@@ -1373,54 +1373,63 @@ impl GraphJoinInference {
                     right_joins.len()
                 );
 
-                // CRITICAL FIX: When LEFT is a simple GraphNode (node-only MATCH pattern) and has no joins,
+                // CRITICAL FIX: When LEFT is a node-only MATCH pattern and has no joins,
                 // we need to create a FROM marker for it. Without this, when OPTIONAL MATCH comes first
                 // and required MATCH has a node-only pattern, the required node would be missing from SQL.
                 // This happens in: OPTIONAL MATCH (a)-[]->(b) MATCH (x) RETURN ...
                 // After swap fix in match_clause.rs: CartesianProduct(left=x, right=optional, is_optional=true)
                 // But x has no FROM marker because GraphNode doesn't generate joins.
+                //
+                // #601: unwrap `Filter`/`Projection` wrappers to reach the bare
+                // `GraphNode(ViewScan)` so the WHERE-wrapped separate-MATCH shape
+                // (`MATCH (c) WHERE … MATCH (p) WHERE …`) also gets its left FROM
+                // anchor materialized (previously only a bare GraphNode matched).
                 if left_joins.is_empty() {
-                    if let LogicalPlan::GraphNode(gn) = cp.left.as_ref() {
-                        // Extract table info from GraphNode's ViewScan
-                        if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
-                            log::info!(
-                                "📦 CartesianProduct: Creating FROM marker for GraphNode '{}' (table='{}')",
-                                gn.alias,
-                                vs.source_table
-                            );
-                            // Insert at the beginning so it becomes the anchor
-                            helpers::JoinBuilder::from_marker(&vs.source_table, &gn.alias)
-                                .build_and_insert_at(collected_graph_joins, 0);
-                            crate::debug_print!(
-                                "📦 CartesianProduct: Added FROM marker for left GraphNode '{}'",
-                                gn.alias
-                            );
-                        }
+                    if let Some((source_table, alias)) =
+                        helpers::find_bare_graph_node_through_wrappers(cp.left.as_ref())
+                    {
+                        log::info!(
+                            "📦 CartesianProduct: Creating FROM marker for GraphNode '{}' (table='{}')",
+                            alias,
+                            source_table
+                        );
+                        // Insert at the beginning so it becomes the anchor
+                        helpers::JoinBuilder::from_marker(&source_table, &alias)
+                            .build_and_insert_at(collected_graph_joins, 0);
+                        crate::debug_print!(
+                            "📦 CartesianProduct: Added FROM marker for left GraphNode '{}'",
+                            alias
+                        );
                     }
                 }
 
                 // #601: symmetric handling for the RIGHT side. A DISCONNECTED
-                // comma-cartesian of bare nodes (`MATCH (a),(c)`) produces empty
-                // joins on BOTH sides — the left becomes the FROM anchor (above),
-                // but without this the right node (`c`) is never materialized and
-                // `c.<prop>` renders against an unbound alias (Code 47). Emit it as
-                // a CROSS JOIN (empty `joining_on` → rendered `JOIN … ON 1=1` /
-                // CROSS JOIN). Only fires when there is genuinely no bridging join
-                // and no correlation predicate (a plain disconnected cartesian);
-                // the WITH…MATCH and OPTIONAL shapes carry a join_condition or
-                // non-empty joins and are unaffected.
+                // comma-cartesian of bare nodes (`MATCH (a),(c)`), or the WHERE-wrapped
+                // separate-MATCH shape (`MATCH (c) WHERE … MATCH (p) WHERE …`), produces
+                // empty joins on BOTH sides — the left becomes the FROM anchor (above),
+                // but without this the right node is never materialized and its
+                // `<alias>.<prop>` renders against an unbound alias (Code 47). Emit it as
+                // a CROSS JOIN (empty `joining_on` → rendered `JOIN … ON 1=1`).
+                // We unwrap `Filter`/`Projection` wrappers so the WHERE-wrapped side is
+                // reached too, and mark the join `.cartesian(true)` so the render-side
+                // `remove_unreferenced_joins` pass does NOT prune it (pruning a genuine
+                // user cross join changes row cardinality — e.g. `count(*)` 64→8).
+                // Only fires when there is genuinely no bridging join and no correlation
+                // predicate (a plain disconnected cartesian); the WITH…MATCH and OPTIONAL
+                // shapes carry a join_condition or non-empty joins and are unaffected.
                 if right_joins.is_empty() && cp.join_condition.is_none() && !cp.is_optional {
-                    if let LogicalPlan::GraphNode(gn) = cp.right.as_ref() {
-                        if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
-                            log::info!(
-                                "📦 CartesianProduct: Creating CROSS JOIN for disconnected right GraphNode '{}' (table='{}') (#601)",
-                                gn.alias,
-                                vs.source_table
-                            );
-                            helpers::JoinBuilder::from_marker(&vs.source_table, &gn.alias)
-                                .join_type(JoinType::Join)
-                                .build_and_push(&mut right_joins);
-                        }
+                    if let Some((source_table, alias)) =
+                        helpers::find_bare_graph_node_through_wrappers(cp.right.as_ref())
+                    {
+                        log::info!(
+                            "📦 CartesianProduct: Creating CROSS JOIN for disconnected right GraphNode '{}' (table='{}') (#601)",
+                            alias,
+                            source_table
+                        );
+                        helpers::JoinBuilder::from_marker(&source_table, &alias)
+                            .join_type(JoinType::Join)
+                            .cartesian(true)
+                            .build_and_push(&mut right_joins);
                     }
                 }
 
@@ -3257,6 +3266,7 @@ impl GraphJoinInference {
                 from_id_column: Some(left_id_col),
                 to_id_column: Some("start_id".to_string()),
                 graph_rel: Some(Arc::new(graph_rel.clone())),
+                is_cartesian: false,
             };
             collected_graph_joins.push(vlp_join);
 

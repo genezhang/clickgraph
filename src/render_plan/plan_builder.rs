@@ -1529,6 +1529,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 from_id_column: None,
                                 to_id_column: None,
                                 graph_rel: None,
+                                is_cartesian: false,
                             });
 
                             // Replace with coalesce(__pc_N.result, default)
@@ -2153,6 +2154,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         from_id_column: Some(anchor_edge_id_col),
                         to_id_column: None,
                         graph_rel: None,
+                        is_cartesian: false,
                     };
 
                     // 4. Extract SELECT, GROUP BY, etc. from the full plan
@@ -2255,6 +2257,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         from_id_column: None,
                         to_id_column: None,
                         graph_rel: None,
+                        is_cartesian: false,
                     };
 
                     let joins = JoinItems::new(vec![vlp_join]);
@@ -2541,6 +2544,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 from_id_column: None,
                                 to_id_column: None,
                                 graph_rel: None,
+                                is_cartesian: false,
                             });
 
                             // Replace the select item with coalesce(__pc_N.result, default)
@@ -3504,6 +3508,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         from_id_column: None,
                         to_id_column: None,
                         graph_rel: None,
+                        is_cartesian: false,
                     };
 
                     // Add to existing joins
@@ -5444,6 +5449,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                     from_id_column: None,
                                     to_id_column: None,
                                     graph_rel: None,
+                                    is_cartesian: false,
                                 });
 
                                 // Replace with coalesce(__pc_N.result, default)

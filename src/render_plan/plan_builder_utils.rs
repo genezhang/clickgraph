@@ -2624,6 +2624,7 @@ pub(crate) fn generate_swapped_joins_for_optional_match(
         from_id_column: Some(rel_col_to_anchor.clone()),
         to_id_column: Some(rel_col_to_new.clone()),
         graph_rel: None,
+        is_cartesian: false,
     });
 
     // JOIN 2: New node (left_connection) connecting to relationship
@@ -2650,6 +2651,7 @@ pub(crate) fn generate_swapped_joins_for_optional_match(
         from_id_column: None,
         to_id_column: None,
         graph_rel: None,
+        is_cartesian: false,
     });
 
     Ok(joins)
@@ -9098,6 +9100,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                     from_id_column: None,
                                     to_id_column: None,
                                     graph_rel: None,
+                                    is_cartesian: false,
                                 };
 
                                 // Add LEFT JOIN to the WITH CTE body.
@@ -9364,6 +9367,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 from_id_column: None,
                                 to_id_column: None,
                                 graph_rel: None,
+                                is_cartesian: false,
                             };
                             with_cte_render.joins.0.push(join);
 
@@ -9783,6 +9787,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                 from_id_column: None,
                                                 to_id_column: None,
                                                 graph_rel: None,
+                                                is_cartesian: false,
                                             };
                                             with_cte_render.joins.0.insert(1, old_from_join);
 
@@ -10064,6 +10069,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                             from_id_column: None,
                                             to_id_column: None,
                                             graph_rel: None,
+                                            is_cartesian: false,
                                         };
 
                                         // Find the edge table's original ON condition that referenced old FROM
@@ -11363,6 +11369,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     from_id_column: None,
                     to_id_column: None,
                     graph_rel: None,
+                    is_cartesian: false,
                 };
 
                 // #453: Post-WITH OPTIONAL MATCH anchoring. When the fresh
@@ -11565,6 +11572,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         from_id_column: None,
                         to_id_column: None,
                         graph_rel: None,
+                        is_cartesian: false,
                     };
                     render_plan.joins.0.insert(0, optional_from_join);
                     log::info!(
@@ -11720,6 +11728,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                     from_id_column: None,
                                     to_id_column: None,
                                     graph_rel: None,
+                                    is_cartesian: false,
                                 };
                                 branch.joins.0.insert(0, branch_cte_join);
                                 log::info!(
@@ -11763,6 +11772,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                     from_id_column: None,
                                     to_id_column: None,
                                     graph_rel: None,
+                                    is_cartesian: false,
                                 };
                                 branch.joins.0.insert(0, branch_cte_join);
                                 log::info!(
@@ -11826,6 +11836,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             from_id_column: None,
                             to_id_column: None,
                             graph_rel: None,
+                            is_cartesian: false,
                         };
                         branch.joins.0.insert(0, cte_join);
                         log::info!(
@@ -14273,6 +14284,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                             from_id_column: j.from_id_column.clone(),
                             to_id_column: j.to_id_column.clone(),
                             graph_rel: None,
+                            is_cartesian: false,
                         })
                     } else {
                         Some(j.clone())
