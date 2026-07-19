@@ -1122,3 +1122,5 @@
 {"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]-(a) WHERE a.user_id = 1 RETURN count(*)", "name": "test_625_closed_vlp_range_composes_with_anchor_where", "schema": "social_integration"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User) RETURN count(*)", "name": "test_625_open_vlp_range_no_constraint_sentinel", "schema": "social_integration"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS*0..2]->(a) RETURN count(*)", "name": "test_625_closed_vlp_lower_bound_zero_fails_loud", "schema": "social_integration"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE a.user_id = 5 RETURN b.user_id AS id ORDER BY id LIMIT 2\nUNION ALL\nMATCH (a:User) WHERE a.user_id = 6 RETURN a.user_id AS id", "name": "test_619_union_arm_modifier_alias_reuse_no_filter_leak", "schema": "social_integration"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS]->(b:User) WHERE a.user_id = 5 RETURN b.user_id AS id ORDER BY id LIMIT 2\nUNION ALL\nMATCH (a:User) WHERE a.user_id = 6 RETURN a.user_id AS id", "name": "test_619_union_arm_modifier_nonvlp_no_filter_leak", "schema": "social_integration"}

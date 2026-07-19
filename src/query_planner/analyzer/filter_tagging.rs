@@ -672,6 +672,70 @@ impl FilterTagging {
                     self.analyze_union_branch(gj.input.clone(), plan_ctx, graph_schema)?;
                 Ok(gj.rebuild_or_clone(child_tf, plan.clone()))
             }
+            // #619: per-arm ORDER BY / SKIP / LIMIT modifiers (parsed INTO the
+            // arm) must recurse back through `analyze_union_branch`, NOT fall to
+            // the `_ =>` catch-all below. The catch-all routes to
+            // `analyze_with_graph_schema`, whose `Filter` arm EXTRACTS the arm's
+            // WHERE into the shared, alias-keyed `plan_ctx.alias_table_ctx_map`
+            // filter pool — which is not scoped per union arm, so a modifier arm's
+            // `a.user_id = 5` then leaks into a sibling arm that reuses alias `a`
+            // and gets AND-ed into its WHERE (`a.user_id = 5 AND a.user_id = 6`),
+            // silently emptying that arm. Keeping the recursion inside
+            // `analyze_union_branch` preserves the Filter node in-tree (never
+            // pooled), exactly as the plain-arm path already does — so an arm with
+            // a trailing ORDER BY/LIMIT stays as self-contained as one without.
+            LogicalPlan::OrderBy(order_by) => {
+                let child_tf =
+                    self.analyze_union_branch(order_by.input.clone(), plan_ctx, graph_schema)?;
+                let child_plan_ref = match &child_tf {
+                    Transformed::Yes(p) | Transformed::No(p) => p.as_ref(),
+                };
+                // Mirror `analyze_with_graph_schema`'s ORDER BY handling: map each
+                // item's property references, honoring the #471 ambiguous-denorm
+                // skip so a standalone denormalized node's ambiguous property
+                // stays unmapped (matching GROUP BY/SELECT).
+                let mut mapped_items = Vec::new();
+                for item in &order_by.items {
+                    if Self::order_by_property_is_ambiguous_denorm_standalone(
+                        &item.expression,
+                        plan_ctx,
+                        graph_schema,
+                        child_plan_ref,
+                    ) {
+                        mapped_items.push(crate::query_planner::logical_plan::OrderByItem {
+                            expression: item.expression.clone(),
+                            order: item.order.clone(),
+                        });
+                        continue;
+                    }
+                    let mapped_expr = self.apply_property_mapping(
+                        item.expression.clone(),
+                        plan_ctx,
+                        graph_schema,
+                        Some(child_plan_ref),
+                    )?;
+                    mapped_items.push(crate::query_planner::logical_plan::OrderByItem {
+                        expression: mapped_expr,
+                        order: item.order.clone(),
+                    });
+                }
+                Ok(Transformed::Yes(Arc::new(LogicalPlan::OrderBy(
+                    crate::query_planner::logical_plan::OrderBy {
+                        input: child_tf.get_plan(),
+                        items: mapped_items,
+                    },
+                ))))
+            }
+            LogicalPlan::Skip(skip) => {
+                let child_tf =
+                    self.analyze_union_branch(skip.input.clone(), plan_ctx, graph_schema)?;
+                Ok(skip.rebuild_or_clone(child_tf, plan.clone()))
+            }
+            LogicalPlan::Limit(limit) => {
+                let child_tf =
+                    self.analyze_union_branch(limit.input.clone(), plan_ctx, graph_schema)?;
+                Ok(limit.rebuild_or_clone(child_tf, plan.clone()))
+            }
             // Leaf nodes - no transformation
             LogicalPlan::ViewScan(_) | LogicalPlan::Empty => Ok(Transformed::No(plan.clone())),
             // For any other node types, fall back to regular analysis
