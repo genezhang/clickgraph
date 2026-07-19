@@ -12828,6 +12828,11 @@ mod vlp_multi_table_label_family_557_558_559 {
     /// now rewrites the renamed CTE's embedded self-name (its `AS (` header AND
     /// its recursive `FROM vlp_a_b vp` self-reference), so the second arm has a
     /// self-consistent `vlp_a_b_2` CTE.
+    ///
+    /// Scope: this covers the single-CTE recursive-VLP shape (#618's repro).
+    /// Multi-sub-CTE VLP shapes (shortestPath/BFS `_bfs`/`_recon`/`_inner`) still
+    /// collide on the DERIVED sub-names in both arms — pre-existing on main,
+    /// tracked in #642.
     #[tokio::test]
     async fn vlp_in_both_union_arms_renames_second_cte_definition_and_selfref_618() {
         let schema = load_schema(SchemaId::Standard.yaml_path());
