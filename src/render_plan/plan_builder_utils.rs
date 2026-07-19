@@ -5887,9 +5887,54 @@ fn is_cte_reference(plan: &LogicalPlan) -> Option<String> {
     }
 }
 
-fn resolve_denormalized_property_in_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
+/// `from_alias` is the alias the enclosing CTE's FROM binds (when known). It
+/// gates the #584 coupled-rel-var remap: the rewrite `r.<col>` → node alias `o`
+/// is only valid when the FROM actually binds `o`. When the FROM binds the rel
+/// var itself (e.g. `WITH count(r)` / `WITH r.order_id` where only `r` is
+/// carried past the barrier), `r.<col>` is already a valid reference to the
+/// coupled row and must be left untouched — remapping it to `o` would unbind it.
+fn resolve_denormalized_property_in_expr_impl(
+    expr: &mut RenderExpr,
+    plan: &LogicalPlan,
+    from_alias: Option<&str>,
+) {
     match expr {
         RenderExpr::PropertyAccessExp(prop) => {
+            // #584: an FK-edge / coupled relationship variable shares one physical
+            // row with its node (edge table == node table). Under a WITH aggregate
+            // the CTE's FROM binds only the NODE alias (`o`) and the rel var `r`
+            // is never emitted as a separate JOIN alias, so `count(r)` →
+            // `count(r.<edge_id>)` dangles (Code 47). Resolve `r` to the coupled
+            // endpoint alias whose physical table IS the edge table
+            // (`coupled_edge_render_alias`). Returns None for a traditional
+            // separate edge table (standard schema binds `r` as its own JOIN
+            // alias), so this is FK-edge/coupled-scoped. Runs before the
+            // denormalized-NODE property resolution below, which only handles node
+            // aliases (`get_properties_with_table_alias` returns None for a rel
+            // var), leaving `r` untouched today.
+            //
+            // Gate: only remap when the coupled NODE alias is what the CTE's FROM
+            // binds. When the FROM binds the rel var itself (only `r` carried past
+            // the WITH barrier), `r.<col>` is already valid and remapping to `o`
+            // would unbind it (regressing `WITH count(r)` / `WITH r.order_id`).
+            if let Some(gr) = plan.find_graph_rel_by_rel_alias(&prop.table_alias.0) {
+                if let Some(node_alias) = LogicalPlan::coupled_edge_render_alias_for_aggregate(
+                    gr,
+                    &gr.left_connection,
+                    &gr.right_connection,
+                    &prop.table_alias.0,
+                ) {
+                    if from_alias == Some(node_alias.as_str()) {
+                        log::info!(
+                            "🔧 #584: FK-edge coupled rel var '{}' → node alias '{}' (denorm resolve)",
+                            prop.table_alias.0,
+                            node_alias
+                        );
+                        prop.table_alias = super::render_expr::TableAlias(node_alias);
+                        return;
+                    }
+                }
+            }
             if let Ok((properties, Some(edge_alias))) =
                 plan.get_properties_with_table_alias(&prop.table_alias.0)
             {
@@ -6005,61 +6050,61 @@ fn resolve_denormalized_property_in_expr(expr: &mut RenderExpr, plan: &LogicalPl
         }
         RenderExpr::AggregateFnCall(agg) => {
             for arg in &mut agg.args {
-                resolve_denormalized_property_in_expr(arg, plan);
+                resolve_denormalized_property_in_expr_impl(arg, plan, from_alias);
             }
         }
         RenderExpr::ScalarFnCall(f) => {
             for arg in &mut f.args {
-                resolve_denormalized_property_in_expr(arg, plan);
+                resolve_denormalized_property_in_expr_impl(arg, plan, from_alias);
             }
         }
         RenderExpr::OperatorApplicationExp(op) => {
             for operand in &mut op.operands {
-                resolve_denormalized_property_in_expr(operand, plan);
+                resolve_denormalized_property_in_expr_impl(operand, plan, from_alias);
             }
         }
         RenderExpr::Case(case) => {
             if let Some(expr) = &mut case.expr {
-                resolve_denormalized_property_in_expr(expr, plan);
+                resolve_denormalized_property_in_expr_impl(expr, plan, from_alias);
             }
             for (cond, then_expr) in &mut case.when_then {
-                resolve_denormalized_property_in_expr(cond, plan);
-                resolve_denormalized_property_in_expr(then_expr, plan);
+                resolve_denormalized_property_in_expr_impl(cond, plan, from_alias);
+                resolve_denormalized_property_in_expr_impl(then_expr, plan, from_alias);
             }
             if let Some(else_expr) = &mut case.else_expr {
-                resolve_denormalized_property_in_expr(else_expr, plan);
+                resolve_denormalized_property_in_expr_impl(else_expr, plan, from_alias);
             }
         }
         RenderExpr::List(items) => {
             for item in items {
-                resolve_denormalized_property_in_expr(item, plan);
+                resolve_denormalized_property_in_expr_impl(item, plan, from_alias);
             }
         }
         RenderExpr::MapLiteral(entries) => {
             for (_, value) in entries {
-                resolve_denormalized_property_in_expr(value, plan);
+                resolve_denormalized_property_in_expr_impl(value, plan, from_alias);
             }
         }
         RenderExpr::ArraySubscript { array, index } => {
-            resolve_denormalized_property_in_expr(array, plan);
-            resolve_denormalized_property_in_expr(index, plan);
+            resolve_denormalized_property_in_expr_impl(array, plan, from_alias);
+            resolve_denormalized_property_in_expr_impl(index, plan, from_alias);
         }
         RenderExpr::ArraySlicing { array, from, to } => {
-            resolve_denormalized_property_in_expr(array, plan);
+            resolve_denormalized_property_in_expr_impl(array, plan, from_alias);
             if let Some(f) = from {
-                resolve_denormalized_property_in_expr(f, plan);
+                resolve_denormalized_property_in_expr_impl(f, plan, from_alias);
             }
             if let Some(t) = to {
-                resolve_denormalized_property_in_expr(t, plan);
+                resolve_denormalized_property_in_expr_impl(t, plan, from_alias);
             }
         }
         RenderExpr::InSubquery(insub) => {
-            resolve_denormalized_property_in_expr(&mut insub.expr, plan);
+            resolve_denormalized_property_in_expr_impl(&mut insub.expr, plan, from_alias);
         }
         RenderExpr::ReduceExpr(reduce) => {
-            resolve_denormalized_property_in_expr(&mut reduce.initial_value, plan);
-            resolve_denormalized_property_in_expr(&mut reduce.list, plan);
-            resolve_denormalized_property_in_expr(&mut reduce.expression, plan);
+            resolve_denormalized_property_in_expr_impl(&mut reduce.initial_value, plan, from_alias);
+            resolve_denormalized_property_in_expr_impl(&mut reduce.list, plan, from_alias);
+            resolve_denormalized_property_in_expr_impl(&mut reduce.expression, plan, from_alias);
         }
         _ => {}
     }
@@ -7298,6 +7343,14 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     );
                 }
 
+                // #584: the alias the CTE body's FROM binds. Gates the coupled
+                // rel-var remap in resolve_denormalized_property_in_expr: `r.<col>`
+                // → node alias `o` is only valid when FROM actually binds `o`
+                // (node carried past the WITH barrier). When FROM binds the rel
+                // var itself (only `r` carried), the remap must not fire.
+                let cte_from_alias: Option<String> =
+                    rendered.from.0.as_ref().and_then(|ft| ft.alias.clone());
+
                 // CRITICAL: Extract schema from UNION (for VLP CTEs)
                 // VLP CTEs are RawSql so we can't extract schema from them directly
                 // But the UNION that uses them has SELECT items with aliases like "friend.id", "p.firstName"
@@ -7802,7 +7855,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                 let expr_result: Result<RenderExpr, _> = expanded_expr.try_into();
                                                 expr_result.ok().map(|mut expr| {
                                                     // Rewrite denormalized node aliases (e.g., a → r)
-                                                    resolve_denormalized_property_in_expr(&mut expr, plan_to_render);
+                                                    resolve_denormalized_property_in_expr_impl(&mut expr, plan_to_render, cte_from_alias.as_deref());
 
                                                     // 🔧 FIX: VLP CTE column rewriting for non-TableAlias WITH items
                                                     // When FROM is a VLP/multi-type CTE, PropertyAccess references
@@ -8180,7 +8233,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                         };
                                                         let rewritten = rewrite_expression_with_property_mapping(&item.expression, &rewrite_ctx);
                                                         let expr_vec: Vec<RenderExpr> = rewritten.try_into().ok().map(|mut expr: RenderExpr| {
-                                                            resolve_denormalized_property_in_expr(&mut expr, plan_to_render);
+                                                            resolve_denormalized_property_in_expr_impl(&mut expr, plan_to_render, cte_from_alias.as_deref());
                                                             expr
                                                         }).into_iter().collect();
                                                         expr_vec

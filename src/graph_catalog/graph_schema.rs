@@ -528,6 +528,25 @@ impl RelationshipSchema {
         !self.is_fk_edge && self.from_node_properties.is_none() && self.to_node_properties.is_none()
     }
 
+    /// True for a **self-referencing FK-edge** — an FK-edge whose from- and
+    /// to-node are the same table with no denormalized node properties (e.g.
+    /// `(child:Object)-[:PARENT]->(parent:Object)` on one `fs_objects` table, or
+    /// `(e:Employee)-[:REPORTS_TO]->(m:Employee)` on `emp`). Both endpoints map
+    /// to the same physical table, which is currently mis-planned as a single
+    /// scan with no self-join. The #584 coupled-rel-var aggregate remap must NOT
+    /// fire here: rewriting `count(r)` → `count(m.<col>)` would fabricate
+    /// valid-but-wrong SQL from what legitimately errors LOUD (Code 47) on main
+    /// (ground rule 1). A non-self-referencing FK-edge (Order≠Customer) and a
+    /// fully-denormalized coupled edge (from_node_properties present, distinct
+    /// labels) are both excluded and still remap. Axis-dispatch: this pattern
+    /// classification belongs in `graph_catalog`.
+    pub fn is_self_referencing_fk_edge(&self) -> bool {
+        self.is_fk_edge
+            && self.from_node_table == self.to_node_table
+            && self.from_node_properties.is_none()
+            && self.to_node_properties.is_none()
+    }
+
     /// #617: whether the undirected doubled-edge single-walk strategy can be
     /// applied to this relationship. False when a mapped property TARGETS one
     /// of the from/to id columns (a per-hop filter on such a property would
@@ -2291,6 +2310,77 @@ mod tests {
         let labels = schema.get_denormalized_node_labels();
         assert_eq!(labels.len(), 1);
         assert!(labels.contains(&&"User".to_string()));
+    }
+
+    /// #584: `is_self_referencing_fk_edge` gates the coupled-rel-var aggregate
+    /// remap. It must fire ONLY for an FK-edge whose from/to tables are equal
+    /// (no denorm props) — the mis-planned single-scan shape whose `count(r)`
+    /// must stay a loud error rather than be remapped to a silent-wrong count.
+    #[test]
+    fn test_is_self_referencing_fk_edge_classification() {
+        // Minimal RelationshipSchema builder over the fields relevant here.
+        let make = |is_fk: bool,
+                    from_tbl: &str,
+                    to_tbl: &str,
+                    from_np: Option<HashMap<String, String>>,
+                    to_np: Option<HashMap<String, String>>| RelationshipSchema {
+            database: "default".to_string(),
+            table_name: from_tbl.to_string(),
+            column_names: vec![],
+            from_node: "A".to_string(),
+            to_node: "B".to_string(),
+            from_node_table: from_tbl.to_string(),
+            to_node_table: to_tbl.to_string(),
+            from_id: Identifier::from("f_id"),
+            to_id: Identifier::from("t_id"),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::Integer,
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            edge_id: None,
+            type_column: None,
+            from_label_column: None,
+            to_label_column: None,
+            from_node_properties: from_np,
+            to_node_properties: to_np,
+            from_label_values: None,
+            to_label_values: None,
+            is_fk_edge: is_fk,
+            constraints: None,
+            edge_id_types: None,
+            source: None,
+            property_types: HashMap::new(),
+        };
+
+        // Self-referencing FK-edge (emp→emp, REPORTS_TO): TRUE — stay loud.
+        assert!(
+            make(true, "emp", "emp", None, None).is_self_referencing_fk_edge(),
+            "FK-edge with equal from/to tables and no denorm props is self-referencing"
+        );
+
+        // Non-self-referencing FK-edge (orders_fk→customers_fk, PLACED_BY): FALSE — remap.
+        assert!(
+            !make(true, "orders_fk", "customers_fk", None, None).is_self_referencing_fk_edge(),
+            "FK-edge with distinct from/to tables is NOT self-referencing"
+        );
+
+        // Fully-denormalized coupled edge on one table (has denorm props): FALSE — remap.
+        let mut np = HashMap::new();
+        np.insert("name".to_string(), "col".to_string());
+        assert!(
+            !make(false, "dns_log", "dns_log", Some(np.clone()), Some(np))
+                .is_self_referencing_fk_edge(),
+            "denormalized coupled edge (denorm props present) is NOT a self-referencing FK-edge"
+        );
+
+        // Plain separate edge table: FALSE.
+        assert!(
+            !make(false, "users", "posts", None, None).is_self_referencing_fk_edge(),
+            "plain separate edge table is NOT a self-referencing FK-edge"
+        );
     }
 
     // ========================================================================

@@ -1134,3 +1134,8 @@
 {"cypher": "MATCH (a:User)-[:FOLLOWS*2..2]->(b:User) RETURN count(*)", "name": "test_605_open_exact_vlp_stays_flat_sentinel", "schema": "social_integration"}
 {"cypher": "MATCH (a:Airport)-[:FLIGHT*2..2]->(a) RETURN count(*)", "name": "test_605_denorm_closed_exact_vlp_fails_loud", "schema": "denormalized_flights"}
 {"cypher": "MATCH (a:Airport)-[:FLIGHT*2..3]->(a) RETURN count(*)", "name": "test_605_denorm_closed_range_vlp_fails_loud", "schema": "denormalized_flights"}
+{"cypher": "MATCH (o:Order)-[r:PLACED_BY]->(c:Customer) WITH o, count(r) AS rc RETURN o.order_id, rc ORDER BY o.order_id", "name": "test_584_fk_edge_coupled_rel_var_count_r_in_with", "schema": "fk_edge"}
+{"cypher": "MATCH (o:Order)-[r:PLACED_BY]->(c:Customer) RETURN count(r)", "name": "test_584_fk_edge_standalone_count_r_still_works", "schema": "fk_edge"}
+{"cypher": "MATCH (o:Order)-[r:PLACED_BY]->(c:Customer) WITH count(r) AS rc RETURN rc", "name": "test_584_fk_edge_count_r_only_no_node_carried", "schema": "fk_edge"}
+{"cypher": "MATCH (o:Order)-[r:PLACED_BY]->(c:Customer) WITH r.order_id AS oid RETURN oid ORDER BY oid", "name": "test_584_fk_edge_rel_prop_only_no_node_carried", "schema": "fk_edge"}
+{"cypher": "MATCH (c:Object)-[r:PARENT]->(p:Object) WITH c, count(r) AS rc RETURN c.name, rc", "name": "test_584_self_ref_fk_edge_count_r_stays_loud", "schema": "fk_edge_self_ref"}
