@@ -95,6 +95,7 @@ schema	is_denormalized	src/render_plan/plan_builder.rs	10
 schema	is_denormalized	src/render_plan/plan_builder_helpers.rs	9
 schema	is_denormalized	src/render_plan/plan_builder_utils.rs	8
 schema	is_denormalized	src/render_plan/properties_builder.rs	3
+schema	is_denormalized	src/render_plan/render_expr.rs	1
 schema	is_denormalized	src/render_plan/select_builder.rs	2
 schema	is_denormalized	src/sql_generator/emitters/clickhouse/to_sql_query.rs	1
 schema	is_denormalized	src/sql_generator/emitters/clickhouse/variable_length_cte.rs	41
