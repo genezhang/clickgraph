@@ -4870,14 +4870,23 @@ impl RenderPlanBuilder for LogicalPlan {
                             //    rendered branches include a `properties` column.
                             fn returns_whole_entity(plan: &LogicalPlan) -> bool {
                                 match plan {
-                                    LogicalPlan::Projection(p) => p.items.iter().any(|item| {
-                                        matches!(
-                                        &item.expression,
-                                        crate::query_planner::logical_expr::LogicalExpr::TableAlias(
-                                            _
-                                        )
-                                    )
-                                    }),
+                                    LogicalPlan::Projection(p) => {
+                                        // #624: a bare TableAlias that is an UNWIND-bound
+                                        // scalar variable (e.g. `UNWIND [1,2] AS n RETURN
+                                        // b.name, n`) is NOT a whole node/relationship —
+                                        // it must not trigger the __label__ column path.
+                                        // Collect the unwind aliases below this projection
+                                        // and exclude them.
+                                        let mut unwind_aliases = std::collections::HashSet::new();
+                                        collect_unwind_aliases_local(&p.input, &mut unwind_aliases);
+                                        p.items.iter().any(|item| {
+                                            matches!(
+                                                &item.expression,
+                                                crate::query_planner::logical_expr::LogicalExpr::TableAlias(a)
+                                                    if !unwind_aliases.contains(&a.0)
+                                            )
+                                        })
+                                    }
                                     LogicalPlan::Limit(l) => returns_whole_entity(&l.input),
                                     LogicalPlan::Skip(s) => returns_whole_entity(&s.input),
                                     LogicalPlan::OrderBy(o) => returns_whole_entity(&o.input),
@@ -4885,6 +4894,43 @@ impl RenderPlanBuilder for LogicalPlan {
                                     LogicalPlan::GraphJoins(gj) => returns_whole_entity(&gj.input),
                                     LogicalPlan::Unwind(u) => returns_whole_entity(&u.input),
                                     _ => false,
+                                }
+                            }
+
+                            // #624: local unwind-alias collector (mirrors
+                            // plan_builder_utils::collect_unwind_aliases) — used to
+                            // exclude UNWIND scalars from the whole-entity check above.
+                            fn collect_unwind_aliases_local(
+                                plan: &LogicalPlan,
+                                out: &mut std::collections::HashSet<String>,
+                            ) {
+                                match plan {
+                                    LogicalPlan::Unwind(u) => {
+                                        out.insert(u.alias.clone());
+                                        collect_unwind_aliases_local(&u.input, out);
+                                    }
+                                    LogicalPlan::Filter(f) => {
+                                        collect_unwind_aliases_local(&f.input, out)
+                                    }
+                                    LogicalPlan::Projection(p) => {
+                                        collect_unwind_aliases_local(&p.input, out)
+                                    }
+                                    LogicalPlan::OrderBy(o) => {
+                                        collect_unwind_aliases_local(&o.input, out)
+                                    }
+                                    LogicalPlan::Limit(l) => {
+                                        collect_unwind_aliases_local(&l.input, out)
+                                    }
+                                    LogicalPlan::Skip(s) => {
+                                        collect_unwind_aliases_local(&s.input, out)
+                                    }
+                                    LogicalPlan::GroupBy(gb) => {
+                                        collect_unwind_aliases_local(&gb.input, out)
+                                    }
+                                    LogicalPlan::GraphJoins(gj) => {
+                                        collect_unwind_aliases_local(&gj.input, out)
+                                    }
+                                    _ => {}
                                 }
                             }
 
