@@ -760,8 +760,16 @@ RETURN u.user_id AS business_id, u.name
 | `collect(expr)` | Aggregate into list | `collect(u.name)` |
 | `stDev(expr)` | Sample standard deviation | `stDev(u.age)` |
 | `stDevP(expr)` | Population standard deviation | `stDevP(u.age)` |
-| `percentileCont(expr, p)` | Continuous percentile | `percentileCont(u.age, 0.5)` |
-| `percentileDisc(expr, p)` | Discrete percentile | `percentileDisc(u.age, 0.9)` |
+| `percentileCont(expr, p)` | Continuous percentile (linear interpolation) | `percentileCont(u.age, 0.5)` |
+| `percentileDisc(expr, p)` | Discrete percentile (nearest actual value) | `percentileDisc(u.age, 0.9)` |
+
+> `percentileCont`/`percentileDisc` honor the `p` argument for any percentile
+> `0.0`–`1.0`. `percentileCont` uses linear interpolation (ClickHouse
+> `quantileExactInclusive(p)`; Databricks `percentile`). `percentileDisc`
+> returns the nearest actual value at Neo4j's discrete index (a sorted-array
+> index expression on both backends, since no native quantile matches Neo4j's
+> convention). Both require exactly two arguments — a wrong arity is a loud
+> error, never a silently guessed value.
 
 ### String Functions
 

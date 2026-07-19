@@ -197,6 +197,32 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// Narrow to this one salvage-key shape, not a general NULLS FIRST/LAST
     /// normalization pass — see #556.
     fn id_order_key_nulls_clause(&self) -> &'static str;
+
+    /// Render an openCypher percentile aggregate — `percentileCont(expr, p)` or
+    /// `percentileDisc(expr, p)` — honoring the percentile argument `p` (#639).
+    ///
+    /// The two dialects and the two variants diverge on call SHAPE, so this
+    /// can't be a registry name-swap:
+    /// - `percentileCont` (continuous, linear interpolation): CH
+    ///   `quantileExactInclusive(p)(expr)` (parametric aggregate — the
+    ///   percentile sits in a leading parameter list); Spark `percentile(expr, p)`.
+    /// - `percentileDisc` (discrete, nearest actual value): NO ClickHouse or
+    ///   Spark builtin reproduces Neo4j's index convention — `quantileExact`,
+    ///   `quantileExactLow`/`High` and Spark's `percentile_disc` all round
+    ///   differently (e.g. [10,20,30,40]@0.25 → Neo4j 10 but `quantileExact` 20).
+    ///   So both dialects build the exact index by hand over the sorted value
+    ///   array at Neo4j's 1-based index `greatest(1, ceil(p * n))` (n = non-null
+    ///   count): CH `arrayElement(arraySort(groupArray(expr)), …)`, Spark
+    ///   `element_at(array_sort(collect_list(expr)), …)`.
+    ///
+    /// Verified exact against the Neo4j reference algorithm: percentileCont
+    /// (`PercentileContFunction`) and percentileDisc (`PercentileDiscFunction`,
+    /// `floatIdx = p*count` with the integer-boundary `-1` correction) — 0
+    /// mismatches across n=1..40 × p=0.05..0.95, plus live corpus checks.
+    ///
+    /// `expr` and `percentile` are pre-rendered SQL fragments; `continuous`
+    /// selects Cont vs Disc.
+    fn percentile_aggregate(&self, expr: &str, percentile: &str, continuous: bool) -> String;
 }
 
 /// Returns the function mapper for the active SQL dialect, read from the

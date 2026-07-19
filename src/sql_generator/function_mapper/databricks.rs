@@ -219,6 +219,29 @@ impl FunctionMapper for DatabricksFunctionMapper {
         // with the ClickHouse-verified ordering (#556).
         " NULLS LAST"
     }
+
+    fn percentile_aggregate(&self, expr: &str, percentile: &str, continuous: bool) -> String {
+        if continuous {
+            // Spark `percentile(expr, p)` does linear interpolation, matching
+            // Neo4j percentileCont. It's a documented plain-function aggregate
+            // (comma-arg form), unlike `percentile_cont`/`percentile_disc`
+            // which are `WITHIN GROUP (ORDER BY …)` ordered-set aggregates.
+            format!("percentile({expr}, {percentile})")
+        } else {
+            // percentileDisc = nearest actual value at Neo4j's 1-based index
+            // `greatest(1, ceil(p * n))`. Spark's `percentile_disc` uses the
+            // `WITHIN GROUP` ordered-set syntax (not a comma-arg function) AND a
+            // different index convention, so mirror the ClickHouse hand-built
+            // exact-index form over the sorted value array for identical
+            // cross-dialect semantics (#639). `try_element_at` (1-based) returns
+            // NULL on an empty group instead of throwing under ANSI mode —
+            // matching ClickHouse `arrayElementOrNull` and Neo4j (null over an
+            // empty set). `array_sort` is ascending; `collect_list` drops NULLs.
+            format!(
+                "try_element_at(array_sort(collect_list({expr})), greatest(1, cast(ceil({percentile} * count({expr})) as int)))"
+            )
+        }
+    }
 }
 
 #[cfg(test)]
@@ -274,6 +297,18 @@ mod tests {
         assert_eq!(
             m.array_slice("arr", "2", None),
             "slice(arr, 2, greatest(size(arr) - (2) + 1, 0))"
+        );
+        // #639: Spark percentileCont = `percentile(expr, p)` (interpolated).
+        // percentileDisc has no matching comma-arg builtin (Spark's
+        // `percentile_disc` uses WITHIN GROUP + a different index), so it's the
+        // hand-built sorted-array index form, mirroring ClickHouse.
+        assert_eq!(
+            m.percentile_aggregate("t.x", "0.9", true),
+            "percentile(t.x, 0.9)"
+        );
+        assert_eq!(
+            m.percentile_aggregate("t.x", "0.9", false),
+            "try_element_at(array_sort(collect_list(t.x)), greatest(1, cast(ceil(0.9 * count(t.x)) as int)))"
         );
     }
 

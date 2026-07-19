@@ -6790,6 +6790,18 @@ impl RenderExpr {
                 // `databricks_name: Some(...)` get a Spark-specific name back from
                 // `mapping.name_for(dialect)`.
                 let fn_name_lower = agg.name.to_lowercase();
+
+                // percentileCont/Disc are parametric quantiles — render through the
+                // dialect FunctionMapper, honoring the percentile arg (#639).
+                {
+                    let args_sql: Vec<String> = agg.args.iter().map(|e| e.to_sql()).collect();
+                    if let Some(sql) =
+                        super::common::try_render_percentile(&fn_name_lower, &args_sql)
+                    {
+                        return sql;
+                    }
+                }
+
                 match get_function_mapping(&fn_name_lower) {
                     Some(mapping) => {
                         let args_sql: Vec<String> = agg.args.iter().map(|e| e.to_sql()).collect();

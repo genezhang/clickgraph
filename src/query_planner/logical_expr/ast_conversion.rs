@@ -219,17 +219,22 @@ impl<'a> TryFrom<open_cypher_parser::ast::FunctionCall<'a>> for LogicalExpr {
         // Code 184). They are genuine aggregates per openCypher and render
         // correctly via the function registry (stddevSamp / stddevPop).
         //
-        // NOTE: percentileCont/percentileDisc are deliberately NOT added here yet.
-        // Their function-registry mapping currently DROPS the percentile argument
-        // and always renders `median(x)` (quantile 0.5) — see
-        // `function_registry.rs` `percentilecont`/`percentiledisc`. Classifying
-        // them as aggregates would turn today's loud error (they land in a GROUP
-        // BY) into a SILENT wrong result (median instead of the requested
-        // percentile) — a loud→silent regression forbidden by ground rule 1.
-        // Add them here only once the registry honors the percentile arg (or
-        // fails loud on a non-0.5 percentile). Tracked as a follow-up.
+        // percentileCont/percentileDisc are also genuine aggregates (#639). They
+        // now render through `FunctionMapper::percentile_aggregate` as parametric
+        // quantiles that HONOR the percentile arg (previously they dropped it and
+        // rendered `median`, so classifying them as aggregates would have turned a
+        // loud Code 184 into a silent wrong median — that hazard is now gone).
         let agg_fns = [
-            "count", "min", "max", "avg", "sum", "collect", "stdev", "stdevp",
+            "count",
+            "min",
+            "max",
+            "avg",
+            "sum",
+            "collect",
+            "stdev",
+            "stdevp",
+            "percentilecont",
+            "percentiledisc",
         ];
 
         // Check if it's a standard aggregate function
