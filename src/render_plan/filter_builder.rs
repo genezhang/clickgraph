@@ -158,6 +158,10 @@ impl FilterBuilder for LogicalPlan {
                             // #623: exact VLP adjacent to another hop uses recursive CTE
                             && !crate::render_plan::from_builder::adjacent_exact_vlp_uses_cte(
                                 graph_rel,
+                            )
+                            // #605: closed exact VLP (a)-[*N..N]->(a) uses recursive CTE
+                            && !crate::render_plan::from_builder::closed_exact_vlp_uses_cte(
+                                graph_rel,
                             );
                         !is_fixed_length // CTE used if NOT fixed-length
                     } else {
@@ -240,6 +244,36 @@ impl FilterBuilder for LogicalPlan {
                                          return to the start node, so the cycle constraint would \
                                          silently drop all real cycles. Use a lower bound >= 1 \
                                          (e.g. `*1..N`) to count cycles. (#625)",
+                                        a = graph_rel.left_connection
+                                    )));
+                                }
+                                // #605/#625 denormalized closed guard: a
+                                // DENORMALIZED closed VLP's recursive CTE enforces
+                                // NODE-uniqueness (`NOT has(vp.path_nodes, ...)`)
+                                // for ALL lower bounds (its endpoints are embedded
+                                // in the edge row; the generator has no separate
+                                // node identity to seed edge-uniqueness). Node-
+                                // uniqueness forbids a walk from returning to its
+                                // start, so `start_id = end_id` never holds and the
+                                // count is silently 0. Fail loud rather than emit
+                                // that silent-wrong constraint (ground rule 1) —
+                                // this covers the closed RANGE case (#625) and the
+                                // closed EXACT case now rerouted here (#605); on a
+                                // denorm schema BOTH previously returned a silent 0
+                                // (range) or failed loud in the flat path (exact),
+                                // and neither should silently undercount. Full
+                                // support needs the denorm closed CTE to switch to
+                                // edge-uniqueness — tracked as a follow-up.
+                                let is_denorm_closed = is_node_denormalized(&graph_rel.left)
+                                    || is_node_denormalized(&graph_rel.right);
+                                if is_denorm_closed && graph_rel.shortest_path_mode.is_none() {
+                                    return Err(RenderBuildError::UnsupportedFeature(format!(
+                                        "closed variable-length path on a denormalized schema \
+                                         (`({a})-[*..]-({a})`): the recursive CTE enforces \
+                                         node-uniqueness (embedded endpoints have no separate \
+                                         identity to seed edge-uniqueness), which structurally \
+                                         cannot return to the start node, so the cycle count \
+                                         would silently be 0. (#605/#625)",
                                         a = graph_rel.left_connection
                                     )));
                                 }
@@ -388,6 +422,16 @@ impl FilterBuilder for LogicalPlan {
                         if exact_hops >= 2
                             && graph_rel.shortest_path_mode.is_none()
                             && !crate::render_plan::from_builder::optional_directed_exact_vlp_uses_cte(
+                                graph_rel,
+                            )
+                            // #605: a CLOSED exact VLP `(a)-[*N..N]->(a)` reroutes
+                            // to the recursive CTE (both endpoints are the same
+                            // variable, so this flat-path cycle-prevention's
+                            // `extract_table_name` on the two endpoints fails
+                            // loud). Skip the flat guard; the CTE's own edge
+                            // uniqueness + the #625 `start_id = end_id` closed
+                            // constraint handle it.
+                            && !crate::render_plan::from_builder::closed_exact_vlp_uses_cte(
                                 graph_rel,
                             )
                         {

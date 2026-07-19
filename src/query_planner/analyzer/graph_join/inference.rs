@@ -3697,10 +3697,18 @@ impl GraphJoinInference {
         // doubled-edge CTE), so this applies regardless of direction.
         let reroute_adjacent_exact =
             crate::server::query_context::is_adjacent_exact_vlp_reroute(&graph_rel.alias);
+        // #605: a CLOSED exact VLP `(a)-[*N..N]->(a)` (same variable at both
+        // endpoints) reroutes to the recursive CTE — the flat r1..rN
+        // cycle-prevention path fails loud trying to resolve the same-variable
+        // endpoints to distinct tables. Detectable directly from the two
+        // connection aliases (no task-local channel), direction-independent.
+        let reroute_closed_exact = graph_rel.shortest_path_mode.is_none()
+            && graph_rel.left_connection == graph_rel.right_connection;
         let is_fixed_length = spec.exact_hop_count().is_some()
             && graph_rel.shortest_path_mode.is_none()
             && !reroute_directed_optional_exact
-            && !reroute_adjacent_exact;
+            && !reroute_adjacent_exact
+            && !reroute_closed_exact;
 
         if !is_fixed_length {
             if is_optional {
