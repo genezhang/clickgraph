@@ -1124,6 +1124,11 @@ impl JoinBuilder for LogicalPlan {
                         if vlp_ctx.is_fixed_length
                             && vlp_ctx.schema_type != VlpSchemaType::Denormalized
                             && !super::from_builder::optional_directed_exact_vlp_uses_cte(graph_rel)
+                            // #623: an exact VLP adjacent to another hop reroutes
+                            // to the recursive CTE — expanding flat r1..rN here
+                            // would return ONLY the VLP joins and drop the
+                            // neighboring hop (silent wrong results).
+                            && !super::from_builder::adjacent_exact_vlp_uses_cte(graph_rel)
                         {
                             let exact_hops = vlp_ctx.exact_hops.unwrap_or(1);
                             if exact_hops > 1 {

@@ -3484,6 +3484,11 @@ pub fn extract_ctes_with_context(
                     // see optional_directed_exact_vlp_uses_cte).
                     && !crate::render_plan::from_builder::optional_directed_exact_vlp_uses_cte(
                         graph_rel,
+                    )
+                    // #623: an exact VLP adjacent to another hop reroutes to the
+                    // recursive CTE (flat chain can't compose with a neighbor).
+                    && !crate::render_plan::from_builder::adjacent_exact_vlp_uses_cte(
+                        graph_rel,
                     );
 
                 if use_chained_join {
@@ -7124,9 +7129,31 @@ pub fn build_vlp_context(
     let spec = graph_rel.variable_length.as_ref()?;
 
     let schema_type = detect_vlp_schema_type(graph_rel);
-    let is_fixed_length =
-        spec.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none();
+    // #623: an exact VLP adjacent to another hop is rerouted from the flat
+    // r1..rN chain to the recursive CTE (the flat chain can't compose with a
+    // neighboring hop — it silently collapses `*N..N` to `*1..1` or drops the
+    // leading hop). Treat it as non-fixed-length here so EVERY VlpContext
+    // consumer (the GraphRel-arm join expander at join_builder.rs:1793, the
+    // GraphJoins-arm expander, use_chained_join) agrees and emits the recursive
+    // CTE. The analyzer's `should_skip_for_vlp` records the reroute in the
+    // task-local `QueryContext`.
+    let reroute_adjacent_exact =
+        crate::server::query_context::is_adjacent_exact_vlp_reroute(&graph_rel.alias);
+    let is_fixed_length = spec.exact_hop_count().is_some()
+        && graph_rel.shortest_path_mode.is_none()
+        && !reroute_adjacent_exact;
     let exact_hops = spec.exact_hop_count();
+
+    // #623: record the exact hop count for a path-variable VLP so `length(p)`
+    // reports N (not the flat fallback's `joins/2`). Only for the genuine flat
+    // fixed case: an exact standalone VLP that keeps the r1..rN chain. Skipping
+    // rerouted/CTE cases avoids mis-keying when the path length comes from the
+    // CTE's own `hop_count` column instead.
+    if is_fixed_length {
+        if let (Some(path_var), Some(hops)) = (graph_rel.path_variable.as_ref(), exact_hops) {
+            crate::server::query_context::register_vlp_exact_path_hops(path_var, hops);
+        }
+    }
 
     // Extract start node info
     let (start_alias, start_table, start_id_col) =
@@ -7745,6 +7772,13 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                 pre_filter: None,
                 from_id_column: None,
                 to_id_column: None,
+                // #623: the endpoint NODE join stays `graph_rel: None` so it
+                // remains prunable by `remove_unreferenced_joins` (whose
+                // `graph_rel.is_some()` guard protects VLP joins). When `b` is
+                // unreferenced it folds into `r{N}.followed_id`; stamping it
+                // here would defeat that legitimate elision (regression caught
+                // by the corpus golden). Only the relationship (r1..rN) joins
+                // carry `graph_rel` — enough for `fixed_path_hop_count`.
                 graph_rel: None,
                 is_cartesian: false,
             });

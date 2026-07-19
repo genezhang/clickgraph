@@ -3390,6 +3390,49 @@ impl GraphJoinInference {
         let mut required_vlps: Vec<(String, String, String)> = Vec::new();
         Self::collect_required_vlps(plan, &mut required_vlps);
 
+        // #623: an exact-bound VLP adjacent to another hop must ALSO be treated
+        // as a required recursive VLP — the flat r1..rN chain cannot compose
+        // with a neighboring hop (it silently collapses `*N..N` to `*1..1` or
+        // drops the leading hop). Folding them in here gives, for free: (a)
+        // endpoint registration so adjacent joins rewrite to `t.start_id`/
+        // `t.end_id`, and (b) inclusion in the #544 multi-VLP guard below (two
+        // recursive VLP CTEs in one scope are genuinely unsupported and must
+        // fail loud, not silently conflate). We also flag each rerouted alias
+        // in the task-local so the render gates treat it as non-fixed-length.
+        for AdjacentExactVlp {
+            left,
+            right,
+            alias,
+            is_composite,
+        } in Self::collect_adjacent_exact_vlps(plan)
+        {
+            // #623 composite guard: composing an adjacent hop onto a
+            // composite-key VLP would bind a single edge column against the
+            // recursive CTE's `concat(...)` start_id/end_id — a silent 0-row
+            // mismatch. Composite standalone exact is already loud-broken
+            // (#604); fail LOUD here rather than reroute into a silent-wrong
+            // result (ground rule 1). Follow-up: composite composed VLP.
+            if is_composite {
+                return Err(AnalyzerError::UnsupportedPattern {
+                    message: format!(
+                        "(#623) exact-bound variable-length path ({left})-[{alias}*N..N]->({right}) \
+                         is adjacent to another hop on a COMPOSITE-key schema. Composing the \
+                         adjacent hop through the recursive CTE cannot bind the composite key \
+                         (the CTE exposes a single concatenated id column), which would silently \
+                         return wrong results. This shape is not yet supported on composite-id \
+                         schemas — run the variable-length path in its own query."
+                    ),
+                });
+            }
+            crate::server::query_context::register_adjacent_exact_vlp_reroute(&alias);
+            if !required_vlps
+                .iter()
+                .any(|(_, _, existing)| existing == &alias)
+            {
+                required_vlps.push((left, right, alias));
+            }
+        }
+
         if required_vlps.len() > 1 {
             let all_same_end = required_vlps
                 .windows(2)
@@ -3509,6 +3552,100 @@ impl GraphJoinInference {
         }
     }
 
+    /// #623: Collect adjacent-exact VLPs in one scope. An exact-bound
+    /// (min==max) VLP renders as a flat r1..rN self-join chain that CANNOT
+    /// compose with a neighboring hop: a trailing neighbor silently collapses
+    /// `*N..N` to `*1..1`, a leading neighbor is dropped and the endpoint
+    /// dangles — both silent wrong results. When such a VLP is adjacent to
+    /// another hop (a sibling GraphRel shares one of its endpoint aliases), it
+    /// must reroute to the recursive-CTE path, which composes on both sides
+    /// (off `t.start_id`/`t.end_id`) exactly like the RANGE path.
+    ///
+    /// This walks the SAME scope arms as `collect_required_vlps` (notably NOT
+    /// into `Union` — same isolation invariant) in two passes over one gather:
+    /// first collect every relationship's `(left_connection, right_connection,
+    /// alias)` and, separately, every flat-exact-VLP candidate; then a VLP is
+    /// "adjacent" iff a DIFFERENT relationship's connection equals one of the
+    /// VLP's endpoints. Returns the rerouted VLPs as
+    /// `(left_connection, right_connection, rel_alias)` so the caller can feed
+    /// them through the same required-VLP registration + #544 guard.
+    fn collect_adjacent_exact_vlps(plan: &LogicalPlan) -> Vec<AdjacentExactVlp> {
+        // (left_connection, right_connection, alias) for every GraphRel.
+        let mut all_rels: Vec<(String, String, String)> = Vec::new();
+        // Flat-exact-VLP candidates, with their composite-endpoint flag.
+        let mut exact_candidates: Vec<AdjacentExactVlp> = Vec::new();
+
+        fn gather(
+            plan: &LogicalPlan,
+            all_rels: &mut Vec<(String, String, String)>,
+            exact_candidates: &mut Vec<AdjacentExactVlp>,
+        ) {
+            match plan {
+                LogicalPlan::GraphRel(gr) => {
+                    gather(&gr.left, all_rels, exact_candidates);
+                    gather(&gr.right, all_rels, exact_candidates);
+
+                    all_rels.push((
+                        gr.left_connection.clone(),
+                        gr.right_connection.clone(),
+                        gr.alias.clone(),
+                    ));
+
+                    if let Some(spec) = gr.variable_length.as_ref() {
+                        // Mirror should_skip_for_vlp's flat-exact condition:
+                        // exact hop count, not shortest-path, not optional
+                        // (optional exact is already handled by #603).
+                        let is_flat_exact = spec.exact_hop_count().is_some()
+                            && gr.shortest_path_mode.is_none()
+                            && !gr.is_optional.unwrap_or(false);
+                        if is_flat_exact {
+                            exact_candidates.push(AdjacentExactVlp {
+                                left: gr.left_connection.clone(),
+                                right: gr.right_connection.clone(),
+                                alias: gr.alias.clone(),
+                                is_composite: endpoints_are_composite(gr),
+                            });
+                        }
+                    }
+                }
+                LogicalPlan::GraphNode(gn) => gather(&gn.input, all_rels, exact_candidates),
+                LogicalPlan::Filter(f) => gather(&f.input, all_rels, exact_candidates),
+                LogicalPlan::Projection(p) => gather(&p.input, all_rels, exact_candidates),
+                LogicalPlan::GroupBy(g) => gather(&g.input, all_rels, exact_candidates),
+                LogicalPlan::OrderBy(o) => gather(&o.input, all_rels, exact_candidates),
+                LogicalPlan::Skip(s) => gather(&s.input, all_rels, exact_candidates),
+                LogicalPlan::Limit(l) => gather(&l.input, all_rels, exact_candidates),
+                LogicalPlan::Cte(c) => gather(&c.input, all_rels, exact_candidates),
+                LogicalPlan::GraphJoins(gj) => gather(&gj.input, all_rels, exact_candidates),
+                // Same Union-isolation invariant as collect_required_vlps: each
+                // branch gets its own pre-pass over its own cloned plan_ctx.
+                LogicalPlan::Union(_) => {}
+                LogicalPlan::Unwind(u) => gather(&u.input, all_rels, exact_candidates),
+                LogicalPlan::CartesianProduct(cp) => {
+                    gather(&cp.left, all_rels, exact_candidates);
+                    gather(&cp.right, all_rels, exact_candidates);
+                }
+                _ => {}
+            }
+        }
+
+        gather(plan, &mut all_rels, &mut exact_candidates);
+
+        exact_candidates
+            .into_iter()
+            .filter(|cand| {
+                // Adjacent iff a DIFFERENT relationship shares an endpoint alias.
+                all_rels.iter().any(|(ol, or, oalias)| {
+                    *oalias != cand.alias
+                        && (*ol == cand.left
+                            || *ol == cand.right
+                            || *or == cand.left
+                            || *or == cand.right)
+                })
+            })
+            .collect()
+    }
+
     /// Check if this pattern should skip JOIN inference due to variable-length path.
     ///
     /// Returns `Some(true)` if pattern should be skipped (required VLP/shortest path that needs CTE).
@@ -3545,9 +3682,18 @@ impl GraphJoinInference {
         // is NOT treated as fixed-length here); everything else keeps the flat
         // fixed-length path, including undirected optional exact.
         let reroute_directed_optional_exact = is_optional && !is_undirected;
+        // #623: an exact VLP adjacent to another hop is rerouted to the
+        // recursive CTE (registered by the pre-pass into the task-local). The
+        // flat r1..rN chain cannot compose with a neighbor — it silently
+        // collapses `*N..N` to `*1..1` or drops the leading hop. The recursive
+        // CTE composes on both sides (directed AND undirected via #617's
+        // doubled-edge CTE), so this applies regardless of direction.
+        let reroute_adjacent_exact =
+            crate::server::query_context::is_adjacent_exact_vlp_reroute(&graph_rel.alias);
         let is_fixed_length = spec.exact_hop_count().is_some()
             && graph_rel.shortest_path_mode.is_none()
-            && !reroute_directed_optional_exact;
+            && !reroute_directed_optional_exact
+            && !reroute_adjacent_exact;
 
         if !is_fixed_length {
             if is_optional {
@@ -3706,4 +3852,47 @@ impl GraphJoinInference {
 
         (left_has_explicit_label, right_has_explicit_label)
     }
+}
+
+/// #623: an exact-bound VLP that is adjacent to another hop (a sibling
+/// GraphRel shares one of its endpoint aliases), so it must reroute from the
+/// flat r1..rN chain to the recursive CTE. `is_composite` marks a
+/// composite-key endpoint, for which the reroute's single-column fold cannot
+/// bind against the CTE's `concat(...)` id — those must fail loud, not compose.
+struct AdjacentExactVlp {
+    left: String,
+    right: String,
+    alias: String,
+    is_composite: bool,
+}
+
+/// #623: true if either endpoint node of this VLP has a COMPOSITE node id.
+/// Used to withhold the adjacent-exact reroute for composite-key schemas (the
+/// recursive CTE emits a `concat(...)` `start_id`/`end_id` that the adjacent
+/// hop's single-column fold can't match → silent 0 rows). Composite standalone
+/// exact VLP is already loud-broken (#604); keeping composite adjacency flat
+/// preserves a loud failure rather than a silent-wrong one (ground rule 1).
+/// Resolves labels via the task-local schema; conservatively returns false when
+/// a label or the schema is unavailable (the single-column common case).
+fn endpoints_are_composite(gr: &GraphRel) -> bool {
+    use crate::graph_catalog::config::Identifier;
+    let Some(schema) = crate::server::query_context::get_current_schema() else {
+        return false;
+    };
+    let node_label = |plan: &LogicalPlan| -> Option<String> {
+        match plan {
+            LogicalPlan::GraphNode(n) => n.label.clone(),
+            _ => None,
+        }
+    };
+    let is_composite = |label: &str| -> bool {
+        schema
+            .node_schema(label)
+            .map(|ns| matches!(ns.node_id.id, Identifier::Composite(_)))
+            .unwrap_or(false)
+    };
+    [node_label(&gr.left), node_label(&gr.right)]
+        .into_iter()
+        .flatten()
+        .any(|lbl| is_composite(&lbl))
 }

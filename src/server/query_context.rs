@@ -95,6 +95,29 @@ pub struct QueryContext {
     /// pass instead.
     pub pattern_union_scope_ctes: HashSet<String>,
 
+    /// #623: relationship aliases of exact-bound (min==max) VLPs that the
+    /// analyzer decided to REROUTE from the flat r1..rN self-join chain to the
+    /// recursive-CTE path, because the exact VLP is adjacent to another hop
+    /// (a sibling GraphRel shares one of its endpoint aliases). The flat
+    /// expander cannot compose with a neighboring hop — it silently collapses
+    /// `*N..N` to `*1..1` (trailing neighbor) or drops the leading hop — so
+    /// such an exact VLP must go through the same recursive CTE the RANGE path
+    /// uses (which composes on both sides off `t.start_id`/`t.end_id`). The
+    /// analyzer's `should_skip_for_vlp` populates this; the four render gates
+    /// (`is_fixed_length_vlp`, the filter gate, `use_chained_join`, the
+    /// join-expansion gate) read it via `is_adjacent_exact_vlp_reroute` to
+    /// treat the VLP as non-fixed-length. A pure lookup channel, mirroring
+    /// `multi_type_vlp_aliases` — no `GraphRel` field, no struct-literal churn.
+    pub adjacent_exact_vlp_reroute_aliases: HashSet<String>,
+
+    /// #623: path variable → exact hop count for a fixed exact-bound VLP
+    /// (`MATCH p = (a)-[:R*N..N]->(b)`). The flat expander renders `N`
+    /// relationship joins (not `2N`), so the `length(p)` fallback's
+    /// `joins/2` heuristic yields `N/2` — wrong. `build_vlp_context` records
+    /// the true `N` here (keyed by the VLP's `path_variable`); the `length(p)`
+    /// resolver reads it. Empty when the query has no path-variable VLP.
+    pub vlp_exact_path_hops: HashMap<String, u32>,
+
     /// VLP CTE outer-query aliases: cte_name → vlp_alias (e.g., "vlp_u1_u2" → "vt0")
     /// Used by FROM/JOIN builders to assign unique aliases per VLP CTE.
     /// NOTE: Currently not populated — see TODO(multi-vlp) in cte_extraction.rs.
@@ -548,6 +571,55 @@ pub fn is_pattern_union_in_scope(cte_name: &str) -> bool {
 pub fn get_relationship_cte_name(alias: &str) -> Option<String> {
     QUERY_CONTEXT
         .try_with(|ctx| ctx.borrow().multi_type_vlp_aliases.get(alias).cloned())
+        .ok()
+        .flatten()
+}
+
+/// #623: mark an exact-bound VLP (by its relationship alias) as rerouted from
+/// the flat self-join chain to the recursive-CTE path because it is adjacent to
+/// another hop. Called by the analyzer's `should_skip_for_vlp` decision. A
+/// no-op outside a task-local scope (all query processing is wrapped in
+/// `with_query_context`, including the embedded/`cg` path).
+pub fn register_adjacent_exact_vlp_reroute(rel_alias: &str) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut()
+            .adjacent_exact_vlp_reroute_aliases
+            .insert(rel_alias.to_string());
+    });
+}
+
+/// #623: is this exact VLP (by relationship alias) rerouted to the recursive
+/// CTE (adjacent to another hop)? Read by the render gates to treat it as
+/// non-fixed-length. Returns false outside a task-local scope — the
+/// conservative direction (keep the historical flat path for the standalone
+/// case, which is byte-identical and correct).
+pub fn is_adjacent_exact_vlp_reroute(rel_alias: &str) -> bool {
+    QUERY_CONTEXT
+        .try_with(|ctx| {
+            ctx.borrow()
+                .adjacent_exact_vlp_reroute_aliases
+                .contains(rel_alias)
+        })
+        .unwrap_or(false)
+}
+
+/// #623: record the exact hop count `N` of a fixed `*N..N` VLP that declares a
+/// path variable, keyed by that path variable. Called from `build_vlp_context`.
+/// No-op outside a task-local scope.
+pub fn register_vlp_exact_path_hops(path_var: &str, hops: u32) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut()
+            .vlp_exact_path_hops
+            .insert(path_var.to_string(), hops);
+    });
+}
+
+/// #623: the recorded exact hop count for a path variable's fixed VLP, if any.
+/// Read by the `length(p)` resolver so a flat `*N..N` VLP reports `N`, not the
+/// `joins/2` heuristic. None outside a task-local scope or for non-VLP paths.
+pub fn get_vlp_exact_path_hops(path_var: &str) -> Option<u32> {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().vlp_exact_path_hops.get(path_var).copied())
         .ok()
         .flatten()
 }

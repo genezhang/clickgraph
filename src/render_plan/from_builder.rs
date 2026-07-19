@@ -69,7 +69,24 @@ pub(super) fn is_fixed_length_vlp(graph_rel: &GraphRel) -> bool {
             && graph_rel.shortest_path_mode.is_none()
             && !is_denorm
             && !optional_directed_exact_vlp_uses_cte(graph_rel)
+            && !adjacent_exact_vlp_uses_cte(graph_rel)
     })
+}
+
+/// #623: single source of truth for "this exact-bound VLP is rerouted from the
+/// flat r1..rN self-join to the recursive CTE because it is ADJACENT to another
+/// hop." The flat chain cannot compose with a neighboring hop — a trailing
+/// neighbor silently collapses `*N..N` to `*1..1`, a leading neighbor is
+/// dropped and the endpoint dangles (both silent wrong results). The recursive
+/// CTE composes on both sides (off `t.start_id`/`t.end_id`), directed AND
+/// undirected (via #617's doubled-edge CTE), so this is direction-independent.
+///
+/// The analyzer's `should_skip_for_vlp` decides the reroute (whole-tree
+/// adjacency, which a lone `GraphRel` can't see) and records the relationship
+/// alias in the task-local `QueryContext`; every render-side flat-join gate
+/// reads it here so FROM, JOIN, and filter builders agree (CLAUDE.md §5).
+pub(super) fn adjacent_exact_vlp_uses_cte(graph_rel: &GraphRel) -> bool {
+    crate::server::query_context::is_adjacent_exact_vlp_reroute(&graph_rel.alias)
 }
 
 /// #603: single source of truth for "this OPTIONAL exact-bound VLP is rerouted
