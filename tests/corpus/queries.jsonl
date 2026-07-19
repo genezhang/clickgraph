@@ -1168,3 +1168,4 @@
 {"cypher": "MATCH (a:User)-[:FOLLOWS]->(b) RETURN percentileDisc(b.user_id, 0.9)", "name": "test_639_percentile_disc_honors_arg", "schema": "standard"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS]->(b) RETURN a.city, percentileCont(b.user_id, 0.5)", "name": "test_639_percentile_grouped_real_group_by", "schema": "standard"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS]->(b) WITH a.city AS city, percentileDisc(b.user_id, 0.95) AS p RETURN city, p", "name": "test_639_percentile_post_with_barrier", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE a.user_id = 6 RETURN b.user_id AS id UNION ALL MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE a.user_id = 5 RETURN b.user_id AS id", "name": "test_618_vlp_both_union_arms_same_aliases", "schema": "standard"}
