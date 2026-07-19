@@ -934,13 +934,15 @@ fn count_undirected_edges(plan: &Arc<LogicalPlan>) -> usize {
 /// 2. Two INDEPENDENT optionals over a disconnected-anchor CartesianProduct
 ///    (`MATCH (a),(x) OPTIONAL (a)-[:R]-(b) OPTIONAL (x)-[:R]-(y)`, and the
 ///    prebound/disconnected variants): the nested optional GraphRel's `left`
-///    is a `CartesianProduct`. These must return `Transformed::No` (their
-///    PRE-EXISTING behavior — they render fine, or fail loud downstream via
-///    #590's DENORMALIZED-only render guard). They must NOT reach the direction
-///    split, which would re-declare an anchor alias and emit invalid SQL
-///    (ClickHouse Code 179) on standard/FK-edge/composite schemas — #590's guard
-///    does not cover those. `has_cartesian_optional_nested_undirected_edge` is
-///    true for this class.
+///    is a `CartesianProduct`. These must return `Transformed::No` — their
+///    exact PRE-EXISTING behavior, byte-identical to before this gate existed.
+///    On a DENORMALIZED schema they then fail loud downstream via #590's render
+///    guard; on standard/FK-edge/composite schemas that guard does NOT fire, so
+///    they simply RENDER (some remain silently single-direction — a pre-existing
+///    gap tracked in #641, deliberately NOT changed here). Either way they must
+///    NOT reach the direction split, which would re-declare an anchor alias and
+///    emit invalid SQL (ClickHouse Code 179).
+///    `has_cartesian_optional_nested_undirected_edge` is true for this class.
 ///
 /// 3. No nested optional-undirected edge at all: both predicates false → the
 ///    normal direction split runs.
