@@ -2938,6 +2938,30 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
         log::debug!("   ({}, {}) → ({}, {:?})", alias, db_col, cte_col, pos);
     }
 
+    // The VLP CTE's table alias to use when rewriting endpoint references in
+    // SELECT / WHERE / GROUP BY / ORDER BY. For a REQUIRED VLP the outer FROM IS
+    // the VLP CTE (`FROM vlp_a_b AS t`), so it's the FROM alias. For an OPTIONAL
+    // VLP the FROM is the anchor table and the VLP CTE is LEFT JOINed
+    // (`LEFT JOIN vlp_a_b AS vt0`), so it's the JOIN alias. Computed ONCE here so
+    // every clause agrees — previously WHERE and GROUP BY hardcoded `"t"`, which
+    // dangled for OPTIONAL VLP where the join alias is `vt0` (#630; SELECT/ORDER
+    // BY already used this value).
+    let vlp_from_alias = if is_optional_vlp {
+        plan.joins
+            .0
+            .iter()
+            .find(|j| j.table_name.starts_with("vlp_"))
+            .map(|j| j.table_alias.clone())
+            .unwrap_or_else(|| "t".to_string())
+    } else {
+        plan.from
+            .0
+            .as_ref()
+            .and_then(|from_ref| from_ref.alias.as_ref())
+            .cloned()
+            .unwrap_or_else(|| "t".to_string())
+    };
+
     // 🔧 CRITICAL: Check if this is a multi-type VLP (from CTE name)
     // Multi-type VLP CTEs use Cypher aliases directly in SELECT (e.g., x.end_type)
     // and properties are extracted via JSON_VALUE() - no table alias rewriting needed
@@ -2956,34 +2980,9 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
         //   - x.name → property (SQL generator extracts from end_properties JSON)
         // No table alias rewriting needed - the FROM clause is already correct!
     } else {
-        // Extract the VLP table alias to use in SELECT/WHERE/GROUP BY references
-        //
-        // For NON-OPTIONAL VLP:
-        //   - FROM clause: FROM vlp_a_b AS t
-        //   - Use FROM alias: 't'
-        //
-        // For OPTIONAL VLP:
-        //   - FROM clause: FROM users AS a (anchor table)
-        //   - JOIN clause: LEFT JOIN vlp_a_b AS t ON ...
-        //   - Use JOIN alias: 't' (NOT FROM alias 'a')
-        let vlp_from_alias = if is_optional_vlp {
-            // For OPTIONAL VLP, find the VLP CTE JOIN alias
-            plan.joins
-                .0
-                .iter()
-                .find(|j| j.table_name.starts_with("vlp_"))
-                .map(|j| j.table_alias.clone())
-                .unwrap_or_else(|| "t".to_string())
-        } else {
-            // For non-OPTIONAL VLP, use FROM alias
-            plan.from
-                .0
-                .as_ref()
-                .and_then(|from_ref| from_ref.alias.as_ref())
-                .cloned()
-                .unwrap_or_else(|| "t".to_string())
-        };
-
+        // `vlp_from_alias` (computed above, before the multi-type check) is the
+        // VLP CTE alias to rewrite endpoint references to — the FROM alias for a
+        // REQUIRED VLP, the JOIN alias for an OPTIONAL one.
         log::debug!(
             "🔧 VLP: VLP table alias to use: '{}' (is_optional_vlp={})",
             vlp_from_alias,
@@ -3045,7 +3044,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
         rewrite_render_expr_for_vlp_with_endpoint_info(
             where_expr,
             &filtered_mappings,
-            "t",
+            &vlp_from_alias,
             &endpoint_position,
             &cte_column_mapping,
         );
@@ -3063,7 +3062,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
         rewrite_render_expr_for_vlp_with_endpoint_info(
             group_expr,
             &filtered_mappings,
-            "t",
+            &vlp_from_alias,
             &endpoint_position,
             &cte_column_mapping,
         );
