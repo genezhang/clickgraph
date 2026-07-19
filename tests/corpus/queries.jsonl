@@ -1139,3 +1139,9 @@
 {"cypher": "MATCH (o:Order)-[r:PLACED_BY]->(c:Customer) WITH count(r) AS rc RETURN rc", "name": "test_584_fk_edge_count_r_only_no_node_carried", "schema": "fk_edge"}
 {"cypher": "MATCH (o:Order)-[r:PLACED_BY]->(c:Customer) WITH r.order_id AS oid RETURN oid ORDER BY oid", "name": "test_584_fk_edge_rel_prop_only_no_node_carried", "schema": "fk_edge"}
 {"cypher": "MATCH (c:Object)-[r:PARENT]->(p:Object) WITH c, count(r) AS rc RETURN c.name, rc", "name": "test_584_self_ref_fk_edge_count_r_stays_loud", "schema": "fk_edge_self_ref"}
+{"cypher": "MATCH (o:Order)-[r:PLACED_BY]->(c:Customer) WHERE r.customer_id > 2 RETURN o.order_id ORDER BY o.order_id", "name": "test_633_fk_edge_coupled_rel_var_where_plain_return", "schema": "fk_edge"}
+{"cypher": "MATCH (o:Order)-[r:PLACED_BY]->(c:Customer) WHERE r.customer_id > 2 WITH o, count(r) AS rc RETURN o.order_id, rc ORDER BY o.order_id", "name": "test_633_fk_edge_coupled_rel_var_where_with_agg", "schema": "fk_edge"}
+{"cypher": "MATCH (o:Order)-[r:PLACED_BY]->(c:Customer) WHERE r.customer_id > 2 AND o.amount > 0 RETURN o.order_id ORDER BY o.order_id", "name": "test_633_fk_edge_coupled_rel_var_where_compound", "schema": "fk_edge"}
+{"cypher": "MATCH (o:Order)-[r:PLACED_BY]->(c:Customer) WITH o, r WHERE r.customer_id > 2 RETURN o.order_id ORDER BY o.order_id", "name": "test_633_fk_edge_coupled_rel_var_post_with_where", "schema": "fk_edge"}
+{"cypher": "MATCH (o:Order)-[r:PLACED_BY]->(c:Customer) WHERE r.customer_id > 2 RETURN r.customer_id ORDER BY r.customer_id", "name": "test_633_fk_edge_where_binds_rel_var_unchanged", "schema": "fk_edge"}
+{"cypher": "MATCH (c:Object)-[r:PARENT]->(p:Object) WHERE r.parent_id > 0 RETURN c.name", "name": "test_633_self_ref_fk_edge_where_stays_loud", "schema": "fk_edge_self_ref"}
