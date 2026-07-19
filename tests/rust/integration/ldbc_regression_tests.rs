@@ -139,14 +139,41 @@ async fn ldbc_short_6() {
 
 #[tokio::test]
 async fn ldbc_short_7() {
+    // IS7 (#589): the OPTIONAL clause `(m)-[:HAS_CREATOR]->(a:Person)-[r:KNOWS]-(p)`
+    // has an UNDIRECTED nested hop (`-[r:KNOWS]-`) inside a chained OPTIONAL.
+    // KNOWS is a symmetric relationship stored in one physical direction, so the
+    // undirected hop must match BOTH orientations. The renderer cannot yet
+    // express that bidirectional expansion together with OPTIONAL semantics —
+    // it previously emitted a SINGLE-direction join (`r.Person1Id = a.id AND
+    // r.Person2Id = p.id`), silently dropping the reverse-stored friendships and
+    // returning WRONG `replyAuthorKnowsOriginalMessageAuthor` values. That is a
+    // ground-rule-1 violation, so the query now FAILS LOUD instead. This test
+    // locks the loud behavior until the anchor-LEFT-JOIN-onto-match-union render
+    // structure exists (tracked in #589). Rewriting the KNOWS hop with an
+    // explicit direction, or splitting the query, is the workaround.
     let schema = load_ldbc_schema();
-    let sql = generate_sql(
-        &schema,
-        "benchmarks/ldbc_snb/queries/official/interactive/short-7.cypher",
-    )
+    let path = "benchmarks/ldbc_snb/queries/official/interactive/short-7.cypher";
+    let ctx = QueryContext::new(Some("default".to_string()));
+    let result: Result<String, String> = with_query_context(ctx, async {
+        set_current_schema(Arc::new(schema.clone()));
+        let raw = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let cleaned = strip_comments(&raw);
+        let (_rem, statement) = clickgraph::open_cypher_parser::parse_cypher_statement(&cleaned)
+            .map_err(|e| format!("parse: {e:?}"))?;
+        let (logical_plan, plan_ctx) =
+            evaluate_read_statement(statement, &schema, None, None, None)
+                .map_err(|e| format!("{e:?}"))?;
+        let render_plan =
+            logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx))
+                .map_err(|e| format!("render: {e:?}"))?;
+        Ok(render_plan.to_sql())
+    })
     .await;
-    assert!(!sql.is_empty());
-    assert!(sql.contains("SELECT"));
+    let err = result.expect_err("IS7 undirected-nested KNOWS optional must fail loud (#589)");
+    assert!(
+        err.contains("Chained OPTIONAL MATCH with an undirected nested hop") && err.contains("589"),
+        "IS7 must fail loud naming the undirected-nested-hop limitation, got:\n{err}"
+    );
 }
 
 // ---------------------------------------------------------------------------

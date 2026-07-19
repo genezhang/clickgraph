@@ -21,6 +21,7 @@ use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::GraphSchema;
 use crate::query_planner::analyzer::analyzer_pass::{AnalyzerPass, AnalyzerResult};
+use crate::query_planner::analyzer::errors::AnalyzerError;
 use crate::query_planner::logical_expr::{
     Direction, LogicalExpr, Operator, OperatorApplication, PropertyAccess, TableAlias,
 };
@@ -386,14 +387,29 @@ fn transform_bidirectional(
                 // branch, and the Incoming-swapped branches anchor the FROM on
                 // the WRONG (optional) node, leaking NULL-anchor garbage.
                 // Correct support needs an anchor-LEFT-JOIN-onto-match-union
-                // structure the renderer does not have yet. Until then, keep
-                // main's pre-#492 behavior for OPTIONAL nested-undirected
-                // patterns (single directed LEFT chain — no new wrongness).
+                // structure the renderer does not have yet.
+                //
+                // #589: this shape previously returned `Transformed::No`, which
+                // kept the single directed LEFT chain — i.e. it SILENTLY DROPPED
+                // the reverse-direction rows of the undirected nested hop (and,
+                // on a denormalized schema, additionally mis-aliased the nested
+                // endpoint onto the anchor's columns). That is a silent wrong
+                // result (ground rule 1). Until the anchor-LEFT-JOIN-onto-match-
+                // union render structure exists, FAIL LOUD instead of emitting a
+                // half-a-direction answer. Verified: the only shape reaching here
+                // is a chained OPTIONAL whose nested hop is undirected — directed
+                // chains and single undirected optionals do not hit this gate.
                 if has_optional_nested_undirected_edge(&proj.input) {
-                    crate::debug_print!(
-                        "🔄 BidirectionalUnion: OPTIONAL nested undirected pattern — keeping pre-#492 behavior (no Union split)"
-                    );
-                    return Ok(Transformed::No(plan.clone()));
+                    return Err(AnalyzerError::UnsupportedPattern {
+                        message: "Chained OPTIONAL MATCH with an undirected nested hop \
+                            (e.g. `OPTIONAL MATCH (a)-[:R]-(b) OPTIONAL MATCH (b)-[:R]-(c)`) \
+                            is not supported: the bidirectional expansion of the nested hop \
+                            cannot yet be expressed together with OPTIONAL semantics, and \
+                            emitting a single-direction join would silently drop the \
+                            reverse-direction matches. Rewrite the undirected nested hop with \
+                            an explicit direction (`->` or `<-`), or split the query. (#589)"
+                            .to_string(),
+                    });
                 }
 
                 crate::debug_print!(
@@ -890,6 +906,17 @@ fn count_undirected_edges(plan: &Arc<LogicalPlan>) -> usize {
 /// REQUIRED chain's split too (0 branches instead of 4 — main's pre-existing
 /// bug, so not a NEW wrongness, but silently reverting value #492 already
 /// delivered for that shape).
+///
+/// #589/#590 disambiguation: the nested optional GraphRel must be a genuine
+/// CHAIN through a shared node — its `left` subtree resolves to a node/GraphRel,
+/// NOT a `CartesianProduct`. Two INDEPENDENT single-hop optionals over
+/// disconnected anchors (`MATCH (a),(x) OPTIONAL MATCH (a)-[:R]-(b) OPTIONAL
+/// MATCH (x)-[:R]-(y)`) also nest as `GraphRel(GraphRel(...))`, but the inner
+/// GraphRel wraps a `CartesianProduct` of the two anchors — those are handled by
+/// `OptionalCartesianDistribution` (#590) and its render-layer guard, NOT here.
+/// Gating them here would preempt the more specific #590 error. Only the
+/// genuinely-chained shape (#589) — where the second optional hop consumes the
+/// first optional's endpoint — reaches the shared-node form this fires on.
 fn has_optional_nested_undirected_edge(plan: &Arc<LogicalPlan>) -> bool {
     match plan.as_ref() {
         LogicalPlan::GraphRel(gr) => {
@@ -897,7 +924,9 @@ fn has_optional_nested_undirected_edge(plan: &Arc<LogicalPlan>) -> bool {
                 && gr.is_optional == Some(true)
                 && matches!(
                     gr.left.as_ref(),
-                    LogicalPlan::GraphRel(inner) if inner.is_optional == Some(true)
+                    LogicalPlan::GraphRel(inner)
+                        if inner.is_optional == Some(true)
+                            && !nested_optional_junction_is_cartesian(inner)
                 ))
                 || has_optional_nested_undirected_edge(&gr.left)
                 || has_optional_nested_undirected_edge(&gr.right)
@@ -906,6 +935,16 @@ fn has_optional_nested_undirected_edge(plan: &Arc<LogicalPlan>) -> bool {
         LogicalPlan::Filter(f) => has_optional_nested_undirected_edge(&f.input),
         _ => false,
     }
+}
+
+/// True when the nested optional GraphRel connects to its predecessor through a
+/// `CartesianProduct` (the two-independent-anchors shape of #590) rather than a
+/// shared node chain (the genuinely-chained shape of #589). Used to keep the
+/// #589 loud gate from preempting #590's own handling. Walks the inner
+/// GraphRel's `left` spine, which is where a disconnected-anchor CartesianProduct
+/// sits.
+fn nested_optional_junction_is_cartesian(inner: &GraphRel) -> bool {
+    matches!(inner.left.as_ref(), LogicalPlan::CartesianProduct(_))
 }
 
 /// Check if any undirected edge in the plan has a nested GraphRel as its left subtree.
@@ -1989,6 +2028,104 @@ mod tests {
         assert!(
             matches!(result, Transformed::Yes(_)),
             "Nested undirected edges should now be transformed into UNION branches"
+        );
+    }
+
+    /// #589: a genuinely CHAINED optional-undirected pattern
+    /// (`OPTIONAL (a)-[:R]-(b)` then `OPTIONAL (b)-[:R]-(c)`, sharing node `b`)
+    /// must trip the loud gate — the inner optional GraphRel is the DIRECT left
+    /// of the outer, not wrapped in a CartesianProduct.
+    #[test]
+    fn test_chained_optional_undirected_trips_gate_589() {
+        let node_a = make_test_node("users", "a", "User");
+        let node_b = make_test_node("users", "b", "User");
+        let node_c = make_test_node("users", "c", "User");
+
+        let mut inner = make_test_graph_rel(
+            node_a,
+            node_b,
+            "r1",
+            "follows",
+            "a",
+            "b",
+            Direction::Either,
+            "FOLLOWS",
+        );
+        inner.is_optional = Some(true);
+        let inner_plan = Arc::new(LogicalPlan::GraphRel(inner));
+
+        let mut outer = make_test_graph_rel(
+            inner_plan,
+            node_c,
+            "r2",
+            "follows",
+            "b",
+            "c",
+            Direction::Either,
+            "FOLLOWS",
+        );
+        outer.is_optional = Some(true);
+        let plan = Arc::new(LogicalPlan::GraphRel(outer));
+
+        assert!(
+            has_optional_nested_undirected_edge(&plan),
+            "#589: chained optional-undirected (shared node, no CartesianProduct) must trip the gate"
+        );
+    }
+
+    /// #589/#590 disambiguation: two INDEPENDENT optional-undirected hops over a
+    /// disconnected-anchor CartesianProduct must NOT trip the #589 gate — those
+    /// are #590's territory (handled by OptionalCartesianDistribution / its
+    /// render guard). The distinguishing signal is the CartesianProduct at the
+    /// inner optional GraphRel's junction.
+    #[test]
+    fn test_independent_optionals_over_cartesian_do_not_trip_gate_589() {
+        let node_a = make_test_node("users", "a", "User");
+        let node_b = make_test_node("users", "b", "User");
+        let node_x = make_test_node("users", "x", "User");
+        let node_y = make_test_node("users", "y", "User");
+
+        // Two disconnected anchors joined by a CartesianProduct.
+        let cartesian = Arc::new(LogicalPlan::CartesianProduct(
+            crate::query_planner::logical_plan::CartesianProduct {
+                left: node_a,
+                right: node_x,
+                is_optional: false,
+                join_condition: None,
+            },
+        ));
+
+        // Inner optional hop (a)-[:R]-(b) whose left is the CartesianProduct.
+        let mut inner = make_test_graph_rel(
+            cartesian,
+            node_b,
+            "r1",
+            "follows",
+            "a",
+            "b",
+            Direction::Either,
+            "FOLLOWS",
+        );
+        inner.is_optional = Some(true);
+        let inner_plan = Arc::new(LogicalPlan::GraphRel(inner));
+
+        // Outer optional hop (x)-[:R]-(y).
+        let mut outer = make_test_graph_rel(
+            inner_plan,
+            node_y,
+            "r2",
+            "follows",
+            "x",
+            "y",
+            Direction::Either,
+            "FOLLOWS",
+        );
+        outer.is_optional = Some(true);
+        let plan = Arc::new(LogicalPlan::GraphRel(outer));
+
+        assert!(
+            !has_optional_nested_undirected_edge(&plan),
+            "#590: independent optionals over a CartesianProduct must NOT trip the #589 gate"
         );
     }
 
