@@ -18,3 +18,4 @@ vlp_a_a AS (
 SELECT 
       t.end_name AS `a.name`
 FROM vlp_a_a AS t
+WHERE t.start_id = t.end_id

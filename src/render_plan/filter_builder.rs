@@ -179,6 +179,43 @@ impl FilterBuilder for LogicalPlan {
                             );
                             // Fall through to collect_graphrel_predicates below
                         } else {
+                            // #625: a CLOSED VLP pattern pins both endpoints to
+                            // the SAME variable (`(a)-[*min..max]-(a)` /
+                            // `(a)-[*min..max]->(a)`), so the path must return to
+                            // its start. The recursive CTE enumerates ALL paths
+                            // (its `start_id`/`end_id` are independent), and the
+                            // outer query is otherwise unconstrained — without an
+                            // explicit `t.start_id = t.end_id` it counts every
+                            // path, not just cycles (silent wrong results: 84 vs
+                            // 12 undirected, 29 vs 6 directed). Detect the closed
+                            // pattern directly from the two connection aliases
+                            // (direction-agnostic; the planner leaves them equal
+                            // for a same-variable pattern, never renaming one) and
+                            // emit the equality on the CTE's own start/end
+                            // columns. Single AND composite ids are both covered:
+                            // the CTE collapses a composite key into one
+                            // pipe-joined `concat(...)` string column, so string
+                            // equality of `start_id`/`end_id` == per-column
+                            // equality. Exact-bound closed patterns take other
+                            // paths (directed `(a)-[*N]->(a)` is #605, undirected
+                            // exact errors); this range branch is the recursive
+                            // CTE only.
+                            if graph_rel.left_connection == graph_rel.right_connection {
+                                use crate::query_planner::join_context::{
+                                    VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
+                                };
+                                log::info!(
+                                    "🔧 #625: closed VLP pattern ({} == {}) — emitting start_id = end_id",
+                                    graph_rel.left_connection,
+                                    graph_rel.right_connection
+                                );
+                                return Ok(Some(RenderExpr::Raw(format!(
+                                    "{a}.{s} = {a}.{e}",
+                                    a = VLP_CTE_FROM_ALIAS,
+                                    s = VLP_START_ID_COLUMN,
+                                    e = VLP_END_ID_COLUMN,
+                                ))));
+                            }
                             log::info!(
                                 "🔧 Required VLP with CTE: Filters already in CTE, skipping outer WHERE extraction"
                             );

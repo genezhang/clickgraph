@@ -26,3 +26,4 @@ WITH RECURSIVE vlp_a_a AS (
 SELECT 
       count(*) AS "loops"
 FROM vlp_a_a AS t
+WHERE t.start_id = t.end_id

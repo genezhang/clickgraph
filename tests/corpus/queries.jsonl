@@ -1117,3 +1117,7 @@
 {"cypher": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[r:AUTHORED]->(p:Post) RETURN r.post_id ORDER BY r.post_id", "name": "test_622_named_chained_denorm_edge_property_resolves_to_node", "schema": "social_integration"}
 {"cypher": "MATCH (u:User)-[r:AUTHORED]->(p:Post) RETURN r.post_id ORDER BY r.post_id", "name": "test_622_standalone_named_denorm_edge_keeps_own_scan", "schema": "social_integration"}
 {"cypher": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[r:AUTHORED]->(p:Post) RETURN u2.user_id, count(r), sum(r.post_id)", "name": "test_622_named_chained_denorm_edge_aggregate_arg_resolves", "schema": "social_integration"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]-(a) RETURN count(*)", "name": "test_625_closed_undirected_vlp_range_start_eq_end", "schema": "social_integration"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(a) RETURN count(*)", "name": "test_625_closed_directed_vlp_range_start_eq_end", "schema": "social_integration"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]-(a) WHERE a.user_id = 1 RETURN count(*)", "name": "test_625_closed_vlp_range_composes_with_anchor_where", "schema": "social_integration"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User) RETURN count(*)", "name": "test_625_open_vlp_range_no_constraint_sentinel", "schema": "social_integration"}
