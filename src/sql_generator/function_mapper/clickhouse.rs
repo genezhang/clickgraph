@@ -143,8 +143,15 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             // So build the exact index form by hand over the sorted value array.
             // Verified: 0 mismatches vs the Neo4j formula across n=1..40 ×
             // p=0.05..0.95, and live against the endpoint corpus (#639).
+            //
+            // `arrayElementOrNull` (not `arrayElement`): on an EMPTY group the
+            // index is 1 but the array is empty, and bare `arrayElement([], 1)`
+            // returns the type default (0) — a silent wrong value. `…OrNull`
+            // returns NULL there, matching percentileCont, `median`, and Neo4j
+            // (percentile over an empty set is null). Identical to `arrayElement`
+            // on every non-empty input (verified).
             format!(
-                "arrayElement(arraySort(groupArray({expr})), greatest(1, toUInt32(ceil({percentile} * count({expr})))))"
+                "arrayElementOrNull(arraySort(groupArray({expr})), greatest(1, toUInt32(ceil({percentile} * count({expr})))))"
             )
         }
     }
@@ -230,7 +237,7 @@ mod tests {
         // form over the sorted values.
         assert_eq!(
             m.percentile_aggregate("t.x", "0.9", false),
-            "arrayElement(arraySort(groupArray(t.x)), greatest(1, toUInt32(ceil(0.9 * count(t.x)))))"
+            "arrayElementOrNull(arraySort(groupArray(t.x)), greatest(1, toUInt32(ceil(0.9 * count(t.x)))))"
         );
     }
 }

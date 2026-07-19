@@ -233,10 +233,12 @@ impl FunctionMapper for DatabricksFunctionMapper {
             // `WITHIN GROUP` ordered-set syntax (not a comma-arg function) AND a
             // different index convention, so mirror the ClickHouse hand-built
             // exact-index form over the sorted value array for identical
-            // cross-dialect semantics (#639). Spark: array_sort / element_at
-            // (1-based) / collect_list.
+            // cross-dialect semantics (#639). `try_element_at` (1-based) returns
+            // NULL on an empty group instead of throwing under ANSI mode —
+            // matching ClickHouse `arrayElementOrNull` and Neo4j (null over an
+            // empty set). `array_sort` is ascending; `collect_list` drops NULLs.
             format!(
-                "element_at(array_sort(collect_list({expr})), greatest(1, cast(ceil({percentile} * count({expr})) as int)))"
+                "try_element_at(array_sort(collect_list({expr})), greatest(1, cast(ceil({percentile} * count({expr})) as int)))"
             )
         }
     }
@@ -306,7 +308,7 @@ mod tests {
         );
         assert_eq!(
             m.percentile_aggregate("t.x", "0.9", false),
-            "element_at(array_sort(collect_list(t.x)), greatest(1, cast(ceil(0.9 * count(t.x)) as int)))"
+            "try_element_at(array_sort(collect_list(t.x)), greatest(1, cast(ceil(0.9 * count(t.x)) as int)))"
         );
     }
 
