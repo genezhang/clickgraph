@@ -3002,6 +3002,39 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
                 &cte_column_mapping,
             );
         }
+
+        // #608: ORDER BY on a VLP endpoint property must get the SAME
+        // endpoint-column rewrite the SELECT items just got — `b.name` →
+        // `<vlp_join_alias>.end_name` (the CTE projects the endpoint's property
+        // as a prefixed `end_<prop>` / `start_<prop>` column). Without this
+        // ORDER BY reached `rewrite_vlp_aggregate_aliases`, which only swaps the
+        // table alias (`b` → `vt0`) and leaves the column as `name`, emitting
+        // `vt0.name` — a column the CTE does not expose (Code 47 at execution).
+        //
+        // Scope to OPTIONAL VLP only: for a REQUIRED VLP the outer query's FROM
+        // IS the VLP CTE and its ORDER BY is already rewritten to `t.end_name`
+        // downstream by `rewrite_vlp_select_aliases` (to_sql_query.rs). Running
+        // this rewrite there too double-processes it and diverges per SQL
+        // dialect (one dialect regressed to a backtick-quoted `b.name`). OPTIONAL
+        // VLP is exactly the shape that pass returns early on (FROM is the anchor
+        // table, not the CTE), so it never rewrote ORDER BY — the #608 gap.
+        // Reuse the same mappings/alias/position the SELECT loop used (here
+        // `vlp_from_alias` is the VLP CTE's JOIN alias, e.g. `vt0`). The anchor
+        // property (`a.name`) is excluded by the OPTIONAL-VLP start-alias
+        // filter, so ORDER BY on the anchor is unaffected.
+        if is_optional_vlp {
+            log::debug!("🔍 VLP: Rewriting {} ORDER BY items", plan.order_by.0.len());
+            for (idx, order_item) in plan.order_by.0.iter_mut().enumerate() {
+                log::debug!("   ORDER BY[{}]: {:?}", idx, order_item.expression);
+                rewrite_render_expr_for_vlp_with_endpoint_info(
+                    &mut order_item.expression,
+                    &filtered_mappings,
+                    &vlp_from_alias,
+                    &endpoint_position,
+                    &cte_column_mapping,
+                );
+            }
+        }
     }
 
     // CRITICAL: Also rewrite WHERE clause expressions

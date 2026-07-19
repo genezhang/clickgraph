@@ -1128,3 +1128,4 @@
 {"cypher": "MATCH (a:User) WHERE NOT (a)-[:FOLLOWS*1..3]->(a) RETURN a.user_id", "name": "test_588_not_vlp_pattern_fails_loud", "schema": "standard"}
 {"cypher": "MATCH (a:User) WHERE NOT (a)-[:FOLLOWS]->(b:User) RETURN a.user_id", "name": "test_588_not_singletype_pattern_still_renders", "schema": "standard"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b) AS friends WITH a, size([f IN friends WHERE (f)-[:FOLLOWS]->()]) AS c RETURN a.user_id AS id, c ORDER BY id", "name": "test_612_uncorrelated_listcomp_pattern_fails_loud", "schema": "standard"}
+{"cypher": "MATCH (a:TestUser) OPTIONAL MATCH (a)-[:TEST_FOLLOWS*2..3]->(b:TestUser) RETURN a.name, b.name ORDER BY a.name, b.name", "name": "test_608_optional_vlp_order_by_endpoint_property", "schema": "test_fixtures"}
