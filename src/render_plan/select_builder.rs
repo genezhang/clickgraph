@@ -2575,7 +2575,7 @@ impl LogicalPlan {
 
     /// Extract the physical source table (`db.table`) backing a plan node.
     /// Walks through GraphNode/Filter wrappers down to the ViewScan.
-    fn plan_source_table(plan: &LogicalPlan) -> Option<String> {
+    pub(super) fn plan_source_table(plan: &LogicalPlan) -> Option<String> {
         match plan {
             LogicalPlan::ViewScan(vs) => Some(vs.source_table.clone()),
             LogicalPlan::GraphNode(gn) => Self::plan_source_table(&gn.input),
@@ -2595,7 +2595,7 @@ impl LogicalPlan {
     /// separate edge table (group_membership) and for the case where the embedded
     /// endpoints already map onto the edge alias (ontime: nodes → edge), so the
     /// existing `rel_alias` rendering is preserved unchanged.
-    fn coupled_edge_render_alias(
+    pub(super) fn coupled_edge_render_alias(
         graph_rel: &crate::query_planner::logical_plan::GraphRel,
         start_alias: &str,
         end_alias: &str,
@@ -2622,6 +2622,42 @@ impl LogicalPlan {
             .unwrap_or_else(|| endpoint_alias.to_string());
 
         (resolved != rel_alias).then_some(resolved)
+    }
+
+    /// #584 aggregate-path wrapper over `coupled_edge_render_alias`. The base
+    /// helper is shared with the fixed-path renderer, where a fully-denormalized
+    /// coupled edge (e.g. ZEEK `(IP)-[:DNS_REQUESTED]->(Domain)` on `dns_log`)
+    /// legitimately remaps. This wrapper additionally withholds the remap for a
+    /// **self-referencing FK-edge** — an FK-edge whose from- and to-node are the
+    /// same table (e.g. `(e:Employee)-[:REPORTS_TO]->(m:Employee)` on one `emp`
+    /// table). That pattern is currently mis-planned to a single scan with no
+    /// self-join, so `count(r)` legitimately dangles and errors LOUD (Code 47);
+    /// remapping would fabricate valid-but-WRONG SQL (rc=1 for every row) — a
+    /// loud→silent regression (ground rule 1). A non-self-referencing FK-edge
+    /// (Order≠Customer) and a fully-denormalized coupled edge (distinct labels)
+    /// both still remap. Detected via the schema classifier
+    /// `RelationshipSchema::is_self_referencing_fk_edge` (axis-dispatch rule).
+    pub(super) fn coupled_edge_render_alias_for_aggregate(
+        graph_rel: &crate::query_planner::logical_plan::GraphRel,
+        start_alias: &str,
+        end_alias: &str,
+        rel_alias: &str,
+    ) -> Option<String> {
+        if let Some(labels) = graph_rel.labels.as_ref() {
+            if let (Some(rt), Some(schema)) = (
+                labels.first(),
+                crate::server::query_context::get_current_schema_with_fallback(),
+            ) {
+                if let Some(rs) = schema.get_relationships_schema_opt(rt) {
+                    if rs.is_self_referencing_fk_edge() {
+                        // self-referencing FK-edge — keep the loud error (Code 47)
+                        // rather than fabricate a valid-but-wrong count.
+                        return None;
+                    }
+                }
+            }
+        }
+        Self::coupled_edge_render_alias(graph_rel, start_alias, end_alias, rel_alias)
     }
 
     /// Find GraphRel where the given alias is a left or right connection.
@@ -2717,7 +2753,7 @@ impl LogicalPlan {
     /// Find a GraphRel whose own relationship alias matches the given alias.
     /// Unlike `find_graph_rel_for_alias` which matches node connections (left/right),
     /// this matches the GraphRel's own `alias` field (the relationship variable).
-    fn find_graph_rel_by_rel_alias(
+    pub(super) fn find_graph_rel_by_rel_alias(
         &self,
         alias: &str,
     ) -> Option<&crate::query_planner::logical_plan::GraphRel> {

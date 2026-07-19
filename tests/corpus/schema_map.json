@@ -19,6 +19,10 @@
     "subschema": null,
     "yaml": "schemas/examples/orders_customers_fk.yaml"
   },
+  "fk_edge_self_ref": {
+    "subschema": null,
+    "yaml": "schemas/examples/filesystem_single.yaml"
+  },
   "ldbc_snb": {
     "subschema": "ldbc_snb",
     "yaml": "schemas/test/unified_test_multi_schema.yaml"
