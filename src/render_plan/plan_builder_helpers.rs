@@ -3175,6 +3175,109 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
     }
 }
 
+/// #633: WHERE-clause sibling of #584's aggregate-arg resolver. An FK-edge
+/// coupled relationship variable shares one physical row with its node (the edge
+/// table IS a node endpoint table). When `r` appears in a WHERE predicate but the
+/// FROM binds the coupled NODE alias `o` (because `o` is referenced downstream —
+/// RETURN or WITH), `apply_property_mapping_to_expr` maps the property NAME but
+/// leaves the dangling `r` table alias → `WHERE r.customer_id > 2 FROM orders_fk
+/// AS o` → Code 47. Rewrite `r.<col>` → the coupled node alias, reusing the same
+/// helper + guards as #584.
+///
+/// Gate (identical to #584): only remap when `from_alias` is the coupled NODE
+/// alias. When the FROM binds the rel var itself (only `r` referenced, e.g.
+/// `RETURN r.customer_id`), `r.<col>` is already valid and remapping would unbind
+/// it. `coupled_edge_render_alias_for_aggregate` additionally returns None for a
+/// traditional separate edge table (standard schema → no-op) and withholds the
+/// remap for a self-referencing FK-edge (keeps the loud error — #632, ground
+/// rule 1). `from_alias` is the enclosing render plan's `from.0.alias`.
+pub(super) fn remap_coupled_rel_vars_in_filter(
+    expr: &mut RenderExpr,
+    plan: &LogicalPlan,
+    from_alias: Option<&str>,
+) {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            if let Some(gr) = plan.find_graph_rel_by_rel_alias(&prop.table_alias.0) {
+                if let Some(node_alias) = LogicalPlan::coupled_edge_render_alias_for_aggregate(
+                    gr,
+                    &gr.left_connection,
+                    &gr.right_connection,
+                    &prop.table_alias.0,
+                ) {
+                    if from_alias == Some(node_alias.as_str()) {
+                        log::info!(
+                            "🔧 #633: FK-edge coupled rel var '{}' → node alias '{}' (WHERE resolve)",
+                            prop.table_alias.0,
+                            node_alias
+                        );
+                        prop.table_alias = TableAlias(node_alias);
+                    }
+                }
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in &mut agg.args {
+                remap_coupled_rel_vars_in_filter(arg, plan, from_alias);
+            }
+        }
+        RenderExpr::ScalarFnCall(f) => {
+            for arg in &mut f.args {
+                remap_coupled_rel_vars_in_filter(arg, plan, from_alias);
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in &mut op.operands {
+                remap_coupled_rel_vars_in_filter(operand, plan, from_alias);
+            }
+        }
+        RenderExpr::Case(case) => {
+            if let Some(inner) = &mut case.expr {
+                remap_coupled_rel_vars_in_filter(inner, plan, from_alias);
+            }
+            for (cond, then_expr) in &mut case.when_then {
+                remap_coupled_rel_vars_in_filter(cond, plan, from_alias);
+                remap_coupled_rel_vars_in_filter(then_expr, plan, from_alias);
+            }
+            if let Some(else_expr) = &mut case.else_expr {
+                remap_coupled_rel_vars_in_filter(else_expr, plan, from_alias);
+            }
+        }
+        RenderExpr::List(items) => {
+            for item in items {
+                remap_coupled_rel_vars_in_filter(item, plan, from_alias);
+            }
+        }
+        RenderExpr::MapLiteral(entries) => {
+            for (_, value) in entries {
+                remap_coupled_rel_vars_in_filter(value, plan, from_alias);
+            }
+        }
+        RenderExpr::ArraySubscript { array, index } => {
+            remap_coupled_rel_vars_in_filter(array, plan, from_alias);
+            remap_coupled_rel_vars_in_filter(index, plan, from_alias);
+        }
+        RenderExpr::ArraySlicing { array, from, to } => {
+            remap_coupled_rel_vars_in_filter(array, plan, from_alias);
+            if let Some(f) = from {
+                remap_coupled_rel_vars_in_filter(f, plan, from_alias);
+            }
+            if let Some(t) = to {
+                remap_coupled_rel_vars_in_filter(t, plan, from_alias);
+            }
+        }
+        RenderExpr::InSubquery(insub) => {
+            remap_coupled_rel_vars_in_filter(&mut insub.expr, plan, from_alias);
+        }
+        RenderExpr::ReduceExpr(reduce) => {
+            remap_coupled_rel_vars_in_filter(&mut reduce.initial_value, plan, from_alias);
+            remap_coupled_rel_vars_in_filter(&mut reduce.list, plan, from_alias);
+            remap_coupled_rel_vars_in_filter(&mut reduce.expression, plan, from_alias);
+        }
+        _ => {}
+    }
+}
+
 /// #582: true when `alias` is the render-time anchor of an OPTIONAL
 /// denorm-scan CTE + LEFT JOIN pattern (`optional_denorm_union_anchor_is_left`,
 /// consumed by `plan_builder.rs` ~1326 to build the `__denorm_scan_{alias}`

@@ -8348,7 +8348,17 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         &where_predicate,
                         &with_rewrite_ctx,
                     );
-                    let where_render_expr: RenderExpr = where_rewritten.try_into()?;
+                    let mut where_render_expr: RenderExpr = where_rewritten.try_into()?;
+
+                    // #633: resolve an FK-edge coupled relationship variable in the
+                    // post-WITH WHERE (`r.<col>`) to its coupled node alias when the
+                    // CTE body's FROM binds the node (not the rel var). Same gate +
+                    // self-ref guard as the pre-WITH filter path; no-op otherwise.
+                    super::plan_builder_helpers::remap_coupled_rel_vars_in_filter(
+                        &mut where_render_expr,
+                        plan_to_render,
+                        cte_from_alias.as_deref(),
+                    );
 
                     if !rendered.group_by.0.is_empty() {
                         // We have GROUP BY - WHERE becomes HAVING

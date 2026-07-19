@@ -1403,6 +1403,16 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
                 let mut filters = FilterItems(FilterBuilder::extract_filters(self)?);
+                // #633: resolve an FK-edge coupled relationship variable in the
+                // WHERE predicate (`r.<col>`) to its coupled node alias when the
+                // FROM binds the node, not the rel var. Gated + self-ref-guarded
+                // inside the helper. No-op for standard/separate edge tables.
+                if let Some(pred) = filters.0.as_mut() {
+                    let from_alias = from.0.as_ref().and_then(|ft| ft.alias.as_deref());
+                    super::plan_builder_helpers::remap_coupled_rel_vars_in_filter(
+                        pred, self, from_alias,
+                    );
+                }
                 // Promote a FROM-marker edge's pre_filter (e.g. the polymorphic
                 // type/label discriminators the SingleTableScan strategy keeps on
                 // the edge for a whole-edge projection like `RETURN r`) into WHERE.
@@ -5435,6 +5445,16 @@ impl RenderPlanBuilder for LogicalPlan {
                 let joins = JoinItems::new(RenderPlanBuilder::extract_joins(self, schema)?);
                 let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
                 let mut filters = FilterItems(FilterBuilder::extract_filters(self)?);
+                // #633: resolve an FK-edge coupled relationship variable in the
+                // WHERE predicate (`r.<col>`) to its coupled node alias when the
+                // FROM binds the node, not the rel var. Gated + self-ref-guarded
+                // inside the helper. No-op for standard/separate edge tables.
+                if let Some(pred) = filters.0.as_mut() {
+                    let from_alias = from.0.as_ref().and_then(|ft| ft.alias.as_deref());
+                    super::plan_builder_helpers::remap_coupled_rel_vars_in_filter(
+                        pred, self, from_alias,
+                    );
+                }
                 // Promote a FROM-marker edge's pre_filter (e.g. the polymorphic
                 // type/label discriminators the SingleTableScan strategy keeps on the
                 // edge for a whole-edge projection like `RETURN r`) into WHERE, or the
@@ -5900,6 +5920,16 @@ impl RenderPlanBuilder for LogicalPlan {
                 let joins = JoinItems::new(RenderPlanBuilder::extract_joins(self, schema)?);
                 let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
                 let mut filters = FilterItems(FilterBuilder::extract_filters(self)?);
+                // #633: resolve an FK-edge coupled relationship variable in the
+                // WHERE predicate (`r.<col>`) to its coupled node alias when the
+                // FROM binds the node, not the rel var. Gated + self-ref-guarded
+                // inside the helper. No-op for standard/separate edge tables.
+                if let Some(pred) = filters.0.as_mut() {
+                    let from_alias = from.0.as_ref().and_then(|ft| ft.alias.as_deref());
+                    super::plan_builder_helpers::remap_coupled_rel_vars_in_filter(
+                        pred, self, from_alias,
+                    );
+                }
                 // Promote a FROM-marker edge's pre_filter (e.g. the polymorphic
                 // type/label discriminators the SingleTableScan strategy keeps on the
                 // edge for a whole-edge projection like `RETURN r`) into WHERE, or the
