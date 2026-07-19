@@ -357,6 +357,31 @@ fn extract_end_node_label(plan: &LogicalPlan) -> Option<String> {
     }
 }
 
+/// #585: the START-node label of a (possibly nested) plan — walks a GraphRel's
+/// `left` (its from/start node), the mirror of `extract_end_node_label` which
+/// walks `right`. Used to resolve the shared anchor of a shared-START comma
+/// pattern (`(p)-[:A]->(x), (p)-[:B]->(y)`), where the outer GraphRel's `left`
+/// is the inner GraphRel and the shared node is the inner's START, not its end.
+fn extract_start_node_label(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphRel(rel) => extract_start_node_label(&rel.left),
+        _ => extract_node_label_from_viewscan(plan),
+    }
+}
+
+/// #585: the START-node id column of a (possibly nested) plan — walks a
+/// GraphRel's `left`, the mirror of `extract_end_node_id_column`.
+fn extract_start_node_id_column(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphRel(rel) => extract_start_node_id_column(&rel.left),
+        LogicalPlan::GraphNode(node) => extract_start_node_id_column(&node.input),
+        LogicalPlan::ViewScan(vs) => Some(vs.id_column.clone()),
+        LogicalPlan::Filter(f) => extract_start_node_id_column(&f.input),
+        LogicalPlan::Projection(p) => extract_start_node_id_column(&p.input),
+        _ => None,
+    }
+}
+
 /// Check if a non-optional VLP in the input plan tree would cause from_builder
 /// to use the VLP CTE as FROM instead of the anchor table.
 /// This mirrors the logic in from_builder::extract_from_graph_joins lines 910-918.
@@ -2912,8 +2937,16 @@ impl JoinBuilder for LogicalPlan {
                 // extract_end_node_label nor extract_node_label_from_viewscan returns a label.
                 // Fall back to the from_node/to_node embedded in the relationship's label
                 // string (format: "TYPE::FromNode::ToNode") to get the correct schema.
-                let start_label = if let LogicalPlan::GraphRel(_) = graph_rel.left.as_ref() {
-                    extract_end_node_label(&graph_rel.left)
+                let start_label = if let LogicalPlan::GraphRel(inner) = graph_rel.left.as_ref() {
+                    // #585: distinguish a SEQUENTIAL multi-hop (outer left_connection ==
+                    // inner's END node → use the inner's end node, current behavior) from a
+                    // shared-START comma pattern (outer left_connection == inner's START
+                    // node `p` → the shared anchor is the inner's START, so walk `left`).
+                    if graph_rel.left_connection == inner.right_connection {
+                        extract_end_node_label(&graph_rel.left)
+                    } else {
+                        extract_start_node_label(&graph_rel.left)
+                    }
                 } else {
                     extract_node_label_from_viewscan(&graph_rel.left)
                 }
@@ -2953,12 +2986,13 @@ impl JoinBuilder for LogicalPlan {
                 // - Single hop (left is GraphNode): use extract_id_column on left
                 // - Multi-hop (left is GraphRel): use extract_end_node_id_column which follows rel.right chain
                 // The left_connection in multi-hop points to the right_connection of the inner GraphRel
-                let start_id_col = if let LogicalPlan::GraphRel(_) = graph_rel.left.as_ref() {
-                    // Multi-hop: left side is another GraphRel
-                    // The shared node is left_connection, which is the inner GraphRel's right node
-                    // Use extract_end_node_id_column to get ID from the inner GraphRel's right side
+                let start_id_col = if matches!(graph_rel.left.as_ref(), LogicalPlan::GraphRel(inner)
+                    if graph_rel.left_connection == inner.right_connection)
+                {
+                    // SEQUENTIAL multi-hop: left is a GraphRel whose END node is the outer
+                    // left_connection. Follow rel.right to that end node (current behavior).
                     log::debug!(
-                        "DEBUG: Multi-hop - left_connection={}, extracting ID from inner GraphRel's right node",
+                        "DEBUG: Sequential multi-hop - left_connection={}, extracting ID from inner GraphRel's right node",
                         graph_rel.left_connection
                     );
                     extract_end_node_id_column(&graph_rel.left)
@@ -2967,16 +3001,20 @@ impl JoinBuilder for LogicalPlan {
                             "id".to_string()
                         })
                 } else {
-                    // Single hop: extract ID column from the node ViewScan
+                    // Single hop (left is a GraphNode) OR #585 shared-START comma pattern
+                    // (left is the inner GraphRel whose START node is the shared anchor).
+                    // Both resolve the anchor `left_connection`'s id via the CTE-aware path.
                     // CRITICAL: For CTE-backed nodes, the ViewScan's id_column may reflect
-                    // the CTE's primary node (e.g., tag's p3_tag_id), not this node's actual ID.
-                    // Check cte_references FIRST and use label-based resolution for CTE nodes.
+                    // the CTE's primary node, not this node's actual ID. Check cte_references
+                    // FIRST and use label-based resolution. `start_label` (computed above)
+                    // already resolves the anchor's label correctly for both shapes
+                    // (extract_node_label_from_viewscan for GraphNode-left, extract_start_node_label
+                    // for shared-START nested-left), so reuse it here.
                     if graph_rel
                         .cte_references
                         .contains_key(&graph_rel.left_connection)
                     {
-                        let label = extract_node_label_from_viewscan(&graph_rel.left);
-                        if let Some(label) = &label {
+                        if let Some(label) = &start_label {
                             let label_table = super::cte_extraction::label_to_table_name(label);
                             let col = table_to_id_column(&label_table);
                             log::info!("🔍 start_id_col: CTE-referenced node '{}', using label '{}' -> table '{}' -> id_col '{}'",
@@ -2991,7 +3029,15 @@ impl JoinBuilder for LogicalPlan {
                             "id".to_string()
                         }
                     } else {
-                        let extracted = extract_id_column(&graph_rel.left);
+                        // #585: for a shared-START comma pattern with no CTE ref (no-WITH
+                        // case), resolve the anchor from the inner GraphRel's START node,
+                        // not its end (extract_id_column follows rel.right).
+                        let extracted =
+                            if matches!(graph_rel.left.as_ref(), LogicalPlan::GraphRel(_)) {
+                                extract_start_node_id_column(&graph_rel.left)
+                            } else {
+                                extract_id_column(&graph_rel.left)
+                            };
                         extracted.unwrap_or_else(|| table_to_id_column(&start_table))
                     }
                 };

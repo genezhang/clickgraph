@@ -1149,3 +1149,7 @@
 {"cypher": "MATCH (a:User)-[:FOLLOWS]-(b:User) UNWIND [1, 2] AS n WITH b, n RETURN b.name, n", "name": "test_624_undirected_unwind_with_barrier", "schema": "standard"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS]-(b:User)-[:FOLLOWS]-(c:User) UNWIND [1, 2] AS n RETURN c.name, n", "name": "test_624_undirected_unwind_multi_hop_uniqueness", "schema": "standard"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS]->(b:User) UNWIND [1, 2] AS n RETURN b.name, n", "name": "test_624_directed_unwind_unchanged", "schema": "standard"}
+{"cypher": "MATCH (p:User) WITH p MATCH (p)-[:AUTHORED]->(post:Post), (p)-[:LIKED]->(post2:Post) RETURN p.name, post.title, post2.title", "name": "test_585_shared_anchor_comma_post_with", "schema": "standard"}
+{"cypher": "MATCH (p:User) WITH p MATCH (p)-[:LIKED]->(x:Post), (p)-[:AUTHORED]->(y:Post) RETURN p.name, x.title, y.title", "name": "test_585_shared_anchor_comma_reversed", "schema": "standard"}
+{"cypher": "MATCH (p:User) WITH p MATCH (p)-[:AUTHORED]->(x:Post), (p)-[:LIKED]->(y:Post), (p)-[:FOLLOWS]->(z:User) RETURN p.name", "name": "test_585_shared_anchor_comma_three_way", "schema": "standard"}
+{"cypher": "MATCH (p:User) WITH p MATCH (p)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User) RETURN p.name, c.name", "name": "test_585_sequential_multihop_post_with_unchanged", "schema": "standard"}
