@@ -802,7 +802,14 @@ mod tests {
 
     #[test]
     fn test_aggregate_function_classification() {
-        let agg_functions = ["count", "min", "max", "avg", "sum", "collect"];
+        // #638: stDev/stDevP must classify as AggregateFnCall — otherwise a
+        // post-WITH stage treats them as grouping keys (GROUP BY stddevSamp(...)
+        // → ClickHouse Code 184). (percentileCont/Disc are intentionally excluded
+        // until the registry stops dropping their percentile arg — see
+        // ast_conversion.rs — so classifying them would be a loud→silent regression.)
+        let agg_functions = [
+            "count", "min", "max", "avg", "sum", "collect", "stDev", "stDevP",
+        ];
 
         for func_name in &agg_functions {
             let ast_function_call = ast::FunctionCall {

@@ -1157,3 +1157,5 @@
 {"cypher": "MATCH (a:User {name:'Alice Johnson', country:'USA'}) RETURN count(*)", "name": "test_600_2_lone_node_inline_map_multi_prop", "schema": "standard"}
 {"cypher": "MATCH (a:User {name:'Alice Johnson'})-[:FOLLOWS]->(b) RETURN count(*)", "name": "test_600_2_rel_inline_map_unchanged", "schema": "standard"}
 {"cypher": "MATCH (a:User) WHERE a.name = 'Alice Johnson' RETURN count(*)", "name": "test_600_2_explicit_where_unchanged", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS]->(b) WITH a, count(b) AS fc RETURN min(fc), max(fc), sum(fc), stDev(fc)", "name": "test_638_stdev_post_with_multi_agg", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS]->(b) RETURN a.name, stDev(b.user_id)", "name": "test_638_stdev_fresh_match_group_by", "schema": "standard"}

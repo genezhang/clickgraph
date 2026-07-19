@@ -212,8 +212,25 @@ impl<'a> TryFrom<open_cypher_parser::ast::FunctionCall<'a>> for LogicalExpr {
             }
         }
 
-        // Standard Neo4j aggregate functions
-        let agg_fns = ["count", "min", "max", "avg", "sum", "collect"];
+        // Standard Neo4j aggregate functions. Includes the standard-deviation
+        // aggregates (stDev/stDevP) — #638/#600.3: without these, `stDev(x)` was
+        // classified as a ScalarFnCall, so a post-WITH aggregation stage treated
+        // it as a GROUPING KEY and emitted `GROUP BY stddevSamp(...)` (ClickHouse
+        // Code 184). They are genuine aggregates per openCypher and render
+        // correctly via the function registry (stddevSamp / stddevPop).
+        //
+        // NOTE: percentileCont/percentileDisc are deliberately NOT added here yet.
+        // Their function-registry mapping currently DROPS the percentile argument
+        // and always renders `median(x)` (quantile 0.5) — see
+        // `function_registry.rs` `percentilecont`/`percentiledisc`. Classifying
+        // them as aggregates would turn today's loud error (they land in a GROUP
+        // BY) into a SILENT wrong result (median instead of the requested
+        // percentile) — a loud→silent regression forbidden by ground rule 1.
+        // Add them here only once the registry honors the percentile arg (or
+        // fails loud on a non-0.5 percentile). Tracked as a follow-up.
+        let agg_fns = [
+            "count", "min", "max", "avg", "sum", "collect", "stdev", "stdevp",
+        ];
 
         // Check if it's a standard aggregate function
         let is_standard_agg = agg_fns.contains(&name_lower.as_str());
