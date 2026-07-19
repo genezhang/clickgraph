@@ -2873,7 +2873,11 @@ impl RenderPlanBuilder for LogicalPlan {
                         use crate::query_planner::logical_expr::expression_rewriter::{
                             rewrite_expression_with_property_mapping, ExpressionRewriteContext,
                         };
-                        let rewrite_ctx = ExpressionRewriteContext::new(&gn.input);
+                        // #600.2: build the rewrite context from the GraphNode (`self`), NOT
+                        // `gn.input` (the bare ViewScan) whose label is unresolvable by
+                        // `find_label_for_alias_in_plan` — otherwise the inline-map property
+                        // (`a.name`) is left unmapped. Mirrors the working explicit-WHERE path.
+                        let rewrite_ctx = ExpressionRewriteContext::new(self);
                         let rewritten =
                             rewrite_expression_with_property_mapping(view_filter, &rewrite_ctx);
                         let expr: RenderExpr = rewritten.try_into()?;

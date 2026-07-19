@@ -53,8 +53,15 @@ impl FilterBuilder for LogicalPlan {
                         );
 
                         // 🔧 FIX: Rewrite property names to DB column names BEFORE converting to RenderExpr
-                        // This uses the same function as WITH clause processing for consistency
-                        let rewrite_ctx = ExpressionRewriteContext::new(&graph_node.input);
+                        // This uses the same function as WITH clause processing for consistency.
+                        // #600.2: build the rewrite context from the GraphNode (`self`), NOT
+                        // `graph_node.input` (the bare ViewScan). `find_label_for_alias_in_plan`
+                        // returns None for a bare ViewScan (it has no alias field), so the
+                        // context lost the alias→label binding and the inline-map property
+                        // (`a.name`) was left unmapped. Passing the GraphNode lets the label
+                        // (`User`) resolve so `name` → `full_name`, mirroring the working
+                        // explicit-WHERE path (`Filter::to_render_plan` passes its GraphNode child).
+                        let rewrite_ctx = ExpressionRewriteContext::new(self);
                         let rewritten_filter =
                             rewrite_expression_with_property_mapping(view_filter, &rewrite_ctx);
 

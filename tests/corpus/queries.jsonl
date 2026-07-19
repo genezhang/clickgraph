@@ -1153,3 +1153,7 @@
 {"cypher": "MATCH (p:User) WITH p MATCH (p)-[:LIKED]->(x:Post), (p)-[:AUTHORED]->(y:Post) RETURN p.name, x.title, y.title", "name": "test_585_shared_anchor_comma_reversed", "schema": "standard"}
 {"cypher": "MATCH (p:User) WITH p MATCH (p)-[:AUTHORED]->(x:Post), (p)-[:LIKED]->(y:Post), (p)-[:FOLLOWS]->(z:User) RETURN p.name", "name": "test_585_shared_anchor_comma_three_way", "schema": "standard"}
 {"cypher": "MATCH (p:User) WITH p MATCH (p)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User) RETURN p.name, c.name", "name": "test_585_sequential_multihop_post_with_unchanged", "schema": "standard"}
+{"cypher": "MATCH (a:User {name:'Alice Johnson'}) RETURN count(*)", "name": "test_600_2_lone_node_inline_map_mapped", "schema": "standard"}
+{"cypher": "MATCH (a:User {name:'Alice Johnson', country:'USA'}) RETURN count(*)", "name": "test_600_2_lone_node_inline_map_multi_prop", "schema": "standard"}
+{"cypher": "MATCH (a:User {name:'Alice Johnson'})-[:FOLLOWS]->(b) RETURN count(*)", "name": "test_600_2_rel_inline_map_unchanged", "schema": "standard"}
+{"cypher": "MATCH (a:User) WHERE a.name = 'Alice Johnson' RETURN count(*)", "name": "test_600_2_explicit_where_unchanged", "schema": "standard"}
