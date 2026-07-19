@@ -33,7 +33,6 @@ with_postCount_u2_cte_0 AS (SELECT
       end_id AS `p2_u2_user_id`, 
       count(DISTINCT t0.post_id) AS `postCount`
 FROM vlp_u1_u2 AS t
-INNER JOIN test_integration.posts_test AS t0 ON t0.author_id = t.end_id
 GROUP BY u2.user_id
 HAVING postCount > 0
 )

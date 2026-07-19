@@ -2844,12 +2844,19 @@ impl GraphJoinInference {
         join_generation::collect_with_dedup(collected_graph_joins, new_joins);
 
         // Step 5: Side effects — register denormalized aliases
+        // #622: a denormalized edge whose left node is already bound by an
+        // earlier pattern (chained) has its redundant edge scan folded away in
+        // render (join_builder). Signal that so the edge→node render remap is
+        // published task-locally now — BEFORE render extracts SELECT items with
+        // no plan_ctx — letting `RETURN r.prop` resolve to the folded node.
+        let left_already_bound = already_available.contains(left_alias);
         join_generation::register_denormalized_aliases(
             ctx,
             left_alias,
             rel_alias,
             right_alias,
             plan_ctx,
+            left_already_bound,
         );
 
         // Step 6: Update join context (track what's been joined)
