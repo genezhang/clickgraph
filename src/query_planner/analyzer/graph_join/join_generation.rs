@@ -89,75 +89,129 @@ pub fn generate_pattern_joins(
             let left_avail = already_available.contains(t.left_alias);
             let right_avail = already_available.contains(t.right_alias);
 
-            let edge_join = |extra_cond: bool| -> Join {
+            // #623: a fixed hop adjacent to a variable-length hop binds its
+            // shared node via the VLP CTE (t.start_id / t.end_id), not via a
+            // plain node table JOIN. When the shared endpoint is a VLP
+            // endpoint, emitting a separate `node_table AS alias` JOIN whose
+            // condition `apply_vlp_rewrites` later rewrites to `t.start_id =
+            // edge.col` leaves that node table correlated to NOTHING (its own
+            // id column drops out of the condition) — an unconstrained
+            // cartesian fan (~N× over-count). Instead fold the correlation
+            // directly onto the EDGE join (edge.to_col = t.<cte_col>) and emit
+            // NO separate node table JOIN, mirroring `SingleTableScan`'s #521
+            // handling and producing the same topology the trailing case
+            // already gets (where the shared node is the FROM marker the VLP
+            // CTE takes over).
+            //
+            // #623 composite guard: the fold binds a SINGLE edge column
+            // (`first_col(rel from/to id)`) against the VLP CTE's single
+            // `start_id`/`end_id` column. For a COMPOSITE key the CTE column is
+            // a `concat(...)` string and the edge side has multiple columns, so
+            // a single-column bind silently never matches (→ 0 rows). Rather
+            // than emit that silent-wrong join, only fold when BOTH the edge's
+            // connecting id and the endpoint node's id are single-column;
+            // otherwise fall through to the node table join (which, on a
+            // composite schema, fails loudly at execution — #604 — an honest
+            // error beats a silent 0, ground rule 1). Composite composed VLP is
+            // a separate follow-up.
+            let rel_from_single = matches!(rel_schema.from_id, Identifier::Single(_));
+            let rel_to_single = matches!(rel_schema.to_id, Identifier::Single(_));
+            let left_id_single = matches!(left_id, Identifier::Single(_));
+            let right_id_single = matches!(right_id, Identifier::Single(_));
+            let left_is_vlp =
+                plan_ctx.is_vlp_endpoint(t.left_alias) && rel_from_single && left_id_single;
+            let right_is_vlp =
+                plan_ctx.is_vlp_endpoint(t.right_alias) && rel_to_single && right_id_single;
+
+            // Edge join, optionally binding one/both endpoints to the VLP CTE
+            // instead of to a node table. `bind_left`/`bind_right` add the
+            // edge↔node equality; when the endpoint is a VLP endpoint the RHS
+            // is the CTE column (t.start_id/end_id) rather than node.id.
+            let edge_join = |bind_left: bool, bind_right: bool| -> Join {
                 let mut b = JoinBuilder::new(t.rel_table, t.rel_alias)
                     .pre_filter(pre_filter.clone())
                     .from_id(first_col(&rel_schema.from_id))
                     .to_id(first_col(&rel_schema.to_id));
-                // Always add the left condition: edge.from_col = left.id
-                b = b.add_identifier_condition(t.rel_alias, &r_left_join, t.left_alias, &r_left_id);
-                if extra_cond {
-                    // Also add right condition: edge.to_col = right.id
-                    b = b.add_identifier_condition(
-                        t.rel_alias,
-                        &r_right_join,
-                        t.right_alias,
-                        &r_right_id,
-                    );
+                if bind_left {
+                    if left_is_vlp {
+                        let from_col = first_col(&rel_schema.from_id);
+                        let (va, vc) = plan_ctx.get_vlp_join_reference(t.left_alias, &from_col);
+                        b = b.add_condition(t.rel_alias, from_col, va, vc);
+                    } else {
+                        b = b.add_identifier_condition(
+                            t.rel_alias,
+                            &r_left_join,
+                            t.left_alias,
+                            &r_left_id,
+                        );
+                    }
+                }
+                if bind_right {
+                    if right_is_vlp {
+                        let to_col = first_col(&rel_schema.to_id);
+                        let (va, vc) = plan_ctx.get_vlp_join_reference(t.right_alias, &to_col);
+                        b = b.add_condition(t.rel_alias, to_col, va, vc);
+                    } else {
+                        b = b.add_identifier_condition(
+                            t.rel_alias,
+                            &r_right_join,
+                            t.right_alias,
+                            &r_right_id,
+                        );
+                    }
                 }
                 b.build()
             };
 
+            // The separate right/left node table JOIN — emitted ONLY when the
+            // node is a real table (not a VLP-CTE endpoint, which is folded
+            // into the edge join above).
+            let right_node_join = || -> Join {
+                JoinBuilder::new(t.right_table, t.right_alias)
+                    .add_identifier_condition(
+                        t.right_alias,
+                        &r_right_id,
+                        t.rel_alias,
+                        &r_right_join,
+                    )
+                    .build()
+            };
+            let left_node_join = || -> Join {
+                JoinBuilder::new(t.left_table, t.left_alias)
+                    .add_identifier_condition(t.left_alias, &r_left_id, t.rel_alias, &r_left_join)
+                    .build()
+            };
+
             match (left_avail, right_avail) {
                 // Neither available: first pattern — FROM left, JOIN edge, JOIN right
-                (false, false) => vec![
-                    JoinBuilder::from_marker(t.left_table, t.left_alias).build(),
-                    edge_join(false),
-                    JoinBuilder::new(t.right_table, t.right_alias)
-                        .add_identifier_condition(
-                            t.right_alias,
-                            &r_right_id,
-                            t.rel_alias,
-                            &r_right_join,
-                        )
-                        .build(),
-                ],
+                (false, false) => {
+                    let mut v = vec![
+                        JoinBuilder::from_marker(t.left_table, t.left_alias).build(),
+                        edge_join(true, right_is_vlp),
+                    ];
+                    if !right_is_vlp {
+                        v.push(right_node_join());
+                    }
+                    v
+                }
                 // Left available: edge anchors on left, right via edge
-                (true, false) => vec![
-                    edge_join(false),
-                    JoinBuilder::new(t.right_table, t.right_alias)
-                        .add_identifier_condition(
-                            t.right_alias,
-                            &r_right_id,
-                            t.rel_alias,
-                            &r_right_join,
-                        )
-                        .build(),
-                ],
+                (true, false) => {
+                    let mut v = vec![edge_join(true, right_is_vlp)];
+                    if !right_is_vlp {
+                        v.push(right_node_join());
+                    }
+                    v
+                }
                 // Right available: edge anchors on right, left via edge
-                (false, true) => vec![
-                    JoinBuilder::new(t.rel_table, t.rel_alias)
-                        .add_identifier_condition(
-                            t.rel_alias,
-                            &r_right_join,
-                            t.right_alias,
-                            &r_right_id,
-                        )
-                        .pre_filter(pre_filter.clone())
-                        .from_id(first_col(&rel_schema.from_id))
-                        .to_id(first_col(&rel_schema.to_id))
-                        .build(),
-                    JoinBuilder::new(t.left_table, t.left_alias)
-                        .add_identifier_condition(
-                            t.left_alias,
-                            &r_left_id,
-                            t.rel_alias,
-                            &r_left_join,
-                        )
-                        .build(),
-                ],
+                (false, true) => {
+                    let mut v = vec![edge_join(left_is_vlp, true)];
+                    if !left_is_vlp {
+                        v.push(left_node_join());
+                    }
+                    v
+                }
                 // Both available: only the edge table, joining both sides
-                (true, true) => vec![edge_join(true)],
+                (true, true) => vec![edge_join(true, true)],
             }
         }
 

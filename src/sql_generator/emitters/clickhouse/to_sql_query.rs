@@ -2546,6 +2546,20 @@ fn derive_cypher_property_name(db_column: &str) -> String {
     }
 }
 
+/// #623: for a fixed exact-bound VLP (`*N..N`) the path length is statically
+/// `N`, but the flat fallback here otherwise derives `hop_count = joins/2`,
+/// which is wrong for a VLP (`*2..2` renders 2 rel-joins → 2/2 = 1, so
+/// `length(p)` wrongly returns 1). `build_vlp_context` records the true `N`
+/// keyed by the path variable in the task-local `QueryContext`; prefer it when
+/// present. Non-VLP fixed multi-hop paths have no such record and fall back to
+/// the historical `joins/2` formula — no perturbation.
+fn fixed_path_hop_count(plan: &RenderPlan, path_var: &str) -> u32 {
+    if let Some(n) = crate::server::query_context::get_vlp_exact_path_hops(path_var) {
+        return n;
+    }
+    plan.joins.0.len() as u32 / 2
+}
+
 /// Extract fixed path information from a RenderPlan by analyzing SELECT items and JOINs
 /// Returns FixedPathMetadata if the plan contains a path function call that can be resolved
 fn extract_fixed_path_info_from_plan(
@@ -2554,12 +2568,10 @@ fn extract_fixed_path_info_from_plan(
     // Look for path function calls in SELECT items
     for item in &plan.select.items {
         if let Some(path_var) = find_path_function_argument(&item.expression) {
-            // Found a path function with argument path_var
-            // Infer hop count from the number of JOINs
-            // For a path (a)-[:T]->(b), we have 2 JOINs (relationship + end node) = 1 hop
-            // For a path (a)-[:T1]->(b)-[:T2]->(c), we have 4 JOINs = 2 hops
-            // Formula: hops = JOINs / 2 (integer division)
-            let hop_count = plan.joins.0.len() as u32 / 2;
+            // Found a path function with argument path_var.
+            // #623: prefer the exact VLP hop count when present; otherwise infer
+            // from JOIN count (hops = JOINs / 2 for a plain fixed multi-hop path).
+            let hop_count = fixed_path_hop_count(plan, &path_var);
 
             log::info!(
                 "🔧 Detected fixed path: path_variable={}, hop_count={} (from {} JOINs)",
@@ -2582,7 +2594,7 @@ fn extract_fixed_path_info_from_plan(
     // Also check GROUP BY and ORDER BY expressions
     for expr in &plan.group_by.0 {
         if let Some(path_var) = find_path_function_argument(expr) {
-            let hop_count = plan.joins.0.len() as u32 / 2;
+            let hop_count = fixed_path_hop_count(plan, &path_var);
             return Some(crate::render_plan::FixedPathMetadata {
                 path_variable: path_var,
                 hop_count,
@@ -2596,7 +2608,7 @@ fn extract_fixed_path_info_from_plan(
 
     for item in &plan.order_by.0 {
         if let Some(path_var) = find_path_function_argument(&item.expression) {
-            let hop_count = plan.joins.0.len() as u32 / 2;
+            let hop_count = fixed_path_hop_count(plan, &path_var);
             return Some(crate::render_plan::FixedPathMetadata {
                 path_variable: path_var,
                 hop_count,

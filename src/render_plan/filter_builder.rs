@@ -154,6 +154,10 @@ impl FilterBuilder for LogicalPlan {
                             // #603: directed OPTIONAL exact VLP uses recursive CTE
                             && !crate::render_plan::from_builder::optional_directed_exact_vlp_uses_cte(
                                 graph_rel,
+                            )
+                            // #623: exact VLP adjacent to another hop uses recursive CTE
+                            && !crate::render_plan::from_builder::adjacent_exact_vlp_uses_cte(
+                                graph_rel,
                             );
                         !is_fixed_length // CTE used if NOT fixed-length
                     } else {
