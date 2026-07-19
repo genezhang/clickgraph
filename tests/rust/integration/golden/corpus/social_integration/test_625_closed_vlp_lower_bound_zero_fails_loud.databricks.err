@@ -1,0 +1,1 @@
+render error: Unsupported feature: closed variable-length path with lower bound 0 (`(a)-[*0..N]-(a)`): the recursive CTE enforces node-uniqueness for *0..N, which structurally cannot return to the start node, so the cycle constraint would silently drop all real cycles. Use a lower bound >= 1 (e.g. `*1..N`) to count cycles. (#625)
