@@ -1896,6 +1896,26 @@ impl LogicalPlan {
                         }
                     }
                 }
+                // #622: a chained denormalized EDGE whose redundant scan was
+                // folded away (join_builder) leaves its alias absent from the
+                // FROM/JOIN list. An aggregate over an edge-variable property —
+                // `count(r)` expands to `count(r.author_id)`, `sum(r.post_id)` —
+                // reaches this pass; without a remap it emits a dangling
+                // `r.<col>` (Code 47). The fold registered a task-local
+                // `r → <node alias>`; when `r` is a RELATIONSHIP variable (never
+                // a node — that would clobber a VLP-endpoint CTE projection,
+                // #559/#569) with such a remap, rewrite the reference onto the
+                // folded node. Mirrors the SELECT/WHERE/ORDER-BY remap so
+                // aggregate args resolve consistently.
+                if self.find_graph_rel_by_rel_alias(&alias).is_some() {
+                    if let Some(mapped) = crate::render_plan::get_denormalized_alias_mapping(&alias)
+                    {
+                        if mapped != alias {
+                            pa.table_alias = RenderTableAlias(mapped);
+                            return;
+                        }
+                    }
+                }
                 // pattern_union CTEs project properties under their property
                 // names — same pass-through as Case 4.
                 if crate::render_plan::cte_extraction::is_pattern_union_rel_alias(&alias, self) {

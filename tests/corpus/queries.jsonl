@@ -1116,3 +1116,4 @@
 {"cypher": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:AUTHORED]->(p:Post) RETURN u2.user_id, p.post_id", "name": "test_622_nonvlp_chained_denorm_edge_single_join", "schema": "social_integration"}
 {"cypher": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[r:AUTHORED]->(p:Post) RETURN r.post_id ORDER BY r.post_id", "name": "test_622_named_chained_denorm_edge_property_resolves_to_node", "schema": "social_integration"}
 {"cypher": "MATCH (u:User)-[r:AUTHORED]->(p:Post) RETURN r.post_id ORDER BY r.post_id", "name": "test_622_standalone_named_denorm_edge_keeps_own_scan", "schema": "social_integration"}
+{"cypher": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[r:AUTHORED]->(p:Post) RETURN u2.user_id, count(r), sum(r.post_id)", "name": "test_622_named_chained_denorm_edge_aggregate_arg_resolves", "schema": "social_integration"}
