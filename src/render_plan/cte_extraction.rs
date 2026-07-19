@@ -110,22 +110,26 @@ pub(crate) fn merge_cte_deduping_by_name_content(
 
 /// Rewrite a CTE's OWN name where it appears embedded inside its `RawSql`
 /// content: the `<old> AS (` definition header and the recursive self-reference
-/// `FROM <old> <alias>`. Only whole-identifier matches are rewritten, so
-/// `vlp_a_b` is not corrupted inside `vlp_a_b_2`. No-op for `Structured`
+/// `FROM <old> <alias>`. Only STRUCTURAL positions are rewritten — a leading
+/// `<old> AS (` header and `<old>` immediately after a `FROM`/`JOIN` keyword —
+/// and never inside a single-quoted string literal. This deliberately does NOT
+/// do a blanket identifier replace: a VLP body can legitimately contain the
+/// text of the CTE name inside a string literal (e.g. `WHERE name = 'vlp_a_b'`),
+/// and corrupting that would be a silent wrong result. No-op for `Structured`
 /// content (which carries its name in `cte_name`, not in text). See #618.
 pub(crate) fn rewrite_cte_self_name_in_raw_sql(content: &mut CteContent, old: &str, new: &str) {
     let CteContent::RawSql(sql) = content else {
         return;
     };
-    *sql = replace_identifier(sql, old, new);
+    *sql = rewrite_cte_name_structural(sql, old, new);
 }
 
-/// Replace every whole-identifier occurrence of `old` with `new` in `sql`.
-/// An occurrence counts only when neither neighbor is an identifier char
-/// (`[A-Za-z0-9_]`), so `vlp_a_b` inside `vlp_a_b_2` or `xvlp_a_b` is left
-/// untouched. Purely textual — adequate for the generated VLP CTE bodies, which
-/// reference the CTE name only as a bare table identifier.
-fn replace_identifier(sql: &str, old: &str, new: &str) -> String {
+/// Rewrite `old`→`new` only where `old` is a CTE reference: the definition
+/// header (`old AS (`, possibly leading the string or after whitespace) or a
+/// table source (`FROM old`/`JOIN old`). Matches only at whole-identifier
+/// boundaries and NEVER inside a single-quoted string literal. Everything else
+/// — string literals, column names, comments — is left byte-for-byte intact.
+fn rewrite_cte_name_structural(sql: &str, old: &str, new: &str) -> String {
     if old.is_empty() {
         return sql.to_string();
     }
@@ -133,15 +137,52 @@ fn replace_identifier(sql: &str, old: &str, new: &str) -> String {
     let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     let mut out = String::with_capacity(sql.len());
     let mut i = 0;
+    let mut in_string = false; // inside a single-quoted literal
     while i < sql.len() {
+        let b = bytes[i];
+        if in_string {
+            // Copy verbatim until the closing quote (handle '' escape).
+            out.push(b as char);
+            if b == b'\'' {
+                if i + 1 < sql.len() && bytes[i + 1] == b'\'' {
+                    out.push('\'');
+                    i += 2;
+                    continue;
+                }
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'\'' {
+            in_string = true;
+            out.push('\'');
+            i += 1;
+            continue;
+        }
+        // Try to match `old` as a whole identifier at position i.
         if sql[i..].starts_with(old) {
             let before_ok = i == 0 || !is_ident(bytes[i - 1]);
             let after_idx = i + old.len();
             let after_ok = after_idx >= sql.len() || !is_ident(bytes[after_idx]);
             if before_ok && after_ok {
-                out.push_str(new);
-                i = after_idx;
-                continue;
+                // Structural gate: the identifier must be a CTE reference —
+                // either the leading `<old> AS (` header (preceded only by
+                // whitespace/start-of-string), or preceded by a FROM/JOIN
+                // keyword. Anything else (a bare column, an aliased projection)
+                // is left untouched.
+                let preceding = out.trim_end();
+                let is_header =
+                    preceding.is_empty() || preceding.ends_with(',') || preceding.ends_with('(');
+                let after_kw = {
+                    let low = preceding.to_ascii_lowercase();
+                    low.ends_with("from") || low.ends_with("join")
+                };
+                if is_header || after_kw {
+                    out.push_str(new);
+                    i = after_idx;
+                    continue;
+                }
             }
         }
         // Advance one UTF-8 char (CTE SQL is ASCII, but stay safe).
@@ -8155,26 +8196,39 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn replace_identifier_rewrites_only_whole_identifiers_618() {
-        // Header + recursive self-ref rewritten; the already-suffixed sibling and
-        // longer identifiers are left untouched (no `vlp_a_b` inside `vlp_a_b_2`).
-        let sql = "vlp_a_b AS (\n  FROM t\n  UNION ALL\n  FROM vlp_a_b vp\n)";
+    fn rewrite_cte_name_structural_targets_refs_not_string_literals_618() {
+        // Header + recursive self-ref rewritten; a string literal that happens to
+        // equal the CTE name is LEFT INTACT (else a silent wrong result).
+        let sql =
+            "vlp_a_b AS (\n  WHERE start_node.full_name = 'vlp_a_b'\n  UNION ALL\n  FROM vlp_a_b vp\n)";
         assert_eq!(
-            replace_identifier(sql, "vlp_a_b", "vlp_a_b_2"),
-            "vlp_a_b_2 AS (\n  FROM t\n  UNION ALL\n  FROM vlp_a_b_2 vp\n)"
+            rewrite_cte_name_structural(sql, "vlp_a_b", "vlp_a_b_2"),
+            "vlp_a_b_2 AS (\n  WHERE start_node.full_name = 'vlp_a_b'\n  UNION ALL\n  FROM vlp_a_b_2 vp\n)"
         );
         // Must NOT corrupt an occurrence that is a prefix of a longer identifier.
         assert_eq!(
-            replace_identifier("FROM vlp_a_b_2 vp", "vlp_a_b", "vlp_a_b_9"),
+            rewrite_cte_name_structural("FROM vlp_a_b_2 vp", "vlp_a_b", "vlp_a_b_9"),
             "FROM vlp_a_b_2 vp"
         );
-        // Boundary at start/end of string and adjacency to non-ident chars.
-        assert_eq!(replace_identifier("vlp_a_b", "vlp_a_b", "x"), "x");
-        assert_eq!(replace_identifier("(vlp_a_b)", "vlp_a_b", "x"), "(x)");
-        // A different-but-overlapping name is not touched.
+        // JOIN reference is rewritten too.
         assert_eq!(
-            replace_identifier("xvlp_a_b y", "vlp_a_b", "z"),
-            "xvlp_a_b y"
+            rewrite_cte_name_structural("JOIN vlp_a_b ON x", "vlp_a_b", "vlp_a_b_2"),
+            "JOIN vlp_a_b_2 ON x"
+        );
+        // A bare column/alias occurrence NOT after FROM/JOIN and not a header is
+        // left alone (conservative — never over-rewrite).
+        assert_eq!(
+            rewrite_cte_name_structural("SELECT vlp_a_b.x FROM t", "vlp_a_b", "z"),
+            "SELECT vlp_a_b.x FROM t"
+        );
+        // Escaped quote inside a string literal doesn't desync the scanner.
+        assert_eq!(
+            rewrite_cte_name_structural(
+                "WHERE n = 'a''vlp_a_b' AND FROM vlp_a_b vp",
+                "vlp_a_b",
+                "vlp_a_b_2"
+            ),
+            "WHERE n = 'a''vlp_a_b' AND FROM vlp_a_b_2 vp"
         );
     }
 
