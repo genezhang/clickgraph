@@ -643,38 +643,14 @@ lazy_static::lazy_static! {
             arg_transform: None,
         });
 
-        // percentileCont(percentile) -> quantile(percentile)
-        // Note: Neo4j syntax is percentileCont(expr, percentile)
-        // ClickHouse syntax is quantile(percentile)(expr) - parametric aggregate
-        // We'll use simpler quantileExact for now which takes (expr)
-        m.insert("percentilecont", FunctionMapping {
-            neo4j_name: "percentileCont",
-            clickhouse_name: "median",  // median = quantile(0.5), closest simple equivalent
-            databricks_name: None,
-            arg_transform: Some(|args| {
-                // percentileCont(expr, 0.5) -> median(expr)
-                // For other percentiles, user needs to use quantile directly
-                if !args.is_empty() {
-                    vec![args[0].clone()]
-                } else {
-                    args.to_vec()
-                }
-            }),
-        });
-
-        // percentileDisc(percentile) -> similar to percentileCont but discrete
-        m.insert("percentiledisc", FunctionMapping {
-            neo4j_name: "percentileDisc",
-            clickhouse_name: "median",
-            databricks_name: None,
-            arg_transform: Some(|args| {
-                if !args.is_empty() {
-                    vec![args[0].clone()]
-                } else {
-                    args.to_vec()
-                }
-            }),
-        });
+        // percentileCont / percentileDisc are NOT registry entries: ClickHouse's
+        // quantile is a *parametric* aggregate (`quantileExactInclusive(p)(x)`)
+        // whose percentile sits in a leading parameter list, a call shape the
+        // `name(args)` registry renderer can't express. They render through
+        // `FunctionMapper::percentile_aggregate` instead, intercepted in the
+        // aggregate/scalar emission arms — see `try_render_percentile` in
+        // `common.rs` (#639). The old registry mapping dropped the percentile and
+        // always emitted `median(x)` (a silent wrong result).
 
         // ===== PREDICATE/NULL FUNCTIONS =====
 
@@ -1218,8 +1194,11 @@ mod tests {
     fn test_aggregation_functions() {
         assert!(get_function_mapping("stdev").is_some());
         assert!(get_function_mapping("stdevp").is_some());
-        assert!(get_function_mapping("percentilecont").is_some());
-        assert!(get_function_mapping("percentiledisc").is_some());
+        // percentileCont/Disc are intentionally NOT registry entries — they
+        // render via FunctionMapper::percentile_aggregate (parametric quantile),
+        // not a `name(args)` mapping (#639).
+        assert!(get_function_mapping("percentilecont").is_none());
+        assert!(get_function_mapping("percentiledisc").is_none());
 
         let mapping = get_function_mapping("stdev")
             .expect("get_function_mapping failed for function in test");
@@ -1369,11 +1348,9 @@ mod tests {
             // String (2)
             "ltrim",
             "rtrim",
-            // Aggregation (4)
+            // Aggregation (2)
             "stdev",
             "stdevp",
-            "percentilecont",
-            "percentiledisc",
             // Predicate (2)
             "coalesce",
             "nullif",

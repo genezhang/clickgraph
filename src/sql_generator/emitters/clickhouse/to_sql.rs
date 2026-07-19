@@ -160,6 +160,13 @@ impl ToSql for LogicalExpr {
                 // Note: We use ClickHouse-specific aggregate names (like "anyLast") to avoid
                 // conflicts with Cypher functions (like "any" for array predicates)
                 let fn_name_lower = fn_call.name.to_lowercase();
+
+                // percentileCont/Disc are parametric quantiles — render through the
+                // dialect FunctionMapper, honoring the percentile arg (#639).
+                if let Some(sql) = super::common::try_render_percentile(&fn_name_lower, &args_sql) {
+                    return Ok(sql);
+                }
+
                 if let Some(mapping) = get_function_mapping(&fn_name_lower) {
                     // Apply argument transformation if provided
                     let transformed_args = if let Some(transform_fn) = mapping.arg_transform {

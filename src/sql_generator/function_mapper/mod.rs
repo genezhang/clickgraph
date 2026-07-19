@@ -197,6 +197,26 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// Narrow to this one salvage-key shape, not a general NULLS FIRST/LAST
     /// normalization pass — see #556.
     fn id_order_key_nulls_clause(&self) -> &'static str;
+
+    /// Render an openCypher percentile aggregate — `percentileCont(expr, p)` or
+    /// `percentileDisc(expr, p)` — honoring the percentile argument `p` (#639).
+    ///
+    /// The two dialects diverge on both call SHAPE and the exact quantile
+    /// variant needed to match Neo4j's algorithm, so this can't be a registry
+    /// name-swap (ClickHouse's quantile is a *parametric* aggregate whose
+    /// percentile sits in a leading parameter list, not the argument list):
+    /// - `percentileCont` (continuous, linear interpolation): CH
+    ///   `quantileExactInclusive(p)(expr)`, Spark `percentile(expr, p)`.
+    /// - `percentileDisc` (discrete, nearest actual value): CH
+    ///   `quantileExact(p)(expr)`, Spark `percentile_disc(expr, p)`.
+    ///
+    /// Verified against Neo4j across datasets: for [10,20,30,40,50] at p=0.9,
+    /// Cont=46 (interpolated) and Disc=50 (nearest); CH's
+    /// `quantileExactInclusive`/`quantileExact` reproduce both exactly.
+    ///
+    /// `expr` and `percentile` are pre-rendered SQL fragments; `continuous`
+    /// selects Cont vs Disc.
+    fn percentile_aggregate(&self, expr: &str, percentile: &str, continuous: bool) -> String;
 }
 
 /// Returns the function mapper for the active SQL dialect, read from the

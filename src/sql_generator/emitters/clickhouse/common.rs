@@ -135,6 +135,31 @@ pub fn dialect_function_name(name: &str) -> String {
     }
 }
 
+/// Intercept the openCypher percentile aggregates and render them through
+/// `FunctionMapper::percentile_aggregate`, honoring the percentile argument
+/// (#639). Returns `Some(sql)` for `percentileCont`/`percentileDisc` called
+/// with exactly `(expr, percentile)`; `None` for any other function name or
+/// arity, so the caller falls through to its normal (loud) handling — we never
+/// emit a percentile call with a dropped or mis-placed argument.
+///
+/// `args_sql` are the already-rendered argument fragments in Cypher order:
+/// `args_sql[0]` = value expression, `args_sql[1]` = percentile.
+pub fn try_render_percentile(fn_name: &str, args_sql: &[String]) -> Option<String> {
+    let continuous = match fn_name.to_lowercase().as_str() {
+        "percentilecont" => true,
+        "percentiledisc" => false,
+        _ => return None,
+    };
+    // openCypher percentiles are strictly binary. A wrong arity is a genuine
+    // error — fall through so the raw call surfaces a loud database error
+    // rather than silently guessing.
+    if args_sql.len() != 2 {
+        return None;
+    }
+    let mapper = crate::sql_generator::function_mapper::current_function_mapper();
+    Some(mapper.percentile_aggregate(&args_sql[0], &args_sql[1], continuous))
+}
+
 #[cfg(test)]
 mod dialect_function_name_tests {
     use super::dialect_function_name;
@@ -166,5 +191,57 @@ mod dialect_function_name_tests {
 
         // Unknown functions fall through unchanged.
         assert_eq!(dialect_function_name("some_native_fn"), "some_native_fn");
+    }
+}
+
+#[cfg(test)]
+mod try_render_percentile_tests {
+    use super::try_render_percentile;
+    use crate::server::query_context::{with_query_context, QueryContext};
+    use crate::sql_generator::SqlDialect;
+
+    #[test]
+    fn renders_parametric_quantile_on_clickhouse_default() {
+        // Default (no scope) = ClickHouse: parametric quantile forms (#639).
+        assert_eq!(
+            try_render_percentile("percentilecont", &["t.x".into(), "0.9".into()]),
+            Some("quantileExactInclusive(0.9)(t.x)".into())
+        );
+        assert_eq!(
+            try_render_percentile("percentiledisc", &["t.x".into(), "0.9".into()]),
+            Some("quantileExact(0.9)(t.x)".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn renders_spark_forms_under_databricks() {
+        let ctx = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        let sql = with_query_context(ctx, async {
+            try_render_percentile("percentilecont", &["t.x".into(), "0.9".into()])
+        })
+        .await;
+        assert_eq!(sql, Some("percentile(t.x, 0.9)".into()));
+    }
+
+    #[test]
+    fn returns_none_for_non_percentile_or_wrong_arity() {
+        // Non-percentile name → None (caller handles it normally).
+        assert_eq!(try_render_percentile("avg", &["t.x".into()]), None);
+        // Wrong arity → None: never emit a percentile with a dropped/guessed
+        // arg — the caller falls through to a loud error (#639).
+        assert_eq!(
+            try_render_percentile("percentilecont", &["t.x".into()]),
+            None
+        );
+        assert_eq!(
+            try_render_percentile(
+                "percentiledisc",
+                &["t.x".into(), "0.9".into(), "extra".into()]
+            ),
+            None
+        );
     }
 }

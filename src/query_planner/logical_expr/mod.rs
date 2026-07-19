@@ -804,11 +804,20 @@ mod tests {
     fn test_aggregate_function_classification() {
         // #638: stDev/stDevP must classify as AggregateFnCall — otherwise a
         // post-WITH stage treats them as grouping keys (GROUP BY stddevSamp(...)
-        // → ClickHouse Code 184). (percentileCont/Disc are intentionally excluded
-        // until the registry stops dropping their percentile arg — see
-        // ast_conversion.rs — so classifying them would be a loud→silent regression.)
+        // → ClickHouse Code 184). #639: percentileCont/Disc likewise — they now
+        // render as parametric quantiles honoring the percentile arg, so
+        // classifying them as aggregates no longer risks a silent wrong median.
         let agg_functions = [
-            "count", "min", "max", "avg", "sum", "collect", "stDev", "stDevP",
+            "count",
+            "min",
+            "max",
+            "avg",
+            "sum",
+            "collect",
+            "stDev",
+            "stDevP",
+            "percentileCont",
+            "percentileDisc",
         ];
 
         for func_name in &agg_functions {

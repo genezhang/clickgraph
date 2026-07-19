@@ -123,6 +123,20 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         // default — but explicit for parity with Databricks (#556).
         " NULLS LAST"
     }
+
+    fn percentile_aggregate(&self, expr: &str, percentile: &str, continuous: bool) -> String {
+        // ClickHouse quantiles are parametric aggregates: the percentile is a
+        // leading parameter, `quantile...(p)(expr)`, NOT an argument (#639).
+        // `quantileExactInclusive` = linear interpolation (matches Neo4j
+        // percentileCont); `quantileExact` = nearest actual value (matches
+        // percentileDisc). Both verified against Neo4j semantics.
+        let variant = if continuous {
+            "quantileExactInclusive"
+        } else {
+            "quantileExact"
+        };
+        format!("{variant}({percentile})({expr})")
+    }
 }
 
 #[cfg(test)]
@@ -189,5 +203,21 @@ mod tests {
     fn min_or_null_uses_clickhouse_specific_name() {
         let m = ClickhouseFunctionMapper;
         assert_eq!(m.min_or_null(), "minOrNull");
+    }
+
+    #[test]
+    fn percentile_aggregate_uses_parametric_quantile_forms() {
+        let m = ClickhouseFunctionMapper;
+        // Cont = linear interpolation (matches Neo4j percentileCont), Disc =
+        // nearest actual value (matches percentileDisc). Both parametric — the
+        // percentile is a leading parameter, not an argument (#639).
+        assert_eq!(
+            m.percentile_aggregate("t.x", "0.9", true),
+            "quantileExactInclusive(0.9)(t.x)"
+        );
+        assert_eq!(
+            m.percentile_aggregate("t.x", "0.9", false),
+            "quantileExact(0.9)(t.x)"
+        );
     }
 }

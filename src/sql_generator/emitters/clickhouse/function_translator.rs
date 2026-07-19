@@ -311,6 +311,30 @@ pub fn translate_scalar_function(
         return translate_duration_function(fn_call);
     }
 
+    // percentileCont/Disc are parametric quantiles — render through the dialect
+    // FunctionMapper, honoring the percentile arg (#639). They are classified as
+    // aggregates so they normally reach the aggregate arms, but intercept here
+    // too in case an unclassified path (e.g. a raw ScalarFnCall) reaches the
+    // translator, so we never fall through to the old median mapping.
+    if matches!(fn_name_lower.as_str(), "percentilecont" | "percentiledisc") {
+        let args_sql: Result<Vec<String>, _> = fn_call.args.iter().map(|e| e.to_sql()).collect();
+        let args_sql = args_sql.map_err(|e| {
+            ClickhouseQueryGeneratorError::SchemaError(format!(
+                "Failed to convert function arguments to SQL: {}",
+                e
+            ))
+        })?;
+        if let Some(sql) = super::common::try_render_percentile(&fn_name_lower, &args_sql) {
+            return Ok(sql);
+        }
+        // Wrong arity — surface a loud error rather than a dropped-arg call.
+        return Err(ClickhouseQueryGeneratorError::SchemaError(format!(
+            "{}() expects exactly 2 arguments (value, percentile), got {}",
+            fn_call.name,
+            fn_call.args.len()
+        )));
+    }
+
     // Look up function mapping
     match get_function_mapping(&fn_name_lower) {
         Some(mapping) => {

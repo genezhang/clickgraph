@@ -219,6 +219,18 @@ impl FunctionMapper for DatabricksFunctionMapper {
         // with the ClickHouse-verified ordering (#556).
         " NULLS LAST"
     }
+
+    fn percentile_aggregate(&self, expr: &str, percentile: &str, continuous: bool) -> String {
+        // Spark takes the percentile as a normal trailing argument. `percentile`
+        // is continuous (linear interpolation, matches Neo4j percentileCont);
+        // `percentile_disc` returns the nearest actual value (percentileDisc).
+        let func = if continuous {
+            "percentile"
+        } else {
+            "percentile_disc"
+        };
+        format!("{func}({expr}, {percentile})")
+    }
 }
 
 #[cfg(test)]
@@ -274,6 +286,15 @@ mod tests {
         assert_eq!(
             m.array_slice("arr", "2", None),
             "slice(arr, 2, greatest(size(arr) - (2) + 1, 0))"
+        );
+        // #639: Spark takes the percentile as a trailing argument.
+        assert_eq!(
+            m.percentile_aggregate("t.x", "0.9", true),
+            "percentile(t.x, 0.9)"
+        );
+        assert_eq!(
+            m.percentile_aggregate("t.x", "0.9", false),
+            "percentile_disc(t.x, 0.9)"
         );
     }
 

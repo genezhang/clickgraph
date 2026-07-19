@@ -1164,3 +1164,7 @@
 {"cypher": "MATCH (a:User) WHERE EXISTS { MATCH (a)-[:FOLLOWS]->(b) WHERE b.name = 'Bob Smith' } RETURN a.name", "name": "test_587_exists_inner_where_unlabeled_maps", "schema": "standard"}
 {"cypher": "MATCH (a:User) WHERE NOT EXISTS { MATCH (a)-[:FOLLOWS]->(b:User) WHERE b.name = 'Bob Smith' } RETURN a.name", "name": "test_587_not_exists_inner_where", "schema": "standard"}
 {"cypher": "MATCH (a:User) WHERE EXISTS { MATCH (a)-[:FOLLOWS]->(b:User) } RETURN a.name", "name": "test_587_exists_no_where_unchanged", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS]->(b) RETURN percentileCont(b.user_id, 0.9)", "name": "test_639_percentile_cont_honors_arg", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS]->(b) RETURN percentileDisc(b.user_id, 0.9)", "name": "test_639_percentile_disc_honors_arg", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS]->(b) RETURN a.city, percentileCont(b.user_id, 0.5)", "name": "test_639_percentile_grouped_real_group_by", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS]->(b) WITH a.city AS city, percentileDisc(b.user_id, 0.95) AS p RETURN city, p", "name": "test_639_percentile_post_with_barrier", "schema": "standard"}
