@@ -1132,3 +1132,5 @@
 {"cypher": "MATCH (a:User)-[:FOLLOWS*2..2]->(a) RETURN count(*)", "name": "test_605_closed_exact_vlp_directed_reroutes_to_cte", "schema": "social_integration"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS*2..2]-(a) RETURN count(*)", "name": "test_605_closed_exact_vlp_undirected_reroutes_to_cte", "schema": "social_integration"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS*2..2]->(b:User) RETURN count(*)", "name": "test_605_open_exact_vlp_stays_flat_sentinel", "schema": "social_integration"}
+{"cypher": "MATCH (a:Airport)-[:FLIGHT*2..2]->(a) RETURN count(*)", "name": "test_605_denorm_closed_exact_vlp_fails_loud", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Airport)-[:FLIGHT*2..3]->(a) RETURN count(*)", "name": "test_605_denorm_closed_range_vlp_fails_loud", "schema": "denormalized_flights"}

@@ -1,0 +1,1 @@
+render error: Unsupported feature: closed variable-length path on a denormalized schema (`(a)-[*..]-(a)`): the recursive CTE enforces node-uniqueness (embedded endpoints have no separate identity to seed edge-uniqueness), which structurally cannot return to the start node, so the cycle count would silently be 0. (#605/#625)

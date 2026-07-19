@@ -247,6 +247,36 @@ impl FilterBuilder for LogicalPlan {
                                         a = graph_rel.left_connection
                                     )));
                                 }
+                                // #605/#625 denormalized closed guard: a
+                                // DENORMALIZED closed VLP's recursive CTE enforces
+                                // NODE-uniqueness (`NOT has(vp.path_nodes, ...)`)
+                                // for ALL lower bounds (its endpoints are embedded
+                                // in the edge row; the generator has no separate
+                                // node identity to seed edge-uniqueness). Node-
+                                // uniqueness forbids a walk from returning to its
+                                // start, so `start_id = end_id` never holds and the
+                                // count is silently 0. Fail loud rather than emit
+                                // that silent-wrong constraint (ground rule 1) —
+                                // this covers the closed RANGE case (#625) and the
+                                // closed EXACT case now rerouted here (#605); on a
+                                // denorm schema BOTH previously returned a silent 0
+                                // (range) or failed loud in the flat path (exact),
+                                // and neither should silently undercount. Full
+                                // support needs the denorm closed CTE to switch to
+                                // edge-uniqueness — tracked as a follow-up.
+                                let is_denorm_closed = is_node_denormalized(&graph_rel.left)
+                                    || is_node_denormalized(&graph_rel.right);
+                                if is_denorm_closed && graph_rel.shortest_path_mode.is_none() {
+                                    return Err(RenderBuildError::UnsupportedFeature(format!(
+                                        "closed variable-length path on a denormalized schema \
+                                         (`({a})-[*..]-({a})`): the recursive CTE enforces \
+                                         node-uniqueness (embedded endpoints have no separate \
+                                         identity to seed edge-uniqueness), which structurally \
+                                         cannot return to the start node, so the cycle count \
+                                         would silently be 0. (#605/#625)",
+                                        a = graph_rel.left_connection
+                                    )));
+                                }
                                 log::info!(
                                     "🔧 #625: closed VLP pattern ({} == {}) — emitting start_id = end_id",
                                     graph_rel.left_connection,
