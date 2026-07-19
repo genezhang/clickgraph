@@ -310,6 +310,31 @@ fn rewrite_with_pattern_comprehensions<'a>(
             let correlation_var =
                 extract_correlation_variable_from_pattern(&pc_info.pattern, plan_ctx);
             if correlation_var.is_none() {
+                // #612: a list-comprehension pattern-count
+                // (`size([f IN friends WHERE (f)-[:FOLLOWS]->()])`) whose pattern
+                // has NO outer correlation variable — it references only the
+                // iteration variable — cannot become a correlated arrayCount
+                // subquery. The WITH rewrite already replaced the whole size([...])
+                // with a bare `count(*)`; skipping the PC here (the historical
+                // behavior) leaves that `count(*)` as a plain per-group aggregate,
+                // silently DROPPING the pattern predicate and returning a row
+                // count instead of the constrained count (returned 1 for every
+                // group). Fail loud for this shape (ground rule 1). The CORRELATED
+                // shape (`(a)-[:FOLLOWS]->(f)` referencing an outer var) has a
+                // correlation variable, passes this check, and still renders its
+                // arrayCount subquery unchanged. A non-list-constraint PC with no
+                // correlation keeps the historical skip.
+                if pc_info.list_constraint.is_some() {
+                    return Err(LogicalPlanError::QueryPlanningError(
+                        "size([x IN list WHERE (pattern)]) where the pattern has no correlation \
+                         to an outer variable (it references only the iteration variable) is not \
+                         yet supported — the count would silently drop the pattern predicate and \
+                         return a plain row count (#612). Workaround: correlate the pattern to an \
+                         outer variable, or express the constrained count via a top-level MATCH \
+                         ... WHERE ... WITH count(...)."
+                            .to_string(),
+                    ));
+                }
                 log::warn!("⚠️  Pattern comprehension has no correlation variable - skipping");
                 continue;
             }
