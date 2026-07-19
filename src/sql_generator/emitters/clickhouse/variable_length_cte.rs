@@ -193,11 +193,27 @@ pub(crate) fn is_integer_literal(s: &str) -> bool {
 }
 
 /// Property to include in the CTE (column name and which node it belongs to)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NodeProperty {
     pub cypher_alias: String, // "u1" or "u2" - which node this property is for
     pub column_name: String,  // Actual column name in the table (e.g., "full_name")
     pub alias: String,        // Output alias (e.g., "name" or "u1_name")
+}
+
+/// Drop exact-duplicate `NodeProperty` entries (same alias, column, and output
+/// name), preserving first-seen order. A CLOSED variable-length pattern —
+/// `(a)-[:R*2..2]->(a)` / `*2..3` — resolves the SAME endpoint property once for
+/// each of the (identical) start and end connections, so the caller can hand the
+/// generator two byte-identical `NodeProperty` rows. Emitting both projects the
+/// same `end_<prop>` column twice → ClickHouse Code 44 (`column ... already
+/// exists`). Deduping here is always safe: projecting an identical property
+/// triple twice is never valid SQL. (#631)
+fn dedup_node_properties(properties: Vec<NodeProperty>) -> Vec<NodeProperty> {
+    let mut seen = std::collections::HashSet::new();
+    properties
+        .into_iter()
+        .filter(|p| seen.insert(p.clone()))
+        .collect()
 }
 
 /// Generates recursive CTE SQL for variable-length path traversal
@@ -456,7 +472,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             start_cypher_alias: start_alias.to_string(),
             end_cypher_alias: end_alias.to_string(),
             relationship_cypher_alias: relationship_cypher_alias.to_string(),
-            properties,
+            properties: dedup_node_properties(properties),
             database,
             shortest_path_mode,
             start_node_filters,
@@ -531,7 +547,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             start_cypher_alias: start_alias.to_string(),
             end_cypher_alias: end_alias.to_string(),
             relationship_cypher_alias: relationship_cypher_alias.to_string(),
-            properties,
+            properties: dedup_node_properties(properties),
             database,
             shortest_path_mode,
             start_node_filters,
@@ -4072,6 +4088,42 @@ mod tests {
     /// Helper to create a minimal test schema for VLC tests
     fn create_test_schema() -> GraphSchema {
         GraphSchema::build(1, "test_db".to_string(), HashMap::new(), HashMap::new())
+    }
+
+    #[test]
+    fn dedup_node_properties_drops_exact_duplicates_keeps_distinct_631() {
+        let np = |c: &str, col: &str, a: &str| NodeProperty {
+            cypher_alias: c.to_string(),
+            column_name: col.to_string(),
+            alias: a.to_string(),
+        };
+        // Closed pattern: the same endpoint property resolved twice (identical) →
+        // collapse to one (else Code 44 on the duplicated end_<prop> column).
+        assert_eq!(
+            dedup_node_properties(vec![
+                np("a", "full_name", "name"),
+                np("a", "full_name", "name")
+            ]),
+            vec![np("a", "full_name", "name")]
+        );
+        // Distinct properties on the same alias are all kept (order preserved).
+        assert_eq!(
+            dedup_node_properties(vec![
+                np("a", "full_name", "name"),
+                np("a", "country", "country"),
+                np("a", "full_name", "name"),
+            ]),
+            vec![np("a", "full_name", "name"), np("a", "country", "country")]
+        );
+        // Different alias but same column/output is NOT a duplicate (open pattern
+        // start vs end must both survive).
+        assert_eq!(
+            dedup_node_properties(vec![
+                np("a", "full_name", "name"),
+                np("b", "full_name", "name")
+            ]),
+            vec![np("a", "full_name", "name"), np("b", "full_name", "name")]
+        );
     }
 
     #[test]
