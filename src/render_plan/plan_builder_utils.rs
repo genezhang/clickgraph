@@ -2946,6 +2946,12 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
     // every clause agrees — previously WHERE and GROUP BY hardcoded `"t"`, which
     // dangled for OPTIONAL VLP where the join alias is `vt0` (#630; SELECT/ORDER
     // BY already used this value).
+    let vlp_join_count = plan
+        .joins
+        .0
+        .iter()
+        .filter(|j| j.table_name.starts_with("vlp_"))
+        .count();
     let vlp_from_alias = if is_optional_vlp {
         plan.joins
             .0
@@ -2960,6 +2966,21 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
             .and_then(|from_ref| from_ref.alias.as_ref())
             .cloned()
             .unwrap_or_else(|| "t".to_string())
+    };
+
+    // The alias to use for the WHERE / GROUP BY endpoint rewrite. Use the
+    // resolved `vlp_from_alias` ONLY when there is a single VLP join (or the
+    // required-VLP FROM case) so the endpoint reference is UNAMBIGUOUS. With TWO
+    // OR MORE VLP joins (`OPTIONAL MATCH (a)-[*]->(b) OPTIONAL MATCH (b)-[*]->(c)`)
+    // `vlp_from_alias` is just the FIRST vlp join — using it for GROUP BY on the
+    // SECOND endpoint would silently group by the WRONG VLP (a separate,
+    // deeper endpoint-resolution defect, tracked as #643). Keep the historical
+    // `"t"` there so that shape continues to FAIL LOUD (Code 47) rather than
+    // return a silently-wrong aggregate (#630 must not trade loud for silent).
+    let group_where_alias: &str = if is_optional_vlp && vlp_join_count > 1 {
+        "t"
+    } else {
+        &vlp_from_alias
     };
 
     // 🔧 CRITICAL: Check if this is a multi-type VLP (from CTE name)
@@ -3044,7 +3065,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
         rewrite_render_expr_for_vlp_with_endpoint_info(
             where_expr,
             &filtered_mappings,
-            &vlp_from_alias,
+            group_where_alias,
             &endpoint_position,
             &cte_column_mapping,
         );
@@ -3062,7 +3083,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
         rewrite_render_expr_for_vlp_with_endpoint_info(
             group_expr,
             &filtered_mappings,
-            &vlp_from_alias,
+            group_where_alias,
             &endpoint_position,
             &cte_column_mapping,
         );
