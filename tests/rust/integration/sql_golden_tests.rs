@@ -12820,6 +12820,64 @@ mod vlp_multi_table_label_family_557_558_559 {
              degrade to an unconditional join: {sql}"
         );
     }
+
+    /// #618: a top-level Cypher UNION with a VLP in BOTH arms, reusing the same
+    /// aliases `a`/`b`, formerly emitted TWO `vlp_a_b AS (…)` definitions (Code
+    /// 179 duplicate) while renaming only the second arm's OUTER reference to
+    /// `vlp_a_b_2` — a dangling reference plus a duplicate definition. The dedup
+    /// now rewrites the renamed CTE's embedded self-name (its `AS (` header AND
+    /// its recursive `FROM vlp_a_b vp` self-reference), so the second arm has a
+    /// self-consistent `vlp_a_b_2` CTE.
+    #[tokio::test]
+    async fn vlp_in_both_union_arms_renames_second_cte_definition_and_selfref_618() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE a.user_id = 6 RETURN b.user_id AS id \
+             UNION ALL \
+             MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE a.user_id = 5 RETURN b.user_id AS id",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        // Exactly two distinct CTE definitions, no duplicate `vlp_a_b AS (`.
+        assert!(
+            sql.contains("vlp_a_b AS (") && sql.contains("vlp_a_b_2 AS ("),
+            "#618: both arms' VLP CTEs must be defined under distinct names: {sql}"
+        );
+        assert_eq!(
+            sql.matches("vlp_a_b AS (").count(),
+            1,
+            "#618: the base CTE name must be defined exactly once (no duplicate \
+             definition → Code 179): {sql}"
+        );
+
+        // The renamed CTE's recursive self-reference must point at ITSELF
+        // (`FROM vlp_a_b_2 vp`), not at the other arm's `vlp_a_b`.
+        assert!(
+            sql.contains("FROM vlp_a_b_2 vp"),
+            "#618: the renamed CTE's recursive self-reference must be rewritten \
+             to its new name, not left pointing at the other arm's CTE: {sql}"
+        );
+
+        // Every outer `FROM <cte> AS t` reference must have a matching definition
+        // (no dangling reference).
+        for name in ["vlp_a_b", "vlp_a_b_2"] {
+            if sql.contains(&format!("FROM {name} AS t")) {
+                assert!(
+                    sql.contains(&format!("{name} AS (")),
+                    "#618: outer reference to '{name}' has no CTE definition: {sql}"
+                );
+            }
+        }
+
+        // The two arms carry DIFFERENT start filters (user 6 vs user 5) — the
+        // rename must preserve both, not collapse them.
+        assert!(
+            sql.contains("start_node.user_id = 6") && sql.contains("start_node.user_id = 5"),
+            "#618: both per-arm start filters (user 6 and user 5) must survive: {sql}"
+        );
+    }
 }
 
 /// #577: STANDARD-schema self-edge/undirected relationship-aggregate

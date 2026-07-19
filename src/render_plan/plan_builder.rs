@@ -5080,6 +5080,19 @@ impl RenderPlanBuilder for LogicalPlan {
                                             );
                                             let mut renamed_cte = cte.clone();
                                             renamed_cte.cte_name = new_name.clone();
+                                            // The RawSql body embeds its own name
+                                            // (`<old> AS (` header + recursive
+                                            // `FROM <old> vp`); rewrite it so the
+                                            // definition + self-ref match the new
+                                            // name, else a duplicate `<old>`
+                                            // definition survives (Code 179) and
+                                            // the self-ref points at the other
+                                            // arm's CTE (#618).
+                                            super::cte_extraction::rewrite_cte_self_name_in_raw_sql(
+                                                &mut renamed_cte.content,
+                                                &base_name,
+                                                &new_name,
+                                            );
                                             renamed.push((base_name, new_name));
                                             all_ctes.push(renamed_cte);
                                         }

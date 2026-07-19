@@ -96,8 +96,60 @@ pub(crate) fn merge_cte_deduping_by_name_content(
     }
     let mut renamed_cte = new_cte;
     renamed_cte.cte_name = new_name.clone();
+    // A VLP (and similar) CTE's RawSql content EMBEDS its own name — both the
+    // `<old> AS (` header (the `Cte::to_sql` RawSql arm emits the content
+    // verbatim when it already contains ` AS (`) and the recursive self-reference
+    // `FROM <old> vp`. Renaming only `cte_name` would leave the emitted SQL still
+    // saying `<old> AS (…)` (a duplicate definition → ClickHouse Code 179) and
+    // the self-ref pointing at the OTHER arm's CTE. Rewrite the embedded name so
+    // the definition and its self-reference match the new name (#618).
+    rewrite_cte_self_name_in_raw_sql(&mut renamed_cte.content, &base_name, &new_name);
     existing.push(renamed_cte);
     Some((base_name, new_name))
+}
+
+/// Rewrite a CTE's OWN name where it appears embedded inside its `RawSql`
+/// content: the `<old> AS (` definition header and the recursive self-reference
+/// `FROM <old> <alias>`. Only whole-identifier matches are rewritten, so
+/// `vlp_a_b` is not corrupted inside `vlp_a_b_2`. No-op for `Structured`
+/// content (which carries its name in `cte_name`, not in text). See #618.
+pub(crate) fn rewrite_cte_self_name_in_raw_sql(content: &mut CteContent, old: &str, new: &str) {
+    let CteContent::RawSql(sql) = content else {
+        return;
+    };
+    *sql = replace_identifier(sql, old, new);
+}
+
+/// Replace every whole-identifier occurrence of `old` with `new` in `sql`.
+/// An occurrence counts only when neither neighbor is an identifier char
+/// (`[A-Za-z0-9_]`), so `vlp_a_b` inside `vlp_a_b_2` or `xvlp_a_b` is left
+/// untouched. Purely textual — adequate for the generated VLP CTE bodies, which
+/// reference the CTE name only as a bare table identifier.
+fn replace_identifier(sql: &str, old: &str, new: &str) -> String {
+    if old.is_empty() {
+        return sql.to_string();
+    }
+    let bytes = sql.as_bytes();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut out = String::with_capacity(sql.len());
+    let mut i = 0;
+    while i < sql.len() {
+        if sql[i..].starts_with(old) {
+            let before_ok = i == 0 || !is_ident(bytes[i - 1]);
+            let after_idx = i + old.len();
+            let after_ok = after_idx >= sql.len() || !is_ident(bytes[after_idx]);
+            if before_ok && after_ok {
+                out.push_str(new);
+                i = after_idx;
+                continue;
+            }
+        }
+        // Advance one UTF-8 char (CTE SQL is ASCII, but stay safe).
+        let ch_len = sql[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+        out.push_str(&sql[i..i + ch_len]);
+        i += ch_len;
+    }
+    out
 }
 
 // ============================================================================
@@ -8101,6 +8153,30 @@ mod tests {
     use super::*;
     use crate::query_planner::logical_expr::{Literal, LogicalExpr};
     use std::sync::Arc;
+
+    #[test]
+    fn replace_identifier_rewrites_only_whole_identifiers_618() {
+        // Header + recursive self-ref rewritten; the already-suffixed sibling and
+        // longer identifiers are left untouched (no `vlp_a_b` inside `vlp_a_b_2`).
+        let sql = "vlp_a_b AS (\n  FROM t\n  UNION ALL\n  FROM vlp_a_b vp\n)";
+        assert_eq!(
+            replace_identifier(sql, "vlp_a_b", "vlp_a_b_2"),
+            "vlp_a_b_2 AS (\n  FROM t\n  UNION ALL\n  FROM vlp_a_b_2 vp\n)"
+        );
+        // Must NOT corrupt an occurrence that is a prefix of a longer identifier.
+        assert_eq!(
+            replace_identifier("FROM vlp_a_b_2 vp", "vlp_a_b", "vlp_a_b_9"),
+            "FROM vlp_a_b_2 vp"
+        );
+        // Boundary at start/end of string and adjacency to non-ident chars.
+        assert_eq!(replace_identifier("vlp_a_b", "vlp_a_b", "x"), "x");
+        assert_eq!(replace_identifier("(vlp_a_b)", "vlp_a_b", "x"), "(x)");
+        // A different-but-overlapping name is not touched.
+        assert_eq!(
+            replace_identifier("xvlp_a_b y", "vlp_a_b", "z"),
+            "xvlp_a_b y"
+        );
+    }
 
     /// Wrap `inner` in a `Cte` node — the shape the Phase 1 Slice 2 gap-fix
     /// (item #6) adds coverage for: `plan_has_relationships`/`plan_has_nodes`/
