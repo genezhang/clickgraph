@@ -5083,7 +5083,7 @@ async fn undirected_multihop_review_fixes_492() {
     .await
     .expect_err("#492-B3/#589: OPTIONAL nested-undirected multi-hop must fail loud");
     assert!(
-        err.contains("Chained OPTIONAL MATCH with an undirected nested hop") && err.contains("589"),
+        err.contains("undirected hop chained onto another optional hop") && err.contains("589"),
         "#492-B3/#589: must fail loud naming the undirected-nested-hop limitation, got:\n{err}"
     );
 

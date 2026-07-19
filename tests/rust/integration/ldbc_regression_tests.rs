@@ -171,7 +171,7 @@ async fn ldbc_short_7() {
     .await;
     let err = result.expect_err("IS7 undirected-nested KNOWS optional must fail loud (#589)");
     assert!(
-        err.contains("Chained OPTIONAL MATCH with an undirected nested hop") && err.contains("589"),
+        err.contains("undirected hop chained onto another optional hop") && err.contains("589"),
         "IS7 must fail loud naming the undirected-nested-hop limitation, got:\n{err}"
     );
 }
