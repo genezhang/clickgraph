@@ -257,6 +257,12 @@ pub fn initial_analyzing(
         current_graph_schema,
     ) {
         Ok(transformed_plan) => transformed_plan.get_plan(),
+        // UnsupportedPattern is FATAL by contract (see its doc comment):
+        // continuing with the original (untransformed) plan would render
+        // silently wrong SQL — e.g. a chained OPTIONAL undirected hop rendered
+        // as a single-direction join, dropping the reverse-direction matches
+        // (#589). Fail the query loudly instead.
+        Err(e @ AnalyzerError::UnsupportedPattern { .. }) => return Err(e),
         Err(e) => {
             log::warn!(
                 "⚠️  BidirectionalUnion failed: {:?}, continuing with original plan",

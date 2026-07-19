@@ -949,26 +949,13 @@ const DENORM_CORPUS: &[(&str, &str)] = &[
         "where_middle_node_undirected_2hop",
         "MATCH (a:Airport)-[:FLIGHT]-(b:Airport)-[:FLIGHT]-(c:Airport) WHERE b.code = 'LAX' RETURN a.code, b.code, c.code",
     ),
-    // #492 review B3 CHARACTERIZATION: OPTIONAL + nested-undirected multi-hop
-    // is GATED to the pre-#492 shape (single directed LEFT chain, no direction
-    // union): per-orientation LEFT-JOIN branches under UNION ALL cannot
-    // express OPTIONAL semantics (NULL-anchor rows dropped by the guard,
-    // duplicated across branches when NULL-safe, partial-pattern rows, and
-    // swapped branches anchoring FROM on the optional node). This byte-lock is
-    // a KNOWN-INCOMPLETE shape (directed-only matches), not semantic coverage;
-    // fixing it needs an anchor-LEFT-JOIN-onto-match-union renderer structure.
-    //
-    // #505 transitioned this golden: the anchor `a` (bare `MATCH (a:Airport)`,
-    // no required binding) now correctly gets its own `__denorm_scan_a` CTE +
-    // LEFT JOIN instead of silently using the first hop's edge table as FROM
-    // (which dropped anchor rows with no match, e.g. an airport with no
-    // flights at all). The directed-only-match limitation described above is
-    // UNCHANGED and still tracked separately — this fix only restores anchor
-    // preservation for the (already directed-only) shape this golden locks.
-    (
-        "optional_undirected_2hop",
-        "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]-(b:Airport)-[:FLIGHT]-(c:Airport) RETURN a.code, b.code, c.code",
-    ),
+    // #589 removed the former `optional_undirected_2hop` snapshot here
+    // (`MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]-(b)-[:FLIGHT]-(c)`): it
+    // byte-locked a SINGLE directed LEFT chain that silently dropped the
+    // reverse direction of the undirected optional hop (a documented
+    // "directed-only-match limitation" — i.e. a silent wrong result). That
+    // shape now FAILS LOUD via the BidirectionalUnion #589 gate; the loud
+    // behavior is asserted in `undirected_multihop_review_fixes_492` (B3).
     // hop projecting edge properties incl. the renamed `flight_num` -> flight_number.
     (
         "hop_edge_props",
@@ -5081,25 +5068,23 @@ async fn undirected_multihop_review_fixes_492() {
          uniqueness guard — different types are never the same relationship:\n{sql}"
     );
 
-    // B3 gate: OPTIONAL nested-undirected keeps the pre-#492 single chain.
-    let sql = normalize(
-        &render(
-            &std_schema,
-            "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]-(b:User)-[:FOLLOWS]-(c:User) \
-             RETURN a.name, b.name, c.name",
-            SqlDialect::ClickHouse,
-        )
-        .await,
-    );
+    // B3 gate (updated by #589): OPTIONAL nested-undirected multi-hop rendered
+    // a SINGLE directed LEFT chain, silently dropping the reverse direction of
+    // the undirected hop — a ground-rule-1 violation. It now FAILS LOUD instead
+    // of emitting a half-a-direction answer, until the renderer can LEFT JOIN an
+    // anchor onto a match union. (Both the single-OPTIONAL 2-hop form here and
+    // the two-chained-OPTIONAL form of #589 hit the same shared-node gate.)
+    let err = try_render(
+        &std_schema,
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]-(b:User)-[:FOLLOWS]-(c:User) \
+         RETURN a.name, b.name, c.name",
+        SqlDialect::ClickHouse,
+    )
+    .await
+    .expect_err("#492-B3/#589: OPTIONAL nested-undirected multi-hop must fail loud");
     assert!(
-        !sql.contains("UNION ALL"),
-        "#492-B3: OPTIONAL nested-undirected must stay gated (single directed \
-         LEFT chain) until the renderer can LEFT JOIN an anchor onto a match \
-         union:\n{sql}"
-    );
-    assert!(
-        sql.contains("LEFT JOIN"),
-        "#492-B3: gated OPTIONAL pattern must still LEFT JOIN:\n{sql}"
+        err.contains("undirected hop chained onto another optional hop") && err.contains("589"),
+        "#492-B3/#589: must fail loud naming the undirected-nested-hop limitation, got:\n{err}"
     );
 
     // RN4: no tautological join conditions in any branch (middle node
