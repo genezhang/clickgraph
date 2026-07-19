@@ -4173,11 +4173,16 @@ fn render_union_branch_sql(branch: &RenderPlan) -> String {
     let has_order_by = !branch.order_by.0.is_empty();
 
     let bsql = if !has_inner_union && !has_limit && !has_skip && !has_order_by {
-        // Simple branch: select + from + joins + filters
+        // Simple branch: select + from + joins + array_join + filters
         let mut bsql = String::new();
         bsql.push_str(&branch.select.to_sql());
         bsql.push_str(&branch.from.to_sql());
         bsql.push_str(&branch.joins.to_sql());
+        // #624: a UNION branch may carry its own UNWIND (ARRAY JOIN) — e.g. an
+        // undirected pattern + UNWIND splits into `Union(Unwind(b0), Unwind(b1))`,
+        // so each branch's ARRAY JOIN must render after its FROM/JOINs (before
+        // WHERE). Without this the branch's unwound alias is unbound (Code 47).
+        bsql.push_str(&branch.array_join.to_sql());
         bsql.push_str(&branch.filters.to_sql());
         bsql
     } else {
@@ -4189,6 +4194,8 @@ fn render_union_branch_sql(branch: &RenderPlan) -> String {
         bsql.push_str(&branch.select.to_sql());
         bsql.push_str(&branch.from.to_sql());
         bsql.push_str(&branch.joins.to_sql());
+        // #624: emit this branch's own ARRAY JOIN (see simple-branch note above).
+        bsql.push_str(&branch.array_join.to_sql());
         bsql.push_str(&branch.filters.to_sql());
 
         // Inner union branches
@@ -5194,6 +5201,12 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                     first_branch_sql.push_str(&plan.select.to_sql());
                     first_branch_sql.push_str(&plan.from.to_sql());
                     first_branch_sql.push_str(&plan.joins.to_sql());
+                    // #624: the base arm of a UNION may carry its own UNWIND
+                    // (ARRAY JOIN) — undirected pattern + UNWIND splits into
+                    // `Union(Unwind(b0), Unwind(b1))` where b0 is this base arm.
+                    // Emit after FROM/JOINs (before WHERE), matching
+                    // `render_union_branch_sql`; else the unwound alias dangles.
+                    first_branch_sql.push_str(&plan.array_join.to_sql());
                     first_branch_sql.push_str(&plan.filters.to_sql());
                     sql.push_str(&first_branch_sql);
 
@@ -5549,6 +5562,12 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                     first_branch_sql.push_str(&plan.select.to_sql());
                     first_branch_sql.push_str(&plan.from.to_sql());
                     first_branch_sql.push_str(&plan.joins.to_sql());
+                    // #624: the base arm of a UNION may carry its own UNWIND
+                    // (ARRAY JOIN) — undirected pattern + UNWIND splits into
+                    // `Union(Unwind(b0), Unwind(b1))` where b0 is this base arm.
+                    // Emit after FROM/JOINs (before WHERE), matching
+                    // `render_union_branch_sql`; else the unwound alias dangles.
+                    first_branch_sql.push_str(&plan.array_join.to_sql());
                     first_branch_sql.push_str(&plan.filters.to_sql());
                     sql.push_str(&first_branch_sql);
 

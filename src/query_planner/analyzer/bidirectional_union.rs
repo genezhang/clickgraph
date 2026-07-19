@@ -858,6 +858,13 @@ fn count_undirected_edges(plan: &Arc<LogicalPlan>) -> usize {
             0
         }
         LogicalPlan::Filter(filter) => count_undirected_edges(&filter.input),
+        // #624: UNWIND wraps the pattern (UNWIND is lowered after MATCH, before
+        // WITH), so `Projection(Unwind(GraphRel))` is the common undirected+UNWIND
+        // shape. Recurse through the Unwind wrapper so the Projection arm's
+        // undirected-count check sees the edge and builds the Union ABOVE the
+        // Projection (mirroring Projection/Filter), rather than deferring to the
+        // deep Unwind-arm recursion that buries the Union under the Unwind.
+        LogicalPlan::Unwind(u) => count_undirected_edges(&u.input),
         _ => 0,
     }
 }
@@ -1100,6 +1107,13 @@ fn collect_relationship_info_inner(
         }
         LogicalPlan::Filter(filter) => {
             collect_relationship_info_inner(&filter.input, graph_schema, rels);
+        }
+        // #624: recurse through an UNWIND wrapper so a multi-hop undirected
+        // pattern's relationship-uniqueness filter is still generated when the
+        // pattern sits under an UNWIND (`Projection(Unwind(GraphRel..))`).
+        // Without this the branch loses its `NOT (t2 = t1)` guard and over-counts.
+        LogicalPlan::Unwind(u) => {
+            collect_relationship_info_inner(&u.input, graph_schema, rels);
         }
         _ => {}
     }
@@ -1627,6 +1641,28 @@ fn apply_direction_combination_inner(
                 predicate: filter.predicate.clone(),
             }))
         }
+        // #624: recurse through an UNWIND wrapper so the direction is applied to
+        // the GraphRel beneath it (mirrors the Filter arm). The UNWIND fields
+        // (expression/alias/label/tuple_properties) reference the unwound array —
+        // a literal or a prior-scope variable — not the node columns being
+        // direction-swapped, so `column_swaps` is not applied to them.
+        LogicalPlan::Unwind(u) => {
+            let new_input = apply_direction_combination_inner(
+                &u.input,
+                combination,
+                bit_position,
+                column_swaps,
+            );
+            Arc::new(LogicalPlan::Unwind(
+                crate::query_planner::logical_plan::Unwind {
+                    input: new_input,
+                    expression: u.expression.clone(),
+                    alias: u.alias.clone(),
+                    label: u.label.clone(),
+                    tuple_properties: u.tuple_properties.clone(),
+                },
+            ))
+        }
         // For other node types, just return as-is
         _ => plan.clone(),
     }
@@ -1825,6 +1861,87 @@ mod tests {
                 }
             }
             Transformed::No(_) => panic!("Expected transformation to occur"),
+        }
+    }
+
+    /// #624: an undirected pattern wrapped by UNWIND (`Projection(Unwind(GraphRel
+    /// undirected))`) must split into a TOP-LEVEL Union whose branches each carry
+    /// the Unwind over a DIRECTED GraphRel — NOT `Projection(Unwind(Union(...)))`
+    /// (Union buried under the Unwind, which the renderer drops to `system.one`).
+    #[test]
+    fn test_undirected_unwind_splits_union_at_top() {
+        let graph_rel = make_test_graph_rel(
+            make_test_node("users", "a", "User"),
+            make_test_node("users", "b", "User"),
+            "r",
+            "follows",
+            "a",
+            "b",
+            Direction::Either,
+            "FOLLOWS",
+        );
+        // Projection(Unwind(GraphRel)) — the shape RETURN + UNWIND produces.
+        let unwind = Arc::new(LogicalPlan::Unwind(
+            crate::query_planner::logical_plan::Unwind {
+                input: Arc::new(LogicalPlan::GraphRel(graph_rel)),
+                expression: crate::query_planner::logical_expr::LogicalExpr::TableAlias(
+                    crate::query_planner::logical_expr::TableAlias("n".to_string()),
+                ),
+                alias: "n".to_string(),
+                label: None,
+                tuple_properties: None,
+            },
+        ));
+        let plan = Arc::new(LogicalPlan::Projection(Projection {
+            input: unwind,
+            items: vec![],
+            distinct: false,
+            pattern_comprehensions: vec![],
+        }));
+
+        let mut plan_ctx = PlanCtx::new_empty();
+        let graph_schema =
+            GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+
+        let result =
+            transform_bidirectional(&plan, &mut plan_ctx, &graph_schema).expect("transform ok");
+        let Transformed::Yes(new_plan) = result else {
+            panic!("Expected transformation to occur");
+        };
+
+        // Top-level node must be a Union (NOT Projection/Unwind wrapping a Union).
+        let LogicalPlan::Union(union) = new_plan.as_ref() else {
+            panic!("Expected top-level Union, got {new_plan:?}");
+        };
+        assert_eq!(union.inputs.len(), 2, "two direction branches");
+
+        // Each branch must contain an Unwind over a DIRECTED GraphRel (the Unwind
+        // is preserved inside the branch, and the inner GraphRel is no longer
+        // Direction::Either).
+        for branch in &union.inputs {
+            fn find_unwind_over_directed(plan: &LogicalPlan) -> bool {
+                match plan {
+                    LogicalPlan::Unwind(u) => {
+                        fn inner_directed(p: &LogicalPlan) -> bool {
+                            match p {
+                                LogicalPlan::GraphRel(gr) => gr.direction != Direction::Either,
+                                LogicalPlan::Projection(pr) => inner_directed(&pr.input),
+                                LogicalPlan::Filter(f) => inner_directed(&f.input),
+                                LogicalPlan::Unwind(uu) => inner_directed(&uu.input),
+                                _ => false,
+                            }
+                        }
+                        inner_directed(&u.input)
+                    }
+                    LogicalPlan::Projection(pr) => find_unwind_over_directed(&pr.input),
+                    LogicalPlan::Filter(f) => find_unwind_over_directed(&f.input),
+                    _ => false,
+                }
+            }
+            assert!(
+                find_unwind_over_directed(branch),
+                "each branch must carry the Unwind over a directed GraphRel; got {branch:?}"
+            );
         }
     }
 

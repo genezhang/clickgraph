@@ -1145,3 +1145,7 @@
 {"cypher": "MATCH (o:Order)-[r:PLACED_BY]->(c:Customer) WITH o, r WHERE r.customer_id > 2 RETURN o.order_id ORDER BY o.order_id", "name": "test_633_fk_edge_coupled_rel_var_post_with_where", "schema": "fk_edge"}
 {"cypher": "MATCH (o:Order)-[r:PLACED_BY]->(c:Customer) WHERE r.customer_id > 2 RETURN r.customer_id ORDER BY r.customer_id", "name": "test_633_fk_edge_where_binds_rel_var_unchanged", "schema": "fk_edge"}
 {"cypher": "MATCH (c:Object)-[r:PARENT]->(p:Object) WHERE r.parent_id > 0 RETURN c.name", "name": "test_633_self_ref_fk_edge_where_stays_loud", "schema": "fk_edge_self_ref"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS]-(b:User) UNWIND [1, 2] AS n RETURN b.name, n", "name": "test_624_undirected_unwind_single_hop", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS]-(b:User) UNWIND [1, 2] AS n WITH b, n RETURN b.name, n", "name": "test_624_undirected_unwind_with_barrier", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS]-(b:User)-[:FOLLOWS]-(c:User) UNWIND [1, 2] AS n RETURN c.name, n", "name": "test_624_undirected_unwind_multi_hop_uniqueness", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS]->(b:User) UNWIND [1, 2] AS n RETURN b.name, n", "name": "test_624_directed_unwind_unchanged", "schema": "standard"}
