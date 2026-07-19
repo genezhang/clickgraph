@@ -1287,6 +1287,58 @@ impl SelectBuilder for LogicalPlan {
                                 }
                             }
 
+                            // #622: a denormalized EDGE chained after a
+                            // preceding hop has its redundant edge scan suppressed
+                            // (join_builder fold) — the edge variable's own table
+                            // alias is no longer in the FROM/JOIN list. A specific
+                            // edge-property reference (`RETURN r.post_id`) that
+                            // reached this default pass-through would emit a
+                            // dangling `r.<col>` (Code 47). The fold registered a
+                            // task-local remap `r → <node alias>`; when it points
+                            // to a DIFFERENT alias, the edge scan was folded into
+                            // that node's join, so rewrite the reference onto it.
+                            //
+                            // Gate strictly on `cypher_alias` being a RELATIONSHIP
+                            // variable: the task-local denormalized-alias registry
+                            // also holds NODE→edge mappings for embedded nodes
+                            // (SingleTableScan / fully-denormalized VLP), whose
+                            // node properties are resolved by dedicated CTE
+                            // projection logic elsewhere — remapping those here
+                            // would clobber a VLP CTE's own endpoint column
+                            // (e.g. `a.code → t.start_origin_code`, #559/#569).
+                            let alias_is_relationship =
+                                self.find_graph_rel_by_rel_alias(cypher_alias).is_some();
+                            if alias_is_relationship {
+                                if let Some(mapped) =
+                                    crate::render_plan::get_denormalized_alias_mapping(cypher_alias)
+                                {
+                                    if mapped != *cypher_alias {
+                                        log::info!(
+                                            "🔧 #622: remapping folded edge property '{}.{}' → '{}.{}'",
+                                            cypher_alias,
+                                            col_name,
+                                            mapped,
+                                            col_name
+                                        );
+                                        select_items.push(SelectItem {
+                                            expression: RenderExpr::PropertyAccessExp(
+                                                PropertyAccess {
+                                                    table_alias: RenderTableAlias(mapped),
+                                                    column: PropertyValue::Column(
+                                                        col_name.to_string(),
+                                                    ),
+                                                },
+                                            ),
+                                            col_alias: item
+                                                .col_alias
+                                                .as_ref()
+                                                .map(|ca| ColumnAlias(ca.0.clone())),
+                                        });
+                                        continue;
+                                    }
+                                }
+                            }
+
                             // Default handling: pass through the PropertyAccessExp as-is
                             select_items.push(SelectItem {
                                 expression: item.expression.clone().try_into()?,

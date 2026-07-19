@@ -34,5 +34,4 @@ SELECT
       count(DISTINCT p.post_id) AS "postCount"
 FROM vlp_u1_u2 AS t
 INNER JOIN test_integration.posts_test AS p ON p.author_id = t.end_id
-INNER JOIN test_integration.posts_test AS t0 ON t0.author_id = t.end_id
 GROUP BY t.end_id

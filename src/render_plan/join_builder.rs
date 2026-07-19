@@ -3632,17 +3632,71 @@ impl JoinBuilder for LogicalPlan {
                     }
                 }
 
-                joins.push(Join {
-                    table_name: rel_table.clone(),
-                    table_alias: graph_rel.alias.clone(),
-                    joining_on: vec![rel_join_condition],
-                    join_type: join_type.clone(),
-                    pre_filter: combined_pre_filter,
-                    from_id_column: Some(rel_cols.from_id.to_string()),
-                    to_id_column: Some(rel_cols.to_id.to_string()),
-                    graph_rel: None,
-                    is_cartesian: false,
-                });
+                // #622: A denormalized edge whose edge table IS the right
+                // endpoint node's table (e.g. AUTHORED stored on `posts_test`,
+                // which is also the Post node table) must contribute exactly ONE
+                // join for the shared physical row. The historical code emitted
+                // BOTH this JOIN-1 (a bare edge scan under the anonymous rel
+                // alias, `posts_test AS t2 ON t2.author_id = <src>`) AND the
+                // denormalized JOIN-2 self-join (`posts_test AS p ON p.author_id
+                // = <src>`) below — same table, same condition, different alias —
+                // so any downstream fan-out (aggregate, continuation) multiplied
+                // rows and squared counts (#622). When the right endpoint is a
+                // plain node that JOIN-2 will emit as the folded row, suppress
+                // this redundant edge scan and let JOIN-2 carry the edge's
+                // pre_filter. The edge variable is remapped to the node alias so
+                // references (`RETURN r.prop`) resolve to the folded columns.
+                //
+                // Only fires for the plain-right-node shape: a nested-GraphRel or
+                // CTE-backed right endpoint takes the early-return branches below
+                // and never reaches JOIN-2's denormalized self-join, so their
+                // edge scan is the sole join and must be kept.
+                // Only fires for the plain-right-node shape chained AFTER a
+                // preceding hop: `graph_rel.left` is a GraphRel (or VLP endpoint)
+                // that already binds the shared middle node, so this denormalized
+                // edge's row is reached via that binding and JOIN-2 emits it once.
+                // A STANDALONE denormalized edge (`(u)-[:AUTHORED]->(p)`,
+                // `left` is a plain GraphNode) makes the edge table itself the
+                // FROM anchor — suppressing its scan would leave nothing to select
+                // from — so it must keep the historical single-scan behavior. A
+                // nested-GraphRel or CTE-backed RIGHT endpoint takes the
+                // early-return branches below and never reaches JOIN-2, so its
+                // edge scan is the sole join and must also be kept.
+                let left_is_chained = matches!(graph_rel.left.as_ref(), LogicalPlan::GraphRel(_));
+                let denorm_edge_folds_into_right_node = left_is_chained
+                    && end_table == rel_table
+                    && !is_bidirectional
+                    && !matches!(graph_rel.right.as_ref(), LogicalPlan::GraphRel(_))
+                    && !graph_rel
+                        .cte_references
+                        .contains_key(&graph_rel.right_connection);
+
+                if denorm_edge_folds_into_right_node {
+                    // Remap the (possibly named) edge alias to the folded node
+                    // alias so property resolution finds the shared row's columns.
+                    crate::render_plan::register_denormalized_alias(
+                        &graph_rel.alias,
+                        &graph_rel.right_connection,
+                    );
+                    log::info!(
+                        "🔧 #622: denormalized edge '{}' folds into right node '{}' — \
+                         suppressing redundant edge scan, JOIN-2 carries the row",
+                        graph_rel.alias,
+                        graph_rel.right_connection
+                    );
+                } else {
+                    joins.push(Join {
+                        table_name: rel_table.clone(),
+                        table_alias: graph_rel.alias.clone(),
+                        joining_on: vec![rel_join_condition],
+                        join_type: join_type.clone(),
+                        pre_filter: combined_pre_filter.clone(),
+                        from_id_column: Some(rel_cols.from_id.to_string()),
+                        to_id_column: Some(rel_cols.to_id.to_string()),
+                        graph_rel: None,
+                        is_cartesian: false,
+                    });
+                }
 
                 // CRITICAL FIX: Handle nested GraphRel patterns differently
                 // In nested multi-hop patterns like (post)<-[:HAS_CREATOR]-(f)-[:KNOWS]-(p):
@@ -3933,12 +3987,24 @@ impl JoinBuilder for LogicalPlan {
                     // The end node gets its own alias pointing to the same table
                     log::debug!("🔧 DEBUG: Adding denormalized end node JOIN: {} AS {} (same table as relationship {})",
                              rel_table, graph_rel.right_connection, graph_rel.alias);
+                    // #622: when we suppressed the redundant JOIN-1 edge scan
+                    // above, fold the edge's pre_filter (polymorphic/type
+                    // discriminators, edge constraints) into this node join so
+                    // no edge-level predicate is lost.
+                    let folded_pre_filter = if denorm_edge_folds_into_right_node {
+                        combine_optional_filters_with_and(vec![
+                            right_node_pre_filter.clone(),
+                            combined_pre_filter.clone(),
+                        ])
+                    } else {
+                        right_node_pre_filter.clone()
+                    };
                     joins.push(Join {
                         table_name: rel_table.clone(), // Same table as relationship
                         table_alias: graph_rel.right_connection.clone(), // End node alias
                         joining_on: vec![end_join_condition], // Connects end node to relationship
                         join_type,
-                        pre_filter: right_node_pre_filter.clone(),
+                        pre_filter: folded_pre_filter,
                         from_id_column: None,
                         to_id_column: None,
                         graph_rel: None,
