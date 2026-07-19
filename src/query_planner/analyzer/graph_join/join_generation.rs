@@ -865,7 +865,17 @@ pub fn register_denormalized_aliases(
             // edge keeps its own scan as the FROM anchor, so it must NOT get this
             // remap — doing so would rewrite `r` onto a node alias that is not in
             // the query.
-            if left_already_bound {
+            //
+            // Restrict to `join_side == Left` (edge table == the TO/right node's
+            // table): that is the exact shape the render fold targets — it folds
+            // the edge into `graph_rel.right_connection` (the right node). For
+            // `join_side == Right` (edge table == the FROM/left node table) the
+            // render fold's `end_table == rel_table` test is false (the right
+            // node is a DIFFERENT table that keeps its own join), the edge scan
+            // is NOT suppressed, and the anchor would be the LEFT node — so a
+            // remap here would diverge from render. Gating on Left keeps the
+            // analyzer remap and the render fold firing on exactly the same set.
+            if left_already_bound && matches!(join_side, NodePosition::Left) {
                 crate::server::query_context::register_denormalized_alias(rel_alias, anchor_alias);
             }
         }
