@@ -158,6 +158,10 @@ impl FilterBuilder for LogicalPlan {
                             // #623: exact VLP adjacent to another hop uses recursive CTE
                             && !crate::render_plan::from_builder::adjacent_exact_vlp_uses_cte(
                                 graph_rel,
+                            )
+                            // #605: closed exact VLP (a)-[*N..N]->(a) uses recursive CTE
+                            && !crate::render_plan::from_builder::closed_exact_vlp_uses_cte(
+                                graph_rel,
                             );
                         !is_fixed_length // CTE used if NOT fixed-length
                     } else {
@@ -388,6 +392,16 @@ impl FilterBuilder for LogicalPlan {
                         if exact_hops >= 2
                             && graph_rel.shortest_path_mode.is_none()
                             && !crate::render_plan::from_builder::optional_directed_exact_vlp_uses_cte(
+                                graph_rel,
+                            )
+                            // #605: a CLOSED exact VLP `(a)-[*N..N]->(a)` reroutes
+                            // to the recursive CTE (both endpoints are the same
+                            // variable, so this flat-path cycle-prevention's
+                            // `extract_table_name` on the two endpoints fails
+                            // loud). Skip the flat guard; the CTE's own edge
+                            // uniqueness + the #625 `start_id = end_id` closed
+                            // constraint handle it.
+                            && !crate::render_plan::from_builder::closed_exact_vlp_uses_cte(
                                 graph_rel,
                             )
                         {

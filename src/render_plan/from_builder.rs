@@ -70,6 +70,7 @@ pub(super) fn is_fixed_length_vlp(graph_rel: &GraphRel) -> bool {
             && !is_denorm
             && !optional_directed_exact_vlp_uses_cte(graph_rel)
             && !adjacent_exact_vlp_uses_cte(graph_rel)
+            && !closed_exact_vlp_uses_cte(graph_rel)
     })
 }
 
@@ -87,6 +88,34 @@ pub(super) fn is_fixed_length_vlp(graph_rel: &GraphRel) -> bool {
 /// reads it here so FROM, JOIN, and filter builders agree (CLAUDE.md §5).
 pub(super) fn adjacent_exact_vlp_uses_cte(graph_rel: &GraphRel) -> bool {
     crate::server::query_context::is_adjacent_exact_vlp_reroute(&graph_rel.alias)
+}
+
+/// #605: single source of truth for "this exact-bound VLP is rerouted from the
+/// flat r1..rN self-join to the recursive CTE because it is a CLOSED pattern —
+/// the SAME variable appears at both endpoints (`(a)-[:R*N..N]->(a)`)."
+///
+/// The flat-join cycle-prevention path (`filter_builder.rs`) calls
+/// `extract_table_name` on both endpoints to build its `start != end` /
+/// pairwise-uniqueness guard; when both endpoints are the same node variable
+/// that extraction has no distinct table to resolve and fails loud
+/// ("Missing table information for start node in cycle prevention", #605). The
+/// recursive CTE has no such problem: it enumerates paths with independent
+/// `start_id`/`end_id` columns and the #625 closed-pattern check emits
+/// `t.start_id = t.end_id` on the outer query, correctly counting N-cycles.
+///
+/// Detectable on the lone `GraphRel` (unlike #623's whole-tree adjacency), so
+/// no analyzer/task-local channel is needed — both the analyzer's
+/// `is_fixed_length` decision and every render-side flat-join gate compute it
+/// directly from the two connection aliases (direction-independent). Restricted
+/// to exact-bound (`exact_hop_count().is_some()`); a closed RANGE VLP already
+/// routes through the CTE and is handled by #625.
+pub(super) fn closed_exact_vlp_uses_cte(graph_rel: &GraphRel) -> bool {
+    graph_rel
+        .variable_length
+        .as_ref()
+        .is_some_and(|spec| spec.exact_hop_count().is_some())
+        && graph_rel.shortest_path_mode.is_none()
+        && graph_rel.left_connection == graph_rel.right_connection
 }
 
 /// #603: single source of truth for "this OPTIONAL exact-bound VLP is rerouted

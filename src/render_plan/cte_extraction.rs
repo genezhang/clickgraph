@@ -3489,6 +3489,12 @@ pub fn extract_ctes_with_context(
                     // recursive CTE (flat chain can't compose with a neighbor).
                     && !crate::render_plan::from_builder::adjacent_exact_vlp_uses_cte(
                         graph_rel,
+                    )
+                    // #605: a CLOSED exact VLP (a)-[*N..N]->(a) reroutes to the
+                    // recursive CTE (flat cycle-prevention can't resolve the
+                    // same-variable endpoints).
+                    && !crate::render_plan::from_builder::closed_exact_vlp_uses_cte(
+                        graph_rel,
                     );
 
                 if use_chained_join {
