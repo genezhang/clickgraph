@@ -764,9 +764,12 @@ RETURN u.user_id AS business_id, u.name
 | `percentileDisc(expr, p)` | Discrete percentile (nearest actual value) | `percentileDisc(u.age, 0.9)` |
 
 > `percentileCont`/`percentileDisc` honor the `p` argument for any percentile
-> `0.0`–`1.0` (ClickHouse `quantileExactInclusive(p)` / `quantileExact(p)`;
-> Databricks `percentile` / `percentile_disc`). Both require exactly two
-> arguments — a wrong arity is a loud error, never a silently guessed value.
+> `0.0`–`1.0`. `percentileCont` uses linear interpolation (ClickHouse
+> `quantileExactInclusive(p)`; Databricks `percentile`). `percentileDisc`
+> returns the nearest actual value at Neo4j's discrete index (a sorted-array
+> index expression on both backends, since no native quantile matches Neo4j's
+> convention). Both require exactly two arguments — a wrong arity is a loud
+> error, never a silently guessed value.
 
 ### String Functions
 

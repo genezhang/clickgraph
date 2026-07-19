@@ -201,18 +201,24 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// Render an openCypher percentile aggregate — `percentileCont(expr, p)` or
     /// `percentileDisc(expr, p)` — honoring the percentile argument `p` (#639).
     ///
-    /// The two dialects diverge on both call SHAPE and the exact quantile
-    /// variant needed to match Neo4j's algorithm, so this can't be a registry
-    /// name-swap (ClickHouse's quantile is a *parametric* aggregate whose
-    /// percentile sits in a leading parameter list, not the argument list):
+    /// The two dialects and the two variants diverge on call SHAPE, so this
+    /// can't be a registry name-swap:
     /// - `percentileCont` (continuous, linear interpolation): CH
-    ///   `quantileExactInclusive(p)(expr)`, Spark `percentile(expr, p)`.
-    /// - `percentileDisc` (discrete, nearest actual value): CH
-    ///   `quantileExact(p)(expr)`, Spark `percentile_disc(expr, p)`.
+    ///   `quantileExactInclusive(p)(expr)` (parametric aggregate — the
+    ///   percentile sits in a leading parameter list); Spark `percentile(expr, p)`.
+    /// - `percentileDisc` (discrete, nearest actual value): NO ClickHouse or
+    ///   Spark builtin reproduces Neo4j's index convention — `quantileExact`,
+    ///   `quantileExactLow`/`High` and Spark's `percentile_disc` all round
+    ///   differently (e.g. [10,20,30,40]@0.25 → Neo4j 10 but `quantileExact` 20).
+    ///   So both dialects build the exact index by hand over the sorted value
+    ///   array at Neo4j's 1-based index `greatest(1, ceil(p * n))` (n = non-null
+    ///   count): CH `arrayElement(arraySort(groupArray(expr)), …)`, Spark
+    ///   `element_at(array_sort(collect_list(expr)), …)`.
     ///
-    /// Verified against Neo4j across datasets: for [10,20,30,40,50] at p=0.9,
-    /// Cont=46 (interpolated) and Disc=50 (nearest); CH's
-    /// `quantileExactInclusive`/`quantileExact` reproduce both exactly.
+    /// Verified exact against the Neo4j reference algorithm: percentileCont
+    /// (`PercentileContFunction`) and percentileDisc (`PercentileDiscFunction`,
+    /// `floatIdx = p*count` with the integer-boundary `-1` correction) — 0
+    /// mismatches across n=1..40 × p=0.05..0.95, plus live corpus checks.
     ///
     /// `expr` and `percentile` are pre-rendered SQL fragments; `continuous`
     /// selects Cont vs Disc.

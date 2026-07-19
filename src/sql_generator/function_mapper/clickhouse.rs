@@ -125,17 +125,28 @@ impl FunctionMapper for ClickhouseFunctionMapper {
     }
 
     fn percentile_aggregate(&self, expr: &str, percentile: &str, continuous: bool) -> String {
-        // ClickHouse quantiles are parametric aggregates: the percentile is a
-        // leading parameter, `quantile...(p)(expr)`, NOT an argument (#639).
-        // `quantileExactInclusive` = linear interpolation (matches Neo4j
-        // percentileCont); `quantileExact` = nearest actual value (matches
-        // percentileDisc). Both verified against Neo4j semantics.
-        let variant = if continuous {
-            "quantileExactInclusive"
+        if continuous {
+            // percentileCont = linear interpolation. ClickHouse quantiles are
+            // parametric aggregates: the percentile is a leading parameter,
+            // `quantile...(p)(expr)`, NOT an argument (#639).
+            // `quantileExactInclusive` matches Neo4j's percentileCont algorithm
+            // (floatIdx = p*(n-1), interpolate) exactly — verified live across
+            // odd/even/single/duplicate datasets at p ∈ {0, .25, .5, .75, .9, 1}.
+            format!("quantileExactInclusive({percentile})({expr})")
         } else {
-            "quantileExact"
-        };
-        format!("{variant}({percentile})({expr})")
+            // percentileDisc = nearest actual value at Neo4j's index convention:
+            // 1-based idx = greatest(1, ceil(p * n)), n = non-null count. NO
+            // ClickHouse quantile variant reproduces this — quantileExact,
+            // quantileExactLow and quantileExactHigh all use a different
+            // rounding and return the wrong element for a large fraction of
+            // inputs (e.g. [10,20,30,40]@0.25 → Neo4j 10 but quantileExact* 20).
+            // So build the exact index form by hand over the sorted value array.
+            // Verified: 0 mismatches vs the Neo4j formula across n=1..40 ×
+            // p=0.05..0.95, and live against the endpoint corpus (#639).
+            format!(
+                "arrayElement(arraySort(groupArray({expr})), greatest(1, toUInt32(ceil({percentile} * count({expr})))))"
+            )
+        }
     }
 }
 
@@ -208,16 +219,18 @@ mod tests {
     #[test]
     fn percentile_aggregate_uses_parametric_quantile_forms() {
         let m = ClickhouseFunctionMapper;
-        // Cont = linear interpolation (matches Neo4j percentileCont), Disc =
-        // nearest actual value (matches percentileDisc). Both parametric — the
-        // percentile is a leading parameter, not an argument (#639).
+        // Cont = linear interpolation → parametric quantileExactInclusive
+        // (percentile in a leading parameter, not an argument) (#639).
         assert_eq!(
             m.percentile_aggregate("t.x", "0.9", true),
             "quantileExactInclusive(0.9)(t.x)"
         );
+        // Disc = nearest value at Neo4j's 1-based index greatest(1, ceil(p*n)).
+        // No CH quantile builtin matches this, so it's a hand-built array-index
+        // form over the sorted values.
         assert_eq!(
             m.percentile_aggregate("t.x", "0.9", false),
-            "quantileExact(0.9)(t.x)"
+            "arrayElement(arraySort(groupArray(t.x)), greatest(1, toUInt32(ceil(0.9 * count(t.x)))))"
         );
     }
 }

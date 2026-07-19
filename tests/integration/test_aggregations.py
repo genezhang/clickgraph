@@ -111,6 +111,60 @@ class TestBasicAggregations:
             col_idx_max = response["columns"].index("oldest")
             assert results[0][col_idx_min] <= results[0][col_idx_max]
 
+    def test_percentile_cont_honors_argument(self, simple_graph):
+        """percentileCont(age, p) must interpolate at p, NOT return the median (#639).
+
+        simple_graph ages = [30, 25, 35, 28, 32] → sorted [25, 28, 30, 32, 35], n=5.
+        Neo4j percentileCont (linear interpolation, floatIdx = p*(n-1)):
+          p=0.5 → idx 2.0        → 30
+          p=0.9 → idx 3.6        → 32 + 0.6*(35-32) = 33.8
+        A regression to median(age) would return 30 for BOTH — the p=0.9 case
+        is what catches the silent-wrong-median bug.
+        """
+        response = execute_cypher(
+            """
+            MATCH (n:TestUser)
+            RETURN percentileCont(n.age, 0.5) AS p50, percentileCont(n.age, 0.9) AS p90
+            """,
+            schema_name=simple_graph["schema_name"],
+        )
+        assert_query_success(response)
+        assert_row_count(response, 1)
+        p50 = float(get_single_value(response, "p50"))
+        p90 = float(get_single_value(response, "p90"))
+        assert abs(p50 - 30.0) < 1e-6, f"percentileCont(0.5) expected 30, got {p50}"
+        assert abs(p90 - 33.8) < 1e-6, f"percentileCont(0.9) expected 33.8, got {p90}"
+
+    def test_percentile_disc_honors_argument_and_index(self, simple_graph):
+        """percentileDisc(age, p) must use Neo4j's discrete index, NOT quantileExact (#639).
+
+        ages sorted [25, 28, 30, 32, 35], n=5. Neo4j percentileDisc 1-based index
+        = greatest(1, ceil(p*n)):
+          p=0.4 → ceil(2.0)=2 → 28   (ClickHouse quantileExact & quantileExactLow return 30 — WRONG)
+          p=0.6 → ceil(3.0)=3 → 30   (quantileExact & quantileExactLow return 32 — WRONG)
+          p=0.9 → ceil(4.5)=5 → 35
+        The p=0.4 and p=0.6 integer-boundary cases are exactly where no ClickHouse
+        quantile builtin matches Neo4j — they pin the hand-built sorted-array-index
+        behavior and FAIL against quantileExact / quantileExactLow.
+        """
+        response = execute_cypher(
+            """
+            MATCH (n:TestUser)
+            RETURN percentileDisc(n.age, 0.4) AS p40,
+                   percentileDisc(n.age, 0.6) AS p60,
+                   percentileDisc(n.age, 0.9) AS p90
+            """,
+            schema_name=simple_graph["schema_name"],
+        )
+        assert_query_success(response)
+        assert_row_count(response, 1)
+        p40 = int(float(get_single_value(response, "p40")))
+        p60 = int(float(get_single_value(response, "p60")))
+        p90 = int(float(get_single_value(response, "p90")))
+        assert p40 == 28, f"percentileDisc(0.4) expected 28 (got {p40}) — quantileExact bug returns 30"
+        assert p60 == 30, f"percentileDisc(0.6) expected 30 (got {p60}) — quantileExact bug returns 32"
+        assert p90 == 35, f"percentileDisc(0.9) expected 35, got {p90}"
+
 
 class TestGroupBy:
     """Test GROUP BY functionality."""

@@ -209,7 +209,10 @@ mod try_render_percentile_tests {
         );
         assert_eq!(
             try_render_percentile("percentiledisc", &["t.x".into(), "0.9".into()]),
-            Some("quantileExact(0.9)(t.x)".into())
+            Some(
+                "arrayElement(arraySort(groupArray(t.x)), greatest(1, toUInt32(ceil(0.9 * count(t.x)))))"
+                    .into()
+            )
         );
     }
 
