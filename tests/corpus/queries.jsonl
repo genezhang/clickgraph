@@ -1159,3 +1159,8 @@
 {"cypher": "MATCH (a:User) WHERE a.name = 'Alice Johnson' RETURN count(*)", "name": "test_600_2_explicit_where_unchanged", "schema": "standard"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS]->(b) WITH a, count(b) AS fc RETURN min(fc), max(fc), sum(fc), stDev(fc)", "name": "test_638_stdev_post_with_multi_agg", "schema": "standard"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS]->(b) RETURN a.name, stDev(b.user_id)", "name": "test_638_stdev_fresh_match_group_by", "schema": "standard"}
+{"cypher": "MATCH (a:User) WHERE EXISTS { MATCH (a)-[:FOLLOWS]->(b:User) WHERE b.name = 'Bob Smith' } RETURN a.name", "name": "test_587_exists_inner_where_directed", "schema": "standard"}
+{"cypher": "MATCH (a:User) WHERE EXISTS { MATCH (a)<-[:FOLLOWS]-(b:User) WHERE b.name = 'Bob Smith' } RETURN a.name", "name": "test_587_exists_inner_where_incoming", "schema": "standard"}
+{"cypher": "MATCH (a:User) WHERE EXISTS { MATCH (a)-[:FOLLOWS]->(b) WHERE b.name = 'Bob Smith' } RETURN a.name", "name": "test_587_exists_inner_where_unlabeled_maps", "schema": "standard"}
+{"cypher": "MATCH (a:User) WHERE NOT EXISTS { MATCH (a)-[:FOLLOWS]->(b:User) WHERE b.name = 'Bob Smith' } RETURN a.name", "name": "test_587_not_exists_inner_where", "schema": "standard"}
+{"cypher": "MATCH (a:User) WHERE EXISTS { MATCH (a)-[:FOLLOWS]->(b:User) } RETURN a.name", "name": "test_587_exists_no_where_unchanged", "schema": "standard"}

@@ -176,6 +176,23 @@ fn generate_exists_sql(
                 rel_type
             )))
         }
+        // #587: a single-hop EXISTS with an inner WHERE lowers to
+        // `Filter(GraphRel)`. Build the correlated edge subquery, JOIN the
+        // inner-bound endpoint's node table, and fold the (property-mapped)
+        // predicate into its WHERE. Falls through to the loud error below for any
+        // shape it cannot cleanly build (undirected/both-bound/multi-hop/etc.).
+        LogicalPlan::Filter(filter) => {
+            if let LogicalPlan::GraphRel(graph_rel) = filter.input.as_ref() {
+                if let Some(result) =
+                    generate_exists_filtered_graph_rel_sql(graph_rel, &filter.predicate)?
+                {
+                    return Ok(result);
+                }
+            }
+            Err(RenderBuildError::UnsupportedFeature(
+                "EXISTS pattern with non-GraphRel subplan".to_string(),
+            ))
+        }
         _ => {
             // For other plan types, this is unsupported
             Err(RenderBuildError::UnsupportedFeature(
@@ -335,9 +352,242 @@ fn generate_exists_graph_rel_sql(
     }
 }
 
-/// Generate SQL for multi-hop pattern count (size() with multiple relationships)
+/// #587: generate the correlated `SELECT 1 FROM edge JOIN inner_node WHERE
+/// correlation AND inner_predicate` SQL for an EXISTS subquery whose subplan is
+/// `Filter(GraphRel)` — a single-hop pattern with an inner WHERE.
 ///
-/// For `size((tag)<-[:HAS_TAG]-(message:Message)-[:HAS_CREATOR]->(person))` generates:
+/// Returns `Ok(Some(sql, correlated_aliases))` when it can cleanly build the
+/// subquery (directed single-hop, predicate on the single inner-bound endpoint),
+/// `Ok(None)` when the shape is not covered (undirected, both-endpoints-outer,
+/// predicate not resolvable to the inner endpoint, missing schema/label) so the
+/// caller falls through to the loud `UnsupportedFeature` error — never emitting
+/// wrong SQL for an uncovered shape.
+fn generate_exists_filtered_graph_rel_sql(
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+    predicate: &LogicalExpr,
+) -> Result<Option<(String, Vec<String>)>, RenderBuildError> {
+    use crate::server::query_context::{
+        get_current_schema, is_correlation_cte_alias, is_exists_outer_alias,
+    };
+
+    // Only directed single-hop is covered by v1. Undirected needs OR-of-both-
+    // orientations join logic; defer (loud fallback).
+    let outgoing = match graph_rel.direction {
+        Direction::Outgoing => true,
+        Direction::Incoming => false,
+        Direction::Either => return Ok(None),
+    };
+
+    // Defer variable-length and shortestPath EXISTS — those carry path semantics
+    // the single-hop correlated-subquery form does not express. Keep them on the
+    // existing loud fallback (never silently treat them as a plain single hop).
+    if graph_rel.variable_length.is_some() || graph_rel.shortest_path_mode.is_some() {
+        return Ok(None);
+    }
+
+    let rel_type = graph_rel
+        .labels
+        .as_ref()
+        .and_then(|l| l.first())
+        .map(|s| s.to_string());
+    let Some(rel_type) = rel_type else {
+        return Ok(None);
+    };
+
+    let Some(schema) = get_current_schema() else {
+        return Ok(None);
+    };
+    let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_type) else {
+        return Ok(None);
+    };
+
+    let left_conn = &graph_rel.left_connection;
+    let right_conn = &graph_rel.right_connection;
+    let is_outer = |alias: &str| is_exists_outer_alias(alias) || is_correlation_cte_alias(alias);
+
+    // Identify the OUTER anchor and the INNER-bound endpoint. For the reported
+    // shape `(a)-[:R]->(b) WHERE b.<p>`, `a` is outer (source), `b` is inner
+    // (target). Only cover the case where exactly one endpoint is outer and the
+    // other (inner) is the one the pattern binds a fresh node for.
+    let (outer_conn, inner_conn, inner_node) = if is_outer(left_conn) && !is_outer(right_conn) {
+        (left_conn, right_conn, graph_rel.right.as_ref())
+    } else if is_outer(right_conn) && !is_outer(left_conn) {
+        (right_conn, left_conn, graph_rel.left.as_ref())
+    } else {
+        // Both outer, or neither detected — defer (loud fallback).
+        return Ok(None);
+    };
+
+    // The inner endpoint's node label + schema (need its table + id column).
+    let inner_label = match inner_node {
+        LogicalPlan::GraphNode(n) => n.label.clone(),
+        _ => None,
+    };
+    // Fall back to the relationship-schema role for an unlabeled inner node.
+    let inner_type = match inner_label {
+        Some(l) => l,
+        None => {
+            // inner endpoint is the target for Outgoing (a->b), source for Incoming.
+            if outgoing {
+                rel_schema.to_node.clone()
+            } else {
+                rel_schema.from_node.clone()
+            }
+        }
+    };
+    let Some(inner_node_schema) = schema.node_schema_opt(&inner_type) else {
+        return Ok(None);
+    };
+
+    // Composite-id inner endpoints need a multi-column join; defer for v1.
+    let inner_id_cols = inner_node_schema.node_id.columns();
+    if inner_id_cols.len() != 1 {
+        return Ok(None);
+    }
+
+    // Defer when the edge's FK column(s) are COMPOSITE — a composite `from_id`/
+    // `to_id` stringifies to `"c1, c2"`, which produces malformed correlation /
+    // join SQL (e.g. `WHERE e.c1, c2 = ...`). Keep the loud fallback rather than
+    // emit invalid SQL. (Adversarial review MAJOR 1.)
+    if rel_schema.from_id.columns().len() != 1 || rel_schema.to_id.columns().len() != 1 {
+        return Ok(None);
+    }
+
+    // Defer when the inner endpoint is a DENORMALIZED (edge-table-hosted) node:
+    // it has no real table/id column of its own to JOIN (`ON b.<logical_id> =
+    // e.<col>` would reference a non-existent column) and its properties need
+    // role-aware mapping the single-hop path doesn't do. Keep the loud fallback
+    // rather than emit invalid SQL. (Adversarial review MAJOR 2.) Routed through
+    // the schema-catalog node classifier per the axis-dispatch rule. FK-edge
+    // inner nodes (a real node table, plain edge FK) are NOT excluded — they
+    // render correctly (verified).
+    if schema.is_denormalized_node(&inner_type) {
+        return Ok(None);
+    }
+
+    let inner_id_col = inner_id_cols[0];
+    let inner_table = format!(
+        "{}.{}",
+        inner_node_schema.database, inner_node_schema.table_name
+    );
+
+    // Edge columns. from_id faces the source, to_id faces the target.
+    let from_col = rel_schema.from_id.to_string();
+    let to_col = rel_schema.to_id.to_string();
+    let edge_table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+    let edge_alias = "e";
+    // Correlation column (edge column facing the OUTER anchor) and inner-join
+    // column (edge column facing the INNER endpoint).
+    let (corr_edge_col, inner_edge_col) = if outgoing {
+        // a (source) -> b (target): correlate on from_id, join b on to_id.
+        (from_col.clone(), to_col.clone())
+    } else {
+        // a (target) <- b (source): correlate on to_id, join b on from_id.
+        (to_col.clone(), from_col.clone())
+    };
+
+    // Resolve the OUTER anchor's id SQL (CTE-aware, mirrors generate_exists_graph_rel_sql).
+    let outer_node = if outer_conn == left_conn {
+        graph_rel.left.as_ref()
+    } else {
+        graph_rel.right.as_ref()
+    };
+    let outer_label = match outer_node {
+        LogicalPlan::GraphNode(n) => n.label.clone(),
+        _ => None,
+    };
+    let outer_type = match outer_label {
+        Some(l) => l,
+        None => {
+            if outgoing {
+                rel_schema.from_node.clone()
+            } else {
+                rel_schema.to_node.clone()
+            }
+        }
+    };
+    let Some(outer_node_schema) = schema.node_schema_opt(&outer_type) else {
+        return Ok(None);
+    };
+    let outer_id_sql = resolve_correlation_id_sql(outer_conn, outer_node_schema);
+
+    // Map the inner predicate's properties to DB columns (b.name -> b.full_name)
+    // using the inner endpoint's RESOLVED node type. We map by `inner_type` (which
+    // is resolved from the pattern label OR the relationship-schema role, so it
+    // works even when the inner node is UNLABELED, e.g. `(a)-[:FOLLOWS]->(b)` — the
+    // plan carries no label there, so the generic plan-context rewrite would leave
+    // `b.name` raw → Code 47). Only the inner alias's properties are mapped; any
+    // property on a different alias (an outer-correlated ref) is left as-is.
+    let mapped_pred =
+        map_exists_inner_predicate(predicate, inner_conn, &inner_type, inner_node_schema);
+    let pred_sql = RenderExpr::try_from(mapped_pred)?.to_sql();
+
+    // Assemble: SELECT 1 FROM edge AS e JOIN inner AS <inner_conn> ON ... WHERE corr AND pred
+    let sql = format!(
+        "SELECT 1 FROM {edge_table} AS {edge_alias} \
+         INNER JOIN {inner_table} AS {inner_conn} ON {inner_conn}.{inner_id_col} = {edge_alias}.{inner_edge_col} \
+         WHERE {edge_alias}.{corr_edge_col} = {outer_id_sql} AND {pred_sql}"
+    );
+
+    Ok(Some((sql, vec![outer_conn.clone()])))
+}
+
+/// #587: map the inner-endpoint property references of an EXISTS predicate to
+/// their DB columns using the inner node's schema, keyed by the inner alias.
+///
+/// `MATCH (a)-[:FOLLOWS]->(b:User) WHERE b.name = 'x'` → `b.full_name = 'x'`.
+/// We map by the RESOLVED `inner_type` rather than the plan's label so it works
+/// even when the inner node is unlabeled (`(a)-[:FOLLOWS]->(b)` — the plan carries
+/// no `:User`, but the relationship's `to_node` role resolves it). Only
+/// `PropertyAccessExp` on the inner alias are rewritten; a property on any other
+/// alias (a correlated outer reference) is left untouched.
+fn map_exists_inner_predicate(
+    expr: &LogicalExpr,
+    inner_alias: &str,
+    _inner_type: &str,
+    inner_node_schema: &crate::graph_catalog::graph_schema::NodeSchema,
+) -> LogicalExpr {
+    use crate::query_planner::logical_expr::PropertyAccess;
+    match expr {
+        LogicalExpr::PropertyAccessExp(prop) if prop.table_alias.0 == inner_alias => {
+            let cypher_name = prop.column.raw();
+            let mapped = inner_node_schema
+                .property_mappings
+                .get(cypher_name)
+                .cloned()
+                .unwrap_or_else(|| prop.column.clone());
+            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: prop.table_alias.clone(),
+                column: mapped,
+            })
+        }
+        LogicalExpr::OperatorApplicationExp(op) => {
+            let mut new_op = op.clone();
+            new_op.operands = op
+                .operands
+                .iter()
+                .map(|o| map_exists_inner_predicate(o, inner_alias, _inner_type, inner_node_schema))
+                .collect();
+            LogicalExpr::OperatorApplicationExp(new_op)
+        }
+        LogicalExpr::ScalarFnCall(f) => {
+            let mut new_f = f.clone();
+            new_f.args = f
+                .args
+                .iter()
+                .map(|a| map_exists_inner_predicate(a, inner_alias, _inner_type, inner_node_schema))
+                .collect();
+            LogicalExpr::ScalarFnCall(new_f)
+        }
+        LogicalExpr::List(list) => LogicalExpr::List(
+            list.iter()
+                .map(|i| map_exists_inner_predicate(i, inner_alias, _inner_type, inner_node_schema))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 /// ```sql
 /// (SELECT COUNT(*)
 ///  FROM Message_hasTag_Tag AS r1

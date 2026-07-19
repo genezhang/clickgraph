@@ -5830,29 +5830,45 @@ async fn exists_subquery_unsupported_shapes_error_cleanly() {
 async fn shortest_path_exists_where_clause_errors_cleanly_not_silently_dropped() {
     let schema = load_schema(SchemaId::Standard.yaml_path());
 
-    // The exact #579 repro (shortestPath) and its non-shortestPath sibling
-    // (already-existing, unrelated to this fix) must now fail identically —
-    // loud and clean, never silently rendering without the WHERE.
-    let must_error_not_silently_drop_where = [
+    // #587: a single-hop `shortestPath((a)-[:FOLLOWS]->(b:User))` normalizes to a
+    // plain single-hop GraphRel (shortestPath over ONE hop is that hop), so its
+    // EXISTS-with-WHERE now renders correctly — honoring the WHERE, never silently
+    // dropping it (the #579 hazard). Both the shortestPath-wrapped and the plain
+    // single-hop shapes render the same correlated subquery with the inner-node
+    // join and the mapped predicate.
+    for cypher in [
         "MATCH (a:User) WHERE EXISTS { MATCH shortestPath((a)-[:FOLLOWS]->(b:User)) \
          WHERE b.name = 'Bob Jones' } RETURN a.name",
         "MATCH (a:User) WHERE EXISTS { MATCH (a)-[:FOLLOWS]->(b:User) \
          WHERE b.name = 'Bob Jones' } RETURN a.name",
-    ];
-    for cypher in must_error_not_silently_drop_where {
-        let result = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
-        match result {
-            Err(msg) => assert!(
-                msg.contains("non-GraphRel subplan"),
-                "[{cypher}] must fail with the clean 'non-GraphRel subplan' \
-                 error, got: {msg}"
-            ),
-            Ok(sql) => panic!(
-                "[{cypher}] must error cleanly instead of silently dropping \
-                 the WHERE clause; rendered:\n{sql}"
-            ),
-        }
+    ] {
+        let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            sql.contains("EXISTS (SELECT 1 FROM social.user_follows_bench")
+                && sql.contains("INNER JOIN social.users_bench")
+                && sql.contains("b.full_name = 'Bob Jones'"),
+            "[{cypher}] #587: must render the correlated EXISTS subquery with the \
+             inner-node join and the mapped predicate (never drop the WHERE); \
+             got:\n{sql}"
+        );
     }
+
+    // Kept for context: the property mapping (`b.name` → `b.full_name`) inside the
+    // EXISTS predicate is the load-bearing part — asserted above.
+    let plain_sql = render(
+        &schema,
+        "MATCH (a:User) WHERE EXISTS { MATCH (a)-[:FOLLOWS]->(b:User) \
+         WHERE b.name = 'Bob Jones' } RETURN a.name",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        plain_sql.contains("EXISTS (SELECT 1 FROM social.user_follows_bench")
+            && plain_sql.contains("INNER JOIN social.users_bench")
+            && plain_sql.contains("b.full_name = 'Bob Jones'"),
+        "#587: plain single-hop EXISTS with inner WHERE must render the correlated \
+         subquery with the inner node join and mapped predicate; got:\n{plain_sql}"
+    );
 
     // Regression guard: shortestPath EXISTS WITHOUT a WHERE clause (the
     // common shape) must still render exactly as before — this fix must not
@@ -5940,21 +5956,14 @@ async fn with_barrier_exists_no_where_resolves_correlation_through_cte_scope() {
 /// Sibling of the EXISTS characterization above, for the SAME WITH-barrier-
 /// crossing shape but with an inner `WHERE` clause on the EXISTS pattern —
 /// which converts the subplan from a bare `GraphRel` to `Filter(GraphRel)`.
-/// `generate_exists_sql` has no arm matching `Filter(GraphRel)` specifically
-/// (only bare `LogicalPlan::GraphRel` and the `WithClause|GraphJoins|
-/// CartesianProduct` pipeline branch), so it falls into the catch-all and
-/// errors — this is the SAME "non-GraphRel subplan" error as #579's
-/// no-outer-WITH sibling, confirming the outer WITH barrier does not change
-/// this particular failure mode (it fails identically with or without a
-/// preceding WITH). Locks in current behavior; not a fix.
-///
-/// Re-verified unchanged by the `generate_exists_sql` stale-CTE-alias fix
-/// (see the sibling test above): that fix only touches the bare-`GraphRel`
-/// arm, so this `Filter(GraphRel)` shape still falls into the same catch-all.
+/// #587 added a `Filter(GraphRel)` arm to `generate_exists_sql`, so this now
+/// renders correctly: the correlation resolves to the WITH-CTE's exported id
+/// column, the inner endpoint's node table is joined, and the inner predicate is
+/// property-mapped (`x.name` → `x.full_name`) and folded into the subquery WHERE.
 #[tokio::test]
-async fn with_barrier_exists_with_inner_where_errors_same_as_no_with_barrier() {
+async fn with_barrier_exists_with_inner_where_renders_correlated_subquery_587() {
     let schema = load_schema(SchemaId::Standard.yaml_path());
-    let result = try_render(
+    let sql = render(
         &schema,
         "MATCH (a:User)-[:FOLLOWS]->(z) WITH a, count(z) AS cnt WHERE cnt > 0 \
          WITH a WHERE EXISTS { (a)-[:FOLLOWS]->(x) WHERE x.name = 'Bob Jones' } \
@@ -5962,18 +5971,17 @@ async fn with_barrier_exists_with_inner_where_errors_same_as_no_with_barrier() {
         SqlDialect::ClickHouse,
     )
     .await;
-    match result {
-        Err(msg) => assert!(
-            msg.contains("non-GraphRel subplan"),
-            "WITH-barrier-crossing EXISTS-with-WHERE must fail with the same \
-             clean 'non-GraphRel subplan' error as the no-WITH-barrier shape \
-             (#579), got: {msg}"
-        ),
-        Ok(sql) => panic!(
-            "expected a clean 'non-GraphRel subplan' error (matching #579's \
-             no-WITH-barrier sibling); instead rendered:\n{sql}"
-        ),
-    }
+    assert!(
+        sql.contains("EXISTS (SELECT 1 FROM social.user_follows_bench")
+            && sql.contains("INNER JOIN social.users_bench")
+            && sql.contains("x.full_name = 'Bob Jones'")
+            // Correlation must resolve to the WITH-CTE's exported id column, not a
+            // raw `a.user_id` unbound outside the CTE.
+            && sql.contains("p1_a_user_id"),
+        "#587: WITH-barrier EXISTS with inner WHERE must render a correlated \
+         subquery with the inner-node join, CTE-scoped correlation, and mapped \
+         predicate; got:\n{sql}"
+    );
 }
 
 /// Regression guard for the stale-CTE-alias fix above: a fresh MATCH with NO
