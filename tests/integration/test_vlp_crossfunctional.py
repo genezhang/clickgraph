@@ -97,7 +97,6 @@ class TestVLPWithClause:
 class TestDenormalizedVLPCrossFunctional:
     """Test VLP on denormalized schemas with other features."""
 
-    @pytest.mark.xfail(reason="Code bug: VLP crossfunctional query generates invalid SQL")
     def test_denormalized_vlp_with_collect(self, setup_benchmark_data):
         """Denormalized VLP + COLLECT: Collect properties from denormalized table."""
         query = """
@@ -114,7 +113,6 @@ class TestDenormalizedVLPCrossFunctional:
         assert "destinations" in row
         assert isinstance(row["destinations"], list)
 
-    @pytest.mark.xfail(reason="Code bug: VLP crossfunctional query generates invalid SQL")
     def test_denormalized_vlp_with_groupby(self, setup_benchmark_data):
         """Denormalized VLP + GROUP BY: Group paths by origin."""
         query = """
@@ -127,7 +125,6 @@ class TestDenormalizedVLPCrossFunctional:
         assert result["status"] == "success"
         assert len(result["data"]) >= 1
 
-    @pytest.mark.xfail(reason="Code bug: VLP crossfunctional query generates invalid SQL")
     def test_denormalized_vlp_multiple_properties(self, setup_benchmark_data):
         """Denormalized VLP: Access multiple properties from denormalized nodes."""
         query = """
@@ -147,7 +144,6 @@ class TestDenormalizedVLPCrossFunctional:
         assert "a2.city" in row
         assert "a2.state" in row
 
-    @pytest.mark.xfail(reason="Code bug: VLP crossfunctional query generates invalid SQL")
     def test_denormalized_vlp_with_where_and_groupby(self, setup_benchmark_data):
         """Denormalized VLP: Property filtering + GROUP BY."""
         query = """

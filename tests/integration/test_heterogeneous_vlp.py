@@ -57,7 +57,6 @@ class TestHeterogeneousMultiTypeVLP:
         # Should have both users (FOLLOWS) and posts (AUTHORED)
         assert len(data["results"]) >= 3
 
-    @pytest.mark.xfail(reason="Heterogeneous multi-type VLP not fully supported")
     def test_heterogeneous_vlp_return_relationship_type(self):
         """Test heterogeneous multi-type VLP returning relationship type."""
         response = self.query(

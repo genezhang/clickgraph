@@ -467,13 +467,19 @@ class TestMultiTypePropertyExtraction:
             assert names == sorted(names), "Results should be ordered by name"
     
     def test_property_with_aggregation(self):
-        """Test aggregation with JSON property access."""
+        """Test aggregation with JSON property access.
+
+        Note: Cypher has no GROUP BY clause — grouping is implicit from the
+        non-aggregate RETURN items. The old query text carried a SQL-style
+        GROUP BY that the pre-#516 lenient parser silently discarded (along
+        with the ORDER BY after it); the strict parser now rightly rejects
+        those trailing tokens.
+        """
         response = execute_cypher(
             """
             MATCH (u:User)-[:FOLLOWS*1..2]->(x:User)
             WHERE u.user_id = 1
             RETURN x.city, count(*) as user_count
-            GROUP BY x.city
             ORDER BY user_count DESC
             """,
             schema_name="social_integration"

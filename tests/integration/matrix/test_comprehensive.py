@@ -533,6 +533,16 @@ class TestUnwind:
         result = execute_query(query)  # UNWIND doesn't need schema
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
+    @pytest.mark.xfail(
+        reason="Feature gap: the grammar only accepts UNWIND *after* the "
+        "reading clauses (MATCH ... UNWIND ... RETURN), not the Neo4j-legal "
+        "leading form UNWIND ... MATCH ... RETURN. Before the #516 strict "
+        "all-consuming parser this 'passed' only because the lenient parser "
+        "silently DISCARDED everything from MATCH onward (silent-wrong); it "
+        "now fails loud at parse. Needs a tracked issue for leading-UNWIND "
+        "support. Remove marker when the parser accepts UNWIND before MATCH.",
+        strict=True,
+    )
     def test_unwind_with_match(self, server_running, schema_config, query_generator):
         """Test: UNWIND ... MATCH ..."""
         query = query_generator.unwind_with_match()

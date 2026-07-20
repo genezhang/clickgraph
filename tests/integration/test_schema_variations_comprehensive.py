@@ -64,7 +64,6 @@ class TestMultiTableNodes:
     Challenge: SchemaInference must create UNION for IP from multiple sources
     """
     
-    @pytest.mark.xfail(reason="Code bug: MATCH (n) with unlabeled node returns planning error")
     def test_unlabeled_node_creates_union_all_types(self):
         """MATCH (n) should create UNION for all node types."""
         query = "MATCH (n) RETURN count(n) as total"
@@ -879,7 +878,6 @@ def test_baseline_server_running():
         pytest.fail(f"Server not accessible: {e}")
 
 
-@pytest.mark.xfail(reason="Code bug: baseline schema test assertion fails")
 def test_baseline_schema_loaded():
     """Verify schema is loaded."""
     query = "MATCH (n) RETURN count(n) LIMIT 1"

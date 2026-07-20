@@ -13,6 +13,48 @@ import pytest
 import requests
 
 
+@pytest.fixture(scope="module", autouse=True)
+def ensure_test_fixtures_tables(clickhouse_client):
+    """Restore the canonical session-shared test_integration base tables.
+
+    The `test_fixtures` schema (used by the TestUser/TEST_FOLLOWS queries in
+    this module) reads test_integration.users/follows. Those are seeded once
+    at session start by conftest.load_test_integration_data, but any test file
+    using the `simple_graph` fixture (e.g. test_spoke_pattern) DROPs them in
+    its per-test clean_database teardown — so by the time this module runs in
+    a full suite the tables are gone. Recreate the canonical (session-loader)
+    shape and data here so these tests are order-independent. Idempotent and a
+    superset restore, so it cannot regress other consumers.
+    """
+    clickhouse_client.command("DROP TABLE IF EXISTS test_integration.users")
+    clickhouse_client.command("DROP TABLE IF EXISTS test_integration.follows")
+    clickhouse_client.command("""
+        CREATE TABLE test_integration.users (
+            user_id UInt32, name String, age UInt32, email String,
+            registration_date Date, is_active UInt8, country String, city String
+        ) ENGINE = Memory
+    """)
+    clickhouse_client.command("""
+        CREATE TABLE test_integration.follows (
+            follower_id UInt32, followed_id UInt32, since Date
+        ) ENGINE = Memory
+    """)
+    clickhouse_client.command("""
+        INSERT INTO test_integration.users VALUES
+            (1, 'Alice', 30, 'alice@example.com', '2023-01-01', 1, 'USA', 'New York'),
+            (2, 'Bob', 25, 'bob@example.com', '2023-02-01', 1, 'USA', 'San Francisco'),
+            (3, 'Charlie', 35, 'charlie@example.com', '2023-03-01', 1, 'UK', 'London'),
+            (4, 'Diana', 28, 'diana@example.com', '2023-04-01', 1, 'Canada', 'Toronto'),
+            (5, 'Eve', 32, 'eve@example.com', '2023-05-01', 1, 'USA', 'Seattle')
+    """)
+    clickhouse_client.command("""
+        INSERT INTO test_integration.follows VALUES
+            (1, 2, '2023-01-15'), (1, 3, '2023-01-20'), (2, 3, '2023-02-10'),
+            (3, 4, '2023-03-05'), (4, 5, '2023-04-15'), (2, 4, '2023-02-20')
+    """)
+    yield
+
+
 def query_api(query: str, schema_name: str = "social_integration", port: int = 7475) -> dict:
     """Execute a Cypher query against the API."""
     response = requests.post(
@@ -193,7 +235,6 @@ class TestVLPWithDenormalizedSchema:
 class TestVLPWithMultipleRelTypes:
     """VLP + WITH with multiple relationship types (coupled edge tables)."""
 
-    @pytest.mark.xfail(reason="Code bug: VLP path functions in WITH clause not resolved")
     def test_multi_rel_length_path_in_with(self):
         """Multiple rel types: length(path) in WITH clause."""
         query = """
@@ -204,12 +245,11 @@ class TestVLPWithMultipleRelTypes:
         RETURN u1.name, u2.name, hops
         LIMIT 5
         """
-        result = query_api(query)
+        result = query_api(query, schema_name="test_fixtures")
         assert result["status"] == "success"
         for row in result["data"]:
             assert row["hops"] == 2
 
-    @pytest.mark.xfail(reason="Code bug: VLP path functions in WITH clause not resolved")
     def test_multi_rel_relationships_in_with(self):
         """Multiple rel types: relationships(path) in WITH clause."""
         query = """
@@ -220,7 +260,7 @@ class TestVLPWithMultipleRelTypes:
         RETURN u1.name, u2.name, size(path_rels) as rel_count
         LIMIT 5
         """
-        result = query_api(query)
+        result = query_api(query, schema_name="test_fixtures")
         assert result["status"] == "success"
         for row in result["data"]:
             assert row["rel_count"] == 1
@@ -229,7 +269,6 @@ class TestVLPWithMultipleRelTypes:
 class TestVLPWithComplexPatterns:
     """VLP + WITH with complex patterns: nested WITH, chaining, etc."""
 
-    @pytest.mark.xfail(reason="Code bug: VLP path functions in WITH clause not resolved")
     def test_chained_with_clauses(self):
         """Chained WITH clauses with path functions."""
         query = """
@@ -242,12 +281,11 @@ class TestVLPWithComplexPatterns:
         ORDER BY end_name
         LIMIT 5
         """
-        result = query_api(query)
+        result = query_api(query, schema_name="test_fixtures")
         assert result["status"] == "success"
         for row in result["data"]:
             assert row["hops"] == 2
 
-    @pytest.mark.xfail(reason="Code bug: VLP path functions in WITH clause not resolved")
     def test_with_order_by_limit(self):
         """WITH clause with ORDER BY and LIMIT."""
         query = """
@@ -260,7 +298,7 @@ class TestVLPWithComplexPatterns:
         WHERE hops >= 1
         RETURN u1.name, u2.name, hops
         """
-        result = query_api(query)
+        result = query_api(query, schema_name="test_fixtures")
         assert result["status"] == "success"
         for row in result["data"]:
             assert row["hops"] >= 1
@@ -276,13 +314,12 @@ class TestVLPWithComplexPatterns:
         ORDER BY u2.name
         LIMIT 5
         """
-        result = query_api(query)
+        result = query_api(query, schema_name="test_fixtures")
         assert result["status"] == "success"
         # Check that results are distinct by u2.name
         names = [row["u2.name"] for row in result["data"]]
         assert len(names) == len(set(names))
 
-    @pytest.mark.xfail(reason="Code bug: VLP path functions in WITH clause not resolved")
     def test_with_collect_and_path_function(self):
         """WITH clause with COLLECT and path function."""
         query = """
@@ -291,7 +328,7 @@ class TestVLPWithComplexPatterns:
         WITH u1, COLLECT(u2.name) as reachable, MAX(length(path)) as max_hops
         RETURN u1.name, reachable, max_hops
         """
-        result = query_api(query)
+        result = query_api(query, schema_name="test_fixtures")
         assert result["status"] == "success"
         assert len(result["data"]) == 1
         row = result["data"][0]
@@ -312,12 +349,11 @@ class TestVLPWithEdgeCases:
         WHERE hops = 0
         RETURN u.name, hops
         """
-        result = query_api(query)
+        result = query_api(query, schema_name="test_fixtures")
         assert result["status"] == "success"
         assert len(result["data"]) == 1
         assert result["data"][0]["hops"] == 0
 
-    @pytest.mark.xfail(reason="Code bug: VLP path functions in WITH clause not resolved")
     def test_unbounded_vlp_with_limit_in_with(self):
         """Unbounded VLP with LIMIT in WITH clause."""
         query = """
@@ -330,11 +366,10 @@ class TestVLPWithEdgeCases:
         WHERE hops >= 1
         RETURN u1.name, u2.name, hops
         """
-        result = query_api(query)
+        result = query_api(query, schema_name="test_fixtures")
         assert result["status"] == "success"
         assert len(result["data"]) <= 5
 
-    @pytest.mark.xfail(reason="Code bug: VLP path functions in WITH clause not resolved")
     def test_path_function_in_where_and_with(self):
         """Path function used in both WHERE (before WITH) and WITH clause."""
         query = """
@@ -344,12 +379,11 @@ class TestVLPWithEdgeCases:
         WHERE hops = 2
         RETURN u1.name, u2.name, hops
         """
-        result = query_api(query)
+        result = query_api(query, schema_name="test_fixtures")
         assert result["status"] == "success"
         for row in result["data"]:
             assert row["hops"] == 2
 
-    @pytest.mark.xfail(reason="Code bug: VLP path functions in WITH clause not resolved")
     def test_with_arithmetic_on_path_function(self):
         """Arithmetic operations on path functions in WITH."""
         query = """
@@ -359,7 +393,7 @@ class TestVLPWithEdgeCases:
         WHERE doubled_hops = 4
         RETURN u1.name, u2.name, hops, doubled_hops
         """
-        result = query_api(query)
+        result = query_api(query, schema_name="test_fixtures")
         assert result["status"] == "success"
         for row in result["data"]:
             assert row["hops"] == 2

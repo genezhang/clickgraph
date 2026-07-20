@@ -88,7 +88,7 @@ def test_simple_pattern_comprehension(setup_pattern_comp_data):
         RETURN u.name, [(u)-[:PATTERN_COMP_FOLLOWS]->(f) | f.name] AS friends
     """
     
-    result = execute_cypher(cypher)
+    result = execute_cypher(cypher, schema_name="pattern_comp")
     assert_query_success(result)
     assert_row_count(result, 1)
     
@@ -109,7 +109,7 @@ def test_pattern_comprehension_with_where(setup_pattern_comp_data):
         RETURN u.name, [(u)-[:PATTERN_COMP_FOLLOWS]->(f) WHERE f.country = 'USA' | f.name] AS us_friends
     """
     
-    result = execute_cypher(cypher)
+    result = execute_cypher(cypher, schema_name="pattern_comp")
     assert_query_success(result)
     assert_row_count(result, 1)
     
@@ -132,7 +132,7 @@ def test_multiple_pattern_comprehensions(setup_pattern_comp_data):
                [(u)<-[:PATTERN_COMP_FOLLOWS]-(follower) | follower.name] AS followers
     """
     
-    result = execute_cypher(cypher)
+    result = execute_cypher(cypher, schema_name="pattern_comp")
     assert_query_success(result)
     assert_row_count(result, 1)
     
@@ -158,7 +158,7 @@ def test_pattern_comprehension_empty_result(setup_pattern_comp_data):
         RETURN u.name, [(u)-[:PATTERN_COMP_FOLLOWS]->(f) | f.name] AS friends
     """
     
-    result = execute_cypher(cypher)
+    result = execute_cypher(cypher, schema_name="pattern_comp")
     assert_query_success(result)
     assert_row_count(result, 1)
     
@@ -179,7 +179,7 @@ def test_pattern_comprehension_with_expression(setup_pattern_comp_data):
         RETURN u.name, [(u)-[:PATTERN_COMP_FOLLOWS]->(f) | f.name + ' from ' + f.country] AS friend_locations
     """
     
-    result = execute_cypher(cypher)
+    result = execute_cypher(cypher, schema_name="pattern_comp")
     assert_query_success(result)
     assert_row_count(result, 1)
     

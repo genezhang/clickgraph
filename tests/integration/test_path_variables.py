@@ -183,7 +183,6 @@ class TestLengthFunction:
 class TestNodesFunction:
     """Test nodes(p) function on paths."""
     
-    @pytest.mark.xfail(reason="nodes(p) not resolved for non-VLP fixed-hop paths")
     def test_nodes_simple_path(self, simple_graph):
         """Test nodes() returning all nodes in path."""
         response = execute_cypher(
@@ -200,7 +199,6 @@ class TestNodesFunction:
         # Should return array [Alice, Bob]
         assert_column_exists(response, "path_nodes")
     
-    @pytest.mark.xfail(reason="nodes(p) not resolved for non-VLP fixed-hop paths")
     def test_nodes_count(self, simple_graph):
         """Test counting nodes in path."""
         response = execute_cypher(
@@ -249,7 +247,6 @@ class TestNodesFunction:
 class TestRelationshipsFunction:
     """Test relationships(p) function on paths."""
     
-    @pytest.mark.xfail(reason="relationships() has SQL generation issues - KNOWN_ISSUES")
     def test_relationships_simple_path(self, simple_graph):
         """Test relationships() returning all relationships in path."""
         response = execute_cypher(

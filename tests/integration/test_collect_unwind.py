@@ -32,7 +32,6 @@ def test_collect_unwind_single_property():
     assert all(row["user.name"] is not None for row in response["results"])
 
 
-@pytest.mark.xfail(reason="collect+unwind CTE does not propagate all needed columns to outer query")
 def test_collect_unwind_multiple_properties():
     """Test collect + UNWIND with multiple property access"""
     response = execute_cypher(
@@ -58,7 +57,6 @@ def test_collect_unwind_multiple_properties():
         assert row["user.city"] is not None
 
 
-@pytest.mark.xfail(reason="collect+unwind CTE does not propagate all needed columns to outer query")
 def test_collect_unwind_with_ordering():
     """Test collect + UNWIND with explicit ordering"""
     response = execute_cypher(
