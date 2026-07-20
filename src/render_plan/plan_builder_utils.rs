@@ -2107,6 +2107,73 @@ graph_schema:
                 );
             }
         }
+
+        // ---- D5: the twin UNWIND collectors and their barrier difference ---
+
+        /// Both collectors gather UNWIND aliases on the projection spine.
+        #[test]
+        fn unwind_collectors_agree_without_a_barrier() {
+            // Filter(Unwind x (Unwind y (Empty)))
+            let plan = filter(unwind(Arc::new(LogicalPlan::Unwind(
+                crate::query_planner::logical_plan::Unwind {
+                    input: leaf(),
+                    expression: LogicalExpr::Column(crate::query_planner::logical_expr::Column(
+                        "ys".to_string(),
+                    )),
+                    alias: "y".to_string(),
+                    label: None,
+                    tuple_properties: None,
+                },
+            ))));
+
+            let mut set = std::collections::HashSet::new();
+            collect_unwind_aliases(&plan, &mut set);
+            let mut vec = Vec::new();
+            find_unwind_aliases(&plan, &mut vec);
+
+            assert!(set.contains("x") && set.contains("y"));
+            assert!(vec.contains(&"x".to_string()) && vec.contains(&"y".to_string()));
+        }
+
+        /// The ONE deliberate difference: `collect_unwind_aliases` STOPS at a
+        /// WithClause barrier (an UNWIND below is a prior segment's, now a CTE
+        /// column); `find_unwind_aliases` CROSSES it (ID-column detection).
+        /// This is the `stop_at_with` / `cross_with_barrier` distinction the D5
+        /// merge preserves.
+        #[test]
+        fn unwind_collectors_differ_across_with_barrier() {
+            // Unwind x ( WITH a ( Unwind pre ( Empty ) ) )
+            let below_barrier = Arc::new(LogicalPlan::Unwind(
+                crate::query_planner::logical_plan::Unwind {
+                    input: leaf(),
+                    expression: LogicalExpr::Column(crate::query_planner::logical_expr::Column(
+                        "pres".to_string(),
+                    )),
+                    alias: "pre".to_string(),
+                    label: None,
+                    tuple_properties: None,
+                },
+            ));
+            let plan = unwind(with_a(below_barrier));
+
+            let mut set = std::collections::HashSet::new();
+            collect_unwind_aliases(&plan, &mut set);
+            // Stops at WITH: sees the top `x`, NOT the `pre` below the barrier.
+            assert!(set.contains("x"), "top-of-spine UNWIND collected");
+            assert!(
+                !set.contains("pre"),
+                "collect_unwind_aliases must STOP at the WithClause barrier"
+            );
+
+            let mut vec = Vec::new();
+            find_unwind_aliases(&plan, &mut vec);
+            // Crosses WITH: sees both.
+            assert!(vec.contains(&"x".to_string()));
+            assert!(
+                vec.contains(&"pre".to_string()),
+                "find_unwind_aliases must CROSS the WithClause barrier"
+            );
+        }
     }
 }
 pub fn extract_having(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<RenderExpr>> {
@@ -2737,27 +2804,20 @@ pub fn hoist_nested_ctes(from: &mut RenderPlan, to: &mut Vec<Cte>) {
     }
 }
 
-/// Check if there's a WithClause anywhere in the logical plan tree
+/// Check if there's a `WithClause` anywhere in the logical plan tree.
+///
+/// This is the single canonical WITH-existence predicate (§4.2 unify). It is
+/// built on the exhaustive [`LogicalPlan::any_node`] walk, so it reaches EVERY
+/// child edge — `GraphRel.center`, `Cte.input`, `ViewScan.input`, and the
+/// write-op inputs — and can never drift out of sync with the plan structure.
+/// The walk is iterative (explicit stack), so it cannot overflow on deep plans;
+/// the old manual `depth`-guard recursion is therefore gone.
+///
+/// [`plan_contains_with_clause`] is a synonym that delegates here — they were
+/// two hand-rolled copies that had historically drifted (the §6 bug class);
+/// they are now one implementation with two names kept for call-site clarity.
 pub fn has_with_clause_in_tree(plan: &LogicalPlan) -> bool {
-    has_with_clause_in_tree_impl(plan, 0)
-}
-
-fn has_with_clause_in_tree_impl(plan: &LogicalPlan, depth: usize) -> bool {
-    if depth > crate::render_plan::MAX_TRAVERSAL_DEPTH {
-        log::warn!("has_with_clause_in_tree: depth limit {} exceeded", depth);
-        return false;
-    }
-    // A WithClause node is itself a hit; otherwise recurse into every direct
-    // child via the exhaustive `LogicalPlan::children` API (single source of
-    // truth for plan-tree structure). This traverses ALL child-bearing variants
-    // — including write-op inputs (Create/SetProperties/Delete/Remove) that the
-    // previous hand-rolled `_ => false` arm silently skipped.
-    if matches!(plan, LogicalPlan::WithClause(_)) {
-        return true;
-    }
-    plan.children()
-        .iter()
-        .any(|child| has_with_clause_in_tree_impl(child, depth + 1))
+    plan.any_node(|node| matches!(node, LogicalPlan::WithClause(_)))
 }
 
 /// Check if plan has WITH clause in GraphRel.right (WITH+MATCH pattern)
@@ -2822,31 +2882,18 @@ pub fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
     result
 }
 
-/// Check if plan contains a WithClause node
+/// Check if plan contains a `WithClause` node — synonym for
+/// [`has_with_clause_in_tree`].
+///
+/// These were two independently hand-rolled walkers that drifted apart (the §6
+/// infinite-iteration / lost-WITH bug class: `plan_contains_with_clause` had at
+/// one point missed `GraphRel.center`, `Cte`, and `ViewScan.input`). They are
+/// now the SAME implementation — this one delegates — so the CLAUDE.md rule-5
+/// "these must agree" invariant is structural, not a convention to police. The
+/// name is retained because call sites in the WITH→CTE builder read more
+/// clearly as "does this sub-tree still contain a WITH to process?".
 pub fn plan_contains_with_clause(plan: &LogicalPlan) -> bool {
-    plan_contains_with_clause_impl(plan, 0)
-}
-
-fn plan_contains_with_clause_impl(plan: &LogicalPlan, depth: usize) -> bool {
-    if depth > crate::render_plan::MAX_TRAVERSAL_DEPTH {
-        log::warn!("plan_contains_with_clause: depth limit {} exceeded", depth);
-        return false;
-    }
-    // A WithClause node is itself a hit; otherwise recurse into every direct
-    // child via the exhaustive `LogicalPlan::children` API.
-    //
-    // DRIFT FIX (CLAUDE.md rule 5): the previous hand-rolled match had drifted
-    // narrower than `has_with_clause_in_tree` — it checked only GraphRel.left/
-    // .right (NOT .center), and had no arm for Cte or ViewScan.input (both fell
-    // through `_ => false`). Routing through `children()` makes this function
-    // byte-for-byte agree with `has_with_clause_in_tree` again, and additionally
-    // covers write-op inputs.
-    if matches!(plan, LogicalPlan::WithClause(_)) {
-        return true;
-    }
-    plan.children()
-        .iter()
-        .any(|child| plan_contains_with_clause_impl(child, depth + 1))
+    has_with_clause_in_tree(plan)
 }
 
 pub(crate) fn generate_swapped_joins_for_optional_match(
@@ -6445,20 +6492,61 @@ fn resolve_denormalized_property_in_expr_impl(
     }
 }
 
-fn collect_unwind_aliases(plan: &LogicalPlan, out: &mut std::collections::HashSet<String>) {
+/// Shared core for the two UNWIND-alias collectors (§4.2 D5 merge).
+///
+/// Walks the *linear modifier spine* above an UNWIND — `Unwind` (collect its
+/// alias, then continue) and the single-input wrappers `Filter` / `Projection`
+/// / `OrderBy` / `Limit` / `Skip` / `GroupBy` — pushing each UNWIND alias into
+/// `sink`. It deliberately does NOT branch into `GraphRel` / `Union` /
+/// `CartesianProduct`: UNWIND aliases live on the projection spine, not inside
+/// pattern subtrees.
+///
+/// The ONE behavioral difference between the two historical copies is the
+/// `WithClause` barrier, captured by `cross_with_barrier`:
+/// - `false` — stop at a `WithClause` (its UNWIND vars are a prior segment,
+///   now CTE columns; re-emitting them as bare columns is wrong). This is
+///   [`collect_unwind_aliases`].
+/// - `true` — descend through a `WithClause` too (for ID-column detection,
+///   where an earlier UNWIND scalar still needs to be recognized). This is
+///   [`find_unwind_aliases`].
+fn collect_unwind_aliases_core(
+    plan: &LogicalPlan,
+    cross_with_barrier: bool,
+    sink: &mut impl FnMut(&str),
+) {
     match plan {
         LogicalPlan::Unwind(u) => {
-            out.insert(u.alias.clone());
-            collect_unwind_aliases(&u.input, out);
+            sink(&u.alias);
+            collect_unwind_aliases_core(&u.input, cross_with_barrier, sink);
         }
-        LogicalPlan::Filter(f) => collect_unwind_aliases(&f.input, out),
-        LogicalPlan::Projection(p) => collect_unwind_aliases(&p.input, out),
-        LogicalPlan::OrderBy(ob) => collect_unwind_aliases(&ob.input, out),
-        LogicalPlan::Limit(lim) => collect_unwind_aliases(&lim.input, out),
-        LogicalPlan::Skip(s) => collect_unwind_aliases(&s.input, out),
-        LogicalPlan::GroupBy(gb) => collect_unwind_aliases(&gb.input, out),
+        LogicalPlan::Filter(f) => collect_unwind_aliases_core(&f.input, cross_with_barrier, sink),
+        LogicalPlan::Projection(p) => {
+            collect_unwind_aliases_core(&p.input, cross_with_barrier, sink)
+        }
+        LogicalPlan::OrderBy(ob) => {
+            collect_unwind_aliases_core(&ob.input, cross_with_barrier, sink)
+        }
+        LogicalPlan::Limit(lim) => {
+            collect_unwind_aliases_core(&lim.input, cross_with_barrier, sink)
+        }
+        LogicalPlan::Skip(s) => collect_unwind_aliases_core(&s.input, cross_with_barrier, sink),
+        LogicalPlan::GroupBy(gb) => {
+            collect_unwind_aliases_core(&gb.input, cross_with_barrier, sink)
+        }
+        // The barrier: only crossed for the `find_unwind_aliases` flavor.
+        LogicalPlan::WithClause(wc) if cross_with_barrier => {
+            collect_unwind_aliases_core(&wc.input, cross_with_barrier, sink)
+        }
         _ => {}
     }
+}
+
+/// Collect UNWIND aliases on the projection spine, STOPPING at a `WithClause`
+/// barrier. See [`collect_unwind_aliases_core`].
+fn collect_unwind_aliases(plan: &LogicalPlan, out: &mut std::collections::HashSet<String>) {
+    collect_unwind_aliases_core(plan, false, &mut |alias| {
+        out.insert(alias.to_string());
+    });
 }
 
 fn plan_has_denormalized_union(plan: &LogicalPlan) -> bool {
@@ -6959,21 +7047,16 @@ fn plan_has_shortest_path(plan: &LogicalPlan) -> bool {
     }
 }
 
+/// Collect UNWIND aliases on the projection spine, CROSSING `WithClause`
+/// barriers (for ID-column detection). See [`collect_unwind_aliases_core`].
+///
+/// NB: pushes duplicates if the same alias appears twice — callers only ever
+/// use the result via `.contains(...)`, so this preserves the historical
+/// `Vec`-with-possible-duplicates behavior exactly.
 fn find_unwind_aliases(plan: &LogicalPlan, out: &mut Vec<String>) {
-    match plan {
-        LogicalPlan::Unwind(u) => {
-            out.push(u.alias.clone());
-            find_unwind_aliases(&u.input, out);
-        }
-        LogicalPlan::Filter(f) => find_unwind_aliases(&f.input, out),
-        LogicalPlan::Projection(p) => find_unwind_aliases(&p.input, out),
-        LogicalPlan::OrderBy(ob) => find_unwind_aliases(&ob.input, out),
-        LogicalPlan::Limit(lim) => find_unwind_aliases(&lim.input, out),
-        LogicalPlan::Skip(s) => find_unwind_aliases(&s.input, out),
-        LogicalPlan::GroupBy(gb) => find_unwind_aliases(&gb.input, out),
-        LogicalPlan::WithClause(wc) => find_unwind_aliases(&wc.input, out),
-        _ => {}
-    }
+    collect_unwind_aliases_core(plan, true, &mut |alias| {
+        out.push(alias.to_string());
+    });
 }
 
 pub(crate) fn build_chained_with_match_cte_plan(
