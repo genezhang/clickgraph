@@ -78,12 +78,13 @@ Exit: one fully green scheduled nightly run + xpass count ~0.
 
 ### P-1 — Keep a small silent-wrong bug lane open  (standing, ≤1 agent)
 Open issues that are NOT the reverse-mapping class and are individually
-fixable: #647 (end-anchored OPTIONAL VLP render), #646 (composite self-ref
-FK-edge, loud), #644 (denorm OPTIONAL-VLP anchor join, loud), #641 (#589
-gate holes), #640 (EXISTS beyond single-hop), #636 (4-way shared-anchor),
-#635 (FK-edge coupled rel-var on VLP). Prefer silent-wrong over loud-error
-fixes. Rule §1.6 applies: if root cause lands in the reverse-mapping class,
-gate loud + document, move on.
+fixable: ~~#647~~ **DONE (#652, `91475be3`)**, #644 (denorm OPTIONAL-VLP anchor
+join, loud — **in flight**), #646 (composite self-ref FK-edge, loud), #641
+(#589 gate holes), #640 (EXISTS beyond single-hop), #636 (4-way shared-anchor),
+#635 (FK-edge coupled rel-var on VLP), #648 (untyped count(r) multi-type),
+#649 (leading UNWIND). Prefer silent-wrong over loud-error fixes. Rule §1.6
+applies: if root cause lands in the reverse-mapping class, gate loud + document,
+move on.
 
 ### P-2 — P1.2: the five WITH functions  ☑ (done — `refactor/p12-five-with-fns`)
 `REFACTORING_SAFETY_PLAN.md` §4.2. Delivered: the missing P1.1 `walk()` /
@@ -101,23 +102,29 @@ P-3). Latent finding filed in-report: `has_with_clause_in_graph_rel` is
 duplicated (utils + helpers) with a DIFFERENT semantic — a future consolidation
 candidate, not touched here (§8.3 no-drive-by).
 
-### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ☐ (open)
-The dead-code sweep shrank plan_builder_utils.rs to 17,249 lines, but no
-§5.1 *moves* have happened. Pure groups first (vlp_rewrite →
+### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ◐ (P2.1 done — P2.2 next)
+The dead-code sweep shrank plan_builder_utils.rs to ~17.7K lines. §5.1 moves are
+now underway. Pure groups first (vlp_rewrite →
 pattern_comprehension_sql → clause_extractors → plan_predicates →
 cte_rewrite → with_to_cte), one move per PR, no logic edits, `pub(crate)`
 re-exports during transition. D-cluster dedups (D1/D2/D3/D6/D8 remainder)
-ride with their §5.1 home module per the plan. Can proceed in parallel
-with P-2 (different files).
+ride with their §5.1 home module per the plan. **P2.1 (vlp_rewrite move) merged
+(#657)** — VLP expr-rewriting group extracted to `render_plan/vlp_rewrite.rs`,
+byte-identical, D3 dedup deferred (follow-up). **Next: P2.2
+pattern_comprehension_sql move.**
 
-### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ☐ (blocked)
-**Blocked on P-2 and substantially eased by P-3.** The architectural fix
-for the open-issue residue: #592 (VariableRegistry drops property_mapping —
-systemic), #595, #602, #613, #643, and the #583 render rework. Design
-already written: `render_plan/AGENTS.md` §10 (3 phases). When P-2 merges,
-this becomes the main refactor lane and gets the bulk of agent capacity;
-per-shape patching of this class stays forbidden (§1.6).
-Remaining Phase-1 pass migrations (P1.4+) and Phase-3 §6.2 slices are
+### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ☐ (UNBLOCKED — plan ready, next big rock)
+**Concrete staged plan written: `docs/design/FORWARD_RESOLUTION_PLAN.md`.** It
+supersedes the stale `render_plan/AGENTS.md` §10 premise: the `reverse_mapping`
+field §10 says to delete was already removed in #115 (Feb 2026); the debt forked
+into three overlapping resolution mechanisms, with **#592** (VariableRegistry
+`define_*` drops `property_mapping`; `set_property_mapping` has zero callers) as
+the systemic root. The architectural fix for the open-issue residue: #592, #595,
+#602, #613, #643, and the #583 render rework. Slices **F0–F6**; **start with F0**
+— thread `property_mapping` through `define_*`/`*_from_cte` in `typed_variable.rs`
++ a corpus-wide `debug_assert_eq!(forward, legacy)` transition-assert (byte-
+identical, zero corpus delta). Per-shape patching of this class stays forbidden
+(§1.6). Remaining Phase-1 pass migrations (P1.4+) and Phase-3 §6.2 slices are
 fill-in work alongside, not blockers.
 
 ### P-5 — Stats-informed SQL generation  ◐ (S1 implemented on branch; S2/S3 open)
@@ -165,11 +172,24 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
-- 2026-07-20: P-2 / P1.2 five WITH functions unified on an exhaustive `walk()`
-  API (branch `refactor/p12-five-with-fns`, awaiting review/merge). Delivers the
-  P1.1 `walk()`/`any_node()`/`find_map_node()`, characterization matrix, D4
-  existence-twin collapse, D5 UNWIND-collector merge; corpus + goldens
-  byte-identical. Next refactor lane is P-4 (forward resolution).
+- 2026-07-20: **#657** P2.1 first Phase-2 module MOVE — VLP expr-rewriting group
+  extracted verbatim from plan_builder_utils.rs to `render_plan/vlp_rewrite.rs`
+  (796 lines, `pub(crate)` re-exports, zero logic edits). Reviewed MERGE (0
+  findings, per-function byte-diff verified); 210 goldens + corpus byte-identical;
+  ratchet net-zero. Also merged **#655** P-4 forward-resolution plan +
+  **#656** PRIORITIES sync. Next refactor slice: P2.2.
+
+- 2026-07-20: **PR flow adopted** (repo has branch protection). Merged to
+  `origin/main` (squash, admin — sole dev can't self-approve): **#650** P-2/P1.2
+  five-WITH `walk()` (`3562ae0f`), **#652** #647 end-anchored OPTIONAL VLP
+  (`91475be3`), **#651** P-5 S1 stats anchor (`65e2008c`), **#653** P-0 nightly
+  triage (`ba8106c8`), **#654** STATUS.md refresh (`de865d85`). Also
+  fast-forwarded origin/main up from #605 — the whole week's backlog (#607–#645
+  + docs) had been local-only. In flight: **#655** P-4 forward-resolution plan
+  (docs), P2.1 vlp_rewrite move, #644 denorm OPTIONAL-VLP fix.
+- 2026-07-20: filed **#648** (untyped `count(r)` multi-type → Code 47, #502
+  regression) and **#649** (leading-UNWIND parser gap) from P-0 triage; **#647**
+  fixed (verified vs live Neo4j).
 
 - 2026-07-19: #645 reversed OPTIONAL-VLP anchor gate (68666fda); #632
   self-ref FK-edge join inversion (94e788cb); #621 OPTIONAL-VLP anchor
