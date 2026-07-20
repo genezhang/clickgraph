@@ -22,6 +22,7 @@ pub mod schema_discovery;
 pub mod databricks_probe;
 pub mod schema_types;
 pub mod schema_validator;
+pub mod table_stats;
 
 #[cfg(test)]
 pub mod testing;

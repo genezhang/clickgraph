@@ -85,17 +85,21 @@ gate holes), #640 (EXISTS beyond single-hop), #636 (4-way shared-anchor),
 fixes. Rule §1.6 applies: if root cause lands in the reverse-mapping class,
 gate loud + document, move on.
 
-### P-2 — P1.2: the five WITH functions  ☐ (open — next refactor slice)
-`REFACTORING_SAFETY_PLAN.md` §4.2, verbatim: characterize current answers
-of all five over the synthetic-plan matrix → decide semantics (divergences
-become named parameters, never silent fixes) → unify on an exhaustive
-`walk()` (building the missing P1.1 `walk()`/`any_node()`/`find_map_node`
-API as part of this slice) → handle write variants. This was the plan's
-"highest-value migration" and was skipped by the sweep. It is the stated
-precondition for P-4 (§7.2), together with P-3.
-Exit: corpus byte-identical; characterization tests locked to decided
-semantics; `render_plan/AGENTS.md` §6 rewritten from "five functions must
-agree" to "walk() is exhaustive; barriers are explicit".
+### P-2 — P1.2: the five WITH functions  ☑ (done — `refactor/p12-five-with-fns`)
+`REFACTORING_SAFETY_PLAN.md` §4.2. Delivered: the missing P1.1 `walk()` /
+`any_node()` / `find_map_node()` API on `LogicalPlan` (pre-order, `ControlFlow`
+early-exit + `Descend::Yes/Skip` prune, iterative so deep plans can't overflow);
+a synthetic-plan characterization matrix locking the five walkers' current
+answers; the decision (documented) that the plan's hypothesized load-bearing
+divergence was already closed by `3a3af0bf` so unify is pure consolidation, not
+a behavior change; unification of the D4 existence twins onto one `any_node()`
+impl and the D5 UNWIND collectors onto one core with an explicit
+`cross_with_barrier: bool`; write variants handled throughout. Corpus + goldens
+byte-identical; `render_plan/AGENTS.md` §6 and CLAUDE.md rule 5 rewritten to
+"walk() is exhaustive; barriers are explicit". This unblocks P-4 (together with
+P-3). Latent finding filed in-report: `has_with_clause_in_graph_rel` is
+duplicated (utils + helpers) with a DIFFERENT semantic — a future consolidation
+candidate, not touched here (§8.3 no-drive-by).
 
 ### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ☐ (open)
 The dead-code sweep shrank plan_builder_utils.rs to 17,249 lines, but no
@@ -116,18 +120,22 @@ per-shape patching of this class stays forbidden (§1.6).
 Remaining Phase-1 pass migrations (P1.4+) and Phase-3 §6.2 slices are
 fill-in work alongside, not blockers.
 
-### P-5 — Stats-informed SQL generation  ☐ (open — parallel workstream)
+### P-5 — Stats-informed SQL generation  ◐ (S1 implemented on branch; S2/S3 open)
 New. Today all planning is rules/heuristics; the concrete gap is
 `select_anchor()` (`analyzer/graph_join/join_generation.rs:550`) breaking
 ties **alphabetically**, and `has_selective_filters()` being a boolean.
 Staged (each stage its own design-then-implement, LDBC-benchmarked):
-- **S1 — table row-count cache**: one `SELECT table, total_rows FROM
-  system.tables WHERE database = ?` at schema load (TTL refresh; the
-  plumbing precedent is `schema_discovery.rs` / `engine_detection.rs`),
-  cached on the schema catalog; `select_anchor()` breaks ties by smallest
-  table and ranks filtered candidates by size. Databricks equivalent via
-  `DESCRIBE TABLE EXTENDED` (`databricks_probe.rs`). Config-gated
-  (`CLICKGRAPH_STATS_ENABLED`, default off), like `CLICKGRAPH_METRICS_CH_SUMMARY`.
+- **S1 — table row-count cache**: ✅ implemented (`feature/stats-planning-s1`):
+  `graph_catalog/table_stats.rs` (snapshot + pluggable source + TTL cache,
+  `CLICKGRAPH_STATS_TTL_SECS`), attached to the task-local `QueryContext` at
+  HTTP/Bolt request entry, consumed by `select_anchor()` as a within-tier
+  ascending-row-count rank (alphabetical fallback preserved; unknown/NULL
+  counts = stats-less). Config-gated (`CLICKGRAPH_STATS_ENABLED`, default
+  off); goldens/corpus stay stats-less + new with-stats golden set
+  (`stats_anchor_golden_tests.rs`). Remaining S1 follow-ups: embedded/remote
+  library-mode wiring; Databricks source via `DESCRIBE TABLE EXTENDED`
+  (`databricks_probe.rs`); LDBC-scale benchmark. Design:
+  `docs/design/STATS_PLANNING.md`.
 - **S2 — column selectivity**: NDV/min-max (ClickHouse column statistics /
   `system.parts_columns` `uniq`) to rank anchors among filtered candidates
   and pick VLP recursion direction (start BFS from the smaller endpoint
@@ -137,9 +145,8 @@ Staged (each stage its own design-then-implement, LDBC-benchmarked):
   to find which heuristics actually cost, BEFORE building more machinery
   (no per-query EXPLAIN ESTIMATE round-trips until S3 says where).
 Guardrails: rule §1.7 (ordering only, off by default); goldens stay
-stats-less; add a small separate golden set locking the with-stats plan
-against a fixed stats fixture. First deliverable: a short
-`docs/design/STATS_PLANNING.md` + S1 behind the flag.
+stats-less; the with-stats golden set locks the flag-on plan against a
+fixed stats fixture.
 
 ### P-6 — Backlog (do not start without re-prioritizing here)
 - SQL-IR Phases 2–4 (path collapse, structural idioms, Raw shrink) —
@@ -157,6 +164,12 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-20: P-2 / P1.2 five WITH functions unified on an exhaustive `walk()`
+  API (branch `refactor/p12-five-with-fns`, awaiting review/merge). Delivers the
+  P1.1 `walk()`/`any_node()`/`find_map_node()`, characterization matrix, D4
+  existence-twin collapse, D5 UNWIND-collector merge; corpus + goldens
+  byte-identical. Next refactor lane is P-4 (forward resolution).
 
 - 2026-07-19: #645 reversed OPTIONAL-VLP anchor gate (68666fda); #632
   self-ref FK-edge join inversion (94e788cb); #621 OPTIONAL-VLP anchor

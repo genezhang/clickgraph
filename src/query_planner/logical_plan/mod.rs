@@ -63,6 +63,7 @@
 //! - [`generate_cte_id`] - CTE names (cte1, cte2, cte3...)
 
 use serde::{Deserialize, Serialize};
+use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::{collections::HashMap, fmt, sync::Arc};
 
@@ -2016,28 +2017,11 @@ impl LogicalPlan {
 
     /// Check if this plan tree contains a Union node at any depth.
     pub fn has_union_anywhere(&self) -> bool {
-        match self {
-            LogicalPlan::Union(_) => true,
-            LogicalPlan::Limit(l) => l.input.has_union_anywhere(),
-            LogicalPlan::Skip(s) => s.input.has_union_anywhere(),
-            LogicalPlan::OrderBy(o) => o.input.has_union_anywhere(),
-            LogicalPlan::Filter(f) => f.input.has_union_anywhere(),
-            LogicalPlan::Projection(p) => p.input.has_union_anywhere(),
-            LogicalPlan::GroupBy(gb) => gb.input.has_union_anywhere(),
-            LogicalPlan::GraphJoins(gj) => gj.input.has_union_anywhere(),
-            LogicalPlan::GraphNode(gn) => gn.input.has_union_anywhere(),
-            LogicalPlan::GraphRel(gr) => {
-                gr.left.has_union_anywhere()
-                    || gr.center.has_union_anywhere()
-                    || gr.right.has_union_anywhere()
-            }
-            LogicalPlan::CartesianProduct(cp) => {
-                cp.left.has_union_anywhere() || cp.right.has_union_anywhere()
-            }
-            LogicalPlan::WithClause(wc) => wc.input.has_union_anywhere(),
-            LogicalPlan::Unwind(u) => u.input.has_union_anywhere(),
-            _ => false,
-        }
+        // Exhaustive walk (no hand-listed arms) — a `Union` reachable through
+        // ANY child edge counts, including the ones the previous hand-rolled
+        // match omitted (`Cte.input`, `ViewScan.input`, and the write-op
+        // inputs). See REFACTORING_SAFETY_PLAN §4.1.
+        self.any_node(|node| matches!(node, LogicalPlan::Union(_)))
     }
 
     /// Count total number of nodes in the plan tree.
@@ -2091,6 +2075,23 @@ impl LogicalPlan {
             LogicalPlan::Remove(r) => r.input.count_plan_nodes_impl(cap, current),
         }
     }
+}
+
+/// Pruning signal returned by a [`LogicalPlan::walk`] visitor that wants to
+/// keep going (`ControlFlow::Continue`) but control whether the walk descends
+/// into the current node's children.
+///
+/// This is what lets a barrier-aware walker stop at a `WithClause` (or any
+/// other boundary) WITHOUT hand-rolling its own recursion: return
+/// `Continue(Descend::Skip)` and the subtree below the current node is not
+/// visited, while siblings elsewhere in the tree still are. Early exit is a
+/// separate concern, expressed by `ControlFlow::Break(b)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Descend {
+    /// Visit this node's children (normal pre-order recursion).
+    Yes,
+    /// Do NOT visit this node's children; continue the walk elsewhere.
+    Skip,
 }
 
 impl LogicalPlan {
@@ -2158,6 +2159,75 @@ impl LogicalPlan {
         for child in self.children() {
             f(child);
         }
+    }
+
+    /// Exhaustive pre-order walk of the plan tree with early-exit and pruning.
+    ///
+    /// For each node (parent before children), the visitor `f` returns a
+    /// [`ControlFlow`]:
+    /// - `Break(b)` — stop the entire walk immediately and return `Some(b)`.
+    /// - `Continue(Descend::Yes)` — visit this node's children next.
+    /// - `Continue(Descend::Skip)` — do NOT visit this node's children (prune
+    ///   the subtree), but keep walking the rest of the tree.
+    ///
+    /// Returns `Some(b)` if the walk broke early, `None` if it ran to
+    /// completion. Because recursion goes through the exhaustive
+    /// [`LogicalPlan::children`], every child-bearing variant — including
+    /// `GraphRel.center`, `Cte.input`, `ViewScan.input`, and the write
+    /// variants — is reached by construction; a new `LogicalPlan` variant
+    /// cannot be silently skipped.
+    ///
+    /// Implemented iteratively over an explicit stack (no per-node recursion
+    /// frame), so pathologically deep plans cannot overflow the call stack —
+    /// the documented failure mode of the hand-rolled recursive walkers this
+    /// replaces (REFACTORING_SAFETY_PLAN §10, AGENTS.md §7).
+    pub fn walk<B>(
+        &self,
+        f: &mut impl FnMut(&LogicalPlan) -> ControlFlow<B, Descend>,
+    ) -> Option<B> {
+        // Explicit DFS stack. Children are pushed in reverse so they are
+        // popped left-to-right, giving the same visitation order as a
+        // straightforward recursive `for child in children()` pre-order walk.
+        let mut stack: Vec<&LogicalPlan> = vec![self];
+        while let Some(node) = stack.pop() {
+            match f(node) {
+                ControlFlow::Break(b) => return Some(b),
+                ControlFlow::Continue(Descend::Yes) => {
+                    let children = node.children();
+                    for child in children.into_iter().rev() {
+                        stack.push(child);
+                    }
+                }
+                ControlFlow::Continue(Descend::Skip) => {}
+            }
+        }
+        None
+    }
+
+    /// `true` if any node in the tree satisfies `pred`. Descends fully (never
+    /// prunes) and short-circuits on the first match. Built on [`walk`].
+    ///
+    /// [`walk`]: LogicalPlan::walk
+    pub fn any_node(&self, mut pred: impl FnMut(&LogicalPlan) -> bool) -> bool {
+        self.walk(&mut |node| {
+            if pred(node) {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(Descend::Yes)
+            }
+        })
+        .is_some()
+    }
+
+    /// Return the first `Some(T)` produced by `f` over a full pre-order walk,
+    /// or `None` if `f` returns `None` for every node. Built on [`walk`].
+    ///
+    /// [`walk`]: LogicalPlan::walk
+    pub fn find_map_node<T>(&self, mut f: impl FnMut(&LogicalPlan) -> Option<T>) -> Option<T> {
+        self.walk(&mut |node| match f(node) {
+            Some(t) => ControlFlow::Break(t),
+            None => ControlFlow::Continue(Descend::Yes),
+        })
     }
 
     /// Rebuild this node, replacing each direct child with `f(child)`.
@@ -2473,44 +2543,13 @@ impl LogicalPlan {
 
     /// Check if the logical plan tree contains any variable-length paths
     pub fn contains_variable_length_path(&self) -> bool {
-        match self {
-            LogicalPlan::GraphRel(graph_rel) => {
-                // Check if this GraphRel has variable_length
-                if graph_rel.variable_length.is_some() {
-                    return true;
-                }
-                // Recursively check children
-                graph_rel.left.contains_variable_length_path()
-                    || graph_rel.center.contains_variable_length_path()
-                    || graph_rel.right.contains_variable_length_path()
-            }
-            LogicalPlan::GraphNode(graph_node) => graph_node.input.contains_variable_length_path(),
-            LogicalPlan::Filter(filter) => filter.input.contains_variable_length_path(),
-            LogicalPlan::Projection(proj) => proj.input.contains_variable_length_path(),
-            LogicalPlan::GraphJoins(joins) => joins.input.contains_variable_length_path(),
-            LogicalPlan::OrderBy(order_by) => order_by.input.contains_variable_length_path(),
-            LogicalPlan::Skip(skip) => skip.input.contains_variable_length_path(),
-            LogicalPlan::Limit(limit) => limit.input.contains_variable_length_path(),
-            LogicalPlan::GroupBy(group_by) => group_by.input.contains_variable_length_path(),
-            LogicalPlan::Cte(cte) => cte.input.contains_variable_length_path(),
-            LogicalPlan::Union(union) => union
-                .inputs
-                .iter()
-                .any(|input| input.contains_variable_length_path()),
-            LogicalPlan::Unwind(unwind) => unwind.input.contains_variable_length_path(),
-            LogicalPlan::CartesianProduct(cp) => {
-                cp.left.contains_variable_length_path() || cp.right.contains_variable_length_path()
-            }
-            LogicalPlan::WithClause(with_clause) => {
-                with_clause.input.contains_variable_length_path()
-            }
-            LogicalPlan::Create(c) => c.input.contains_variable_length_path(),
-            LogicalPlan::SetProperties(sp) => sp.input.contains_variable_length_path(),
-            LogicalPlan::Delete(d) => d.input.contains_variable_length_path(),
-            LogicalPlan::Remove(r) => r.input.contains_variable_length_path(),
-            // Leaf nodes
-            LogicalPlan::ViewScan(_) | LogicalPlan::Empty | LogicalPlan::PageRank(_) => false,
-        }
+        // Exhaustive walk: any GraphRel carrying `variable_length` anywhere in
+        // the tree. Equivalent to the previous fully-enumerated match (which
+        // already handled every variant including the write ops), but the
+        // recursion can no longer drift from the plan structure. §4.1.
+        self.any_node(
+            |node| matches!(node, LogicalPlan::GraphRel(gr) if gr.variable_length.is_some()),
+        )
     }
 }
 
@@ -2846,7 +2885,231 @@ mod tests {
         }));
     }
 
-    /// A 3-level plan for transform_up contract tests:
+    // ---- walk() / any_node() / find_map_node() (P1.1 API) --------------------
+
+    /// Build `Filter(WithClause(GraphRel{left: node_a, center: Empty, right:
+    /// node_b}))` — a small tree whose WithClause sits above a multi-child
+    /// GraphRel, so we can prove pre-order visitation and Descend::Skip pruning
+    /// at a real barrier node.
+    fn walk_fixture() -> LogicalPlan {
+        let leaf: Arc<LogicalPlan> = Arc::new(LogicalPlan::Empty);
+        let node_a = Arc::new(LogicalPlan::GraphNode(GraphNode {
+            input: leaf.clone(),
+            alias: "a".to_string(),
+            label: None,
+            is_denormalized: false,
+            projected_columns: None,
+            node_types: None,
+        }));
+        let node_b = Arc::new(LogicalPlan::GraphNode(GraphNode {
+            input: leaf.clone(),
+            alias: "b".to_string(),
+            label: None,
+            is_denormalized: false,
+            projected_columns: None,
+            node_types: None,
+        }));
+        let gr = Arc::new(LogicalPlan::GraphRel(GraphRel {
+            left: node_a,
+            center: leaf.clone(),
+            right: node_b,
+            alias: "r".to_string(),
+            direction: Direction::Outgoing,
+            left_connection: "a".to_string(),
+            right_connection: "b".to_string(),
+            is_rel_anchor: false,
+            variable_length: None,
+            shortest_path_mode: None,
+            path_variable: None,
+            where_predicate: None,
+            labels: None,
+            is_optional: None,
+            anchor_connection: None,
+            cte_references: HashMap::new(),
+            pattern_combinations: None,
+            was_undirected: None,
+            match_clause_index: 0,
+            optional_anchor_where: None,
+        }));
+        let wc = Arc::new(LogicalPlan::WithClause(WithClause::new(gr, vec![]).expect(
+            "with_var WithClause with no items is valid for the walk fixture",
+        )));
+        LogicalPlan::Filter(Filter {
+            input: wc,
+            predicate: LogicalExpr::Literal(Literal::Boolean(true)),
+        })
+    }
+
+    /// Compact variant tag for walk-order assertions (`variant_name()` embeds
+    /// per-node detail like item counts, which is noise here).
+    fn walk_tag(p: &LogicalPlan) -> &'static str {
+        match p {
+            LogicalPlan::Filter(_) => "Filter",
+            LogicalPlan::WithClause(_) => "WithClause",
+            LogicalPlan::GraphRel(_) => "GraphRel",
+            LogicalPlan::GraphNode(_) => "GraphNode",
+            LogicalPlan::Empty => "Empty",
+            _ => "Other",
+        }
+    }
+
+    /// walk() visits parent-before-children, left-to-right (pre-order).
+    #[test]
+    fn test_walk_preorder_visitation_order() {
+        let plan = walk_fixture();
+        let mut order: Vec<&'static str> = vec![];
+        let done: Option<()> = plan.walk(&mut |node| {
+            order.push(walk_tag(node));
+            ControlFlow::Continue(Descend::Yes)
+        });
+        assert!(done.is_none(), "a fully-descending walk never breaks");
+        // Filter -> WithClause -> GraphRel -> (left) GraphNode 'a' -> Empty ->
+        // (center) Empty -> (right) GraphNode 'b' -> Empty
+        assert_eq!(
+            order,
+            vec![
+                "Filter",
+                "WithClause",
+                "GraphRel",
+                "GraphNode",
+                "Empty",
+                "Empty",
+                "GraphNode",
+                "Empty",
+            ]
+        );
+    }
+
+    /// `Descend::Skip` prunes the subtree below the node that returns it, but
+    /// keeps walking siblings/ancestors — the barrier-stop primitive.
+    #[test]
+    fn test_walk_descend_skip_prunes_subtree() {
+        let plan = walk_fixture();
+        let mut visited: Vec<&'static str> = vec![];
+        let _: Option<()> = plan.walk(&mut |node| {
+            visited.push(walk_tag(node));
+            // Stop AT the WithClause barrier: record it, but don't descend.
+            if matches!(node, LogicalPlan::WithClause(_)) {
+                ControlFlow::Continue(Descend::Skip)
+            } else {
+                ControlFlow::Continue(Descend::Yes)
+            }
+        });
+        // Filter and the WithClause itself are visited; nothing below the
+        // WithClause (the GraphRel and its whole subtree) is.
+        assert_eq!(visited, vec!["Filter", "WithClause"]);
+    }
+
+    /// `ControlFlow::Break` stops the whole walk immediately and returns the
+    /// break value.
+    #[test]
+    fn test_walk_break_early_exit() {
+        let plan = walk_fixture();
+        let mut visited = 0usize;
+        let found = plan.walk(&mut |node| {
+            visited += 1;
+            if matches!(node, LogicalPlan::GraphRel(_)) {
+                ControlFlow::Break("hit-graphrel")
+            } else {
+                ControlFlow::Continue(Descend::Yes)
+            }
+        });
+        assert_eq!(found, Some("hit-graphrel"));
+        // Filter, WithClause, GraphRel — then stop, before any GraphRel child.
+        assert_eq!(visited, 3);
+    }
+
+    /// any_node() descends into EVERY child edge, including the ones the
+    /// pre-P1.1 hand-rolled walkers omitted: GraphRel.center, Cte.input,
+    /// ViewScan.input, and the write-variant inputs.
+    #[test]
+    fn test_any_node_reaches_all_child_edges() {
+        let leaf: Arc<LogicalPlan> = Arc::new(LogicalPlan::Empty);
+        let marker = |alias: &str| {
+            Arc::new(LogicalPlan::GraphNode(GraphNode {
+                input: leaf.clone(),
+                alias: alias.to_string(),
+                label: None,
+                is_denormalized: false,
+                projected_columns: None,
+                node_types: None,
+            }))
+        };
+        let has_marker = |p: &LogicalPlan, want: &str| {
+            let want = want.to_string();
+            p.any_node(move |n| matches!(n, LogicalPlan::GraphNode(gn) if gn.alias == want))
+        };
+
+        // GraphRel.center
+        let gr_center = LogicalPlan::GraphRel(GraphRel {
+            left: leaf.clone(),
+            center: marker("in_center"),
+            right: leaf.clone(),
+            alias: "r".to_string(),
+            direction: Direction::Outgoing,
+            left_connection: "l".to_string(),
+            right_connection: "r".to_string(),
+            is_rel_anchor: false,
+            variable_length: None,
+            shortest_path_mode: None,
+            path_variable: None,
+            where_predicate: None,
+            labels: None,
+            is_optional: None,
+            anchor_connection: None,
+            cte_references: HashMap::new(),
+            pattern_combinations: None,
+            was_undirected: None,
+            match_clause_index: 0,
+            optional_anchor_where: None,
+        });
+        assert!(has_marker(&gr_center, "in_center"));
+
+        // Cte.input
+        let cte = LogicalPlan::Cte(Cte {
+            input: marker("in_cte"),
+            name: "c1".to_string(),
+        });
+        assert!(has_marker(&cte, "in_cte"));
+
+        // ViewScan.input
+        let mut vs = ViewScan::new(
+            "t".to_string(),
+            None,
+            HashMap::new(),
+            "id".to_string(),
+            vec!["id".to_string()],
+            vec![],
+        );
+        vs.input = Some(marker("in_viewscan"));
+        let vs = LogicalPlan::ViewScan(Arc::new(vs));
+        assert!(has_marker(&vs, "in_viewscan"));
+
+        // Write-variant input (Create)
+        let create = LogicalPlan::Create(Create {
+            input: marker("in_create"),
+            patterns: vec![],
+        });
+        assert!(has_marker(&create, "in_create"));
+    }
+
+    /// find_map_node() returns the first `Some` in pre-order and stops.
+    #[test]
+    fn test_find_map_node_first_match() {
+        let plan = walk_fixture();
+        let mut calls = 0usize;
+        let first_node_alias = plan.find_map_node(|n| {
+            calls += 1;
+            match n {
+                LogicalPlan::GraphNode(gn) => Some(gn.alias.clone()),
+                _ => None,
+            }
+        });
+        assert_eq!(first_node_alias.as_deref(), Some("a"));
+        // Filter, WithClause, GraphRel, GraphNode('a') — 4 calls, then stop.
+        assert_eq!(calls, 4);
+    }
+
     /// Limit(Filter(Skip(Empty)))
     fn transform_up_fixture() -> Arc<LogicalPlan> {
         Arc::new(LogicalPlan::Limit(Limit {

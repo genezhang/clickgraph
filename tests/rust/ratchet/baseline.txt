@@ -76,7 +76,7 @@ schema	is_denormalized	src/query_planner/logical_plan/match_clause/helpers.rs	11
 schema	is_denormalized	src/query_planner/logical_plan/match_clause/mod.rs	1
 schema	is_denormalized	src/query_planner/logical_plan/match_clause/traversal.rs	16
 schema	is_denormalized	src/query_planner/logical_plan/match_clause/view_scan.rs	17
-schema	is_denormalized	src/query_planner/logical_plan/mod.rs	8
+schema	is_denormalized	src/query_planner/logical_plan/mod.rs	11
 schema	is_denormalized	src/query_planner/logical_plan/optional_match_clause.rs	1
 schema	is_denormalized	src/query_planner/logical_plan/view_scan.rs	6
 schema	is_denormalized	src/query_planner/logical_plan/write_clause_builder.rs	1
@@ -93,7 +93,7 @@ schema	is_denormalized	src/render_plan/from_builder.rs	4
 schema	is_denormalized	src/render_plan/join_builder.rs	10
 schema	is_denormalized	src/render_plan/plan_builder.rs	10
 schema	is_denormalized	src/render_plan/plan_builder_helpers.rs	9
-schema	is_denormalized	src/render_plan/plan_builder_utils.rs	8
+schema	is_denormalized	src/render_plan/plan_builder_utils.rs	9
 schema	is_denormalized	src/render_plan/properties_builder.rs	3
 schema	is_denormalized	src/render_plan/render_expr.rs	1
 schema	is_denormalized	src/render_plan/select_builder.rs	2

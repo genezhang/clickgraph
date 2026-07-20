@@ -6777,6 +6777,125 @@ async fn reversed_written_optional_vlp_anchor_gate_folds_into_vlp_join_645() {
     );
 }
 
+/// #647: an OPTIONAL variable-length pattern whose ANCHOR is the pattern's END
+/// node was mis-rendered — the outer query bound the pattern START as FROM and
+/// joined on `vt0.start_id`, projecting/grouping the endpoint via `vt0.end_*`.
+/// That DROPPED anchors with no path (instead of NULL-extending them) and added
+/// a spurious NULL-endpoint row. The fix drives the outer FROM from the ANCHOR
+/// (end) node, LEFT JOINs the VLP CTE on `anchor.id = vt0.end_id`, projects the
+/// OTHER endpoint from `vt0.start_*`, and GROUP BYs the anchor's own column.
+/// Both written forms reach this shape: genuine incoming `(a)<-[*]-(b)` (anchor
+/// `a` is END) and outgoing `(a)-[*]->(b)` with a pre-bound `b` (anchor `b` is
+/// END).
+#[tokio::test]
+async fn end_anchored_optional_vlp_drives_from_anchor_and_joins_on_end_id_647() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // Form 1: genuine incoming, anchor `a` is the pattern END node.
+    // FROM must be the anchor `a`, join key `a.user_id = vt0.end_id`, the OTHER
+    // endpoint (`count(b)`) counted from `vt0.start_id`, GROUP BY the anchor's
+    // own `a.full_name` — NOT `vt0.end_name`.
+    let sql = render(
+        &schema,
+        "MATCH (a:User) OPTIONAL MATCH (a)<-[:FOLLOWS*1..2]-(b:User) \
+         RETURN a.name, count(b) ORDER BY a.name",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("FROM social.users_bench AS a")
+            && sql.contains("LEFT JOIN vlp_b_a AS vt0 ON a.user_id = vt0.end_id"),
+        "#647: end-anchored OPTIONAL VLP must drive FROM from the anchor and join \
+         on `end_id` (not bind the START node as FROM on `start_id`):\n{sql}"
+    );
+    assert!(
+        sql.contains("a.full_name AS \"a.name\"") && sql.contains("GROUP BY a.full_name"),
+        "#647: the anchor property/GROUP BY must reference the anchor's own \
+         column, not the CTE `vt0.end_name`:\n{sql}"
+    );
+    assert!(
+        sql.contains("count(vt0.start_id)"),
+        "#647: the counted (far) endpoint must be projected from `vt0.start_id`:\n{sql}"
+    );
+    assert!(
+        !sql.contains("vt0.end_name"),
+        "#647: the anchor endpoint must NOT be projected as `vt0.end_name`:\n{sql}"
+    );
+
+    // Form 2: outgoing written with a PRE-BOUND end node `b` (anchor `b` is END).
+    // Same corrected structure, mirror aliases.
+    let sql2 = render(
+        &schema,
+        "MATCH (b:User) OPTIONAL MATCH (a:User)-[:FOLLOWS*1..2]->(b) \
+         RETURN b.name, count(a) ORDER BY b.name",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql2.contains("FROM social.users_bench AS b")
+            && sql2.contains("LEFT JOIN vlp_a_b AS vt0 ON b.user_id = vt0.end_id"),
+        "#647: pre-bound-end outgoing OPTIONAL VLP must also drive FROM from the \
+         anchor `b` and join on `end_id`:\n{sql2}"
+    );
+    assert!(
+        sql2.contains("b.full_name AS \"b.name\"") && sql2.contains("count(vt0.start_id)"),
+        "#647: anchor `b` from its own column, far endpoint `a` from \
+         `vt0.start_id`:\n{sql2}"
+    );
+
+    // Endpoint-property projection (not just count): the OTHER endpoint `b.name`
+    // must resolve to `vt0.start_name`; the anchor `a.name` stays `a.full_name`.
+    let sql3 = render(
+        &schema,
+        "MATCH (a:User) OPTIONAL MATCH (a)<-[:FOLLOWS*1..2]-(b:User) \
+         RETURN a.name, b.name",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql3.contains("a.full_name AS \"a.name\"") && sql3.contains("vt0.start_name AS \"b.name\""),
+        "#647: anchor endpoint from its own table, far endpoint from \
+         `vt0.start_*`:\n{sql3}"
+    );
+
+    // Anchor-gate (`a.is_active`, anchor is END): applied inside the CTE as
+    // `end_is_active` — an inactive anchor finds no CTE rows and is correctly
+    // NULL-extended (count 0). Was Code 47 / silent-wrong on main.
+    let sql4 = render(
+        &schema,
+        "MATCH (a:User) OPTIONAL MATCH (a)<-[:FOLLOWS*1..2]-(b:User) \
+         WHERE a.is_active = true RETURN a.name, count(b)",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql4.contains("end_is_active = true") && sql4.contains("ON a.user_id = vt0.end_id"),
+        "#647: the anchor gate (`a`, the END node) stays applied inside the CTE \
+         as `end_is_active`; anchor still drives FROM on `end_id`:\n{sql4}"
+    );
+
+    // Far-endpoint filter (`b.is_active`, `b` is the counted START endpoint):
+    // must stay embedded in the CTE (as `start_node.is_active` in the base/
+    // recursive SELECTs) — dropping it silently counted filtered-out endpoints
+    // (the pre-existing gap this fix also closes).
+    let sql5 = render(
+        &schema,
+        "MATCH (a:User) OPTIONAL MATCH (a)<-[:FOLLOWS*1..2]-(b:User) \
+         WHERE b.is_active = true RETURN a.name, count(b)",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql5.contains("WHERE start_node.is_active = true"),
+        "#647: the far-endpoint filter (`b`, the START/counted node) must stay \
+         embedded in the CTE as `start_node.is_active`:\n{sql5}"
+    );
+    assert!(
+        !sql5.to_uppercase().contains("\nWHERE B.IS_ACTIVE"),
+        "#647: the far-endpoint filter must not leak to the outer WHERE:\n{sql5}"
+    );
+}
+
 /// #599: `size((pattern))` renders as a bare correlated `COUNT(*)` scalar
 /// subquery; ClickHouse decorrelates that into a LEFT JOIN, so an outer row
 /// with ZERO pattern matches yields NULL instead of 0 — silently breaking
