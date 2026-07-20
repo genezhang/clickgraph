@@ -433,6 +433,15 @@ Cypher scope stack:           SQL equivalent:
 
 #### The Architectural Flaw: Premature Resolution + Reverse Mapping
 
+> **⚠️ Stale premise (corrected 2026-07-20).** The `reverse_mapping` field
+> described below was already deleted in the Feb-2026 scope redesign (#115).
+> The debt did not vanish — it forked into three overlapping resolution
+> mechanisms, with #592 (`property_mapping` dropped in `define_*`) as the
+> systemic root. For the current, source-verified plan and the staged fix,
+> see **`docs/design/FORWARD_RESOLUTION_PLAN.md`** (P-4). The narrative below is
+> retained for the conceptual "premature-resolve-then-undo" explanation only —
+> the specific field names / "88 usages" figure are obsolete.
+
 **Current (broken) flow:**
 1. Parser creates: `person.name` → `LogicalExpr::PropertyAccess("person", "name")`
 2. Schema lookup resolves to DB column: `"name"` → `"full_name"`
