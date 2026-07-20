@@ -12,7 +12,7 @@ LogicalPlan (from query_planner)
 plan_builder.rs          ← trait RenderPlanBuilder: LogicalPlan → RenderPlan
     │                       dispatches to build_chained_with_match_cte_plan for WITH+MATCH
     │
-    ├─ plan_builder_utils.rs (17K lines) ← the beast: CTE extraction, expression rewriting,
+    ├─ plan_builder_utils.rs (14K lines) ← the beast: CTE extraction, expression rewriting,
     │                                       WITH→CTE transformation, VLP+WITH JOIN generation
     │
     ├─ vlp_rewrite.rs (796)             ← **P2.1 (Jul 2026)**: VLP expression-rewriting group
@@ -22,6 +22,19 @@ plan_builder.rs          ← trait RenderPlanBuilder: LogicalPlan → RenderPlan
     │                                       rewrite_render_expr_for_vlp_with_{from_alias,endpoint_info},
     │                                       extract_vlp_alias_mappings). Re-exported from the
     │                                       old path during transition.
+    │
+    ├─ pattern_comprehension_sql.rs (2.6K) ← **P2.2 (Jul 2026)**: pattern-comprehension SQL
+    │                                       *string*-emitting group moved verbatim out of
+    │                                       plan_builder_utils.rs. Correlated-subquery /
+    │                                       pre-aggregated-CTE renderings for
+    │                                       `size([(a)-[:R]->(b) WHERE .. | ..])` / pattern-count,
+    │                                       arrayCount list-comp lowering, count(*)-placeholder
+    │                                       passes, edge/node id-column + CTE-column lookups
+    │                                       (build_pattern_comprehension_sql,
+    │                                       generate_pattern_comprehension_cte / PcCteResult,
+    │                                       generate_pc_*, build_cte_column_map, ...). Emits SQL
+    │                                       text, a distinct layer. Re-exported from the old path
+    │                                       during transition.
     │
     ├─ plan_builder_helpers.rs (4.6K)   ← schema lookups, property resolution, label fallbacks
     │
@@ -605,7 +618,7 @@ Weighted VLP for `cost(path)` support (LDBC complex-14):
 ### 14. Pattern Comprehension CTEs (Feb 2026)
 
 For `size(PatternComprehension)` that would generate correlated subqueries (which fail with ClickHouse UNION ALL):
-- **`PcCteResult`** + `generate_pattern_comprehension_cte()` in `plan_builder_utils.rs`: Pre-aggregated CTEs.
+- **`PcCteResult`** + `generate_pattern_comprehension_cte()` in `pattern_comprehension_sql.rs` (P2.2; re-exported from `plan_builder_utils.rs` during transition): Pre-aggregated CTEs.
 - Pattern: `SELECT corr_0, corr_1, COUNT(*) AS result FROM edge GROUP BY corr_0, corr_1`
 - LEFT JOIN + `COALESCE(pc_cte.result, 0)` replaces correlated subquery.
 - `generate_pc_cte_with_either()` for `Direction::Either`: UNION ALL of both direction variants.

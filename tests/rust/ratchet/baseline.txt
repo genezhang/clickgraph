@@ -21,8 +21,9 @@ schema	from_label_column	src/query_planner/optimizer/filter_into_graph_rel.rs	10
 schema	from_label_column	src/query_planner/write_guard.rs	1
 schema	from_label_column	src/render_plan/cte_extraction.rs	3
 schema	from_label_column	src/render_plan/cte_manager/mod.rs	6
+schema	from_label_column	src/render_plan/pattern_comprehension_sql.rs	1
 schema	from_label_column	src/render_plan/plan_builder_helpers.rs	9
-schema	from_label_column	src/render_plan/plan_builder_utils.rs	2
+schema	from_label_column	src/render_plan/plan_builder_utils.rs	1
 schema	from_label_column	src/server/bolt_protocol/result_transformer.rs	3
 schema	from_label_column	src/sql_generator/emitters/clickhouse/multi_type_vlp_joins.rs	2
 schema	from_label_column	src/sql_generator/emitters/clickhouse/variable_length_cte.rs	12
@@ -131,8 +132,9 @@ schema	to_label_column	src/query_planner/optimizer/filter_into_graph_rel.rs	10
 schema	to_label_column	src/query_planner/write_guard.rs	1
 schema	to_label_column	src/render_plan/cte_extraction.rs	3
 schema	to_label_column	src/render_plan/cte_manager/mod.rs	8
+schema	to_label_column	src/render_plan/pattern_comprehension_sql.rs	1
 schema	to_label_column	src/render_plan/plan_builder_helpers.rs	9
-schema	to_label_column	src/render_plan/plan_builder_utils.rs	2
+schema	to_label_column	src/render_plan/plan_builder_utils.rs	1
 schema	to_label_column	src/server/bolt_protocol/result_transformer.rs	3
 schema	to_label_column	src/sql_generator/emitters/clickhouse/multi_type_vlp_joins.rs	2
 schema	to_label_column	src/sql_generator/emitters/clickhouse/variable_length_cte.rs	17
@@ -182,8 +184,9 @@ schema	type_column	src/query_planner/write_guard.rs	1
 schema	type_column	src/render_plan/cte_extraction.rs	16
 schema	type_column	src/render_plan/cte_manager/mod.rs	6
 schema	type_column	src/render_plan/join_builder.rs	1
+schema	type_column	src/render_plan/pattern_comprehension_sql.rs	2
 schema	type_column	src/render_plan/plan_builder_helpers.rs	12
-schema	type_column	src/render_plan/plan_builder_utils.rs	3
+schema	type_column	src/render_plan/plan_builder_utils.rs	1
 schema	type_column	src/server/bolt_protocol/result_transformer.rs	3
 schema	type_column	src/sql_generator/emitters/clickhouse/multi_type_vlp_joins.rs	2
 schema	type_column	src/sql_generator/emitters/clickhouse/variable_length_cte.rs	13
@@ -192,7 +195,8 @@ dialect	Dialect::	src/graph_catalog/expression_parser.rs	3
 dialect	Dialect::	src/graph_catalog/schema_types.rs	40
 dialect	Dialect::	src/render_plan/cte_extraction.rs	1
 dialect	Dialect::	src/render_plan/cte_manager/mod.rs	1
-dialect	Dialect::	src/render_plan/plan_builder_utils.rs	9
+dialect	Dialect::	src/render_plan/pattern_comprehension_sql.rs	2
+dialect	Dialect::	src/render_plan/plan_builder_utils.rs	7
 dialect	Dialect::	src/render_plan/select_builder.rs	2
 dialect	Dialect::	src/server/mod.rs	1
 dialect	Dialect::	src/server/query_context.rs	3
@@ -208,7 +212,8 @@ dialect	databricks	src/query_planner/analyzer/projection_tagging.rs	1
 dialect	databricks	src/query_planner/logical_expr/ast_conversion.rs	1
 dialect	databricks	src/render_plan/cte_extraction.rs	4
 dialect	databricks	src/render_plan/cte_manager/mod.rs	5
-dialect	databricks	src/render_plan/plan_builder_utils.rs	21
+dialect	databricks	src/render_plan/pattern_comprehension_sql.rs	6
+dialect	databricks	src/render_plan/plan_builder_utils.rs	15
 dialect	databricks	src/render_plan/select_builder.rs	6
 dialect	databricks	src/server/bolt_protocol/result_transformer.rs	7
 dialect	databricks	src/server/handlers.rs	23
