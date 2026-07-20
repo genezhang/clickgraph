@@ -4113,11 +4113,14 @@ fn build_alias_label_map_from_scope(
             // schemas — picking the WRONG label (`Post.post_id` instead of
             // `User.user_id`). Recover the label by finding the node table that
             // the subquery joins under THIS join's own alias (`{qualified} AS
-            // {alias}`), so `b.id` resolves to the correct `user_id`.
+            // {alias} `), so `b.id` resolves to the correct `user_id`. The
+            // trailing space is load-bearing: the fold always emits
+            // `AS {alias} ON …`, and it prevents alias `b` from spuriously
+            // matching `… AS b2 …` (whole-alias boundary).
             for (qualified, label) in &table_to_label {
                 if join
                     .table_name
-                    .contains(&format!("{} AS {}", qualified, join.table_alias))
+                    .contains(&format!("{} AS {} ", qualified, join.table_alias))
                 {
                     map.insert(join.table_alias.clone(), label.clone());
                     break;
