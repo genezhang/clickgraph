@@ -6031,6 +6031,66 @@ impl WithBarrierScope {
                     .define_node(alias.to_string(), labels.to_vec(), cte_source);
             }
         }
+
+        // F0 TRANSITION-ASSERT (P-4 forward-resolution, slice F0):
+        // #592 was that `define_node`/`define_scalar` DROPPED the caller's
+        // `property_mapping` and rebuilt an empty one, so the unified
+        // `VariableRegistry` (M1) could never resolve a WITH-CTE property — the
+        // live forward resolution ran entirely through the parallel
+        // `scope_cte_variables` map (M3: `variable_scope::VariableScope`) and
+        // the task-local reparse (M2). F0 threads `property_mapping` through
+        // `define_*`, so M1 now carries the SAME data M3 does — both are
+        // populated here from the identical `per_alias_mapping`.
+        //
+        // This asserts that faithfulness at the point the data is born: for
+        // every mapped Cypher property, M1 (`var_registry.resolve`) must return
+        // exactly the CTE column M3 (`scope_cte_variables[alias].property_mapping`)
+        // holds. This is the non-vacuous form of the doc's transition-assert:
+        // the render-site variant (§5) is inert because expressions are already
+        // M3-rewritten to CTE-column names before `to_sql` (see the DISCOVERY
+        // note in to_sql_query.rs). Proving M1 == M3 here de-risks F1, which
+        // will make the forward registry authoritative.
+        //
+        // If this fires, the two populators have diverged — investigate; do NOT
+        // silence it (see FORWARD_RESOLUTION_PLAN.md §5 and the F0 report).
+        #[cfg(debug_assertions)]
+        {
+            use crate::query_planner::typed_variable::ResolvedProperty;
+            let schema = crate::server::query_context::get_current_schema();
+            if let (Some(schema), Some(info)) = (schema, self.scope_cte_variables.get(alias)) {
+                let expected_from_alias = info.effective_from_alias();
+                for (cypher_prop, cte_col) in info.property_mapping.iter() {
+                    match self.var_registry.resolve(alias, cypher_prop, &schema) {
+                        ResolvedProperty::CteColumn { sql_alias, column } => {
+                            debug_assert_eq!(
+                                (sql_alias.as_str(), column.as_str()),
+                                (expected_from_alias.as_str(), cte_col.as_str()),
+                                "F0 M1/M3 divergence: registry resolved {}.{} → {}.{}, \
+                                 but scope map holds {}.{}",
+                                alias,
+                                cypher_prop,
+                                sql_alias,
+                                column,
+                                expected_from_alias,
+                                cte_col
+                            );
+                        }
+                        other => {
+                            // A mapped property MUST resolve to a CteColumn now.
+                            // Anything else means the threaded map did not reach
+                            // the registry (the #592 defect regressing).
+                            debug_assert!(
+                                false,
+                                "F0 M1 failed to resolve mapped property {}.{} \
+                                 (expected {}.{}, got {:?}) — property_mapping \
+                                 not threaded into VariableRegistry",
+                                alias, cypher_prop, expected_from_alias, cte_col, other
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Add the COMPOSITE alias (e.g., "countWindow1_tag") to the CTE variable

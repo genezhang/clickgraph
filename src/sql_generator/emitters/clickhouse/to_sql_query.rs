@@ -6922,14 +6922,66 @@ impl RenderExpr {
                     use crate::query_planner::typed_variable::ResolvedProperty;
                     match resolved {
                         ResolvedProperty::CteColumn { sql_alias, column } => {
+                            // F0 (P-4 forward-resolution): the forward path (M1:
+                            // VariableRegistry) now carries a populated
+                            // `property_mapping` (#592 fix threaded it through
+                            // `define_*`). This slice does NOT make M1 authoritative;
+                            // it keeps emitting the legacy result so SQL is
+                            // byte-identical.
+                            //
+                            // DISCOVERY (F0): this arm is effectively DEAD at this
+                            // render site — even with M1 now populated. Expressions
+                            // reaching `to_sql` have already been rewritten upstream by
+                            // the live forward resolver (M3:
+                            // `variable_scope::rewrite_render_expr` /
+                            // `VariableScope::resolve`) during render-plan building, so
+                            // `col_name` here is already a CTE *column* name
+                            // (`p1_a_name`), never a Cypher property (`name`). M1's
+                            // Cypher-property-keyed map therefore never matches at this
+                            // point (verified: this arm resolves a `CteColumn` 0× in the
+                            // corpus sweep + lib suite; it does fire ~37× in the
+                            // LDBC/integration tests, but there `col_name` is ALREADY an
+                            // M3-rewritten CTE column — it falls through to the identical
+                            // legacy M2 branch, so output stays byte-identical). The
+                            // load-bearing transition-assert for F0 lives where the data
+                            // is born — `publish_alias`
+                            // (plan_builder_utils.rs) asserts the freshly-threaded M1
+                            // registry agrees with the live M3 scope map. See
+                            // FORWARD_RESOLUTION_PLAN.md §5 and the F0 report.
+                            //
+                            // Kept as a debug_assert here anyway (belt-and-suspenders):
+                            // in the (currently unobserved) event M1 *does* answer here,
+                            // it must agree with the legacy M2 path we still emit.
                             log::info!(
-                                "🔧 VariableRegistry resolved: {}.{} → {}.{}",
+                                "VariableRegistry resolved (F0, non-authoritative): {}.{} -> {}.{}",
                                 table_alias.0,
                                 col_name,
                                 sql_alias,
                                 column
                             );
-                            return format!("{}.{}", sql_alias, column);
+                            #[cfg(debug_assertions)]
+                            if let Some(legacy_col) =
+                                get_cte_property_from_context(&table_alias.0, col_name)
+                            {
+                                debug_assert_eq!(
+                                    format!("{}.{}", sql_alias, column),
+                                    format!("{}.{}", table_alias.0, legacy_col),
+                                    "F0 forward/legacy divergence resolving {}.{} \
+                                     (forward M1={}.{}, legacy M2={}.{})",
+                                    table_alias.0,
+                                    col_name,
+                                    sql_alias,
+                                    column,
+                                    table_alias.0,
+                                    legacy_col
+                                );
+                            }
+                            // F0: do NOT return here — fall through to the legacy M2
+                            // branch below so output is byte-identical. (F1 will replace
+                            // this arm with `return format!("{}.{}", sql_alias, column)`
+                            // and delete the legacy branch — but see the DISCOVERY note:
+                            // F1's real switch must target the M3 rewrite path, not this
+                            // dead site.)
                         }
                         ResolvedProperty::DbColumn(_) | ResolvedProperty::Unresolved => {
                             // Match-sourced or unresolved: skip — PropertyAccess already has
