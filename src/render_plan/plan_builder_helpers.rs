@@ -4821,7 +4821,17 @@ pub(super) fn optional_anchor_gate_conjuncts(
     gr: &crate::query_planner::logical_plan::GraphRel,
 ) -> Vec<LogicalExpr> {
     if !gr.is_optional.unwrap_or(false)
-        || gr.variable_length.is_some()
+        // #621: a DIRECTED single-CTE variable-length pattern IS gateable — its
+        // only anchor-adjacent join is the `LEFT JOIN vlp_… AS vt0 ON
+        // a.id = vt0.start_id`, and ANDing the anchor gate into that ON correctly
+        // NULL-extends anchors that fail the gate (LEFT JOIN semantics, oracle-
+        // verified). Only UNDIRECTED VLP stays excluded (the `was_undirected`
+        // term below plus this one): folding into a two-arm/doubled-edge layout
+        // makes the combined-anchor rewrite decline and leaves an out-of-order
+        // join (Code 47). shortestPath / multi-type / composite VLP stay
+        // excluded via the `shortest_path_mode` / `pattern_combinations` /
+        // `cte_references` guards below; denorm VLP via the denorm-union guards.
+        || (gr.variable_length.is_some() && gr.was_undirected == Some(true))
         || gr.shortest_path_mode.is_some()
         || gr.pattern_combinations.is_some()
         || !gr.cte_references.is_empty()

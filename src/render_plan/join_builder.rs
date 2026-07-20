@@ -252,11 +252,21 @@ fn apply_optional_node_pre_filters(
                 let ta = &joins[i].table_alias;
                 *ta == gr.alias || *ta == gr.left_connection || *ta == gr.right_connection
             };
+            // #621: for a variable-length pattern the clause's own join is the
+            // `LEFT JOIN vlp_… AS vt0 ON a.id = vt0.start_id` — its `table_alias`
+            // (`vt0`) matches none of the Cypher aliases, so `clause_owned` above
+            // never accepts it. Recognize the VLP CTE join by its `vlp_`-prefixed
+            // `table_name` (the established VLP-CTE discriminator). It is already
+            // in `candidates` (an anchor-adjacent LEFT JOIN), so folding the gate
+            // into its ON NULL-extends anchors that fail the gate.
+            let is_vlp_cte_join =
+                |i: usize| gr.variable_length.is_some() && joins[i].table_name.starts_with("vlp_");
             let gate_join_idx = candidates
                 .iter()
                 .copied()
                 .find(|&i| joins[i].table_alias == gr.alias)
-                .or_else(|| candidates.iter().copied().find(|&i| clause_owned(i)));
+                .or_else(|| candidates.iter().copied().find(|&i| clause_owned(i)))
+                .or_else(|| candidates.iter().copied().find(|&i| is_vlp_cte_join(i)));
             if let Some(gate_join) = gate_join_idx.map(|i| &mut joins[i]) {
                 for conj in &anchor_gate_conjuncts {
                     if let Ok(RenderExpr::OperatorApplicationExp(op)) =
