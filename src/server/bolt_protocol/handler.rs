@@ -2979,6 +2979,10 @@ impl BoltHandler {
         // code can access it via get_current_schema() without GLOBAL_SCHEMAS lookups
         crate::server::query_context::set_current_schema(std::sync::Arc::new(graph_schema.clone()));
 
+        // S1 stats-informed planning: attach the current row-count snapshot
+        // (no-op unless CLICKGRAPH_STATS_ENABLED installed the cache).
+        crate::server::query_context::attach_current_table_stats(&graph_schema).await;
+
         // Re-parse and transform for planning (after async boundary)
         // Note: This is unavoidable due to Rc<RefCell<>> in AST not being Send
         let parsed_stmt_for_planning = match open_cypher_parser::parse_cypher_statement(query) {

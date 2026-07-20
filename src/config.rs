@@ -119,6 +119,20 @@ pub struct ServerConfig {
     /// (JSON only, never a Prometheus label). Off by default for environments
     /// where query text may carry sensitive values.
     pub metrics_query_preview: bool,
+
+    /// S1 stats-informed planning (`docs/design/STATS_PLANNING.md`): fetch
+    /// per-table row counts from `system.tables` and let the planner rank
+    /// semantically-equivalent anchor/FROM choices by table size. Ordering
+    /// only — never row membership (PRIORITIES.md §1.7). Off by default so
+    /// sql_only/test paths stay byte-deterministic. Remote ClickHouse mode
+    /// only in this slice.
+    #[serde(default)]
+    pub stats_enabled: bool,
+
+    /// TTL in seconds for the cached table row counts
+    /// (`CLICKGRAPH_STATS_TTL_SECS`). Default: 300.
+    #[serde(default = "default_stats_ttl_secs")]
+    pub stats_ttl_secs: u64,
 }
 
 impl Default for ServerConfig {
@@ -143,6 +157,8 @@ impl Default for ServerConfig {
             slow_query_threshold_ms: 0,
             metrics_ch_summary: false,
             metrics_query_preview: false,
+            stats_enabled: false,
+            stats_ttl_secs: 300,
         }
     }
 }
@@ -170,6 +186,8 @@ impl ServerConfig {
             slow_query_threshold_ms: parse_env_var("CLICKGRAPH_SLOW_QUERY_THRESHOLD_MS", "0")?,
             metrics_ch_summary: parse_env_var("CLICKGRAPH_METRICS_CH_SUMMARY", "false")?,
             metrics_query_preview: parse_env_var("CLICKGRAPH_METRICS_QUERY_PREVIEW", "false")?,
+            stats_enabled: parse_env_var("CLICKGRAPH_STATS_ENABLED", "false")?,
+            stats_ttl_secs: parse_env_var("CLICKGRAPH_STATS_TTL_SECS", "300")?,
         };
 
         config.validate()?;
@@ -201,6 +219,9 @@ impl ServerConfig {
             slow_query_threshold_ms: parse_env_var("CLICKGRAPH_SLOW_QUERY_THRESHOLD_MS", "0")?,
             metrics_ch_summary: parse_env_var("CLICKGRAPH_METRICS_CH_SUMMARY", "false")?,
             metrics_query_preview: parse_env_var("CLICKGRAPH_METRICS_QUERY_PREVIEW", "false")?,
+            // Stats knobs are operational and env-only, like the metrics knobs.
+            stats_enabled: parse_env_var("CLICKGRAPH_STATS_ENABLED", "false")?,
+            stats_ttl_secs: parse_env_var("CLICKGRAPH_STATS_TTL_SECS", "300")?,
         };
 
         config.validate()?;
@@ -246,6 +267,8 @@ impl ServerConfig {
         self.slow_query_threshold_ms = other.slow_query_threshold_ms;
         self.metrics_ch_summary = other.metrics_ch_summary;
         self.metrics_query_preview = other.metrics_query_preview;
+        self.stats_enabled = other.stats_enabled;
+        self.stats_ttl_secs = other.stats_ttl_secs;
     }
 }
 
@@ -266,6 +289,11 @@ pub struct CliConfig {
     pub query_timeout_secs: u64,
     pub max_request_body_bytes: usize,
     pub max_concurrent_queries: usize,
+}
+
+/// serde default for `ServerConfig::stats_ttl_secs` (YAML-file config path).
+fn default_stats_ttl_secs() -> u64 {
+    300
 }
 
 /// Parse an environment variable with a default value

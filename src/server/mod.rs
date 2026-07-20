@@ -95,6 +95,15 @@ pub static GLOBAL_QUERY_CACHE: OnceCell<query_cache::QueryCache> = OnceCell::con
 // ring). Initialized once in `run_server` before the listener binds.
 pub static GLOBAL_SERVER_METRICS: OnceCell<Arc<metrics::ServerMetrics>> = OnceCell::const_new();
 
+// S1 stats-informed planning (`docs/design/STATS_PLANNING.md`): process-wide
+// TTL cache of per-table row counts. Set ONLY in remote ClickHouse mode when
+// `CLICKGRAPH_STATS_ENABLED=true`; absent everywhere else (embedded, other
+// executor modes, flag off), which keeps planning byte-identical to the
+// stats-less engine. The query handler snapshots it into the task-local
+// `QueryContext` at request entry.
+pub static GLOBAL_TABLE_STATS: OnceCell<Arc<crate::graph_catalog::table_stats::TableStatsCache>> =
+    OnceCell::const_new();
+
 pub async fn run() {
     dotenv().ok();
 
@@ -356,6 +365,31 @@ pub async fn run_with_config(config: ServerConfig) {
         "GLOBAL_SCHEMAS initialized: {:?}",
         GLOBAL_SCHEMAS.get().is_some()
     );
+
+    // S1 stats-informed planning: install the row-count cache, gated on
+    // CLICKGRAPH_STATS_ENABLED (default off) and on having a real ClickHouse
+    // client. When absent, the planner never sees a stats snapshot and
+    // behaves byte-identically to the stats-less engine.
+    if config.stats_enabled {
+        if let Some(client) = client_opt.clone() {
+            let cache = crate::graph_catalog::table_stats::TableStatsCache::new(
+                Box::new(
+                    crate::graph_catalog::table_stats::ClickHouseTableStatsSource::new(client),
+                ),
+                Duration::from_secs(config.stats_ttl_secs),
+            );
+            let _ = GLOBAL_TABLE_STATS.set(Arc::new(cache));
+            log::info!(
+                "📊 Stats-informed planning enabled (row-count cache, TTL {}s)",
+                config.stats_ttl_secs
+            );
+        } else {
+            log::warn!(
+                "CLICKGRAPH_STATS_ENABLED=true but no ClickHouse client available — \
+                 stats-informed planning stays off"
+            );
+        }
+    }
 
     // Initialize query cache
     let cache_config = query_cache::QueryCacheConfig::from_env();
