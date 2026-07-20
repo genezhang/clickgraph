@@ -10,6 +10,7 @@ mod from_table;
 mod group_by_builder;
 mod join_builder;
 mod join_deduplicator;
+pub(crate) mod pattern_comprehension_sql;
 pub mod plan_builder_helpers; // Made public for JOIN dependency sorting in SQL generation
 mod plan_builder_utils;
 pub mod plan_optimizer;
