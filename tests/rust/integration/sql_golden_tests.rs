@@ -6696,6 +6696,87 @@ async fn optional_vlp_anchor_gate_folds_into_vlp_join_621() {
     );
 }
 
+#[tokio::test]
+async fn reversed_written_optional_vlp_anchor_gate_folds_into_vlp_join_645() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // #645: a RIGHT-TO-LEFT written pattern `(b)<-[:FOLLOWS*1..2]-(a)` is
+    // semantically identical to the #621 outgoing `(a)-[:FOLLOWS*1..2]->(b)` —
+    // the anchor `a` is the pattern's START node, bound by the outer FROM and
+    // joined at `vt0.start_id`. But it parses to `direction == Incoming`, so the
+    // #621 `direction == Outgoing` proxy DROPPED the gate → inactive anchors got
+    // a nonzero count(b) instead of 0 (silent-wrong). The gate must fold into the
+    // vlp CTE LEFT JOIN ON exactly as the outgoing form does. Discriminated by
+    // `anchor_gate_targets_left_connection` (the gate references only
+    // `left_connection` = the from-id / start side).
+    let sql = render(
+        &schema,
+        "MATCH (a:User) OPTIONAL MATCH (b:User)<-[:FOLLOWS*1..2]-(a) \
+         WHERE a.is_active = true RETURN a.name, count(b)",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("ON a.user_id = vt0.start_id AND a.is_active = true"),
+        "#645: reversed-written VLP anchor gate must fold into the vlp CTE LEFT \
+         JOIN ON (anchor `a` is the START node despite Incoming direction):\n{sql}"
+    );
+    assert!(
+        !sql.to_uppercase().contains("\nWHERE A.IS_ACTIVE"),
+        "#645: gate must not stay in the outer WHERE (drops NULL-extended anchors):\n{sql}"
+    );
+
+    // A compound gate on the reversed-written start anchor folds every conjunct.
+    let sql2 = render(
+        &schema,
+        "MATCH (a:User) OPTIONAL MATCH (b:User)<-[:FOLLOWS*1..3]-(a) \
+         WHERE a.is_active = true AND a.country = 'USA' RETURN a.name, count(b)",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql2.contains("AND a.is_active = true") && sql2.contains("AND a.country = 'USA'"),
+        "#645: both reversed-anchor gate conjuncts must fold into the vlp join ON:\n{sql2}"
+    );
+
+    // Reversed-written with NO gate stays byte-identical (nothing to fold).
+    let sql3 = render(
+        &schema,
+        "MATCH (a:User) OPTIONAL MATCH (b:User)<-[:FOLLOWS*1..2]-(a) \
+         RETURN a.name, count(b)",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        !sql3.contains("start_id AND"),
+        "#645: reversed-written VLP with no gate must not fold anything:\n{sql3}"
+    );
+
+    // A gate that references the END endpoint (`b`, not the start anchor `a`) of
+    // a reversed pattern must NOT fold — `b` is gated inside the CTE. This proves
+    // the discriminator keys on `left_connection`, not merely on Incoming.
+    let sql4 = render(
+        &schema,
+        "MATCH (a:User) OPTIONAL MATCH (b:User)<-[:FOLLOWS*1..2]-(a) \
+         WHERE a.is_active = true AND b.is_active = true RETURN a.name, count(b)",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql4.contains("ON a.user_id = vt0.start_id AND a.is_active = true"),
+        "#645: the start-anchor conjunct (`a`) must still fold:\n{sql4}"
+    );
+    assert!(
+        sql4.contains("end_is_active = true"),
+        "#645: the END-endpoint conjunct (`b`) must be gated inside the CTE, not \
+         folded into the outer ON:\n{sql4}"
+    );
+    assert!(
+        !sql4.contains("start_id AND a.is_active = true AND b.is_active"),
+        "#645: the END-endpoint conjunct (`b`) must NOT fold into the start-side ON:\n{sql4}"
+    );
+}
+
 /// #599: `size((pattern))` renders as a bare correlated `COUNT(*)` scalar
 /// subquery; ClickHouse decorrelates that into a LEFT JOIN, so an outer row
 /// with ZERO pattern matches yields NULL instead of 0 — silently breaking

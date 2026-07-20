@@ -4791,6 +4791,27 @@ fn optional_node_shares_table_with_edge(gr: &crate::query_planner::logical_plan:
     !right_tables.is_disjoint(&edge_tables)
 }
 
+/// #645: true "is the OPTIONAL-VLP anchor the outer-FROM-bound start node"
+/// test — the anchor gate (`optional_anchor_where`) must reference ONLY the
+/// pattern's `left_connection` (the from-id / VLP-`start_id` side, which the
+/// outer `FROM … AS <left_connection>` binds). Replaces the old
+/// `direction == Outgoing` proxy as an ADDITIVE admission: it lets the
+/// reversed-written `(b)<-[*]-(a)` shape (anchor `a` IS the start node but the
+/// pattern parses to Incoming) fold its gate like the equivalent outgoing
+/// `(a)-[*]->(b)`. Returns false (→ do not newly admit) when the gate is
+/// absent or references any alias other than `left_connection`.
+fn anchor_gate_targets_left_connection(gr: &crate::query_planner::logical_plan::GraphRel) -> bool {
+    let Some(ref anchor_where) = gr.optional_anchor_where else {
+        return false;
+    };
+    let mut aliases = HashSet::new();
+    collect_aliases_from_logical_expr(anchor_where, &mut aliases);
+    // Foldable iff every referenced alias is the from-id/start side. An empty
+    // alias set (a constant gate, e.g. `WHERE true`) has no outer-alias
+    // dependency and folds harmlessly into the start-side ON.
+    aliases.iter().all(|a| a == &gr.left_connection)
+}
+
 /// #597: the conjuncts of an OPTIONAL MATCH clause's own WHERE that reference
 /// ONLY a mandatory anchor variable, recorded on
 /// `GraphRel.optional_anchor_where` during lowering (the only stage where
@@ -4821,27 +4842,37 @@ pub(super) fn optional_anchor_gate_conjuncts(
     gr: &crate::query_planner::logical_plan::GraphRel,
 ) -> Vec<LogicalExpr> {
     if !gr.is_optional.unwrap_or(false)
-        // #621: a DIRECTED-OUTGOING single-CTE variable-length pattern IS
-        // gateable — the anchor `a` is the pattern's START node, bound by the
-        // outer `FROM users AS a`, and its only anchor-adjacent join is the
-        // `LEFT JOIN vlp_… AS vt0 ON a.id = vt0.start_id`; ANDing the anchor gate
-        // into that ON correctly NULL-extends anchors that fail the gate (LEFT
-        // JOIN semantics, oracle-verified). Every OTHER VLP orientation is
-        // excluded:
-        //   - INCOMING (`(a)<-[…]-(b)`): the anchor `a` is the pattern's END
-        //     node — the outer FROM binds `b`, and `a`'s gate is ALREADY applied
-        //     inside the CTE (`WHERE end_is_active = …`). There is no outer `a`
-        //     alias, so folding `AND a.<col>` would reference a non-existent
-        //     table → Code 47 (and double-apply the gate). Detected by
-        //     `direction != Outgoing`.
-        //   - UNDIRECTED (`was_undirected`): folding into the two-arm/doubled-
-        //     edge layout makes the combined-anchor rewrite decline (Code 47).
-        //   - shortestPath / multi-type / composite / denorm: excluded via the
-        //     `shortest_path_mode` / `pattern_combinations` / `cte_references` /
-        //     denorm-union guards below.
+        // #621/#645: a single-CTE variable-length OPTIONAL pattern is gateable
+        // iff the anchor gate is bound by the outer FROM — i.e. it references the
+        // pattern's `left_connection` (the from-id / VLP-`start_id` side, which
+        // the outer `FROM <label> AS <left_connection>` binds via
+        // `LEFT JOIN vlp_… AS vt0 ON <left_connection>.id = vt0.start_id`).
+        //
+        // This is expressed ADDITIVELY over the #621 rule (`direction ==
+        // Outgoing`) rather than replacing it, to preserve main's exact
+        // loud/silent behavior on every non-#645 shape (ground rule 1 — never
+        // convert a loud error into a silent-wrong result):
+        //   - outgoing `(a)-[*]->(b)` gate on a → Outgoing → FOLD (#621).
+        //   - reversed `(b)<-[*]-(a)` gate on a → left_conn=a, gate={a} →
+        //     `anchor_gate_targets_left_connection` → FOLD (#645). This is the
+        //     ONLY shape this clause newly admits: same anchor-is-start-node
+        //     semantics as #621, just written right-to-left so it parses to
+        //     Incoming. Oracle-verified NULL-extends gated-out anchors.
+        //   - genuine `(a)<-[*]-(b)` gate on a → left_conn=b, gate={a} → neither
+        //     Outgoing nor targets-left → EXCLUDE (anchor is the END node, gated
+        //     inside the CTE as `WHERE end_is_active`; unchanged from main).
+        //   - outgoing `(a)-[*]->(b)` gate on b (anchor is END) → Outgoing →
+        //     still folds, still Code 47 on main — a PRE-EXISTING end-anchored
+        //     VLP render bug (wrong outer FROM / `vt0.end_name` projection). Left
+        //     exactly as-is (stays loud); NOT newly excluded here, because
+        //     excluding it would drop it to the broken-but-executing end-anchored
+        //     path → silent-wrong. Tracked as a separate follow-up.
+        // UNDIRECTED (`was_undirected`) stays excluded regardless (two-arm /
+        // doubled-edge layout breaks the combined-anchor rewrite).
         || (gr.variable_length.is_some()
-            && (gr.direction != crate::query_planner::logical_expr::Direction::Outgoing
-                || gr.was_undirected == Some(true)))
+            && (gr.was_undirected == Some(true)
+                || (gr.direction != crate::query_planner::logical_expr::Direction::Outgoing
+                    && !anchor_gate_targets_left_connection(gr))))
         || gr.shortest_path_mode.is_some()
         || gr.pattern_combinations.is_some()
         || !gr.cte_references.is_empty()
