@@ -1793,6 +1793,388 @@ graph_schema:
             resolved
         );
     }
+
+    // ========================================================================
+    // Characterization: the five WITH-traversal functions (P1.2 / §4.2)
+    //
+    // These lock the CURRENT answers of the WITH-detection/collection walkers
+    // over a synthetic-plan matrix — WITH under each structural position and
+    // under write variants — BEFORE any behavior is unified. Post-3a3af0bf,
+    // has_with_clause_in_tree / plan_contains_with_clause / needs_processing /
+    // find_all_with_clauses_grouped already route through the exhaustive
+    // children() API; these tests document that they now AGREE (the historical
+    // plan_contains_with_clause GraphRel.center / Cte / ViewScan drift is
+    // closed) and additionally reach write-variant inputs. If a later unify
+    // step changes any of these answers, that is a behavior change and must be
+    // reviewed as such (§10), not silently absorbed.
+    //
+    // `needs_processing` and `replace_with_clause_with_cte_reference_v2` are
+    // nested/transform functions not directly callable here; their traversal
+    // agreement is exercised end-to-end by the golden + corpus sweeps.
+    // ========================================================================
+    mod with_traversal_characterization {
+        use super::*;
+        use crate::query_planner::logical_expr::{Direction, Literal, LogicalExpr};
+        use crate::query_planner::logical_plan::{
+            Cte, Filter, GraphNode, GraphRel, ProjectionItem, Unwind, WithClause,
+        };
+        use std::sync::Arc;
+
+        fn leaf() -> Arc<LogicalPlan> {
+            Arc::new(LogicalPlan::Empty)
+        }
+
+        /// A WithClause exporting alias `a` (key becomes "a"), wrapping `input`.
+        fn with_a(input: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
+            let item = ProjectionItem {
+                expression: LogicalExpr::Column(crate::query_planner::logical_expr::Column(
+                    "a".to_string(),
+                )),
+                col_alias: None,
+            };
+            Arc::new(LogicalPlan::WithClause(
+                WithClause::new(input, vec![item]).expect("WITH a is valid"),
+            ))
+        }
+
+        fn node(alias: &str, input: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
+            Arc::new(LogicalPlan::GraphNode(GraphNode {
+                input,
+                alias: alias.to_string(),
+                label: None,
+                is_denormalized: false,
+                projected_columns: None,
+                node_types: None,
+            }))
+        }
+
+        /// GraphRel with the given left/center/right children.
+        fn graph_rel(
+            left: Arc<LogicalPlan>,
+            center: Arc<LogicalPlan>,
+            right: Arc<LogicalPlan>,
+        ) -> Arc<LogicalPlan> {
+            Arc::new(LogicalPlan::GraphRel(GraphRel {
+                left,
+                center,
+                right,
+                alias: "r".to_string(),
+                direction: Direction::Outgoing,
+                left_connection: "a".to_string(),
+                right_connection: "b".to_string(),
+                is_rel_anchor: false,
+                variable_length: None,
+                shortest_path_mode: None,
+                path_variable: None,
+                where_predicate: None,
+                labels: None,
+                is_optional: None,
+                anchor_connection: None,
+                cte_references: std::collections::HashMap::new(),
+                pattern_combinations: None,
+                was_undirected: None,
+                match_clause_index: 0,
+                optional_anchor_where: None,
+            }))
+        }
+
+        fn cte(input: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
+            Arc::new(LogicalPlan::Cte(Cte {
+                input,
+                name: "c1".to_string(),
+            }))
+        }
+
+        fn view_scan_with_input(input: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
+            let mut vs = crate::query_planner::logical_plan::ViewScan::new(
+                "t".to_string(),
+                None,
+                std::collections::HashMap::new(),
+                "id".to_string(),
+                vec!["id".to_string()],
+                vec![],
+            );
+            vs.input = Some(input);
+            Arc::new(LogicalPlan::ViewScan(Arc::new(vs)))
+        }
+
+        fn unwind(input: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
+            Arc::new(LogicalPlan::Unwind(Unwind {
+                input,
+                expression: LogicalExpr::Column(crate::query_planner::logical_expr::Column(
+                    "xs".to_string(),
+                )),
+                alias: "x".to_string(),
+                label: None,
+                tuple_properties: None,
+            }))
+        }
+
+        fn cartesian(left: Arc<LogicalPlan>, right: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
+            Arc::new(LogicalPlan::CartesianProduct(
+                crate::query_planner::logical_plan::CartesianProduct {
+                    left,
+                    right,
+                    is_optional: false,
+                    join_condition: None,
+                },
+            ))
+        }
+
+        fn union(inputs: Vec<Arc<LogicalPlan>>) -> Arc<LogicalPlan> {
+            Arc::new(LogicalPlan::Union(
+                crate::query_planner::logical_plan::Union {
+                    inputs,
+                    union_type: crate::query_planner::logical_plan::UnionType::All,
+                    is_cypher_union: false,
+                },
+            ))
+        }
+
+        fn filter(input: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
+            Arc::new(LogicalPlan::Filter(Filter {
+                input,
+                predicate: LogicalExpr::Literal(Literal::Boolean(true)),
+            }))
+        }
+
+        fn create(input: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
+            Arc::new(LogicalPlan::Create(
+                crate::query_planner::logical_plan::Create {
+                    input,
+                    patterns: vec![],
+                },
+            ))
+        }
+
+        fn set_props(input: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
+            Arc::new(LogicalPlan::SetProperties(
+                crate::query_planner::logical_plan::SetProperties {
+                    input,
+                    items: vec![],
+                },
+            ))
+        }
+
+        /// Assert the two existence predicates AGREE and both return `expected`.
+        fn assert_existence(plan: &LogicalPlan, expected: bool, case: &str) {
+            assert_eq!(
+                has_with_clause_in_tree(plan),
+                expected,
+                "has_with_clause_in_tree wrong for: {case}"
+            );
+            assert_eq!(
+                plan_contains_with_clause(plan),
+                expected,
+                "plan_contains_with_clause wrong for: {case}"
+            );
+        }
+
+        // ---- WITH directly under each structural position -----------------
+
+        #[test]
+        fn with_under_graph_rel_left_is_found() {
+            let plan = graph_rel(with_a(node("a", leaf())), leaf(), node("b", leaf()));
+            assert_existence(&plan, true, "GraphRel.left");
+            assert!(find_all_with_clauses_grouped(&plan).contains_key("a"));
+        }
+
+        #[test]
+        fn with_under_graph_rel_right_is_found() {
+            let plan = graph_rel(node("b", leaf()), leaf(), with_a(node("a", leaf())));
+            assert_existence(&plan, true, "GraphRel.right");
+            assert!(find_all_with_clauses_grouped(&plan).contains_key("a"));
+        }
+
+        /// GraphRel.center: the historically-divergent position. Both existence
+        /// predicates now find it (children()-backed). `find_all_with_clauses_
+        /// grouped` also collects it (its `other =>` arm recurses via
+        /// for_each_child, which includes center).
+        #[test]
+        fn with_under_graph_rel_center_is_found_by_existence() {
+            let plan = graph_rel(
+                node("b", leaf()),
+                with_a(node("a", leaf())),
+                node("c", leaf()),
+            );
+            assert_existence(&plan, true, "GraphRel.center");
+            assert!(
+                find_all_with_clauses_grouped(&plan).contains_key("a"),
+                "center WITH collected by find_all_with_clauses_grouped"
+            );
+        }
+
+        #[test]
+        fn with_under_cte_input_is_found() {
+            let plan = cte(with_a(node("a", leaf())));
+            assert_existence(&plan, true, "Cte.input");
+            assert!(find_all_with_clauses_grouped(&plan).contains_key("a"));
+        }
+
+        #[test]
+        fn with_under_view_scan_input_is_found() {
+            let plan = view_scan_with_input(with_a(node("a", leaf())));
+            assert_existence(&plan, true, "ViewScan.input");
+            assert!(find_all_with_clauses_grouped(&plan).contains_key("a"));
+        }
+
+        #[test]
+        fn with_under_unwind_is_found() {
+            let plan = unwind(with_a(node("a", leaf())));
+            assert_existence(&plan, true, "Unwind.input");
+            assert!(find_all_with_clauses_grouped(&plan).contains_key("a"));
+        }
+
+        #[test]
+        fn with_under_cartesian_product_is_found() {
+            let plan = cartesian(with_a(node("a", leaf())), node("b", leaf()));
+            assert_existence(&plan, true, "CartesianProduct.left");
+            assert!(find_all_with_clauses_grouped(&plan).contains_key("a"));
+        }
+
+        #[test]
+        fn with_under_union_arm_is_found() {
+            let plan = union(vec![with_a(node("a", leaf())), node("b", leaf())]);
+            assert_existence(&plan, true, "Union arm");
+            // NB find_all_with_clauses_grouped has bespoke Union dedup logic;
+            // characterize only the existence predicates + that it doesn't panic.
+            let _ = find_all_with_clauses_grouped(&plan);
+        }
+
+        // ---- WITH under WRITE variants (the latent §6 gap the migration
+        //      closes for the existence predicates) --------------------------
+
+        /// CURRENT behavior: a WITH inside a Create.input IS visible to both
+        /// existence predicates (they route through children(), whose Create
+        /// arm returns [&c.input]). This documents the closed gap.
+        #[test]
+        fn with_under_create_input_is_found_by_existence() {
+            let plan = create(with_a(node("a", leaf())));
+            assert_existence(&plan, true, "Create.input");
+        }
+
+        #[test]
+        fn with_under_set_properties_input_is_found_by_existence() {
+            let plan = set_props(with_a(node("a", leaf())));
+            assert_existence(&plan, true, "SetProperties.input");
+        }
+
+        // ---- Nested combinations ------------------------------------------
+
+        #[test]
+        fn nested_with_under_cte_under_graph_rel_center() {
+            // GraphRel{center: Cte(Filter(WITH a))}
+            let inner = cte(filter(with_a(node("a", leaf()))));
+            let plan = graph_rel(node("b", leaf()), inner, node("c", leaf()));
+            assert_existence(&plan, true, "GraphRel.center -> Cte -> Filter -> WITH");
+        }
+
+        #[test]
+        fn no_with_anywhere_is_false() {
+            let plan = graph_rel(node("a", leaf()), leaf(), node("b", leaf()));
+            assert_existence(&plan, false, "no WITH present");
+            assert!(find_all_with_clauses_grouped(&plan).is_empty());
+        }
+
+        /// The two existence predicates must AGREE on every matrix position —
+        /// this is the core §6 invariant the migration makes structural. A
+        /// single loop over all positions catches any future re-divergence.
+        #[test]
+        fn existence_predicates_agree_across_matrix() {
+            let positions: Vec<(&str, Arc<LogicalPlan>)> = vec![
+                ("graph_rel.left", graph_rel(with_a(leaf()), leaf(), leaf())),
+                (
+                    "graph_rel.center",
+                    graph_rel(leaf(), with_a(leaf()), leaf()),
+                ),
+                ("graph_rel.right", graph_rel(leaf(), leaf(), with_a(leaf()))),
+                ("cte.input", cte(with_a(leaf()))),
+                ("view_scan.input", view_scan_with_input(with_a(leaf()))),
+                ("unwind.input", unwind(with_a(leaf()))),
+                ("cartesian.left", cartesian(with_a(leaf()), leaf())),
+                ("cartesian.right", cartesian(leaf(), with_a(leaf()))),
+                ("union.arm", union(vec![leaf(), with_a(leaf())])),
+                ("filter.input", filter(with_a(leaf()))),
+                ("create.input", create(with_a(leaf()))),
+                ("set.input", set_props(with_a(leaf()))),
+                ("no_with", graph_rel(leaf(), leaf(), leaf())),
+            ];
+            for (name, plan) in &positions {
+                assert_eq!(
+                    has_with_clause_in_tree(plan),
+                    plan_contains_with_clause(plan),
+                    "existence predicates disagree at position: {name}"
+                );
+            }
+        }
+
+        // ---- D5: the twin UNWIND collectors and their barrier difference ---
+
+        /// Both collectors gather UNWIND aliases on the projection spine.
+        #[test]
+        fn unwind_collectors_agree_without_a_barrier() {
+            // Filter(Unwind x (Unwind y (Empty)))
+            let plan = filter(unwind(Arc::new(LogicalPlan::Unwind(
+                crate::query_planner::logical_plan::Unwind {
+                    input: leaf(),
+                    expression: LogicalExpr::Column(crate::query_planner::logical_expr::Column(
+                        "ys".to_string(),
+                    )),
+                    alias: "y".to_string(),
+                    label: None,
+                    tuple_properties: None,
+                },
+            ))));
+
+            let mut set = std::collections::HashSet::new();
+            collect_unwind_aliases(&plan, &mut set);
+            let mut vec = Vec::new();
+            find_unwind_aliases(&plan, &mut vec);
+
+            assert!(set.contains("x") && set.contains("y"));
+            assert!(vec.contains(&"x".to_string()) && vec.contains(&"y".to_string()));
+        }
+
+        /// The ONE deliberate difference: `collect_unwind_aliases` STOPS at a
+        /// WithClause barrier (an UNWIND below is a prior segment's, now a CTE
+        /// column); `find_unwind_aliases` CROSSES it (ID-column detection).
+        /// This is the `stop_at_with` / `cross_with_barrier` distinction the D5
+        /// merge preserves.
+        #[test]
+        fn unwind_collectors_differ_across_with_barrier() {
+            // Unwind x ( WITH a ( Unwind pre ( Empty ) ) )
+            let below_barrier = Arc::new(LogicalPlan::Unwind(
+                crate::query_planner::logical_plan::Unwind {
+                    input: leaf(),
+                    expression: LogicalExpr::Column(crate::query_planner::logical_expr::Column(
+                        "pres".to_string(),
+                    )),
+                    alias: "pre".to_string(),
+                    label: None,
+                    tuple_properties: None,
+                },
+            ));
+            let plan = unwind(with_a(below_barrier));
+
+            let mut set = std::collections::HashSet::new();
+            collect_unwind_aliases(&plan, &mut set);
+            // Stops at WITH: sees the top `x`, NOT the `pre` below the barrier.
+            assert!(set.contains("x"), "top-of-spine UNWIND collected");
+            assert!(
+                !set.contains("pre"),
+                "collect_unwind_aliases must STOP at the WithClause barrier"
+            );
+
+            let mut vec = Vec::new();
+            find_unwind_aliases(&plan, &mut vec);
+            // Crosses WITH: sees both.
+            assert!(vec.contains(&"x".to_string()));
+            assert!(
+                vec.contains(&"pre".to_string()),
+                "find_unwind_aliases must CROSS the WithClause barrier"
+            );
+        }
+    }
 }
 pub fn extract_having(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<RenderExpr>> {
     let having_clause = match plan {
@@ -2422,27 +2804,20 @@ pub fn hoist_nested_ctes(from: &mut RenderPlan, to: &mut Vec<Cte>) {
     }
 }
 
-/// Check if there's a WithClause anywhere in the logical plan tree
+/// Check if there's a `WithClause` anywhere in the logical plan tree.
+///
+/// This is the single canonical WITH-existence predicate (§4.2 unify). It is
+/// built on the exhaustive [`LogicalPlan::any_node`] walk, so it reaches EVERY
+/// child edge — `GraphRel.center`, `Cte.input`, `ViewScan.input`, and the
+/// write-op inputs — and can never drift out of sync with the plan structure.
+/// The walk is iterative (explicit stack), so it cannot overflow on deep plans;
+/// the old manual `depth`-guard recursion is therefore gone.
+///
+/// [`plan_contains_with_clause`] is a synonym that delegates here — they were
+/// two hand-rolled copies that had historically drifted (the §6 bug class);
+/// they are now one implementation with two names kept for call-site clarity.
 pub fn has_with_clause_in_tree(plan: &LogicalPlan) -> bool {
-    has_with_clause_in_tree_impl(plan, 0)
-}
-
-fn has_with_clause_in_tree_impl(plan: &LogicalPlan, depth: usize) -> bool {
-    if depth > crate::render_plan::MAX_TRAVERSAL_DEPTH {
-        log::warn!("has_with_clause_in_tree: depth limit {} exceeded", depth);
-        return false;
-    }
-    // A WithClause node is itself a hit; otherwise recurse into every direct
-    // child via the exhaustive `LogicalPlan::children` API (single source of
-    // truth for plan-tree structure). This traverses ALL child-bearing variants
-    // — including write-op inputs (Create/SetProperties/Delete/Remove) that the
-    // previous hand-rolled `_ => false` arm silently skipped.
-    if matches!(plan, LogicalPlan::WithClause(_)) {
-        return true;
-    }
-    plan.children()
-        .iter()
-        .any(|child| has_with_clause_in_tree_impl(child, depth + 1))
+    plan.any_node(|node| matches!(node, LogicalPlan::WithClause(_)))
 }
 
 /// Check if plan has WITH clause in GraphRel.right (WITH+MATCH pattern)
@@ -2507,31 +2882,18 @@ pub fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
     result
 }
 
-/// Check if plan contains a WithClause node
+/// Check if plan contains a `WithClause` node — synonym for
+/// [`has_with_clause_in_tree`].
+///
+/// These were two independently hand-rolled walkers that drifted apart (the §6
+/// infinite-iteration / lost-WITH bug class: `plan_contains_with_clause` had at
+/// one point missed `GraphRel.center`, `Cte`, and `ViewScan.input`). They are
+/// now the SAME implementation — this one delegates — so the CLAUDE.md rule-5
+/// "these must agree" invariant is structural, not a convention to police. The
+/// name is retained because call sites in the WITH→CTE builder read more
+/// clearly as "does this sub-tree still contain a WITH to process?".
 pub fn plan_contains_with_clause(plan: &LogicalPlan) -> bool {
-    plan_contains_with_clause_impl(plan, 0)
-}
-
-fn plan_contains_with_clause_impl(plan: &LogicalPlan, depth: usize) -> bool {
-    if depth > crate::render_plan::MAX_TRAVERSAL_DEPTH {
-        log::warn!("plan_contains_with_clause: depth limit {} exceeded", depth);
-        return false;
-    }
-    // A WithClause node is itself a hit; otherwise recurse into every direct
-    // child via the exhaustive `LogicalPlan::children` API.
-    //
-    // DRIFT FIX (CLAUDE.md rule 5): the previous hand-rolled match had drifted
-    // narrower than `has_with_clause_in_tree` — it checked only GraphRel.left/
-    // .right (NOT .center), and had no arm for Cte or ViewScan.input (both fell
-    // through `_ => false`). Routing through `children()` makes this function
-    // byte-for-byte agree with `has_with_clause_in_tree` again, and additionally
-    // covers write-op inputs.
-    if matches!(plan, LogicalPlan::WithClause(_)) {
-        return true;
-    }
-    plan.children()
-        .iter()
-        .any(|child| plan_contains_with_clause_impl(child, depth + 1))
+    has_with_clause_in_tree(plan)
 }
 
 pub(crate) fn generate_swapped_joins_for_optional_match(
@@ -6130,20 +6492,61 @@ fn resolve_denormalized_property_in_expr_impl(
     }
 }
 
-fn collect_unwind_aliases(plan: &LogicalPlan, out: &mut std::collections::HashSet<String>) {
+/// Shared core for the two UNWIND-alias collectors (§4.2 D5 merge).
+///
+/// Walks the *linear modifier spine* above an UNWIND — `Unwind` (collect its
+/// alias, then continue) and the single-input wrappers `Filter` / `Projection`
+/// / `OrderBy` / `Limit` / `Skip` / `GroupBy` — pushing each UNWIND alias into
+/// `sink`. It deliberately does NOT branch into `GraphRel` / `Union` /
+/// `CartesianProduct`: UNWIND aliases live on the projection spine, not inside
+/// pattern subtrees.
+///
+/// The ONE behavioral difference between the two historical copies is the
+/// `WithClause` barrier, captured by `cross_with_barrier`:
+/// - `false` — stop at a `WithClause` (its UNWIND vars are a prior segment,
+///   now CTE columns; re-emitting them as bare columns is wrong). This is
+///   [`collect_unwind_aliases`].
+/// - `true` — descend through a `WithClause` too (for ID-column detection,
+///   where an earlier UNWIND scalar still needs to be recognized). This is
+///   [`find_unwind_aliases`].
+fn collect_unwind_aliases_core(
+    plan: &LogicalPlan,
+    cross_with_barrier: bool,
+    sink: &mut impl FnMut(&str),
+) {
     match plan {
         LogicalPlan::Unwind(u) => {
-            out.insert(u.alias.clone());
-            collect_unwind_aliases(&u.input, out);
+            sink(&u.alias);
+            collect_unwind_aliases_core(&u.input, cross_with_barrier, sink);
         }
-        LogicalPlan::Filter(f) => collect_unwind_aliases(&f.input, out),
-        LogicalPlan::Projection(p) => collect_unwind_aliases(&p.input, out),
-        LogicalPlan::OrderBy(ob) => collect_unwind_aliases(&ob.input, out),
-        LogicalPlan::Limit(lim) => collect_unwind_aliases(&lim.input, out),
-        LogicalPlan::Skip(s) => collect_unwind_aliases(&s.input, out),
-        LogicalPlan::GroupBy(gb) => collect_unwind_aliases(&gb.input, out),
+        LogicalPlan::Filter(f) => collect_unwind_aliases_core(&f.input, cross_with_barrier, sink),
+        LogicalPlan::Projection(p) => {
+            collect_unwind_aliases_core(&p.input, cross_with_barrier, sink)
+        }
+        LogicalPlan::OrderBy(ob) => {
+            collect_unwind_aliases_core(&ob.input, cross_with_barrier, sink)
+        }
+        LogicalPlan::Limit(lim) => {
+            collect_unwind_aliases_core(&lim.input, cross_with_barrier, sink)
+        }
+        LogicalPlan::Skip(s) => collect_unwind_aliases_core(&s.input, cross_with_barrier, sink),
+        LogicalPlan::GroupBy(gb) => {
+            collect_unwind_aliases_core(&gb.input, cross_with_barrier, sink)
+        }
+        // The barrier: only crossed for the `find_unwind_aliases` flavor.
+        LogicalPlan::WithClause(wc) if cross_with_barrier => {
+            collect_unwind_aliases_core(&wc.input, cross_with_barrier, sink)
+        }
         _ => {}
     }
+}
+
+/// Collect UNWIND aliases on the projection spine, STOPPING at a `WithClause`
+/// barrier. See [`collect_unwind_aliases_core`].
+fn collect_unwind_aliases(plan: &LogicalPlan, out: &mut std::collections::HashSet<String>) {
+    collect_unwind_aliases_core(plan, false, &mut |alias| {
+        out.insert(alias.to_string());
+    });
 }
 
 fn plan_has_denormalized_union(plan: &LogicalPlan) -> bool {
@@ -6644,21 +7047,16 @@ fn plan_has_shortest_path(plan: &LogicalPlan) -> bool {
     }
 }
 
+/// Collect UNWIND aliases on the projection spine, CROSSING `WithClause`
+/// barriers (for ID-column detection). See [`collect_unwind_aliases_core`].
+///
+/// NB: pushes duplicates if the same alias appears twice — callers only ever
+/// use the result via `.contains(...)`, so this preserves the historical
+/// `Vec`-with-possible-duplicates behavior exactly.
 fn find_unwind_aliases(plan: &LogicalPlan, out: &mut Vec<String>) {
-    match plan {
-        LogicalPlan::Unwind(u) => {
-            out.push(u.alias.clone());
-            find_unwind_aliases(&u.input, out);
-        }
-        LogicalPlan::Filter(f) => find_unwind_aliases(&f.input, out),
-        LogicalPlan::Projection(p) => find_unwind_aliases(&p.input, out),
-        LogicalPlan::OrderBy(ob) => find_unwind_aliases(&ob.input, out),
-        LogicalPlan::Limit(lim) => find_unwind_aliases(&lim.input, out),
-        LogicalPlan::Skip(s) => find_unwind_aliases(&s.input, out),
-        LogicalPlan::GroupBy(gb) => find_unwind_aliases(&gb.input, out),
-        LogicalPlan::WithClause(wc) => find_unwind_aliases(&wc.input, out),
-        _ => {}
-    }
+    collect_unwind_aliases_core(plan, true, &mut |alias| {
+        out.push(alias.to_string());
+    });
 }
 
 pub(crate) fn build_chained_with_match_cte_plan(
