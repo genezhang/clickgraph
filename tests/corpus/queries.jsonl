@@ -1172,3 +1172,5 @@
 {"cypher": "MATCH (a:User)-[:FOLLOWS*2..2]->(a) RETURN a.name", "name": "test_631_closed_exact_vlp_endpoint_prop", "schema": "standard"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS*2..3]->(a) RETURN a.name", "name": "test_631_closed_range_vlp_endpoint_prop", "schema": "standard"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS*2..2]->(a) RETURN a.name, a.country", "name": "test_631_closed_vlp_multi_prop", "schema": "standard"}
+{"cypher": "MATCH (a:TestUser) OPTIONAL MATCH (a)-[:TEST_FOLLOWS*2..3]->(b:TestUser) RETURN b.name, count(*) AS c ORDER BY b.name", "name": "test_630_optional_vlp_aggregate_order_by_endpoint", "schema": "test_fixtures"}
+{"cypher": "MATCH (a:TestUser) OPTIONAL MATCH (a)-[:TEST_FOLLOWS*2..3]->(b:TestUser) WHERE b.name = 'Bob' RETURN a.name, b.name", "name": "test_630_optional_vlp_where_endpoint", "schema": "test_fixtures"}

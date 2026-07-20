@@ -7986,7 +7986,75 @@ mod walker_drift_family_484_490_495_476_483 {
         );
     }
 
-    /// #490: `type(r)` behind a `WITH r` barrier used to hard-code the VLP
+    /// #630: OPTIONAL VLP + aggregate + ORDER BY on the endpoint property. The
+    /// endpoint is LEFT JOINed as `vt0` (`LEFT JOIN vlp_a_b AS vt0`), so SELECT,
+    /// GROUP BY, and ORDER BY must ALL reference `vt0.end_name`. GROUP BY (and
+    /// WHERE) formerly hardcoded the alias `t` — a dangling reference under an
+    /// OPTIONAL VLP (join alias is `vt0`, not `t`) → Code 47. The required-VLP
+    /// case (FROM alias IS `t`) must keep using `t` — no regression.
+    #[tokio::test]
+    async fn optional_vlp_aggregate_group_by_order_by_endpoint_alias_consistent_630() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+
+        let sql = render(
+            &schema,
+            "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS*2..3]->(b:User) \
+             RETURN b.name, count(*) AS c ORDER BY b.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        // The VLP endpoint is joined as vt0; every clause must agree.
+        assert!(
+            sql.contains("LEFT JOIN vlp_a_b AS vt0"),
+            "#630: OPTIONAL VLP endpoint must LEFT JOIN as vt0:\n{sql}"
+        );
+        assert!(
+            sql.contains("GROUP BY vt0.end_name"),
+            "#630: GROUP BY must use the OPTIONAL-VLP join alias vt0, not a \
+             hardcoded t:\n{sql}"
+        );
+        assert!(
+            !sql.contains("GROUP BY t.end_name"),
+            "#630: GROUP BY must NOT dangle on the hardcoded alias t:\n{sql}"
+        );
+        assert!(
+            sql.contains("ORDER BY vt0.end_name"),
+            "#630: ORDER BY must use vt0 too (the #608 endpoint rewrite):\n{sql}"
+        );
+
+        // Required VLP (FROM IS the VLP CTE, alias t) must keep using t.
+        let req = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*2..3]->(b:User) \
+             RETURN b.name, count(*) AS c ORDER BY b.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            req.contains("GROUP BY t.end_name") && req.contains("ORDER BY t.end_name"),
+            "#630: a REQUIRED VLP (FROM alias t) must NOT be rewritten to vt0:\n{req}"
+        );
+
+        // #630 guard (must NOT trade loud for silent): with TWO chained OPTIONAL
+        // VLPs the endpoint→alias mapping is ambiguous (a separate defect, #643).
+        // The GROUP BY must stay on the hardcoded `t` so the query FAILS LOUD
+        // (Code 47) rather than silently grouping by the wrong VLP's endpoint.
+        let two_vlp = render(
+            &schema,
+            "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS*1..2]->(b:User) \
+             OPTIONAL MATCH (b)-[:FOLLOWS*1..2]->(c:User) \
+             RETURN c.name, count(*) AS n ORDER BY c.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            two_vlp.contains("GROUP BY t.end_name"),
+            "#630/#643: two chained OPTIONAL VLPs must keep GROUP BY on the \
+             hardcoded `t` (fails loud, not a silently-wrong endpoint):\n{two_vlp}"
+        );
+    }
+
     /// alias `t` in the outer SELECT even when the relationship actually
     /// routes through a `pattern_union_r AS r` CTE (both endpoints
     /// unlabeled) — unbound `t.path_relationships`, ClickHouse Code 47. The
