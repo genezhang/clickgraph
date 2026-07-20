@@ -3292,11 +3292,38 @@ pub fn extract_ctes_with_context(
                 log::debug!("  Final start_filters_sql: {:?}", start_filters_sql);
                 log::debug!("  Final end_filters_sql: {:?}", end_filters_sql);
 
-                // For optional VLP, don't include start node filters in CTE
-                // The filters should remain on the base table in the final query
+                // For optional VLP, don't include the ANCHOR node's filters in
+                // the CTE — the anchor filter gates the optional match (folded
+                // into the LEFT JOIN ON / applied to the outer FROM), it must not
+                // filter the CTE rows away.
+                //
+                // The anchor is normally the pattern START (`(a)-[*]->(b)`), so we
+                // drop start_filters_sql — the #621/#645 gate fold re-applies it on
+                // the anchor's LEFT JOIN ON.
+                //
+                // For an END-anchored OPTIONAL VLP (`(a)<-[*]-(b)`, anchor is
+                // `right_connection`, #647) BOTH filters stay embedded in the CTE:
+                //   - start_filters_sql = the FAR (counted) endpoint `b`'s filter,
+                //     which must gate CTE rows (dropping it silently counted
+                //     filtered-out endpoints);
+                //   - end_filters_sql = the anchor `a`'s filter. #621/#645 does NOT
+                //     fold the gate for this shape (genuine incoming / reversed
+                //     end-anchored), so the anchor gate must remain in the CTE.
+                //     Because the anchor drives the outer FROM and joins on
+                //     `end_id`, an inactive anchor simply finds no CTE rows and is
+                //     correctly NULL-extended (count 0) — same OPTIONAL semantics
+                //     as the ON fold. Guard on distinct endpoints so a CLOSED VLP
+                //     (start==end) keeps the historical start-drop behavior.
                 if graph_rel.is_optional.unwrap_or(false) {
-                    log::info!("🔧 Optional VLP: Removing start_filters_sql from CTE (will be applied to final FROM)");
-                    start_filters_sql = None;
+                    let anchor_is_end = graph_rel.left_connection != graph_rel.right_connection
+                        && graph_rel.anchor_connection.as_deref()
+                            == Some(graph_rel.right_connection.as_str());
+                    if anchor_is_end {
+                        log::info!("🔧 Optional VLP (#647 end-anchored): keeping BOTH start (far-endpoint) and end (anchor-gate) filters embedded in CTE");
+                    } else {
+                        log::info!("🔧 Optional VLP: Removing start_filters_sql from CTE (will be applied to final FROM)");
+                        start_filters_sql = None;
+                    }
                 }
 
                 // Extract properties from filter expressions for shortest path queries

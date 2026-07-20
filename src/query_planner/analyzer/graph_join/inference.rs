@@ -3238,13 +3238,63 @@ impl GraphJoinInference {
                 "    🎯 OPTIONAL VLP: Creating GraphJoins for LEFT JOIN to VLP CTE"
             );
 
-            // 1. Create FROM marker for anchor node (left node)
-            helpers::JoinBuilder::from_marker(left_node_schema.full_table_name(), &left_alias)
+            // #647: An OPTIONAL VLP whose ANCHOR is the pattern's END node
+            // (`anchor_connection == right_connection`) must drive the outer
+            // FROM from the ANCHOR (end) node and LEFT JOIN the VLP CTE on
+            // `anchor.id = vt0.end_id` — the mirror image of the anchor-at-start
+            // layout below. Otherwise the outer query wrongly binds the pattern
+            // START node as FROM (joined on `start_id`), so anchors with no path
+            // are DROPPED instead of NULL-extended and a spurious NULL-endpoint
+            // row appears (both written forms `(a)<-[*]-(b)` and `(a)-[*]->(b)`
+            // with a pre-bound `b` reach this). The recursive CTE itself is
+            // symmetric (`start_id`/`end_id` + `start_*`/`end_*` props), so only
+            // the outer assembly is inverted here; the render phase projects the
+            // OTHER endpoint from `vt0.start_*` and excludes the FROM-bound anchor
+            // from endpoint rewriting (see `rewrite_vlp_union_branch_aliases`).
+            //
+            // Discriminator is exact: `anchor_connection == right_connection`.
+            // `None` (plain outgoing anchor-at-start) and `Some(left_connection)`
+            // (reversed-written anchor-at-start, #645) keep the original
+            // start-side layout → byte-identical.
+            //
+            // CLOSED VLP (`(a)<-[*]-(a)`, `left_connection == right_connection`)
+            // is EXCLUDED: it is a distinct, separately-tracked shape (#625/#631)
+            // that is LOUD (Code 47) on main. Admitting it here would flip it from
+            // loud to a silently-executing cycle count we cannot verify — keep it
+            // loud (ground rule 1). It stays on the original start-side layout.
+            //
+            // CHAINED VLP (`(a)<-[*]-(b) OPTIONAL MATCH (b)<-[*]-(c)`) is also
+            // EXCLUDED: when the anchor (this VLP's END = right_connection) is
+            // ALSO an endpoint of another VLP, the outer-query endpoint→CTE-column
+            // resolution across the two CTEs is a separate unsolved defect (#643)
+            // that is LOUD on main. Inverting only THIS VLP's FROM would change
+            // that loud shape's SQL (still loud, but a different error) — keep it
+            // byte-identical by leaving it on the original layout. Detected via the
+            // join context: the anchor already carries a VLP-endpoint mark from the
+            // sibling clause.
+            let anchor_is_chained_vlp_endpoint = join_ctx
+                .get_vlp_endpoint(&right_alias)
+                .map(|info| info.rel_alias != rel_alias)
+                .unwrap_or(false);
+            let anchor_is_end = graph_rel.left_connection != graph_rel.right_connection
+                && !anchor_is_chained_vlp_endpoint
+                && graph_rel.anchor_connection.as_deref()
+                    == Some(graph_rel.right_connection.as_str());
+            let (anchor_alias, anchor_schema, cte_id_col) = if anchor_is_end {
+                (&right_alias, &right_node_schema, "end_id")
+            } else {
+                (&left_alias, &left_node_schema, "start_id")
+            };
+
+            // 1. Create FROM marker for the anchor node
+            helpers::JoinBuilder::from_marker(anchor_schema.full_table_name(), anchor_alias)
                 .build_and_push(collected_graph_joins);
 
-            // 2. Create LEFT JOIN to VLP CTE
+            // 2. Create LEFT JOIN to VLP CTE.
+            // CTE name is always `vlp_{start}_{end}` (start = left_connection,
+            // end = right_connection) regardless of which endpoint is the anchor.
             let cte_name = format!("vlp_{}_{}", left_alias, right_alias);
-            let left_id_col = left_node_schema
+            let anchor_id_col = anchor_schema
                 .node_id
                 .columns()
                 .first()
@@ -3252,6 +3302,7 @@ impl GraphJoinInference {
                 .to_string();
 
             // Get the unique VLP alias from the endpoint marked in should_skip_for_vlp
+            // (`should_skip_for_vlp` marks the END endpoint = right_alias).
             let vlp_alias = join_ctx
                 .get_vlp_endpoint(&right_alias)
                 .map(|info| info.vlp_alias.clone())
@@ -3263,25 +3314,26 @@ impl GraphJoinInference {
                 table_name: cte_name.clone(),
                 table_alias: vlp_alias.clone(),
                 joining_on: vec![helpers::eq_condition(
-                    &left_alias,
-                    &left_id_col,
+                    anchor_alias,
+                    &anchor_id_col,
                     &vlp_alias,
-                    "start_id",
+                    cte_id_col,
                 )],
                 join_type: JoinType::Left,
                 pre_filter: None,
-                from_id_column: Some(left_id_col),
-                to_id_column: Some("start_id".to_string()),
+                from_id_column: Some(anchor_id_col),
+                to_id_column: Some(cte_id_col.to_string()),
                 graph_rel: Some(Arc::new(graph_rel.clone())),
                 is_cartesian: false,
             };
             collected_graph_joins.push(vlp_join);
 
             crate::debug_print!(
-                "    ✅ Created OPTIONAL VLP joins: FROM {} LEFT JOIN {} AS {}",
-                left_alias,
+                "    ✅ Created OPTIONAL VLP joins: FROM {} LEFT JOIN {} AS {} (anchor_is_end={})",
+                anchor_alias,
                 cte_name,
-                vlp_alias
+                vlp_alias,
+                anchor_is_end
             );
             crate::debug_print!("    +- infer_graph_join EXIT\n");
 
