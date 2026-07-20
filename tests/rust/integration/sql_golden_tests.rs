@@ -9862,6 +9862,134 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
             );
         }
     }
+
+    /// #644: a denormalized OPTIONAL variable-length path anchored at its START
+    /// node. On main this rendered `FROM db_denormalized.flights_denorm AS a
+    /// LEFT JOIN vlp_a_b AS vt0 ON a.code = vt0.start_id` — `a.code` is the
+    /// LOGICAL node id, absent on the denorm edge table (which stores
+    /// `origin_code`/`dest_code`) → ClickHouse Code 47. The fix reroutes the
+    /// anchor through its node-grain `__denorm_scan_a` CTE (the same shape the
+    /// single-hop denorm OPTIONAL path builds), correlating the VLP CTE's
+    /// `start_id` to the physical `origin_code` column that CTE exposes.
+    ///
+    /// Live-verified on db_denormalized (8 seeded flights) that the fixed SQL
+    /// returns the correct per-airport 2..3-hop simple-path counts, NULL-
+    /// extending destination-only airports (DEN, PHX) to 1 (the `count(*)` of
+    /// the single NULL-extended row): ATL=3, DEN=1, JFK=3, LAX=2, ORD=1, PHX=1,
+    /// SFO=2. A naive JOIN-key remap (keeping the raw edge table as FROM) is
+    /// SILENTLY WRONG — it drops destination-only airports and fans the count
+    /// out to edge grain — hence the node-grain scan CTE is required.
+    #[tokio::test]
+    async fn denorm_optional_vlp_anchor_scan_cte_644() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let cypher = "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*2..3]->(b:Airport) \
+             RETURN a.code, count(*) AS c";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        // Anchor reroutes to the node-grain scan CTE, not the raw edge table.
+        assert!(
+            sql.contains("__denorm_scan_a AS"),
+            "#644: the anchor must be a `__denorm_scan_a` node-scan CTE:\n{sql}"
+        );
+        assert!(
+            sql.contains("FROM __denorm_scan_a AS a"),
+            "#644: the outer FROM must be the anchor scan CTE, not the raw \
+             denorm edge table:\n{sql}"
+        );
+        // The VLP anchor JOIN key must be the physical id column the scan CTE
+        // exposes (origin_code), never the logical `a.code` (Code 47).
+        assert!(
+            sql.contains("ON a.origin_code = vt0.start_id"),
+            "#644: the VLP LEFT JOIN must correlate the physical `origin_code` \
+             the scan CTE exposes:\n{sql}"
+        );
+        assert!(
+            !sql.contains("ON a.code = vt0.start_id"),
+            "#644: the anchor JOIN must not reference the logical `a.code` \
+             column (absent on the denorm table — Code 47):\n{sql}"
+        );
+        // The scan CTE unions the origin- and dest-role columns at node grain.
+        assert!(
+            sql.contains("s.origin_code AS \"origin_code\"")
+                && sql.contains("s.dest_code AS \"origin_code\""),
+            "#644: the scan CTE must UNION the from-role and to-role physical \
+             columns so destination-only airports are enumerated:\n{sql}"
+        );
+        assert!(
+            sql.contains("GROUP BY \"origin_code\""),
+            "#644: the scan CTE must collapse to node grain (GROUP BY the id \
+             column):\n{sql}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(sql, again, "#644: nondeterministic render");
+        }
+    }
+
+    /// #644 endpoint-projection sibling: the same denorm OPTIONAL VLP returning
+    /// endpoint properties (`a.code, b.code`) rather than an aggregate. The
+    /// anchor `a` must still reroute to the `__denorm_scan_a` CTE; the endpoint
+    /// `b` is projected from the VLP CTE (`vt0.end_*`). Live-verified the joined
+    /// rows and the NULL-extended dest-only anchors (DEN/PHX → `b.code` NULL).
+    #[tokio::test]
+    async fn denorm_optional_vlp_anchor_scan_endpoint_projection_644() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let cypher = "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*2..3]->(b:Airport) \
+             RETURN a.code, b.code";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        assert!(
+            sql.contains("FROM __denorm_scan_a AS a"),
+            "#644: endpoint-projection form must also reroute the anchor to \
+             the scan CTE:\n{sql}"
+        );
+        assert!(
+            sql.contains("ON a.origin_code = vt0.start_id"),
+            "#644: endpoint-projection anchor JOIN must use the physical id \
+             column:\n{sql}"
+        );
+        assert!(
+            !sql.contains("ON a.code = vt0.start_id"),
+            "#644: endpoint-projection anchor JOIN must not reference the \
+             logical `a.code` (Code 47):\n{sql}"
+        );
+
+        for _ in 0..5 {
+            let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(sql, again, "#644: nondeterministic render");
+        }
+    }
+
+    /// #644 loud-guard: a denorm OPTIONAL VLP that ALSO carries an anchor-gate
+    /// WHERE (`WHERE a.state = 'CA'`) must stay LOUD (unchanged from main),
+    /// NOT be silently executed with the gate dropped. On the denorm schema the
+    /// anchor-gate fold (#621) is separately gated out, so rerouting the anchor
+    /// to the scan CTE would make the query EXECUTE while silently ignoring the
+    /// gate — a loud→silent regression. The rewrite refuses this subshape, so
+    /// it keeps the pre-existing loud `a.code` reference (Code 47 at execution).
+    #[tokio::test]
+    async fn denorm_optional_vlp_anchor_gate_stays_loud_644() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let cypher = "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*2..3]->(b:Airport) \
+             WHERE a.state = 'CA' RETURN a.code, count(*) AS c";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        // Not rerouted: the scan CTE is NOT injected and the anchor stays on
+        // the raw edge table with the (loud) logical `a.code` JOIN key.
+        assert!(
+            !sql.contains("__denorm_scan_a AS"),
+            "#644: the anchor-gate subshape must NOT be rerouted (it would \
+             silently drop the `a.state = 'CA'` gate):\n{sql}"
+        );
+        assert!(
+            sql.contains("FROM db_denormalized.flights_denorm AS a")
+                && sql.contains("ON a.code = vt0.start_id"),
+            "#644: the anchor-gate subshape must stay on the pre-existing loud \
+             render path (raw edge table + logical `a.code` JOIN key):\n{sql}"
+        );
+    }
 }
 
 mod coupled_anchor_optional_family_504_508_529_530_471 {

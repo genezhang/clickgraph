@@ -437,6 +437,288 @@ pub(super) fn optional_denorm_union_anchor_is_left(
     None
 }
 
+/// #644: A denormalized OPTIONAL variable-length path renders its anchor as
+/// `FROM <denorm_edge_table> AS a LEFT JOIN vlp_a_b AS vt0 ON a.<id> = vt0.start_id`.
+/// Two problems:
+///  1. The anchor JOIN key is the LOGICAL node id (`a.code`), but the denorm
+///     edge table stores role-specific physical columns (`origin_code`/
+///     `dest_code`) — there is no `code` column → ClickHouse Code 47.
+///  2. Even if the JOIN key were remapped to `origin_code`, scanning the raw
+///     edge table for the anchor enumerates only airports that appear as an
+///     ORIGIN, silently dropping destination-only airports, and the
+///     unaggregated edge rows fan out the LEFT-JOIN count (edge grain, not node
+///     grain) — a SILENT wrong result.
+///
+/// The correct anchor is the same node-grain `__denorm_scan_{alias}` CTE the
+/// single-hop denorm OPTIONAL path already builds (see `plan_builder.rs`'s
+/// `optional_denorm_union_anchor_is_left` branch): a `UNION DISTINCT` of the
+/// from-role and to-role physical columns, collapsed to one row per node id.
+/// This helper post-processes a rendered GraphJoins plan for exactly the VLP
+/// anchor shape, injecting that CTE, pointing FROM at it, and rewriting the
+/// anchor-side VLP JOIN key to the CTE's physical id column.
+///
+/// Deliberately narrow — returns without modifying the plan (leaving the
+/// existing LOUD Code 47 in place, per ground rule 1) for any shape it cannot
+/// prove correct:
+///  - non-denormalized anchor (standard / FK-edge / polymorphic) — untouched;
+///  - more than one VLP LEFT JOIN (chained denorm VLP, #643-class) — LOUD;
+///  - composite node id (`#646`-adjacent) — LOUD;
+///  - FROM not bound to the raw denorm edge table under the anchor alias
+///    (already a CTE, or a different plan shape) — untouched.
+///
+/// Consumes denorm classification via the schema-catalog `NodeSchema`
+/// (`NodeSchema::denorm_role_properties` returns `Some` only for an
+/// edge-hosted node, CLAUDE.md rule 7), never a raw plan-level flag or
+/// table-name comparison.
+pub(super) fn rewrite_denorm_optional_vlp_anchor_scan(
+    render_plan: &mut super::RenderPlan,
+    gj_input: &LogicalPlan,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+) {
+    // The anchor is whatever alias the FROM clause binds. Bail unless the FROM
+    // is a bare base-table reference under some alias (a `vlp_`/`__denorm_scan_`
+    // CTE FROM means this isn't the raw-edge-table VLP anchor shape).
+    let Some(from_ref) = render_plan.from.0.as_ref() else {
+        return;
+    };
+    let Some(anchor_alias) = from_ref.alias.clone() else {
+        return;
+    };
+    if from_ref.name.starts_with("vlp_") || from_ref.name.contains("__denorm_scan_") {
+        return;
+    }
+
+    // Find the (single) optional VLP GraphRel whose anchor is this FROM alias.
+    let Some(vlp_rel) = find_optional_vlp_graphrel_for_anchor(gj_input, &anchor_alias) else {
+        return;
+    };
+
+    // An anchor-gate WHERE (`OPTIONAL MATCH (a)-[*]->(b) WHERE a.<prop> …`)
+    // must fold into the LEFT JOIN's ON (NULL-extending anchors that fail the
+    // gate). For denormalized schemas that fold is currently NOT performed
+    // (#621's gate machinery is separately gated out for the denorm shape), so
+    // the conjunct is dropped. On main that drop is masked by the anchor's own
+    // Code 47 (the query fails loud). Rerouting the anchor to the scan CTE would
+    // make it EXECUTE while still silently ignoring the gate — a loud→silent
+    // regression. Keep this subshape LOUD by refusing to rewrite it (ground
+    // rule 1); handling the denorm anchor gate is a separate follow-up.
+    if vlp_rel.optional_anchor_where.is_some() {
+        return;
+    }
+
+    // Resolve the anchor node label from whichever connection the FROM binds.
+    // Restrict to the anchor-at-START layout (`(a)-[*]->(b)`, anchor is the
+    // pattern's `left_connection`). The #647 end-anchored layout resolves the
+    // anchor's own properties via the TO-role property map (`dest_code`), which
+    // would not match this CTE's FROM-role physical column names — a separate,
+    // unproven shape kept LOUD here (ground rule 1).
+    if vlp_rel.left_connection != anchor_alias {
+        return;
+    }
+    let Some(anchor_label) = get_node_label_for_alias(&anchor_alias, gj_input) else {
+        return;
+    };
+
+    let Some(node_schema) = schema.node_schema_opt(&anchor_label) else {
+        return;
+    };
+
+    // Composite node ids are out of scope (#646-adjacent) — keep LOUD.
+    let id_cols = node_schema.node_id.columns();
+    if id_cols.len() != 1 {
+        return;
+    }
+    let logical_id = id_cols[0].to_string();
+
+    // Schema-catalog denorm classification (CLAUDE.md rule 7): a node hosted on
+    // an edge table exposes role-specific physical columns via
+    // `denorm_role_properties`; a standard/FK-edge/polymorphic node returns
+    // `None` for both roles → this returns without touching the plan (the shape
+    // stays on its existing, correct render path). Both roles must be present to
+    // build the from/to UNION scan.
+    let (Some(from_props), Some(to_props)) = (
+        node_schema.denorm_role_properties(true),
+        node_schema.denorm_role_properties(false),
+    ) else {
+        return;
+    };
+    // Physical id column on each role (e.g. origin_code / dest_code).
+    let (Some(from_id_col), Some(to_id_col)) =
+        (from_props.get(&logical_id), to_props.get(&logical_id))
+    else {
+        return;
+    };
+
+    // Only rewrite when there is exactly ONE VLP LEFT JOIN and it references the
+    // anchor alias with the logical id column. More than one VLP join is a
+    // chained denorm VLP (#643-class) — keep it LOUD.
+    let vlp_join_indices: Vec<usize> = render_plan
+        .joins
+        .0
+        .iter()
+        .enumerate()
+        .filter(|(_, j)| j.table_name.starts_with("vlp_"))
+        .map(|(i, _)| i)
+        .collect();
+    if vlp_join_indices.len() != 1 {
+        return;
+    }
+    let vlp_join_idx = vlp_join_indices[0];
+
+    // Confirm the anchor JOIN operand references the anchor alias + logical id,
+    // and rewrite it to the CTE's physical id column. If it doesn't match the
+    // expected shape, leave the plan untouched (stay LOUD).
+    let mut rewrote_join = false;
+    for cond in render_plan.joins.0[vlp_join_idx].joining_on.iter_mut() {
+        for operand in cond.operands.iter_mut() {
+            if let RenderExpr::PropertyAccessExp(pa) = operand {
+                if pa.table_alias.0 == anchor_alias
+                    && matches!(&pa.column, PropertyValue::Column(c) if c == &logical_id)
+                {
+                    pa.column = PropertyValue::Column(from_id_col.clone());
+                    rewrote_join = true;
+                }
+            }
+        }
+    }
+    if !rewrote_join {
+        return;
+    }
+
+    // Build the node-grain `__denorm_scan_{alias}` CTE. Column set = the union
+    // of both roles' physical column names; the id column is the GROUP BY key,
+    // every other column takes a deterministic `min()` representative (node
+    // grain, mirroring `wrap_denorm_scan_cte_at_node_grain`). Emitted physical
+    // column names so the anchor's SELECT/GROUP BY (which already project
+    // `a.origin_code` for this shape) resolve against the CTE unchanged.
+    let full_table = node_schema.full_table_name();
+    let cte_name = format!("__denorm_scan_{}", anchor_alias);
+
+    // Deterministic ordering of the non-id physical columns.
+    let mut other_cols: Vec<(String, String)> = Vec::new(); // (from_col, to_col) aligned by cypher prop
+    let mut cypher_props: Vec<&String> = from_props.keys().collect();
+    cypher_props.sort();
+    for prop in cypher_props {
+        if prop == &logical_id {
+            continue;
+        }
+        if let (Some(fc), Some(tc)) = (from_props.get(prop), to_props.get(prop)) {
+            other_cols.push((fc.clone(), tc.clone()));
+        }
+    }
+
+    // Inner UNION DISTINCT: from-role branch then to-role branch. Each branch
+    // projects the role's physical column under the FROM-role physical name so
+    // both branches share one column schema.
+    let mut from_select = format!("      s.{fc} AS \"{fc}\"", fc = from_id_col);
+    let mut to_select = format!("      s.{tc} AS \"{fc}\"", tc = to_id_col, fc = from_id_col);
+    for (fc, tc) in &other_cols {
+        from_select.push_str(&format!(",\n      s.{fc} AS \"{fc}\"", fc = fc));
+        to_select.push_str(&format!(",\n      s.{tc} AS \"{fc}\"", tc = tc, fc = fc));
+    }
+    let inner_sql = format!(
+        "SELECT \n{from_select}\nFROM {tbl} AS s\nUNION DISTINCT \nSELECT \n{to_select}\nFROM {tbl} AS s",
+        from_select = from_select,
+        to_select = to_select,
+        tbl = full_table,
+    );
+
+    // Wrap at node grain: GROUP BY the id column, min() every other column.
+    let cte_sql = if other_cols.is_empty() {
+        inner_sql
+    } else {
+        let mut grain_select = format!("      \"{id}\" AS \"{id}\"", id = from_id_col);
+        for (fc, _) in &other_cols {
+            grain_select.push_str(&format!(",\n      min(\"{fc}\") AS \"{fc}\"", fc = fc));
+        }
+        format!(
+            "SELECT \n{grain_select}\nFROM (\n{inner}\n)\nGROUP BY \"{id}\"",
+            grain_select = grain_select,
+            inner = inner_sql,
+            id = from_id_col,
+        )
+    };
+
+    let cte = super::Cte::new(cte_name.clone(), super::CteContent::RawSql(cte_sql), false);
+    render_plan.ctes.0.insert(0, cte);
+
+    // Point the anchor FROM at the scan CTE (alias unchanged).
+    if let Some(from_ref) = render_plan.from.0.as_mut() {
+        from_ref.name = cte_name;
+        from_ref.source = std::sync::Arc::new(LogicalPlan::Empty);
+        from_ref.use_final = false;
+    }
+}
+
+/// #644 helper: find the single OPTIONAL variable-length GraphRel in `plan`
+/// whose start OR end connection is `anchor_alias`. Returns `None` if there is
+/// no such VLP, or if more than one VLP GraphRel is present (chained VLP — the
+/// caller keeps that shape LOUD).
+fn find_optional_vlp_graphrel_for_anchor<'a>(
+    plan: &'a LogicalPlan,
+    anchor_alias: &str,
+) -> Option<&'a crate::query_planner::logical_plan::GraphRel> {
+    let mut found: Option<&crate::query_planner::logical_plan::GraphRel> = None;
+    let mut vlp_count = 0usize;
+    collect_optional_vlp_graphrels(plan, anchor_alias, &mut found, &mut vlp_count);
+    if vlp_count == 1 {
+        found
+    } else {
+        None
+    }
+}
+
+fn collect_optional_vlp_graphrels<'a>(
+    plan: &'a LogicalPlan,
+    anchor_alias: &str,
+    found: &mut Option<&'a crate::query_planner::logical_plan::GraphRel>,
+    vlp_count: &mut usize,
+) {
+    match plan {
+        LogicalPlan::GraphRel(gr) => {
+            if gr.variable_length.is_some() {
+                *vlp_count += 1;
+                if gr.is_optional.unwrap_or(false)
+                    && (gr.left_connection == anchor_alias || gr.right_connection == anchor_alias)
+                {
+                    *found = Some(gr);
+                }
+            }
+            collect_optional_vlp_graphrels(&gr.left, anchor_alias, found, vlp_count);
+            collect_optional_vlp_graphrels(&gr.center, anchor_alias, found, vlp_count);
+            collect_optional_vlp_graphrels(&gr.right, anchor_alias, found, vlp_count);
+        }
+        LogicalPlan::GraphJoins(gj) => {
+            collect_optional_vlp_graphrels(&gj.input, anchor_alias, found, vlp_count)
+        }
+        LogicalPlan::GraphNode(gn) => {
+            collect_optional_vlp_graphrels(&gn.input, anchor_alias, found, vlp_count)
+        }
+        LogicalPlan::Projection(p) => {
+            collect_optional_vlp_graphrels(&p.input, anchor_alias, found, vlp_count)
+        }
+        LogicalPlan::GroupBy(gb) => {
+            collect_optional_vlp_graphrels(&gb.input, anchor_alias, found, vlp_count)
+        }
+        LogicalPlan::Filter(f) => {
+            collect_optional_vlp_graphrels(&f.input, anchor_alias, found, vlp_count)
+        }
+        LogicalPlan::OrderBy(o) => {
+            collect_optional_vlp_graphrels(&o.input, anchor_alias, found, vlp_count)
+        }
+        LogicalPlan::Skip(s) => {
+            collect_optional_vlp_graphrels(&s.input, anchor_alias, found, vlp_count)
+        }
+        LogicalPlan::Limit(l) => {
+            collect_optional_vlp_graphrels(&l.input, anchor_alias, found, vlp_count)
+        }
+        LogicalPlan::Unwind(u) => {
+            collect_optional_vlp_graphrels(&u.input, anchor_alias, found, vlp_count)
+        }
+        _ => {}
+    }
+}
+
 /// #508: determine whether the OPTIONAL denorm CTE + LEFT JOIN anchor is
 /// genuinely on the edge's FROM side or TO side — independent of
 /// `anchor_is_left`, which only records a STRUCTURAL fact (which side of
