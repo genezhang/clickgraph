@@ -138,12 +138,20 @@ impl NodeVariable {
     }
 
     /// Create a node variable exported through a CTE
-    pub fn from_cte(labels: Vec<String>, cte_name: String) -> Self {
+    ///
+    /// `property_mapping` carries the `cypher_property → cte_column` map for this
+    /// exported alias (see #592). Planning-phase callers, where columns are not
+    /// yet assigned, pass an empty map.
+    pub fn from_cte(
+        labels: Vec<String>,
+        cte_name: String,
+        property_mapping: HashMap<String, String>,
+    ) -> Self {
         Self {
             labels,
             source: VariableSource::Cte {
                 cte_name,
-                property_mapping: Box::new(HashMap::new()),
+                property_mapping: Box::new(property_mapping),
             },
             accessed_properties: Vec::new(),
         }
@@ -207,17 +215,21 @@ impl RelVariable {
     }
 
     /// Create a relationship variable exported through a CTE
+    ///
+    /// `property_mapping` carries the `cypher_property → cte_column` map for this
+    /// exported alias (see #592). Planning-phase callers pass an empty map.
     pub fn from_cte(
         rel_types: Vec<String>,
         cte_name: String,
         from_node_label: Option<String>,
         to_node_label: Option<String>,
+        property_mapping: HashMap<String, String>,
     ) -> Self {
         Self {
             rel_types,
             source: VariableSource::Cte {
                 cte_name,
-                property_mapping: Box::new(HashMap::new()),
+                property_mapping: Box::new(property_mapping),
             },
             from_node_label,
             to_node_label,
@@ -255,11 +267,16 @@ pub struct ScalarVariable {
 
 impl ScalarVariable {
     /// Create a scalar variable from a CTE (most common case)
-    pub fn from_cte(cte_name: String) -> Self {
+    ///
+    /// `property_mapping` carries the `cypher_property → cte_column` map for this
+    /// exported alias (see #592). Scalars typically export an empty map (the
+    /// alias itself is a direct CTE column); planning-phase callers also pass
+    /// empty.
+    pub fn from_cte(cte_name: String, property_mapping: HashMap<String, String>) -> Self {
         Self {
             source: VariableSource::Cte {
                 cte_name,
-                property_mapping: Box::new(HashMap::new()),
+                property_mapping: Box::new(property_mapping),
             },
             data_type: None,
         }
@@ -386,11 +403,18 @@ pub struct CollectionVariable {
 
 impl CollectionVariable {
     /// Create a collection variable from a CTE
-    pub fn from_cte(cte_name: String, element_type: CollectionElementType) -> Self {
+    ///
+    /// `property_mapping` carries the `cypher_property → cte_column` map for this
+    /// exported alias (see #592). Planning-phase callers pass an empty map.
+    pub fn from_cte(
+        cte_name: String,
+        element_type: CollectionElementType,
+        property_mapping: HashMap<String, String>,
+    ) -> Self {
         Self {
             source: VariableSource::Cte {
                 cte_name,
-                property_mapping: Box::new(HashMap::new()),
+                property_mapping: Box::new(property_mapping),
             },
             element_type,
         }
@@ -442,8 +466,12 @@ impl TypedVariable {
     }
 
     /// Create a node variable from CTE
-    pub fn node_from_cte(labels: Vec<String>, cte_name: String) -> Self {
-        TypedVariable::Node(NodeVariable::from_cte(labels, cte_name))
+    pub fn node_from_cte(
+        labels: Vec<String>,
+        cte_name: String,
+        property_mapping: HashMap<String, String>,
+    ) -> Self {
+        TypedVariable::Node(NodeVariable::from_cte(labels, cte_name, property_mapping))
     }
 
     /// Create a relationship variable from MATCH
@@ -465,18 +493,20 @@ impl TypedVariable {
         cte_name: String,
         from_node_label: Option<String>,
         to_node_label: Option<String>,
+        property_mapping: HashMap<String, String>,
     ) -> Self {
         TypedVariable::Relationship(RelVariable::from_cte(
             rel_types,
             cte_name,
             from_node_label,
             to_node_label,
+            property_mapping,
         ))
     }
 
     /// Create a scalar variable from CTE
-    pub fn scalar_from_cte(cte_name: String) -> Self {
-        TypedVariable::Scalar(ScalarVariable::from_cte(cte_name))
+    pub fn scalar_from_cte(cte_name: String, property_mapping: HashMap<String, String>) -> Self {
+        TypedVariable::Scalar(ScalarVariable::from_cte(cte_name, property_mapping))
     }
 
     /// Create a scalar variable from parameter
@@ -515,8 +545,16 @@ impl TypedVariable {
     }
 
     /// Create a collection variable from CTE
-    pub fn collection_from_cte(cte_name: String, element_type: CollectionElementType) -> Self {
-        TypedVariable::Collection(CollectionVariable::from_cte(cte_name, element_type))
+    pub fn collection_from_cte(
+        cte_name: String,
+        element_type: CollectionElementType,
+        property_mapping: HashMap<String, String>,
+    ) -> Self {
+        TypedVariable::Collection(CollectionVariable::from_cte(
+            cte_name,
+            element_type,
+            property_mapping,
+        ))
     }
 
     // ========================================================================
@@ -654,22 +692,29 @@ impl TypedVariable {
 
     /// Convert this variable to a CTE-sourced version
     ///
-    /// Used when exporting a variable through WITH clause.
+    /// Used when exporting a variable through WITH clause. Columns are not yet
+    /// assigned at this conversion point, so the `property_mapping` is empty
+    /// (populated later at the render `publish_alias` site — see #592).
     pub fn to_cte_sourced(&self, cte_name: String) -> Self {
         match self {
-            TypedVariable::Node(n) => {
-                TypedVariable::Node(NodeVariable::from_cte(n.labels.clone(), cte_name))
-            }
+            TypedVariable::Node(n) => TypedVariable::Node(NodeVariable::from_cte(
+                n.labels.clone(),
+                cte_name,
+                HashMap::new(),
+            )),
             TypedVariable::Relationship(r) => TypedVariable::Relationship(RelVariable::from_cte(
                 r.rel_types.clone(),
                 cte_name,
                 r.from_node_label.clone(),
                 r.to_node_label.clone(),
+                HashMap::new(),
             )),
-            TypedVariable::Scalar(_) => TypedVariable::Scalar(ScalarVariable::from_cte(cte_name)),
+            TypedVariable::Scalar(_) => {
+                TypedVariable::Scalar(ScalarVariable::from_cte(cte_name, HashMap::new()))
+            }
             TypedVariable::Path(_) => TypedVariable::Path(PathVariable::from_cte(cte_name)),
             TypedVariable::Collection(c) => TypedVariable::Collection(
-                CollectionVariable::from_cte(cte_name, c.element_type.clone()),
+                CollectionVariable::from_cte(cte_name, c.element_type.clone(), HashMap::new()),
             ),
         }
     }
@@ -715,7 +760,10 @@ impl VariableRegistry {
     ) {
         let var = match source {
             VariableSource::Match => TypedVariable::node_from_match(labels),
-            VariableSource::Cte { cte_name, .. } => TypedVariable::node_from_cte(labels, cte_name),
+            VariableSource::Cte {
+                cte_name,
+                property_mapping,
+            } => TypedVariable::node_from_cte(labels, cte_name, *property_mapping),
             _ => TypedVariable::node_from_match(labels), // Fallback
         };
         self.variables.insert(name.into(), var);
@@ -746,9 +794,16 @@ impl VariableRegistry {
     ) {
         let var = match source {
             VariableSource::Match => TypedVariable::rel_from_match(rel_types, from_label, to_label),
-            VariableSource::Cte { cte_name, .. } => {
-                TypedVariable::rel_from_cte(rel_types, cte_name, from_label, to_label)
-            }
+            VariableSource::Cte {
+                cte_name,
+                property_mapping,
+            } => TypedVariable::rel_from_cte(
+                rel_types,
+                cte_name,
+                from_label,
+                to_label,
+                *property_mapping,
+            ),
             _ => TypedVariable::rel_from_match(rel_types, from_label, to_label), // Fallback
         };
         self.variables.insert(name.into(), var);
@@ -774,9 +829,16 @@ impl VariableRegistry {
     ) {
         let mut var = match source {
             VariableSource::Match => TypedVariable::rel_from_match(rel_types, from_label, to_label),
-            VariableSource::Cte { cte_name, .. } => {
-                TypedVariable::rel_from_cte(rel_types, cte_name, from_label, to_label)
-            }
+            VariableSource::Cte {
+                cte_name,
+                property_mapping,
+            } => TypedVariable::rel_from_cte(
+                rel_types,
+                cte_name,
+                from_label,
+                to_label,
+                *property_mapping,
+            ),
             _ => TypedVariable::rel_from_match(rel_types, from_label, to_label), // Fallback
         };
         // Set direction on the RelVariable
@@ -793,7 +855,10 @@ impl VariableRegistry {
     /// * `source` - Where the variable came from
     pub fn define_scalar(&mut self, name: impl Into<String>, source: VariableSource) {
         let var = match source {
-            VariableSource::Cte { cte_name, .. } => TypedVariable::scalar_from_cte(cte_name),
+            VariableSource::Cte {
+                cte_name,
+                property_mapping,
+            } => TypedVariable::scalar_from_cte(cte_name, *property_mapping),
             VariableSource::Parameter => TypedVariable::scalar_from_parameter(),
             VariableSource::Unwind { source_array } => {
                 TypedVariable::Scalar(ScalarVariable::from_unwind(source_array))
@@ -845,9 +910,10 @@ impl VariableRegistry {
         source: VariableSource,
     ) {
         let var = match source {
-            VariableSource::Cte { cte_name, .. } => {
-                TypedVariable::collection_from_cte(cte_name, element_type)
-            }
+            VariableSource::Cte {
+                cte_name,
+                property_mapping,
+            } => TypedVariable::collection_from_cte(cte_name, element_type, *property_mapping),
             VariableSource::Unwind { source_array } => TypedVariable::Collection(
                 CollectionVariable::from_unwind(source_array, element_type),
             ),
@@ -1180,7 +1246,7 @@ mod tests {
 
     #[test]
     fn test_scalar_variable_creation() {
-        let var = TypedVariable::scalar_from_cte("with_cte_1".to_string());
+        let var = TypedVariable::scalar_from_cte("with_cte_1".to_string(), HashMap::new());
         assert!(var.is_scalar());
         assert!(!var.is_entity());
         assert!(var.is_from_cte());
@@ -1208,6 +1274,7 @@ mod tests {
         let var = TypedVariable::collection_from_cte(
             "with_cte_1".to_string(),
             CollectionElementType::Nodes,
+            HashMap::new(),
         );
         assert!(var.is_collection());
 
@@ -1285,6 +1352,64 @@ mod tests {
         assert_eq!(node.labels, vec!["User"]);
     }
 
+    /// F0 (#592): a WITH-CTE variable defined with a populated `property_mapping`
+    /// must resolve forward to its CTE column. Before F0 threaded the mapping
+    /// through `define_*`, this returned `Unresolved` (the map was dropped and
+    /// rebuilt empty), which is exactly why the forward path (M1) was dead.
+    #[test]
+    fn test_resolve_cte_variable_uses_threaded_property_mapping() {
+        use crate::graph_catalog::graph_schema::GraphSchema;
+        use crate::query_planner::typed_variable::ResolvedProperty;
+
+        let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+
+        let mut registry = VariableRegistry::new();
+        let mut mapping = HashMap::new();
+        mapping.insert("name".to_string(), "p1_a_name".to_string());
+        registry.define_node(
+            "a",
+            vec!["User".to_string()],
+            VariableSource::Cte {
+                cte_name: "with_a_cte_1".to_string(),
+                property_mapping: Box::new(mapping),
+            },
+        );
+
+        // Forward path now answers with the CTE column (was Unresolved pre-F0).
+        match registry.resolve("a", "name", &schema) {
+            ResolvedProperty::CteColumn { sql_alias, column } => {
+                assert_eq!(column, "p1_a_name");
+                // FROM alias is derived from the CTE name ("with_a_cte_1" → "a").
+                assert_eq!(sql_alias, "a");
+            }
+            other => panic!("expected CteColumn, got {:?}", other),
+        }
+
+        // A property NOT in the mapping stays Unresolved (falls through to legacy).
+        assert!(matches!(
+            registry.resolve("a", "email", &schema),
+            ResolvedProperty::Unresolved
+        ));
+
+        // Same for a scalar/relationship/collection CTE export.
+        let mut rel_map = HashMap::new();
+        rel_map.insert("since".to_string(), "p1_r_since".to_string());
+        registry.define_relationship(
+            "r",
+            vec!["FOLLOWS".to_string()],
+            Some("User".to_string()),
+            Some("User".to_string()),
+            VariableSource::Cte {
+                cte_name: "with_r_cte_1".to_string(),
+                property_mapping: Box::new(rel_map),
+            },
+        );
+        match registry.resolve("r", "since", &schema) {
+            ResolvedProperty::CteColumn { column, .. } => assert_eq!(column, "p1_r_since"),
+            other => panic!("expected CteColumn for rel, got {:?}", other),
+        }
+    }
+
     #[test]
     fn test_registry_merge() {
         let mut reg1 = VariableRegistry::new();
@@ -1319,7 +1444,7 @@ mod tests {
         );
         assert_eq!(rel.primary_label_or_type(), Some("KNOWS"));
 
-        let scalar = TypedVariable::scalar_from_cte("cte".to_string());
+        let scalar = TypedVariable::scalar_from_cte("cte".to_string(), HashMap::new());
         assert_eq!(scalar.labels_or_types(), None);
         assert_eq!(scalar.primary_label_or_type(), None);
     }
