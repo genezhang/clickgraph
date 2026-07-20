@@ -5518,6 +5518,22 @@ impl RenderPlanBuilder for LogicalPlan {
                         pred, self, from_alias,
                     );
                 }
+                // #634: the same coupled-rel resolution for SELECT/projection
+                // items. `RETURN o.order_id, r.customer_id` where the FROM binds
+                // the coupled node alias `o` leaves `r.<col>` dangling (Code 47).
+                // Reuse the same generic RenderExpr walker (FROM-alias gated +
+                // self-ref-guarded); no-op for standard/separate edge tables and
+                // for `RETURN r` (FROM binds `r`, so the gate does not fire).
+                {
+                    let from_alias = from.0.as_ref().and_then(|ft| ft.alias.as_deref());
+                    for item in select_items.items.iter_mut() {
+                        super::plan_builder_helpers::remap_coupled_rel_vars_in_filter(
+                            &mut item.expression,
+                            self,
+                            from_alias,
+                        );
+                    }
+                }
                 // Promote a FROM-marker edge's pre_filter (e.g. the polymorphic
                 // type/label discriminators the SingleTableScan strategy keeps on the
                 // edge for a whole-edge projection like `RETURN r`) into WHERE, or the
@@ -5562,6 +5578,17 @@ impl RenderPlanBuilder for LogicalPlan {
                         }
                     } else {
                         log::debug!("🔧 ORDER BY scope rewriting: scope is None, skipping");
+                    }
+                    // #634: resolve an FK-edge coupled rel var in ORDER BY
+                    // (`ORDER BY r.<col>`) to its coupled node alias, same as the
+                    // SELECT/WHERE remap above. FROM-alias gated + self-ref-guarded.
+                    let from_alias = from.0.as_ref().and_then(|ft| ft.alias.as_deref());
+                    for item in &mut items {
+                        super::plan_builder_helpers::remap_coupled_rel_vars_in_filter(
+                            &mut item.expression,
+                            self,
+                            from_alias,
+                        );
                     }
                     OrderByItems(items)
                 };
@@ -5992,6 +6019,22 @@ impl RenderPlanBuilder for LogicalPlan {
                     super::plan_builder_helpers::remap_coupled_rel_vars_in_filter(
                         pred, self, from_alias,
                     );
+                }
+                // #634: the same coupled-rel resolution for SELECT/projection
+                // items. `RETURN o.order_id, r.customer_id` where the FROM binds
+                // the coupled node alias `o` leaves `r.<col>` dangling (Code 47).
+                // Reuse the same generic RenderExpr walker (FROM-alias gated +
+                // self-ref-guarded); no-op for standard/separate edge tables and
+                // for `RETURN r` (FROM binds `r`, so the gate does not fire).
+                {
+                    let from_alias = from.0.as_ref().and_then(|ft| ft.alias.as_deref());
+                    for item in select_items.items.iter_mut() {
+                        super::plan_builder_helpers::remap_coupled_rel_vars_in_filter(
+                            &mut item.expression,
+                            self,
+                            from_alias,
+                        );
+                    }
                 }
                 // Promote a FROM-marker edge's pre_filter (e.g. the polymorphic
                 // type/label discriminators the SingleTableScan strategy keeps on the
