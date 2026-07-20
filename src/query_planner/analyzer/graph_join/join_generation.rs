@@ -547,12 +547,42 @@ fn redistribute_conditions(joins: &mut [Join], duplicate: &Join) {
 /// `{name: $tag}`) are preferred because they're highly selective — starting
 /// FROM a filtered table lets ClickHouse process far fewer rows through
 /// downstream JOINs.
+///
+/// ## Stats-informed ranking (S1, `docs/design/STATS_PLANNING.md`)
+///
+/// When the current query carries a table-stats snapshot (attached to the
+/// task-local `QueryContext` by the server, only under
+/// `CLICKGRAPH_STATS_ENABLED=true`), candidates WITHIN each priority tier are
+/// ranked by ascending row count before the alphabetical tie-break. Tables
+/// with unknown counts sort after known ones, alphabetically among
+/// themselves — so with no snapshot (the default: sql_only, tests, flag off)
+/// or all-unknown counts, the ordering is exactly the historical alphabetical
+/// one. This changes only WHICH semantically-equivalent anchor is picked
+/// (ordering), never row membership (PRIORITIES.md §1.7).
 pub fn select_anchor(joins: &[Join], plan_ctx: Option<&PlanCtx>) -> Option<String> {
+    let stats = crate::server::query_context::get_current_table_stats();
+
+    // Sort candidate (alias, table_name) pairs: by ascending row count when a
+    // stats snapshot is present (unknown counts last), then alphabetically by
+    // alias. Without a snapshot this is a pure alphabetical sort — identical
+    // to the stats-less engine.
+    let rank = |candidates: &mut Vec<(&str, &str)>| {
+        candidates.sort_by(|a, b| {
+            let key = |(_, table): &(&str, &str)| {
+                stats
+                    .as_ref()
+                    .and_then(|s| s.row_count(table))
+                    .unwrap_or(u64::MAX)
+            };
+            key(a).cmp(&key(b)).then_with(|| a.0.cmp(b.0))
+        });
+    };
+
     // Collect non-optional FROM markers
-    let mut non_optional: Vec<&str> = Vec::new();
+    let mut non_optional: Vec<(&str, &str)> = Vec::new();
     for join in joins {
         if join.joining_on.is_empty() && join.join_type != JoinType::Left {
-            non_optional.push(&join.table_alias);
+            non_optional.push((&join.table_alias, &join.table_name));
         }
     }
 
@@ -560,34 +590,35 @@ pub fn select_anchor(joins: &[Join], plan_ctx: Option<&PlanCtx>) -> Option<Strin
         // If plan_ctx is available, prefer aliases with selective filters
         // (inline properties like {name: $tag} or pushed-down WHERE predicates)
         if let Some(ctx) = plan_ctx {
-            let mut filtered: Vec<&str> = non_optional
+            let mut filtered: Vec<(&str, &str)> = non_optional
                 .iter()
                 .copied()
-                .filter(|alias| {
+                .filter(|(alias, _)| {
                     ctx.get_table_ctx(alias)
                         .is_ok_and(|tc| tc.has_selective_filters())
                 })
                 .collect();
             if !filtered.is_empty() {
-                filtered.sort();
-                return Some(filtered[0].to_string());
+                rank(&mut filtered);
+                return Some(filtered[0].0.to_string());
             }
         }
 
-        // No filtered nodes — fall back to alphabetically smallest
-        non_optional.sort();
-        return Some(non_optional[0].to_string());
+        // No filtered nodes — rank by row count (when stats present), then
+        // alphabetically.
+        rank(&mut non_optional);
+        return Some(non_optional[0].0.to_string());
     }
 
-    // Fall back to any FROM marker (including Left), alphabetically smallest
-    let mut optional: Vec<&str> = Vec::new();
+    // Fall back to any FROM marker (including Left), same ranking
+    let mut optional: Vec<(&str, &str)> = Vec::new();
     for join in joins {
         if join.joining_on.is_empty() {
-            optional.push(&join.table_alias);
+            optional.push((&join.table_alias, &join.table_name));
         }
     }
-    optional.sort();
-    optional.first().map(|s| s.to_string())
+    rank(&mut optional);
+    optional.first().map(|(alias, _)| alias.to_string())
 }
 
 /// Topological sort of joins ensuring each JOIN only references already-available tables.
@@ -1253,5 +1284,163 @@ mod tests {
             select_anchor(&joins, Some(&plan_ctx)),
             Some("tag".to_string())
         );
+    }
+
+    // ========================================================================
+    // S1 stats-informed anchor selection (docs/design/STATS_PLANNING.md)
+    // ========================================================================
+
+    /// Helper: run `f` inside a task-local QueryContext carrying `stats`.
+    fn with_stats_fixture<F: FnOnce()>(stats: &[(&str, u64)], f: F) {
+        use crate::graph_catalog::table_stats::TableStatsSnapshot;
+        use crate::server::query_context::{
+            set_current_table_stats, with_query_context, QueryContext,
+        };
+
+        let counts: std::collections::HashMap<String, u64> =
+            stats.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        rt.block_on(with_query_context(QueryContext::new(None), async move {
+            set_current_table_stats(std::sync::Arc::new(TableStatsSnapshot::from_counts(counts)));
+            f();
+        }));
+    }
+
+    #[test]
+    fn test_select_anchor_stats_prefer_smaller_table() {
+        // Alphabetical order picks "a" (users, 1M rows); with stats the
+        // anchor flips to "t" (tags, 100 rows).
+        let joins = vec![
+            JoinBuilder::from_marker("social.users", "a")
+                .join_type(JoinType::Inner)
+                .build(),
+            JoinBuilder::from_marker("social.tags", "t")
+                .join_type(JoinType::Inner)
+                .build(),
+        ];
+
+        // Stats disabled (no task-local snapshot): alphabetical, "a" wins.
+        assert_eq!(select_anchor(&joins, None), Some("a".to_string()));
+
+        // Stats enabled: smaller table wins.
+        with_stats_fixture(&[("social.users", 1_000_000), ("social.tags", 100)], || {
+            assert_eq!(select_anchor(&joins, None), Some("t".to_string()));
+        });
+    }
+
+    #[test]
+    fn test_select_anchor_stats_unknown_counts_fall_back_alphabetical() {
+        let joins = vec![
+            JoinBuilder::from_marker("social.zzz", "z")
+                .join_type(JoinType::Inner)
+                .build(),
+            JoinBuilder::from_marker("social.aaa", "a")
+                .join_type(JoinType::Inner)
+                .build(),
+        ];
+
+        // Snapshot present but neither table known: identical to stats-less
+        // (alphabetical by alias).
+        with_stats_fixture(&[("social.other", 5)], || {
+            assert_eq!(select_anchor(&joins, None), Some("a".to_string()));
+        });
+
+        // Known count beats unknown, even when the unknown is alphabetically
+        // smaller.
+        with_stats_fixture(&[("social.zzz", 5)], || {
+            assert_eq!(select_anchor(&joins, None), Some("z".to_string()));
+        });
+    }
+
+    #[test]
+    fn test_select_anchor_stats_rank_within_filtered_tier_only() {
+        use crate::query_planner::logical_expr::LogicalExpr;
+        use crate::query_planner::plan_ctx::{PlanCtx, TableCtx};
+
+        // "big" (filtered, 1M rows) vs "s" (unfiltered, 10 rows): the filter
+        // tier still wins outright — stats rank candidates WITHIN a tier, they
+        // never promote an unfiltered table over a filtered one.
+        let joins = vec![
+            JoinBuilder::from_marker("social.big_table", "big")
+                .join_type(JoinType::Inner)
+                .build(),
+            JoinBuilder::from_marker("social.small_table", "s")
+                .join_type(JoinType::Inner)
+                .build(),
+        ];
+
+        let mut plan_ctx = PlanCtx::new_empty();
+        let mut big_ctx = TableCtx::build(
+            "big".to_string(),
+            Some(vec!["Big".to_string()]),
+            vec![],
+            false,
+            true,
+        );
+        big_ctx.insert_filter(LogicalExpr::Literal(
+            crate::query_planner::logical_expr::Literal::String("placeholder".to_string()),
+        ));
+        plan_ctx.insert_table_ctx("big".to_string(), big_ctx);
+        plan_ctx.insert_table_ctx(
+            "s".to_string(),
+            TableCtx::build(
+                "s".to_string(),
+                Some(vec!["Small".to_string()]),
+                vec![],
+                false,
+                true,
+            ),
+        );
+
+        with_stats_fixture(
+            &[("social.big_table", 1_000_000), ("social.small_table", 10)],
+            || {
+                assert_eq!(
+                    select_anchor(&joins, Some(&plan_ctx)),
+                    Some("big".to_string())
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn test_select_anchor_stats_rank_among_multiple_filtered() {
+        use crate::query_planner::logical_expr::LogicalExpr;
+        use crate::query_planner::plan_ctx::{PlanCtx, TableCtx};
+
+        // Both candidates filtered: ascending row count decides ("t" smaller),
+        // beating the alphabetical pick ("a").
+        let joins = vec![
+            JoinBuilder::from_marker("social.users", "a")
+                .join_type(JoinType::Inner)
+                .build(),
+            JoinBuilder::from_marker("social.tags", "t")
+                .join_type(JoinType::Inner)
+                .build(),
+        ];
+
+        let mut plan_ctx = PlanCtx::new_empty();
+        for alias in ["a", "t"] {
+            let mut tc = TableCtx::build(
+                alias.to_string(),
+                Some(vec!["X".to_string()]),
+                vec![],
+                false,
+                true,
+            );
+            tc.insert_filter(LogicalExpr::Literal(
+                crate::query_planner::logical_expr::Literal::String("placeholder".to_string()),
+            ));
+            plan_ctx.insert_table_ctx(alias.to_string(), tc);
+        }
+
+        with_stats_fixture(&[("social.users", 1_000_000), ("social.tags", 100)], || {
+            assert_eq!(
+                select_anchor(&joins, Some(&plan_ctx)),
+                Some("t".to_string())
+            );
+        });
     }
 }

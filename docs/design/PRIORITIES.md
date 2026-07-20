@@ -116,18 +116,22 @@ per-shape patching of this class stays forbidden (§1.6).
 Remaining Phase-1 pass migrations (P1.4+) and Phase-3 §6.2 slices are
 fill-in work alongside, not blockers.
 
-### P-5 — Stats-informed SQL generation  ☐ (open — parallel workstream)
+### P-5 — Stats-informed SQL generation  ◐ (S1 implemented on branch; S2/S3 open)
 New. Today all planning is rules/heuristics; the concrete gap is
 `select_anchor()` (`analyzer/graph_join/join_generation.rs:550`) breaking
 ties **alphabetically**, and `has_selective_filters()` being a boolean.
 Staged (each stage its own design-then-implement, LDBC-benchmarked):
-- **S1 — table row-count cache**: one `SELECT table, total_rows FROM
-  system.tables WHERE database = ?` at schema load (TTL refresh; the
-  plumbing precedent is `schema_discovery.rs` / `engine_detection.rs`),
-  cached on the schema catalog; `select_anchor()` breaks ties by smallest
-  table and ranks filtered candidates by size. Databricks equivalent via
-  `DESCRIBE TABLE EXTENDED` (`databricks_probe.rs`). Config-gated
-  (`CLICKGRAPH_STATS_ENABLED`, default off), like `CLICKGRAPH_METRICS_CH_SUMMARY`.
+- **S1 — table row-count cache**: ✅ implemented (`feature/stats-planning-s1`):
+  `graph_catalog/table_stats.rs` (snapshot + pluggable source + TTL cache,
+  `CLICKGRAPH_STATS_TTL_SECS`), attached to the task-local `QueryContext` at
+  HTTP/Bolt request entry, consumed by `select_anchor()` as a within-tier
+  ascending-row-count rank (alphabetical fallback preserved; unknown/NULL
+  counts = stats-less). Config-gated (`CLICKGRAPH_STATS_ENABLED`, default
+  off); goldens/corpus stay stats-less + new with-stats golden set
+  (`stats_anchor_golden_tests.rs`). Remaining S1 follow-ups: embedded/remote
+  library-mode wiring; Databricks source via `DESCRIBE TABLE EXTENDED`
+  (`databricks_probe.rs`); LDBC-scale benchmark. Design:
+  `docs/design/STATS_PLANNING.md`.
 - **S2 — column selectivity**: NDV/min-max (ClickHouse column statistics /
   `system.parts_columns` `uniq`) to rank anchors among filtered candidates
   and pick VLP recursion direction (start BFS from the smaller endpoint
@@ -137,9 +141,8 @@ Staged (each stage its own design-then-implement, LDBC-benchmarked):
   to find which heuristics actually cost, BEFORE building more machinery
   (no per-query EXPLAIN ESTIMATE round-trips until S3 says where).
 Guardrails: rule §1.7 (ordering only, off by default); goldens stay
-stats-less; add a small separate golden set locking the with-stats plan
-against a fixed stats fixture. First deliverable: a short
-`docs/design/STATS_PLANNING.md` + S1 behind the flag.
+stats-less; the with-stats golden set locks the flag-on plan against a
+fixed stats fixture.
 
 ### P-6 — Backlog (do not start without re-prioritizing here)
 - SQL-IR Phases 2–4 (path collapse, structural idioms, Raw shrink) —

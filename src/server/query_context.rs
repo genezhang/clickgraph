@@ -202,6 +202,15 @@ pub struct QueryContext {
     /// not track (e.g. `WITH collect(post) AS posts`).
     pub array_cte_columns: HashSet<String>,
 
+    /// S1 stats-informed planning: per-table row-count snapshot for this query
+    /// (`docs/design/STATS_PLANNING.md`). Attached at query entry by the server
+    /// when `CLICKGRAPH_STATS_ENABLED=true` and a fetch has succeeded; `None`
+    /// everywhere else — sql_only, embedded, tests, flag off — which keeps the
+    /// planner byte-identical to the stats-less engine (the ONLY consumer is
+    /// `select_anchor`'s ordering-only ranking; guardrail: stats never change
+    /// row membership, PRIORITIES.md §1.7).
+    pub table_stats: Option<Arc<crate::graph_catalog::table_stats::TableStatsSnapshot>>,
+
     /// #596: Cypher aliases bound in the OUTER (enclosing) query scope at the
     /// point an `EXISTS { ... }` pattern predicate is rendered. Populated from
     /// the outer plan's live node/relationship aliases (see
@@ -387,6 +396,45 @@ pub fn set_current_schema(schema: Arc<GraphSchema>) {
     let _ = QUERY_CONTEXT.try_with(|ctx| {
         ctx.borrow_mut().schema = Some(schema);
     });
+}
+
+// ============================================================================
+// TABLE STATS ACCESSORS (S1 stats-informed planning)
+// ============================================================================
+
+/// Attach a per-table row-count snapshot for the current query. Called once at
+/// query entry by the server, ONLY when `CLICKGRAPH_STATS_ENABLED=true` and a
+/// stats fetch has succeeded. No-op outside a task-local scope.
+pub fn set_current_table_stats(stats: Arc<crate::graph_catalog::table_stats::TableStatsSnapshot>) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().table_stats = Some(stats);
+    });
+}
+
+/// The current query's table-stats snapshot, or `None` when stats-informed
+/// planning is disabled/unavailable (the default). Consumers must treat `None`
+/// (and any per-table miss) as "fall back to the stats-less heuristic" —
+/// stats influence ordering only, never row membership (PRIORITIES.md §1.7).
+pub fn get_current_table_stats(
+) -> Option<Arc<crate::graph_catalog::table_stats::TableStatsSnapshot>> {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().table_stats.clone())
+        .ok()
+        .flatten()
+}
+
+/// Attach the process-wide stats cache's current snapshot (covering `schema`'s
+/// databases) to the task-local context, refreshing the cache first if its TTL
+/// elapsed. No-ops — leaving the planner stats-less — when the cache was never
+/// installed (`CLICKGRAPH_STATS_ENABLED` off, embedded/warehouse modes) or no
+/// fetch has ever succeeded. Call once per query, after `set_current_schema`.
+pub async fn attach_current_table_stats(schema: &GraphSchema) {
+    if let Some(cache) = crate::server::GLOBAL_TABLE_STATS.get() {
+        let dbs = crate::graph_catalog::table_stats::schema_databases(schema);
+        if let Some(snapshot) = cache.snapshot(&dbs).await {
+            set_current_table_stats(snapshot);
+        }
+    }
 }
 
 // ============================================================================

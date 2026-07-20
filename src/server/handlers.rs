@@ -1283,6 +1283,11 @@ async fn query_handler_inner(
         // code can access it via get_current_schema() without GLOBAL_SCHEMAS lookups
         crate::server::query_context::set_current_schema(std::sync::Arc::new(graph_schema.clone()));
 
+        // S1 stats-informed planning: attach the current row-count snapshot
+        // (no-op unless CLICKGRAPH_STATS_ENABLED installed the cache at
+        // startup). Must happen before planning so select_anchor can see it.
+        crate::server::query_context::attach_current_table_stats(&graph_schema).await;
+
         // Phase 1: Parse query with UNION support
         // IMPORTANT: Parse the CLEAN query without CYPHER prefix
         let parse_start = Instant::now();
