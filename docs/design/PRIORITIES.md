@@ -101,7 +101,7 @@ P-3). Latent finding filed in-report: `has_with_clause_in_graph_rel` is
 duplicated (utils + helpers) with a DIFFERENT semantic — a future consolidation
 candidate, not touched here (§8.3 no-drive-by).
 
-### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ☐ (open)
+### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ◐ (P2.1 done)
 The dead-code sweep shrank plan_builder_utils.rs to 17,249 lines, but no
 §5.1 *moves* have happened. Pure groups first (vlp_rewrite →
 pattern_comprehension_sql → clause_extractors → plan_predicates →
@@ -109,6 +109,11 @@ cte_rewrite → with_to_cte), one move per PR, no logic edits, `pub(crate)`
 re-exports during transition. D-cluster dedups (D1/D2/D3/D6/D8 remainder)
 ride with their §5.1 home module per the plan. Can proceed in parallel
 with P-2 (different files).
+**P2.1 done** (`refactor/p21-vlp-rewrite-move`, awaiting review/merge): VLP
+expr-rewriting group moved to `render_plan/vlp_rewrite.rs` (796 lines, pure
+transforms), `pub(crate)` re-exported, zero logic edits, goldens + 1,082-query
+corpus byte-identical, ratchet baseline updated for the pure token relocation.
+D3 dedup deferred to a follow-up. Next unblocked: P2.2 pattern_comprehension_sql.
 
 ### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ☐ (blocked)
 **Blocked on P-2 and substantially eased by P-3.** The architectural fix
@@ -164,6 +169,14 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-20: P-3 / P2.1 first Phase-2 module MOVE (branch
+  `refactor/p21-vlp-rewrite-move`, awaiting review/merge). VLP
+  expression-rewriting group extracted verbatim from plan_builder_utils.rs to
+  `render_plan/vlp_rewrite.rs` (796 lines); `pub(crate)` re-exports keep the
+  old path working; zero logic edits; 211 goldens + 1,082-query corpus
+  byte-identical; ratchet baseline updated for a pure relocation of 4
+  `is_denormalized` structural tokens (net zero). D3 dedup deferred. Next: P2.2.
 
 - 2026-07-20: P-2 / P1.2 five WITH functions unified on an exhaustive `walk()`
   API (branch `refactor/p12-five-with-fns`, awaiting review/merge). Delivers the

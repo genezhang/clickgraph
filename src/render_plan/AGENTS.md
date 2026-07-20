@@ -12,8 +12,16 @@ LogicalPlan (from query_planner)
 plan_builder.rs          ← trait RenderPlanBuilder: LogicalPlan → RenderPlan
     │                       dispatches to build_chained_with_match_cte_plan for WITH+MATCH
     │
-    ├─ plan_builder_utils.rs (12K lines) ← the beast: CTE extraction, expression rewriting,
+    ├─ plan_builder_utils.rs (17K lines) ← the beast: CTE extraction, expression rewriting,
     │                                       WITH→CTE transformation, VLP+WITH JOIN generation
+    │
+    ├─ vlp_rewrite.rs (796)             ← **P2.1 (Jul 2026)**: VLP expression-rewriting group
+    │                                       moved out of plan_builder_utils.rs. Pure
+    │                                       `&mut RenderExpr`/`RenderPlan` transforms
+    │                                       (rewrite_vlp_aggregate_aliases,
+    │                                       rewrite_render_expr_for_vlp_with_{from_alias,endpoint_info},
+    │                                       extract_vlp_alias_mappings). Re-exported from the
+    │                                       old path during transition.
     │
     ├─ plan_builder_helpers.rs (4.6K)   ← schema lookups, property resolution, label fallbacks
     │
