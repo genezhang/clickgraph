@@ -4102,6 +4102,38 @@ fn build_alias_label_map_from_scope(
     for join in &joins.0 {
         if let Some(label) = table_to_label.get(&join.table_name) {
             map.insert(join.table_alias.clone(), label.clone());
+        } else if join.table_name.trim_start().starts_with('(') {
+            // #616: the combined-anchor fold (plan_optimizer.rs
+            // `fold_optional_edge_node_join_with_predicate`) rewrites the
+            // optional node's join `table_name` into a subquery string like
+            // `(SELECT … FROM edge AS t1 JOIN social.users_bench AS b ON … WHERE
+            // <pred>)`, aliased `b`. That hides `b`'s node table from the
+            // exact-match above, so `b`'s label goes unknown and the render-time
+            // generic `.id` resolver falls back to an alphabetical scan of all
+            // node schemas — picking the WRONG label (`Post.post_id` instead of
+            // `User.user_id`). Recover the label from the subquery's inner node
+            // JOIN.
+            //
+            // SOUNDNESS: only scan the `FROM … JOIN … ON` PREFIX (everything
+            // before the first ` WHERE `). The WHERE predicate can contain user
+            // string literals that spoof the magic substring (e.g.
+            // `WHERE b.name = 'posts_bench AS b '`) — matching against those
+            // would pick a non-deterministic wrong label (the scan iterates a
+            // randomized HashMap). The generated inner JOIN is always
+            // `JOIN {qualified} AS {alias} ON …` and always precedes the WHERE,
+            // so the prefix is literal-free ground truth. Match the exact
+            // `JOIN {qualified} AS {alias} ON` form (not a bare substring).
+            let join_prefix = join
+                .table_name
+                .split(" WHERE ")
+                .next()
+                .unwrap_or(&join.table_name);
+            for (qualified, label) in &table_to_label {
+                if join_prefix.contains(&format!("JOIN {} AS {} ON", qualified, join.table_alias)) {
+                    map.insert(join.table_alias.clone(), label.clone());
+                    break;
+                }
+            }
         }
     }
     map
