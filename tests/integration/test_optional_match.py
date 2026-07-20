@@ -87,6 +87,15 @@ class TestSingleOptionalMatch:
         # Should return one row with NULL for b
         assert_row_count(response, 1)
     
+    @pytest.mark.xfail(
+        reason="#583-family product regression (bisected to #479 combined LEFT "
+        "JOIN fold, 52d49f9a): the undirected OPTIONAL MATCH BidirectionalUnion "
+        "reverse arm NULL-extends from the non-anchor side, emitting a spurious "
+        "(NULL, 4) row alongside the correct (Bob, 3) row — 2 rows instead of 1. "
+        "Oracle: Bob has undirected TEST_FOLLOWS edges to Charlie, Diana, Alice "
+        "= 1 row, 3 connections. Remove this marker when #583 is fixed.",
+        strict=True,
+    )
     def test_optional_match_undirected(self, simple_graph):
         """Test OPTIONAL MATCH with undirected relationship."""
         response = execute_cypher(

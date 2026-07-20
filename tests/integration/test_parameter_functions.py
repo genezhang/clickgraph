@@ -316,7 +316,6 @@ class TestParameterFunctionEdgeCases:
         result = response.json()
         assert result["results"][0]["result"] == "fallback"
     
-    @pytest.mark.xfail(reason="Multiple parameter function composition needs investigation")
     def test_multiple_function_composition(self):
         """Test: Complex function composition with parameters."""
         query = """

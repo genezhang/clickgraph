@@ -87,7 +87,6 @@ class TestVLPRelationshipReturn:
         data = response.json()
         assert len(data["results"]) >= 3
 
-    @pytest.mark.xfail(reason="VLP path variable return not fully supported")
     def test_vlp_path_variable_length(self):
         """Test VLP with path variable and length function."""
         response = self.query(

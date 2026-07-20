@@ -167,16 +167,20 @@ class TestInvalidSyntax:
         assert "error" in response or "errors" in response or response.get("status") == "error"
     
     def test_invalid_return_syntax(self, simple_graph):
-        """Test invalid RETURN syntax - now handled gracefully."""
+        """Test invalid RETURN syntax - rejected as a parse error.
+
+        `RETURN a.name AS` (dangling AS with no alias) is a syntax error in
+        Neo4j. The pre-#516 lenient parser silently ignored the trailing
+        tokens; the strict all-consuming parser now correctly rejects it.
+        """
         response = execute_cypher(
             """
             MATCH (a:TestUser)
             RETURN a.name AS
             """,
             schema_name=simple_graph["schema_name"], raise_on_error=False)
-        
-        # ClickGraph now handles "AS" without alias by using the expression
-        assert_query_success(response)
+
+        assert "error" in response or "errors" in response or response.get("status") == "error"
     
     def test_invalid_order_by(self, simple_graph):
         """Test invalid ORDER BY syntax."""

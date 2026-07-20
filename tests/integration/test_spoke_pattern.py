@@ -24,23 +24,33 @@ class TestSpokePattern:
     """Test spoke/star patterns with comma-separated path patterns."""
     
     def test_simple_spoke_inbound(self, simple_graph):
-        """Test simple spoke: multiple nodes pointing to central hub."""
+        """Test simple spoke: multiple nodes pointing to central hub.
+
+        Cypher relationship-uniqueness applies across the whole MATCH clause
+        (comma patterns included), so `a` and `c` must bind DISTINCT edges
+        into the hub. Charlie (user_id=3) has two followers (Alice, Bob), so
+        the oracle answer is the 2 distinct-pair permutations. (Bob, the
+        previous hub choice, has only ONE follower — the correct Neo4j answer
+        there is 0 rows; the old expectation relied on the engine illegally
+        reusing one relationship twice, fixed by #518/#586.)
+        """
         response = execute_cypher(
             """
-            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(hub:TestUser), 
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(hub:TestUser),
                   (c:TestUser)-[:TEST_FOLLOWS]->(hub)
-            WHERE hub.user_id = 2
+            WHERE hub.user_id = 3
             RETURN a.name, hub.name, c.name
             """,
             schema_name=simple_graph["schema_name"]
         )
-        
+
         assert_query_success(response)
-        # Bob (user_id=2) is followed by Alice
-        # Should return at least one result
-        assert len(response["results"]) >= 1
+        # Charlie (user_id=3) is followed by Alice and Bob: 2 permutations
+        assert len(response["results"]) == 2
         assert_column_exists(response, "hub.name")
-        assert response["results"][0]["hub.name"] == "Bob"
+        assert response["results"][0]["hub.name"] == "Charlie"
+        pairs = {(r["a.name"], r["c.name"]) for r in response["results"]}
+        assert pairs == {("Alice", "Bob"), ("Bob", "Alice")}
     
     def test_simple_spoke_outbound(self, simple_graph):
         """Test simple spoke: central hub pointing to multiple nodes."""
@@ -59,28 +69,40 @@ class TestSpokePattern:
         assert len(response["results"]) >= 1
         assert_column_exists(response, "hub.name")
     
-    def test_bowtie_pattern(self, simple_graph):
-        """Test bowtie pattern: paths converging and diverging from hub (a->hub->c, e->hub->d)."""
+    def test_bowtie_pattern(self, simple_graph, clickhouse_client, test_database):
+        """Test bowtie pattern: paths converging and diverging from hub (a->hub->c, e->hub->d).
+
+        Relationship-uniqueness (whole-MATCH-clause scope, comma patterns
+        included) means a/e must bind DISTINCT in-edges and c/d DISTINCT
+        out-edges. The stock fixture gives Bob only ONE follower, for which
+        the Neo4j-correct answer is 0 rows (the old >=1 expectation relied on
+        illegal edge reuse, fixed by #518/#586). Seed one extra follower so a
+        genuine bowtie exists: in {Alice, Eve}, out {Charlie, Diana} -> 2x2
+        ordered permutations = 4 rows.
+        """
+        clickhouse_client.command(
+            f"INSERT INTO {test_database}.follows VALUES (5, 2, '2023-04-01')"
+        )
         response = execute_cypher(
             """
-            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(hub:TestUser)-[:TEST_FOLLOWS]->(c:TestUser), 
+            MATCH (a:TestUser)-[:TEST_FOLLOWS]->(hub:TestUser)-[:TEST_FOLLOWS]->(c:TestUser),
                   (e:TestUser)-[:TEST_FOLLOWS]->(hub)-[:TEST_FOLLOWS]->(d:TestUser)
             WHERE hub.user_id = 2
             RETURN a.name, hub.name, c.name, d.name, e.name
             """,
             schema_name=simple_graph["schema_name"]
         )
-        
+
         assert_query_success(response)
-        # Bob is the hub (user_id=2)
-        # Alice follows Bob, Bob follows Charlie and Diana
-        # This creates a bowtie shape
-        assert len(response["results"]) >= 1
-        
-        result = response["results"][0]
-        assert result["hub.name"] == "Bob"
-        # 'a' and 'e' should be users who follow Bob
-        # 'c' and 'd' should be users Bob follows
+        # Bob is the hub: followers {Alice, Eve}, followees {Charlie, Diana}
+        assert len(response["results"]) == 4
+
+        for result in response["results"]:
+            assert result["hub.name"] == "Bob"
+            # 'a' and 'e' are distinct users who follow Bob
+            assert {result["a.name"], result["e.name"]} == {"Alice", "Eve"}
+            # 'c' and 'd' are distinct users Bob follows
+            assert {result["c.name"], result["d.name"]} == {"Charlie", "Diana"}
     
     def test_spoke_with_aggregation(self, simple_graph):
         """Test spoke pattern with COUNT aggregation."""

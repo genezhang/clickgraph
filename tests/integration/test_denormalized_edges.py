@@ -267,7 +267,6 @@ class TestDenormalizedWithFilters:
 class TestDenormalizedVariableLengthPaths:
     """Test variable-length paths with denormalized properties."""
     
-    @pytest.mark.xfail(reason="Code bug: VLP with denormalized edges generates SQL missing WITH before RECURSIVE")
     def test_variable_path_with_denormalized_properties(self, denormalized_flights_graph):
         """Test variable-length path returning denormalized properties."""
         response = execute_cypher(
@@ -289,7 +288,6 @@ class TestDenormalizedVariableLengthPaths:
         assert row['dest.city'] == 'Atlanta'
         assert row['hops'] == 2  # LAX -> ORD -> ATL
     
-    @pytest.mark.xfail(reason="Denormalized VLP CTE renders outer SELECT only, not full CTE definition")
     def test_variable_path_cte_uses_denormalized_props(self, denormalized_flights_graph):
         """Verify CTEs for variable paths use denormalized properties."""
         # Use sql_only mode to get SQL back
@@ -443,7 +441,6 @@ class TestCompositeEdgeIds:
         row = response['results'][0]
         assert row['total'] == 6  # Total flights in test data
     
-    @pytest.mark.xfail(reason="Composite edge IDs with VLP need investigation")
     def test_variable_path_with_composite_edge_id(self, denormalized_flights_graph):
         """Test variable-length paths respect composite edge IDs for cycle prevention."""
         response = execute_cypher(
@@ -460,7 +457,6 @@ class TestCompositeEdgeIds:
         row = response['results'][0]
         assert row['dest_count'] >= 2  # At least SFO and ORD reachable
     
-    @pytest.mark.xfail(reason="Composite edge ID duplicate prevention needs investigation")
     def test_composite_id_prevents_duplicate_edges(self, denormalized_flights_graph):
         """Verify composite IDs are used for cycle prevention in CTEs."""
         response = execute_cypher(

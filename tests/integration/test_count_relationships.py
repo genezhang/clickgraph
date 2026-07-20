@@ -71,6 +71,15 @@ class TestCountRelationships:
         total = get_single_value(response, "total", convert_to_int=True)
         assert total > 0
 
+    @pytest.mark.xfail(
+        reason="Product regression (bisected to #502 NULL-sensitive count(r), "
+        "a10886aa): count(r) over an UNTYPED multi-type rel routes through the "
+        "vlp_multi_type CTE but still emits count(r.follower_id) against the "
+        "CTE alias t, whose projection has no such column -> ClickHouse Code 47 "
+        "(loud, HTTP 500). count(*) and typed count(r) work. #620-family "
+        "(CTE projection contract). Remove marker when fixed.",
+        strict=True,
+    )
     def test_count_relationship_with_node_constraints(self, simple_graph):
         """
         Test relationship counting with node type constraints.
