@@ -105,9 +105,62 @@ pub fn rewrite_vlp_aggregate_aliases(plan: &mut RenderPlan) -> RenderPlanBuilder
     // Example: {"b": "t"} for `vlp_a_b AS t`
     let mut vlp_end_to_cte_alias: HashMap<String, String> = HashMap::new();
 
+    // #647: For an END-anchored OPTIONAL VLP (`(a)<-[*]-(b)`, anchor `a` is the
+    // pattern END node) the FROM clause binds the END node directly — its
+    // properties come from the base table, NOT the VLP CTE. The VLP CTE's
+    // `vlp_cypher_end_alias` then equals the FROM-bound anchor, so mapping it to
+    // the CTE join alias would rewrite `a.name` → `vt0.name` (a column the CTE
+    // does not expose). Skip the FROM-bound anchor here; the OTHER endpoint (the
+    // one actually joined via the CTE) is projected from `vt0.start_*` by
+    // `rewrite_vlp_union_branch_aliases`. For the common anchor-at-start layout
+    // the FROM alias is the anchor (start), never the end alias, so this
+    // exclusion is a no-op there → byte-identical.
+    let optional_vlp_from_anchor: Option<&str> = plan
+        .from
+        .0
+        .as_ref()
+        .and_then(|from_ref| from_ref.alias.as_deref())
+        .filter(|alias| !alias.starts_with("vlp_"));
+
+    // #647/#643: only apply the end-anchored skip for a SINGLE VLP join. With
+    // TWO OR MORE VLP joins (chained `OPTIONAL MATCH (a)<-[*]-(b) OPTIONAL MATCH
+    // (b)<-[*]-(c)`) the endpoint→CTE-alias resolution is a separate, unsolved
+    // defect (#643): the far endpoint would resolve to the WRONG VLP's column.
+    // That chained shape is LOUD (Code 47) on main; keep it loud by NOT skipping
+    // (the historical mapping then dangles exactly as before) rather than letting
+    // it execute a silently-wrong aggregate (ground rule 1). Mirrors the
+    // `vlp_join_count > 1` guard #630 uses in `rewrite_vlp_union_branch_aliases`.
+    let single_vlp_join = plan
+        .joins
+        .0
+        .iter()
+        .filter(|j| j.table_name.starts_with("vlp_"))
+        .count()
+        == 1;
+
     // Extract VLP metadata from CTEs
     for cte in &plan.ctes.0 {
         if let Some(ref cypher_end_alias) = cte.vlp_cypher_end_alias {
+            // #647: skip only for a GENUINE end-anchored inversion — the FROM
+            // binds the end alias AND the pattern's two endpoints are distinct
+            // (`start_alias != end_alias`). A CLOSED VLP (`(a)<-[*]-(a)`) has
+            // start_alias == end_alias == the FROM anchor; it is a separate,
+            // loud-on-main shape (#625/#631) left on the original layout by the
+            // analyzer, so it must NOT be skipped here (skipping would silently
+            // change its projection). Guarding on distinct endpoints keeps it
+            // byte-identical.
+            let endpoints_distinct =
+                cte.vlp_cypher_start_alias.as_deref() != Some(cypher_end_alias.as_str());
+            if single_vlp_join
+                && endpoints_distinct
+                && Some(cypher_end_alias.as_str()) == optional_vlp_from_anchor
+            {
+                log::debug!(
+                    "🔧 VLP aggregate rewrite: skipping FROM-bound anchor end alias '{}' (#647 end-anchored OPTIONAL VLP)",
+                    cypher_end_alias
+                );
+                continue;
+            }
             // Find the corresponding JOIN to get the CTE alias
             for join in &plan.joins.0 {
                 if join.table_name == cte.cte_name {
@@ -2847,17 +2900,54 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
         }
     }
 
+    // #647: For an OPTIONAL VLP the FROM clause binds the ANCHOR node directly
+    // (its properties come from the base table, NOT the VLP CTE), so the anchor
+    // alias must be EXCLUDED from endpoint rewriting.
+    //
+    // Normal anchor-at-START layout: the anchor is the CTE's START alias, so the
+    // original rule excludes every CTE `vlp_cypher_start_alias`. Kept verbatim so
+    // all pre-existing shapes stay BYTE-IDENTICAL (including chained forward VLPs).
+    //
+    // END-anchored OPTIONAL VLP (`(a)<-[*]-(b)` / pre-bound `(a)-[*]->(b)`, #647):
+    // the orientation is mirrored — the FROM binds the CTE END alias (the anchor),
+    // and the CTE START alias is now the FAR (counted) endpoint that MUST be
+    // rewritten to `vt0.start_*`. So for the end-anchored CTE: exclude its END
+    // alias (the FROM anchor) and DO NOT exclude its START alias. Detected by the
+    // FROM alias matching a CTE's END alias with a distinct START alias (excludes
+    // closed VLP start==end, which keeps the historical start-exclusion).
+    let end_anchored_from_alias: Option<String> = if is_optional_vlp {
+        let from_alias = plan
+            .from
+            .0
+            .as_ref()
+            .and_then(|from_ref| from_ref.alias.clone());
+        from_alias.filter(|fa| {
+            plan.ctes.0.iter().any(|cte| {
+                cte.vlp_cypher_end_alias.as_deref() == Some(fa.as_str())
+                    && cte.vlp_cypher_start_alias.as_deref() != Some(fa.as_str())
+            })
+        })
+    } else {
+        None
+    };
+
     let filtered_mappings: HashMap<String, String> = vlp_mappings
         .clone()
         .into_iter()
         .filter(|(cypher_alias, _vlp_alias)| {
-            // 🔧 FIX: For OPTIONAL VLP, exclude the start alias from rewriting
-            // The start alias refers to the anchor table in FROM, not VLP CTE
+            // 🔧 FIX: For OPTIONAL VLP, exclude the anchor alias from rewriting —
+            // it refers to the anchor table in FROM, not the VLP CTE. Anchor is
+            // the CTE START alias in the normal layout (original rule); for an
+            // end-anchored VLP (#647) it is instead the CTE END alias, and that
+            // CTE's START alias (the far endpoint) MUST stay included.
             if is_optional_vlp {
-                // For OPTIONAL VLP, find the start alias and exclude it
                 for cte in &plan.ctes.0 {
                     if let Some(start_alias) = &cte.vlp_cypher_start_alias {
-                        if cypher_alias == start_alias {
+                        // #647: for the end-anchored CTE, the START alias is the
+                        // far endpoint — keep it in the rewrite (→ `vt0.start_*`).
+                        let this_cte_is_end_anchored = end_anchored_from_alias.as_deref()
+                            == cte.vlp_cypher_end_alias.as_deref();
+                        if !this_cte_is_end_anchored && cypher_alias == start_alias {
                             log::debug!(
                                 "🔧 OPTIONAL VLP: Excluding start alias '{}' from rewrite (anchor table in FROM)",
                                 cypher_alias
@@ -2865,6 +2955,15 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
                             return false;
                         }
                     }
+                }
+            }
+            if let Some(anchor_alias) = &end_anchored_from_alias {
+                if cypher_alias == anchor_alias {
+                    log::debug!(
+                        "🔧 OPTIONAL VLP (#647 end-anchored): Excluding FROM-bound END anchor alias '{}' from rewrite",
+                        cypher_alias
+                    );
+                    return false;
                 }
             }
 
