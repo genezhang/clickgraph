@@ -460,7 +460,7 @@ Split along the audited seams, **pure groups first** (lowest risk):
 | New module | Contents (current line ranges) | Purity |
 |---|---|---|
 | `render_plan/vlp_rewrite.rs` | VLP expr rewriting, 115–812 + `extract_vlp_alias_mappings` :1296 | pure `&mut RenderExpr` transforms — **move first** |
-| `render_plan/pattern_comprehension_sql.rs` | 15593–18207 (~2,600 lines, 29 fns) — emits SQL *strings*, a different layer from the rest | cohesive, separable |
+| `render_plan/pattern_comprehension_sql.rs` | ✅ **moved (P2.2, Jul 2026)** — the pattern-comprehension SQL *string* emitters (31 fns, ~2,600 lines): emits SQL text, a different layer from the rest | cohesive, separable |
 | `render_plan/clause_extractors.rs` | the `extract_*` pipeline 1418–3300 (`extract_filters/from/group_by/having/order_by/limit/skip/distinct` + embedded tests) | the only externally-consumed group; mostly pure |
 | `render_plan/plan_predicates.rs` | WITH-detection + alias/table lookups 3850–4247, 4418–4519 | pure read-only walkers — natural home for the §4 `walk()` rewrites |
 | `render_plan/cte_rewrite.rs` | CTE-ref extraction + CTE/alias rewriting 813–1295, 3323–3849, 6102–6970 | pure-ish (RenderPlan/RenderExpr + maps) |
@@ -972,8 +972,27 @@ re-exported from the old path; ZERO logic edits; goldens (211) + corpus sweep
 of 4 `is_denormalized` structural-derivation tokens (plan_builder_utils 9→5,
 vlp_rewrite 0→4, net zero). D3 dedup deliberately deferred (pure move this
 slice; the file churned past the §5.1 line numbers). ·
-☐ P2.1-D3 VLP expr-rewriter generation dedup (follow-up) · ☐ P2.2 pattern_comprehension_sql
-move (+D7 rest) · ☐ P2.3 clause_extractors move · ☐ P2.4 plan_predicates move ·
+☐ P2.1-D3 VLP expr-rewriter generation dedup (follow-up) ·
+☑ P2.2 pattern_comprehension_sql move (`refactor/p22-pattern-comprehension-move`): the
+pattern-comprehension SQL *string*-emitting group (`build_pattern_comprehension_sql`,
+`generate_pattern_comprehension_{correlated_subquery,cte}` + `PcCteResult`,
+`generate_pc_cte_with_either` / `generate_pc_correlated_subquery_with_either`, the
+`generate_list_comp_array_count*` / `emit_array_count_*` arrayCount lowering,
+`render_pc_where_clause` / `render_logical_expr_to_sql`, the count(*)-placeholder and
+arraycount-placeholder substitution passes, the pc edge/node id-column + CTE-column
+lookups, and `build_cte_column_map`/`scan_expr_for_aliases` which only that group uses)
+moved verbatim (31 fns) → `render_plan/pattern_comprehension_sql.rs` (2,629 lines);
+`pub(crate)` re-exported from the old path; ZERO logic edits (12 fns + `PcCteResult`
+struct/fields widened to `pub(crate)`, 2 stay-behind helpers `quote_qualified_col` /
+`extract_from_alias_from_cte_name` widened to `pub(crate)` so the sibling module can call
+them — the ONLY changes; per-function byte-diff vs origin/main confirmed identical modulo
+those visibility widenings + one benign fmt sig-reflow of `emit_array_count_in_subquery`).
+210 goldens + 1,082-query corpus byte-identical; full `cargo test` green; ratchet baseline
+updated for the pure relocation of schema/dialect axis tokens
+(`from_label_column`/`to_label_column`/`type_column`/`Dialect::`/`databricks`)
+plan_builder_utils → pattern_comprehension_sql, all net-zero. D7-rest deferred (pure move
+this slice). ·
+☐ P2.3 clause_extractors move · ☐ P2.4 plan_predicates move ·
 ☐ P2.5 cte_rewrite move (+D2) · ☐ P2.6 with_to_cte move · ☐ P2.7 D1 ·
 ☐ P2.8 D6 · ☐ P2.9 D8 · ☐ P2.10 import hygiene + remaining dead_code
 

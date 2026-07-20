@@ -102,7 +102,7 @@ P-3). Latent finding filed in-report: `has_with_clause_in_graph_rel` is
 duplicated (utils + helpers) with a DIFFERENT semantic — a future consolidation
 candidate, not touched here (§8.3 no-drive-by).
 
-### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ◐ (P2.1 done — P2.2 next)
+### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ◐ (P2.1, P2.2 done — P2.3 next)
 The dead-code sweep shrank plan_builder_utils.rs to ~17.7K lines. §5.1 moves are
 now underway. Pure groups first (vlp_rewrite →
 pattern_comprehension_sql → clause_extractors → plan_predicates →
@@ -110,8 +110,11 @@ cte_rewrite → with_to_cte), one move per PR, no logic edits, `pub(crate)`
 re-exports during transition. D-cluster dedups (D1/D2/D3/D6/D8 remainder)
 ride with their §5.1 home module per the plan. **P2.1 (vlp_rewrite move) merged
 (#657)** — VLP expr-rewriting group extracted to `render_plan/vlp_rewrite.rs`,
-byte-identical, D3 dedup deferred (follow-up). **Next: P2.2
-pattern_comprehension_sql move.**
+byte-identical, D3 dedup deferred (follow-up). **P2.2 (pattern_comprehension_sql move)
+delivered** (`refactor/p22-pattern-comprehension-move`) — the pattern-comprehension SQL
+string-emitting group (31 fns, `render_plan/pattern_comprehension_sql.rs`, 2,629 lines)
+extracted verbatim, `pub(crate)` re-exports, byte-identical goldens + corpus, ratchet
+net-zero; D7-rest deferred. **Next: P2.3 clause_extractors move.**
 
 ### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ☐ (UNBLOCKED — plan ready, next big rock)
 **Concrete staged plan written: `docs/design/FORWARD_RESOLUTION_PLAN.md`.** It
@@ -171,6 +174,18 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-20: **P2.2** second Phase-2 module MOVE — pattern-comprehension SQL
+  string-emitting group extracted verbatim from plan_builder_utils.rs to
+  `render_plan/pattern_comprehension_sql.rs` (31 fns, 2,629 lines, `pub(crate)`
+  re-exports, zero logic edits; 12 fns + `PcCteResult` struct/fields +
+  2 stay-behind helpers widened to `pub(crate)` as the only changes). Per-function
+  byte-diff vs origin/main verified identical (modulo those visibility widenings +
+  one benign fmt sig-reflow); 210 goldens + 1,082-query corpus byte-identical;
+  ratchet net-zero (schema/dialect axis tokens relocated pbu→new module). Branch
+  `refactor/p22-pattern-comprehension-move` (delivered, not yet merged). Next
+  refactor slice: P2.3 clause_extractors.
+
 
 - 2026-07-20: **#657** P2.1 first Phase-2 module MOVE — VLP expr-rewriting group
   extracted verbatim from plan_builder_utils.rs to `render_plan/vlp_rewrite.rs`
