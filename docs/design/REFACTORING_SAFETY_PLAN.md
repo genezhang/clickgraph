@@ -891,8 +891,16 @@ commented-out job stub listing the exact secrets it would need
 secrets/live warehouse aren't available to verify against. No alerting beyond
 default GitHub notifications, per the plan's explicit non-goal)
 
-Phase 1: ☐ P1.1 `children()`/`walk()` + mod.rs walkers · ☐ P1.2 five WITH fns
-characterize+unify (D4, D5) · ☑ P1.3 `transform_up` + first 3 passes
+> **Reconciliation note (2026-07-19)**: the week of 2026-07-12..17 landed real
+> slices across Phases 1–4 that this checklist did not track (marked ◐/☑ below
+> with dates). Work order is now governed by `docs/design/PRIORITIES.md` —
+> pick slices from there, and update BOTH docs in the merging PR.
+
+Phase 1: ◐ P1.1 `children()`/`map_children`/`map_children_arc` landed with
+P1.3 (exhaustive, no catch-all); **`walk()`/`any_node()`/`find_map_node` and
+the mod.rs read-walker migration remain open** · ☐ P1.2 five WITH fns
+characterize+unify (D4, D5) — **skipped so far; now the top refactor priority
+(PRIORITIES.md P-2)** · ☑ P1.3 `transform_up` + first 3 passes
 (`refactor/p13-transform-up`: `LogicalPlan::transform_up` — exhaustive bottom-up
 driver on a new Arc-preserving `map_children_arc` (single no-catch-all rebuild
 site; `map_children`/`children()` now delegate to it/`child_arcs()`); lazy
@@ -914,18 +922,38 @@ by CteReferencePopulator, which runs later; the reset was itself a latent
 Review: 1 real finding (the speculative-clone perf issue, fixed same-branch),
 0 blocking. Gate: fmt/clippy/`cargo test` green — goldens + 1,082-query corpus
 byte-identical, ratchet clean) ·
-☐ P1.4+ remaining passes/walkers (batch per file) · ☐ P1.x ExprVisitor
-adoption slices
+☐ P1.4+ remaining passes/walkers (batch per file) — ◐ Batch A merged 2026-07-17
+(`view_optimizer` + `projection_tagging` onto transform_up, 20a878b5); still
+hand-rolled: `type_inference`, `filter_tagging`, `graph_traversal_planning`,
+`filter_into_graph_rel`, `query_validation`, `plan_sanitization`,
+`cte_schema_resolver`, `cte_column_resolver`, `projected_columns_resolver`,
+`duplicate_scans_removing`, `group_by_building` (partial) ·
+◐ P1.x ExprVisitor adoption — 2 slices merged 2026-07-17: exhaustive
+`map_expression` combinator + 4 LogicalExpr catch-all rewriters retired
+(8f06b08c); `map_render_expr` combinator + RenderExpr catch-all rewriters
+retired (d58bad1f)
 
-Phase 2: ☐ P2.1 vlp_rewrite move (+D3) · ☐ P2.2 pattern_comprehension_sql
-move (+D7) · ☐ P2.3 clause_extractors move · ☐ P2.4 plan_predicates move ·
+Phase 2: **no §5.1 module MOVES have happened — plan_builder_utils.rs is still
+one file (17,249 lines as of 2026-07-19)** — but the dead-code/dedup slices
+landed 2026-07-13: ☑ dead-function sweep (2+3+18 dead fns, dead struct field,
+edge-id-column trio merged = D7 partial; 8e654039/6bb533e1/de0c073a/61481972) ·
+☑ module-level `allow(dead_code)` removed, scoped to 2 exceptions (227f08fb) ·
+☐ P2.1 vlp_rewrite move (+D3) · ☐ P2.2 pattern_comprehension_sql
+move (+D7 rest) · ☐ P2.3 clause_extractors move · ☐ P2.4 plan_predicates move ·
 ☐ P2.5 cte_rewrite move (+D2) · ☐ P2.6 with_to_cte move · ☐ P2.7 D1 ·
-☐ P2.8 D6 · ☐ P2.9 D8 · ☐ P2.10 import hygiene + dead_code removal
+☐ P2.8 D6 · ☐ P2.9 D8 · ☐ P2.10 import hygiene + remaining dead_code
 
-Phase 3: ☐ P3.1–P3.5 per §6.2 (transition-assert PRs then switch PRs) ·
-☐ P3.6 legacy-path deletion
+Phase 3: ◐ Slices 1–2 merged 2026-07-13: GraphNode/ViewScan + query_planner
+`is_denormalized` reads routed through canonical wrappers (162f9338/7d0f81bd) ·
+☐ remaining §6.2 sites (fk-edge re-derivations, first_col, view_scan.rs,
+start/end_is_denormalized cluster) · ☐ P3.6 legacy-path deletion
 
-Phase 4: ☐ P4.1..n hoists · ☐ P4.x §10 phases 1–3 · ☐ P4.final #411
+Phase 4: ◐ early hoists landed OUT OF ORDER 2026-07-14 (low-risk, accepted):
+3 diagnostic helpers (fe968442), 10 self-contained nested fns (b9ce1d94),
+final self-contained batch (c7317091), `WithBarrierScope` extracted (51ea82fe),
+`CteNameAllocator` extracted (1428324a) — the god-function core remains ~5K
+lines · ☐ P4.1..n remaining hoists (RefCell-capturing helpers need the
+`WithCteBuildState` struct) · ☐ P4.x §10 phases 1–3 · ☐ P4.final #411
 
 ## 10. Risks / what NOT to do
 

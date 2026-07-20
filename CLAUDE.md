@@ -14,6 +14,8 @@ ClickGraph is a **read-only graph query engine** for ClickHouse, written in Rust
 
 **Ground rules**: (1) Never change query semantics — honestly return what is asked, no more, no less. (2) No shortcuts — fully understand the processing flow before making changes. Quality over speed.
 
+**Work dispatch**: `docs/design/PRIORITIES.md` is the canonical "what to work on next" queue across all workstreams. Before starting refactor/bug-sweep/optimization work, pick the highest unblocked item there; when a slice merges, update that doc (and the owning design doc's checklist) in the same PR.
+
 ## Workspace Structure
 
 ```
@@ -251,6 +253,7 @@ Five schema variations exist: Standard, FK-edge, Denormalized, Polymorphic, Comp
 ## Key Documentation Files
 
 - **`STATUS.md`** — Single source of truth for project state
+- **`docs/design/PRIORITIES.md`** — Canonical work-dispatch queue (what to do next, and why)
 - **`CHANGELOG.md`** — Release history (Keep-a-Changelog format)
 - **`DEV_QUICK_START.md`** — Essential developer workflow
 - **`DEVELOPMENT_PROCESS.md`** — Detailed 6-phase development process
