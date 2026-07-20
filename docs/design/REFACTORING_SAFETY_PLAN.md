@@ -896,11 +896,34 @@ default GitHub notifications, per the plan's explicit non-goal)
 > with dates). Work order is now governed by `docs/design/PRIORITIES.md` —
 > pick slices from there, and update BOTH docs in the merging PR.
 
-Phase 1: ◐ P1.1 `children()`/`map_children`/`map_children_arc` landed with
-P1.3 (exhaustive, no catch-all); **`walk()`/`any_node()`/`find_map_node` and
-the mod.rs read-walker migration remain open** · ☐ P1.2 five WITH fns
-characterize+unify (D4, D5) — **skipped so far; now the top refactor priority
-(PRIORITIES.md P-2)** · ☑ P1.3 `transform_up` + first 3 passes
+Phase 1: ☑ P1.1 `children()`/`map_children`/`map_children_arc` (landed with
+P1.3) **+ `walk()`/`any_node()`/`find_map_node()` and the first mod.rs read-walker
+migrations (landed with P1.2 below)** · ☑ P1.2 five WITH fns
+characterize+unify (D4, D5) (`refactor/p12-five-with-fns`: added the missing
+P1.1 `walk()` — pre-order, `ControlFlow` early-exit + `Descend::Yes/Skip` prune,
+iterative/explicit-stack so deep plans can't overflow (§10) — plus
+`any_node()`/`find_map_node()`; `has_union_anywhere` +
+`contains_variable_length_path` reexpressed as `any_node()` proofs. Five WITH
+fns: `3a3af0bf` had already routed 4 of them through `children()`, closing the
+plan's hypothesized `plan_contains_with_clause`-narrower divergence — a
+synthetic-plan characterization matrix (WITH under GraphRel.left/center/right /
+Cte / ViewScan / Unwind / CartesianProduct / Union arm / write variants /
+nested) confirms all now AGREE, so unify is pure consolidation, NOT a behavior
+change (§10 decision). D4: `has_with_clause_in_tree` is the single existence
+impl (`any_node`), `plan_contains_with_clause` a synonym delegating to it; both
+`_impl` depth-guard twins deleted. D5: `collect_unwind_aliases` /
+`find_unwind_aliases` merged onto `collect_unwind_aliases_core(...,
+cross_with_barrier: bool, ...)` preserving the deliberate stop-at-WithClause vs
+cross-barrier difference as a NAMED parameter. Write variants handled throughout
+(children()-backed). Gate: fmt/clippy/`cargo test` green — 210 goldens +
+1,082-query corpus byte-identical; ratchet +2 (`is_denormalized: false`
+test-literal fields in the new synthetic helpers, not branching). AGENTS.md §6 /
+CLAUDE.md rule 5 rewritten from "five must agree" to "walk() is exhaustive;
+barriers are explicit". `has_with_clause_in_graph_rel` (utils+helpers duplicate
+pair, DIFFERENT WITH-in-GraphRel-branch semantics from the existence
+predicates) left as a documented latent-duplication finding, not merged —
+outside the existence cluster and behavior-risky per §8.3 no-drive-by) ·
+☑ P1.3 `transform_up` + first 3 passes
 (`refactor/p13-transform-up`: `LogicalPlan::transform_up` — exhaustive bottom-up
 driver on a new Arc-preserving `map_children_arc` (single no-catch-all rebuild
 site; `map_children`/`children()` now delegate to it/`child_arcs()`); lazy
