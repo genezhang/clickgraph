@@ -4821,7 +4821,27 @@ pub(super) fn optional_anchor_gate_conjuncts(
     gr: &crate::query_planner::logical_plan::GraphRel,
 ) -> Vec<LogicalExpr> {
     if !gr.is_optional.unwrap_or(false)
-        || gr.variable_length.is_some()
+        // #621: a DIRECTED-OUTGOING single-CTE variable-length pattern IS
+        // gateable — the anchor `a` is the pattern's START node, bound by the
+        // outer `FROM users AS a`, and its only anchor-adjacent join is the
+        // `LEFT JOIN vlp_… AS vt0 ON a.id = vt0.start_id`; ANDing the anchor gate
+        // into that ON correctly NULL-extends anchors that fail the gate (LEFT
+        // JOIN semantics, oracle-verified). Every OTHER VLP orientation is
+        // excluded:
+        //   - INCOMING (`(a)<-[…]-(b)`): the anchor `a` is the pattern's END
+        //     node — the outer FROM binds `b`, and `a`'s gate is ALREADY applied
+        //     inside the CTE (`WHERE end_is_active = …`). There is no outer `a`
+        //     alias, so folding `AND a.<col>` would reference a non-existent
+        //     table → Code 47 (and double-apply the gate). Detected by
+        //     `direction != Outgoing`.
+        //   - UNDIRECTED (`was_undirected`): folding into the two-arm/doubled-
+        //     edge layout makes the combined-anchor rewrite decline (Code 47).
+        //   - shortestPath / multi-type / composite / denorm: excluded via the
+        //     `shortest_path_mode` / `pattern_combinations` / `cte_references` /
+        //     denorm-union guards below.
+        || (gr.variable_length.is_some()
+            && (gr.direction != crate::query_planner::logical_expr::Direction::Outgoing
+                || gr.was_undirected == Some(true)))
         || gr.shortest_path_mode.is_some()
         || gr.pattern_combinations.is_some()
         || !gr.cte_references.is_empty()

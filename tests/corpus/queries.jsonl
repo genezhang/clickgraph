@@ -1176,3 +1176,5 @@
 {"cypher": "MATCH (a:TestUser) OPTIONAL MATCH (a)-[:TEST_FOLLOWS*2..3]->(b:TestUser) WHERE b.name = 'Bob' RETURN a.name, b.name", "name": "test_630_optional_vlp_where_endpoint", "schema": "test_fixtures"}
 {"cypher": "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) WHERE size((b)-[:FOLLOWS]->()) > 0 RETURN a.id, b.id", "name": "test_616_fold_optional_bid_resolves_user_label", "schema": "standard"}
 {"cypher": "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) WHERE b.country = 'USA' RETURN a.id, b.id", "name": "test_616_fold_optional_bid_plain_predicate", "schema": "standard"}
+{"cypher": "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS*1..2]->(b:User) WHERE a.is_active = true RETURN a.name, count(b) AS c", "name": "test_621_optional_vlp_anchor_gate_directed", "schema": "standard"}
+{"cypher": "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS*1..3]->(b:User) WHERE a.is_active = true AND a.country = 'USA' RETURN a.name, count(b) AS c", "name": "test_621_optional_vlp_anchor_gate_compound_range", "schema": "standard"}

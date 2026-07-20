@@ -6590,6 +6590,83 @@ async fn optional_where_gate_placement_611_614() {
     }
 }
 
+/// #621: an OPTIONAL MATCH anchor-WHERE gate on a DIRECTED variable-length
+/// pattern must fold into the `LEFT JOIN vlp_… AS vt0 ON a.id = vt0.start_id`
+/// (ANDing `a.is_active = true`), so anchors that fail the gate are
+/// NULL-extended (count → 0). Previously `optional_anchor_gate_conjuncts`
+/// bailed for `variable_length.is_some()`, silently DROPPING the gate. UNDIRECTED
+/// VLP stays excluded (kept at old placement — a separate shape).
+#[tokio::test]
+async fn optional_vlp_anchor_gate_folds_into_vlp_join_621() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // Directed VLP: gate folds into the vlp CTE join's ON.
+    let sql = render(
+        &schema,
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS*1..2]->(b:User) \
+         WHERE a.is_active = true RETURN a.name, count(b)",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("ON a.user_id = vt0.start_id AND a.is_active = true"),
+        "#621: directed VLP anchor gate must fold into the vlp CTE LEFT JOIN ON:\n{sql}"
+    );
+    assert!(
+        !sql.to_uppercase().contains("\nWHERE A.IS_ACTIVE"),
+        "#621: gate must not stay in the outer WHERE (drops NULL-extended anchors):\n{sql}"
+    );
+
+    // A compound anchor gate folds every conjunct into the same ON.
+    let sql2 = render(
+        &schema,
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS*1..2]->(b:User) \
+         WHERE a.is_active = true AND a.country = 'USA' RETURN a.name, count(b)",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql2.contains("AND a.is_active = true") && sql2.contains("AND a.country = 'USA'"),
+        "#621: both anchor-gate conjuncts must fold into the vlp join ON:\n{sql2}"
+    );
+
+    // UNDIRECTED VLP stays excluded — the gate is NOT folded (kept at old
+    // placement, a separate shape). Must not newly error, and must not fold.
+    let sql3 = render(
+        &schema,
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS*1..2]-(b:User) \
+         WHERE a.is_active = true RETURN a.name, count(b)",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        !sql3.contains("start_id AND a.is_active"),
+        "#621: undirected VLP must stay excluded (gate not folded into the CTE join):\n{sql3}"
+    );
+
+    // #621 review BLOCKER: INCOMING-direction VLP (`(a)<-[…]-(b)`) — the anchor
+    // `a` is the VLP's END node (outer FROM binds `b`); its gate is ALREADY
+    // applied inside the CTE (`WHERE end_is_active = …`). The fold must NOT fire
+    // — there is no outer `a` alias, so `AND a.<col>` would reference a
+    // non-existent table (Code 47). Excluded via `direction != Outgoing`.
+    let sql4 = render(
+        &schema,
+        "MATCH (a:User) OPTIONAL MATCH (a)<-[:FOLLOWS*1..2]-(b:User) \
+         WHERE a.is_active = true RETURN a.name, count(b)",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        !sql4.contains("AND a.is_active"),
+        "#621: incoming VLP must NOT fold the gate into the outer ON (no outer `a` \
+         alias — would be Code 47); the gate is already applied inside the CTE:\n{sql4}"
+    );
+    assert!(
+        sql4.contains("end_is_active = true"),
+        "#621: incoming VLP gate must stay applied inside the CTE (end_ column):\n{sql4}"
+    );
+}
+
 /// #599: `size((pattern))` renders as a bare correlated `COUNT(*)` scalar
 /// subquery; ClickHouse decorrelates that into a LEFT JOIN, so an outer row
 /// with ZERO pattern matches yields NULL instead of 0 — silently breaking
