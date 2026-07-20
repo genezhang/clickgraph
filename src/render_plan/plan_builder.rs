@@ -5642,6 +5642,18 @@ impl RenderPlanBuilder for LogicalPlan {
                 rewrite_vlp_union_branch_aliases(&mut render_plan)?;
                 rewrite_vlp_aggregate_aliases(&mut render_plan)?;
 
+                // #644: reroute a denormalized OPTIONAL VLP anchor through its
+                // node-grain `__denorm_scan_a` CTE (fixes the Code 47 from the
+                // anchor LEFT JOIN referencing the logical id column absent on
+                // the denorm edge table). No-op for every other shape.
+                if let Some(gj_node) = find_graph_joins_node(self) {
+                    super::plan_builder_helpers::rewrite_denorm_optional_vlp_anchor_scan(
+                        &mut render_plan,
+                        &gj_node.input,
+                        schema,
+                    );
+                }
+
                 // Handle RETURN-context pattern comprehensions (same logic as GraphJoins match arm)
                 let gj_input = match self {
                     LogicalPlan::GraphJoins(gj) => Some(&gj.input),
@@ -6089,7 +6101,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     None,
                 )?);
 
-                return Ok(RenderPlan {
+                let mut render_plan = RenderPlan {
                     ctes,
                     select: select_items,
                     from,
@@ -6105,7 +6117,22 @@ impl RenderPlanBuilder for LogicalPlan {
                     fixed_path_info: None,
                     is_multi_label_scan: false,
                     variable_registry: None,
-                });
+                };
+
+                // #644: a denormalized OPTIONAL VLP anchor is rendered as
+                // `FROM <denorm_edge_table> AS a LEFT JOIN vlp_a_b AS vt0 ON
+                // a.<logical_id> = vt0.start_id`, referencing a logical id
+                // column that doesn't exist on the denorm edge table (Code 47).
+                // Reroute the anchor through its node-grain `__denorm_scan_a`
+                // CTE (the same shape single-hop denorm OPTIONAL builds). No-op
+                // for every non-(denorm optional VLP anchor-at-start) shape.
+                super::plan_builder_helpers::rewrite_denorm_optional_vlp_anchor_scan(
+                    &mut render_plan,
+                    &_gj.input,
+                    schema,
+                );
+
+                return Ok(render_plan);
             }
 
             // WithClause WITH plan_ctx
