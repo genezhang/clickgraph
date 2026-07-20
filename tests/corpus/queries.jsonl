@@ -1178,3 +1178,4 @@
 {"cypher": "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) WHERE b.country = 'USA' RETURN a.id, b.id", "name": "test_616_fold_optional_bid_plain_predicate", "schema": "standard"}
 {"cypher": "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS*1..2]->(b:User) WHERE a.is_active = true RETURN a.name, count(b) AS c", "name": "test_621_optional_vlp_anchor_gate_directed", "schema": "standard"}
 {"cypher": "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS*1..3]->(b:User) WHERE a.is_active = true AND a.country = 'USA' RETURN a.name, count(b) AS c", "name": "test_621_optional_vlp_anchor_gate_compound_range", "schema": "standard"}
+{"cypher": "MATCH (c:Object)-[:PARENT]->(p:Object) RETURN c.name, p.name", "name": "test_632_self_ref_fk_edge_child_parent_join", "schema": "fk_edge_self_ref"}

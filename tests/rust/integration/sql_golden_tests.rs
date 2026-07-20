@@ -2033,11 +2033,40 @@ async fn with_cte_join_key_is_correlated_not_cartesian_451() {
     }
 }
 
-/// Regression for #457: GROUP BY on a bare composite-id node variable must key
-/// on ALL id columns, not just the first. `MATCH (a:Account)-[:TRANSFERRED]->
-/// (a2:Account) RETURN a, count(a2)` previously emitted `GROUP BY a.bank_id`
-/// only, silently collapsing every Account that shared a bank_id into one bucket
-/// (count summed across them, other identity columns returned an arbitrary
+/// #632: a SELF-REFERENCING FK-edge (edge table == node table, from_node ==
+/// to_node) must join the child's FK column to the parent's PK — NOT the same
+/// column on both aliases (which degenerates to a self-identity / inverted
+/// join, returning parent↔child reversed). The FK column is whichever of
+/// {from_id, to_id} is NOT the node_id; the two example schemas declare it on
+/// OPPOSITE sides, so the fix must handle both:
+///   - filesystem_single PARENT: node_id=object_id, from_id=parent_id (FK) →
+///     `(c)-[:PARENT]->(p)` = `c.parent_id = p.object_id`.
+///   - ldbc REPLY_OF (unified_test): node_id=commentId, to_id=replyOfCommentId
+///     (FK) → `(c)<-[:REPLY_OF]-(reply)` = `reply.replyOfCommentId = c.commentId`.
+#[tokio::test]
+async fn self_referencing_fk_edge_joins_child_fk_to_parent_pk_632() {
+    // filesystem_single: FK is on from_id (parent_id).
+    let schema = load_schema("schemas/examples/filesystem_single.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(
+            &schema,
+            "MATCH (c:Object)-[:PARENT]->(p:Object) RETURN c.name, p.name",
+            dialect,
+        )
+        .await;
+        assert!(
+            sql.contains("c.parent_id = p.object_id"),
+            "#632 (filesystem): self-ref join must be child.FK(parent_id) = \
+             parent.PK(object_id) for {dialect:?}, got:\n{sql}"
+        );
+        assert!(
+            !sql.contains("c.object_id = p.parent_id"),
+            "#632 (filesystem): must NOT emit the inverted parent↔child join for \
+             {dialect:?}:\n{sql}"
+        );
+    }
+}
+
 /// member's value). The whole-node GROUP BY optimization in `group_by_builder.rs`
 /// now expands to the full `node_id.columns()` set via the schema.
 #[tokio::test]

@@ -2,7 +2,7 @@ WITH with_c_rc_cte_0 AS (SELECT
       anyLast(c.name) AS "p1_c_name", 
       count(r.parent_id) AS "rc"
 FROM test_integration.fs_objects_single AS p
-INNER JOIN test_integration.fs_objects_single AS c ON c.object_id = p.parent_id
+INNER JOIN test_integration.fs_objects_single AS c ON c.parent_id = p.object_id
 GROUP BY c.object_id
 )
 SELECT 

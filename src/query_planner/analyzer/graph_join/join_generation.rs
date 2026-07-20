@@ -338,7 +338,7 @@ pub fn generate_pattern_joins(
             from_id,
             to_id,
             join_side,
-            ..
+            is_self_referencing,
         } => {
             match join_side {
                 NodePosition::Left => {
@@ -351,6 +351,44 @@ pub fn generate_pattern_joins(
                         t.right_cte_name,
                         plan_ctx,
                     ));
+                    // #632: a SELF-REFERENCING FK-edge (from_node == to_node, one
+                    // physical table aliased twice) needs DIFFERENT columns on the
+                    // two aliases: the FROM/child row carries the FK column
+                    // pointing at the TO/parent row's PK (= the node_id). The
+                    // non-self-ref pairing (`left.node_id = right.from_id`) is a
+                    // shared-column equi-join, correct only when the two aliases
+                    // are DIFFERENT tables; for a self-join it degenerates to
+                    // e.g. `c.object_id = p.parent_id` (parent↔child inverted).
+                    //
+                    // The FK column is whichever of {from_id, to_id} is NOT the
+                    // node_id — the schemas declare it inconsistently:
+                    //   filesystem PARENT: node_id=object_id, from_id=parent_id
+                    //     (FK), to_id=object_id (PK) → FK = from_id.
+                    //   ldbc REPLY_OF: node_id=commentId, from_id=commentId (PK),
+                    //     to_id=replyOfCommentId (FK) → FK = to_id.
+                    // Correct join is always `child(from-node).FK = parent(to-node)
+                    // .node_id`, verified live against both schemas.
+                    let node_id_col = first_col(&left_id); // self-ref: left/right same table
+                    let fk_col = if from_id == &node_id_col {
+                        to_id.clone()
+                    } else {
+                        from_id.clone()
+                    };
+                    let r_selfref_left = Identifier::Single(helpers::resolve_column(
+                        &fk_col,
+                        t.left_cte_name,
+                        plan_ctx,
+                    ));
+                    let r_selfref_right = Identifier::Single(helpers::resolve_column(
+                        &node_id_col,
+                        t.right_cte_name,
+                        plan_ctx,
+                    ));
+                    let (cond_left_id, cond_right_id) = if *is_self_referencing {
+                        (&r_selfref_left, &r_selfref_right)
+                    } else {
+                        (&r_left_id, &r_from_id)
+                    };
                     let right_avail = already_available.contains(t.right_alias);
                     let left_avail = already_available.contains(t.left_alias);
 
@@ -363,26 +401,26 @@ pub fn generate_pattern_joins(
                             JoinBuilder::new(t.left_table, t.left_alias)
                                 .add_identifier_condition(
                                     t.left_alias,
-                                    &r_left_id,
+                                    cond_left_id,
                                     t.right_alias,
-                                    &r_from_id,
+                                    cond_right_id,
                                 )
                                 .build(),
                         ],
                         (true, false) => vec![JoinBuilder::new(t.left_table, t.left_alias)
                             .add_identifier_condition(
                                 t.left_alias,
-                                &r_left_id,
+                                cond_left_id,
                                 t.right_alias,
-                                &r_from_id,
+                                cond_right_id,
                             )
                             .build()],
                         (false, true) => vec![JoinBuilder::new(t.right_table, t.right_alias)
                             .add_identifier_condition(
                                 t.right_alias,
-                                &r_from_id,
+                                cond_right_id,
                                 t.left_alias,
-                                &r_left_id,
+                                cond_left_id,
                             )
                             .from_id(from_id.clone())
                             .to_id(to_id.clone())
