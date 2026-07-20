@@ -2724,6 +2724,23 @@ async fn combined_anchor_fold_generic_id_resolves_correct_label_616() {
         sql2.contains(r#"b.user_id AS "b.id""#) && !sql2.contains("b.post_id"),
         "#616: plain-predicate fold must also resolve b.id → b.user_id:\n{sql2}"
     );
+
+    // #616 soundness (review BLOCKER): a WHERE string literal that spoofs the
+    // magic `<table> AS <alias>` substring must NOT flip the label. The label is
+    // recovered from the subquery's `FROM … JOIN … ON` PREFIX (literal-free),
+    // so the literal is ignored and `b.id` deterministically resolves to
+    // `b.user_id`.
+    let sql3 = render(
+        &schema,
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) \
+         WHERE b.name = 'social.posts_bench AS b ' RETURN a.id, b.id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql3.contains(r#"b.user_id AS "b.id""#) && !sql3.contains(r#"b.post_id AS "b.id""#),
+        "#616: a string literal spoofing `posts_bench AS b` must not flip b.id to post_id:\n{sql3}"
+    );
 }
 
 /// misplaced, just silently absent.
