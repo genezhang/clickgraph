@@ -2684,9 +2684,48 @@ async fn social_479_plain_optional_where_combined_subquery_preserves_null_extens
     );
 }
 
-/// FIXED (#554): an `Incoming`-direction end-bound OPTIONAL MATCH (anchor on
-/// the RIGHT connection, e.g. `MATCH (a) OPTIONAL MATCH (b)<-[:R]-(a) WHERE
-/// b.prop = X`) rendered with NO WHERE filter applied at ALL — not
+/// #616: the combined-anchor fold rewrites the optional node's join `table_name`
+/// into a subquery string, which hid the node's table from
+/// `build_alias_label_map_from_scope`. The generic `.id` render-time resolver
+/// then found no label for `b` and fell back to an alphabetical scan of all node
+/// schemas — resolving `b.id` (a `:User`) to `Post.post_id` (Post sorts before
+/// User) instead of `User.user_id`, emitting `b.post_id` (Code 47 at execution).
+/// The fix recovers the label from the folded subquery's inner `JOIN <table> AS
+/// <alias>`, so `b.id` → `b.user_id`.
+#[tokio::test]
+async fn combined_anchor_fold_generic_id_resolves_correct_label_616() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    // size() predicate — the #614 shape that routed into the fold.
+    let sql = render(
+        &schema,
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) \
+         WHERE size((b)-[:FOLLOWS]->()) > 0 RETURN a.id, b.id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains(r#"b.user_id AS "b.id""#),
+        "#616: b.id (a :User) must resolve to b.user_id in the folded projection:\n{sql}"
+    );
+    assert!(
+        !sql.contains("b.post_id"),
+        "#616: b.id must NOT resolve to Post's post_id (alphabetical-fallback bug):\n{sql}"
+    );
+
+    // Plain structural predicate — same fold, same resolution.
+    let sql2 = render(
+        &schema,
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) \
+         WHERE b.country = 'USA' RETURN a.id, b.id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql2.contains(r#"b.user_id AS "b.id""#) && !sql2.contains("b.post_id"),
+        "#616: plain-predicate fold must also resolve b.id → b.user_id:\n{sql2}"
+    );
+}
+
 /// misplaced, just silently absent.
 ///
 /// Root cause: `collect_graphrel_predicates` (plan_builder_helpers.rs) drops

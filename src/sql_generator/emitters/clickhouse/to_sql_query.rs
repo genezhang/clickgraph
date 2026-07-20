@@ -4102,6 +4102,27 @@ fn build_alias_label_map_from_scope(
     for join in &joins.0 {
         if let Some(label) = table_to_label.get(&join.table_name) {
             map.insert(join.table_alias.clone(), label.clone());
+        } else if join.table_name.trim_start().starts_with('(') {
+            // #616: the combined-anchor fold (plan_optimizer.rs
+            // `fold_optional_edge_node_join_with_predicate`) rewrites the
+            // optional node's join `table_name` into a subquery string like
+            // `(SELECT … FROM edge AS t1 JOIN social.users_bench AS b ON …)`,
+            // aliased `b`. That hides `b`'s node table from the exact-match
+            // above, so `b`'s label goes unknown and the render-time generic
+            // `.id` resolver falls back to an alphabetical scan of all node
+            // schemas — picking the WRONG label (`Post.post_id` instead of
+            // `User.user_id`). Recover the label by finding the node table that
+            // the subquery joins under THIS join's own alias (`{qualified} AS
+            // {alias}`), so `b.id` resolves to the correct `user_id`.
+            for (qualified, label) in &table_to_label {
+                if join
+                    .table_name
+                    .contains(&format!("{} AS {}", qualified, join.table_alias))
+                {
+                    map.insert(join.table_alias.clone(), label.clone());
+                    break;
+                }
+            }
         }
     }
     map
