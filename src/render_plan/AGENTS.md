@@ -263,7 +263,7 @@ pattern, promote the CTE to the FROM anchor and LEFT-join the optional pattern
 (demoting inner/cross pattern joins to LEFT). Schema-pattern-agnostic (keys off
 `is_optional_pattern()` + CTE-name prefixes, not schema flags).
 
-### 6. WITH Clause Processing Must Traverse All Plan Node Types ⚠️ CRITICAL
+### 6. WITH Clause Processing: `walk()` Is Exhaustive; Barriers Are Explicit
 
 **Background**: `build_chained_with_match_cte_plan` iterates to extract WITH clauses. Each iteration:
 1. `has_with_clause_in_tree()` detects if a WITH clause exists in the plan
@@ -274,26 +274,47 @@ Inside step 3, there are two additional traversal helpers used within the `Graph
 4. `plan_contains_with_clause()` — checks if a sub-tree contains any WithClause
 5. `needs_processing()` — checks if a sub-tree needs CTE replacement for a given alias
 
-**The Trap**: ALL FIVE functions must agree on plan traversal. If any function can't traverse
-through a plan node type (e.g., `Unwind`, `CartesianProduct`), WITH clauses nested inside
-that node become invisible, causing:
-- Detection succeeds (step 1) but replacement skips the sub-tree (step 3) → WITH clause persists
-- Next iteration finds same WITH, skips it (already in `processed_cte_aliases`) → no progress
-- Loop ends → "Failed to process all WITH clauses" error
+**History (the old trap)**: these functions were once five *independently
+hand-rolled* recursive walkers, each with a `_ => false`/`_ => {}` catch-all.
+They drifted: a variant handled by one but missed by another made a WITH
+*visible to detection* (step 1) but *invisible to the guards* (step 3), so the
+sub-tree was skipped, the WITH persisted, and the loop either lost it or spun
+until "Failed to process all WITH clauses". The Feb-2026 `Unwind`/
+`CartesianProduct` gap and the `plan_contains_with_clause` `GraphRel.center`/
+`Cte`/`ViewScan` gap were both instances of this class.
 
-**Feb 2026 fix**: `plan_contains_with_clause()` and `needs_processing()` were missing `Unwind`
-and `CartesianProduct` variants. The replacement function itself (`replace_with_clause_with_cte_reference_v2`)
-already handled them, but the guard checks at the `GraphRel` match arm prevented entry.
-This blocked `WITH collect(x) as xs UNWIND xs as x MATCH (x)-[]->(y)` patterns.
+**How it's structural now** (P1.1/P1.2, `REFACTORING_SAFETY_PLAN` §4):
+- `LogicalPlan::children()` / `child_arcs()` / `map_children_arc()` are the
+  single **exhaustive** child enumeration — a `match` with NO catch-all, so
+  adding a `LogicalPlan` variant is a compile error until every one is handled.
+- `LogicalPlan::walk()` (+ `any_node()` / `find_map_node()`) is the pre-order
+  walker built on `children()`: it reaches **every** child edge —
+  `GraphRel.center`, `Cte.input`, `ViewScan.input`, and the write-op inputs —
+  by construction, and is iterative (explicit stack) so deep plans can't
+  overflow. A `Descend::Skip` return prunes a subtree (the barrier primitive);
+  `ControlFlow::Break` exits early.
+- `has_with_clause_in_tree()` is now the single canonical existence predicate
+  (`any_node(is WithClause)`); `plan_contains_with_clause()` is a thin synonym
+  delegating to it. They are ONE implementation — they cannot re-diverge.
+- `find_all_with_clauses_grouped()` and `needs_processing()` route their
+  generic recursion through `children()`/`for_each_child()`; only their
+  WITH-key / alias-matching *decision* logic is bespoke.
+- The twin UNWIND collectors share `collect_unwind_aliases_core(...,
+  cross_with_barrier: bool, ...)`: `collect_unwind_aliases` STOPS at a
+  `WithClause` barrier, `find_unwind_aliases` CROSSES it (ID-column detection).
+  That difference is now an explicit **named parameter**, not two silently-
+  divergent copies.
 
-**Pattern to watch**: Any time a NEW `LogicalPlan` variant is added, verify ALL FIVE functions handle it:
-- `has_with_clause_in_tree()` (plan_builder_utils.rs ~line 3537)
-- `plan_contains_with_clause()` (plan_builder_utils.rs ~line 4186)
-- `find_all_with_clauses_grouped()` / `find_all_with_clauses_impl()` (plan_builder_utils.rs ~line 10989)
-- `needs_processing()` (inside `replace_with_clause_with_cte_reference_v2`, plan_builder_utils.rs ~line 12125)
-- `replace_with_clause_with_cte_reference_v2()` (plan_builder_utils.rs ~line 11548)
-
-If even one function misses the new variant, infinite iteration or lost WITH clauses can result.
+**Rule for a NEW `LogicalPlan` variant**: `children()`/`map_children_arc()`
+force you to handle it (compile error otherwise), and every `walk()`-based
+predicate then recurses into it automatically. You only need bespoke handling
+where a walker has a genuine *barrier* (stop-at-WithClause) or *decision*
+(alias/key matching) — and those are explicit `Descend::Skip` returns or named
+`bool` parameters, greppable and reviewable, never a missing match arm.
+Characterization tests in
+`plan_builder_utils.rs::tests::with_traversal_characterization` lock the
+existence predicates' agreement across the full position matrix and the D5
+barrier difference — a re-divergence is a single visible test failure.
 
 ### 6b. recreate_pattern_schema_context: 3-Tier Label Resolution
 
@@ -586,7 +607,7 @@ For `size(PatternComprehension)` that would generate correlated subqueries (whic
 |---------|---------|------------|
 | `a_start_id` in JOIN | ClickHouse: "cannot be resolved" | `find_id_column_for_alias` VLP shortcut before GraphNode |
 | **Forward reference in OPTIONAL MATCH** | **"Unknown identifier `tag.id`"** | **FROM/JOIN order not using `anchor_connection` when anchor is right_connection** |
-| **Infinite WITH iteration** | **"Failed to process all WITH clauses after N iterations"** | **`plan_contains_with_clause` or `needs_processing` doesn't traverse a plan node type (see §6)** |
+| **Infinite WITH iteration** | **"Failed to process all WITH clauses after N iterations"** | **A `walk()`/`children()`-based WITH predicate has a bespoke barrier/decision that skips the sub-tree the WITH lives in (see §6). The old "walker missed a variant" cause is now a compile error.** |
 | Wrong property mapping | Properties from wrong table | Denormalized vs standard property source confusion |
 | Missing CTE columns | Column not found in subquery | `cte_schemas` not populated for this CTE |
 | Duplicate CTEs | Same CTE name generated twice | CTE name collision, missing dedup check |
