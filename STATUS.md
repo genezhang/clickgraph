@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: May 6, 2026*
+*Updated: July 20, 2026*
 
 ## Current Version: v0.6.7-dev
 
@@ -9,8 +9,8 @@ Supports server mode, embedded (in-process chdb), remote ClickHouse, and SQL-onl
 **Embedded mode is now read-write** (v0.6.7+): `CREATE`, `SET`, `DELETE`, and `REMOVE` against ClickGraph-managed tables; server / remote / sql_only modes remain read-only and reject writes upstream.
 `cg` CLI tool for agent/script-oriented use (`clickgraph-tool` workspace crate).
 
-**Unit Tests**: 1,653 passing (100%)
-**Integration Tests**: 183 passing (100%)
+**Rust Tests**: ~2,145 passing (100%) — 1,604 lib + 504 integration (incl. the 210-case byte-exact golden matrix and the 1,082-query corpus translation-snapshot sweep) + ratchet + stats + doctests; `cargo test`, no live ClickHouse
+**Python Integration Tests**: ~3,480 passing against live CH (nightly full-suite workflow); 50-test `smoke` subset + a 2-file regression set gate every PR
 **Embedded Tests**: 152 passing (unit + integration + e2e)
 **Go Binding Tests**: 14 passing (100%)
 **openCypher TCK**: **402/402 read scenarios passing (100%)** — 0 failures. Write feature files (~205 scenarios across `Create*`/`Set*`/`Delete*`/`Remove*`) imported and partially lifted: 9 scenarios run end-to-end with counter assertions; remaining are `@wip` with per-scenario triage notes. See `clickgraph-tck/`.
@@ -18,7 +18,27 @@ Supports server mode, embedded (in-process chdb), remote ClickHouse, and SQL-onl
 **Benchmark**: 14/14 queries (100%)
 **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)
 **Endurance**: 24h / 518M requests / 0 server errors / P50=1ms / 27 MB RSS (jemalloc) — [details](tests/stress/RESULTS.md)
-**Lint**: `cargo clippy --all-targets` — **0 warnings** (cleaned from 68 across PRs #287–#302)
+**Lint**: `cargo clippy --all-targets` — **0 warnings**
+
+### Active workstreams (see `docs/design/PRIORITIES.md` — canonical dispatch queue)
+
+- **Refactoring-safety plan** (`docs/design/REFACTORING_SAFETY_PLAN.md`): Phase 0
+  regression net **complete** (per-variation goldens + corpus sweep + ratchet +
+  CI smoke/nightly). Phase 1 in progress — P1.2 five-WITH-function unification on
+  an exhaustive `LogicalPlan::walk()` **merged** (#650); `transform_up` + several
+  passes migrated. Phase 2 module split of `plan_builder_utils.rs` (still ~17.7K
+  lines) is the **next refactor slice** (P-3). Phase 4 forward-resolution rewrite
+  (§7.2) is unblocked.
+- **Stats-informed SQL generation** (`docs/design/STATS_PLANNING.md`): Stage 1
+  **merged** (#651) — flag-gated (`CLICKGRAPH_STATS_ENABLED`, default off) table
+  row-count cache feeding `select_anchor()` tie-breaks; ordering-only, never
+  semantics. S2 (column selectivity) / S3 (feedback loop) open.
+- **Correctness bug lane**: silent-wrong / loud-error VLP + OPTIONAL-MATCH +
+  FK-edge shapes fixed continuously (recent: #647 end-anchored OPTIONAL VLP,
+  verified vs live Neo4j). Open follow-ups tracked as GitHub issues (#648/#649
+  and the #6xx VLP/composite residue).
+- **DeltaGraph (Databricks/Spark dialect)**: beta; SQL-IR dialect routing via
+  `FunctionMapper`. Live-workspace validation pending (`docs/deltagraph/GA_READINESS.md`).
 
 ### Integration Test Breakdown
 
