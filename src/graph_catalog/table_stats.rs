@@ -192,9 +192,12 @@ impl TableStatsSource for ClickHouseTableStatsSource {
 
 struct CacheState {
     snapshot: Option<Arc<TableStatsSnapshot>>,
-    /// Databases covered by the last successful fetch. A request for a
-    /// database outside this set forces a refresh (multi-schema servers).
-    fetched_dbs: BTreeSet<String>,
+    /// Databases *attempted* in the last fetch (success OR failure) — the union
+    /// fetched at `last_attempt`. Freshness is keyed off this, not off what
+    /// succeeded, so a database whose fetch failed still respects the TTL
+    /// instead of forcing a refetch on every subsequent query. A request for a
+    /// database outside this set is genuinely new and forces a refresh.
+    attempted_dbs: BTreeSet<String>,
     /// Last fetch *attempt* (success or failure). Failures keep serving the
     /// stale snapshot but are not retried until the TTL elapses again, so a
     /// down backend can't be hammered on every query.
@@ -221,7 +224,7 @@ impl TableStatsCache {
             ttl,
             state: tokio::sync::RwLock::new(CacheState {
                 snapshot: None,
-                fetched_dbs: BTreeSet::new(),
+                attempted_dbs: BTreeSet::new(),
                 last_attempt: None,
             }),
         }
@@ -245,13 +248,17 @@ impl TableStatsCache {
             return st.snapshot.clone();
         }
 
-        // Fetch the union of previously-covered and requested databases so a
+        // Fetch the union of previously-attempted and requested databases so a
         // multi-schema server keeps counts for all schemas it has served.
-        let mut fetch_dbs: BTreeSet<String> = st.fetched_dbs.clone();
+        let mut fetch_dbs: BTreeSet<String> = st.attempted_dbs.clone();
         fetch_dbs.extend(databases.iter().cloned());
         let fetch_list: Vec<String> = fetch_dbs.iter().cloned().collect();
 
         st.last_attempt = Some(Instant::now());
+        // Record the attempt set BEFORE the fetch resolves: freshness keys off
+        // what was attempted, not what succeeded, so a failed db still respects
+        // the TTL rather than forcing a refetch on every query.
+        st.attempted_dbs = fetch_dbs;
         match self.source.fetch(&fetch_list).await {
             Ok(rows) => {
                 log::debug!(
@@ -260,7 +267,6 @@ impl TableStatsCache {
                     fetch_list.len()
                 );
                 st.snapshot = Some(Arc::new(TableStatsSnapshot::from_counts(rows)));
-                st.fetched_dbs = fetch_dbs;
             }
             Err(e) => {
                 log::warn!(
@@ -279,10 +285,12 @@ impl TableStatsCache {
 
     fn is_fresh(st: &CacheState, ttl: Duration, databases: &[String]) -> bool {
         let attempted_recently = st.last_attempt.is_some_and(|at| at.elapsed() < ttl);
-        let covers = databases.iter().all(|db| st.fetched_dbs.contains(db));
-        // A recent FAILED attempt (snapshot None but fetched_dbs empty) also
-        // counts as fresh: don't re-hit a down backend on every query.
-        attempted_recently && (covers || st.snapshot.is_none())
+        // `attempted_dbs` holds every db in the last fetch's union, whether it
+        // succeeded or failed — so a recently-failed db is "covered" here and
+        // won't be re-hit until the TTL elapses. Only a genuinely new db
+        // (never attempted) misses coverage and forces a refresh.
+        let attempted = databases.iter().all(|db| st.attempted_dbs.contains(db));
+        attempted_recently && attempted
     }
 }
 
@@ -309,30 +317,38 @@ pub fn schema_databases(schema: &GraphSchema) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     /// Fixture source: returns a fixed map, counts fetch invocations, can be
-    /// told to fail.
+    /// told to fail (statically, or toggled at runtime via `fail_flag`).
     struct FixtureSource {
         rows: HashMap<String, u64>,
-        calls: AtomicUsize,
+        calls: Arc<AtomicUsize>,
         fail: bool,
+        /// Runtime-toggleable failure, checked in addition to `fail`.
+        fail_flag: Arc<AtomicBool>,
     }
 
     impl FixtureSource {
         fn new(rows: HashMap<String, u64>) -> Self {
             Self {
                 rows,
-                calls: AtomicUsize::new(0),
+                calls: Arc::new(AtomicUsize::new(0)),
                 fail: false,
+                fail_flag: Arc::new(AtomicBool::new(false)),
             }
         }
         fn failing() -> Self {
             Self {
                 rows: HashMap::new(),
-                calls: AtomicUsize::new(0),
+                calls: Arc::new(AtomicUsize::new(0)),
                 fail: true,
+                fail_flag: Arc::new(AtomicBool::new(false)),
             }
+        }
+        /// Handles to observe call count and flip failure on/off after construction.
+        fn probes(&self) -> (Arc<AtomicUsize>, Arc<AtomicBool>) {
+            (self.calls.clone(), self.fail_flag.clone())
         }
     }
 
@@ -340,7 +356,7 @@ mod tests {
     impl TableStatsSource for FixtureSource {
         async fn fetch(&self, _databases: &[String]) -> Result<HashMap<String, u64>, String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            if self.fail {
+            if self.fail || self.fail_flag.load(Ordering::SeqCst) {
                 Err("fixture failure".to_string())
             } else {
                 Ok(self.rows.clone())
@@ -416,6 +432,7 @@ mod tests {
     #[tokio::test]
     async fn cache_failure_returns_none_then_does_not_hammer() {
         let src = FixtureSource::failing();
+        let (calls, _) = src.probes();
         let cache = TableStatsCache::new(Box::new(src), Duration::from_secs(3600));
         let dbs = vec!["db".to_string()];
 
@@ -426,6 +443,53 @@ mod tests {
         // Second call within TTL: failed attempt is remembered, no snapshot,
         // and (behaviorally) the planner just runs stats-less.
         assert!(cache.snapshot(&dbs).await.is_none());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "failed db must not be refetched within TTL"
+        );
+    }
+
+    /// Regression (P-5 review MAJOR): a successful fetch covering db `a`,
+    /// followed by a request for db `b` whose fetch FAILS, must not refetch `b`
+    /// on every subsequent query within the TTL. Before the fix, `is_fresh`
+    /// keyed off successfully-covered dbs, so the still-uncovered `b` forced a
+    /// synchronous fetch under the write lock on every query.
+    #[tokio::test]
+    async fn cache_does_not_hammer_a_persistently_failing_uncovered_db() {
+        let src = FixtureSource::new(counts(&[("a.t", 1)]));
+        let (calls, fail_flag) = src.probes();
+        let cache = TableStatsCache::new(Box::new(src), Duration::from_secs(3600));
+
+        // Cover `a` successfully.
+        let sa = cache.snapshot(&["a".to_string()]).await.expect("a covered");
+        assert_eq!(sa.row_count("a.t"), Some(1));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // Now make fetches fail, then request the uncovered `b` repeatedly.
+        fail_flag.store(true, Ordering::SeqCst);
+        for _ in 0..5 {
+            // `b` was attempted (and failed) once; further requests within TTL
+            // must be served stats-less WITHOUT another fetch.
+            let _ = cache.snapshot(&["b".to_string()]).await;
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "b must be attempted exactly once, not on every query"
+        );
+
+        // `a` is still covered from the first successful fetch — cache hit, no refetch.
+        let sa2 = cache
+            .snapshot(&["a".to_string()])
+            .await
+            .expect("a still covered");
+        assert_eq!(sa2.row_count("a.t"), Some(1));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "covered a must remain a cache hit"
+        );
     }
 
     #[test]
