@@ -961,7 +961,18 @@ one file (17,249 lines as of 2026-07-19)** — but the dead-code/dedup slices
 landed 2026-07-13: ☑ dead-function sweep (2+3+18 dead fns, dead struct field,
 edge-id-column trio merged = D7 partial; 8e654039/6bb533e1/de0c073a/61481972) ·
 ☑ module-level `allow(dead_code)` removed, scoped to 2 exceptions (227f08fb) ·
-☐ P2.1 vlp_rewrite move (+D3) · ☐ P2.2 pattern_comprehension_sql
+☑ P2.1 vlp_rewrite move (`refactor/p21-vlp-rewrite-move`): the VLP
+expression-rewriting group (`rewrite_vlp_aggregate_aliases` +
+`rewrite_expr_for_vlp_end_nodes`, `rewrite_render_expr_for_vlp_with_from_alias`,
+`translate_db_columns_to_cypher_properties`,
+`rewrite_render_expr_for_vlp_with_endpoint_info`, `extract_vlp_alias_mappings`)
+moved verbatim → `render_plan/vlp_rewrite.rs` (796 lines); `pub(crate)`
+re-exported from the old path; ZERO logic edits; goldens (211) + corpus sweep
+(1,082 queries) byte-identical; ratchet baseline updated for the pure relocation
+of 4 `is_denormalized` structural-derivation tokens (plan_builder_utils 9→5,
+vlp_rewrite 0→4, net zero). D3 dedup deliberately deferred (pure move this
+slice; the file churned past the §5.1 line numbers). ·
+☐ P2.1-D3 VLP expr-rewriter generation dedup (follow-up) · ☐ P2.2 pattern_comprehension_sql
 move (+D7 rest) · ☐ P2.3 clause_extractors move · ☐ P2.4 plan_predicates move ·
 ☐ P2.5 cte_rewrite move (+D2) · ☐ P2.6 with_to_cte move · ☐ P2.7 D1 ·
 ☐ P2.8 D6 · ☐ P2.9 D8 · ☐ P2.10 import hygiene + remaining dead_code

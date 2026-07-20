@@ -102,14 +102,16 @@ P-3). Latent finding filed in-report: `has_with_clause_in_graph_rel` is
 duplicated (utils + helpers) with a DIFFERENT semantic — a future consolidation
 candidate, not touched here (§8.3 no-drive-by).
 
-### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ◐ (P2.1 in flight — top refactor slice)
-The dead-code sweep shrank plan_builder_utils.rs to ~17.7K lines, but no
-§5.1 *moves* have happened. Pure groups first (vlp_rewrite →
+### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ◐ (P2.1 done — P2.2 next)
+The dead-code sweep shrank plan_builder_utils.rs to ~17.7K lines. §5.1 moves are
+now underway. Pure groups first (vlp_rewrite →
 pattern_comprehension_sql → clause_extractors → plan_predicates →
 cte_rewrite → with_to_cte), one move per PR, no logic edits, `pub(crate)`
 re-exports during transition. D-cluster dedups (D1/D2/D3/D6/D8 remainder)
-ride with their §5.1 home module per the plan. **P2.1 (vlp_rewrite move) is in
-flight** (`refactor/p21-vlp-rewrite-move`); P2.2→P2.6 follow in order.
+ride with their §5.1 home module per the plan. **P2.1 (vlp_rewrite move) merged
+(#657)** — VLP expr-rewriting group extracted to `render_plan/vlp_rewrite.rs`,
+byte-identical, D3 dedup deferred (follow-up). **Next: P2.2
+pattern_comprehension_sql move.**
 
 ### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ☐ (UNBLOCKED — plan ready, next big rock)
 **Concrete staged plan written: `docs/design/FORWARD_RESOLUTION_PLAN.md`.** It
@@ -169,6 +171,13 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-20: **#657** P2.1 first Phase-2 module MOVE — VLP expr-rewriting group
+  extracted verbatim from plan_builder_utils.rs to `render_plan/vlp_rewrite.rs`
+  (796 lines, `pub(crate)` re-exports, zero logic edits). Reviewed MERGE (0
+  findings, per-function byte-diff verified); 210 goldens + corpus byte-identical;
+  ratchet net-zero. Also merged **#655** P-4 forward-resolution plan +
+  **#656** PRIORITIES sync. Next refactor slice: P2.2.
 
 - 2026-07-20: **PR flow adopted** (repo has branch protection). Merged to
   `origin/main` (squash, admin — sole dev can't self-approve): **#650** P-2/P1.2
