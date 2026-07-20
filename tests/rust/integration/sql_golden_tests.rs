@@ -632,6 +632,18 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
         "single_hop",
         "MATCH (o:Order)-[:PLACED_BY]->(c:Customer) RETURN o.order_id, c.name",
     ),
+    // #634: coupled FK-edge rel var's property in RETURN / ORDER BY, when the FROM
+    // binds the coupled NODE alias `o` (because `o` is also referenced). `r.<col>`
+    // must resolve to the node alias `o` (they share the orders_fk row), not
+    // dangle (Code 47). Mirrors the #584 aggregate / #633 WHERE remaps.
+    (
+        "coupled_rel_prop_in_return_634",
+        "MATCH (o:Order)-[r:PLACED_BY]->(c:Customer) RETURN o.order_id, r.customer_id",
+    ),
+    (
+        "coupled_rel_prop_in_order_by_634",
+        "MATCH (o:Order)-[r:PLACED_BY]->(c:Customer) RETURN o.order_id ORDER BY r.customer_id",
+    ),
     // Reverse pattern (same directed edge, written right-to-left).
     (
         "single_hop_reverse",
