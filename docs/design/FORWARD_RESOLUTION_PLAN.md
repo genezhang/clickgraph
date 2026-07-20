@@ -249,9 +249,23 @@ marked**. The three §10 phases map to slice groups **F0–F1** (forward path),
 - Fixes: nothing user-visible yet — it *proves* M1 and M2 agree everywhere they
   both answer, de-risking F1.
 
+> **⚠️ F0 outcome (2026-07-20, verified in review) — READ BEFORE F1.** F0 landed
+> the threading + a *working* transition-assert, but it was **relocated** from
+> the `to_sql_query.rs:6918` render site to `publish_alias`
+> (`plan_builder_utils.rs`), because that render-site M1 arm is effectively
+> dead: expressions reaching `to_sql` are **already** rewritten to CTE column
+> names by the live M3 resolver (`variable_scope::VariableScope::resolve` /
+> `rewrite_render_expr`), so M1's Cypher-property-keyed map never matches there
+> (0 hits in corpus/lib; the ~37 integration-test hits are already-M3-rewritten
+> columns that fall through to M2 identically). **Consequence for F1: the
+> authoritative switch must target the M3 rewrite path, NOT the `to_sql_query.rs`
+> render site the bullets below name.** F0 found zero forward-vs-legacy
+> disagreements, so F1's data is trustworthy — but retarget it to M3 first.
+
 **F1 — make M1 authoritative (the intentional-diff slice).**
-- At the render site, when M1 returns `CteColumn`, **return it** and stop
-  consulting M2. Remove the transition-assert.
+- ~~At the render site, when M1 returns `CteColumn`, **return it**~~ **(see F0
+  outcome above — retarget to the M3 rewrite path in `variable_scope`)** and
+  stop consulting M2. Remove the transition-assert.
 - Acceptance: corpus sweep diff is **exactly** the set of cases where M2 was
   wrong/absent and M1 is right — each hunk reviewed and justified in the PR;
   regenerate goldens. Live-verify the changed queries against CH.

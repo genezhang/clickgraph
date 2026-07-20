@@ -6938,9 +6938,13 @@ impl RenderExpr {
                             // `col_name` here is already a CTE *column* name
                             // (`p1_a_name`), never a Cypher property (`name`). M1's
                             // Cypher-property-keyed map therefore never matches at this
-                            // point (verified: 0 `CteColumn` returns across the full
-                            // corpus + test suite). The load-bearing transition-assert
-                            // for F0 lives where the data is born — `publish_alias`
+                            // point (verified: this arm resolves a `CteColumn` 0× in the
+                            // corpus sweep + lib suite; it does fire ~37× in the
+                            // LDBC/integration tests, but there `col_name` is ALREADY an
+                            // M3-rewritten CTE column — it falls through to the identical
+                            // legacy M2 branch, so output stays byte-identical). The
+                            // load-bearing transition-assert for F0 lives where the data
+                            // is born — `publish_alias`
                             // (plan_builder_utils.rs) asserts the freshly-threaded M1
                             // registry agrees with the live M3 scope map. See
                             // FORWARD_RESOLUTION_PLAN.md §5 and the F0 report.
