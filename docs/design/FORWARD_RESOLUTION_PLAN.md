@@ -275,13 +275,97 @@ marked**. The three §10 phases map to slice groups **F0–F1** (forward path),
   Triage which is which during F0 by inspecting the debug-assert divergences and
   the M2-returns-`None` fall-throughs.
 
+> **✅ F1 outcome (2026-07-20, landed) — READ BEFORE F2.** The three bullets
+> above are superseded by what F1 actually did, once the render site was
+> measured directly (F0 had only inferred it):
+>
+> 1. **The render-site M1 arm was NOT dead — for scalars.** F0 concluded "M1
+>    fires 0× at the render site" from the *node* corpus. A direct probe showed
+>    the load-bearing render-site path is the **legacy M2 fallback**
+>    (`get_cte_property_from_context`, `to_sql_query.rs:~6995`), which fires 210×.
+>    **Every one of those 210 is a scalar / composite CTE FROM-alias reference**
+>    (`id.id`, `e_id_n.id` from `WITH u.user_id AS id`). Deleting M2's `return`
+>    without a replacement regresses exactly these: a CTE column literally named
+>    `id` then falls into the **id-pseudo-property block** (`to_sql_query.rs`,
+>    `col_name == "id"`) and is schema-mapped to a node_id column —
+>    *alphabetically* `post_id` on a multi-label schema (a #616-class wrong-label
+>    bug). `n`/`e` fall through fine; only `.id` corrupts.
+>
+> 2. **Root cause: scalars carry an EMPTY `property_mapping`.** M1 (registry) and
+>    M3 (`VariableScope`) both return `Unresolved` for an empty map, so *neither*
+>    forward mechanism resolved a scalar export — M2 was the only one that did
+>    (it supplies an identity entry, keyed by FROM alias). F0's transition-assert
+>    never caught this because it loops over `info.property_mapping` (empty for
+>    scalars → zero iterations). "M1 == M3 everywhere" was true but **silent on
+>    the one class that mattered**.
+>
+> 3. **The fix (byte-identical "scalars-first"):** give the **registry** (M1) an
+>    identity self-map (`id → id`) for every empty-mapping export, in
+>    `publish_alias` (single) and `publish_composite` (multi). Kept OUT of
+>    `scope_cte_variables` (M3) on purpose: M3 keys its scalar-vs-node *expansion*
+>    on `property_mapping.is_empty()`, so a non-empty scope map would wrongly
+>    expand the scalar as a node. The registry is a separate render-only channel.
+>    Then made the render-site M1 arm authoritative (`return`) and **deleted M2's
+>    render-site `return`** + its local wrapper `get_cte_property_from_context`.
+>
+> 4. **#593 guard (mandatory, TWO conditions).** M1's registry is keyed by
+>    **Cypher alias** and is **global** — it is NOT scoped per Cypher-UNION arm
+>    the way M3 is (`scoped_to_referenced_ctes`). An unguarded authoritative M1
+>    leaked a WITH arm's CTE column into a sibling plain arm reusing the same
+>    alias. The guard needs BOTH:
+>    - **(a) `sql_alias == table_alias.0`** — reproduces M2's FROM-alias keying
+>      (M2 always re-qualified with `table_alias.0`, never rewriting the alias);
+>      falls through for a *composite* cross-arm alias whose CTE FROM alias
+>      differs (`c_u` ≠ `u`).
+>    - **(b) `table_alias.0` is NOT a base table in the current branch**
+>      (`alias_is_base_table_in_branch`, consulting ONLY the branch-local
+>      `alias_label_map`, not the global registry). Condition (a) alone is
+>      **insufficient** and F1's first cut shipped without (b) — the adversarial
+>      review caught it, and a differential vs the F0 parent **confirmed a real
+>      regression**: for a SINGLE-alias WITH arm (`MATCH (u:User) WITH u WHERE …
+>      RETURN u.user_id`), the CTE FROM alias is literally `u`, so a plain sibling
+>      arm's own `u.user_id` (raw `users_bench` scan) passed (a) and leaked the
+>      WITH arm's `p1_u_user_id` (Code 47). The corpus missed it — the shape isn't
+>      in it. (b) distinguishes the plain arm's base-table `u` (present in
+>      `alias_label_map`) from a genuine CTE FROM alias (`id`, `with_*_cte_*`,
+>      absent). This is the arm-locality M2 had implicitly (its map was
+>      repopulated per CTE-body scope) and M3 has explicitly.
+>
+> **Net:** corpus + all goldens **byte-identical**; render-site M2 return + its
+> wrapper deleted; #592 forward path now resolves scalars. The **intentional
+> user-visible diffs** the bullets promised (#595/#602/#613/#643) did **NOT**
+> land here — they are not render-site-M2 cases; they live on the M3 path or in
+> the opaque-string types (Phase C). F1 is therefore a **byte-identical
+> consolidation**, not the intentional-diff slice; the diff slice is re-scoped to
+> a follow-up on the M3 path (tracked as **F1b**, below). The underlying M2
+> accessor (`get_cte_property_mapping`) still has other consumers
+> (`cte_column_resolver.rs`, `select_builder.rs`) — those are F2a's teardown.
+>
+> **Lesson for F2b (full per-arm registry scoping):** the global Cypher-alias-
+> keyed registry is fundamentally arm-unsafe when made authoritative; the
+> two-condition guard is a *containment*, not the real fix. F2b must give the
+> render-site registry the same per-arm scoping M3 has
+> (`scoped_to_referenced_ctes`) before removing the (b) base-table guard.
+>
+> **F1b — the real intentional-diff slice (follow-up, not yet done).** Hunt where
+> the live **M3** path falls through to a loud error / wrong column for
+> #602/#613/#643 and fix on the forward map there. Higher-value, higher-risk;
+> each fix a reviewed hunk, not byte-identical. Was folded into "F1" in the
+> original plan; split out because F1-as-landed is provably byte-identical.
+
+
 ### Phase B — retire the legacy resolution machinery (byte-identical)
 
 **F2a — delete M2 (`cte_property_mappings`).** Remove `set_cte_property_mappings`
-callers (`plan_builder_utils.rs:5846`, `cte_extraction.rs:6095`),
-`get_cte_property_from_context` (`to_sql_query.rs:41`), and the task-local field
-(`query_context.rs`). Corpus byte-identical (F1 already made M1 authoritative;
-M2 is now dead).
+callers (`plan_builder_utils.rs:5846`, `cte_extraction.rs:6095`) and the
+task-local field (`query_context.rs`). The render-site reader wrapper
+`get_cte_property_from_context` (`to_sql_query.rs:41`) was **already deleted in
+F1** (its only caller was the render-site fallback F1 retired); the underlying
+accessor `get_cte_property_mapping` still has two non-render-site consumers
+(`cte_column_resolver.rs:132`, `select_builder.rs:2446`) plus `get_all_cte_
+properties` (`select_builder.rs:873`) — F2a must retire those too or scope them
+out explicitly. Corpus byte-identical (F1 already made M1 authoritative at the
+render site).
 
 **F2b — reconcile/fold M3.** Transition-assert M1 vs M3
 (`rewrite_render_plan_with_scope`) agree, then either delete M3 or reduce it to
@@ -322,10 +406,10 @@ patch-in is unnecessary because `define_*` carries data directly), the
 
 | Issue | Fixing slice | Why |
 |---|---|---|
-| **#592** (registry drops `property_mapping`) | **F0 + F1** | root; F0 plumbs data, F1 switches authority |
-| #595, #602 | F1 if `PropertyAccessExp`-only; else F4 (EXISTS) | triage via F0 divergence log |
-| #613 | F1 or **F3** (size/PatternCount) | opaque size() pattern needs structure |
-| #643 (chained VLP endpoint alias) | F1 (forward map per-endpoint) | see §4 VLP interaction |
+| **#592** (registry drops `property_mapping`) | **F0 + F1** | root; F0 plumbs data, F1 switches authority (incl. the scalar/composite identity-map gap F0 missed) |
+| #595, #602 | **F1b** if `PropertyAccessExp`-only; else F4 (EXISTS) | NOT render-site-M2 cases (F1 is byte-identical); on the M3 path or opaque strings |
+| #613 | **F1b** or **F3** (size/PatternCount) | opaque size() pattern needs structure |
+| #643 (chained VLP endpoint alias) | **F1b** (forward map per-endpoint) | see §4 VLP interaction |
 | #583 render rework | after Phase C | depends on structured EXISTS/NOT-EXISTS |
 
 ---

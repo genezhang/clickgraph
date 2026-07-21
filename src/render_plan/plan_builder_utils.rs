@@ -6016,9 +6016,39 @@ impl WithBarrierScope {
         // with its property mapping so the SQL renderer can resolve properties.
         {
             use crate::query_planner::typed_variable::VariableSource;
+
+            // F1 (P-4 forward-resolution): an EMPTY `per_alias_mapping` means the
+            // alias IS a direct CTE column (a scalar projection like
+            // `WITH u.user_id AS id` or `WITH count(*) AS cnt`) — there is no
+            // Cypher-property→column indirection, the column is named after the
+            // alias itself. Without an entry the forward registry (M1) returned
+            // `Unresolved`, so the render site fell through to the legacy M2
+            // reparse (`get_cte_property_from_context`), which supplies exactly
+            // this identity entry (keyed by the FROM alias). F1 retires that
+            // fallback, so give the registry the SAME identity self-map here.
+            //
+            // This is gated on emptiness, NOT on the labels branch below: the
+            // planner may still attach a node label to such a scalar (e.g. `id`
+            // above derives from `u:User`, so `find_label_for_alias_in_plan`
+            // reports `User`), which would otherwise route it through the node
+            // branch with an empty map and leave `id.id` to be mis-resolved by
+            // the id-pseudo-property block in `to_sql_query.rs`. The identity map
+            // only ever matches a literal `alias.alias` access — a genuine node
+            // property (`u.name`) is absent from it and still falls through — so
+            // it is safe to apply regardless of label.
+            //
+            // Kept OUT of `scope_cte_variables`/`per_alias_mapping` on purpose:
+            // M3 (`VariableScope`) keys its scalar-vs-node expansion on
+            // `property_mapping.is_empty()` (variable_scope.rs), so a non-empty
+            // scope map would wrongly expand the scalar as a node. The registry
+            // is a separate channel consulted only at the render site.
+            let mut registry_mapping = per_alias_mapping.clone();
+            if registry_mapping.is_empty() {
+                registry_mapping.insert(alias.to_string(), alias.to_string());
+            }
             let cte_source = VariableSource::Cte {
                 cte_name: cte_name.to_string(),
-                property_mapping: Box::new(per_alias_mapping.clone()),
+                property_mapping: Box::new(registry_mapping),
             };
             if labels.is_empty() {
                 // No labels → scalar variable (e.g., computed column, count, etc.)
@@ -6128,6 +6158,28 @@ impl WithBarrierScope {
                 map_keys: None,
             },
         );
+
+        // F1 (P-4 forward-resolution): mirror the composite mapping into the
+        // forward registry (M1), keyed by the composite alias, so a render-site
+        // reference through the composite FROM alias (e.g. `e_id_n.id` from
+        // `WITH u.name AS n, u.email AS e, u.user_id AS id`) resolves forward
+        // instead of via the legacy M2 reparse this slice retires. Registered as
+        // a scalar (no single label spans a heterogeneous composite); the merged
+        // `composite_mapping` already carries each member's Cypher→CTE-column
+        // entries plus identity entries for scalar members (see the loop above).
+        // Same rationale as the scalar case in `publish_alias`: the registry is a
+        // separate channel from `scope_cte_variables` (M3), whose empty-map test
+        // drives node-vs-scalar expansion — so this stays OUT of M3's map.
+        if !composite_mapping.is_empty() {
+            use crate::query_planner::typed_variable::VariableSource;
+            self.var_registry.define_scalar(
+                with_alias.to_string(),
+                VariableSource::Cte {
+                    cte_name: cte_name.to_string(),
+                    property_mapping: Box::new(composite_mapping.clone()),
+                },
+            );
+        }
         log::info!(
             "🔧 build_chained: Added composite alias '{}' to scope_cte_variables with {} properties",
             with_alias,

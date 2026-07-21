@@ -7799,6 +7799,96 @@ async fn union_three_arms_same_alias_per_arm_from_and_projection_593() {
     );
 }
 
+/// P-4 F1 (forward-resolution): a scalar / renamed-property WITH export
+/// (`WITH u.user_id AS id`) whose alias reference (`id.id`) must resolve to the
+/// CTE's own column `id`, NOT be re-run through the render-site
+/// id-pseudo-property block that schema-maps a bare `id` to a node_id column
+/// (alphabetically `post_id` — a #616-class wrong-label bug). Before F1 the
+/// legacy task-local M2 reparse (`get_cte_property_from_context`) caught this;
+/// F1 retires that render-site fallback and the forward registry (M1) now
+/// carries an identity self-map for empty-mapping exports (see `publish_alias`).
+/// Locks that the switch is faithful for BOTH the single-scalar CTE FROM alias
+/// (`id`) and the multi-property composite FROM alias (`e_id_n`).
+#[tokio::test]
+async fn scalar_with_export_id_resolves_to_cte_column_not_node_id_f1() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // Single scalar export: FROM alias == cypher alias == `id`.
+    let single = render(
+        &schema,
+        "MATCH (u:User) WITH u.user_id AS id RETURN id LIMIT 1",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        single.contains("id.id AS \"id\""),
+        "single scalar `id.id` must resolve to the CTE column `id.id`, not a \
+         schema-mapped node_id (e.g. id.user_id / id.post_id): {single}"
+    );
+    assert!(
+        !single.contains("id.user_id") && !single.contains("id.post_id"),
+        "F1: scalar `id` must NOT be re-resolved via the id-pseudo-property \
+         block: {single}"
+    );
+
+    // Multi-property composite export: FROM alias == composite `e_id_n`.
+    let composite = render(
+        &schema,
+        "MATCH (u:User) WITH u.name AS n, u.email AS e, u.user_id AS id \
+         RETURN n, e, id LIMIT 1",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        composite.contains("e_id_n.id AS \"id\""),
+        "composite `e_id_n.id` must resolve to the CTE column `id`, not a \
+         schema-mapped node_id (e.g. e_id_n.post_id): {composite}"
+    );
+    assert!(
+        !composite.contains("e_id_n.post_id") && !composite.contains("e_id_n.user_id"),
+        "F1: composite scalar `id` must NOT be re-resolved via the \
+         id-pseudo-property block: {composite}"
+    );
+}
+
+/// P-4 F1 (#593 guard, node export): a single-alias WITH-barrier arm whose CTE
+/// FROM alias is literally the reused Cypher alias (`WITH u WHERE … RETURN
+/// u.user_id` builds `with_u_cte_0` with FROM alias `u`), UNION'd with a PLAIN
+/// arm reusing `u` that scans the raw table. The plain arm's OWN `u.user_id`
+/// must resolve to its base-table column `u.user_id`, NOT be hijacked to the
+/// WITH arm's CTE column `u.p1_u_user_id`.
+///
+/// This is the shape the `sql_alias == table_alias.0` guard alone does NOT
+/// cover (both the WITH arm's CTE FROM alias AND the plain arm's base alias are
+/// `u`, so condition 1 passes for both). F1 adds a second guard condition — the
+/// alias must NOT be a base table in the current branch
+/// (`alias_is_base_table_in_branch`, consulting only the branch-local
+/// `alias_label_map`) — which distinguishes the plain arm's raw `u` scan from
+/// the WITH arm's CTE. Regression for a bug F1's first cut introduced (global M1
+/// registry made authoritative leaks across UNION arms without arm-locality).
+#[tokio::test]
+async fn single_alias_with_in_union_plain_arm_not_hijacked_f1() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH (u:User) WITH u WHERE u.age > 0 RETURN u.user_id \
+         UNION MATCH (u:User) RETURN u.user_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    // The plain arm scans the raw table and projects its own column.
+    assert!(
+        sql.contains("u.user_id AS \"u.user_id\"\nFROM social.users_bench AS u"),
+        "plain arm's u.user_id must resolve to its own base-table column, not \
+         the WITH arm's CTE column: {sql}"
+    );
+    assert!(
+        !sql.contains("u.p1_u_user_id AS \"u.user_id\"\nFROM social.users_bench AS u"),
+        "#593 (node export): plain arm must NOT project the WITH arm's CTE \
+         column p1_u_user_id against its own base-table alias `u`: {sql}"
+    );
+}
+
 /// #518: a DIRECTED same-type multi-hop pattern (`(a)-[:FOLLOWS]->(b)
 /// -[:FOLLOWS]->(c)`) must get the same relationship-uniqueness guard
 /// (`r1 <> r2`) that #492 already gives the UNDIRECTED case — Neo4j forbids

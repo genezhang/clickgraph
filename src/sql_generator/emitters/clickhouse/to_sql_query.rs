@@ -16,9 +16,9 @@ use crate::{
         },
     },
     server::query_context::{
-        clear_all_render_contexts, get_cte_property_mapping, get_relationship_columns,
-        is_multi_type_vlp_alias, restore_branch_context, set_alias_label_map,
-        set_all_render_contexts, set_multi_type_vlp_aliases, snapshot_branch_context,
+        clear_all_render_contexts, get_relationship_columns, is_multi_type_vlp_alias,
+        restore_branch_context, set_alias_label_map, set_all_render_contexts,
+        set_multi_type_vlp_aliases, snapshot_branch_context,
     },
     utils::cte_naming::is_generated_cte_name,
 };
@@ -35,11 +35,6 @@ use super::function_registry::get_function_mapping;
 /// Get relationship columns for IS NULL checks
 fn get_relationship_columns_from_context(alias: &str) -> Option<(String, String)> {
     get_relationship_columns(alias)
-}
-
-/// Get CTE property mapping
-fn get_cte_property_from_context(cte_alias: &str, property: &str) -> Option<String> {
-    get_cte_property_mapping(cte_alias, property)
 }
 
 /// Check if alias is a multi-type VLP endpoint
@@ -5251,6 +5246,23 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                     // non-aggregate columns plus aggregate argument columns.
                     let inner_sql = inner_select_sql.as_ref().unwrap();
 
+                    // NOTE (P-4 F1): unlike `render_cypher_union_arm` /
+                    // `render_union_branch_sql`, this planner-internal
+                    // aggregation-union branch loop does NOT call
+                    // `activate_scope_context` per branch — each branch renders
+                    // under the OUTER plan's `alias_label_map` (activated at the
+                    // caller). That is pre-existing and safe for the #593 alias-
+                    // reuse leak class (these are aggregation branches of ONE
+                    // logical pattern, not independent Cypher-UNION arms reusing a
+                    // Cypher alias). The F1 render-site guard condition (b)
+                    // (`alias_is_base_table_in_branch`) now reads `alias_label_map`
+                    // here; because it can only be the outer scope's (never a
+                    // sibling arm's), it cannot admit a cross-arm leak — at worst it
+                    // over-blocks toward the legacy M2 fall-through, which the
+                    // byte-identical corpus confirms is not hit. If this loop ever
+                    // needs true per-branch alias scoping, add the snapshot/
+                    // activate/restore trio as the other two union renderers do.
+
                     // For VLP+aggregation+UNION, detect when reverse branches need
                     // start↔end swapping. The inner_select_sql was computed from
                     // the first VLP CTE's perspective. Reverse branches have the
@@ -6911,96 +6923,86 @@ impl RenderExpr {
                     }
                 }
 
-                // Resolve via unified VariableRegistry for CTE-scoped variables only.
-                // Match-sourced variables are already resolved to DB columns during planning,
-                // so we only need registry resolution for CTE-sourced variables where the
-                // PropertyAccess.column is a Cypher property name that needs CTE column mapping.
+                // Resolve via unified VariableRegistry (M1) for CTE-scoped variables.
+                // Match-sourced variables are already resolved to DB columns during
+                // planning, so only CTE-sourced variables need registry resolution
+                // (where the PropertyAccess.column is a Cypher property / scalar-alias
+                // name that maps to a CTE column).
                 if let Some(resolved) = crate::server::query_context::resolve_with_current_registry(
                     &table_alias.0,
                     col_name,
                 ) {
                     use crate::query_planner::typed_variable::ResolvedProperty;
                     match resolved {
-                        ResolvedProperty::CteColumn { sql_alias, column } => {
-                            // F0 (P-4 forward-resolution): the forward path (M1:
-                            // VariableRegistry) now carries a populated
-                            // `property_mapping` (#592 fix threaded it through
-                            // `define_*`). This slice does NOT make M1 authoritative;
-                            // it keeps emitting the legacy result so SQL is
-                            // byte-identical.
-                            //
-                            // DISCOVERY (F0): this arm is effectively DEAD at this
-                            // render site — even with M1 now populated. Expressions
-                            // reaching `to_sql` have already been rewritten upstream by
-                            // the live forward resolver (M3:
-                            // `variable_scope::rewrite_render_expr` /
-                            // `VariableScope::resolve`) during render-plan building, so
-                            // `col_name` here is already a CTE *column* name
-                            // (`p1_a_name`), never a Cypher property (`name`). M1's
-                            // Cypher-property-keyed map therefore never matches at this
-                            // point (verified: this arm resolves a `CteColumn` 0× in the
-                            // corpus sweep + lib suite; it does fire ~37× in the
-                            // LDBC/integration tests, but there `col_name` is ALREADY an
-                            // M3-rewritten CTE column — it falls through to the identical
-                            // legacy M2 branch, so output stays byte-identical). The
-                            // load-bearing transition-assert for F0 lives where the data
-                            // is born — `publish_alias`
-                            // (plan_builder_utils.rs) asserts the freshly-threaded M1
-                            // registry agrees with the live M3 scope map. See
-                            // FORWARD_RESOLUTION_PLAN.md §5 and the F0 report.
-                            //
-                            // Kept as a debug_assert here anyway (belt-and-suspenders):
-                            // in the (currently unobserved) event M1 *does* answer here,
-                            // it must agree with the legacy M2 path we still emit.
-                            log::info!(
-                                "VariableRegistry resolved (F0, non-authoritative): {}.{} -> {}.{}",
+                        // F1 (P-4 forward-resolution): the forward registry (M1) resolves
+                        // the scalar / composite FROM-alias references (`id.id`,
+                        // `e_id_n.id`) that M3 (`variable_scope`) does NOT rewrite and that
+                        // would otherwise fall into the id-pseudo-property block below and
+                        // be mis-resolved to a schema node_id column. This retires the
+                        // legacy render-site M2 reparse (`get_cte_property_from_context`)
+                        // that used to catch them.
+                        //
+                        // GUARD — two conditions, both required, because M1's registry is
+                        // keyed by Cypher alias and is GLOBAL (not scoped per Cypher-UNION
+                        // arm the way M3 is, `VariableScope::scoped_to_referenced_ctes`,
+                        // #593):
+                        //
+                        //  1. `sql_alias == table_alias.0` — the reference is against the
+                        //     CTE's OWN FROM alias (a scalar / composite self-reference),
+                        //     not a cross-arm alias whose CTE FROM alias differs. Reproduces
+                        //     M2's FROM-alias keying (M2 always re-qualified with
+                        //     `table_alias.0`, never rewriting the alias).
+                        //
+                        //  2. `table_alias.0` is NOT a base-table alias in the CURRENT
+                        //     branch (`alias_is_base_table_in_branch` consults ONLY the
+                        //     branch-local `alias_label_map`, rebuilt from THIS branch's
+                        //     FROM/JOIN table names — see `build_alias_label_map_from_scope`
+                        //     — NOT the global registry, which would report the WITH arm's
+                        //     label for the plain arm's `u`). Condition 1 alone is
+                        //     insufficient: in `MATCH (u:User) WITH u WHERE … RETURN
+                        //     u.user_id UNION MATCH (u:User) RETURN u.user_id`, the WITH
+                        //     arm's CTE FROM alias is literally `u` (single-alias CTE), so
+                        //     the PLAIN arm's own `u.user_id` — where `u` scans the raw
+                        //     `users_bench` table — would pass condition 1 and leak the WITH
+                        //     arm's `p1_u_user_id` (the #593 leak, on a NODE export this
+                        //     time). When `u` is a base table in this branch it appears in
+                        //     `alias_label_map`; a genuine CTE FROM alias (`id`,
+                        //     `with_*_cte_*`) does not. This is exactly the arm-locality M2
+                        //     had implicitly (its map was repopulated per CTE-body scope)
+                        //     and M3 has explicitly. (Full per-arm registry scoping is
+                        //     F2b's job; this keeps F1 byte-identical.)
+                        ResolvedProperty::CteColumn { sql_alias, column }
+                            if sql_alias == table_alias.0
+                                && !crate::server::query_context::alias_is_base_table_in_branch(
+                                    &table_alias.0,
+                                ) =>
+                        {
+                            log::debug!(
+                                "VariableRegistry resolved (F1, authoritative): {}.{} -> {}.{}",
                                 table_alias.0,
                                 col_name,
                                 sql_alias,
                                 column
                             );
-                            #[cfg(debug_assertions)]
-                            if let Some(legacy_col) =
-                                get_cte_property_from_context(&table_alias.0, col_name)
-                            {
-                                debug_assert_eq!(
-                                    format!("{}.{}", sql_alias, column),
-                                    format!("{}.{}", table_alias.0, legacy_col),
-                                    "F0 forward/legacy divergence resolving {}.{} \
-                                     (forward M1={}.{}, legacy M2={}.{})",
-                                    table_alias.0,
-                                    col_name,
-                                    sql_alias,
-                                    column,
-                                    table_alias.0,
-                                    legacy_col
-                                );
-                            }
-                            // F0: do NOT return here — fall through to the legacy M2
-                            // branch below so output is byte-identical. (F1 will replace
-                            // this arm with `return format!("{}.{}", sql_alias, column)`
-                            // and delete the legacy branch — but see the DISCOVERY note:
-                            // F1's real switch must target the M3 rewrite path, not this
-                            // dead site.)
+                            return format!("{}.{}", sql_alias, column);
                         }
-                        ResolvedProperty::DbColumn(_) | ResolvedProperty::Unresolved => {
-                            // Match-sourced or unresolved: skip — PropertyAccess already has
-                            // the correct DB column from planning. Fall through.
+                        ResolvedProperty::CteColumn { .. }
+                        | ResolvedProperty::DbColumn(_)
+                        | ResolvedProperty::Unresolved => {
+                            // Cross-arm alias (guard failed), Match-sourced, or unresolved:
+                            // skip — PropertyAccess already carries the correct column from
+                            // planning / upstream M3 rewrite. Fall through.
                         }
                     }
                 }
 
-                // Check if table_alias refers to a CTE and needs property mapping
-                // (fallback to task-local context for backward compatibility)
-                if let Some(cte_col) = get_cte_property_from_context(&table_alias.0, col_name) {
-                    log::debug!(
-                        "🔧 CTE property mapping (legacy): {}.{} → {}",
-                        table_alias.0,
-                        col_name,
-                        cte_col
-                    );
-                    return format!("{}.{}", table_alias.0, cte_col);
-                }
+                // F1 (P-4 forward-resolution): the legacy M2 render-site fallback
+                // (`get_cte_property_from_context`) was DELETED here — the forward
+                // registry (M1) above now resolves every CTE-scoped reference this
+                // arm used to (node property maps + scalar/composite identity maps).
+                // Corpus + goldens byte-identical after the switch; see the F1 report
+                // and FORWARD_RESOLUTION_PLAN.md. (M2's populator/reader are retired
+                // wholesale in F2a.)
 
                 // Resolve "id" pseudo-property (from id() function transform) to actual
                 // schema id column. This handles composite ID schemas where the table
