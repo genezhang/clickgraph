@@ -12181,6 +12181,44 @@ mod postwith_continuation_join_anchor_602 {
              node label and silently resolve `.id` to `user_id`:\n{sql}"
         );
     }
+
+    /// #662: a node RENAMED at the very barrier the label must cross
+    /// (`WITH u AS u3`) must still anchor its continuation join on the forwarded
+    /// CTE id column. The label was recorded under the source name `u`; the carry
+    /// looks it up under both the published name and the source alias so the
+    /// rename inherits it (previously loud Code 47 `u3.post_id`, same class as
+    /// #602).
+    #[tokio::test]
+    async fn rename_at_continuation_barrier_anchors_on_forwarded_id_662() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let cypher = "MATCH (u:User)-[:FOLLOWS]->(f) \
+                      WITH u, count(f) AS fc \
+                      WITH u AS u3, fc \
+                      MATCH (u3)-[:AUTHORED]->(p) \
+                      RETURN u3.name, count(p) AS posts";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        // The renamed alias's continuation JOIN anchors on the forwarded CTE id
+        // column (still prefixed under the SOURCE alias `u`: `p1_u_user_id`).
+        assert!(
+            regex::Regex::new(r#"t\d+\.user_id = u3\.p1_u_user_id"#)
+                .unwrap()
+                .is_match(&sql),
+            "#662 regressed: renamed continuation alias must anchor on the \
+             forwarded CTE id column `u3.p1_u_user_id`:\n{sql}"
+        );
+        assert!(
+            !sql.contains("u3.post_id") && !sql.contains("= u3.id"),
+            "#662 regressed: renamed continuation alias anchors on an \
+             unresolved `.id` (renders `u3.post_id`, Code 47):\n{sql}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(sql, again, "#662: nondeterministic render");
+        }
+    }
 }
 
 /// Regression tests for #551: a single-id denormalized node behind a

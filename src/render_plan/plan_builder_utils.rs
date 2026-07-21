@@ -6004,9 +6004,16 @@ impl WithBarrierScope {
 
     /// Record one exported alias's property mapping into both the CTE variable
     /// map and the unified variable registry (scalar-vs-node branch preserved).
+    ///
+    /// `source_alias` is the alias the CTE columns are prefixed under — the same
+    /// as `alias` for a plain export, but the ORIGINAL name for a rename
+    /// (`WITH u AS u3` → `alias = "u3"`, `source_alias = "u"`). The label carry
+    /// (#602/#662) keys on it so a rename that happens at the very barrier the
+    /// label must cross still inherits the label recorded under the source name.
     fn publish_alias(
         &mut self,
         alias: &str,
+        source_alias: &str,
         cte_name: &str,
         per_alias_mapping: &HashMap<String, String>,
         labels: &[String],
@@ -6028,12 +6035,29 @@ impl WithBarrierScope {
         // route back through node resolution and silently resolve to the old
         // node's id column (loud→silent). Gating the carry on a non-empty mapping
         // keeps scalars scalar and preserves main's behavior for them.
+        //
+        // #662: a rename AT the crossing barrier (`WITH u AS u3`) publishes under
+        // the NEW name (`u3`) while the label was recorded under the ORIGINAL
+        // (`u`). Look up the carried label under BOTH the published name and the
+        // `source_alias`, and record the carried-forward label under the new name
+        // too so a further barrier keeps finding it.
         let effective_labels: Vec<String> = if !labels.is_empty() {
             self.carried_labels
                 .insert(alias.to_string(), labels.to_vec());
             labels.to_vec()
         } else if !per_alias_mapping.is_empty() {
-            self.carried_labels.get(alias).cloned().unwrap_or_default()
+            let carried = self
+                .carried_labels
+                .get(alias)
+                .or_else(|| self.carried_labels.get(source_alias))
+                .cloned()
+                .unwrap_or_default();
+            if !carried.is_empty() && alias != source_alias {
+                // Re-key under the new published name for subsequent barriers.
+                self.carried_labels
+                    .insert(alias.to_string(), carried.clone());
+            }
+            carried
         } else {
             Vec::new()
         };
@@ -10583,7 +10607,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     .map(|l| vec![l])
                     .unwrap_or_default();
 
-                with_scope.publish_alias(alias, &cte_name, &per_alias_mapping, &labels);
+                with_scope.publish_alias(
+                    alias,
+                    lookup_alias,
+                    &cte_name,
+                    &per_alias_mapping,
+                    &labels,
+                );
 
                 // Publish this alias's CTE scope (FROM alias + Cypher-property →
                 // CTE-column mapping) to a narrow, purpose-built task-local
