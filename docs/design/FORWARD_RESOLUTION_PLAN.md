@@ -352,6 +352,28 @@ marked**. The three §10 phases map to slice groups **F0–F1** (forward path),
 > #602/#613/#643 and fix on the forward map there. Higher-value, higher-risk;
 > each fix a reviewed hunk, not byte-identical. Was folded into "F1" in the
 > original plan; split out because F1-as-landed is provably byte-identical.
+>
+> **F1b outcome (2026-07-21, #602 landed).** First F1b hunk delivered: **#602**
+> (post-WITH MATCH continuation joined on the wrong column). Root cause was on the
+> M3 path exactly as predicted — the continuation join's `.id` operand is resolved
+> by `VariableScope::resolve_generic_id_in_cte`, which needs the node's label in
+> `CteVariableInfo.labels`. Across a *second* (passthrough) WITH barrier the label
+> was re-derived from the post-barrier plan (source `GraphNode` gone → label
+> stripped) and arrived EMPTY, so `u.id` stayed unresolved and the SQL-gen generic
+> `.id` fallback alphabetically mis-picked `Post.post_id` (#616 class, Code 47).
+> Fix: a persistent `carried_labels` map on `WithBarrierScope` (survives `reset()`)
+> that threads the node label forward across every barrier the alias crosses —
+> forward data, mirroring `property_mapping`. Gated on a non-empty
+> `per_alias_mapping` so a scalar rebind (`WITH u.email AS u`) does not inherit a
+> stale node label. The id column is *produced* in both CTEs and merely *pruned*
+> when unreferenced, so resolving the operand lets the existing `prune_cte_columns`
+> pass retain it — no projection injection. Corpus byte-identical (the fixed shape
+> isn't in it); cross-schema standard/denorm/polymorphic all corrected (denorm/poly
+> were silent-wrong on main). **Remaining F1b residue: #613** (blocked by CH Code 48
+> correlated-subquery limit → really an **F3** PatternCount de-opaque), **#643**
+> (chained-VLP endpoint needs planner-topology rework, its own design cycle), **#595**
+> (EXISTS → **F4**). #602 composite-id continuation stays loud (single-column-only
+> id resolver) — separate follow-up.
 
 
 ### Phase B — retire the legacy resolution machinery (byte-identical)
