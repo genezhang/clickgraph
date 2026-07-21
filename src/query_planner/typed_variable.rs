@@ -1410,6 +1410,47 @@ mod tests {
         }
     }
 
+    /// P-4 F1 (forward-resolution): an empty-mapping export (a scalar / renamed
+    /// property projection like `WITH u.user_id AS id`) is registered with an
+    /// identity self-map (`id → id`) — see `publish_alias`/`publish_composite`
+    /// in `render_plan/plan_builder_utils.rs`. The registry must then resolve
+    /// `id.id` to the CTE column `id` (the render site relies on this to skip the
+    /// id-pseudo-property block that would otherwise schema-map a bare `id` to a
+    /// node_id column). A DIFFERENT property name still falls through Unresolved.
+    #[test]
+    fn test_resolve_scalar_identity_self_map_f1() {
+        use crate::graph_catalog::graph_schema::GraphSchema;
+        use crate::query_planner::typed_variable::ResolvedProperty;
+
+        let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+
+        let mut registry = VariableRegistry::new();
+        let mut identity = HashMap::new();
+        identity.insert("id".to_string(), "id".to_string());
+        registry.define_scalar(
+            "id",
+            VariableSource::Cte {
+                cte_name: "with_id_cte_0".to_string(),
+                property_mapping: Box::new(identity),
+            },
+        );
+
+        match registry.resolve("id", "id", &schema) {
+            ResolvedProperty::CteColumn { sql_alias, column } => {
+                assert_eq!(column, "id");
+                assert_eq!(sql_alias, "id");
+            }
+            other => panic!("expected CteColumn identity, got {:?}", other),
+        }
+
+        // A non-identity property is absent from the map → Unresolved (the F1
+        // render-site guard would then fall through, as the legacy path did).
+        assert!(matches!(
+            registry.resolve("id", "name", &schema),
+            ResolvedProperty::Unresolved
+        ));
+    }
+
     #[test]
     fn test_registry_merge() {
         let mut reg1 = VariableRegistry::new();

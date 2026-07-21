@@ -1027,6 +1027,23 @@ pub fn set_alias_label_map(map: HashMap<String, String>) {
     });
 }
 
+/// Is `alias` a base-table (schema node) alias in the CURRENT render branch?
+///
+/// Consults ONLY the branch-local `alias_label_map` (rebuilt per SQL branch
+/// from that branch's actual FROM/JOIN table names by
+/// `build_alias_label_map_from_scope`), NOT the global variable registry. Unlike
+/// [`get_node_label_for_alias`] — which falls back to the registry and so can
+/// report a label for an alias whose FROM in this branch is actually a CTE —
+/// this answers the strict question "does this branch scan a raw schema table
+/// under `alias`?". Used by the F1 forward-resolution guard to keep a global
+/// (non-arm-scoped) registry hit from hijacking a base-table reference in a
+/// sibling UNION arm (the #593 leak class).
+pub fn alias_is_base_table_in_branch(alias: &str) -> bool {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().alias_label_map.contains_key(alias))
+        .unwrap_or(false)
+}
+
 /// Clear the current variable registry
 pub fn clear_current_variable_registry() {
     let _ = QUERY_CONTEXT.try_with(|ctx| {
