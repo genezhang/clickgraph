@@ -116,7 +116,7 @@ string-emitting group (31 fns, `render_plan/pattern_comprehension_sql.rs`, 2,629
 extracted verbatim, `pub(crate)` re-exports, byte-identical goldens + corpus, ratchet
 net-zero; D7-rest deferred. **Next: P2.3 clause_extractors move.**
 
-### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1 merged; F1b/F2+ open)
+### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1+F1b/#602 done; F2+ and F1b residue open)
 **Concrete staged plan written: `docs/design/FORWARD_RESOLUTION_PLAN.md`.** It
 supersedes the stale `render_plan/AGENTS.md` §10 premise: the `reverse_mapping`
 field §10 says to delete was already removed in #115 (Feb 2026); the debt forked
@@ -134,10 +134,15 @@ self-map + a `sql_alias == table_alias.0` guard that reproduces M2's FROM-alias
 keying and closes the #593 cross-arm leak. **F1 is byte-identical (a
 consolidation), NOT the intentional-diff slice** — the #595/#602/#613/#643
 user-visible fixes are re-scoped to **F1b** (the M3-path hunt) + Phase C
-(opaque strings). **Next: F2a** (delete M2 populator/field; the render-site
-reader wrapper is already gone) or **F1b**. Per-shape patching of this class
-stays forbidden (§1.6). Remaining Phase-1 pass migrations (P1.4+) and Phase-3
-§6.2 slices are fill-in work alongside, not blockers.
+(opaque strings). **F1b/#602 done** — post-WITH MATCH continuation joined on the
+wrong column across a second passthrough WITH barrier (the node label was dropped,
+so the `.id` operand mis-resolved to the edge `to_id`, #616-class Code 47); fixed by
+carrying the node label forward across barriers (`WithBarrierScope::carried_labels`),
+a forward-data thread, +3 regression goldens, corpus byte-identical. **Next: F2a**
+(delete M2 populator/field; the render-site reader wrapper is already gone) or the
+remaining **F1b** residue (#595→F4, #613→F3, #643 planner-topology). Per-shape
+patching of this class stays forbidden (§1.6). Remaining Phase-1 pass migrations
+(P1.4+) and Phase-3 §6.2 slices are fill-in work alongside, not blockers.
 
 ### P-5 — Stats-informed SQL generation  ◐ (S1 implemented on branch; S2/S3 open)
 New. Today all planning is rules/heuristics; the concrete gap is
@@ -184,6 +189,22 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-21: **P-4 F1b (#602)** — first F1b intentional-diff hunk. Post-WITH MATCH
+  continuation from a WITH-projected node joined on the wrong column
+  (`t2.user_id = u.post_id`, Code 47) when a second passthrough WITH barrier was
+  present: the node's label was re-derived per barrier and arrived EMPTY after the
+  passthrough (source `GraphNode` gone), so the `.id` operand couldn't resolve and
+  the SQL-gen `.id` fallback alphabetically mis-picked `Post.post_id` (#616 class).
+  Fixed by a persistent `carried_labels` map on `WithBarrierScope` (survives
+  `reset()`) threading the label forward across barriers; gated on non-empty
+  `per_alias_mapping` so scalar rebinds don't inherit a stale node label (adversarial
+  review caught that loud→silent edge, fixed + regression-tested). No projection
+  injection — the id column is produced then pruned, so resolving the operand lets
+  `prune_cte_columns` retain it. Live-verified (baseline Code 47 → correct rows,
+  fc/posts cross-checked); cross-schema standard/denorm/polymorphic fixed (denorm/poly
+  silent-wrong on main), composite stays loud (follow-up), fk_edge unchanged. Corpus
+  byte-identical; +3 regression goldens; ratchet net-zero. Branch
+  `fix/602-postwith-continuation-label-carry`. #595→F4, #613→F3, #643 remain.
 - 2026-07-20: **P-4 F1** — made the render-site forward registry (M1)
   authoritative for CTE-scoped property resolution and deleted the legacy M2
   render-site fallback (`get_cte_property_from_context` wrapper) + its import.

@@ -5948,6 +5948,15 @@ fn is_literal_expr(expr: &crate::query_planner::logical_expr::LogicalExpr) -> bo
 struct WithBarrierScope {
     scope_cte_variables: HashMap<String, super::variable_scope::CteVariableInfo>,
     var_registry: crate::query_planner::typed_variable::VariableRegistry,
+    /// #602: node labels an alias carried at ANY prior WITH barrier, keyed by the
+    /// alias name it is published under. Unlike `scope_cte_variables` this is NOT
+    /// cleared at `reset()` — it persists for the whole barrier chain. A passthrough
+    /// WITH (e.g. `WITH u, fc`) re-derives an alias's label from the post-barrier
+    /// plan, where the source `GraphNode` is gone (the alias is now a `with_`-sourced
+    /// CTE ViewScan, label stripped), so a downstream MATCH re-anchoring on `u` loses
+    /// the `User` label needed by `resolve_generic_id_in_cte` for generic `.id`
+    /// resolution. This map lets the label survive every barrier the alias crosses.
+    carried_labels: HashMap<String, Vec<String>>,
 }
 
 impl WithBarrierScope {
@@ -5956,6 +5965,7 @@ impl WithBarrierScope {
         Self {
             scope_cte_variables: HashMap::new(),
             var_registry: crate::query_planner::typed_variable::VariableRegistry::new(),
+            carried_labels: HashMap::new(),
         }
     }
 
@@ -6001,6 +6011,34 @@ impl WithBarrierScope {
         per_alias_mapping: &HashMap<String, String>,
         labels: &[String],
     ) {
+        // #602: an alias's node label is re-derived per barrier from the
+        // post-barrier plan (`plan_builder_utils.rs` label-compute site). After a
+        // passthrough WITH (e.g. `WITH u, fc`) the source `GraphNode` is gone —
+        // the alias is now a `with_`-sourced CTE ViewScan whose label was stripped
+        // — so `labels` arrives EMPTY even though the alias still denotes the same
+        // node. If a downstream MATCH re-anchors on it, `resolve_generic_id_in_cte`
+        // (variable_scope.rs) then can't resolve the generic `.id` and the join
+        // anchors on the wrong column (alphabetical `.id` fallback → #616 class).
+        // Carry the label forward: prefer this barrier's freshly-computed label,
+        // else — ONLY for a genuine node passthrough (a non-empty
+        // `per_alias_mapping`) — reuse the most recent non-empty label the alias
+        // published earlier. An EMPTY mapping means the alias was rebound to a
+        // direct CTE column / scalar (e.g. `WITH u.email AS u`); such a scalar
+        // must NOT inherit a stale node label, or a downstream `.id` on it would
+        // route back through node resolution and silently resolve to the old
+        // node's id column (loud→silent). Gating the carry on a non-empty mapping
+        // keeps scalars scalar and preserves main's behavior for them.
+        let effective_labels: Vec<String> = if !labels.is_empty() {
+            self.carried_labels
+                .insert(alias.to_string(), labels.to_vec());
+            labels.to_vec()
+        } else if !per_alias_mapping.is_empty() {
+            self.carried_labels.get(alias).cloned().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let labels: &[String] = &effective_labels;
+
         self.scope_cte_variables.insert(
             alias.to_string(),
             super::variable_scope::CteVariableInfo {
