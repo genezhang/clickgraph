@@ -12069,6 +12069,120 @@ mod with_aggregate_denorm_mixed_sources_family_549_550 {
     }
 }
 
+/// Regression tests for #602: a `MATCH` that continues AFTER a WITH barrier
+/// from a WITH-projected node variable must anchor its continuation JOIN on the
+/// node's forwarded CTE id column, not on an unresolved generic `.id`
+/// pseudo-property (which the SQL-gen `.id` fallback alphabetically mis-resolves
+/// to the continuation edge's `to_id` — the #616 wrong-label class → Code 47).
+///
+/// Root cause (P-4 F1b): after a *second* (passthrough) WITH barrier the node's
+/// label is re-derived from the post-barrier plan, where the source `GraphNode`
+/// is gone (the alias is now a `with_`-sourced CTE ViewScan, label stripped), so
+/// `labels` arrived EMPTY and `resolve_generic_id_in_cte` could not map `u.id`.
+/// Fixed by carrying the label forward across barriers (`WithBarrierScope::
+/// carried_labels`), so the join operand resolves to `u.p1_u_user_id` and the
+/// existing `prune_cte_columns` pass then retains the referenced id column.
+mod postwith_continuation_join_anchor_602 {
+    use super::*;
+
+    /// The exact issue repro: `WITH u, count(f) AS fc` then a passthrough
+    /// `WITH u, fc` then `MATCH (u)-[:AUTHORED]->(p)`. The AUTHORED join must
+    /// anchor on `u`'s forwarded id column, never the unresolved `u.id`
+    /// (→ `u.post_id`).
+    #[tokio::test]
+    async fn double_with_barrier_continuation_anchors_on_forwarded_id_602() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let cypher = "MATCH (u:User)-[:FOLLOWS]->(f) \
+                      WITH u, count(f) AS fc \
+                      WITH u, fc \
+                      MATCH (u)-[:AUTHORED]->(p) \
+                      RETURN u.name, fc, count(p) AS posts";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        // The continuation JOIN's anchor operand must be the forwarded CTE id
+        // column `p1_u_user_id`, on the AUTHORED edge alias's `user_id`.
+        assert!(
+            sql.contains("t2.user_id = u.p1_u_user_id")
+                || regex::Regex::new(r#"t\d+\.user_id = u\.p1_u_user_id"#)
+                    .unwrap()
+                    .is_match(&sql),
+            "#602 regressed: continuation JOIN must anchor on the forwarded \
+             CTE id column `u.p1_u_user_id`:\n{sql}"
+        );
+        // Never the unresolved generic `.id` pseudo-property nor the edge's
+        // `post_id` (the #616 alphabetical `.id` mis-resolution).
+        assert!(
+            !sql.contains("u.post_id") && !sql.contains("= u.id"),
+            "#602 regressed: continuation JOIN anchors on an unresolved `.id` \
+             (renders `u.post_id` / `u.id`, ClickHouse Code 47):\n{sql}"
+        );
+        // Both WITH CTEs must project the forwarded id column so the resolved
+        // reference is bound (the prune pass keeps it once referenced).
+        assert!(
+            sql.matches("p1_u_user_id").count() >= 2,
+            "#602 regressed: the forwarded id column must be projected through \
+             both WITH CTEs:\n{sql}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(sql, again, "#602: nondeterministic render");
+        }
+    }
+
+    /// Guard: the SINGLE-WITH continuation shape (already correct before the
+    /// fix) must remain byte-identical — the label carry must not alter it.
+    #[tokio::test]
+    async fn single_with_barrier_continuation_unchanged_602() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let cypher = "MATCH (u:User)-[:FOLLOWS]->(f) \
+                      WITH u, count(f) AS fc WHERE fc > 0 \
+                      MATCH (u)-[:AUTHORED]->(p) \
+                      RETURN u.name, fc, count(p) AS posts";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        assert!(
+            regex::Regex::new(r#"t\d+\.user_id = u\.p1_u_user_id"#)
+                .unwrap()
+                .is_match(&sql),
+            "#602 guard: single-WITH continuation must still anchor on \
+             `u.p1_u_user_id`:\n{sql}"
+        );
+        assert!(
+            !sql.contains("u.post_id") && !sql.contains("= u.id"),
+            "#602 guard: single-WITH continuation must not regress to an \
+             unresolved `.id`:\n{sql}"
+        );
+    }
+
+    /// Guard for the label-carry: an alias REBOUND to a scalar (`WITH u.email
+    /// AS u`, empty property mapping) must NOT inherit the earlier node label.
+    /// Otherwise a downstream `.id` on the (now scalar) alias would route back
+    /// through node resolution and silently resolve to the old node's id column
+    /// — a loud→silent transition. `.id` on a scalar is malformed input and must
+    /// stay LOUD (byte-identical to pre-fix `main`: unresolved `u.id` → the raw
+    /// `.id` pseudo-property, not a real CTE column).
+    #[tokio::test]
+    async fn scalar_rebound_alias_does_not_inherit_carried_label_602() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let cypher = "MATCH (u:User)-[:FOLLOWS]->(f) \
+                      WITH u, count(f) AS fc \
+                      WITH u.email AS u \
+                      WITH u \
+                      RETURN u.id";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        // Must NOT silently resolve `.id` to the User node's `user_id` column via
+        // a stale carried label — that would be loud→silent for malformed input.
+        assert!(
+            !sql.contains("u.user_id AS \"u.id\""),
+            "#602 guard: a scalar-rebound alias must not inherit the carried \
+             node label and silently resolve `.id` to `user_id`:\n{sql}"
+        );
+    }
+}
+
 /// Regression tests for #551: a single-id denormalized node behind a
 /// WITH-aggregate barrier used to GROUP BY the FIRST PROPERTY returned by
 /// `get_properties_with_table_alias` (alphabetically sorted by Cypher
