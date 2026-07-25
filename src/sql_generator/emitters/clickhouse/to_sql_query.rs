@@ -955,69 +955,6 @@ fn build_relationship_columns_from_plan(plan: &RenderPlan) -> HashMap<String, (S
     map
 }
 
-/// Build CTE property mappings from RenderPlan CTEs (for collecting data)
-/// Returns mapping of CTE alias → (property → column name)
-fn build_cte_property_mappings(plan: &RenderPlan) -> HashMap<String, HashMap<String, String>> {
-    let mut map = HashMap::new();
-
-    // Process each CTE in the plan
-    for cte in &plan.ctes.0 {
-        if let CteContent::Structured(ref cte_plan) = cte.content {
-            let mut property_map: HashMap<String, String> = HashMap::new();
-
-            // Build property mapping from SELECT items
-            // Format: "property_name" → "cte_column_name"
-            //
-            // IMPORTANT: We use the FULL column name as the property name (e.g., "user_id" → "user_id")
-            // because the column names in CTEs already come from ViewScan.property_mapping.
-            //
-            // Previous behavior: Used underscore/dot parsing to extract suffix (e.g., "user_id" → "id")
-            // This broke auto-discovery schemas where property names include underscores.
-            // Example bug: node_id=user_id with auto_discover_columns should expose property "user_id",
-            // not "id" (which doesn't exist in the database).
-            for select_item in &cte_plan.select.items {
-                if let Some(ref col_alias) = select_item.col_alias {
-                    let cte_col = col_alias.0.as_str();
-
-                    // Identity mapping: property name = column name
-                    property_map.insert(cte_col.to_string(), cte_col.to_string());
-                }
-            }
-
-            if !property_map.is_empty() {
-                log::debug!(
-                    "🗺️  CTE '{}' property mapping: {:?}",
-                    cte.cte_name,
-                    property_map
-                );
-                map.insert(cte.cte_name.clone(), property_map.clone());
-            }
-        }
-    }
-
-    // CRITICAL: Also scan main plan's FROM clause to map CTE aliases
-    // Example: FROM with_cnt_friend_cte_1 AS cnt_friend
-    // We need to map BOTH "with_cnt_friend_cte_1" AND "cnt_friend" to the same property mapping
-    if let Some(ref from_table) = plan.from.0 {
-        let table_name = &from_table.name;
-        let alias = from_table.alias.as_ref().unwrap_or(table_name);
-
-        // If this FROM references a CTE (name starts with "with_" or matches a CTE name)
-        if let Some(cte_mapping) = map.get(table_name).cloned() {
-            if alias != table_name {
-                log::debug!(
-                    "🔗 Aliasing CTE '{}' as '{}' with same property mapping",
-                    table_name,
-                    alias
-                );
-                map.insert(alias.clone(), cte_mapping);
-            }
-        }
-    }
-
-    map
-}
-
 /// Build CTE alias → CTE name mapping for a specific RenderPlan scope.
 /// Scans FROM/JOINs for references to known CTEs. Used per-scope (per CTE body
 /// or main plan) to correctly resolve `IN alias.column` → `IN (SELECT col FROM cte)`.
@@ -4863,9 +4800,8 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
     // Converts length(p) → hop_count, etc.
     plan = rewrite_fixed_path_functions(plan);
 
-    // Build ALL rendering contexts (CTE registry, relationship columns, CTE mappings, multi-type aliases)
+    // Build ALL rendering contexts (CTE registry, relationship columns, multi-type aliases)
     let relationship_columns = build_relationship_columns_from_plan(&plan);
-    let cte_mappings = build_cte_property_mappings(&plan);
     let multi_type_aliases = build_multi_type_vlp_aliases(&plan);
 
     // Collect all CTE names for scope-specific alias resolution in Cte::to_sql()
@@ -4877,7 +4813,6 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
     // TASK-LOCAL: Set ALL contexts for this async task's rendering context
     set_all_render_contexts(
         relationship_columns,
-        cte_mappings,
         multi_type_aliases,
         main_plan_alias_mapping,
     );

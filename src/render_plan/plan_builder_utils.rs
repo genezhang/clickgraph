@@ -4975,112 +4975,6 @@ fn apply_outer_scope_passes(
     super::variable_scope::fix_orphan_table_aliases(plan, &scoped);
 }
 
-/// Populate task-local CTE property mappings from a RenderPlan's SELECT items
-///
-/// This enables PropertyAccessExp rendering to resolve CTE column names correctly.
-/// Example: `a_follows.name` → `a_follows.a_name` (because CTE has column "a_name")
-///
-/// # Arguments
-/// * `cte_name` - Full CTE name (e.g., "with_a_follows_cte_1")
-/// * `render_plan` - The CTE's RenderPlan containing SELECT items
-fn populate_cte_property_mappings_from_render_plan(
-    cte_name: &str,
-    render_plan: &super::RenderPlan,
-) {
-    log::debug!(
-        "ENTRY: populate_cte_property_mappings_from_render_plan called for CTE '{}'",
-        cte_name
-    );
-    // Compute FROM alias by stripping "with_" and "_cte[_<digits>]" from CTE name
-    // Example: "with_a_follows_cte_1" → "a_follows"
-    // This handles arbitrary CTE numbering: _cte, _cte_1, _cte_2, ..., _cte_999, etc.
-    let from_alias = extract_from_alias_from_cte_name(cte_name);
-
-    let mut cte_mappings: std::collections::HashMap<
-        String,
-        std::collections::HashMap<String, String>,
-    > = std::collections::HashMap::new();
-    let mut alias_mapping: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-
-    // For denormalized unions, parent SELECT is empty; items are in union branches.
-    let select_items: &[SelectItem] = if render_plan.select.items.is_empty() {
-        if let UnionItems(Some(ref union)) = render_plan.union {
-            if !union.input.is_empty() {
-                &union.input[0].select.items
-            } else {
-                &render_plan.select.items
-            }
-        } else {
-            &render_plan.select.items
-        }
-    } else {
-        &render_plan.select.items
-    };
-
-    for select_item in select_items {
-        if let Some(col_alias) = &select_item.col_alias {
-            let col_name = col_alias.0.clone();
-
-            // Skip internal discriminator columns
-            if col_name == "__label__" {
-                continue;
-            }
-
-            // CTE columns can be:
-            // 1. New p{N} format: "p1_a_name" → alias="a", property="name"
-            // 2. Legacy prefixed: "a_name", "a_user_id" → property is after underscore
-            // 3. Unprefixed: "follows" (aggregate result) → property is the column name itself
-
-            if let Some((_alias, property)) = parse_cte_column(&col_name) {
-                // Case 1: New p{N} format
-                log::debug!(
-                    "🔧 CTE mapping (p{{N}} format): {}.{} → {}",
-                    from_alias,
-                    property,
-                    col_name
-                );
-                alias_mapping.insert(property, col_name.clone());
-            } else if let Some(underscore_pos) = col_name.find('_') {
-                // Case 2: Legacy prefixed column like "a_name"
-                let property = &col_name[underscore_pos + 1..];
-                log::debug!(
-                    "🔧 CTE mapping (prefixed): {}.{} → {}",
-                    from_alias,
-                    property,
-                    col_name
-                );
-                alias_mapping.insert(property.to_string(), col_name.clone());
-            } else {
-                // Case 2: Unprefixed column like "follows" (aggregate or scalar)
-                // Map the column name to itself
-                log::debug!(
-                    "🔧 CTE mapping (unprefixed): {}.{} → {}",
-                    from_alias,
-                    &col_name,
-                    &col_name
-                );
-                alias_mapping.insert(col_name.clone(), col_name.clone());
-            }
-        }
-    }
-
-    // Map the FROM alias (e.g., "a_follows") to the property mappings
-    cte_mappings.insert(from_alias.to_string(), alias_mapping);
-
-    // Log before moving cte_mappings
-    let num_properties = cte_mappings.get(from_alias).map(|m| m.len()).unwrap_or(0);
-    log::debug!(
-        "🔧 Populated CTE property mappings: CTE '{}' → FROM alias '{}' with {} properties",
-        cte_name,
-        from_alias,
-        num_properties
-    );
-
-    // Store in task-local context for SQL rendering
-    crate::server::query_context::set_cte_property_mappings(cte_mappings);
-}
-
 /// Detect `head(collect({key1: val1, key2: val2, ...})) AS alias` patterns where
 /// any MapLiteral value is a bare node reference (TableAlias). ClickHouse map() requires
 /// homogeneous value types, but nodes have no single SQL value. Flatten each map entry
@@ -10234,12 +10128,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
             with_cte.columns = cte_columns;
             with_cte.with_exported_aliases = original_exported_aliases.clone();
 
-            // 🔧 CRITICAL FIX: Populate task-local CTE property mappings for SQL rendering
-            // The PropertyAccessExp renderer checks get_cte_property_from_context() to resolve
-            // CTE column names (e.g., "a_follows.name" → "a_follows.a_name")
-            // We extract the FROM alias from the CTE name and build property → column mappings
-            populate_cte_property_mappings_from_render_plan(&cte_name, &with_cte_render);
-
             all_ctes.push(with_cte);
 
             // Detect weight CTE for weighted shortest path (complex-14)
@@ -10621,24 +10509,21 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 // (`render_expr::resolve_correlation_id_sql`).
                 //
                 // NOT the same as `var_registry` above: `VariableRegistry::
-                // define_node`/`define_scalar` unconditionally construct a
-                // FRESH, EMPTY `property_mapping` for `VariableSource::Cte`
-                // (see `NodeVariable::from_cte` et al. — `set_property_mapping`
-                // is the only way to patch it in after the fact, and has no
-                // callers), so `resolve_with_current_registry` can never
-                // return a `CteColumn` for a WITH-CTE variable in production
-                // today — every property access that appears to "resolve
-                // across CTE barriers" actually does so via the separate
-                // legacy `cte_property_mappings` mechanism
-                // (`get_cte_property_from_context`, built from the final
-                // render plan much later, in `to_sql_query.rs`). Fixing
-                // `define_node`/`define_scalar` to actually carry through
-                // `property_mapping` would change resolution for every
-                // CTE-crossing property access application-wide — far
-                // outside this fix's scope (see commit message / handoff
-                // notes). This channel is written only here and read only by
-                // `generate_exists_sql`'s `GraphRel` branch, so it cannot
-                // affect any other property resolution.
+                // define_node`/`define_scalar` still construct an EMPTY
+                // `property_mapping` for a WITH-CTE `VariableSource::Cte` node
+                // export, so `resolve_with_current_registry` does not carry a
+                // per-property node map here. Ordinary property access across
+                // CTE barriers resolves forward via the render-site registry
+                // identity self-map + `plan_ctx` CTE columns (the F0/F1
+                // forward-resolution work; the legacy task-local
+                // `cte_property_mappings` reparse was removed in F2a). This
+                // channel remains the purpose-built path for the one case the
+                // forward registry cannot serve mid-build: an EXISTS
+                // correlation variable that must resolve through the CTE scope
+                // active *at this exact point* in `build_chained_with_match_cte_plan`,
+                // before the variable moves on to a later WITH clause's CTE. It
+                // is written only here and read only by `generate_exists_sql`'s
+                // `GraphRel` branch, so it cannot affect any other resolution.
                 crate::server::query_context::set_cte_scope_for_correlation(
                     alias.clone(),
                     extract_from_alias_from_cte_name(&cte_name).to_string(),

@@ -67,10 +67,6 @@ pub struct QueryContext {
     /// Used for IS NULL checks on relationship aliases
     pub relationship_columns: HashMap<String, (String, String)>,
 
-    /// CTE property mappings: cte_alias → { property → column_name }
-    /// For resolving properties on CTE-exported variables
-    pub cte_property_mappings: HashMap<String, HashMap<String, String>>,
-
     /// Multi-type VLP aliases: alias → cte_name
     /// For aliases that are multi-type VLP endpoints requiring JSON extraction
     pub multi_type_vlp_aliases: HashMap<String, String>,
@@ -133,10 +129,9 @@ pub struct QueryContext {
     /// Cypher alias → (generation, CTE FROM alias, {Cypher property → CTE
     /// column}) for a WITH-CTE-exported variable, published *while*
     /// `build_chained_with_match_cte_plan` is still building the plan (not
-    /// only at the very end, unlike `current_variable_registry`/
-    /// `cte_property_mappings`, both of which are populated only after the
-    /// full render plan — including any pre-rendered EXISTS SQL baked from it
-    /// — already exists).
+    /// only at the very end, unlike `current_variable_registry`, which is
+    /// populated only after the full render plan — including any pre-rendered
+    /// EXISTS SQL baked from it — already exists).
     ///
     /// This is a narrow, purpose-built channel for
     /// `render_expr::generate_exists_sql`'s `GraphRel` branch: it needs to
@@ -147,10 +142,11 @@ pub struct QueryContext {
     /// `VariableRegistry::define_node`/`define_scalar` unconditionally
     /// construct a fresh, empty `property_mapping` for `VariableSource::Cte`,
     /// so it never actually carries CTE column info in production (ordinary
-    /// property access instead resolves via the separate legacy
-    /// `cte_property_mappings` path, populated later from the final render
-    /// plan). Written only in `build_chained_with_match_cte_plan`; read only
-    /// by `generate_exists_sql` — cannot affect any other resolution path.
+    /// property access instead resolves forward via the render-site registry
+    /// identity self-map and `plan_ctx` CTE columns — see the F0/F1
+    /// forward-resolution work). Written only in
+    /// `build_chained_with_match_cte_plan`; read only by `generate_exists_sql`
+    /// — cannot affect any other resolution path.
     ///
     /// The `generation` tag (see `cte_scope_generation` /
     /// `enter_cte_scope_generation`) is what keeps this safe across
@@ -502,67 +498,6 @@ pub fn clear_relationship_columns() {
 }
 
 // ============================================================================
-// CTE PROPERTY MAPPINGS ACCESSORS
-// ============================================================================
-
-/// Set CTE property mappings for the current query
-/// Deep-merges new mappings with existing ones to preserve prior entries
-pub fn set_cte_property_mappings(mappings: HashMap<String, HashMap<String, String>>) {
-    let _ = QUERY_CONTEXT.try_with(|ctx| {
-        let mut ctx = ctx.borrow_mut();
-        let existing = &mut ctx.cte_property_mappings;
-
-        // Deep-merge: for each CTE alias, merge its property mappings
-        for (cte_alias, new_props) in mappings {
-            let entry = existing.entry(cte_alias).or_default();
-            // New or updated properties overwrite existing ones; unrelated ones are preserved
-            for (prop, column) in new_props {
-                entry.insert(prop, column);
-            }
-        }
-    });
-}
-
-/// Get a CTE property mapping
-pub fn get_cte_property_mapping(cte_alias: &str, property: &str) -> Option<String> {
-    QUERY_CONTEXT
-        .try_with(|ctx| {
-            ctx.borrow()
-                .cte_property_mappings
-                .get(cte_alias)
-                .and_then(|props| props.get(property).cloned())
-        })
-        .ok()
-        .flatten()
-}
-
-/// Get all CTE property mappings for a given alias
-/// Returns Vec<(property_name, cte_column_name)> sorted by property name for deterministic order
-pub fn get_all_cte_properties(cte_alias: &str) -> Vec<(String, String)> {
-    QUERY_CONTEXT
-        .try_with(|ctx| {
-            ctx.borrow()
-                .cte_property_mappings
-                .get(cte_alias)
-                .map(|props| {
-                    let mut entries: Vec<(String, String)> =
-                        props.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-                    entries.sort_by(|a, b| a.0.cmp(&b.0));
-                    entries
-                })
-                .unwrap_or_default()
-        })
-        .unwrap_or_default()
-}
-
-/// Clear CTE property mappings
-pub fn clear_cte_property_mappings() {
-    let _ = QUERY_CONTEXT.try_with(|ctx| {
-        ctx.borrow_mut().cte_property_mappings.clear();
-    });
-}
-
-// ============================================================================
 // MULTI-TYPE VLP ALIASES ACCESSORS
 // ============================================================================
 
@@ -808,14 +743,13 @@ static CTE_SCOPE_GENERATION_COUNTER: std::sync::atomic::AtomicU64 =
 /// finished generations: they can never be resolved again, so there's no
 /// reason to let the map grow across a query with many independent subplans.
 ///
-/// This is a deliberate design choice, not an oversight: `cte_property_mappings`,
-/// `relationship_columns`, and `denormalized_aliases` each have a matching
-/// `clear_*` function with zero callers anywhere in the codebase (a
-/// separate, pre-existing gap — those maps are simply never cleared today).
-/// `cte_scope_for_correlation` avoids joining that same pattern by folding
-/// its cleanup into generation entry above, rather than adding another
-/// `clear_cte_scope_for_correlation()` that would need a caller to remember
-/// to invoke (and could easily end up with zero callers too).
+/// This is a deliberate design choice, not an oversight: `relationship_columns`
+/// and `denormalized_aliases` each have a matching `clear_*` function with zero
+/// callers anywhere in the codebase (a separate, pre-existing gap — those maps
+/// are simply never cleared today). `cte_scope_for_correlation` avoids joining
+/// that same pattern by folding its cleanup into generation entry above, rather
+/// than adding another `clear_cte_scope_for_correlation()` that would need a
+/// caller to remember to invoke (and could easily end up with zero callers too).
 pub fn enter_cte_scope_generation() -> u64 {
     let new_gen = CTE_SCOPE_GENERATION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     QUERY_CONTEXT
@@ -1058,14 +992,12 @@ pub fn clear_current_variable_registry() {
 /// Set all render contexts at once (for render phase entry)
 pub fn set_all_render_contexts(
     relationship_columns: HashMap<String, (String, String)>,
-    cte_mappings: HashMap<String, HashMap<String, String>>,
     multi_type_aliases: HashMap<String, String>,
     cte_alias_to_cte_name: HashMap<String, String>,
 ) {
     let _ = QUERY_CONTEXT.try_with(|ctx| {
         let mut ctx = ctx.borrow_mut();
         ctx.relationship_columns = relationship_columns;
-        ctx.cte_property_mappings = cte_mappings;
         ctx.multi_type_vlp_aliases = multi_type_aliases;
         ctx.cte_alias_to_cte_name = cte_alias_to_cte_name;
     });
@@ -1076,7 +1008,6 @@ pub fn clear_all_render_contexts() {
     let _ = QUERY_CONTEXT.try_with(|ctx| {
         let mut ctx = ctx.borrow_mut();
         ctx.relationship_columns.clear();
-        ctx.cte_property_mappings.clear();
         ctx.multi_type_vlp_aliases.clear();
         ctx.cte_alias_to_cte_name.clear();
         ctx.all_cte_names.clear();

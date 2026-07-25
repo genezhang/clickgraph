@@ -863,43 +863,6 @@ impl SelectBuilder for LogicalPlan {
                                 }
                             }
 
-                            // CTE reference wildcard: alias was renamed to CTE name
-                            // (e.g., "a" → "with_a_cte_0" by rewrite_logical_expr_cte_refs)
-                            // Reverse-map to original alias, then expand using CTE columns.
-                            if let Some(original_alias) =
-                                self.find_cte_original_alias(&prop.table_alias.0)
-                            {
-                                let cte_props =
-                                    crate::server::query_context::get_all_cte_properties(
-                                        &original_alias,
-                                    );
-                                if !cte_props.is_empty() {
-                                    log::info!(
-                                        "🔍 CTE wildcard expansion: '{}' → original alias '{}' with {} properties",
-                                        prop.table_alias.0, original_alias, cte_props.len()
-                                    );
-                                    for (prop_name, cte_column) in &cte_props {
-                                        select_items.push(SelectItem {
-                                            expression: RenderExpr::PropertyAccessExp(
-                                                PropertyAccess {
-                                                    table_alias: RenderTableAlias(
-                                                        original_alias.clone(),
-                                                    ),
-                                                    column: PropertyValue::Column(
-                                                        cte_column.clone(),
-                                                    ),
-                                                },
-                                            ),
-                                            col_alias: Some(ColumnAlias(format!(
-                                                "{}.{}",
-                                                original_alias, prop_name
-                                            ))),
-                                        });
-                                    }
-                                    continue;
-                                }
-                            }
-
                             // Check if this is a denormalized edge alias mapping
                             // First try plan_ctx (populated during planning), then fall back to
                             // logical plan inspection, then QUERY_CONTEXT
@@ -2442,9 +2405,12 @@ impl LogicalPlan {
         let table_ref = alias.to_string();
         let prop_count = properties.len();
         for (prop_name, _db_column) in properties {
-            let cte_column =
-                crate::server::query_context::get_cte_property_mapping(&from_alias, &prop_name)
-                    .unwrap_or_else(|| cte_column_name(alias, &prop_name));
+            // Forward CTE column naming (rule 6): `p{N}_{alias}_{property}`. This
+            // reproduces exactly what the (now-deleted) M2 `cte_property_mappings`
+            // task-local returned here — every value it ever stored at this site
+            // was already this `p{N}` form (F2a; verified byte-identical across
+            // corpus + goldens + full suite).
+            let cte_column = cte_column_name(alias, &prop_name);
             select_items.push(SelectItem {
                 expression: RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: RenderTableAlias(table_ref.clone()),
@@ -2704,50 +2670,6 @@ impl LogicalPlan {
             }
         }
         None
-    }
-
-    /// Reverse-map a CTE name to the original alias.
-    /// Searches GraphJoins.cte_references for an entry where value == cte_name,
-    /// returning the key (original alias).
-    fn find_cte_original_alias(&self, cte_name: &str) -> Option<String> {
-        match self {
-            LogicalPlan::GraphJoins(gj) => {
-                // Collect all matching aliases and pick the smallest for determinism
-                let mut matches: Vec<&String> = gj
-                    .cte_references
-                    .iter()
-                    .filter(|(_, name)| name.as_str() == cte_name)
-                    .map(|(alias, _)| alias)
-                    .collect();
-                matches.sort();
-                if let Some(alias) = matches.first() {
-                    return Some((*alias).clone());
-                }
-                gj.input.find_cte_original_alias(cte_name)
-            }
-            LogicalPlan::Union(u) => u
-                .inputs
-                .iter()
-                .find_map(|branch| branch.find_cte_original_alias(cte_name)),
-            LogicalPlan::Projection(p) => p.input.find_cte_original_alias(cte_name),
-            LogicalPlan::Filter(f) => f.input.find_cte_original_alias(cte_name),
-            LogicalPlan::GraphRel(gr) => {
-                let mut matches: Vec<&String> = gr
-                    .cte_references
-                    .iter()
-                    .filter(|(_, name)| name.as_str() == cte_name)
-                    .map(|(alias, _)| alias)
-                    .collect();
-                matches.sort();
-                if let Some(alias) = matches.first() {
-                    return Some((*alias).clone());
-                }
-                gr.left
-                    .find_cte_original_alias(cte_name)
-                    .or_else(|| gr.right.find_cte_original_alias(cte_name))
-            }
-            _ => None,
-        }
     }
 
     /// Find a GraphRel whose own relationship alias matches the given alias.
