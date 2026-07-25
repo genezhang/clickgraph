@@ -437,6 +437,26 @@ unreferenced, `translate_db_columns_to_cypher_properties`. Corpus byte-identical
 (nothing resolves via DB-column keys post-F1). If a residual reader remains,
 transition-assert first.
 
+> **⚠️ F2c outcome (2026-07-25, BLOCKED as byte-identical — not started).** The
+> premise "nothing resolves via DB-column keys post-F1" is **false**. A stub
+> experiment (disable the 3 secondary "also add DB column" inserts, run the net)
+> dropped **18 corpus goldens** (9 shapes × 2 dialects): all whole-node
+> expansion / property-rename / node-passthrough
+> (`test_with_cte_node_expansion`, `test_with_property_mapping`). The reverse
+> arm is load-bearing there: for `WITH a AS person ... RETURN person` it makes
+> each property surface under **both** its Cypher name **and** its DB column
+> name — e.g. `person.p1_a_name AS "person.name"` *and*
+> `person.p1_a_name AS "person.full_name"`; `... AS "person.email"` *and*
+> `... AS "person.email_address"`. Removing the arm drops the DB-column-named
+> SELECT items. So F2c is **not** a byte-identical teardown — it needs a forward
+> derivation of that second (DB-column) projection name from schema, and a
+> semantics decision on whether emitting both names is even intended (it may be
+> a pre-existing over-projection). Its own design cycle; do not attempt as a
+> pure deletion. `translate_db_columns_to_cypher_properties` is separately still
+> load-bearing (19 VLP-path callers; its root — VLP columns resolved to DB
+> columns before scope — is untouched by F1/F2a). **Next viable Phase-B/C slice:
+> F2b (fold M3) or Phase C (F3/F4 de-opaque).**
+
 ### Phase C — de-opaque the three baked-SQL types (§10 Phase 2)
 
 Each is independent and byte-identical (same SQL, built later from structure):
