@@ -128,24 +128,6 @@ impl CteColumnResolver {
                     cte_column.to_string(),
                 ),
             }
-        } else if let Some(cte_column) =
-            crate::server::query_context::get_cte_property_mapping(table_alias, property_name)
-        {
-            log::debug!(
-                "🔧 CteColumnResolver: Resolved {}.{} → {}.{} (task-local context lookup)",
-                table_alias,
-                property_name,
-                table_alias,
-                cte_column
-            );
-
-            // Create a new PropertyAccess with the resolved column name
-            PropertyAccess {
-                table_alias: prop_access.table_alias.clone(),
-                column: crate::graph_catalog::expression_parser::PropertyValue::Column(
-                    cte_column.to_string(),
-                ),
-            }
         } else {
             // Try to get CTE name from TableCtx and look up that way
             if let Ok(table_ctx) = plan_ctx.get_table_ctx(table_alias) {

@@ -389,6 +389,44 @@ properties` (`select_builder.rs:873`) — F2a must retire those too or scope the
 out explicitly. Corpus byte-identical (F1 already made M1 authoritative at the
 render site).
 
+> **✅ F2a outcome (2026-07-25, landed) — byte-identical.** M2 deleted end to
+> end. **De-risked by a stub-probe experiment before any deletion** (the F1
+> lesson — a green net can be silent on the one class that matters, so measure
+> the site directly): stubbing the two read accessors
+> (`get_cte_property_mapping`/`get_all_cte_properties`) to return `None`/empty
+> was byte-identical across corpus (517) + goldens (220) + the full suite
+> (1,606 unit + 513 integration). Then instrumenting the *real* accessors
+> showed M2 genuinely fires (36 hits) but is fully covered:
+> - **`cte_column_resolver.rs:132` — never reached.** Its M2 branch is a
+>   fallback *after* the forward `plan_ctx.get_cte_column()` miss; 0 of the 36
+>   hits came from here. The forward path already resolves every case. Branch
+>   deleted (the `if`/`else if`/`else` collapses to `if`/`else`).
+> - **`select_builder.rs:2446` (`expand_cte_entity`) — 32 hits, all `p{N}_`
+>   values.** M2's populator only ever stores the rule-6 `p{N}_{alias}_{prop}`
+>   form, which is exactly what the existing `cte_column_name(alias, prop)`
+>   fallback reconstructs — byte-identical *by construction*, not by luck
+>   (verified: 0 divergences M2-value vs fallback-value across the suite).
+>   Replaced with the direct `cte_column_name` call.
+> - **`select_builder.rs:873` (CTE wildcard `get_all_cte_properties`) — 4 hits.**
+>   Removing the block falls through to the schema-property re-expansion
+>   immediately below it (the exact path taken when the stub returned empty) —
+>   byte-identical. Its now-orphaned helper `find_cte_original_alias` deleted too.
+>
+> **Two producers** removed: the deep-merge populator
+> (`populate_cte_property_mappings_from_render_plan` in `plan_builder_utils.rs`
+> + the inline block in `cte_extraction.rs`) and the bulk `set_all_render_contexts`
+> path (`build_cte_property_mappings` in `to_sql_query.rs`, with the field dropped
+> from the `set_all_render_contexts`/`clear_all_render_contexts` signatures). The
+> task-local field + all four accessors (`set_`/`get_`/`get_all_`/`clear_`) gone.
+> **Left untouched (F1 §1.2 hazard, hit again):** the *local parameter* also named
+> `cte_property_mappings` on `rewrite_logical_expr_cte_refs`/
+> `update_graph_joins_cte_refs` is a **different** map (fed from M3
+> `with_scope.scope_cte_variables().property_mapping`), NOT the deleted field —
+> the naming collision is a trap, verified independent before keeping it. Corpus +
+> goldens + full suite (2,156 tests) byte-identical; clippy clean; ratchet
+> net-zero. Branch `refactor/f2a-delete-m2-cte-property-mappings`. **Next: F2b**
+> (reconcile/fold M3) or Phase C (F3 PatternCount / F4 EXISTS de-opaque).
+
 **F2b — reconcile/fold M3.** Transition-assert M1 vs M3
 (`rewrite_render_plan_with_scope`) agree, then either delete M3 or reduce it to
 "apply M1's data". Corpus byte-identical.

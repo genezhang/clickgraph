@@ -116,7 +116,7 @@ string-emitting group (31 fns, `render_plan/pattern_comprehension_sql.rs`, 2,629
 extracted verbatim, `pub(crate)` re-exports, byte-identical goldens + corpus, ratchet
 net-zero; D7-rest deferred. **Next: P2.3 clause_extractors move.**
 
-### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1+F1b/#602 done; F2+ and F1b residue open)
+### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1+F1b/#602+F2a done; F2b+ and F1b residue open)
 **Concrete staged plan written: `docs/design/FORWARD_RESOLUTION_PLAN.md`.** It
 supersedes the stale `render_plan/AGENTS.md` §10 premise: the `reverse_mapping`
 field §10 says to delete was already removed in #115 (Feb 2026); the debt forked
@@ -138,8 +138,11 @@ user-visible fixes are re-scoped to **F1b** (the M3-path hunt) + Phase C
 wrong column across a second passthrough WITH barrier (the node label was dropped,
 so the `.id` operand mis-resolved to the edge `to_id`, #616-class Code 47); fixed by
 carrying the node label forward across barriers (`WithBarrierScope::carried_labels`),
-a forward-data thread, +3 regression goldens, corpus byte-identical. **Next: F2a**
-(delete M2 populator/field; the render-site reader wrapper is already gone) or the
+a forward-data thread, +3 regression goldens, corpus byte-identical. **F2a done** —
+deleted the M2 legacy mechanism (`cte_property_mappings` task-local field + its
+populators + 3 consumers), byte-identical (2,156 tests), de-risked by a stub-probe
+experiment that proved M2 fully covered by the forward path. **Next: F2b**
+(reconcile/fold M3) or Phase C (F3 PatternCount / F4 EXISTS de-opaque), or the
 remaining **F1b** residue (#595→F4, #613→F3, #643 planner-topology). Per-shape
 patching of this class stays forbidden (§1.6). Remaining Phase-1 pass migrations
 (P1.4+) and Phase-3 §6.2 slices are fill-in work alongside, not blockers.
@@ -189,6 +192,25 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-25: **P-4 F2a** — deleted the M2 legacy CTE-property resolution
+  mechanism (the task-local `cte_property_mappings` field, its four accessors
+  `set_/get_/get_all_/clear_`, both producers — the deep-merge
+  `populate_cte_property_mappings_from_render_plan` + `cte_extraction.rs` inline
+  block, and the bulk `build_cte_property_mappings`/`set_all_render_contexts`
+  path — and all three consumers). **Byte-identical** (2,156 Rust tests + 517
+  corpus + 220 goldens unchanged; clippy clean; ratchet net-zero). De-risked
+  before deletion with a **stub-probe experiment** (the F1 lesson — a green net
+  can be silent on the class that matters): stubbing the read accessors to
+  return nothing was byte-identical everywhere, and instrumenting the real
+  accessors showed M2 fires 36× but is fully covered by the forward path —
+  `cte_column_resolver`'s M2 fallback is never reached (0/36; forward
+  `plan_ctx.get_cte_column` covers it), and `select_builder`'s 36 hits are all
+  the rule-6 `p{N}_{alias}_{prop}` form that `cte_column_name()` reconstructs
+  identically (0 divergences). Hazard re-encountered and avoided: the *local
+  parameter* also named `cte_property_mappings` on
+  `rewrite_logical_expr_cte_refs`/`update_graph_joins_cte_refs` is a different
+  map (M3 `scope_cte_variables`) and was left intact. Branch
+  `refactor/f2a-delete-m2-cte-property-mappings`. Next: F2b or Phase C.
 - 2026-07-21: **P-4 F1b (#602)** — first F1b intentional-diff hunk. Post-WITH MATCH
   continuation from a WITH-projected node joined on the wrong column
   (`t2.user_id = u.post_id`, Code 47) when a second passthrough WITH barrier was

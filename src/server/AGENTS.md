@@ -202,7 +202,6 @@ pub struct QueryContext {
     pub schema: Option<Arc<GraphSchema>>,
     pub denormalized_aliases: HashMap<String, String>,
     pub relationship_columns: HashMap<String, (String, String)>,
-    pub cte_property_mappings: HashMap<String, HashMap<String, String>>,
     pub multi_type_vlp_aliases: HashMap<String, String>,
     // PR #120: Task-local VariableRegistry for scope-aware property resolution
     // Set/get via set_current_registry() / get_current_registry()
