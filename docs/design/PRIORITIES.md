@@ -57,22 +57,26 @@ bad work — it's caused by no shared, current answer to "what's next".
 
 Ordered; work the highest unblocked item. "Owner: open" = unclaimed.
 
-### P-0 — Nightly CI green + net hygiene  ◐ (fix in flight — #687)
-The nightly was red from ~2026-07-13. Successive triage narrowed it: the
-2026-07-24 run was down to a **single** failing test + **2** xpassed markers
-(cargo/fmt/clippy/build/2,156 rust tests + 3,577 pytest all pass):
-- `test_disconnected_pattern` asserted `status == 'error'` under an obsolete
-  "comma-separated patterns not supported" limitation. Cartesian support landed
-  since — the query renders `JOIN … ON 1 = 1` + WHERE and returns the Alice×Bob
-  row. **Fixed (#687, `9a7f9abe`)**: assert success + the exact row.
-- **2 xpassed** cleared (#687): `test_shortest_path_basic` (shortestPath VLP CTE
-  alias) + `test_labels_mixed_typed_untyped` (labels() mixed typed/untyped) —
-  both underlying bugs fixed, markers removed.
-- Manual `workflow_dispatch` run triggered post-merge to confirm green; the
-  scheduled weekday run then validates continuously.
-- Follow-ups still open: prune stale `worktree-agent-*` branches; refresh
-  STATUS.md (last updated 2026-05-06).
-Exit: one fully green scheduled nightly run + xpass count ~0.
+### P-0 — Nightly CI green + net hygiene  ☑ (GREEN — run `30213027096`, 2026-07-26)
+The nightly was red from ~2026-07-13. Successive triage narrowed it to zero:
+- **#687 (`9a7f9abe`)**: `test_disconnected_pattern` asserted `status == 'error'`
+  under an obsolete "comma-separated patterns not supported" limitation. Cartesian
+  support landed since — the query renders `JOIN … ON 1 = 1` + WHERE and returns
+  the Alice×Bob row. Fixed to assert success + the exact row. +2 stale xfail markers
+  cleared (`test_shortest_path_basic`, `test_labels_mixed_typed_untyped`).
+- **#690 (`f60be99f`)**: round-2 triage of the next layer — (1) `test_unwind_with_match`
+  generator compared an Int UNWIND id to a random String prop → CH String-vs-Int 500;
+  fixed generator to `_get_id_prop`. (2) `test_external_users_with_access` 500s live
+  (my over-eager #682 xfail removal — `cg validate` passed but live path is a genuine
+  VLP-then-fixed-hop-polymorphic bug); restored xfail, filed **#689**. (3)
+  `test_vlp_with_and_aggregation` xpassed from #620; marker removed.
+- **Confirmed green**: `workflow_dispatch` run `30213027096` (head `f60be99f`) =
+  `conclusion: success` — fmt/clippy `-D warnings`/build/full `cargo test`/full live
+  pytest all pass. The scheduled weekday run now validates continuously.
+Exit met: one fully green nightly run + xpass count 0.
+- Follow-ups still open (net hygiene, not blocking): prune stale
+  `worktree-agent-*` branches; refresh STATUS.md (last updated 2026-05-06); **#689**
+  (live VLP-then-fixed-hop-polymorphic 500).
 
 ### P-1 — Keep a small silent-wrong bug lane open  (standing, ≤1 agent)
 Open issues that are NOT the reverse-mapping class and are individually
@@ -199,6 +203,12 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-26: **P-0 nightly GREEN** — `workflow_dispatch` run `30213027096`
+  (head `f60be99f`) = `success`. Closes the red streak open since ~07-13. Final
+  layer cleared by **#690** (`f60be99f`): `test_unwind_with_match` generator
+  String-vs-Int fix, `test_external_users_with_access` xfail restored (+#689 filed),
+  `test_vlp_with_and_aggregation` xpass marker removed. P-0 now folds into standing
+  nightly-triage duty (§3).
 - 2026-07-26: **#683 residual 1 — denorm anchor count(a)** (P-1 bug lane, #685,
   `f8a69ad7`) — `count(a)` on a denorm OPTIONAL-VLP anchor rendered `count(a.code)`
   (logical node_id) but the `__denorm_scan_a` CTE exposes physical `origin_code` →
