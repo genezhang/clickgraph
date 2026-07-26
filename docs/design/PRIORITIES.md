@@ -116,7 +116,7 @@ string-emitting group (31 fns, `render_plan/pattern_comprehension_sql.rs`, 2,629
 extracted verbatim, `pub(crate)` re-exports, byte-identical goldens + corpus, ratchet
 net-zero; D7-rest deferred. **Next: P2.3 clause_extractors move.**
 
-### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1+F1b/#602+F2a+F3 done; F2b/F4/F5 and F1b residue open)
+### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1+F1b/#602+F2a+F3+F4 done; F2b/F5 and F1b residue open)
 **Concrete staged plan written: `docs/design/FORWARD_RESOLUTION_PLAN.md`.** It
 supersedes the stale `render_plan/AGENTS.md` §10 premise: the `reverse_mapping`
 field §10 says to delete was already removed in #115 (Feb 2026); the debt forked
@@ -192,6 +192,15 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-25: **P-4 F4** — second Phase-C slice, mirrors F3. Added structural
+  `subplan: Arc<LogicalPlan>` to `render_expr::ExistsSubquery` (backs `EXISTS { pattern }`)
+  alongside the now validated-`sql` cache, so a later slice (#595/#613) can make rewriters
+  recurse into it. Byte-identical (C1 — carry + cache): `generate_exists_sql` is already the
+  single producer, bake site keeps the `?` (same error boundary) and stores an Arc clone of
+  the subplan; all 6 `es.sql` consumers unchanged; the `EXISTS (...)` wrapper stays at the
+  emit sites. serde via `#[serde(with = "serde_arc")]`, mirroring the input type. Corpus +
+  220 goldens byte-identical; 2,156 tests; clippy clean; ratchet net-zero. Branch
+  `refactor/f4-existssubquery-carry-subplan`.
 - 2026-07-25: **P-4 F3** — first Phase-C slice. Added structural `pattern: PathPattern`
   to `render_expr::PatternCount` (backs `size((a)-[:R]->(b))`) alongside the now
   validated-`sql` cache, so a later slice (#613) can make rewriters recurse into it.

@@ -3929,9 +3929,14 @@ mod tests {
         );
         assert!(aliases.contains("col1"));
 
-        // ExistsSubquery with alias.column pattern
+        // ExistsSubquery with alias.column pattern. `correlated_aliases` is
+        // empty, so `collect_aliases_from_expr` falls back to scanning `sql` —
+        // the `subplan` field is inert here (only the cache is exercised).
         collect_aliases_from_expr(
             &RenderExpr::ExistsSubquery(render_expr::ExistsSubquery {
+                subplan: std::sync::Arc::new(
+                    crate::query_planner::logical_plan::LogicalPlan::Empty,
+                ),
                 sql: "EXISTS (SELECT 1 FROM t WHERE friend.id = t.PersonId)".to_string(),
                 correlated_aliases: vec![],
             }),

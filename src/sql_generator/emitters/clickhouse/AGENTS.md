@@ -365,7 +365,7 @@ sub-expressions. This means CTE scope rewriting **cannot reach inside them**:
 | Variant | Carries | Created in | Example content |
 |---------|---------|-----------|-----------------|
 | `Raw(String)` | Opaque SQL | `render_expr.rs:914-918` | `"NOT EXISTS (SELECT 1 FROM ... WHERE ... = person.id)"` |
-| `ExistsSubquery { sql: String }` | Opaque SQL | `render_expr.rs:940-944` | `"EXISTS (SELECT 1 FROM ... WHERE ...)"` |
+| `ExistsSubquery { subplan, sql, correlated_aliases }` | Structural subplan + validated SQL cache (rewriters still skip — #595/#613) | `render_expr.rs:1693` | `"EXISTS (SELECT 1 FROM ... WHERE ...)"` |
 | `PatternCount { pattern, sql, correlated_aliases }` | Structural pattern + validated SQL cache (rewriters still skip — #613) | `render_expr.rs:1721` | `"coalesce((SELECT count(*) FROM ... WHERE ... = a.id), 0)"` |
 
 **Impact**: When these expressions appear after a WITH scope barrier, the embedded
