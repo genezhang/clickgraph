@@ -121,7 +121,108 @@ pub(crate) fn rewrite_cte_self_name_in_raw_sql(content: &mut CteContent, old: &s
     let CteContent::RawSql(sql) = content else {
         return;
     };
+    // #642: a VLP CTE's RawSql can bundle a whole FAMILY of derived sub-CTEs —
+    // `<old>_inner`, `<old>_to_target`, `<old>_bfs`, `<old>_recon`,
+    // `<old>_reachable` (shortestPath/BFS/min-hops wrappers) — all defined inside
+    // this ONE blob and cross-referencing each other. Renaming only `<old>`→`<new>`
+    // (the #618 single-CTE case) leaves those derived names intact, so a second
+    // union arm with the same aliases re-defines e.g. `<old>_inner` → Code 179.
+    //
+    // Discover the derived names actually present as `<old>_<suffix> AS (` headers
+    // in this blob and rename each `<old>_<suffix>`→`<new>_<suffix>` FIRST (longest
+    // first, so `<old>_inner` is handled before the bare `<old>` — otherwise the
+    // whole-identifier boundary would already have stopped `<old>` from matching
+    // inside `<old>_inner`, but doing the derived names first is clearest and
+    // order-independent since each rewrite targets a distinct whole identifier).
+    let mut derived = discover_derived_cte_names(sql, old);
+    // Longest suffix first for determinism (no nesting among siblings, but stable).
+    derived.sort_by_key(|b| std::cmp::Reverse(b.len()));
+    for derived_old in derived {
+        let derived_new = format!("{}{}", new, &derived_old[old.len()..]);
+        *sql = rewrite_cte_name_structural(sql, &derived_old, &derived_new);
+    }
     *sql = rewrite_cte_name_structural(sql, old, new);
+}
+
+/// #642: find the derived sub-CTE names (`<base>_<suffix>`) DEFINED as headers
+/// (`<base>_<suffix> AS (`) inside a VLP RawSql blob. Only names that appear as an
+/// actual CTE definition header are returned, so we never rename a coincidental
+/// identifier.
+///
+/// TWO-LAYER SAFETY: this discovery gate is deliberately NOT the safety boundary —
+/// even if it over-includes a name, the actual rewrite goes through
+/// `rewrite_cte_name_structural`, which only touches header / post-`FROM` /
+/// post-`JOIN` positions and is string-literal-aware. So an over-detected name at
+/// worst re-confirms a rename that is already correct; it can never corrupt a
+/// column, alias, or literal. The gate requires `AS (` (a real definition, not an
+/// `AS <alias>` reference) to keep discovery tight regardless. String-literal spans are skipped (a literal containing
+/// `foo_inner AS (` must not be mistaken for a header).
+fn discover_derived_cte_names(sql: &str, base: &str) -> Vec<String> {
+    if base.is_empty() {
+        return Vec::new();
+    }
+    let bytes = sql.as_bytes();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let prefix = format!("{}_", base);
+    let mut names = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut i = 0;
+    let mut in_string = false;
+    while i < sql.len() {
+        let b = bytes[i];
+        if in_string {
+            if b == b'\'' {
+                if i + 1 < sql.len() && bytes[i + 1] == b'\'' {
+                    i += 2;
+                    continue;
+                }
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'\'' {
+            in_string = true;
+            i += 1;
+            continue;
+        }
+        // Match `<base>_<suffix>` as a whole identifier at a header position.
+        if sql[i..].starts_with(&prefix) {
+            let before_ok = i == 0 || !is_ident(bytes[i - 1]);
+            if before_ok {
+                // Consume the full identifier `<base>_<ident-chars>`.
+                let mut end = i + prefix.len();
+                while end < sql.len() && is_ident(bytes[end]) {
+                    end += 1;
+                }
+                let candidate = &sql[i..end];
+                // Only accept it if this occurrence is a DEFINITION header:
+                // `<name> AS (` — `AS` followed (after optional whitespace) by `(`.
+                // A CTE definition is ALWAYS `AS (`; an aliased table reference is
+                // `AS <alias>` (no paren) or a bare `<name> <alias>` — neither of
+                // which we rename. Requiring the `(` avoids mistaking an aliased
+                // reference for a definition (defense-in-depth: no VLP template
+                // currently emits `<derived> AS <alias>`, but this keeps discovery
+                // strictly limited to real definitions).
+                let rest = sql[end..].trim_start();
+                let is_header = {
+                    let low = rest.to_ascii_lowercase();
+                    low.strip_prefix("as")
+                        .map(|after| after.trim_start())
+                        .is_some_and(|after| after.starts_with('('))
+                };
+                if is_header && candidate.len() > prefix.len() && seen.insert(candidate.to_string())
+                {
+                    names.push(candidate.to_string());
+                }
+                i = end;
+                continue;
+            }
+        }
+        let ch_len = sql[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+        i += ch_len;
+    }
+    names
 }
 
 /// Rewrite `old`→`new` only where `old` is a CTE reference: the definition
@@ -8174,6 +8275,50 @@ mod tests {
             ),
             "WHERE n = 'a''vlp_a_b' AND FROM vlp_a_b_2 vp"
         );
+    }
+
+    /// #642: the derived sub-CTE family (`<base>_inner`/`_to_target`/…) bundled in
+    /// a VLP RawSql blob must be discovered (only at `AS (` definition headers) and
+    /// renamed together with the base, so a second union arm with the same aliases
+    /// doesn't re-define e.g. `vlp_a_b_inner` (Code 179).
+    #[test]
+    fn discover_and_rewrite_derived_cte_family_642() {
+        // Discovery: only names defined as `<base>_<suffix> AS (` headers.
+        let sql = "vlp_a_b_inner AS (\n  FROM vlp_a_b_inner vp\n),\nvlp_a_b_to_target AS (\n  SELECT * FROM vlp_a_b_inner\n),\nvlp_a_b AS (\n  SELECT * FROM vlp_a_b_to_target\n)";
+        let mut found = discover_derived_cte_names(sql, "vlp_a_b");
+        found.sort();
+        assert_eq!(found, vec!["vlp_a_b_inner", "vlp_a_b_to_target"]);
+
+        // A `<base>_<suffix>` that is only REFERENCED (never a header) is NOT
+        // discovered — e.g. a bare `FROM foo_inner` with no `foo_inner AS (`.
+        assert_eq!(
+            discover_derived_cte_names("SELECT * FROM vlp_a_b_inner", "vlp_a_b"),
+            Vec::<String>::new()
+        );
+
+        // A string literal that looks like a header must NOT be discovered.
+        assert_eq!(
+            discover_derived_cte_names("WHERE x = 'vlp_a_b_inner AS ('", "vlp_a_b"),
+            Vec::<String>::new()
+        );
+
+        // Full family rewrite (base + derived) via rewrite_cte_self_name_in_raw_sql.
+        let mut content = CteContent::RawSql(sql.to_string());
+        rewrite_cte_self_name_in_raw_sql(&mut content, "vlp_a_b", "vlp_a_b_2");
+        let CteContent::RawSql(rewritten) = &content else {
+            panic!("expected RawSql");
+        };
+        // Every header and cross-reference of the family is renamed.
+        assert!(rewritten.contains("vlp_a_b_2_inner AS ("));
+        assert!(rewritten.contains("FROM vlp_a_b_2_inner vp"));
+        assert!(rewritten.contains("vlp_a_b_2_to_target AS ("));
+        assert!(rewritten.contains("SELECT * FROM vlp_a_b_2_inner")); // to_target's ref
+        assert!(rewritten.contains("vlp_a_b_2 AS ("));
+        assert!(rewritten.contains("SELECT * FROM vlp_a_b_2_to_target")); // outer's ref
+                                                                          // The un-suffixed base must NOT leak (no bare `vlp_a_b_inner`/`vlp_a_b AS`).
+        assert!(!rewritten.contains("vlp_a_b_inner"));
+        assert!(!rewritten.contains("vlp_a_b_to_target"));
+        assert!(!rewritten.contains("\nvlp_a_b AS ("));
     }
 
     /// Wrap `inner` in a `Cte` node — the shape the Phase 1 Slice 2 gap-fix
