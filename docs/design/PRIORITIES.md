@@ -57,23 +57,21 @@ bad work — it's caused by no shared, current answer to "what's next".
 
 Ordered; work the highest unblocked item. "Owner: open" = unclaimed.
 
-### P-0 — Nightly CI green + net hygiene  ☐ (open)
-The nightly has failed every run since ~2026-07-13. Two distinct causes:
-- 2026-07-17: `cargo fmt --check` failure from an unformatted merge
-  (`graph_schema.rs`) — main is fmt-clean as of 2026-07-19; should
-  self-recover. Consider a pre-merge fmt check on the merge queue to
-  prevent recurrence.
-- 2026-07-14..16: 9 real pytest failures needing triage (fix, issue+xfail,
-  or revert): `test_spoke_pattern` (inbound spoke + bowtie, 0 rows),
-  `test_optional_match_undirected` (1 expected, got 2 — check vs. #583/#589
-  family), `test_graphrag_multi_type` property aggregation (400),
-  `test_count_relationship_with_node_constraints` (500),
-  `test_invalid_return_syntax` (parser error text drift),
-  3× `matrix/test_comprehensive.py::TestUnwind::test_unwind_with_match`.
-- Clear the **84 xpassed** stale xfail markers (batch PR, list from the
-  nightly log).
-- Also: prune the ~25 stale `worktree-agent-*` branches; refresh STATUS.md
-  (last updated 2026-05-06, predates this whole workstream).
+### P-0 — Nightly CI green + net hygiene  ◐ (fix in flight — #687)
+The nightly was red from ~2026-07-13. Successive triage narrowed it: the
+2026-07-24 run was down to a **single** failing test + **2** xpassed markers
+(cargo/fmt/clippy/build/2,156 rust tests + 3,577 pytest all pass):
+- `test_disconnected_pattern` asserted `status == 'error'` under an obsolete
+  "comma-separated patterns not supported" limitation. Cartesian support landed
+  since — the query renders `JOIN … ON 1 = 1` + WHERE and returns the Alice×Bob
+  row. **Fixed (#687, `9a7f9abe`)**: assert success + the exact row.
+- **2 xpassed** cleared (#687): `test_shortest_path_basic` (shortestPath VLP CTE
+  alias) + `test_labels_mixed_typed_untyped` (labels() mixed typed/untyped) —
+  both underlying bugs fixed, markers removed.
+- Manual `workflow_dispatch` run triggered post-merge to confirm green; the
+  scheduled weekday run then validates continuously.
+- Follow-ups still open: prune stale `worktree-agent-*` branches; refresh
+  STATUS.md (last updated 2026-05-06).
 Exit: one fully green scheduled nightly run + xpass count ~0.
 
 ### P-1 — Keep a small silent-wrong bug lane open  (standing, ≤1 agent)
