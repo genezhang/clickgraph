@@ -3942,9 +3942,33 @@ mod tests {
             "ExistsSubquery should extract 'friend' from SQL"
         );
 
-        // PatternCount with alias.column pattern
+        // PatternCount with alias.column pattern. `correlated_aliases` is empty,
+        // so `collect_aliases_from_expr` falls back to scanning `sql` — the
+        // `pattern` field is inert here (only the cache is exercised).
         collect_aliases_from_expr(
             &RenderExpr::PatternCount(render_expr::PatternCount {
+                pattern: crate::query_planner::logical_expr::PathPattern::ConnectedPattern(vec![
+                    crate::query_planner::logical_expr::ConnectedPattern {
+                        start_node: Arc::new(crate::query_planner::logical_expr::NodePattern {
+                            name: Some("person".to_string()),
+                            label: None,
+                            labels: None,
+                            properties: None,
+                        }),
+                        relationship: crate::query_planner::logical_expr::RelationshipPattern {
+                            name: None,
+                            direction: crate::query_planner::logical_expr::Direction::Outgoing,
+                            labels: Some(vec!["R".to_string()]),
+                            properties: None,
+                        },
+                        end_node: Arc::new(crate::query_planner::logical_expr::NodePattern {
+                            name: None,
+                            label: None,
+                            labels: None,
+                            properties: None,
+                        }),
+                    },
+                ]),
                 sql: "(SELECT COUNT(*) FROM r WHERE person.id = r.Id)".to_string(),
                 correlated_aliases: vec![],
             }),
