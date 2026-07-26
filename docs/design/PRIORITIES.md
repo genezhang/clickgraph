@@ -216,7 +216,12 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
-- 2026-07-26: **#640 shape 3 — both-endpoints-outer EXISTS with inner WHERE** (P-1
+- 2026-07-26: **#705 — shared exhaustive EXISTS predicate rewriter** (P-1 bug lane,
+  #707, `1fe800ca`) — both #587/#640-s3 predicate mappers hand-rolled a partial
+  recursion, leaking a CASE/InSubquery-nested property ref as a raw column (Code
+  47). Extracted one exhaustive `map_exists_predicate_props`; both delegate.
+  Byte-identical for covered shapes. Adversarially reviewed (0 defects; None-vs-
+  unwrap equivalence + Operator-merge both confirmed safe). #705 closed.
   bug lane, #704, `90d5697b`) — `MATCH (a),(c) WHERE EXISTS { (a)-[:R]->(c) WHERE
   <pred> }` was loud; now emits the both-outer correlated subquery (no inner JOIN)
   with `map_exists_outer_predicate` mapping refs by each endpoint's schema.
