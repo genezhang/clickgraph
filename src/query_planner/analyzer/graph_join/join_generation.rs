@@ -368,22 +368,31 @@ pub fn generate_pattern_joins(
                     //     to_id=replyOfCommentId (FK) → FK = to_id.
                     // Correct join is always `child(from-node).FK = parent(to-node)
                     // .node_id`, verified live against both schemas.
-                    let node_id_col = first_col(&left_id); // self-ref: left/right same table
-                    let fk_col = if from_id == &node_id_col {
-                        to_id.clone()
+                    //
+                    // #646: composite-aware. `from_id`/`to_id` are comma-joined
+                    // strings; `left_id` is the node_id Identifier. Compare the
+                    // FULL column sets (not just `first_col`) — the PK is the side
+                    // whose columns equal node_id's, the FK is the other side. For
+                    // single-column ids this is byte-identical to the old
+                    // `from_id == first_col(node_id)` test. The composite pairing
+                    // (e.g. `child.parent_region = parent.region AND
+                    // child.parent_id = parent.object_id`) is emitted by
+                    // `add_identifier_condition`, which zips the two Identifiers
+                    // positionally — so the schema must declare the FK columns in
+                    // the SAME order as the node_id columns (an author invariant,
+                    // mirroring the non-self-ref composite FK-edge contract).
+                    let from_id_ident = Identifier::from_comma_separated(from_id);
+                    let node_id_cols = left_id.columns();
+                    let from_id_is_pk = from_id_ident.columns() == node_id_cols;
+                    let fk_ident = if from_id_is_pk {
+                        Identifier::from_comma_separated(to_id)
                     } else {
-                        from_id.clone()
+                        from_id_ident
                     };
-                    let r_selfref_left = Identifier::Single(helpers::resolve_column(
-                        &fk_col,
-                        t.left_cte_name,
-                        plan_ctx,
-                    ));
-                    let r_selfref_right = Identifier::Single(helpers::resolve_column(
-                        &node_id_col,
-                        t.right_cte_name,
-                        plan_ctx,
-                    ));
+                    let r_selfref_left =
+                        helpers::resolve_identifier(&fk_ident, t.left_cte_name, plan_ctx);
+                    let r_selfref_right =
+                        helpers::resolve_identifier(&left_id, t.right_cte_name, plan_ctx);
                     let (cond_left_id, cond_right_id) = if *is_self_referencing {
                         (&r_selfref_left, &r_selfref_right)
                     } else {
