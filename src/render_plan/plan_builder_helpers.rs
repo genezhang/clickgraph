@@ -648,6 +648,119 @@ pub(super) fn rewrite_denorm_optional_vlp_anchor_scan(
         from_ref.source = std::sync::Arc::new(LogicalPlan::Empty);
         from_ref.use_final = false;
     }
+
+    // #683: the anchor's own aggregate/projection may still reference the LOGICAL
+    // node id (`a.code`) — `count(a)` normalises (projection_tagging) to
+    // `count(a.<node_id.columns().first()>)` = `count(a.code)`, which the
+    // `__denorm_scan_{alias}` CTE never projects (it exposes the FROM-role
+    // physical `origin_code`). The JOIN-key rewrite above already mapped the join
+    // operand; mirror it across the SELECT / GROUP BY / HAVING / ORDER BY so the
+    // anchor's logical-id references resolve to the same physical column. Scoped
+    // to `(anchor_alias, logical_id)` only, so already-physical refs
+    // (`a.origin_code`) and non-id properties (`a.city` → `a.origin_city`, already
+    // resolved upstream) are untouched.
+    for item in render_plan.select.items.iter_mut() {
+        rewrite_anchor_logical_id_to_physical(
+            &mut item.expression,
+            &anchor_alias,
+            &logical_id,
+            from_id_col,
+        );
+    }
+    for expr in render_plan.group_by.0.iter_mut() {
+        rewrite_anchor_logical_id_to_physical(expr, &anchor_alias, &logical_id, from_id_col);
+    }
+    if let Some(having) = render_plan.having_clause.as_mut() {
+        rewrite_anchor_logical_id_to_physical(having, &anchor_alias, &logical_id, from_id_col);
+    }
+    for item in render_plan.order_by.0.iter_mut() {
+        rewrite_anchor_logical_id_to_physical(
+            &mut item.expression,
+            &anchor_alias,
+            &logical_id,
+            from_id_col,
+        );
+    }
+}
+
+/// #683: rewrite every `<anchor_alias>.<logical_id>` PropertyAccess in `expr` to
+/// `<anchor_alias>.<physical_id>`, recursing through aggregate/scalar/operator/
+/// CASE/list wrappers. Used by `rewrite_denorm_optional_vlp_anchor_scan` to align
+/// the anchor's logical-id references (e.g. the `count(a.code)` a bare `count(a)`
+/// normalises to) with the `__denorm_scan_{alias}` CTE's physical id column.
+fn rewrite_anchor_logical_id_to_physical(
+    expr: &mut RenderExpr,
+    anchor_alias: &str,
+    logical_id: &str,
+    physical_id: &str,
+) {
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => {
+            if pa.table_alias.0 == anchor_alias
+                && matches!(&pa.column, PropertyValue::Column(c) if c == logical_id)
+            {
+                pa.column = PropertyValue::Column(physical_id.to_string());
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in agg.args.iter_mut() {
+                rewrite_anchor_logical_id_to_physical(arg, anchor_alias, logical_id, physical_id);
+            }
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            for arg in func.args.iter_mut() {
+                rewrite_anchor_logical_id_to_physical(arg, anchor_alias, logical_id, physical_id);
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in op.operands.iter_mut() {
+                rewrite_anchor_logical_id_to_physical(
+                    operand,
+                    anchor_alias,
+                    logical_id,
+                    physical_id,
+                );
+            }
+        }
+        RenderExpr::Case(case) => {
+            if let Some(scrutinee) = case.expr.as_mut() {
+                rewrite_anchor_logical_id_to_physical(
+                    scrutinee,
+                    anchor_alias,
+                    logical_id,
+                    physical_id,
+                );
+            }
+            for (when_expr, then_expr) in case.when_then.iter_mut() {
+                rewrite_anchor_logical_id_to_physical(
+                    when_expr,
+                    anchor_alias,
+                    logical_id,
+                    physical_id,
+                );
+                rewrite_anchor_logical_id_to_physical(
+                    then_expr,
+                    anchor_alias,
+                    logical_id,
+                    physical_id,
+                );
+            }
+            if let Some(else_expr) = case.else_expr.as_mut() {
+                rewrite_anchor_logical_id_to_physical(
+                    else_expr,
+                    anchor_alias,
+                    logical_id,
+                    physical_id,
+                );
+            }
+        }
+        RenderExpr::List(items) => {
+            for item in items.iter_mut() {
+                rewrite_anchor_logical_id_to_physical(item, anchor_alias, logical_id, physical_id);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// #644 helper: find the single OPTIONAL variable-length GraphRel in `plan`

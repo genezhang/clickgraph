@@ -10203,6 +10203,51 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
              render path (raw edge table + logical `a.code` JOIN key):\n{sql}"
         );
     }
+
+    /// #683 (residual 1 of #659): a bare `count(a)` on the SAME denorm OPTIONAL
+    /// VLP anchor. `count(a)` is normalised (projection_tagging) to
+    /// `count(a.<logical_node_id>)` = `count(a.code)`, but the `__denorm_scan_a`
+    /// CTE exposes the FROM-role physical `origin_code`, not the logical `code` →
+    /// ClickHouse Code 47. The #644 anchor-reroute already knew the physical id
+    /// column (it rewrote the JOIN key); this mirrors that rewrite across the
+    /// SELECT so the anchor's own aggregate resolves. `count(a.code)` explicit and
+    /// `RETURN a.code` already worked (property-mapped upstream); only the bare
+    /// `count(a)` normalisation dangled.
+    #[tokio::test]
+    async fn denorm_optional_vlp_anchor_count_logical_id_683() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let cypher = "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*2..3]->(b:Airport) \
+             RETURN count(a) AS c";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        // The anchor still reroutes to the scan CTE (the #644 machinery).
+        assert!(
+            sql.contains("FROM __denorm_scan_a AS a"),
+            "#683: the anchor must reroute to the `__denorm_scan_a` scan CTE:\n{sql}"
+        );
+        // The aggregate over the anchor must reference the physical id column the
+        // CTE exposes (origin_code), NOT the logical `a.code` (Code 47).
+        assert!(
+            sql.contains("count(a.origin_code)"),
+            "#683: count(a) must resolve the anchor id to the physical \
+             `a.origin_code` the scan CTE exposes:\n{sql}"
+        );
+        assert!(
+            !sql.contains("count(a.code)"),
+            "#683: count(a) must not reference the logical `a.code` (absent on \
+             the scan CTE — Code 47):\n{sql}"
+        );
+
+        // count(DISTINCT a) too.
+        let cypher_d = "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*2..3]->(b:Airport) \
+             RETURN count(DISTINCT a) AS c";
+        let sql_d = normalize(&render(&schema, cypher_d, SqlDialect::ClickHouse).await);
+        assert!(
+            sql_d.contains("count(DISTINCT a.origin_code)")
+                && !sql_d.contains("a.code"),
+            "#683: count(DISTINCT a) must also resolve to the physical id:\n{sql_d}"
+        );
+    }
 }
 
 mod coupled_anchor_optional_family_504_508_529_530_471 {
