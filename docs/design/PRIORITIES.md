@@ -216,6 +216,19 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-26: **#606 — denormalized VLP relationship-uniqueness** (P-1 bug lane,
+  #709, `1b4feba2`) — `DenormalizedCteStrategy` range VLP enforced node-uniqueness
+  (`NOT has(vp.path_nodes, next.to)`), silently dropping valid node-revisiting
+  paths. Mirrored #598 into the denorm strategy: `path_edges` seeds/extends the
+  `(from,to)` edge tuple, cycle check on that tuple. Gated
+  `shortest_path_mode.is_none() && effective_min_hops()>=1` (zero-hop + shortestPath
+  stay node-unique — verified base/recursive shape-safe). LIVE-VERIFIED against a
+  cyclic fixture: 14 edge-unique trails vs the old bug's 7 over `*1..3`. Golden
+  corpus regenerated (denorm only). Adversarially reviewed (0 blocker/major; MINOR
+  parallel-edge under-count is a pre-existing denorm limitation this PR strictly
+  improves → follow-up filed). Denorm variant of #606 done; fk-edge/mixed/
+  edge-to-edge/heterogeneous-polymorphic recursive generators stay open.
+
 - 2026-07-26: **#705 — shared exhaustive EXISTS predicate rewriter** (P-1 bug lane,
   #707, `1fe800ca`) — both #587/#640-s3 predicate mappers hand-rolled a partial
   recursion, leaking a CASE/InSubquery-nested property ref as a raw column (Code
