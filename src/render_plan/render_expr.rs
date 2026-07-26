@@ -655,8 +655,7 @@ fn map_exists_outer_predicate(
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
 ) -> LogicalExpr {
     // Build alias → node schema for the two outer endpoints.
-    let endpoint_schema = |conn: &str,
-                           node: &LogicalPlan,
+    let endpoint_schema = |node: &LogicalPlan,
                            is_source: bool|
      -> Option<crate::graph_catalog::graph_schema::NodeSchema> {
         let label = match node {
@@ -670,90 +669,123 @@ fn map_exists_outer_predicate(
                 rel_schema.to_node.clone()
             }
         });
-        let _ = conn;
         schema.node_schema_opt(&node_type).cloned()
     };
     // Left is source when Outgoing, target when Incoming.
     let outgoing = matches!(graph_rel.direction, Direction::Outgoing);
-    let left_schema = endpoint_schema(
-        &graph_rel.left_connection,
-        graph_rel.left.as_ref(),
-        outgoing,
-    );
-    let right_schema = endpoint_schema(
-        &graph_rel.right_connection,
-        graph_rel.right.as_ref(),
-        !outgoing,
-    );
+    let left_conn = graph_rel.left_connection.clone();
+    let right_conn = graph_rel.right_connection.clone();
+    let left_schema = endpoint_schema(graph_rel.left.as_ref(), outgoing);
+    let right_schema = endpoint_schema(graph_rel.right.as_ref(), !outgoing);
 
-    fn rewrite(
-        expr: &LogicalExpr,
-        left_conn: &str,
-        left_schema: &Option<crate::graph_catalog::graph_schema::NodeSchema>,
-        right_conn: &str,
-        right_schema: &Option<crate::graph_catalog::graph_schema::NodeSchema>,
-    ) -> LogicalExpr {
-        use crate::query_planner::logical_expr::PropertyAccess as PA;
-        match expr {
-            LogicalExpr::PropertyAccessExp(prop) => {
-                let schema_for = if prop.table_alias.0 == left_conn {
-                    left_schema
-                } else if prop.table_alias.0 == right_conn {
-                    right_schema
-                } else {
-                    &None
-                };
-                if let Some(ns) = schema_for {
-                    let cypher_name = prop.column.raw();
-                    let mapped = ns
-                        .property_mappings
-                        .get(cypher_name)
-                        .cloned()
-                        .unwrap_or_else(|| prop.column.clone());
-                    LogicalExpr::PropertyAccessExp(PA {
-                        table_alias: prop.table_alias.clone(),
-                        column: mapped,
-                    })
-                } else {
-                    expr.clone()
-                }
+    map_exists_predicate_props(expr, &|prop| {
+        let ns = if prop.table_alias.0 == left_conn {
+            left_schema.as_ref()
+        } else if prop.table_alias.0 == right_conn {
+            right_schema.as_ref()
+        } else {
+            None
+        }?;
+        ns.property_mappings.get(prop.column.raw()).cloned()
+    })
+}
+
+/// #705: the single exhaustive predicate-property rewriter shared by both EXISTS
+/// predicate mappers (`map_exists_inner_predicate` / `map_exists_outer_predicate`).
+/// Walks the `LogicalExpr` variants that a scalar EXISTS-inner-WHERE predicate can
+/// nest a `PropertyAccessExp` in — operators, function/aggregate calls, lists,
+/// CASE, InSubquery (its scalar `.expr`, not the correlated subplan), reduce, map
+/// literals, and array subscript/slicing — and applies `map_prop` at each
+/// PropertyAccess: `Some(new_column)` replaces the accessed column (keeping the
+/// alias), `None` leaves it untouched. Previously each mapper
+/// hand-rolled a partial match (PropertyAccess/Operator/ScalarFnCall/List only),
+/// so a ref nested in a `Case`/`InSubquery`/`ArraySubscript`/`ReduceExpr`/etc. was
+/// left with its raw Cypher property name → a nonexistent DB column (loud Code 47).
+fn map_exists_predicate_props(
+    expr: &LogicalExpr,
+    map_prop: &dyn Fn(
+        &crate::query_planner::logical_expr::PropertyAccess,
+    ) -> Option<crate::graph_catalog::expression_parser::PropertyValue>,
+) -> LogicalExpr {
+    use crate::query_planner::logical_expr::PropertyAccess;
+    let rec = |e: &LogicalExpr| map_exists_predicate_props(e, map_prop);
+    match expr {
+        LogicalExpr::PropertyAccessExp(prop) => {
+            if let Some(mapped) = map_prop(prop) {
+                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: prop.table_alias.clone(),
+                    column: mapped,
+                })
+            } else {
+                expr.clone()
             }
-            LogicalExpr::OperatorApplicationExp(op) => {
-                let mut op2 = op.clone();
-                op2.operands = op
-                    .operands
-                    .iter()
-                    .map(|o| rewrite(o, left_conn, left_schema, right_conn, right_schema))
-                    .collect();
-                LogicalExpr::OperatorApplicationExp(op2)
-            }
-            // Mirror `map_exists_inner_predicate`'s coverage so a property ref
-            // nested inside a function call or list (e.g. `toLower(c.name)`,
-            // `c.name IN [...]`) is still mapped, not left raw.
-            LogicalExpr::ScalarFnCall(f) => {
-                let mut f2 = f.clone();
-                f2.args = f
-                    .args
-                    .iter()
-                    .map(|a| rewrite(a, left_conn, left_schema, right_conn, right_schema))
-                    .collect();
-                LogicalExpr::ScalarFnCall(f2)
-            }
-            LogicalExpr::List(list) => LogicalExpr::List(
-                list.iter()
-                    .map(|i| rewrite(i, left_conn, left_schema, right_conn, right_schema))
-                    .collect(),
-            ),
-            other => other.clone(),
         }
+        LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
+            let mut op2 = op.clone();
+            op2.operands = op.operands.iter().map(rec).collect();
+            // Preserve the original variant (both share OperatorApplication).
+            match expr {
+                LogicalExpr::Operator(_) => LogicalExpr::Operator(op2),
+                _ => LogicalExpr::OperatorApplicationExp(op2),
+            }
+        }
+        LogicalExpr::ScalarFnCall(f) => {
+            let mut f2 = f.clone();
+            f2.args = f.args.iter().map(rec).collect();
+            LogicalExpr::ScalarFnCall(f2)
+        }
+        LogicalExpr::AggregateFnCall(f) => {
+            let mut f2 = f.clone();
+            f2.args = f.args.iter().map(rec).collect();
+            LogicalExpr::AggregateFnCall(f2)
+        }
+        LogicalExpr::List(list) => LogicalExpr::List(list.iter().map(rec).collect()),
+        LogicalExpr::Case(case) => {
+            let mut case2 = case.clone();
+            case2.expr = case.expr.as_ref().map(|e| Box::new(rec(e)));
+            case2.when_then = case
+                .when_then
+                .iter()
+                .map(|(w, t)| (rec(w), rec(t)))
+                .collect();
+            case2.else_expr = case.else_expr.as_ref().map(|e| Box::new(rec(e)));
+            LogicalExpr::Case(case2)
+        }
+        LogicalExpr::InSubquery(in_sq) => {
+            let mut in2 = in_sq.clone();
+            in2.expr = Box::new(rec(&in_sq.expr));
+            // subplan is a correlated plan, not part of the scalar predicate we map.
+            LogicalExpr::InSubquery(in2)
+        }
+        LogicalExpr::ReduceExpr(r) => {
+            let mut r2 = r.clone();
+            r2.initial_value = Box::new(rec(&r.initial_value));
+            r2.list = Box::new(rec(&r.list));
+            r2.expression = Box::new(rec(&r.expression));
+            LogicalExpr::ReduceExpr(r2)
+        }
+        LogicalExpr::MapLiteral(entries) => {
+            LogicalExpr::MapLiteral(entries.iter().map(|(k, v)| (k.clone(), rec(v))).collect())
+        }
+        LogicalExpr::ArraySubscript { array, index } => LogicalExpr::ArraySubscript {
+            array: Box::new(rec(array)),
+            index: Box::new(rec(index)),
+        },
+        LogicalExpr::ArraySlicing { array, from, to } => LogicalExpr::ArraySlicing {
+            array: Box::new(rec(array)),
+            from: from.as_ref().map(|e| Box::new(rec(e))),
+            to: to.as_ref().map(|e| Box::new(rec(e))),
+        },
+        // Leaves + variants deliberately NOT recursed: true leaves (Literal, Raw,
+        // Star, Parameter, TableAlias, ColumnAlias, Column, PathPattern,
+        // LabelExpression, CteEntityRef), and the property-bearing-but-unreachable
+        // ones (Lambda bodies, PatternComprehension, nested ExistsSubquery,
+        // PatternCount) — an EXISTS-inner-WHERE scalar predicate does not surface a
+        // mappable endpoint ref inside those today (they carry their own scopes /
+        // render paths). If one ever does, it fails loud (raw column → Code 47),
+        // not silent-wrong. Left unchanged.
+        other => other.clone(),
     }
-    rewrite(
-        expr,
-        &graph_rel.left_connection,
-        &left_schema,
-        &graph_rel.right_connection,
-        &right_schema,
-    )
 }
 
 /// #587: map the inner-endpoint property references of an EXISTS predicate to
@@ -771,45 +803,16 @@ fn map_exists_inner_predicate(
     _inner_type: &str,
     inner_node_schema: &crate::graph_catalog::graph_schema::NodeSchema,
 ) -> LogicalExpr {
-    use crate::query_planner::logical_expr::PropertyAccess;
-    match expr {
-        LogicalExpr::PropertyAccessExp(prop) if prop.table_alias.0 == inner_alias => {
-            let cypher_name = prop.column.raw();
-            let mapped = inner_node_schema
+    map_exists_predicate_props(expr, &|prop| {
+        if prop.table_alias.0 == inner_alias {
+            inner_node_schema
                 .property_mappings
-                .get(cypher_name)
+                .get(prop.column.raw())
                 .cloned()
-                .unwrap_or_else(|| prop.column.clone());
-            LogicalExpr::PropertyAccessExp(PropertyAccess {
-                table_alias: prop.table_alias.clone(),
-                column: mapped,
-            })
+        } else {
+            None
         }
-        LogicalExpr::OperatorApplicationExp(op) => {
-            let mut new_op = op.clone();
-            new_op.operands = op
-                .operands
-                .iter()
-                .map(|o| map_exists_inner_predicate(o, inner_alias, _inner_type, inner_node_schema))
-                .collect();
-            LogicalExpr::OperatorApplicationExp(new_op)
-        }
-        LogicalExpr::ScalarFnCall(f) => {
-            let mut new_f = f.clone();
-            new_f.args = f
-                .args
-                .iter()
-                .map(|a| map_exists_inner_predicate(a, inner_alias, _inner_type, inner_node_schema))
-                .collect();
-            LogicalExpr::ScalarFnCall(new_f)
-        }
-        LogicalExpr::List(list) => LogicalExpr::List(
-            list.iter()
-                .map(|i| map_exists_inner_predicate(i, inner_alias, _inner_type, inner_node_schema))
-                .collect(),
-        ),
-        other => other.clone(),
-    }
+    })
 }
 
 /// ```sql
