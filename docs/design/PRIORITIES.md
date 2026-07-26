@@ -93,7 +93,8 @@ heterogeneous stays loud; shapes 2–5 multi-hop/both-outer/composite/denorm rem
 correct; +3 regression goldens; dangling `RETURN r`/`count(r)` shapes are
 schema-agnostic #620)**, ~~#620 id-projection~~ **DONE (#677, `079571fc` — VLP
 WITH-item endpoint id-property → `start_id`/`end_id`; corrected a silently-broken
-directed-VLP golden; FK-edge/denorm/closed-VLP residue split to #678)**,
+directed-VLP golden; FK-edge/denorm/closed-VLP residue split to #678; the broader
+#620 residual family verified-fixed + locked #700, issue closed)**,
 ~~#678~~ **DONE (#692, `3e6d6078` — denorm VLP `WITH a.code` → `start_id`/`end_id`;
 `DenormalizedCteStrategy` was the sole strategy hardcoding id `cypher_property`
 to `"id"` vs the shared `build_vlp_column_metadata`'s real logical name;
@@ -213,7 +214,12 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
-- 2026-07-26: **#642 — VLP multi-sub-CTE union-arm collision** (P-1 bug lane, #698,
+- 2026-07-26: **#620 — undirected-VLP CTE-column-projection shapes** (P-1 bug lane,
+  #700, `42e87215`, test-only) — verified all residual shapes (OPTIONAL
+  anchor-filter, WITH id-property, WITH+aggregate grain, bound RETURN r,
+  DISTINCT, shortestPath+name) now render correctly on main, resolved as
+  collateral by #630/#659/#677/#678; the `__order_col` alias-mangling path is
+  gone. Added a dedicated regression test locking shapes A/B/D/E. #620 closed.
   `e34cead8`) — a multi-sub-CTE VLP (shortestPath/min-hops: `{name}_inner` +
   `{name}` wrapper in one RawSql blob) in both UNION arms emitted Code 179 on the
   derived `vlp_a_b_inner` (#618 renamed only the outer). Fix discovers the derived
