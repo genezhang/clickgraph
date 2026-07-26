@@ -87,8 +87,9 @@ correct; +3 regression goldens; dangling `RETURN r`/`count(r)` shapes are
 schema-agnostic #620)**, ~~#620 id-projection~~ **DONE (#677, `079571fc` — VLP
 WITH-item endpoint id-property → `start_id`/`end_id`; corrected a silently-broken
 directed-VLP golden; FK-edge/denorm/closed-VLP residue split to #678)**,
-~~#659~~ **INVESTIGATED (denorm OPTIONAL-VLP `count(b)`→`end_code`; loud/safe;
-clean fix overturns #545/#558/#559 dotted-column contract → dedicated PR)**, ~~#648~~
+~~#659~~ **DONE (#682, `2a2d900f` — VLP `count(<endpoint>)` id → `start_id`/`end_id`
+via miss-fallback only; zeek #545/#558/#559 byte-identical; also fixed standard-schema
++ zeek `count(b)` variants; residuals → #683)**, ~~#648~~
 **DONE (untyped count(r) multi-type)**, ~~#649~~ **DONE (leading UNWIND before
 MATCH)**. Prefer
 silent-wrong over loud-error fixes. Rule §1.6 applies: if root cause lands in
@@ -199,6 +200,28 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-26: **#659 VLP count(<endpoint>) endpoint-id resolution** (P-1 bug lane,
+  #682, `2a2d900f`) — `count(b)` over a VLP endpoint rendered `count(vt0.end_code)`
+  (a column the CTE never projects → Code 47). Root: `count(b)` normalizes to
+  `count(b.<logical_id>)` (e.g. `b.code`) UN-db-translated, so it misses
+  `cte_column_mapping` (keyed on db_column) in `rewrite_render_expr_for_vlp_with_endpoint_info`
+  and the prefix-fallback built `end_code`. Fix (miss-fallback ONLY, mirrors
+  #620/#677 — NOT the reverted drop-the-redundant-column prototype): thread
+  `id_property_by_alias` (built at the `rewrite_vlp_union_branch_aliases` caller via
+  `get_node_label_for_alias`/`find_denorm_connection_node_label` + `node_id.column()`,
+  composite-safe → stays loud per #605); on the id-property miss, resolve to
+  `VLP_START/END_ID_COLUMN`. Broader than the ticket: also fixed the STANDARD-schema
+  variant (`data_security` `count(g)`/whole-node `RETURN target` dangled `end_group_id`;
+  2 corpus goldens corrected dangling→correct, value-identical) and zeek `count(b)`
+  (was `count(t."end_id.orig_h")`, also dangling on main). Removed a now-passing xfail.
+  Zeek #545/#558/#559 dotted-column contract BYTE-IDENTICAL (they db-translate → HIT the
+  map, never reach the fallback). No metadata-builder/SQL-emitter change. +5 regression
+  goldens. Adversarial review: isolated main-vs-PR differential, 0 blockers, no over-fire,
+  no zeek regression; caught that the `!is_composite()` guard also averts a
+  `NodeId::column()` panic-on-composite. Residuals (denorm anchor `count(a)`,
+  composite-VLP malformed SQL) → #683. Gates: 1611 lib + 222 sql_golden + corpus (2
+  corrected, 5 new) + ratchet net-zero.
 
 - 2026-07-25: **#641 chained-undirected-optional loud-gate holes** (P-1 bug lane,
   #680, `fe6de435`) — two shapes slipped past the #589 loud gate and stayed
