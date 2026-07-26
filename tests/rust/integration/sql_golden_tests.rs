@@ -6197,6 +6197,85 @@ async fn undirected_exists_with_inner_where_renders_or_of_both_orientations_640(
     );
 }
 
+/// #640 shape 3: `MATCH (a),(c) WHERE EXISTS { (a)-[:R]->(c) WHERE <pred> }` — a
+/// single-hop EXISTS with an inner WHERE where BOTH endpoints are OUTER anchors.
+/// There is no fresh inner node to JOIN; the subquery checks the edge between the
+/// two outer anchors and folds the (outer-node-mapped) predicate. #587/#640-s1
+/// deferred this (loud). Now emits the correlated-both-columns form.
+#[tokio::test]
+async fn both_endpoints_outer_exists_with_inner_where_640() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // Predicate on the target outer node `c`; c.name maps to c.full_name.
+    let sql = normalize(
+        &render(
+            &schema,
+            "MATCH (a:User),(c:User) WHERE a.user_id = 1 AND c.user_id = 2 \
+             AND EXISTS { (a)-[:FOLLOWS]->(c) WHERE c.name = 'Bob' } RETURN a.name",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        sql.contains(
+            "EXISTS (SELECT 1 FROM social.user_follows_bench AS e \
+             WHERE e.follower_id = a.user_id AND e.followed_id = c.user_id \
+             AND c.full_name = 'Bob')"
+        ),
+        "#640 shape 3: both-outer EXISTS must correlate both edge columns and fold \
+         the mapped predicate:\n{sql}"
+    );
+    assert!(
+        !sql.contains("INNER JOIN"),
+        "#640 shape 3: both-outer has no fresh inner node — no INNER JOIN:\n{sql}"
+    );
+
+    // Incoming swaps the correlation (c is the source / follower).
+    let inc = normalize(
+        &render(
+            &schema,
+            "MATCH (a:User),(c:User) WHERE a.user_id = 1 AND c.user_id = 2 \
+             AND EXISTS { (a)<-[:FOLLOWS]-(c) WHERE c.name = 'Bob' } RETURN a.name",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        inc.contains("e.follower_id = c.user_id AND e.followed_id = a.user_id"),
+        "#640 shape 3 Incoming: correlation must swap (c=follower, a=followed):\n{inc}"
+    );
+
+    // A property ref nested inside a function call must still be mapped
+    // (c.name -> c.full_name), not left raw — mirrors #587's coverage.
+    let fn_wrapped = normalize(
+        &render(
+            &schema,
+            "MATCH (a:User),(c:User) WHERE a.user_id = 1 AND c.user_id = 2 \
+             AND EXISTS { (a)-[:FOLLOWS]->(c) WHERE toLower(c.name) = 'bob' } RETURN a.name",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        fn_wrapped.contains("c.full_name") && !fn_wrapped.contains("(c.name)"),
+        "#640 shape 3: a property ref inside a function call must be mapped to the \
+         DB column, not left raw:\n{fn_wrapped}"
+    );
+
+    // Undirected both-outer still defers (loud) — not yet supported.
+    let undirected = try_render(
+        &schema,
+        "MATCH (a:User),(c:User) WHERE a.user_id = 1 AND c.user_id = 2 \
+         AND EXISTS { (a)-[:FOLLOWS]-(c) WHERE c.name = 'Bob' } RETURN a.name",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        undirected.is_err(),
+        "#640 shape 3: undirected both-outer must stay loud:\n{undirected:?}"
+    );
+}
+
 /// Regression test: `EXISTS { pattern }` whose correlated variable was bound
 /// BEFORE a `WITH` barrier — i.e. the variable lives in a CTE by the time the
 /// EXISTS subquery is rendered — must correlate against the variable's

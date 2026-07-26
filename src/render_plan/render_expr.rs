@@ -407,6 +407,80 @@ fn generate_exists_filtered_graph_rel_sql(
     let right_conn = &graph_rel.right_connection;
     let is_outer = |alias: &str| is_exists_outer_alias(alias) || is_correlation_cte_alias(alias);
 
+    // #640 shape 3 — BOTH endpoints are outer anchors:
+    // `MATCH (a),(c) WHERE EXISTS { (a)-[:R]->(c) WHERE <pred> }`. There is no
+    // fresh inner node to JOIN; the subquery just checks the edge between the two
+    // outer anchors and folds the predicate (which references the outer nodes, so
+    // it is a correlated filter — structurally the same outer-ref the no-WHERE
+    // both-outer path already emits, so no new Code-48 surface). Only directed
+    // single-hop with a labeled edge; the inner-node/composite/denorm guards below
+    // don't apply (no inner node). Undirected both-outer defers (would need the OR
+    // form; not yet requested).
+    if is_outer(left_conn) && is_outer(right_conn) {
+        let Some(outgoing_dir) = outgoing else {
+            return Ok(None); // undirected both-outer: defer (loud)
+        };
+        // Correlate from_id to the source anchor, to_id to the target anchor.
+        let (src_conn, src_node, tgt_conn, tgt_node) = if outgoing_dir {
+            (
+                left_conn,
+                graph_rel.left.as_ref(),
+                right_conn,
+                graph_rel.right.as_ref(),
+            )
+        } else {
+            (
+                right_conn,
+                graph_rel.right.as_ref(),
+                left_conn,
+                graph_rel.left.as_ref(),
+            )
+        };
+        let from_col = rel_schema.from_id.to_string();
+        let to_col = rel_schema.to_id.to_string();
+        // Composite edge FK stringifies to `"c1, c2"` → defer (same guard as below).
+        if rel_schema.from_id.columns().len() != 1 || rel_schema.to_id.columns().len() != 1 {
+            return Ok(None);
+        }
+        let edge_table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+
+        // Resolve each outer anchor's id SQL (CTE-aware).
+        let resolve_outer = |conn: &str, node: &LogicalPlan, is_source: bool| -> Option<String> {
+            let label = match node {
+                LogicalPlan::GraphNode(n) => n.label.clone(),
+                _ => None,
+            };
+            let node_type = label.unwrap_or_else(|| {
+                if is_source {
+                    rel_schema.from_node.clone()
+                } else {
+                    rel_schema.to_node.clone()
+                }
+            });
+            let ns = schema.node_schema_opt(&node_type)?;
+            Some(resolve_correlation_id_sql(conn, ns))
+        };
+        let Some(src_id_sql) = resolve_outer(src_conn, src_node, true) else {
+            return Ok(None);
+        };
+        let Some(tgt_id_sql) = resolve_outer(tgt_conn, tgt_node, false) else {
+            return Ok(None);
+        };
+
+        // Map the predicate's property references by each referenced OUTER node's
+        // schema (a and c are both outer). Unresolvable alias → leave as-is.
+        let mapped_pred = map_exists_outer_predicate(predicate, graph_rel, rel_schema, &schema);
+        let pred_sql = RenderExpr::try_from(mapped_pred)?.to_sql();
+
+        let edge_alias = "e";
+        let sql = format!(
+            "SELECT 1 FROM {edge_table} AS {edge_alias} \
+             WHERE {edge_alias}.{from_col} = {src_id_sql} \
+             AND {edge_alias}.{to_col} = {tgt_id_sql} AND {pred_sql}"
+        );
+        return Ok(Some((sql, vec![src_conn.clone(), tgt_conn.clone()])));
+    }
+
     // Identify the OUTER anchor and the INNER-bound endpoint. For the reported
     // shape `(a)-[:R]->(b) WHERE b.<p>`, `a` is outer (source), `b` is inner
     // (target). Only cover the case where exactly one endpoint is outer and the
@@ -565,6 +639,121 @@ fn generate_exists_filtered_graph_rel_sql(
     let sql = format!("SELECT 1 FROM {edge_table} AS {edge_alias} {join_and_corr} AND {pred_sql}");
 
     Ok(Some((sql, vec![outer_conn.clone()])))
+}
+
+/// #640 shape 3: map the property references of a BOTH-OUTER EXISTS predicate to
+/// their DB columns. Both endpoints are outer anchors, so a predicate reference
+/// (`c.country`) is an OUTER-node reference — mapped by whichever endpoint's node
+/// schema matches its alias, keeping the alias (it correlates to the outer query).
+/// The endpoint labels come from the plan's GraphNodes, falling back to the
+/// relationship's from_node/to_node roles for an unlabeled endpoint. A reference
+/// on an alias that is neither endpoint is left untouched.
+fn map_exists_outer_predicate(
+    expr: &LogicalExpr,
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+    rel_schema: &crate::graph_catalog::graph_schema::RelationshipSchema,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+) -> LogicalExpr {
+    // Build alias → node schema for the two outer endpoints.
+    let endpoint_schema = |conn: &str,
+                           node: &LogicalPlan,
+                           is_source: bool|
+     -> Option<crate::graph_catalog::graph_schema::NodeSchema> {
+        let label = match node {
+            LogicalPlan::GraphNode(n) => n.label.clone(),
+            _ => None,
+        };
+        let node_type = label.unwrap_or_else(|| {
+            if is_source {
+                rel_schema.from_node.clone()
+            } else {
+                rel_schema.to_node.clone()
+            }
+        });
+        let _ = conn;
+        schema.node_schema_opt(&node_type).cloned()
+    };
+    // Left is source when Outgoing, target when Incoming.
+    let outgoing = matches!(graph_rel.direction, Direction::Outgoing);
+    let left_schema = endpoint_schema(
+        &graph_rel.left_connection,
+        graph_rel.left.as_ref(),
+        outgoing,
+    );
+    let right_schema = endpoint_schema(
+        &graph_rel.right_connection,
+        graph_rel.right.as_ref(),
+        !outgoing,
+    );
+
+    fn rewrite(
+        expr: &LogicalExpr,
+        left_conn: &str,
+        left_schema: &Option<crate::graph_catalog::graph_schema::NodeSchema>,
+        right_conn: &str,
+        right_schema: &Option<crate::graph_catalog::graph_schema::NodeSchema>,
+    ) -> LogicalExpr {
+        use crate::query_planner::logical_expr::PropertyAccess as PA;
+        match expr {
+            LogicalExpr::PropertyAccessExp(prop) => {
+                let schema_for = if prop.table_alias.0 == left_conn {
+                    left_schema
+                } else if prop.table_alias.0 == right_conn {
+                    right_schema
+                } else {
+                    &None
+                };
+                if let Some(ns) = schema_for {
+                    let cypher_name = prop.column.raw();
+                    let mapped = ns
+                        .property_mappings
+                        .get(cypher_name)
+                        .cloned()
+                        .unwrap_or_else(|| prop.column.clone());
+                    LogicalExpr::PropertyAccessExp(PA {
+                        table_alias: prop.table_alias.clone(),
+                        column: mapped,
+                    })
+                } else {
+                    expr.clone()
+                }
+            }
+            LogicalExpr::OperatorApplicationExp(op) => {
+                let mut op2 = op.clone();
+                op2.operands = op
+                    .operands
+                    .iter()
+                    .map(|o| rewrite(o, left_conn, left_schema, right_conn, right_schema))
+                    .collect();
+                LogicalExpr::OperatorApplicationExp(op2)
+            }
+            // Mirror `map_exists_inner_predicate`'s coverage so a property ref
+            // nested inside a function call or list (e.g. `toLower(c.name)`,
+            // `c.name IN [...]`) is still mapped, not left raw.
+            LogicalExpr::ScalarFnCall(f) => {
+                let mut f2 = f.clone();
+                f2.args = f
+                    .args
+                    .iter()
+                    .map(|a| rewrite(a, left_conn, left_schema, right_conn, right_schema))
+                    .collect();
+                LogicalExpr::ScalarFnCall(f2)
+            }
+            LogicalExpr::List(list) => LogicalExpr::List(
+                list.iter()
+                    .map(|i| rewrite(i, left_conn, left_schema, right_conn, right_schema))
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+    rewrite(
+        expr,
+        &graph_rel.left_connection,
+        &left_schema,
+        &graph_rel.right_connection,
+        &right_schema,
+    )
 }
 
 /// #587: map the inner-endpoint property references of an EXISTS predicate to
