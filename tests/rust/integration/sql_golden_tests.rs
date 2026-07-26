@@ -10247,6 +10247,83 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
             "#683: count(DISTINCT a) must also resolve to the physical id:\n{sql_d}"
         );
     }
+
+    /// #678 (residual of #620): `WITH a.code AS x, b.code AS y` over a
+    /// DENORMALIZED VLP resolves each endpoint's logical id property (`code`) to
+    /// the VLP CTE's authoritative id column (`start_id`/`end_id`).
+    ///
+    /// The #620/#677 WITH-item id pre-pass (`rewrite_vlp_id_property_columns`)
+    /// fires when the accessed column equals the CTE metadata's id
+    /// `cypher_property`. Every VLP strategy but the denormalized one builds that
+    /// metadata via the shared `build_vlp_column_metadata`, which sets the id
+    /// column's `cypher_property` to the real logical id name. The denorm builder
+    /// alone hand-rolled it to the placeholder `"id"`, so `a.code`/`b.code` never
+    /// matched → the blind prefix rewriter produced `t.start_code`/`t.end_code`,
+    /// columns the denorm CTE never projects (it projects `start_id`/`end_id`
+    /// holding `origin_code`/`dest_code` values) → ClickHouse Code 47. Fix:
+    /// resolve the endpoint's logical node_id property name in the denorm metadata
+    /// builder (composite ids stay `"id"`/loud per #683-r2 / #605).
+    #[tokio::test]
+    async fn denorm_vlp_with_endpoint_id_property_resolves_to_cte_id_column_678() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let cypher = "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport) \
+                      WITH a.code AS x, b.code AS y RETURN x, y";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        // Both endpoint id-properties resolve to the CTE's authoritative id
+        // columns, not the blind `start_code`/`end_code` (absent → Code 47).
+        assert!(
+            sql.contains("t.start_id AS \"x\"") && sql.contains("t.end_id AS \"y\""),
+            "#678: denorm VLP WITH endpoint id-property must resolve to \
+             start_id/end_id:\n{sql}"
+        );
+        assert!(
+            !sql.contains("start_code") && !sql.contains("end_code"),
+            "#678: must not reference the dangling start_code/end_code (columns \
+             the denorm CTE never projects):\n{sql}"
+        );
+
+        // Regression guard: a NON-id denorm property must STILL prefix-map to
+        // start_<prop>/end_<prop> (the CTE DOES project those) — the fix is
+        // scoped to the id property only.
+        let cypher_city = "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport) \
+                           WITH a.city AS c1, b.city AS c2 RETURN c1, c2";
+        let sql_city = normalize(&render(&schema, cypher_city, SqlDialect::ClickHouse).await);
+        assert!(
+            sql_city.contains("t.start_city AS \"c1\"")
+                && sql_city.contains("t.end_city AS \"c2\""),
+            "#678: non-id denorm property must still map to start_city/end_city:\n{sql_city}"
+        );
+    }
+
+    /// #678 multi-label guard: when a single denorm table hosts MULTIPLE node
+    /// labels with DIFFERENT logical node_ids (zeek's `dns_log` hosts IP
+    /// /`ip_address`, Domain/`domain_name`, ResolvedIP/`answers`), the id-property
+    /// resolver must return `None` (fall back to the `"id"` placeholder) rather
+    /// than arbitrarily pick one label's id. Picking one would let a mislabeled
+    /// access (`b.domain_name` for a `:Domain` endpoint whose id matched
+    /// BTreeMap-first) silently rewrite to the position-based `end_id`, turning a
+    /// pre-existing loud Code-47 miss into silent output — a ground-rule-1
+    /// violation. Guard keeps these queries byte-identical to pre-#678 main
+    /// (still `t.end_domain_name`, loud). Single-label denorm tables (Airport on
+    /// `flights_denorm`) are unaffected — see the sibling test.
+    #[tokio::test]
+    async fn denorm_vlp_with_endpoint_id_multi_label_table_stays_loud_678() {
+        let schema = load_schema("schemas/examples/zeek_dns_log.yaml");
+        let cypher = "MATCH (a:IP)-[:REQUESTED*1..2]->(b:Domain) \
+                      WITH a.ip_address AS x, b.domain_name AS y RETURN x, y";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        // The end endpoint's id-property must NOT be rewritten to the CTE's
+        // position id column: `dns_log` is multi-label with distinct node_ids, so
+        // the resolver returns None and the access stays on the pre-existing
+        // (loud) `end_domain_name` prefix form — identical to pre-#678 main.
+        assert!(
+            sql.contains("t.end_domain_name AS \"y\""),
+            "#678: multi-label denorm table must stay loud (end_domain_name), not \
+             silently rewrite to end_id:\n{sql}"
+        );
+    }
 }
 
 mod coupled_anchor_optional_family_504_508_529_530_471 {
