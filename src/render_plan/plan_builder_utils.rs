@@ -2327,6 +2327,8 @@ pub(crate) fn generate_swapped_joins_for_optional_match(
 
 pub(crate) fn rewrite_vlp_union_branch_aliases(
     plan: &mut RenderPlan,
+    source_plan: &LogicalPlan,
+    schema: &GraphSchema,
 ) -> RenderPlanBuilderResult<()> {
     log::debug!("TRACING: rewrite_vlp_union_branch_aliases called");
     log::info!(
@@ -2609,6 +2611,27 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
         }
     }
 
+    // #659: the LOGICAL node-id property name for each VLP endpoint alias.
+    // `count(b)` normalizes to `count(b.<logical_id>)` (e.g. `b.code` on a denorm
+    // Airport whose node_id is `code`), un-translated to its physical column. That
+    // reference MISSES `cte_column_mapping` (keyed on db_column, e.g. `Dest`) and
+    // the rewriter's prefix-fallback would build a non-existent `end_code`. Supply
+    // the logical id name so the fallback can instead resolve it to the CTE's
+    // canonical `start_id`/`end_id`. Composite ids are left out (stay loud, #605).
+    let mut id_property_by_alias: HashMap<String, String> = HashMap::new();
+    for alias in endpoint_position.keys() {
+        if let Some(label) = super::cte_extraction::get_node_label_for_alias(alias, source_plan)
+            .or_else(|| find_denorm_connection_node_label(source_plan, alias, schema))
+        {
+            if let Some(node_schema) = schema.node_schema_opt(&label) {
+                if !node_schema.node_id.is_composite() {
+                    id_property_by_alias
+                        .insert(alias.clone(), node_schema.node_id.column().to_string());
+                }
+            }
+        }
+    }
+
     if filtered_mappings.is_empty() {
         log::debug!("🔍 VLP Union Branch: All mappings filtered out - nothing to rewrite");
         return Ok(());
@@ -2716,6 +2739,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
                 &vlp_from_alias,
                 &endpoint_position,
                 &cte_column_mapping,
+                &id_property_by_alias,
             );
         }
 
@@ -2748,6 +2772,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
                     &vlp_from_alias,
                     &endpoint_position,
                     &cte_column_mapping,
+                    &id_property_by_alias,
                 );
             }
         }
@@ -2764,6 +2789,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
             group_where_alias,
             &endpoint_position,
             &cte_column_mapping,
+            &id_property_by_alias,
         );
     }
 
@@ -2782,6 +2808,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
             group_where_alias,
             &endpoint_position,
             &cte_column_mapping,
+            &id_property_by_alias,
         );
     }
 
@@ -11921,7 +11948,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
     // Apply VLP alias rewriting for path functions in WITH clauses
     // This fixes "Unknown expression identifier `t.hop_count`" errors where
     // length(path) was converted to t.hop_count but t needs to be rewritten to the actual VLP alias
-    rewrite_vlp_union_branch_aliases(&mut render_plan)?;
+    rewrite_vlp_union_branch_aliases(&mut render_plan, plan, schema)?;
 
     // 🔧 FIX: Rewrite aggregate arguments for VLP end nodes
     // Problem: COUNT(DISTINCT b) where b is VLP end node generates b.end_id

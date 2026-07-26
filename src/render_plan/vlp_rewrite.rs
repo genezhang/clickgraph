@@ -575,6 +575,11 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
         (String, String),
         (String, crate::render_plan::cte_manager::VlpColumnPosition),
     >,
+    // #659: endpoint Cypher alias → its LOGICAL node-id property name (e.g.
+    // `b → "code"`). Used ONLY in the lookup-miss fallback below to recognise a
+    // `count(b)`-normalised `b.<logical_id>` reference and resolve it to the CTE's
+    // canonical `start_id`/`end_id` rather than a non-existent `end_{logical_id}`.
+    id_property_by_alias: &HashMap<String, String>,
 ) {
     log::debug!("🔍 REWRITE: Processing expr with new lookup-based mapping (no splitting)");
     match expr {
@@ -646,6 +651,39 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                     prop_access.table_alias.0 = vlp_from_alias.to_string();
                     prop_access.column = PropertyValue::Column(cte_column_name.clone());
                 } else {
+                    // #659: a `count(<endpoint>)` normalises to `count(b.<logical_id>)`
+                    // using the LOGICAL node-id property (e.g. `b.code`), which is NOT
+                    // db-translated, so it misses `cte_column_mapping` (keyed on
+                    // db_column). Resolve it to the CTE's canonical `start_id`/`end_id`
+                    // instead of the prefix-fallback's non-existent `end_code`. Gated on
+                    // `col_name` being exactly the endpoint's logical id property, so
+                    // non-id misses (`b.city`) and non-denorm/zeek paths are untouched.
+                    if let Some(id_prop) = id_property_by_alias.get(alias.as_str()) {
+                        if col_name == id_prop.as_str() {
+                            let id_col = match endpoint_position.get(alias.as_str()) {
+                                Some(&"start") => {
+                                    Some(crate::query_planner::join_context::VLP_START_ID_COLUMN)
+                                }
+                                Some(&"end") => {
+                                    Some(crate::query_planner::join_context::VLP_END_ID_COLUMN)
+                                }
+                                _ => None,
+                            };
+                            if let Some(id_col) = id_col {
+                                log::debug!(
+                                    "✅ REWRITE #659: id-property miss ({}, {}) → {}.{}",
+                                    alias,
+                                    col_name,
+                                    vlp_from_alias,
+                                    id_col
+                                );
+                                prop_access.table_alias.0 = vlp_from_alias.to_string();
+                                prop_access.column = PropertyValue::Column(id_col.to_string());
+                                return;
+                            }
+                        }
+                    }
+
                     // Fallback: construct from endpoint_position
                     // This handles cases where metadata wasn't fully populated
                     let prefix = match endpoint_position.get(alias.as_str()) {
@@ -677,6 +715,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                     vlp_from_alias,
                     endpoint_position,
                     cte_column_mapping,
+                    id_property_by_alias,
                 );
             }
             for (when_expr, then_expr) in &mut case_expr.when_then {
@@ -686,6 +725,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                     vlp_from_alias,
                     endpoint_position,
                     cte_column_mapping,
+                    id_property_by_alias,
                 );
                 rewrite_render_expr_for_vlp_with_endpoint_info(
                     then_expr,
@@ -693,6 +733,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                     vlp_from_alias,
                     endpoint_position,
                     cte_column_mapping,
+                    id_property_by_alias,
                 );
             }
             if let Some(else_expr) = &mut case_expr.else_expr {
@@ -702,6 +743,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                     vlp_from_alias,
                     endpoint_position,
                     cte_column_mapping,
+                    id_property_by_alias,
                 );
             }
         }
@@ -713,6 +755,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                     vlp_from_alias,
                     endpoint_position,
                     cte_column_mapping,
+                    id_property_by_alias,
                 );
             }
         }
@@ -724,6 +767,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                     vlp_from_alias,
                     endpoint_position,
                     cte_column_mapping,
+                    id_property_by_alias,
                 );
             }
         }
@@ -735,6 +779,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                     vlp_from_alias,
                     endpoint_position,
                     cte_column_mapping,
+                    id_property_by_alias,
                 );
             }
         }
@@ -745,6 +790,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                 vlp_from_alias,
                 endpoint_position,
                 cte_column_mapping,
+                id_property_by_alias,
             );
         }
         _ => {

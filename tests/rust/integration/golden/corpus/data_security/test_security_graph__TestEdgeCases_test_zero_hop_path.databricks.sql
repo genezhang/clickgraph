@@ -27,6 +27,6 @@ WITH RECURSIVE vlp_u_target AS (
 )
 SELECT 
       t.end_description AS `target.description`, 
-      t.end_group_id AS `target.group_id`, 
+      t.end_id AS `target.group_id`, 
       t.end_name AS `target.name`
 FROM vlp_u_target AS t

@@ -1199,3 +1199,8 @@
 {"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User) WITH a.user_id AS id, a.name AS nm RETURN nm ORDER BY nm", "name": "test_620_undirected_vlp_with_id_and_name_mixed", "schema": "standard"}
 {"cypher": "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]-(b) OPTIONAL MATCH (b)-[:FOLLOWS]-(c) RETURN a.user_id AS id UNION MATCH (z:User) RETURN z.user_id AS id", "name": "test_641_hole1_chained_undirected_optional_in_union_branch_stays_loud", "schema": "standard"}
 {"cypher": "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]-(b) OPTIONAL MATCH (b)-[:FOLLOWS]->(c) RETURN a.user_id, b.user_id, c.user_id", "name": "test_641_hole2_undirected_inner_directed_outer_chained_optional_stays_loud", "schema": "standard"}
+{"cypher": "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*2..3]->(b:Airport) RETURN a.code, count(b) AS c", "name": "test_659_denorm_optional_vlp_count_far_endpoint", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Airport)-[:FLIGHT*2..3]->(b:Airport) RETURN a.code, count(b) AS c", "name": "test_659_denorm_required_vlp_count_far_endpoint", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*2..3]->(b:Airport) RETURN a.code, count(DISTINCT b) AS c", "name": "test_659_denorm_optional_vlp_count_distinct_endpoint", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Airport)-[:FLIGHT*2..3]->(b:Airport) RETURN a.code, b.code", "name": "test_659_denorm_vlp_endpoint_id_projection_control", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Airport)-[:FLIGHT*2..3]->(b:Airport) RETURN a.code, b.city", "name": "test_659_denorm_vlp_endpoint_prop_projection_control", "schema": "denormalized_flights"}

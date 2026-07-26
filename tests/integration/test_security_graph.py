@@ -232,7 +232,6 @@ class TestVariableLengthPaths:
 class TestSecurityQueries:
     """Complex security analysis queries."""
     
-    @pytest.mark.xfail(reason="Code bug: VLP CTE generates t.end_group_id instead of t.end_id")
     def test_external_users_with_access(self):
         """Find external users with any access permissions."""
         response = execute_cypher(
