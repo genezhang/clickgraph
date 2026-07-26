@@ -346,11 +346,19 @@ pub fn generate_pattern_joins(
                     let left_id = own_table_id(&ctx.left_node, "FkEdgeJoin left")?;
                     let r_left_id =
                         helpers::resolve_identifier(&left_id, t.left_cte_name, plan_ctx);
-                    let r_from_id = Identifier::Single(helpers::resolve_column(
-                        from_id,
+                    // #672: composite-aware (mirrors the Right branch and the
+                    // self-ref path below). The old
+                    // `Identifier::Single(resolve_column(from_id, …))` stringified
+                    // a composite non-self-ref `from_id` into one bogus quoted
+                    // column; wrapping via `from_comma_separated` + per-column
+                    // resolution lets `add_identifier_condition` zip the node_id and
+                    // FK column sets into per-column equalities. Byte-identical for
+                    // single-column FKs.
+                    let r_from_id = helpers::resolve_identifier(
+                        &Identifier::from_comma_separated(from_id),
                         t.right_cte_name,
                         plan_ctx,
-                    ));
+                    );
                     // #632: a SELF-REFERENCING FK-edge (from_node == to_node, one
                     // physical table aliased twice) needs DIFFERENT columns on the
                     // two aliases: the FROM/child row carries the FK column
@@ -442,11 +450,23 @@ pub fn generate_pattern_joins(
                     let right_id = own_table_id(&ctx.right_node, "FkEdgeJoin right")?;
                     let r_right_id =
                         helpers::resolve_identifier(&right_id, t.right_cte_name, plan_ctx);
-                    let r_to_id = Identifier::Single(helpers::resolve_column(
-                        to_id,
+                    // #672: composite-aware. `to_id` is a comma-joined string; wrap
+                    // it as a full Identifier (single OR composite) and resolve each
+                    // column, mirroring the self-ref path above. The old
+                    // `Identifier::Single(resolve_column(to_id, …))` stringified a
+                    // composite `to_id` into one bogus quoted column
+                    // (`c."forum_region, forum_id"`); `add_identifier_condition`
+                    // then zips the node_id and FK column sets positionally into
+                    // per-column equalities (`f.region = c.forum_region AND
+                    // f.forum_id = c.forum_id`). Byte-identical for single-column
+                    // FKs. The author invariant (FK columns declared in the SAME
+                    // order as the target node_id) mirrors the composite self-ref
+                    // and SeparateTable FK-edge contracts.
+                    let r_to_id = helpers::resolve_identifier(
+                        &Identifier::from_comma_separated(to_id),
                         t.left_cte_name,
                         plan_ctx,
-                    ));
+                    );
                     let left_avail = already_available.contains(t.left_alias);
                     let right_avail = already_available.contains(t.right_alias);
 

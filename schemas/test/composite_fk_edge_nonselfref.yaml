@@ -1,0 +1,50 @@
+# Non-self-referencing composite FK-edge fixture (#672 part 2)
+#
+# An FK-edge is a relationship whose edge "table" IS one of the node tables —
+# the relationship is a foreign-key column on that node's row, no separate edge
+# table. Here the FK is a COMPOSITE column set pointing at a DIFFERENT node with
+# a composite node_id, exercising the non-self-ref composite FkEdgeJoin path
+# (join_generation.rs FkEdgeJoin Right branch — edge table == from_node table).
+#
+#   comments_composite
+#   +------------+---------+---------------+----------+
+#   | comment_id | content | forum_region  | forum_id |  <- composite FK to forums_composite
+#   +------------+---------+---------------+----------+
+#
+# Cypher pattern: (c:Comment)-[:IN_FORUM]->(f:Forum)
+# Expected SQL:   c.forum_region = f.region AND c.forum_id = f.forum_id
+
+name: composite_fk_edge_nonselfref
+version: "1.0"
+description: "Non-self-referencing composite FK-edge pattern (#672 part 2 fixture)"
+
+graph_schema:
+  nodes:
+    - label: Comment
+      database: db_composite_fk
+      table: comments_composite
+      node_id: comment_id
+      property_mappings:
+        comment_id: comment_id
+        content: content
+
+    - label: Forum
+      database: db_composite_fk
+      table: forums_composite
+      node_id: [region, forum_id]
+      property_mappings:
+        region: region
+        forum_id: forum_id
+        title: title
+
+  edges:
+    # FK-edge: edge table == Comment (from_node) table; the composite FK columns
+    # [forum_region, forum_id] live on the Comment row and point at Forum's
+    # composite PK [region, forum_id]. Non-self-referencing (Comment != Forum).
+    - type: IN_FORUM
+      database: db_composite_fk
+      table: comments_composite
+      from_id: comment_id
+      to_id: [forum_region, forum_id]
+      from_node: Comment
+      to_node: Forum
