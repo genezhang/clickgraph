@@ -6276,6 +6276,47 @@ async fn both_endpoints_outer_exists_with_inner_where_640() {
     );
 }
 
+/// #705: the shared exhaustive EXISTS predicate-property rewriter maps property
+/// refs nested inside a `CASE` (and other compound expressions), which the old
+/// partial matchers (PropertyAccess/Operator/ScalarFnCall/List only) left raw →
+/// a nonexistent DB column (loud Code 47). Covers BOTH the single-outer inner-node
+/// path (#587) and the both-outer path (#640 shape 3).
+#[tokio::test]
+async fn exists_predicate_maps_property_nested_in_case_705() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // Single-outer inner-node EXISTS: b.name inside a CASE → b.full_name.
+    let inner = normalize(
+        &render(
+            &schema,
+            "MATCH (a:User) WHERE a.user_id = 1 AND EXISTS { (a)-[:FOLLOWS]->(b) \
+             WHERE (CASE WHEN b.name = 'x' THEN 1 ELSE 0 END) = 1 } RETURN a.name",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        inner.contains("b.full_name") && !inner.contains("b.name"),
+        "#705: a CASE-nested inner property ref must map to the DB column:\n{inner}"
+    );
+
+    // Both-outer EXISTS: c.name inside a CASE → c.full_name.
+    let outer = normalize(
+        &render(
+            &schema,
+            "MATCH (a:User),(c:User) WHERE a.user_id = 1 AND c.user_id = 2 \
+             AND EXISTS { (a)-[:FOLLOWS]->(c) WHERE (CASE WHEN c.name = 'x' THEN 1 ELSE 0 END) = 1 } \
+             RETURN a.name",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        outer.contains("c.full_name") && !outer.contains("c.name"),
+        "#705: a CASE-nested outer property ref must map to the DB column:\n{outer}"
+    );
+}
+
 /// Regression test: `EXISTS { pattern }` whose correlated variable was bound
 /// BEFORE a `WITH` barrier — i.e. the variable lives in a CTE by the time the
 /// EXISTS subquery is rendered — must correlate against the variable's
