@@ -201,6 +201,21 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-26: **#683 residual 1 — denorm anchor count(a)** (P-1 bug lane, #685,
+  `f8a69ad7`) — `count(a)` on a denorm OPTIONAL-VLP anchor rendered `count(a.code)`
+  (logical node_id) but the `__denorm_scan_a` CTE exposes physical `origin_code` →
+  Code 47. The ANCHOR sibling of #659 (which fixed the VLP-endpoint variant); the
+  earlier investigation was blocked because the WITH-path anchor-id helper's
+  traversal excludes VLP. Fix: extend #644's `rewrite_denorm_optional_vlp_anchor_scan`
+  (which already computes the anchor physical id `from_id_col` + rewrites the VLP
+  JOIN key) to mirror the `(anchor_alias, logical_id) → physical_id` rewrite across
+  SELECT/GROUP BY/HAVING/ORDER BY, via the exhaustive `map_render_expr` (§5 walker
+  discipline). ALL #644 guards reused → end-anchored/reversed, composite,
+  anchor-gate, chained-VLP stay loud unchanged. Adversarial review 0 blockers
+  (guard chain airtight + no over-fire, main-vs-PR differential). +1 curated + 2
+  corpus goldens; no existing golden flipped. Residual 2 (composite-VLP malformed
+  SQL, #604/#605/#627 family) stays open under #683.
+
 - 2026-07-26: **#659 VLP count(<endpoint>) endpoint-id resolution** (P-1 bug lane,
   #682, `2a2d900f`) — `count(b)` over a VLP endpoint rendered `count(vt0.end_code)`
   (a column the CTE never projects → Code 47). Root: `count(b)` normalizes to
