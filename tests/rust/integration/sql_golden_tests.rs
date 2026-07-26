@@ -13991,9 +13991,8 @@ mod vlp_multi_table_label_family_557_558_559 {
     /// self-consistent `vlp_a_b_2` CTE.
     ///
     /// Scope: this covers the single-CTE recursive-VLP shape (#618's repro).
-    /// Multi-sub-CTE VLP shapes (shortestPath/BFS `_bfs`/`_recon`/`_inner`) still
-    /// collide on the DERIVED sub-names in both arms — pre-existing on main,
-    /// tracked in #642.
+    /// Multi-sub-CTE VLP shapes (shortestPath/BFS `_inner`/`_bfs`/`_recon`) are
+    /// handled by #642 (the sibling test below), which renames the derived family.
     #[tokio::test]
     async fn vlp_in_both_union_arms_renames_second_cte_definition_and_selfref_618() {
         let schema = load_schema(SchemaId::Standard.yaml_path());
@@ -14042,6 +14041,60 @@ mod vlp_multi_table_label_family_557_558_559 {
         assert!(
             sql.contains("start_node.user_id = 6") && sql.contains("start_node.user_id = 5"),
             "#618: both per-arm start filters (user 6 and user 5) must survive: {sql}"
+        );
+    }
+
+    /// #642: a top-level Cypher UNION with a MULTI-SUB-CTE VLP (shortestPath, whose
+    /// CTE is built from a `vlp_a_b_inner` recursive body + a `vlp_a_b` ROW_NUMBER
+    /// dedup wrapper, all in ONE RawSql blob) in BOTH arms reusing aliases `a`/`b`.
+    /// #618 renamed only the OUTER `vlp_a_b`→`vlp_a_b_2` and its FROM/self-refs; the
+    /// DERIVED `vlp_a_b_inner` stayed, so the second arm re-defined it → Code 179.
+    /// The dedup now discovers the derived family (`vlp_a_b_inner`) and renames it
+    /// with the base (`vlp_a_b_2_inner`), rewriting its header, self-ref, and the
+    /// wrapper's cross-reference.
+    #[tokio::test]
+    async fn vlp_multi_sub_cte_in_both_union_arms_renames_derived_family_642() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH p = shortestPath((a:User)-[:FOLLOWS*1..3]->(b:User)) WHERE a.user_id = 6 \
+             RETURN length(p) AS l \
+             UNION ALL \
+             MATCH p = shortestPath((a:User)-[:FOLLOWS*1..3]->(b:User)) WHERE a.user_id = 5 \
+             RETURN length(p) AS l",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        // The derived sub-CTE must be defined exactly once per name — no duplicate
+        // `vlp_a_b_inner AS (` (the Code 179 trigger).
+        assert_eq!(
+            sql.matches("vlp_a_b_inner AS (").count(),
+            1,
+            "#642: the derived sub-CTE `vlp_a_b_inner` must be defined exactly once \
+             (no duplicate → Code 179): {sql}"
+        );
+        // The second arm's derived family is renamed in lock-step with its base.
+        assert!(
+            sql.contains("vlp_a_b_2_inner AS (") && sql.contains("vlp_a_b_2 AS ("),
+            "#642: the second arm's derived sub-CTE must be renamed to \
+             `vlp_a_b_2_inner` alongside `vlp_a_b_2`: {sql}"
+        );
+        // The renamed inner's recursive self-ref points at ITSELF, and the renamed
+        // outer wrapper references the renamed inner (no cross-arm dangling ref).
+        assert!(
+            sql.contains("FROM vlp_a_b_2_inner vp"),
+            "#642: renamed inner's self-reference must be rewritten: {sql}"
+        );
+        assert!(
+            sql.matches("FROM vlp_a_b_inner").count() >= 1
+                && sql.matches("FROM vlp_a_b_2_inner").count() >= 1,
+            "#642: each arm's wrapper must reference its OWN inner CTE: {sql}"
+        );
+        // Both per-arm start filters survive.
+        assert!(
+            sql.contains("start_node.user_id = 6") && sql.contains("start_node.user_id = 5"),
+            "#642: both per-arm start filters must survive the family rename: {sql}"
         );
     }
 }
