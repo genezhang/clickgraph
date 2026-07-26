@@ -648,6 +648,69 @@ pub(super) fn rewrite_denorm_optional_vlp_anchor_scan(
         from_ref.source = std::sync::Arc::new(LogicalPlan::Empty);
         from_ref.use_final = false;
     }
+
+    // #683: the anchor's own aggregate/projection may still reference the LOGICAL
+    // node id (`a.code`) — `count(a)` normalises (projection_tagging) to
+    // `count(a.<node_id.columns().first()>)` = `count(a.code)`, which the
+    // `__denorm_scan_{alias}` CTE never projects (it exposes the FROM-role
+    // physical `origin_code`). The JOIN-key rewrite above already mapped the join
+    // operand; mirror it across the SELECT / GROUP BY / HAVING / ORDER BY so the
+    // anchor's logical-id references resolve to the same physical column. Scoped
+    // to `(anchor_alias, logical_id)` only, so already-physical refs
+    // (`a.origin_code`) and non-id properties (`a.city` → `a.origin_city`, already
+    // resolved upstream) are untouched.
+    for item in render_plan.select.items.iter_mut() {
+        rewrite_anchor_logical_id_to_physical(
+            &mut item.expression,
+            &anchor_alias,
+            &logical_id,
+            from_id_col,
+        );
+    }
+    for expr in render_plan.group_by.0.iter_mut() {
+        rewrite_anchor_logical_id_to_physical(expr, &anchor_alias, &logical_id, from_id_col);
+    }
+    if let Some(having) = render_plan.having_clause.as_mut() {
+        rewrite_anchor_logical_id_to_physical(having, &anchor_alias, &logical_id, from_id_col);
+    }
+    for item in render_plan.order_by.0.iter_mut() {
+        rewrite_anchor_logical_id_to_physical(
+            &mut item.expression,
+            &anchor_alias,
+            &logical_id,
+            from_id_col,
+        );
+    }
+}
+
+/// #683: rewrite every `<anchor_alias>.<logical_id>` PropertyAccess in `expr` to
+/// `<anchor_alias>.<physical_id>`. Used by `rewrite_denorm_optional_vlp_anchor_scan`
+/// to align the anchor's logical-id references (e.g. the `count(a.code)` a bare
+/// `count(a)` normalises to) with the `__denorm_scan_{alias}` CTE's physical id
+/// column. Routed through the EXHAUSTIVE `map_render_expr` (§5 walker discipline)
+/// so every wrapper variant (incl. ArraySubscript/Reduce/Map) is covered — a new
+/// `RenderExpr` variant fails to compile rather than silently skipping a rewrite.
+fn rewrite_anchor_logical_id_to_physical(
+    expr: &mut RenderExpr,
+    anchor_alias: &str,
+    logical_id: &str,
+    physical_id: &str,
+) {
+    let mut f = |e: &RenderExpr| -> crate::render_plan::render_expr::RenderRewrite {
+        use crate::render_plan::render_expr::RenderRewrite;
+        if let RenderExpr::PropertyAccessExp(pa) = e {
+            if pa.table_alias.0 == anchor_alias
+                && matches!(&pa.column, PropertyValue::Column(c) if c == logical_id)
+            {
+                return RenderRewrite::Replace(RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: pa.table_alias.clone(),
+                    column: PropertyValue::Column(physical_id.to_string()),
+                }));
+            }
+        }
+        RenderRewrite::Recurse
+    };
+    *expr = crate::render_plan::render_expr::map_render_expr(expr, &mut f);
 }
 
 /// #644 helper: find the single OPTIONAL variable-length GraphRel in `plan`
