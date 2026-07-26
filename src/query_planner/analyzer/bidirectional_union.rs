@@ -944,7 +944,9 @@ fn count_undirected_edges(plan: &Arc<LogicalPlan>) -> usize {
 ///    On a DENORMALIZED schema they then fail loud downstream via #590's render
 ///    guard; on standard/FK-edge/composite schemas that guard does NOT fire, so
 ///    they simply RENDER (some remain silently single-direction — a pre-existing
-///    gap tracked in #641, deliberately NOT changed here). Either way they must
+///    gap for the INDEPENDENT-optionals-over-CartesianProduct class, distinct from
+///    the shared-node CHAIN holes #641 closed; still open here, deliberately NOT
+///    changed). Either way they must
 ///    NOT reach the direction split, which would re-declare an anchor alias and
 ///    emit invalid SQL (ClickHouse Code 179).
 ///    `has_cartesian_optional_nested_undirected_edge` is true for this class.
