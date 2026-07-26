@@ -965,6 +965,20 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
     }
 }
 
+/// Render `size((pattern))`: a correlated `COUNT(*)` subquery wrapped in
+/// `coalesce(..., 0)` (decorrelation turns the scalar subquery into a LEFT JOIN,
+/// so an outer row with zero matches yields NULL rather than 0; `size()` must
+/// return 0 there — #599). This is the single source of the `PatternCount` SQL
+/// string: the `TryFrom<LogicalExpr>` bake site calls it (behind `?`) to fill
+/// the validated `PatternCount::sql` cache. `pub(crate)` so a later slice (#613)
+/// can re-render from the carried `pattern` after rewriting it.
+pub(crate) fn render_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBuildError> {
+    Ok(format!(
+        "coalesce({}, 0)",
+        generate_pattern_count_sql(pattern)?
+    ))
+}
+
 /// Generate NOT EXISTS SQL for a PathPattern (negative pattern matching / anti-join)
 ///
 /// For `NOT (a)-[:REL]-(b)` pattern, generates:
@@ -1197,7 +1211,8 @@ pub enum RenderExpr {
     /// Used in duration({days: 5}), point({x: 1, y: 2}), etc.
     MapLiteral(Vec<(String, RenderExpr)>),
 
-    /// Pattern count: pre-rendered SQL for `size((n)-[:REL]->())`
+    /// Pattern count for `size((n)-[:REL]->())` — carries the structural
+    /// `pattern` plus a validated SQL cache (see [`PatternCount`]).
     PatternCount(PatternCount),
 
     /// Array subscript: `array[index]`
@@ -1241,9 +1256,11 @@ pub enum RenderRewrite {
 /// DESCENT POLICY: recurses into value-carrying wrappers only. It does NOT
 /// descend into `InSubquery`/`ExistsSubquery` (a correlated subquery owns a
 /// separate FROM/alias scope — blindly rewriting into it is a different, riskier
-/// operation) nor `PatternCount` (pre-rendered SQL) nor `CteEntityRef` — those
-/// are cloned, matching every current caller's intent. A rewriter that DOES want
-/// to enter a subquery must handle it explicitly in `f` before returning Recurse.
+/// operation) nor `PatternCount` (carries a structural `pattern` + validated SQL
+/// cache; not descended until #613 makes rewriters recurse into the pattern) nor
+/// `CteEntityRef` — those are cloned, matching every current caller's intent. A
+/// rewriter that DOES want to enter a subquery must handle it explicitly in `f`
+/// before returning Recurse.
 pub fn map_render_expr<F>(expr: &RenderExpr, f: &mut F) -> RenderExpr
 where
     F: FnMut(&RenderExpr) -> RenderRewrite,
@@ -1316,8 +1333,9 @@ where
         },
 
         // Leaves + deliberately-not-descended nodes (subqueries own a separate
-        // scope; PatternCount is pre-rendered SQL). NO `_` catch-all — every
-        // variant is named so a new one forces a compile error here.
+        // scope; PatternCount carries a pattern + validated SQL cache, not
+        // descended until #613). NO `_` catch-all — every variant is named so a
+        // new one forces a compile error here.
         RenderExpr::PropertyAccessExp(_)
         | RenderExpr::Literal(_)
         | RenderExpr::Raw(_)
@@ -1348,11 +1366,21 @@ pub struct CteEntityRef {
     pub columns: Vec<String>,
 }
 
-/// Pattern count for size() on patterns
-/// Contains pre-rendered SQL for a correlated COUNT(*) subquery
+/// Pattern count for `size()` on patterns.
+///
+/// Carries the structural `pattern` (the source of truth) alongside a `sql`
+/// cache that is rendered *and validated* once at `LogicalExpr` → `RenderExpr`
+/// conversion via [`render_pattern_count_sql`]. Today every consumer reads the
+/// `sql` cache; the `pattern` is retained so a later slice (#613) can make the
+/// expression rewriters recurse into it. Until then the rewriters still SKIP
+/// this variant, so the cache stays authoritative and generation is unaffected
+/// by scope rewriting.
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct PatternCount {
-    /// Pre-rendered SQL for the pattern count subquery
+    /// Structural pattern being counted — source of truth for the `sql` cache.
+    pub pattern: PathPattern,
+    /// Validated pre-rendered SQL for the pattern-count subquery
+    /// (`coalesce(<count-subquery>, 0)`), cached from `pattern` at conversion.
     pub sql: String,
     /// #614: outer-scope aliases the correlated subquery references (the
     /// pattern's correlation anchors — the start node for pattern counts),
@@ -1691,14 +1719,17 @@ impl TryFrom<LogicalExpr> for RenderExpr {
                 })
             }
             LogicalExpr::PatternCount(pc) => {
-                // Generate the pattern count SQL (correlated COUNT(*) subquery).
-                // Decorrelation turns the scalar subquery into a LEFT JOIN, so an
-                // outer row with zero pattern matches yields NULL rather than 0;
-                // size() must return 0 there (#599). coalesce is dialect-neutral.
+                // Render + validate the pattern-count SQL once and cache it (see
+                // `render_pattern_count_sql`; coalesce → 0 on zero matches, #599).
+                // The `?` stays HERE so an invalid pattern (bare node,
+                // shortestPath, missing schema) aborts render at the same point
+                // as before rather than surfacing later at the infallible emit.
+                // The structural `pattern` is carried forward for #613.
                 let correlated_aliases = pattern_count_correlated_aliases(&pc.pattern);
-                let sql = generate_pattern_count_sql(&pc.pattern)?;
+                let sql = render_pattern_count_sql(&pc.pattern)?;
                 RenderExpr::PatternCount(PatternCount {
-                    sql: format!("coalesce({}, 0)", sql),
+                    pattern: pc.pattern.clone(),
+                    sql,
                     correlated_aliases,
                 })
             }

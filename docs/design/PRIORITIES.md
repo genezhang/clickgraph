@@ -116,7 +116,7 @@ string-emitting group (31 fns, `render_plan/pattern_comprehension_sql.rs`, 2,629
 extracted verbatim, `pub(crate)` re-exports, byte-identical goldens + corpus, ratchet
 net-zero; D7-rest deferred. **Next: P2.3 clause_extractors move.**
 
-### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1+F1b/#602+F2a done; F2b+ and F1b residue open)
+### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1+F1b/#602+F2a+F3 done; F2b/F4/F5 and F1b residue open)
 **Concrete staged plan written: `docs/design/FORWARD_RESOLUTION_PLAN.md`.** It
 supersedes the stale `render_plan/AGENTS.md` §10 premise: the `reverse_mapping`
 field §10 says to delete was already removed in #115 (Feb 2026); the debt forked
@@ -192,6 +192,21 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-25: **P-4 F3** — first Phase-C slice. Added structural `pattern: PathPattern`
+  to `render_expr::PatternCount` (backs `size((a)-[:R]->(b))`) alongside the now
+  validated-`sql` cache, so a later slice (#613) can make rewriters recurse into it.
+  Byte-identical (variant **C1** — carry + cache): scoped DOWN from the plan's
+  "drop `sql`, render at emit" because that flip isn't byte-identical and has zero
+  payoff until a rewriter mutates the pattern (= #613). Extracted `render_pattern_count_sql`
+  as the single source of the `coalesce(...,0)` string; kept the `?` at the bake site so
+  invalid patterns still abort render at the same boundary (the infallible emit never
+  panics — the error-path crux). All 6 `pc.sql` consumers unchanged. Corpus + 220 goldens
+  byte-identical; 2,156 tests; clippy clean; ratchet net-zero; adversarial review 0 real
+  findings. Branch `refactor/f3-patterncount-carry-pattern`.
+- 2026-07-25: **P-4 F2c BLOCKED (docs, #665)** — recorded that F2c is NOT byte-identical:
+  the "also add DB column" reverse arms are load-bearing for whole-node expansion (18
+  goldens; property surfaces under both Cypher and DB-column names). Needs its own design
+  cycle, not a pure deletion.
 - 2026-07-25: **P-4 F2a** — deleted the M2 legacy CTE-property resolution
   mechanism (the task-local `cte_property_mappings` field, its four accessors
   `set_/get_/get_all_/clear_`, both producers — the deep-merge

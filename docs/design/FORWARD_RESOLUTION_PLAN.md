@@ -466,6 +466,27 @@ Each is independent and byte-identical (same SQL, built later from structure):
 `to_sql()` at render. Rewriters recurse into it. Corpus byte-identical.
 Fixes the size()-pattern member of the residue (candidate **#613**).
 
+> **✅ F3 outcome (2026-07-25, landed) — byte-identical (C1, partial).** Scoped down
+> from "drop `sql`, render at emit" to **carry `pattern` + keep a validated `sql`
+> cache** (variant C1), because the full flip is NOT byte-identical and has zero
+> payoff until a rewriter actually mutates the pattern (which is #613 itself).
+> Delivered: added `pattern: PathPattern` to `render_expr::PatternCount` alongside
+> the (now validated-cache) `sql`; extracted `pub(crate) render_pattern_count_sql`
+> as the single source of the `coalesce(<subquery>,0)` string; the `TryFrom` bake
+> site keeps the `?` (invalid patterns — bare node / shortestPath / missing schema
+> — still abort render at the same `Result` boundary, so the infallible emit never
+> panics). All 6 `pc.sql` consumers (2 emit + 4 pre-render optimizer text-scans)
+> unchanged; `correlated_aliases` still structurally computed so the `:2213` guard
+> takes the same branch. **Error-path crux (verified):** `RenderExpr::to_sql`
+> returns `String` (infallible) but `generate_pattern_count_sql` returns `Result`
+> called in exactly one place (bake site) — deferring generation into emit would
+> force a panic/marker on erroring inputs, so C2 (drop the cache) was rejected.
+> Corpus + 220 goldens byte-identical; 2,156 tests; clippy clean; ratchet net-zero;
+> adversarial review 0 real findings. Branch `refactor/f3-patterncount-carry-pattern`.
+> **Still #613's job (out of scope here):** making rewriters recurse into `pattern`,
+> and flipping emit to render from the (rewritten) `pattern` instead of the cache —
+> that flip is where the intentional SQL diff lives.
+
 **F4 — `ExistsSubquery` structured.** Same treatment via `generate_exists_sql`.
 Candidate **#595**.
 
