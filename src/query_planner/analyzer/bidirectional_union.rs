@@ -519,21 +519,26 @@ fn transform_bidirectional(
 
         LogicalPlan::Union(union) => {
             let mut any_transformed = false;
-            let new_inputs: Vec<Arc<LogicalPlan>> = union
-                .inputs
-                .iter()
-                .map(|input| {
-                    let result = transform_bidirectional(input, plan_ctx, graph_schema);
-                    match result {
-                        Ok(Transformed::Yes(new_plan)) => {
-                            any_transformed = true;
-                            new_plan
-                        }
-                        Ok(Transformed::No(plan)) => plan,
-                        Err(_) => input.clone(), // On error, keep original
+            let mut new_inputs: Vec<Arc<LogicalPlan>> = Vec::with_capacity(union.inputs.len());
+            for input in &union.inputs {
+                let result = transform_bidirectional(input, plan_ctx, graph_schema);
+                match result {
+                    Ok(Transformed::Yes(new_plan)) => {
+                        any_transformed = true;
+                        new_inputs.push(new_plan);
                     }
-                })
-                .collect();
+                    Ok(Transformed::No(plan)) => new_inputs.push(plan),
+                    // #641 Hole 1: UnsupportedPattern is FATAL by contract (see its
+                    // doc comment + the analyzer/mod.rs call sites that propagate it).
+                    // A chained-undirected-optional inside a UNION branch must fail
+                    // loud, exactly as it does at top level — swallowing it here would
+                    // silently render single-direction (reverse join dropped), the same
+                    // silent-wrong #589 guards against, just unreached. Other errors
+                    // stay tolerated (keep the original branch) as before.
+                    Err(e @ AnalyzerError::UnsupportedPattern { .. }) => return Err(e),
+                    Err(_) => new_inputs.push(input.clone()), // On error, keep original
+                }
+            }
 
             if any_transformed {
                 Ok(Transformed::Yes(Arc::new(LogicalPlan::Union(Union {
@@ -956,12 +961,21 @@ fn count_undirected_edges(plan: &Arc<LogicalPlan>) -> usize {
 fn has_chained_optional_nested_undirected_edge(plan: &Arc<LogicalPlan>) -> bool {
     match plan.as_ref() {
         LogicalPlan::GraphRel(gr) => {
-            (gr.direction == Direction::Either
-                && gr.is_optional == Some(true)
+            // #589/#641 Hole 2: the silent-drop risk exists whenever an UNDIRECTED
+            // optional hop is chained onto another optional hop — REGARDLESS of which
+            // of the two (outer or nested-inner) carries the undirected orientation.
+            // The original gate keyed only on the OUTER hop being `Direction::Either`,
+            // so `OPTIONAL (a)-[:R]-(b) OPTIONAL (b)-[:R]->(c)` (undirected INNER,
+            // directed OUTER) slipped through and rendered single-direction. Fire the
+            // loud gate when the outer + a nested optional inner are chained (junction
+            // not a CartesianProduct — that is outcome #2) AND EITHER hop is undirected.
+            (gr.is_optional == Some(true)
                 && matches!(
                     gr.left.as_ref(),
                     LogicalPlan::GraphRel(inner)
                         if inner.is_optional == Some(true)
+                            && (gr.direction == Direction::Either
+                                || inner.direction == Direction::Either)
                             && !nested_optional_junction_is_cartesian(inner)
                 ))
                 || has_chained_optional_nested_undirected_edge(&gr.left)
@@ -2195,6 +2209,122 @@ mod tests {
         assert!(
             has_cartesian_optional_nested_undirected_edge(&plan),
             "#590: independent optionals over a CartesianProduct must trip the cartesian predicate (→ Transformed::No, preserving the pre-existing render path)"
+        );
+    }
+
+    /// #641 Hole 2: the loud gate must be orientation-SYMMETRIC. An undirected
+    /// optional hop chained onto a DIRECTED optional hop is just as silent-wrong as
+    /// the all-undirected chain — the undirected hop's reverse orientation is still
+    /// dropped by a single-direction render. The original gate keyed only on the
+    /// OUTER hop being `Direction::Either`, so `OPTIONAL (a)-[:R]-(b) OPTIONAL
+    /// (b)-[:R]->(c)` (undirected INNER, directed OUTER) slipped through. Both
+    /// mixed orientations must now trip the gate.
+    #[test]
+    fn test_mixed_orientation_chained_optional_trips_gate_641_hole2() {
+        // undirected INNER (a)-[:R]-(b), directed OUTER (b)-[:R]->(c).
+        let node_a = make_test_node("users", "a", "User");
+        let node_b = make_test_node("users", "b", "User");
+        let node_c = make_test_node("users", "c", "User");
+        let mut inner = make_test_graph_rel(
+            node_a,
+            node_b,
+            "r1",
+            "follows",
+            "a",
+            "b",
+            Direction::Either,
+            "FOLLOWS",
+        );
+        inner.is_optional = Some(true);
+        let inner_plan = Arc::new(LogicalPlan::GraphRel(inner));
+        let mut outer = make_test_graph_rel(
+            inner_plan,
+            node_c,
+            "r2",
+            "follows",
+            "b",
+            "c",
+            Direction::Outgoing,
+            "FOLLOWS",
+        );
+        outer.is_optional = Some(true);
+        let plan = Arc::new(LogicalPlan::GraphRel(outer));
+        assert!(
+            has_chained_optional_nested_undirected_edge(&plan),
+            "#641 Hole 2: undirected INNER + directed OUTER chained optionals must trip the gate"
+        );
+
+        // Mirror: directed INNER (a)-[:R]->(b), undirected OUTER (b)-[:R]-(c) —
+        // already tripped pre-#641 (outer is Either), must still trip.
+        let node_a2 = make_test_node("users", "a", "User");
+        let node_b2 = make_test_node("users", "b", "User");
+        let node_c2 = make_test_node("users", "c", "User");
+        let mut inner2 = make_test_graph_rel(
+            node_a2,
+            node_b2,
+            "r1",
+            "follows",
+            "a",
+            "b",
+            Direction::Outgoing,
+            "FOLLOWS",
+        );
+        inner2.is_optional = Some(true);
+        let inner2_plan = Arc::new(LogicalPlan::GraphRel(inner2));
+        let mut outer2 = make_test_graph_rel(
+            inner2_plan,
+            node_c2,
+            "r2",
+            "follows",
+            "b",
+            "c",
+            Direction::Either,
+            "FOLLOWS",
+        );
+        outer2.is_optional = Some(true);
+        let plan2 = Arc::new(LogicalPlan::GraphRel(outer2));
+        assert!(
+            has_chained_optional_nested_undirected_edge(&plan2),
+            "#641 Hole 2: directed INNER + undirected OUTER chained optionals must trip the gate"
+        );
+    }
+
+    /// #641 Hole 2 boundary: a FULLY-DIRECTED chained optional pair must NOT trip
+    /// the gate (no undirected hop → no reverse-direction rows to drop → the
+    /// direction split is not even needed). Guards against the widened predicate
+    /// over-firing on ordinary directed OPTIONAL chains.
+    #[test]
+    fn test_all_directed_chained_optional_does_not_trip_gate_641() {
+        let node_a = make_test_node("users", "a", "User");
+        let node_b = make_test_node("users", "b", "User");
+        let node_c = make_test_node("users", "c", "User");
+        let mut inner = make_test_graph_rel(
+            node_a,
+            node_b,
+            "r1",
+            "follows",
+            "a",
+            "b",
+            Direction::Outgoing,
+            "FOLLOWS",
+        );
+        inner.is_optional = Some(true);
+        let inner_plan = Arc::new(LogicalPlan::GraphRel(inner));
+        let mut outer = make_test_graph_rel(
+            inner_plan,
+            node_c,
+            "r2",
+            "follows",
+            "b",
+            "c",
+            Direction::Outgoing,
+            "FOLLOWS",
+        );
+        outer.is_optional = Some(true);
+        let plan = Arc::new(LogicalPlan::GraphRel(outer));
+        assert!(
+            !has_chained_optional_nested_undirected_edge(&plan),
+            "#641: an all-directed chained optional pair has no undirected hop and must NOT trip the loud gate"
         );
     }
 
