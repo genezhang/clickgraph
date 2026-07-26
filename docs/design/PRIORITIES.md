@@ -192,6 +192,22 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-25: **#649 leading UNWIND** (P-1 bug lane, `fix/649-leading-unwind`,
+  PR #669) — `UNWIND [...] AS x MATCH (n) WHERE n.p = x RETURN n` (UNWIND as the
+  first clause) was rejected; pre-#516 it "passed" only by silently dropping
+  everything from MATCH on. `parse_query_with_nom` now parses leading UNWINDs
+  before the reading clauses and threads them (leading-first) into the same flat
+  `unwind_clauses` list the trailing form uses, so the planner builds the
+  identical `Unwind(Match(...))` plan → byte-identical SQL to `MATCH ... UNWIND`.
+  NOT a new `ReadingClause::Unwind` variant (an order-preserving Unwind-wraps-
+  Match plan was prototyped and dropped the ARRAY JOIN — renderer only emits it
+  when Unwind wraps Match). Scoped diff: corpus `test_unwind_list` .err→.sql
+  (ARRAY JOIN / LATERAL VIEW), only transition in the 517-golden sweep. Removed
+  matrix strict-xfail `test_unwind_with_match`; ldbc_bi_4 now PARSES and fails
+  loud `UnionColumnMismatch` (silent-drop → loud, union-arm alignment deferred).
+  +3 parser unit tests. Adversarial worktree review: 0 blockers, 2 nits (one
+  "keep as-is"). Gates: corpus/sql_golden/1609+513/clippy/ratchet/fmt.
+
 - 2026-07-25: **P-4 F4** — second Phase-C slice, mirrors F3. Added structural
   `subplan: Arc<LogicalPlan>` to `render_expr::ExistsSubquery` (backs `EXISTS { pattern }`)
   alongside the now validated-`sql` cache, so a later slice (#595/#613) can make rewriters

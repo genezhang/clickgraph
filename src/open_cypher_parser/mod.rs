@@ -209,7 +209,10 @@ pub fn parse_query_with_nom(
     // `MATCH ... UNWIND ...` form (ARRAY JOIN over the matched rows, then WHERE).
     // For filter-correlated queries (`UNWIND xs AS x MATCH (n) WHERE n.p = x`)
     // this is semantically exact. Shapes where the unwound variable is itself a
-    // pattern node still surface downstream rather than being silently mis-planned.
+    // pattern node inherit the existing trailing-UNWIND planner behavior verbatim
+    // (byte-identical to `MATCH ... UNWIND ...`); this parser change neither fixes
+    // nor worsens those — e.g. LDBC bi-4 now parses and fails loud downstream
+    // instead of being silently truncated at the top-level parse.
     let (input, leading_unwind_clauses): (&str, Vec<UnwindClause>) =
         many0(unwind_clause::parse_unwind_clause).parse(input)?;
 
