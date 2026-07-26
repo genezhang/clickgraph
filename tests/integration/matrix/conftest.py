@@ -877,7 +877,12 @@ RETURN a, b, d LIMIT 10"""
     
     def unwind_with_match(self) -> str:
         label = self._get_label()
-        prop, _ = self._get_node_prop(label)
+        # `sample_node_ids` are INTEGERS, so compare against an integer property
+        # (`_get_id_prop`), not an arbitrary `_get_node_prop` which may pick a
+        # String column (e.g. `n.country`/`n.name`) — that made ClickHouse 500 on
+        # a String-vs-Int comparison. The pattern under test is leading-UNWIND
+        # before MATCH (#649), not the property type.
+        prop, _ = self._get_id_prop(label)
         ids = self.schema.sample_node_ids.get(label, [1, 2, 3])
         return f"UNWIND {ids} AS id MATCH (n:{label}) WHERE n.{prop} = id RETURN n"
     
