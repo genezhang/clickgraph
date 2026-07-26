@@ -2431,19 +2431,33 @@ impl JoinBuilder for LogicalPlan {
                                 });
 
                             // Get shared node's ID column.
-                            // #636: when inner_rel.left is itself a GraphRel (a
-                            // sibling shared-anchor branch buried deeper, as in a
-                            // 3+-way comma pattern with an Incoming branch flipping
-                            // the shared node onto the outer's RIGHT), the shared
-                            // anchor `p` sits at the START (deepest left) of that
-                            // subchain — NOT at inner_rel.left's end. `extract_id_column`
-                            // walks a GraphRel's `right`, so it would grab a sibling
-                            // branch's END node id (e.g. a Post's `post_id`) — the
-                            // wrong anchor (#636 Code 47). Walk to the START node
-                            // instead, mirroring the #585 left-path resolution.
-                            let shared_left_is_nested =
-                                matches!(inner_rel.left.as_ref(), LogicalPlan::GraphRel(_));
-                            let shared_id_col = if shared_left_is_nested {
+                            // #636: when inner_rel.left is itself a GraphRel that
+                            // fans out from the SAME shared anchor (its
+                            // left_connection == the shared alias — a contiguous
+                            // trailing-Incoming comma pattern, where all outgoing
+                            // branches precede the Incoming one that flipped the
+                            // shared node onto the outer's RIGHT), the shared anchor
+                            // `p` sits at the START (deepest left) of that subchain,
+                            // NOT at inner_rel.left's end. `extract_id_column` walks a
+                            // GraphRel's `right`, so it would grab a sibling branch's
+                            // END-node id (e.g. a Post's `post_id`) — the wrong anchor
+                            // (#636 Code 47). Walk to the START node instead.
+                            //
+                            // CRITICAL — this MUST be coupled to the part-2 recursion
+                            // gate below (the identical `left_inner.left_connection ==
+                            // shared_node_alias` test). Correcting the anchor column
+                            // WITHOUT also re-emitting the buried sibling branches
+                            // turns a loud Code 47 into a SILENT-wrong query (missing
+                            // joins) for INTERLEAVED out/in patterns, where the anchor
+                            // is fixable but the recursion can't reach the siblings.
+                            // Only take the START-node path when the recursion will
+                            // actually re-emit that subchain; otherwise fall through
+                            // to the old resolution so the shape stays LOUD.
+                            let shared_left_is_fanout = matches!(
+                                inner_rel.left.as_ref(),
+                                LogicalPlan::GraphRel(li) if li.left_connection == *shared_node_alias
+                            );
+                            let shared_id_col = if shared_left_is_fanout {
                                 extract_start_node_id_column(&inner_rel.left)
                             } else {
                                 extract_id_column(&inner_rel.left)
@@ -2456,7 +2470,7 @@ impl JoinBuilder for LogicalPlan {
                                 .unwrap_or_else(|| inner_rel.alias.clone());
 
                             // Resolve shared node's full Identifier from schema
-                            let shared_label_left = if shared_left_is_nested {
+                            let shared_label_left = if shared_left_is_fanout {
                                 extract_start_node_label(&inner_rel.left)
                             } else {
                                 extract_node_label_from_viewscan(&inner_rel.left)
