@@ -8102,6 +8102,59 @@ async fn union_three_arms_same_alias_per_arm_from_and_projection_593() {
     );
 }
 
+/// #595: a post-WITH EXISTS correlation inside a UNION arm must correlate on the
+/// arm's CTE column, not a raw base-table reference. The middle arm
+/// (`WITH a, count(*) AS c WHERE c > 0 WHERE EXISTS { (a)-[:FOLLOWS]->(y) }`)
+/// formerly baked `follower_id = a.user_id` — but by that arm's outer scope `a`
+/// is the CTE alias `a_c`, which exposes `p1_a_user_id`, not `user_id` → Code 47.
+/// Resolved as collateral by the EXISTS correlation-resolution (#587,
+/// `resolve_correlation_id_sql`) + carry-id-across-barrier work; this locks it.
+#[tokio::test]
+async fn post_with_exists_correlation_in_union_arm_resolves_cte_column_595() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH (a:User) RETURN a.name AS name \
+         UNION \
+         MATCH (a:User) WITH a, count(*) AS c WHERE c > 0 WHERE EXISTS { (a)-[:FOLLOWS]->(y) } \
+         RETURN a.name AS name \
+         UNION \
+         MATCH (a:User) WHERE EXISTS { (a)-[:FOLLOWS]->(z) } RETURN a.name AS name",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+
+    // The middle (post-WITH) arm's CTE must project the correlation id, and its
+    // EXISTS must correlate on that CTE column (a_c.p1_a_user_id), never raw a.user_id.
+    assert!(
+        sql.contains("a.user_id AS \"p1_a_user_id\""),
+        "#595: the WITH arm's CTE must project the correlation id p1_a_user_id: {sql}"
+    );
+    assert!(
+        sql.contains(
+            "EXISTS (SELECT 1 FROM social.user_follows_bench WHERE \
+             user_follows_bench.follower_id = a_c.p1_a_user_id)"
+        ),
+        "#595: the post-WITH arm's EXISTS must correlate on the CTE column \
+         a_c.p1_a_user_id, not raw a.user_id: {sql}"
+    );
+    // The `WHERE c > 0` on the aggregate becomes a HAVING (post-aggregate filter).
+    assert!(
+        sql.contains("HAVING c > 0"),
+        "#595: the post-aggregate WHERE c > 0 must render as HAVING: {sql}"
+    );
+    // The fresh-MATCH third arm legitimately correlates on the base-table a.user_id
+    // (there `a` IS social.users_bench AS a), so that form is correct there.
+    assert!(
+        sql.contains(
+            "EXISTS (SELECT 1 FROM social.user_follows_bench WHERE \
+             user_follows_bench.follower_id = a.user_id)"
+        ),
+        "#595: the fresh-MATCH arm's EXISTS correctly correlates on the base \
+         table a.user_id: {sql}"
+    );
+}
+
 /// P-4 F1 (forward-resolution): a scalar / renamed-property WITH export
 /// (`WITH u.user_id AS id`) whose alias reference (`id.id`) must resolve to the
 /// CTE's own column `id`, NOT be re-run through the render-site
