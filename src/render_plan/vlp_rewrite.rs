@@ -245,6 +245,88 @@ fn rewrite_expr_for_vlp_end_nodes(
     }
 }
 
+/// Pre-pass for the VLP WITH-item rewrite: rewrite any endpoint **id-property**
+/// PropertyAccess (`a.user_id` where `a` is a VLP endpoint whose id property is
+/// `user_id`) directly to the VLP CTE's authoritative id column (`t.start_id` /
+/// `t.end_id`), then mark it done by moving it off the endpoint alias.
+///
+/// Why this is needed (#620): the generic prefix rewriter below turns
+/// `a.user_id` into `t.start_user_id` by blindly prefixing the column name. But
+/// the VLP CTE names the id column `start_id`/`end_id`
+/// (`VLP_START_ID_COLUMN`/`VLP_END_ID_COLUMN`), never `start_{id_db_col}`, so the
+/// blind form references a column the CTE never projects → Code 47 at execution
+/// (e.g. `WITH a.user_id AS x` over an undirected VLP). Non-id properties are
+/// unaffected: the CTE does name them `start_{db_col}` (e.g. `start_name`), which
+/// the generic rewriter reproduces correctly.
+///
+/// `id_columns` maps a VLP endpoint Cypher alias (`a`, `b`) to its id Cypher
+/// property (`user_id`), built from the CTE metadata at the call site. After this
+/// pre-pass the id PropertyAccess sits on `vlp_from_alias` (not an endpoint alias
+/// in `mappings`), so the generic rewriter leaves it untouched.
+pub fn rewrite_vlp_id_property_columns(
+    expr: &mut RenderExpr,
+    mappings: &HashMap<String, String>,
+    id_columns: &HashMap<String, String>,
+    vlp_from_alias: &str,
+) {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop_access) => {
+            let alias = &prop_access.table_alias.0;
+            if let (Some(internal_alias), Some(id_prop)) =
+                (mappings.get(alias), id_columns.get(alias))
+            {
+                if prop_access.column.raw() == id_prop.as_str() {
+                    let id_col = if internal_alias.starts_with("start_") {
+                        crate::query_planner::join_context::VLP_START_ID_COLUMN
+                    } else if internal_alias.starts_with("end_") {
+                        crate::query_planner::join_context::VLP_END_ID_COLUMN
+                    } else {
+                        return;
+                    };
+                    prop_access.table_alias.0 = vlp_from_alias.to_string();
+                    prop_access.column = PropertyValue::Column(id_col.to_string());
+                }
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op_app) => {
+            for operand in &mut op_app.operands {
+                rewrite_vlp_id_property_columns(operand, mappings, id_columns, vlp_from_alias);
+            }
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            for arg in &mut func.args {
+                rewrite_vlp_id_property_columns(arg, mappings, id_columns, vlp_from_alias);
+            }
+        }
+        RenderExpr::AggregateFnCall(func) => {
+            for arg in &mut func.args {
+                rewrite_vlp_id_property_columns(arg, mappings, id_columns, vlp_from_alias);
+            }
+        }
+        RenderExpr::InSubquery(in_exp) => {
+            rewrite_vlp_id_property_columns(&mut in_exp.expr, mappings, id_columns, vlp_from_alias);
+        }
+        RenderExpr::Case(case_exp) => {
+            if let Some(scrutinee) = &mut case_exp.expr {
+                rewrite_vlp_id_property_columns(scrutinee, mappings, id_columns, vlp_from_alias);
+            }
+            for (when_expr, then_expr) in &mut case_exp.when_then {
+                rewrite_vlp_id_property_columns(when_expr, mappings, id_columns, vlp_from_alias);
+                rewrite_vlp_id_property_columns(then_expr, mappings, id_columns, vlp_from_alias);
+            }
+            if let Some(else_expr) = &mut case_exp.else_expr {
+                rewrite_vlp_id_property_columns(else_expr, mappings, id_columns, vlp_from_alias);
+            }
+        }
+        RenderExpr::List(items) => {
+            for item in items {
+                rewrite_vlp_id_property_columns(item, mappings, id_columns, vlp_from_alias);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Enhanced version that takes the FROM alias into account.
 /// For VLP CTEs, the FROM clause looks like: FROM vlp_a_b AS t
 /// So we need to use the alias (t) when rendering, and also add property prefixes (start_/end_).

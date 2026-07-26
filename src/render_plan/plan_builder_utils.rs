@@ -7714,6 +7714,26 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                                     if !db_to_cypher.is_empty() {
                                                                         translate_db_columns_to_cypher_properties(&mut expr, &db_to_cypher);
                                                                     }
+                                                                    // #620: rewrite endpoint id-property access
+                                                                    // (a.user_id) to the VLP CTE's authoritative id
+                                                                    // column (t.start_id/t.end_id) BEFORE the generic
+                                                                    // prefix rewrite, which would otherwise blindly
+                                                                    // build `start_user_id` (a column the CTE never
+                                                                    // projects → Code 47).
+                                                                    let mut id_columns: HashMap<String, String> = HashMap::new();
+                                                                    for col_meta in col_metadata {
+                                                                        if col_meta.is_id_column {
+                                                                            id_columns.insert(
+                                                                                col_meta.cypher_alias.clone(),
+                                                                                col_meta.cypher_property.clone(),
+                                                                            );
+                                                                        }
+                                                                    }
+                                                                    if !id_columns.is_empty() {
+                                                                        crate::render_plan::vlp_rewrite::rewrite_vlp_id_property_columns(
+                                                                            &mut expr, &mappings, &id_columns, from_alias,
+                                                                        );
+                                                                    }
                                                                     log::debug!("🔧 VLP WITH item rewrite: mappings={:?}, from_alias={}", mappings, from_alias);
                                                                     rewrite_render_expr_for_vlp_with_from_alias(&mut expr, &mappings, from_alias);
                                                                 }
