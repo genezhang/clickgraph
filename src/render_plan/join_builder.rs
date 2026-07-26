@@ -2430,9 +2430,25 @@ impl JoinBuilder for LogicalPlan {
                                     to_id: Identifier::Single("to_node_id".to_string()),
                                 });
 
-                            // Get shared node's ID column
-                            let shared_id_col = extract_id_column(&inner_rel.left)
-                                .unwrap_or_else(|| "id".to_string());
+                            // Get shared node's ID column.
+                            // #636: when inner_rel.left is itself a GraphRel (a
+                            // sibling shared-anchor branch buried deeper, as in a
+                            // 3+-way comma pattern with an Incoming branch flipping
+                            // the shared node onto the outer's RIGHT), the shared
+                            // anchor `p` sits at the START (deepest left) of that
+                            // subchain — NOT at inner_rel.left's end. `extract_id_column`
+                            // walks a GraphRel's `right`, so it would grab a sibling
+                            // branch's END node id (e.g. a Post's `post_id`) — the
+                            // wrong anchor (#636 Code 47). Walk to the START node
+                            // instead, mirroring the #585 left-path resolution.
+                            let shared_left_is_nested =
+                                matches!(inner_rel.left.as_ref(), LogicalPlan::GraphRel(_));
+                            let shared_id_col = if shared_left_is_nested {
+                                extract_start_node_id_column(&inner_rel.left)
+                            } else {
+                                extract_id_column(&inner_rel.left)
+                            }
+                            .unwrap_or_else(|| "id".to_string());
 
                             // JOIN 1: Relationship connecting to shared node (left)
                             // t1.from_id = f.id (since f = left_connection → from_id)
@@ -2440,8 +2456,11 @@ impl JoinBuilder for LogicalPlan {
                                 .unwrap_or_else(|| inner_rel.alias.clone());
 
                             // Resolve shared node's full Identifier from schema
-                            let shared_label_left =
-                                extract_node_label_from_viewscan(&inner_rel.left);
+                            let shared_label_left = if shared_left_is_nested {
+                                extract_start_node_label(&inner_rel.left)
+                            } else {
+                                extract_node_label_from_viewscan(&inner_rel.left)
+                            };
                             let shared_node_identifier: Identifier = shared_label_left
                                 .as_ref()
                                 .and_then(|lbl| schema.node_schema_opt(lbl))
@@ -2631,6 +2650,33 @@ impl JoinBuilder for LogicalPlan {
                                 non_shared_alias
                             );
                         } // end non_shared_is_rel_table else (materialize JOIN1/JOIN2)
+
+                        // #636: buried sibling shared-branches. When the shared
+                        // anchor is on this GraphRel's LEFT (shared_is_inner_left)
+                        // and `inner_rel.left` is itself a GraphRel that ALSO fans
+                        // out from the same shared anchor (its left_connection ==
+                        // the shared alias — a 3+-way comma pattern where an
+                        // Incoming branch flipped the shared node onto the outer's
+                        // RIGHT), those sibling branches hang off `inner_rel.left`.
+                        // The block above only descends `inner_rel.right`, so the
+                        // left subchain was silently dropped (missing t1/t2 joins).
+                        // Recurse into it: a left-deep shared chain is exactly the
+                        // shape the #585 left-path already resolves correctly,
+                        // anchoring every branch on the shared node's CTE id.
+                        if let LogicalPlan::GraphRel(left_inner) = inner_rel.left.as_ref() {
+                            if left_inner.left_connection == *shared_node_alias {
+                                log::debug!(
+                                    "🔍 #636: recursing into buried sibling shared-branches on inner_rel.left (alias={})",
+                                    left_inner.alias
+                                );
+                                let mut sibling_joins =
+                                    <LogicalPlan as JoinBuilder>::extract_joins(
+                                        &inner_rel.left,
+                                        schema,
+                                    )?;
+                                joins.append(&mut sibling_joins);
+                            }
+                        }
                     } else {
                         // Shared node doesn't match either inner connection - fallback to old behavior
                         log::debug!("⚠️ DEBUG: Shared node '{}' doesn't match inner connections - using fallback", shared_node_alias);
