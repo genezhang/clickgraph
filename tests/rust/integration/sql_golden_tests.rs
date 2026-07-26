@@ -2067,6 +2067,45 @@ async fn self_referencing_fk_edge_joins_child_fk_to_parent_pk_632() {
     }
 }
 
+/// #646 regression: a COMPOSITE-id self-referencing FK-edge must emit a
+/// multi-column equality join, not a malformed single quoted identifier.
+///
+/// Before the fix the self-ref FK-detection used `first_col(node_id)` and a
+/// string compare, so for `node_id: [region, object_id]` /
+/// `from_id: [parent_region, parent_id]` it emitted the bogus
+/// `child."parent_region, parent_id" = parent.region` (Code 47). The
+/// composite-aware fix compares the full column SETS (FK = the {from,to} side
+/// whose columns != node_id's) and emits the zipped tuple equality
+/// `child.parent_region = parent.region AND child.parent_id = parent.object_id`.
+/// Byte-identical for single-column self-ref (see `..._632`).
+#[tokio::test]
+async fn composite_self_referencing_fk_edge_emits_multi_column_join_646() {
+    let schema = load_schema("schemas/test/composite_self_ref_fk.yaml");
+    // Both directions route through the same (Left) FkEdgeJoin self-ref path.
+    let queries = [
+        "MATCH (child:Object)-[:PARENT]->(parent:Object) RETURN child.name, parent.name",
+        "MATCH (parent:Object)<-[:PARENT]-(child:Object) RETURN child.name, parent.name",
+    ];
+    for cypher in queries {
+        for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+            let sql = render(&schema, cypher, dialect).await;
+            // Both composite columns must be joined (FK cols = parent PK cols).
+            assert!(
+                sql.contains("child.parent_region = parent.region")
+                    && sql.contains("child.parent_id = parent.object_id"),
+                "#646: composite self-ref join must pair BOTH id columns for \
+                 {dialect:?} / `{cypher}`, got:\n{sql}"
+            );
+            // The malformed comma-joined quoted identifier must be gone.
+            assert!(
+                !sql.contains("parent_region, parent_id"),
+                "#646: must NOT emit the malformed comma-joined identifier for \
+                 {dialect:?} / `{cypher}`:\n{sql}"
+            );
+        }
+    }
+}
+
 /// member's value). The whole-node GROUP BY optimization in `group_by_builder.rs`
 /// now expands to the full `node_id.columns()` set via the schema.
 #[tokio::test]

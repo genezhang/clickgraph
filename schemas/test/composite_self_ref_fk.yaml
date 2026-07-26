@@ -1,0 +1,39 @@
+# Composite-id self-referencing FK-edge schema (regression fixture for #646)
+#
+# Like filesystem_single, but the node_id is COMPOSITE ([region, object_id]) and
+# the parent FK is likewise composite ([parent_region, parent_id]). Exercises the
+# composite branch of the self-referencing FkEdgeJoin fix.
+#
+#   fs_objects_composite
+#   +--------+-----------+---------+-----------------+-------------+
+#   | region | object_id | name    | parent_region   | parent_id   |  <- composite FK to same table
+#   +--------+-----------+---------+-----------------+-------------+
+#
+# Cypher pattern: (child:Object)-[:PARENT]->(parent:Object)
+# Expected SQL:   child.parent_region = parent.region
+#             AND child.parent_id     = parent.object_id
+
+name: composite_self_ref_fk
+version: "1.0"
+description: "Composite-id self-referencing FK-edge pattern (#646 regression fixture)"
+
+graph_schema:
+  nodes:
+    - label: Object
+      database: test_integration
+      table: fs_objects_composite
+      node_id: [region, object_id]
+      property_mappings:
+        region: region
+        object_id: object_id
+        name: name
+        type: object_type
+
+  edges:
+    - type: PARENT
+      database: test_integration
+      table: fs_objects_composite  # Same table as the node (self-referencing)
+      from_id: [parent_region, parent_id]  # composite FK column set (child side)
+      to_id: [region, object_id]           # composite target PK (parent side)
+      from_node: Object
+      to_node: Object

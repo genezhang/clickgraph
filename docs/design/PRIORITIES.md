@@ -79,7 +79,7 @@ Exit: one fully green scheduled nightly run + xpass count ~0.
 ### P-1 — Keep a small silent-wrong bug lane open  (standing, ≤1 agent)
 Open issues that are NOT the reverse-mapping class and are individually
 fixable: ~~#647~~ **DONE (#652, `91475be3`)**, #644 (denorm OPTIONAL-VLP anchor
-join, loud — **in flight**), #646 (composite self-ref FK-edge, loud), #641
+join, loud — **in flight**), ~~#646~~ **DONE (composite self-ref FK-edge)**, #641
 (#589 gate holes), #640 (EXISTS beyond single-hop), #636 (4-way shared-anchor),
 #635 (FK-edge coupled rel-var on VLP), ~~#648~~ **DONE (untyped count(r)
 multi-type)**, ~~#649~~ **DONE (leading UNWIND before MATCH)**. Prefer
@@ -191,6 +191,25 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-25: **#646 composite self-ref FK-edge** (P-1 bug lane, follow-up to
+  #632) — a self-referencing FK-edge (edge table == node table) with a COMPOSITE
+  node_id emitted a malformed single-column join `child."parent_region, parent_id"
+  = parent.region` → Code 47. #632's self-ref FK-detection used
+  `first_col(node_id)` + a `String` compare, so for composite ids the whole
+  comma-joined FK string became one bogus quoted identifier. Fix (Left branch
+  only — self-ref always routes join_side=Left): compare full column SETS
+  (`Identifier::from_comma_separated(from_id).columns()` vs `node_id.columns()`;
+  FK = the {from,to} side ≠ node_id) and emit `Composite` Identifiers through
+  `resolve_identifier` + `add_identifier_condition` (zips positionally →
+  `child.parent_region = parent.region AND child.parent_id = parent.object_id`).
+  Byte-identical for single-column self-ref (filesystem PARENT FK=from_id, ldbc
+  REPLY_OF FK=to_id) — corpus_sweep 0 changes. New fixture
+  `schemas/test/composite_self_ref_fk.yaml` + executable-oracle sql_golden test
+  (both directions × both dialects). VLP/CTE-path composite truncation
+  (`cte_manager` get_fk_edge_node_id_column `columns[0]` TODO) is a documented
+  follow-up, out of scope. Column-order is a positional author invariant (FK
+  cols must align with node_id cols), mirroring the non-self-ref composite path.
 
 - 2026-07-25: **#648 untyped count(r) multi-type** (P-1 bug lane) — regression
   from #502 (bisect a10886aa). `MATCH (u:TestUser)-[r]->(o:TestUser) RETURN
