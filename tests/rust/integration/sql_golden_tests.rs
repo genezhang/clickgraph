@@ -6092,6 +6092,68 @@ async fn shortest_path_exists_where_clause_errors_cleanly_not_silently_dropped()
     );
 }
 
+/// #640 shape 1: `EXISTS { (a)-[:R]-(b) WHERE b.p }` — UNDIRECTED single-hop with
+/// an inner WHERE. #587 covered directed single-hop and deliberately kept
+/// undirected loud. This extends `generate_exists_filtered_graph_rel_sql` to emit
+/// the OR-of-both-orientations correlation, fusing correlation + inner binding per
+/// orientation into the JOIN ON so a single OR covers both edge directions.
+#[tokio::test]
+async fn undirected_exists_with_inner_where_renders_or_of_both_orientations_640() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // Labeled AND unlabeled inner node both render the same OR join (the inner
+    // type resolves via the relationship's from/to role — here both are User).
+    for cypher in [
+        "MATCH (a:User) WHERE EXISTS { MATCH (a)-[:FOLLOWS]-(b:User) \
+         WHERE b.name = 'Alice' } RETURN a.name",
+        "MATCH (a:User) WHERE EXISTS { MATCH (a)-[:FOLLOWS]-(b) \
+         WHERE b.name = 'Alice' } RETURN a.name",
+    ] {
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+        assert!(
+            sql.contains("EXISTS (SELECT 1 FROM social.user_follows_bench AS e")
+                && sql.contains("INNER JOIN social.users_bench AS b"),
+            "[{cypher}] #640: undirected EXISTS must render the correlated edge \
+             subquery with the inner-node join; got:\n{sql}"
+        );
+        // OR-of-both-orientations: a may sit on either edge column, and b binds
+        // the opposite one per orientation.
+        assert!(
+            sql.contains(
+                "(e.follower_id = a.user_id AND b.user_id = e.followed_id) OR \
+                 (e.followed_id = a.user_id AND b.user_id = e.follower_id)"
+            ),
+            "[{cypher}] #640: undirected EXISTS must emit the OR-of-both-orientations \
+             correlation/join; got:\n{sql}"
+        );
+        // The inner predicate is still mapped (b.name -> b.full_name) and applied.
+        assert!(
+            sql.contains("b.full_name = 'Alice'"),
+            "[{cypher}] #640: the inner WHERE must be mapped and folded in; got:\n{sql}"
+        );
+    }
+
+    // Regression: directed single-hop (the #587 shape) must stay byte-identical —
+    // correlate on the anchor's edge column, join the inner on the opposite, with
+    // NO OR-of-orientations.
+    let directed = normalize(
+        &render(
+            &schema,
+            "MATCH (a:User) WHERE EXISTS { MATCH (a)-[:FOLLOWS]->(b:User) \
+             WHERE b.name = 'Alice' } RETURN a.name",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        directed.contains(
+            "INNER JOIN social.users_bench AS b ON b.user_id = e.followed_id \
+             WHERE e.follower_id = a.user_id AND b.full_name = 'Alice'"
+        ),
+        "#640: directed single-hop EXISTS must stay on the #587 form (no OR); got:\n{directed}"
+    );
+}
+
 /// Regression test: `EXISTS { pattern }` whose correlated variable was bound
 /// BEFORE a `WITH` barrier — i.e. the variable lives in a CTE by the time the
 /// EXISTS subquery is rendered — must correlate against the variable's

@@ -371,12 +371,13 @@ fn generate_exists_filtered_graph_rel_sql(
         get_current_schema, is_correlation_cte_alias, is_exists_outer_alias,
     };
 
-    // Only directed single-hop is covered by v1. Undirected needs OR-of-both-
-    // orientations join logic; defer (loud fallback).
-    let outgoing = match graph_rel.direction {
-        Direction::Outgoing => true,
-        Direction::Incoming => false,
-        Direction::Either => return Ok(None),
+    // Directed single-hop and undirected single-hop are covered. Undirected
+    // (`Either`) emits an OR-of-both-orientations correlation/join (#640 shape 1);
+    // `outgoing` is `None` for it (no fixed source/target role).
+    let outgoing: Option<bool> = match graph_rel.direction {
+        Direction::Outgoing => Some(true),
+        Direction::Incoming => Some(false),
+        Direction::Either => None,
     };
 
     // Defer variable-length and shortestPath EXISTS — those carry path semantics
@@ -427,14 +428,22 @@ fn generate_exists_filtered_graph_rel_sql(
     // Fall back to the relationship-schema role for an unlabeled inner node.
     let inner_type = match inner_label {
         Some(l) => l,
-        None => {
+        None => match outgoing {
             // inner endpoint is the target for Outgoing (a->b), source for Incoming.
-            if outgoing {
-                rel_schema.to_node.clone()
-            } else {
-                rel_schema.from_node.clone()
+            Some(true) => rel_schema.to_node.clone(),
+            Some(false) => rel_schema.from_node.clone(),
+            // Undirected + unlabeled: the inner endpoint could be either role, so
+            // the role is ambiguous UNLESS both roles are the same node type
+            // (the common self-referential case, e.g. User-FOLLOWS-User). Defer
+            // when they differ rather than guess (loud fallback).
+            None => {
+                if rel_schema.from_node == rel_schema.to_node {
+                    rel_schema.to_node.clone()
+                } else {
+                    return Ok(None);
+                }
             }
-        }
+        },
     };
     let Some(inner_node_schema) = schema.node_schema_opt(&inner_type) else {
         return Ok(None);
@@ -477,15 +486,6 @@ fn generate_exists_filtered_graph_rel_sql(
     let to_col = rel_schema.to_id.to_string();
     let edge_table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
     let edge_alias = "e";
-    // Correlation column (edge column facing the OUTER anchor) and inner-join
-    // column (edge column facing the INNER endpoint).
-    let (corr_edge_col, inner_edge_col) = if outgoing {
-        // a (source) -> b (target): correlate on from_id, join b on to_id.
-        (from_col.clone(), to_col.clone())
-    } else {
-        // a (target) <- b (source): correlate on to_id, join b on from_id.
-        (to_col.clone(), from_col.clone())
-    };
 
     // Resolve the OUTER anchor's id SQL (CTE-aware, mirrors generate_exists_graph_rel_sql).
     let outer_node = if outer_conn == left_conn {
@@ -499,13 +499,20 @@ fn generate_exists_filtered_graph_rel_sql(
     };
     let outer_type = match outer_label {
         Some(l) => l,
-        None => {
-            if outgoing {
-                rel_schema.from_node.clone()
-            } else {
-                rel_schema.to_node.clone()
+        None => match outgoing {
+            Some(true) => rel_schema.from_node.clone(),
+            Some(false) => rel_schema.to_node.clone(),
+            // Undirected + unlabeled outer: same ambiguity as the inner endpoint;
+            // safe only when both roles share a node type (deferred otherwise above,
+            // but re-check here since the outer node is resolved independently).
+            None => {
+                if rel_schema.from_node == rel_schema.to_node {
+                    rel_schema.from_node.clone()
+                } else {
+                    return Ok(None);
+                }
             }
-        }
+        },
     };
     let Some(outer_node_schema) = schema.node_schema_opt(&outer_type) else {
         return Ok(None);
@@ -523,12 +530,39 @@ fn generate_exists_filtered_graph_rel_sql(
         map_exists_inner_predicate(predicate, inner_conn, &inner_type, inner_node_schema);
     let pred_sql = RenderExpr::try_from(mapped_pred)?.to_sql();
 
-    // Assemble: SELECT 1 FROM edge AS e JOIN inner AS <inner_conn> ON ... WHERE corr AND pred
-    let sql = format!(
-        "SELECT 1 FROM {edge_table} AS {edge_alias} \
-         INNER JOIN {inner_table} AS {inner_conn} ON {inner_conn}.{inner_id_col} = {edge_alias}.{inner_edge_col} \
-         WHERE {edge_alias}.{corr_edge_col} = {outer_id_sql} AND {pred_sql}"
-    );
+    // Assemble the correlation + inner-join, then the shared predicate.
+    let join_and_corr = match outgoing {
+        // Directed: correlate on the edge column facing the OUTER anchor, join the
+        // inner endpoint on the opposite column.
+        Some(true) => {
+            // a (source) -> b (target): correlate on from_id, join b on to_id.
+            format!(
+                "INNER JOIN {inner_table} AS {inner_conn} ON {inner_conn}.{inner_id_col} = {edge_alias}.{to_col} \
+                 WHERE {edge_alias}.{from_col} = {outer_id_sql}"
+            )
+        }
+        Some(false) => {
+            // a (target) <- b (source): correlate on to_id, join b on from_id.
+            format!(
+                "INNER JOIN {inner_table} AS {inner_conn} ON {inner_conn}.{inner_id_col} = {edge_alias}.{from_col} \
+                 WHERE {edge_alias}.{to_col} = {outer_id_sql}"
+            )
+        }
+        // Undirected: the edge may run either way. Fuse correlation + inner binding
+        // per orientation into the JOIN ON so a single OR covers both:
+        //   (a = e.from AND b = e.to) OR (a = e.to AND b = e.from)
+        // #640 shape 1. The predicate then filters the joined inner node.
+        None => {
+            format!(
+                "INNER JOIN {inner_table} AS {inner_conn} ON \
+                 ({edge_alias}.{from_col} = {outer_id_sql} AND {inner_conn}.{inner_id_col} = {edge_alias}.{to_col}) OR \
+                 ({edge_alias}.{to_col} = {outer_id_sql} AND {inner_conn}.{inner_id_col} = {edge_alias}.{from_col}) \
+                 WHERE 1 = 1"
+            )
+        }
+    };
+
+    let sql = format!("SELECT 1 FROM {edge_table} AS {edge_alias} {join_and_corr} AND {pred_sql}");
 
     Ok(Some((sql, vec![outer_conn.clone()])))
 }
