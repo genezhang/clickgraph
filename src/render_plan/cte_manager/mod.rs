@@ -1374,11 +1374,26 @@ impl DenormalizedCteStrategy {
         // Build column metadata for denormalized schema
         let mut columns = Vec::new();
 
+        // #678: resolve the endpoint's logical node_id property name (e.g. `code`)
+        // rather than hardcoding the placeholder `"id"`. The shared
+        // `build_vlp_column_metadata` (used by every OTHER strategy) sets the id
+        // column's `cypher_property` to the real logical id name; only the denorm
+        // builder hand-rolled it to `"id"`. That mismatch made the #620/#677 VLP
+        // WITH-item id pre-pass (which fires when `prop_access.column ==
+        // cypher_property`) miss `WITH a.code AS x` over a denorm VLP, so it fell
+        // through to the blind prefix rewriter → `t.start_code` (a column the CTE
+        // never projects; it projects `start_id`/`end_id`) → Code 47.
+        // Composite ids stay `"id"` (loud), per #683-r2 / #605 composite discipline.
+        let start_id_prop = self
+            .denorm_node_id_property_name()
+            .unwrap_or_else(|| "id".to_string());
+        let end_id_prop = start_id_prop.clone();
+
         // Add start node ID column
         columns.push(CteColumnMetadata {
             cte_column_name: VLP_START_ID_COLUMN.to_string(),
             cypher_alias: self.pattern_ctx.left_node_alias.clone(),
-            cypher_property: "id".to_string(),
+            cypher_property: start_id_prop,
             db_column: self.from_col.clone(),
             is_id_column: true,
             vlp_position: Some(VlpColumnPosition::Start),
@@ -1388,7 +1403,7 @@ impl DenormalizedCteStrategy {
         columns.push(CteColumnMetadata {
             cte_column_name: VLP_END_ID_COLUMN.to_string(),
             cypher_alias: self.pattern_ctx.right_node_alias.clone(),
-            cypher_property: "id".to_string(),
+            cypher_property: end_id_prop,
             db_column: self.to_col.clone(),
             is_id_column: true,
             vlp_position: Some(VlpColumnPosition::End),
@@ -1458,6 +1473,58 @@ impl DenormalizedCteStrategy {
                 "DenormalizedCteStrategy requires both nodes to be EmbeddedInEdge".into(),
             )),
         }
+    }
+
+    /// Resolve the endpoint node's **logical** node_id property name (e.g. `code`)
+    /// for a denormalized VLP, mirroring `map_denormalized_property`'s node-schema
+    /// resolution (match the node schema whose table is this edge/denorm table).
+    ///
+    /// This name is used ONLY as a match-key for the #620/#677 WITH-item id
+    /// pre-pass: when the accessed column equals it, the pre-pass rewrites the
+    /// access to the CTE's **position-based** id column (`start_id` = from-role,
+    /// `end_id` = to-role), the position taken from the alias→start/end mapping,
+    /// NOT from this name. So the name only decides *whether* the pre-pass fires,
+    /// never *which* column it targets; a wrong or missing resolution can at worst
+    /// cause a loud Code-47 miss, never a wrong-position value.
+    ///
+    /// Returns `None` (→ caller falls back to the `"id"` placeholder, keeping the
+    /// pre-existing loud behavior) when:
+    /// - the id is composite (#683-r2 / #605 composite discipline), or
+    /// - no node schema matches the table, or
+    /// - **more than one** node schema is hosted on the table with a distinct
+    ///   node_id (e.g. zeek's `dns_log` hosts IP/`ip_address`, Domain/`domain_name`,
+    ///   ResolvedIP/`answers`). Picking one arbitrarily would let a *malformed*
+    ///   query (`WITH a.domain_name` where `a` is an `:IP`) silently match and drop
+    ///   to `start_id` instead of erroring — a loud→silent regression. Staying
+    ///   `None` keeps those loud. Single-label denorm tables (the common case:
+    ///   `flights_denorm` hosts only `Airport`) resolve normally.
+    fn denorm_node_id_property_name(&self) -> Option<String> {
+        let node_schemas = self.schema.all_node_schemas();
+        let rel_table_name = self.table.rsplit('.').next().unwrap_or(&self.table);
+
+        let mut matches = node_schemas.values().filter(|n| {
+            let schema_table = n.table_name.rsplit('.').next().unwrap_or(&n.table_name);
+            schema_table == rel_table_name
+        });
+
+        let node_schema = matches.next()?;
+
+        if node_schema.node_id.is_composite() {
+            return None;
+        }
+        let id_prop = node_schema.node_id.column_or_error().ok()?;
+
+        // If another node schema on the SAME table has a DIFFERENT logical id,
+        // the table is multi-label (heterogeneous endpoints) and we cannot safely
+        // pick one id for both VLP endpoints — stay `None`/loud rather than risk
+        // a loud→silent match on a mislabeled property access.
+        for other in matches {
+            if other.node_id.is_composite() || other.node_id.column_or_error().ok() != Some(id_prop)
+            {
+                return None;
+            }
+        }
+        Some(id_prop.to_string())
     }
 
     /// Map logical property name to physical column name in edge table
