@@ -2106,6 +2106,49 @@ async fn composite_self_referencing_fk_edge_emits_multi_column_join_646() {
     }
 }
 
+/// #672 part 2 regression: a COMPOSITE-id NON-self-referencing FK-edge must emit
+/// a multi-column equality join, not a malformed single quoted identifier.
+///
+/// An FK-edge is a relationship whose edge table IS one of the node tables (the
+/// FK is a column on that node's row). For `(c:Comment)-[:IN_FORUM]->(f:Forum)`
+/// the edge table == Comment (from_node) table, so the join routes the
+/// `FkEdgeJoin` Right branch and resolves the composite `to_id`
+/// (`[forum_region, forum_id]`, the FK on the Comment row) against Forum's
+/// composite `node_id` (`[region, forum_id]`). Before the fix the Right/Left
+/// branches wrapped the comma-joined FK string as `Identifier::Single`, emitting
+/// the bogus `f.region = c."forum_region, forum_id"` (Code 47). The
+/// composite-aware fix (`from_comma_separated` + `resolve_identifier`, mirroring
+/// the #646 self-ref path) zips the sets into `f.region = c.forum_region AND
+/// f.forum_id = c.forum_id`. Byte-identical for single-column FK-edges.
+#[tokio::test]
+async fn composite_non_self_ref_fk_edge_emits_multi_column_join_672() {
+    let schema = load_schema("schemas/test/composite_fk_edge_nonselfref.yaml");
+    // Outgoing routes the Right branch (edge==from_node table, JOIN to_node);
+    // the reversed-written form routes the Left branch — both must be correct.
+    let queries = [
+        "MATCH (c:Comment)-[:IN_FORUM]->(f:Forum) RETURN c.content, f.title",
+        "MATCH (f:Forum)<-[:IN_FORUM]-(c:Comment) RETURN c.content, f.title",
+    ];
+    for cypher in queries {
+        for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+            let sql = render(&schema, cypher, dialect).await;
+            // Both composite columns must be joined (Forum PK cols = Comment FK cols).
+            assert!(
+                sql.contains("f.region = c.forum_region")
+                    && sql.contains("f.forum_id = c.forum_id"),
+                "#672: composite non-self-ref FK-edge join must pair BOTH id \
+                 columns for {dialect:?} / `{cypher}`, got:\n{sql}"
+            );
+            // The malformed comma-joined quoted identifier must be gone.
+            assert!(
+                !sql.contains("forum_region, forum_id"),
+                "#672: must NOT emit the malformed comma-joined identifier for \
+                 {dialect:?} / `{cypher}`:\n{sql}"
+            );
+        }
+    }
+}
+
 /// member's value). The whole-node GROUP BY optimization in `group_by_builder.rs`
 /// now expands to the full `node_id.columns()` set via the schema.
 #[tokio::test]
