@@ -1755,6 +1755,54 @@ impl LogicalPlan {
         }
     }
 
+    /// #648: is `rel_alias` bound to a MULTI-TYPE relationship (two or more
+    /// candidate relationship types between the endpoints, e.g.
+    /// `(u:TestUser)-[r]->(o:TestUser)` where both TEST_FOLLOWS and
+    /// TEST_FRIENDS_WITH connect TestUser→TestUser) — materialized by a
+    /// `vlp_multi_type_*` UNION-ALL CTE aliased `AS t` with generic columns
+    /// (`start_id`/`end_id`/`r_from_id`/...), NOT by any single rel type's
+    /// edge table?
+    ///
+    /// The rel-var analog of `node_is_multi_type_rel_endpoint`
+    /// (`analyzer/projection_tagging.rs`), which checks `gr.labels.len() > 1`
+    /// for NODE columns. `count(r)` over such a rel var must count the CTE's
+    /// own rows, not `count(r.<first-type's-from_id>)` — the first type's
+    /// FK column doesn't exist on the CTE and the alias `r` is unbound
+    /// (the CTE is aliased `t`), a ClickHouse Code 47. Distinct from
+    /// `rel_alias_uses_pattern_union` (`pattern_combinations` / unlabeled
+    /// endpoints, CTE aliased `pattern_union_r AS r`).
+    pub fn rel_alias_uses_multi_type_vlp(&self, rel_alias: &str) -> bool {
+        match self {
+            LogicalPlan::GraphRel(rel) => {
+                if rel.alias == rel_alias {
+                    return rel.labels.as_ref().is_some_and(|l| l.len() > 1);
+                }
+                rel.left.rel_alias_uses_multi_type_vlp(rel_alias)
+                    || rel.center.rel_alias_uses_multi_type_vlp(rel_alias)
+                    || rel.right.rel_alias_uses_multi_type_vlp(rel_alias)
+            }
+            LogicalPlan::GraphNode(node) => node.input.rel_alias_uses_multi_type_vlp(rel_alias),
+            LogicalPlan::Filter(f) => f.input.rel_alias_uses_multi_type_vlp(rel_alias),
+            LogicalPlan::Projection(p) => p.input.rel_alias_uses_multi_type_vlp(rel_alias),
+            LogicalPlan::GraphJoins(gj) => gj.input.rel_alias_uses_multi_type_vlp(rel_alias),
+            LogicalPlan::GroupBy(gb) => gb.input.rel_alias_uses_multi_type_vlp(rel_alias),
+            LogicalPlan::OrderBy(ob) => ob.input.rel_alias_uses_multi_type_vlp(rel_alias),
+            LogicalPlan::Skip(s) => s.input.rel_alias_uses_multi_type_vlp(rel_alias),
+            LogicalPlan::Limit(l) => l.input.rel_alias_uses_multi_type_vlp(rel_alias),
+            LogicalPlan::Cte(cte) => cte.input.rel_alias_uses_multi_type_vlp(rel_alias),
+            LogicalPlan::WithClause(wc) => wc.input.rel_alias_uses_multi_type_vlp(rel_alias),
+            LogicalPlan::CartesianProduct(cp) => {
+                cp.left.rel_alias_uses_multi_type_vlp(rel_alias)
+                    || cp.right.rel_alias_uses_multi_type_vlp(rel_alias)
+            }
+            LogicalPlan::Union(u) => u
+                .inputs
+                .iter()
+                .any(|i| i.rel_alias_uses_multi_type_vlp(rel_alias)),
+            _ => false,
+        }
+    }
+
     /// #483: is `alias` a connection (`left_connection`/`right_connection`) of
     /// an UNDIRECTED (`Direction::Either`) `GraphRel` in this plan? Returns
     /// `Some(true)` for the left/start connection, `Some(false)` for the

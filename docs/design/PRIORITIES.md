@@ -81,10 +81,10 @@ Open issues that are NOT the reverse-mapping class and are individually
 fixable: ~~#647~~ **DONE (#652, `91475be3`)**, #644 (denorm OPTIONAL-VLP anchor
 join, loud — **in flight**), #646 (composite self-ref FK-edge, loud), #641
 (#589 gate holes), #640 (EXISTS beyond single-hop), #636 (4-way shared-anchor),
-#635 (FK-edge coupled rel-var on VLP), #648 (untyped count(r) multi-type),
-~~#649~~ **DONE (leading UNWIND before MATCH)**. Prefer silent-wrong over
-loud-error fixes. Rule §1.6 applies: if root cause lands in the reverse-mapping
-class, gate loud + document, move on.
+#635 (FK-edge coupled rel-var on VLP), ~~#648~~ **DONE (untyped count(r)
+multi-type)**, ~~#649~~ **DONE (leading UNWIND before MATCH)**. Prefer
+silent-wrong over loud-error fixes. Rule §1.6 applies: if root cause lands in
+the reverse-mapping class, gate loud + document, move on.
 
 ### P-2 — P1.2: the five WITH functions  ☑ (done — `refactor/p12-five-with-fns`)
 `REFACTORING_SAFETY_PLAN.md` §4.2. Delivered: the missing P1.1 `walk()` /
@@ -191,6 +191,24 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-25: **#648 untyped count(r) multi-type** (P-1 bug lane) — regression
+  from #502 (bisect a10886aa). `MATCH (u:TestUser)-[r]->(o:TestUser) RETURN
+  count(r)` where two rel types connect TestUser→TestUser routes through the
+  `vlp_multi_type_*` UNION-ALL CTE (aliased `t`, generic `start_id`/`r_from_id`
+  cols) but the projection-tagging aggregate rewrite picked the FIRST type's
+  `from_id` and kept the Cypher alias `r` → `count(r.follower_id)` against a
+  CTE with no such column and an unbound alias → Code 47. Fix: new
+  `rel_alias_uses_multi_type_vlp` predicate (`logical_plan/mod.rs`, gated on
+  `rel.labels.len() > 1`) + a guard branch in `projection_tagging.rs` mirroring
+  the #526 `pattern_union` branch → emit `count(t.start_id)` (NULL-sensitive,
+  always-projected) / DISTINCT label-agnostic tuple over alias `t`. Blast
+  radius nil: typed count(r), count(*), single-type-untyped count(r), and
+  fully-unlabeled count(r) all unchanged (guard fires only on labels.len()>1).
+  Scoped diff: corpus `test_count_relationship_with_node_constraints` golden
+  flips from the BROKEN `count(r.follower_id)` to `count(t.start_id)` (both
+  dialects) — the only corpus transition. +executable-oracle sql_golden test;
+  removed py strict-xfail.
 
 - 2026-07-25: **#649 leading UNWIND** (P-1 bug lane, `fix/649-leading-unwind`,
   PR #669) — `UNWIND [...] AS x MATCH (n) WHERE n.p = x RETURN n` (UNWIND as the
