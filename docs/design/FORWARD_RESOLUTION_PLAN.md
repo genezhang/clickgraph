@@ -488,7 +488,21 @@ Fixes the size()-pattern member of the residue (candidate **#613**).
 > that flip is where the intentional SQL diff lives.
 
 **F4 — `ExistsSubquery` structured.** Same treatment via `generate_exists_sql`.
-Candidate **#595**.
+
+> **✅ F4 outcome (2026-07-25, landed) — byte-identical (C1, mirrors F3).** Added
+> `subplan: Arc<LogicalPlan>` (`#[serde(with = "serde_arc")]`, mirroring the input
+> `logical_expr::ExistsSubquery.subplan`) to `render_expr::ExistsSubquery` alongside
+> the now validated-`sql` cache. `generate_exists_sql` is already the single producer,
+> so the bake site just also stores `exists.subplan.clone()` (a cheap Arc bump) and
+> keeps the `?` — an EXISTS pattern that can't render still aborts render at the same
+> `Result` boundary. All 6 `es.sql` consumers (2 emit + 4 pre-render optimizer scans)
+> unchanged; the outer `EXISTS (...)` wrapper stays at the emit sites (unlike F3's
+> `coalesce`, which was at the bake site — nothing to extract here). Rewriter skip
+> arms stay no-ops (recursion into `subplan` = #595/#613). Corpus + 220 goldens
+> byte-identical; 2,156 tests; clippy clean; ratchet net-zero. Branch
+> `refactor/f4-existssubquery-carry-subplan`. **Still #595/#613's job:** making
+> rewriters recurse into `subplan`, and flipping emit to render from the (rewritten)
+> `subplan` instead of the cache.
 
 **F5 — NOT-EXISTS `Raw` → structured `NotExists` variant.** Replace the
 `RenderExpr::Raw(not_exists_sql)` at `:1630` with a structured type carrying the

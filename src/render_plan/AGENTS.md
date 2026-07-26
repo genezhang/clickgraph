@@ -463,7 +463,7 @@ Cypher scope stack:           SQL equivalent:
 5. ❌ NOW we need to undo step 3: map `("person", "full_name")` → `"p6_person_full_name"`
 6. ❌ This requires `reverse_mapping: HashMap<(alias, db_column), cte_column>`
 7. ❌ Walk ALL expressions post-hoc, rewriting matching PropertyAccessExp entries
-8. ❌ `Raw(String)`, `ExistsSubquery { sql }`, `PatternCount { pattern, sql }` are opaque — SKIPPED (`PatternCount` now carries `pattern`; rewriter recursion still deferred to #613)
+8. ❌ `Raw(String)`, `ExistsSubquery { subplan, sql }`, `PatternCount { pattern, sql }` are opaque — SKIPPED (`ExistsSubquery`/`PatternCount` now carry structure; rewriter recursion still deferred to #595/#613)
 
 **Why reverse_mapping is a hack:**
 - It's a post-hoc fixup: first resolve to DB columns, then try to undo it
@@ -512,7 +512,7 @@ Three expression types bake variable names into SQL strings too early:
 | Type | Where created | Problem |
 |------|--------------|---------|
 | `RenderExpr::Raw(sql)` | `render_expr.rs:914-918` — NOT (PathPattern) | `person.id` baked into string |
-| `ExistsSubquery { sql }` | `render_expr.rs:940-944` — ExistsSubquery | Same |
+| `ExistsSubquery { subplan, sql }` | `render_expr.rs:1693` — ExistsSubquery; carries `subplan`, rewriters still skip (#595/#613) | Same (cache) |
 | `PatternCount { pattern, sql }` | `render_expr.rs:1721` — size(pattern); carries `pattern`, rewriters still skip (#613) | Same (cache) |
 
 All three call SQL-generation functions (`generate_not_exists_from_path_pattern()`,

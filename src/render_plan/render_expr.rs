@@ -17,6 +17,7 @@ use crate::query_planner::logical_expr::{
 };
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::sql_generator::function_mapper::current_function_mapper;
+use crate::utils::serde_arc;
 
 use super::errors::RenderBuildError;
 
@@ -1201,7 +1202,8 @@ pub enum RenderExpr {
 
     InSubquery(InSubquery),
 
-    /// EXISTS subquery expression - checks if a pattern exists
+    /// EXISTS subquery expression — checks if a pattern exists. Carries the
+    /// structural `subplan` plus a validated SQL cache (see [`ExistsSubquery`]).
     ExistsSubquery(ExistsSubquery),
 
     /// Reduce expression: fold list into single value
@@ -1408,12 +1410,23 @@ pub struct ReduceExpr {
     pub expression: Box<RenderExpr>,
 }
 
-/// EXISTS subquery for render plan
+/// EXISTS subquery for render plan.
+///
+/// Carries the structural `subplan` (the EXISTS pattern's logical plan, the
+/// source of truth) alongside a `sql` cache rendered *and validated* once at
+/// `LogicalExpr` → `RenderExpr` conversion via [`generate_exists_sql`]. Today
+/// every consumer reads the `sql` cache; the `subplan` is retained so a later
+/// slice (#595/#613 forward-resolution) can make the expression rewriters
+/// recurse into it. Until then the rewriters still SKIP this variant, so the
+/// cache stays authoritative and generation is unaffected by scope rewriting.
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct ExistsSubquery {
-    /// Pre-rendered SQL for the EXISTS subquery
-    /// This is generated during conversion since EXISTS patterns
-    /// don't fit the normal query structure (no select items)
+    /// Structural EXISTS pattern — source of truth for the `sql` cache.
+    #[serde(with = "serde_arc")]
+    pub subplan: std::sync::Arc<LogicalPlan>,
+    /// Validated pre-rendered SQL for the EXISTS subquery body (WITHOUT the
+    /// outer `EXISTS (...)` wrapper — that is applied at the emit sites),
+    /// cached from `subplan` at conversion.
     pub sql: String,
     /// #614: outer-scope aliases the correlated subquery references (the
     /// endpoints classified outer-bound during generation, #596). Same
@@ -1678,10 +1691,15 @@ impl TryFrom<LogicalExpr> for RenderExpr {
                     .map(Box::new),
             },
             LogicalExpr::ExistsSubquery(exists) => {
-                // For EXISTS subqueries, generate SQL directly since they don't fit
-                // the normal RenderPlan structure (no select items needed)
+                // Render + validate the EXISTS body SQL once and cache it (see
+                // `generate_exists_sql`). The `?` stays HERE so an EXISTS pattern
+                // that can't render (missing schema, unsupported subplan) aborts
+                // render at the same point as before rather than surfacing later
+                // at the infallible emit. The structural `subplan` is carried
+                // forward for #595/#613.
                 let (sql, correlated_aliases) = generate_exists_sql(&exists)?;
                 RenderExpr::ExistsSubquery(ExistsSubquery {
+                    subplan: exists.subplan.clone(),
                     sql,
                     correlated_aliases,
                 })
