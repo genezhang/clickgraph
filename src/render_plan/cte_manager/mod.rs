@@ -1356,6 +1356,43 @@ impl DenormalizedCteStrategy {
         }
     }
 
+    /// Whether this denormalized VLP should enforce Cypher's default
+    /// relationship-uniqueness (an edge may not be reused, but a node MAY be
+    /// revisited) via a `path_edges` array of `(from, to)` edge tuples, instead
+    /// of the stronger node-uniqueness via `path_nodes`.
+    ///
+    /// This is the denormalized-strategy counterpart of the standard emitter's
+    /// [`VariableLengthCteGenerator::uses_edge_uniqueness`] (#598 part 2). It
+    /// mirrors that helper's two shape guards, both of which prevent a
+    /// base/recursive column-shape mismatch (unbound-identifier, cf. #469) and
+    /// preserve intended semantics:
+    ///
+    /// - **shortestPath** stays node-unique: revisiting a node can never
+    ///   shorten a path, and the shortest-path arms have their own base shape.
+    /// - **zero-hop `*0..N`** (`effective_min_hops() == 0`) stays node-unique:
+    ///   its base row is a node paired with itself and carries no edge, so it
+    ///   cannot seed a 1-hop `path_edges` tuple; seeding it only in the
+    ///   ordinary base would diverge from the zero-hop base's column shape.
+    ///
+    /// A denormalized edge has no separate edge-id column, so its edge identity
+    /// is the `(from_col, to_col)` pair — see [`Self::edge_tuple`].
+    fn uses_edge_uniqueness(&self, context: &CteGenerationContext) -> bool {
+        context.shortest_path_mode.is_none() && context.spec.effective_min_hops() >= 1
+    }
+
+    /// The `(from, to)` edge-identity tuple for one hop, read off `rel_alias`
+    /// (base case) or `next` (recursive case). Denormalized edges carry no
+    /// dedicated edge-id column, so the ordered endpoint pair uniquely
+    /// identifies the physical edge row for trail-uniqueness.
+    fn edge_tuple(&self, rel_alias: &str) -> String {
+        let tuple_ctor =
+            crate::sql_generator::function_mapper::current_function_mapper().tuple_constructor();
+        format!(
+            "{}({}.{}, {}.{})",
+            tuple_ctor, rel_alias, self.from_col, rel_alias, self.to_col
+        )
+    }
+
     pub fn generate_sql(
         &self,
         context: &CteGenerationContext,
@@ -1728,10 +1765,22 @@ impl DenormalizedCteStrategy {
             ),
             format!("{}.{} as end_id", self.pattern_ctx.rel_alias, self.to_col),
             "1 as hop_count".to_string(),
-            format!(
-                "{} as path_edges",
-                arr(&format!("{}.{}", self.pattern_ctx.rel_alias, self.from_col))
-            ), // Simplified edge tracking
+            // path_edges seeds the trail-uniqueness array. Under edge-uniqueness
+            // (#606) it holds the `(from, to)` edge-identity tuple so a physical
+            // edge is deduplicated while nodes may still be revisited; otherwise
+            // it keeps the legacy single-`from_col` form (node-uniqueness paths
+            // never consult it — they filter on `path_nodes`).
+            if self.uses_edge_uniqueness(context) {
+                format!(
+                    "{} as path_edges",
+                    arr(&self.edge_tuple(&self.pattern_ctx.rel_alias))
+                )
+            } else {
+                format!(
+                    "{} as path_edges",
+                    arr(&format!("{}.{}", self.pattern_ctx.rel_alias, self.from_col))
+                )
+            },
             format!(
                 "{} as path_nodes",
                 arr(&format!(
@@ -1904,7 +1953,15 @@ impl DenormalizedCteStrategy {
             "vp.start_id as start_id".to_string(),
             format!("next.{} as end_id", self.to_col),
             "vp.hop_count + 1".to_string(),
-            arr_append("vp.path_edges", &format!("next.{}", self.from_col)), // Extend edge path array
+            // Extend path_edges. Under edge-uniqueness (#606) append the new
+            // hop's `(from, to)` edge tuple so the shape matches the base seed
+            // and the recursive cycle check below; otherwise keep the legacy
+            // single-`from_col` append (unused by node-uniqueness filtering).
+            if self.uses_edge_uniqueness(context) {
+                arr_append("vp.path_edges", &self.edge_tuple("next"))
+            } else {
+                arr_append("vp.path_edges", &format!("next.{}", self.from_col))
+            }, // Extend edge path array
             arr_append("vp.path_nodes", &format!("next.{}", self.to_col)), // Extend node path array
             // Extend the relationship-type path array (see base case for why
             // this column is part of the VLP CTE contract). Grows only when a
@@ -1940,11 +1997,25 @@ impl DenormalizedCteStrategy {
             // ⚠️ ClickHouse limitation: NOT IN with array doesn't work in recursive CTEs.
             // Use NOT <array_contains>(array, element) for cycle detection. The membership
             // function is dialect-specific: CH `has`, Spark `array_contains`.
-            format!(
-                "NOT {}(vp.path_nodes, next.{})",
-                cycle_mapper.array_contains(),
-                self.to_col
-            ), // Cycle prevention
+            //
+            // Under edge-uniqueness (#606) test membership of the new hop's
+            // `(from, to)` edge tuple against path_edges — a physical edge may
+            // not repeat, but a node MAY be revisited (Cypher's default
+            // relationship-uniqueness). Otherwise fall back to node-uniqueness
+            // (reject any revisited node) via path_nodes.
+            if self.uses_edge_uniqueness(context) {
+                format!(
+                    "NOT {}(vp.path_edges, {})",
+                    cycle_mapper.array_contains(),
+                    self.edge_tuple("next")
+                )
+            } else {
+                format!(
+                    "NOT {}(vp.path_nodes, next.{})",
+                    cycle_mapper.array_contains(),
+                    self.to_col
+                )
+            }, // Cycle prevention
         ];
 
         // Add additional filters if present
@@ -3550,6 +3621,10 @@ mod tests {
     /// ClickHouse (default) it uses `has`; under Databricks it must use Spark's
     /// `array_contains` (Spark has no `has`). Covers the DenormalizedCteStrategy
     /// recursive builder — the path the server/cg VLP queries route through.
+    ///
+    /// This range VLP (min_hops=1, not shortestPath) enforces #606
+    /// relationship-uniqueness, so the membership test is over `path_edges`
+    /// (the `(from,to)` edge tuple), not `path_nodes`.
     #[test]
     fn test_denormalized_cte_cycle_check_clickhouse_default() {
         let (strategy, context) = denormalized_cycle_check_sql();
@@ -3558,8 +3633,8 @@ mod tests {
             .unwrap()
             .sql;
         assert!(
-            sql.contains("NOT has(vp.path_nodes"),
-            "CH cycle check should use `has`; got:\n{sql}"
+            sql.contains("NOT has(vp.path_edges"),
+            "CH cycle check should use `has` on path_edges (#606); got:\n{sql}"
         );
         assert!(
             !sql.contains("array_contains"),
@@ -3585,11 +3660,12 @@ mod tests {
         })
         .await;
         assert!(
-            sql.contains("array_contains(vp.path_nodes"),
-            "Databricks cycle check should use `array_contains`; got:\n{sql}"
+            sql.contains("array_contains(vp.path_edges"),
+            "Databricks cycle check should use `array_contains` on path_edges \
+             (#606); got:\n{sql}"
         );
         assert!(
-            !sql.contains("has(vp.path_nodes"),
+            !sql.contains("has(vp.path_edges"),
             "Databricks SQL leaked ClickHouse `has(...)` cycle check; got:\n{sql}"
         );
     }

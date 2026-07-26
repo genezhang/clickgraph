@@ -8453,6 +8453,84 @@ async fn relationship_uniqueness_guard_skips_unrelated_types_and_optional_518() 
     );
 }
 
+/// #606: the DENORMALIZED VLP strategy (`DenormalizedCteStrategy`, a
+/// single-table / edge-embedded-node schema like `flights_denorm`) enforced
+/// NODE-uniqueness (`NOT has(vp.path_nodes, next.<to>)`) on its range recursive
+/// walk, silently dropping every valid path that legitimately revisits a node.
+/// Cypher's default is RELATIONSHIP-uniqueness: a physical edge may not repeat,
+/// but a node MAY be revisited. This mirrors the standard emitter's #598 part-2
+/// fix into the denormalized strategy: `path_edges` now seeds and extends the
+/// `(from, to)` edge-identity tuple, and the cycle check tests that tuple.
+///
+/// A denormalized edge carries no dedicated edge-id column, so the ordered
+/// endpoint pair IS the edge identity. Live-verified against a cyclic fixture
+/// (edges A→B, B→A, B→C, C→A): the edge-unique walk returns 14 trails over
+/// `*1..3` (including node-revisiting trails like A→B→A and C→A→B→A) versus the
+/// old node-unique walk's 7 — exactly the 7 valid paths that were being
+/// silently dropped, with no edge ever reused.
+#[tokio::test]
+async fn denormalized_vlp_range_uses_edge_uniqueness_606() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+
+    // Range VLP (min_hops >= 1, not shortestPath): edge-unique.
+    for cypher in [
+        "MATCH (a:Airport)-[:FLIGHT*1..3]->(b:Airport) RETURN a.code, b.code",
+        // Wrapper form (min_hops > 1) must agree on the base/recursive shape.
+        "MATCH (a:Airport)-[:FLIGHT*2..3]->(b:Airport) RETURN a.code, b.code",
+    ] {
+        let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+        // Base seed + recursive extend carry the (origin, dest) edge tuple.
+        assert!(
+            sql.contains("[tuple(t")
+                && sql.contains("origin_code")
+                && sql.contains("dest_code")
+                && sql.contains(
+                    "arrayConcat(vp.path_edges, [tuple(next.origin_code, next.dest_code)])"
+                ),
+            "[{cypher}] #606: denorm range VLP must seed/extend path_edges with \
+             the (from,to) edge tuple; got:\n{sql}"
+        );
+        // Cycle check is edge-unique on the tuple, NOT node-unique on the endpoint.
+        assert!(
+            sql.contains("NOT has(vp.path_edges, tuple(next.origin_code, next.dest_code))"),
+            "[{cypher}] #606: denorm range VLP cycle check must test edge-tuple \
+             membership in path_edges; got:\n{sql}"
+        );
+        assert!(
+            !sql.contains("NOT has(vp.path_nodes, next.dest_code)"),
+            "[{cypher}] #606: denorm range VLP must no longer enforce \
+             node-uniqueness; got:\n{sql}"
+        );
+    }
+
+    // Zero-hop (*0..N) stays NODE-unique: its base row is a node paired with
+    // itself and carries no edge to seed a 1-hop tuple, so switching it would
+    // create a base/recursive column-shape mismatch (#469).
+    let zero = render(
+        &schema,
+        "MATCH (a:Airport)-[:FLIGHT*0..3]->(b:Airport) RETURN a.code, b.code",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        zero.contains("NOT has(vp.path_nodes, next.dest_code)")
+            && !zero.contains("NOT has(vp.path_edges, tuple("),
+        "#606: denorm zero-hop VLP must stay node-unique; got:\n{zero}"
+    );
+
+    // shortestPath stays NODE-unique: revisiting a node can never shorten a path.
+    let sp = render(
+        &schema,
+        "MATCH p = shortestPath((a:Airport)-[:FLIGHT*1..3]->(b:Airport)) RETURN length(p)",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        !sp.contains("NOT has(vp.path_edges, tuple("),
+        "#606: denorm shortestPath VLP must stay node-unique; got:\n{sp}"
+    );
+}
+
 /// #511: a hardcoded `LIMIT 1000` "safety cap" on every `pattern_union` CTE
 /// branch (unlabeled/multi-type relationship scans, e.g.
 /// `MATCH ()-[r]->() RETURN ...`) silently truncated results — with no
