@@ -83,8 +83,11 @@ join, loud — **in flight**), ~~#646~~ **DONE (composite self-ref FK-edge)**, #
 (#589 gate holes), #640 (EXISTS beyond single-hop), #636 (4-way shared-anchor),
 ~~#635~~ **DONE (#675 — not-a-bug: coupled rel-var VLP WHERE-filter already
 correct; +3 regression goldens; dangling `RETURN r`/`count(r)` shapes are
-schema-agnostic #620)**, ~~#648~~ **DONE (untyped count(r)
-multi-type)**, ~~#649~~ **DONE (leading UNWIND before MATCH)**. Prefer
+schema-agnostic #620)**, ~~#620 id-projection~~ **DONE (#677, `079571fc` — VLP
+WITH-item endpoint id-property → `start_id`/`end_id`; corrected a silently-broken
+directed-VLP golden; FK-edge/denorm/closed-VLP residue split to #678)**, ~~#648~~
+**DONE (untyped count(r) multi-type)**, ~~#649~~ **DONE (leading UNWIND before
+MATCH)**. Prefer
 silent-wrong over loud-error fixes. Rule §1.6 applies: if root cause lands in
 the reverse-mapping class, gate loud + document, move on.
 
@@ -193,6 +196,33 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-25: **#620 VLP WITH-item endpoint id-projection** (P-1 bug lane, #677,
+  `079571fc`) — `WITH a.user_id AS x` (also DISTINCT / `count(b)` / mixed) over a
+  variable-length path projected the endpoint *id* property as
+  `t.start_user_id`/`t.end_user_id`, columns the VLP CTE never defines (it
+  special-cases the id column as `start_id`/`end_id` = VLP_START/END_ID_COLUMN,
+  while non-id props get `start_{db_col}`). The WITH-item rewriter
+  (`vlp_rewrite::rewrite_render_expr_for_vlp_with_from_alias`) blindly prefixed
+  the column name → only the id property mismatched → Code 47 at execution. Fix:
+  targeted pre-pass `rewrite_vlp_id_property_columns` (vlp_rewrite.rs) run before
+  the generic prefix rewrite at the `build_chained_with_match_cte_plan` WITH-item
+  site, using the VLP CTE metadata's `is_id_column` + `cypher_property` to rewrite
+  the endpoint id-property PropertyAccess to `t.start_id`/`t.end_id` (moving it off
+  the endpoint alias so the generic rewriter then skips it). Affects directed AND
+  undirected: corrected an existing corpus golden (`test_vlp_with_and_aggregation`,
+  directed `*1..2->` `COUNT(DISTINCT u2.user_id)`) that was locking silently-broken
+  `count(DISTINCT t.end_user_id)` → `count(DISTINCT t.end_id)`. Collision-immunity
+  is structural: `build_vlp_column_metadata` sets `is_id_column` true ONLY for the
+  real node_id, never via the `_id`-suffix heuristic — so composite-id sub-columns
+  (`bank_id`/`account_number` → own `start_bank_id` cols, no truncation to the
+  `start_id` concat) and `_id`-suffix property collisions (`author_id`) are left
+  alone (adversarially verified). +5 regression goldens. Scope: standard-schema
+  single-WITH-barrier id projection. Out: FK-edge self-ref / denorm / closed-VLP
+  endpoint id-property (pre-existing, byte-identical to main, still loud → **#678**);
+  the outer-barrier `.id` alphabetical fallback (#616/#411); OPTIONAL anchor-gate
+  (already #621). Gates: 1609 lib + 222 sql_golden + corpus (2 corrected, 5 new) +
+  ratchet net-zero; fmt/clippy clean. Adversarial worktree review 0 findings.
 
 - 2026-07-25: **#635 FK-edge coupled rel-var VLP WHERE-filter** (P-1 bug lane,
   #675, `04ac22da`) — **not-a-bug + regression lock**. #635 asked (its own words)
