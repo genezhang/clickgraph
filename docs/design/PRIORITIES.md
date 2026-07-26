@@ -214,7 +214,12 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
-- 2026-07-26: **#620 — undirected-VLP CTE-column-projection shapes** (P-1 bug lane,
+- 2026-07-26: **#595 — post-WITH EXISTS correlation in a UNION arm** (P-1 bug lane,
+  #702, `e82a5a5a`, test-only) — verified the 3-arm UNION repro renders correctly
+  on main (middle post-WITH arm correlates on the CTE column `a_c.p1_a_user_id`,
+  fresh-MATCH arm on base-table `a.user_id`, `WHERE c > 0` → HAVING), fixed as
+  collateral of #587 `resolve_correlation_id_sql` + carry-id-across-barrier. Added
+  a regression test. #595 closed.
   #700, `42e87215`, test-only) — verified all residual shapes (OPTIONAL
   anchor-filter, WITH id-property, WITH+aggregate grain, bound RETURN r,
   DISTINCT, shortestPath+name) now render correctly on main, resolved as
