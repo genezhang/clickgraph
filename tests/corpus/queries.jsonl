@@ -1192,3 +1192,8 @@
 {"cypher": "MATCH (a:User) OPTIONAL MATCH (a)<-[:FOLLOWS*1..2]-(b:User) WHERE a.is_active = true RETURN a.name, count(b) AS c ORDER BY a.name", "name": "test_647_end_anchored_optional_vlp_anchor_gate", "schema": "standard"}
 {"cypher": "MATCH (a:User) OPTIONAL MATCH (a)<-[:FOLLOWS*1..2]-(b:User) WHERE b.is_active = true RETURN a.name, count(b) AS c ORDER BY a.name", "name": "test_647_end_anchored_optional_vlp_far_endpoint_filter", "schema": "standard"}
 {"cypher": "MATCH (a:User) OPTIONAL MATCH (a)<-[:FOLLOWS*1..2]-(b:User) RETURN a.name, b.name ORDER BY a.name, b.name", "name": "test_647_end_anchored_optional_vlp_endpoint_projection", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User) WITH a.user_id AS x, b.user_id AS y RETURN x, y", "name": "test_620_undirected_vlp_with_endpoint_id_projection", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User) WITH DISTINCT a.user_id AS x RETURN x", "name": "test_620_undirected_vlp_with_distinct_endpoint_id", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User) WITH a, count(b) AS c RETURN a.user_id, c", "name": "test_620_undirected_vlp_with_count_far_endpoint", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WITH a.user_id AS x, b.user_id AS y RETURN x, y", "name": "test_620_directed_vlp_with_endpoint_id_projection", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User) WITH a.user_id AS id, a.name AS nm RETURN nm ORDER BY nm", "name": "test_620_undirected_vlp_with_id_and_name_mixed", "schema": "standard"}

@@ -28,7 +28,7 @@ WITH RECURSIVE vlp_u1_u2 AS (
 ), 
 with_reach_count_u1_cte_0 AS (SELECT 
       any_value(start_name) AS `p2_u1_name`, 
-      count(DISTINCT t.end_user_id) AS `reach_count`
+      count(DISTINCT t.end_id) AS `reach_count`
 FROM vlp_u1_u2 AS t
 GROUP BY t.start_id
 )
