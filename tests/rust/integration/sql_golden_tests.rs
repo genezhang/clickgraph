@@ -6746,6 +6746,81 @@ async fn recursive_cte_union_wrapped_in_subquery_609() {
     );
 }
 
+/// #620: the undirected-VLP CTE-column-projection residual shapes (surfaced by
+/// #609's subquery wrap as Code 47 — references to columns the VLP CTE never
+/// projects). These were resolved as collateral by the id-property /
+/// endpoint-alias / GROUP-BY fixes (#630/#659/#677/#678); this locks them so a
+/// future undirected-VLP change can't silently reintroduce the dangling refs.
+/// Every shape here is `(a)-[:FOLLOWS*1..2]-(b)` undirected on the standard schema.
+#[tokio::test]
+async fn undirected_vlp_cte_column_projection_shapes_resolve_620() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // Shape A — OPTIONAL undirected VLP: the anchor filter stays on the outer
+    // anchor (`a.user_id = 6`), NOT a stale `t.end_id = 6`, and the LEFT JOIN
+    // correlates the outer anchor to the VLP CTE's start_id.
+    let a = render(
+        &schema,
+        "MATCH (a:User) WHERE a.user_id = 6 OPTIONAL MATCH (a)-[:FOLLOWS*1..2]-(b:User) \
+         RETURN a.user_id, b.user_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        a.contains("WHERE a.user_id = 6") && !a.contains("t.end_id = 6"),
+        "#620 shape A: anchor filter must stay on the outer anchor, not a stale \
+         VLP-CTE end_id:\n{a}"
+    );
+
+    // Shape B — WITH endpoint id-properties over an undirected VLP: `a.user_id`/
+    // `b.user_id` resolve to the CTE's `start_id`/`end_id` (never the unprojected
+    // `start_user_id`/`end_user_id`).
+    let b = render(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User) WHERE a.user_id = 6 \
+         WITH a.user_id AS x, b.user_id AS y RETURN x, y",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        b.contains("t.start_id AS \"x\"") && b.contains("t.end_id AS \"y\""),
+        "#620 shape B: WITH endpoint id-properties must resolve to start_id/end_id:\n{b}"
+    );
+    assert!(
+        !b.contains("start_user_id") && !b.contains("end_user_id"),
+        "#620 shape B: must not reference the unprojected start_user_id/end_user_id:\n{b}"
+    );
+
+    // Shape D — aggregate over an undirected VLP: `count(b)` counts the CTE's
+    // end_id and the implicit GROUP BY key is the CTE's start_id (correct grain).
+    let d = render(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User) WHERE a.user_id = 6 \
+         WITH a, count(b) AS c RETURN a.user_id, c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        d.contains("count(t.end_id)") && d.contains("GROUP BY t.start_id"),
+        "#620 shape D: aggregate must count the CTE end_id, grouped by start_id:\n{d}"
+    );
+
+    // Shape E — a BOUND relationship variable over an undirected VLP: `RETURN r`
+    // projects the CTE's path_relationships (+ endpoints), never a dangling
+    // `r.follower_id`.
+    let e = render(
+        &schema,
+        "MATCH (a:User)-[r:FOLLOWS*1..2]-(b:User) WHERE a.user_id = 6 RETURN r",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        e.contains("t.path_relationships") && !e.contains("r.follower_id"),
+        "#620 shape E: bound rel-var over undirected VLP must project \
+         path_relationships, not a dangling r.follower_id:\n{e}"
+    );
+}
+
 /// #611/#614: OPTIONAL MATCH WHERE placement — gate conjuncts must never
 /// land in the outer WHERE (a bare outer predicate evaluates to false/NULL
 /// against NULL-extended anchor rows and silently drops them).
