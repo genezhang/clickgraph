@@ -201,6 +201,21 @@ pub fn parse_query_with_nom(
         many0(use_clause::parse_use_clause).parse(input)?;
     let use_clause = use_clauses.into_iter().last();
 
+    // Parse leading UNWIND clauses (Neo4j-legal `UNWIND ... AS x MATCH ...`, #649).
+    // Cypher allows UNWIND as the first reading clause; the grammar historically
+    // accepted it only after MATCH. We parse any leading UNWINDs here and thread
+    // them into the trailing `unwind_clauses` list below, so the planner builds
+    // the same `Unwind(Match(...))` plan it already builds for the accepted
+    // `MATCH ... UNWIND ...` form (ARRAY JOIN over the matched rows, then WHERE).
+    // For filter-correlated queries (`UNWIND xs AS x MATCH (n) WHERE n.p = x`)
+    // this is semantically exact. Shapes where the unwound variable is itself a
+    // pattern node inherit the existing trailing-UNWIND planner behavior verbatim
+    // (byte-identical to `MATCH ... UNWIND ...`); this parser change neither fixes
+    // nor worsens those — e.g. LDBC bi-4 now parses and fails loud downstream
+    // instead of being silently truncated at the top-level parse.
+    let (input, leading_unwind_clauses): (&str, Vec<UnwindClause>) =
+        many0(unwind_clause::parse_unwind_clause).parse(input)?;
+
     // Parse reading clauses (MATCH and OPTIONAL MATCH can appear in any order)
     let (input, reading_clauses): (&str, Vec<ReadingClause>) =
         many0(parse_reading_clause).parse(input)?;
@@ -228,8 +243,19 @@ pub fn parse_query_with_nom(
     // Supports multiple consecutive UNWIND for cartesian product
     // Example: MATCH (n) UNWIND n.items AS item RETURN item
     // Example: UNWIND [1,2] AS x UNWIND [10,20] AS y RETURN x, y
-    let (input, unwind_clauses): (&str, Vec<UnwindClause>) =
+    let (input, trailing_unwind_clauses): (&str, Vec<UnwindClause>) =
         many0(unwind_clause::parse_unwind_clause).parse(input)?;
+
+    // Prepend any leading UNWINDs (#649) to the trailing UNWINDs so the planner
+    // sees a single ordered `unwind_clauses` list and builds `Unwind(Match(...))`
+    // exactly as it does for the already-accepted `MATCH ... UNWIND ...` form.
+    let unwind_clauses: Vec<UnwindClause> = if leading_unwind_clauses.is_empty() {
+        trailing_unwind_clauses
+    } else {
+        let mut merged = leading_unwind_clauses;
+        merged.extend(trailing_unwind_clauses);
+        merged
+    };
 
     let (input, with_clause): (&str, Option<WithClause>) =
         opt(with_clause::parse_with_clause).parse(input)?;
@@ -466,6 +492,60 @@ mod tests {
             }
             Err(e) => panic!("Full query parsing failed: {:?}", e),
         }
+    }
+
+    /// #649: a leading UNWIND (Neo4j-legal `UNWIND ... AS x MATCH ...`) must parse.
+    /// It is threaded into `unwind_clauses` alongside the following MATCH so the
+    /// planner builds the same `Unwind(Match(...))` plan as `MATCH ... UNWIND ...`.
+    #[test]
+    fn test_parse_leading_unwind_before_match() {
+        let query =
+            "UNWIND ['Alice', 'Bob'] AS name MATCH (u:User) WHERE u.name = name RETURN u.name";
+        let ast = parse_query(query).expect("leading UNWIND before MATCH should parse");
+
+        // The leading UNWIND lands in unwind_clauses.
+        assert_eq!(ast.unwind_clauses.len(), 1, "Expected one UNWIND clause");
+        assert_eq!(ast.unwind_clauses[0].alias, "name");
+
+        // The MATCH is still captured (its WHERE is a per-MATCH clause).
+        assert!(!ast.match_clauses.is_empty(), "Expected MATCH clause");
+        assert!(
+            ast.match_clauses[0].where_clause.is_some(),
+            "Expected per-MATCH WHERE clause"
+        );
+        assert!(ast.return_clause.is_some(), "Expected RETURN clause");
+    }
+
+    /// #649: a leading UNWIND followed by a trailing UNWIND (either side of the
+    /// MATCH) must collect both, leading first, preserving cartesian order.
+    #[test]
+    fn test_parse_leading_and_trailing_unwind() {
+        let query = "UNWIND [1, 2] AS x MATCH (u:User) UNWIND [3, 4] AS y RETURN u.name, x, y";
+        let ast = parse_query(query).expect("leading + trailing UNWIND should parse");
+
+        assert_eq!(ast.unwind_clauses.len(), 2, "Expected two UNWIND clauses");
+        assert_eq!(
+            ast.unwind_clauses[0].alias, "x",
+            "leading UNWIND comes first"
+        );
+        assert_eq!(
+            ast.unwind_clauses[1].alias, "y",
+            "trailing UNWIND comes second"
+        );
+        assert!(!ast.match_clauses.is_empty(), "Expected MATCH clause");
+    }
+
+    /// #649 guard: a standalone leading UNWIND with no following MATCH must keep
+    /// its pre-existing behavior (routed through the trailing UNWIND path).
+    #[test]
+    fn test_parse_standalone_leading_unwind_unchanged() {
+        let query = "UNWIND [1, 2, 3] AS x RETURN x";
+        let ast = parse_query(query).expect("standalone UNWIND should parse");
+
+        assert_eq!(ast.unwind_clauses.len(), 1, "Expected one UNWIND clause");
+        assert_eq!(ast.unwind_clauses[0].alias, "x");
+        assert!(ast.match_clauses.is_empty(), "No MATCH clause expected");
+        assert!(ast.return_clause.is_some(), "Expected RETURN clause");
     }
 
     #[test]

@@ -448,17 +448,14 @@ async fn ldbc_bi_3() {
 }
 
 #[tokio::test]
-#[ignore = "pre-existing parser gap (found while fixing #516, NOT caused by it): the second \
-    UNION ALL arm of bi-4-workaround.cypher opens with `UNWIND topForums AS topForum1 \
-    MATCH (person:Person)<-[:HAS_MEMBER]-(topForum1:Forum) ...` — UNWIND before MATCH at the \
-    top level of a query/union-arm. parse_query_with_nom() only parses UNWIND clauses *after* \
-    MATCH/OPTIONAL MATCH (src/open_cypher_parser/mod.rs), unlike with_clause.rs's nested \
-    subsequent_unwind/subsequent_match chain, which already supports that ordering. Before \
-    #516's all-consuming top-level parse fix, this silently truncated the whole arm (MATCH, \
-    WITH, RETURN, ORDER BY, LIMIT all silently dropped as 'trailing garbage') and the test \
-    still passed because it only asserts non-empty SQL containing SELECT — a live example of \
-    the exact silent-drop bug class #516 fixes. Fixing the UNWIND-before-MATCH ordering gap \
-    itself is a separate, out-of-scope parser feature; tracked for future work, not fixed here."]
+#[ignore = "leading UNWIND before MATCH now PARSES (#649), so the bi-4-workaround union \
+    arm `UNWIND topForums AS topForum1 MATCH (person:Person)<-[:HAS_MEMBER]-(topForum1:Forum) \
+    ...` is no longer silently truncated. It now fails LOUD and honest with \
+    UnionColumnMismatch (arm 1 projects personId/personFirstName/... while arm 0 projects \
+    creationDate/firstName/id/... — the two UNION ALL arms emit columns in different order/\
+    naming). That column-alignment gap across union arms is a separate downstream issue, \
+    tracked apart from the parser fix; the silent-drop bug class #516 hardened against is \
+    resolved here (loud, not silent). Un-ignore when union-arm column alignment is fixed."]
 async fn ldbc_bi_4() {
     let schema = load_ldbc_schema();
     // Official bi-4 uses CALL subquery; use adapted workaround with UNION ALL

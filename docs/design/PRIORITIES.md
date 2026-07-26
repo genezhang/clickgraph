@@ -82,9 +82,9 @@ fixable: ~~#647~~ **DONE (#652, `91475be3`)**, #644 (denorm OPTIONAL-VLP anchor
 join, loud — **in flight**), #646 (composite self-ref FK-edge, loud), #641
 (#589 gate holes), #640 (EXISTS beyond single-hop), #636 (4-way shared-anchor),
 #635 (FK-edge coupled rel-var on VLP), #648 (untyped count(r) multi-type),
-#649 (leading UNWIND). Prefer silent-wrong over loud-error fixes. Rule §1.6
-applies: if root cause lands in the reverse-mapping class, gate loud + document,
-move on.
+~~#649~~ **DONE (leading UNWIND before MATCH)**. Prefer silent-wrong over
+loud-error fixes. Rule §1.6 applies: if root cause lands in the reverse-mapping
+class, gate loud + document, move on.
 
 ### P-2 — P1.2: the five WITH functions  ☑ (done — `refactor/p12-five-with-fns`)
 `REFACTORING_SAFETY_PLAN.md` §4.2. Delivered: the missing P1.1 `walk()` /
@@ -191,6 +191,22 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-25: **#649 leading UNWIND** (P-1 bug lane, `fix/649-leading-unwind`,
+  PR #669) — `UNWIND [...] AS x MATCH (n) WHERE n.p = x RETURN n` (UNWIND as the
+  first clause) was rejected; pre-#516 it "passed" only by silently dropping
+  everything from MATCH on. `parse_query_with_nom` now parses leading UNWINDs
+  before the reading clauses and threads them (leading-first) into the same flat
+  `unwind_clauses` list the trailing form uses, so the planner builds the
+  identical `Unwind(Match(...))` plan → byte-identical SQL to `MATCH ... UNWIND`.
+  NOT a new `ReadingClause::Unwind` variant (an order-preserving Unwind-wraps-
+  Match plan was prototyped and dropped the ARRAY JOIN — renderer only emits it
+  when Unwind wraps Match). Scoped diff: corpus `test_unwind_list` .err→.sql
+  (ARRAY JOIN / LATERAL VIEW), only transition in the 517-golden sweep. Removed
+  matrix strict-xfail `test_unwind_with_match`; ldbc_bi_4 now PARSES and fails
+  loud `UnionColumnMismatch` (silent-drop → loud, union-arm alignment deferred).
+  +3 parser unit tests. Adversarial worktree review: 0 blockers, 2 nits (one
+  "keep as-is"). Gates: corpus/sql_golden/1609+513/clippy/ratchet/fmt.
 
 - 2026-07-25: **P-4 F4** — second Phase-C slice, mirrors F3. Added structural
   `subplan: Arc<LogicalPlan>` to `render_expr::ExistsSubquery` (backs `EXISTS { pattern }`)
