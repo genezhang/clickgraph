@@ -86,8 +86,10 @@ join, loud — **in flight**), ~~#646~~ **DONE (composite self-ref FK-edge; foll
 `03d61403`); #672 part 1 loud order/arity guard remains)**, ~~#641~~
 **DONE (#680, `fe6de435` — #589 gate holes: swallowed-in-UNION + orientation-asymmetric,
 both silent→loud)**, #640 (EXISTS beyond single-hop — ~~shape 1 undirected~~
-**DONE (#694, `2fdf98f8` — OR-of-both-orientations; homogeneous edges only,
-heterogeneous stays loud; shapes 2–5 multi-hop/both-outer/composite/denorm remain)**),
+**DONE (#694, `2fdf98f8`)** + ~~shape 3 both-endpoints-outer~~ **DONE (#704,
+`90d5697b` — both-outer correlated subquery + `map_exists_outer_predicate`;
+follow-up #705 shared exhaustive rewriter); shapes 2/4/5 (multi-hop/composite/denorm)
+remain**),
 #636 (4-way shared-anchor),
 ~~#635~~ **DONE (#675 — not-a-bug: coupled rel-var VLP WHERE-filter already
 correct; +3 regression goldens; dangling `RETURN r`/`count(r)` shapes are
@@ -214,7 +216,14 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
-- 2026-07-26: **#595 — post-WITH EXISTS correlation in a UNION arm** (P-1 bug lane,
+- 2026-07-26: **#640 shape 3 — both-endpoints-outer EXISTS with inner WHERE** (P-1
+  bug lane, #704, `90d5697b`) — `MATCH (a),(c) WHERE EXISTS { (a)-[:R]->(c) WHERE
+  <pred> }` was loud; now emits the both-outer correlated subquery (no inner JOIN)
+  with `map_exists_outer_predicate` mapping refs by each endpoint's schema.
+  Direction-aware; VLP/composite/undirected/single-outer guards preserved. I caught
+  a function-nested-predicate leak myself before review (added ScalarFnCall/List
+  recursion). Adversarially reviewed (0 blockers; 2 pre-existing loud MINORs shared
+  with #587 → follow-up #705). Shapes 2/4/5 remain open on #640.
   #702, `e82a5a5a`, test-only) — verified the 3-arm UNION repro renders correctly
   on main (middle post-WITH arm correlates on the CTE column `a_c.p1_a_user_id`,
   fresh-MATCH arm on base-table `a.user_id`, `WHERE c > 0` → HAVING), fixed as
