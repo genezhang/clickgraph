@@ -213,7 +213,14 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
-- 2026-07-26: **#672 part 2 — non-self-ref composite FK-edge malformed join** (P-1
+- 2026-07-26: **#642 — VLP multi-sub-CTE union-arm collision** (P-1 bug lane, #698,
+  `e34cead8`) — a multi-sub-CTE VLP (shortestPath/min-hops: `{name}_inner` +
+  `{name}` wrapper in one RawSql blob) in both UNION arms emitted Code 179 on the
+  derived `vlp_a_b_inner` (#618 renamed only the outer). Fix discovers the derived
+  family (`{base}_{suffix} AS (` headers, string-literal-aware) and renames it with
+  the base via the #618 structural rewriter. Two-layer safety (loose discovery +
+  strict structural rewrite). Byte-identical #618 single-CTE + single-arm.
+  Adversarially reviewed with isolated-build differential (0 defects). #642 closed.
   bug lane, #696, `03d61403`) — a non-self-ref FK-edge with a composite FK emitted
   `f.region = c."forum_region, forum_id"` (comma-joined FK wrapped as one bogus
   identifier → Code 47). The `FkEdgeJoin` non-self-ref Right/Left branches used
