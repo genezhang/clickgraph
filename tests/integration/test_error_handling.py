@@ -264,10 +264,14 @@ class TestInvalidPatterns:
             RETURN a.name, b.name
             """,
             schema_name=simple_graph["schema_name"], raise_on_error=False)
-        
-        # ClickGraph currently doesn't support comma-separated patterns (Cartesian products)
-        # This is a known limitation - expect error
-        assert response.get("status") == "error"
+
+        # Comma-separated disconnected patterns (Cartesian products) ARE
+        # supported: the two anchors join on `ON 1 = 1`, filtered by WHERE.
+        # (This previously asserted an error under an obsolete "not supported"
+        # limitation — Cartesian support landed since.) Expect the single
+        # Alice × Bob row, no error.
+        assert response.get("status") != "error", response
+        assert response.get("results") == [{"a.name": "Alice", "b.name": "Bob"}], response
     
     def test_invalid_variable_length_range(self, simple_graph):
         """Test invalid variable-length range."""
