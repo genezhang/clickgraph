@@ -81,7 +81,9 @@ Exit met: one fully green nightly run + xpass count 0.
 ### P-1 — Keep a small silent-wrong bug lane open  (standing, ≤1 agent)
 Open issues that are NOT the reverse-mapping class and are individually
 fixable: ~~#647~~ **DONE (#652, `91475be3`)**, #644 (denorm OPTIONAL-VLP anchor
-join, loud — **in flight**), ~~#646~~ **DONE (composite self-ref FK-edge)**, ~~#641~~
+join, loud — **in flight**), ~~#646~~ **DONE (composite self-ref FK-edge; follow-up
+#672 part 2 ~~non-self-ref composite from_id/to_id malformed~~ DONE (#696,
+`03d61403`); #672 part 1 loud order/arity guard remains)**, ~~#641~~
 **DONE (#680, `fe6de435` — #589 gate holes: swallowed-in-UNION + orientation-asymmetric,
 both silent→loud)**, #640 (EXISTS beyond single-hop — ~~shape 1 undirected~~
 **DONE (#694, `2fdf98f8` — OR-of-both-orientations; homogeneous edges only,
@@ -211,7 +213,15 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
-- 2026-07-26: **#640 shape 1 — undirected EXISTS with inner WHERE** (P-1 bug lane,
+- 2026-07-26: **#672 part 2 — non-self-ref composite FK-edge malformed join** (P-1
+  bug lane, #696, `03d61403`) — a non-self-ref FK-edge with a composite FK emitted
+  `f.region = c."forum_region, forum_id"` (comma-joined FK wrapped as one bogus
+  identifier → Code 47). The `FkEdgeJoin` non-self-ref Right/Left branches used
+  `Identifier::Single(resolve_column(…))`; fixed to `from_comma_separated` +
+  `resolve_identifier` (mirrors the #646 self-ref path), zipping into per-column
+  equalities. Byte-identical single-column; self-ref untouched; new fixture +
+  golden. Adversarially reviewed (0 defects). Part 1 (loud order/arity guard)
+  still open on #672.
   #694, `2fdf98f8`) — `EXISTS { (a)-[:R]-(b) WHERE b.p }` failed loud; #587 covered
   only directed. `generate_exists_filtered_graph_rel_sql` now handles
   `Direction::Either` via the OR-of-both-orientations correlation (fused into the
