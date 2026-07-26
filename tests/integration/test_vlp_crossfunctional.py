@@ -78,7 +78,6 @@ class TestVLPWithClause:
         for row in result["data"]:
             assert row["path_len"] == 2
 
-    @pytest.mark.xfail(reason="Code bug: VLP crossfunctional query generates invalid SQL")
     def test_vlp_with_and_aggregation(self, simple_graph):
         """VLP + WITH + Aggregation: Count distinct endpoints."""
         query = """
