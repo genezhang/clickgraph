@@ -89,6 +89,11 @@ correct; +3 regression goldens; dangling `RETURN r`/`count(r)` shapes are
 schema-agnostic #620)**, ~~#620 id-projection~~ **DONE (#677, `079571fc` — VLP
 WITH-item endpoint id-property → `start_id`/`end_id`; corrected a silently-broken
 directed-VLP golden; FK-edge/denorm/closed-VLP residue split to #678)**,
+~~#678~~ **DONE (#692, `3e6d6078` — denorm VLP `WITH a.code` → `start_id`/`end_id`;
+`DenormalizedCteStrategy` was the sole strategy hardcoding id `cypher_property`
+to `"id"` vs the shared `build_vlp_column_metadata`'s real logical name;
+composite + multi-label-table guards keep loud; FK-edge/closed variants already
+render correctly on main via #677)**,
 ~~#659~~ **DONE (#682, `2a2d900f` — VLP `count(<endpoint>)` id → `start_id`/`end_id`
 via miss-fallback only; zeek #545/#558/#559 byte-identical; also fixed standard-schema
 + zeek `count(b)` variants; residuals → #683)**, ~~#648~~
@@ -203,7 +208,17 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
-- 2026-07-26: **P-0 nightly GREEN** — `workflow_dispatch` run `30213027096`
+- 2026-07-26: **#678 — denorm VLP WITH endpoint id-property** (P-1 bug lane, #692,
+  `3e6d6078`) — `WITH a.code AS x, b.code AS y` over a denorm VLP rendered
+  `t.start_code`/`t.end_code` (Code 47); the denorm CTE projects `start_id`/`end_id`.
+  `DenormalizedCteStrategy` was the sole VLP strategy hardcoding the id column's
+  `cypher_property` to `"id"` (vs the shared `build_vlp_column_metadata`'s real
+  logical name), so the #620/#677 WITH-item id pre-pass never matched. Fix resolves
+  the logical node_id property name; composite + multi-label-table (zeek `dns_log`)
+  guards keep the pre-existing loud behavior (byte-identical to main). FK-edge
+  self-ref + closed-VLP variants already render correctly on main (#677). #678 closed.
+  Adversarially reviewed (0 blockers; both MINORs — loud→silent edge + comment —
+  addressed).
   (head `f60be99f`) = `success`. Closes the red streak open since ~07-13. Final
   layer cleared by **#690** (`f60be99f`): `test_unwind_with_match` generator
   String-vs-Int fix, `test_external_users_with_access` xfail restored (+#689 filed),
