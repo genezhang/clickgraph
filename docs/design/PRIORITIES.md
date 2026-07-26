@@ -83,7 +83,10 @@ Open issues that are NOT the reverse-mapping class and are individually
 fixable: ~~#647~~ **DONE (#652, `91475be3`)**, #644 (denorm OPTIONAL-VLP anchor
 join, loud — **in flight**), ~~#646~~ **DONE (composite self-ref FK-edge)**, ~~#641~~
 **DONE (#680, `fe6de435` — #589 gate holes: swallowed-in-UNION + orientation-asymmetric,
-both silent→loud)**, #640 (EXISTS beyond single-hop), #636 (4-way shared-anchor),
+both silent→loud)**, #640 (EXISTS beyond single-hop — ~~shape 1 undirected~~
+**DONE (#694, `2fdf98f8` — OR-of-both-orientations; homogeneous edges only,
+heterogeneous stays loud; shapes 2–5 multi-hop/both-outer/composite/denorm remain)**),
+#636 (4-way shared-anchor),
 ~~#635~~ **DONE (#675 — not-a-bug: coupled rel-var VLP WHERE-filter already
 correct; +3 regression goldens; dangling `RETURN r`/`count(r)` shapes are
 schema-agnostic #620)**, ~~#620 id-projection~~ **DONE (#677, `079571fc` — VLP
@@ -208,7 +211,14 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
-- 2026-07-26: **#678 — denorm VLP WITH endpoint id-property** (P-1 bug lane, #692,
+- 2026-07-26: **#640 shape 1 — undirected EXISTS with inner WHERE** (P-1 bug lane,
+  #694, `2fdf98f8`) — `EXISTS { (a)-[:R]-(b) WHERE b.p }` failed loud; #587 covered
+  only directed. `generate_exists_filtered_graph_rel_sql` now handles
+  `Direction::Either` via the OR-of-both-orientations correlation (fused into the
+  JOIN ON), mirroring `join_builder.rs`. Homogeneous edges render; heterogeneous
+  undirected + composite/denorm/polymorphic stay loud (role-ambiguity + #587
+  guards); directed byte-identical. Adversarially reviewed (0 defects). Shapes 2–5
+  remain open on #640.
   `3e6d6078`) — `WITH a.code AS x, b.code AS y` over a denorm VLP rendered
   `t.start_code`/`t.end_code` (Code 47); the denorm CTE projects `start_id`/`end_id`.
   `DenormalizedCteStrategy` was the sole VLP strategy hardcoding the id column's
