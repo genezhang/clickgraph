@@ -1761,16 +1761,26 @@ impl LogicalPlan {
     /// TEST_FRIENDS_WITH connect TestUser→TestUser) — materialized by a
     /// `vlp_multi_type_*` UNION-ALL CTE aliased `AS t` with generic columns
     /// (`start_id`/`end_id`/`r_from_id`/...), NOT by any single rel type's
-    /// edge table?
+    /// edge table — **in the current scope** (no `WITH` barrier crossed)?
     ///
     /// The rel-var analog of `node_is_multi_type_rel_endpoint`
     /// (`analyzer/projection_tagging.rs`), which checks `gr.labels.len() > 1`
     /// for NODE columns. `count(r)` over such a rel var must count the CTE's
     /// own rows, not `count(r.<first-type's-from_id>)` — the first type's
     /// FK column doesn't exist on the CTE and the alias `r` is unbound
-    /// (the CTE is aliased `t`), a ClickHouse Code 47. Distinct from
-    /// `rel_alias_uses_pattern_union` (`pattern_combinations` / unlabeled
-    /// endpoints, CTE aliased `pattern_union_r AS r`).
+    /// (the CTE is aliased `t`), a ClickHouse Code 47.
+    ///
+    /// Unlike `rel_alias_uses_pattern_union`, this **does NOT recurse through a
+    /// `WithClause` barrier**. The two CTEs render with DIFFERENT FROM aliases:
+    /// pattern_union is `pattern_union_r AS r` (the rel var itself) both pre-
+    /// and post-`WITH`, so its branch can always use `t_alias`; but the
+    /// multi_type CTE is `AS t` in-scope and, after a `WITH r` barrier, the
+    /// outer FROM becomes `with_r_cte_0 AS r` — the raw `t` alias is no longer
+    /// in scope. Correctly resolving the post-`WITH` continuation alias is the
+    /// #602/#616 forward-resolution-through-barrier problem (blocked on render-
+    /// phase timing), so this predicate deliberately declines post-`WITH`,
+    /// leaving that shape exactly as it was (loud, deferred) rather than
+    /// emitting a dangling `t`.
     pub fn rel_alias_uses_multi_type_vlp(&self, rel_alias: &str) -> bool {
         match self {
             LogicalPlan::GraphRel(rel) => {
@@ -1790,7 +1800,9 @@ impl LogicalPlan {
             LogicalPlan::Skip(s) => s.input.rel_alias_uses_multi_type_vlp(rel_alias),
             LogicalPlan::Limit(l) => l.input.rel_alias_uses_multi_type_vlp(rel_alias),
             LogicalPlan::Cte(cte) => cte.input.rel_alias_uses_multi_type_vlp(rel_alias),
-            LogicalPlan::WithClause(wc) => wc.input.rel_alias_uses_multi_type_vlp(rel_alias),
+            // Deliberately NO WithClause recursion — post-WITH the multi_type
+            // CTE alias `t` is out of scope (see doc above). Decline so the
+            // continuation falls through to its existing (main) behavior.
             LogicalPlan::CartesianProduct(cp) => {
                 cp.left.rel_alias_uses_multi_type_vlp(rel_alias)
                     || cp.right.rel_alias_uses_multi_type_vlp(rel_alias)

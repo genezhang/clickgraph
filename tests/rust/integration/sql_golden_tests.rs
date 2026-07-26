@@ -4185,6 +4185,26 @@ async fn untyped_count_relationship_multi_type_uses_cte_column_648() {
         "#648: single-type untyped count(r) must stay on the real edge-table \
          path (regression guard), got:\n{single}"
     );
+
+    // Regression guard: the multi-type guard deliberately does NOT fire across a
+    // WITH barrier — post-WITH the CTE alias `t` is out of scope (the outer FROM
+    // is `with_r_cte_0 AS r`), so emitting `count(t.start_id)` there would dangle.
+    // The correct post-WITH continuation alias is the #602/#616 forward-
+    // resolution problem; until then this shape must stay exactly as before
+    // (still loud), never regress to a dangling `t`.
+    let with_barrier = normalize(
+        &render(
+            &schema,
+            "MATCH (u:TestUser)-[r]->(o:TestUser) WITH r RETURN count(r) AS total",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        !with_barrier.contains("count(t.start_id)"),
+        "#648: multi-type guard must NOT fire post-WITH (dangling `t` alias — \
+         the #602/#616 continuation problem), got:\n{with_barrier}"
+    );
 }
 
 /// #506 regression: an INCOMING-direction OPTIONAL MATCH on a denormalized

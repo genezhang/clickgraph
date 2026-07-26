@@ -1441,6 +1441,15 @@ impl ProjectionTagging {
                                 // (always projected, non-NULL on a real edge row), aliased
                                 // `t` — mirroring the `pattern_union` branch above and the
                                 // NODE-side `node_is_multi_type_rel_endpoint` handling.
+                                //
+                                // NOTE: `rel_alias_uses_multi_type_vlp` intentionally does
+                                // NOT recurse past a `WITH` barrier (unlike the
+                                // pattern_union predicate), so the hardcoded `t`
+                                // (VLP_CTE_FROM_ALIAS) is only used while `t` is genuinely
+                                // in scope. Post-`WITH` the outer FROM is `with_r_cte_0 AS r`
+                                // and `t` is gone; that continuation-alias case is the
+                                // #602/#616 forward-resolution problem and is left as-is
+                                // (still loud) rather than emitting a dangling `t`.
                                 if input_plan
                                     .is_some_and(|p| p.rel_alias_uses_multi_type_vlp(t_alias))
                                 {
