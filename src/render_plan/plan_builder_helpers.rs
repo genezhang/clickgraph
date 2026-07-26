@@ -684,83 +684,33 @@ pub(super) fn rewrite_denorm_optional_vlp_anchor_scan(
 }
 
 /// #683: rewrite every `<anchor_alias>.<logical_id>` PropertyAccess in `expr` to
-/// `<anchor_alias>.<physical_id>`, recursing through aggregate/scalar/operator/
-/// CASE/list wrappers. Used by `rewrite_denorm_optional_vlp_anchor_scan` to align
-/// the anchor's logical-id references (e.g. the `count(a.code)` a bare `count(a)`
-/// normalises to) with the `__denorm_scan_{alias}` CTE's physical id column.
+/// `<anchor_alias>.<physical_id>`. Used by `rewrite_denorm_optional_vlp_anchor_scan`
+/// to align the anchor's logical-id references (e.g. the `count(a.code)` a bare
+/// `count(a)` normalises to) with the `__denorm_scan_{alias}` CTE's physical id
+/// column. Routed through the EXHAUSTIVE `map_render_expr` (§5 walker discipline)
+/// so every wrapper variant (incl. ArraySubscript/Reduce/Map) is covered — a new
+/// `RenderExpr` variant fails to compile rather than silently skipping a rewrite.
 fn rewrite_anchor_logical_id_to_physical(
     expr: &mut RenderExpr,
     anchor_alias: &str,
     logical_id: &str,
     physical_id: &str,
 ) {
-    match expr {
-        RenderExpr::PropertyAccessExp(pa) => {
+    let mut f = |e: &RenderExpr| -> crate::render_plan::render_expr::RenderRewrite {
+        use crate::render_plan::render_expr::RenderRewrite;
+        if let RenderExpr::PropertyAccessExp(pa) = e {
             if pa.table_alias.0 == anchor_alias
                 && matches!(&pa.column, PropertyValue::Column(c) if c == logical_id)
             {
-                pa.column = PropertyValue::Column(physical_id.to_string());
+                return RenderRewrite::Replace(RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: pa.table_alias.clone(),
+                    column: PropertyValue::Column(physical_id.to_string()),
+                }));
             }
         }
-        RenderExpr::AggregateFnCall(agg) => {
-            for arg in agg.args.iter_mut() {
-                rewrite_anchor_logical_id_to_physical(arg, anchor_alias, logical_id, physical_id);
-            }
-        }
-        RenderExpr::ScalarFnCall(func) => {
-            for arg in func.args.iter_mut() {
-                rewrite_anchor_logical_id_to_physical(arg, anchor_alias, logical_id, physical_id);
-            }
-        }
-        RenderExpr::OperatorApplicationExp(op) => {
-            for operand in op.operands.iter_mut() {
-                rewrite_anchor_logical_id_to_physical(
-                    operand,
-                    anchor_alias,
-                    logical_id,
-                    physical_id,
-                );
-            }
-        }
-        RenderExpr::Case(case) => {
-            if let Some(scrutinee) = case.expr.as_mut() {
-                rewrite_anchor_logical_id_to_physical(
-                    scrutinee,
-                    anchor_alias,
-                    logical_id,
-                    physical_id,
-                );
-            }
-            for (when_expr, then_expr) in case.when_then.iter_mut() {
-                rewrite_anchor_logical_id_to_physical(
-                    when_expr,
-                    anchor_alias,
-                    logical_id,
-                    physical_id,
-                );
-                rewrite_anchor_logical_id_to_physical(
-                    then_expr,
-                    anchor_alias,
-                    logical_id,
-                    physical_id,
-                );
-            }
-            if let Some(else_expr) = case.else_expr.as_mut() {
-                rewrite_anchor_logical_id_to_physical(
-                    else_expr,
-                    anchor_alias,
-                    logical_id,
-                    physical_id,
-                );
-            }
-        }
-        RenderExpr::List(items) => {
-            for item in items.iter_mut() {
-                rewrite_anchor_logical_id_to_physical(item, anchor_alias, logical_id, physical_id);
-            }
-        }
-        _ => {}
-    }
+        RenderRewrite::Recurse
+    };
+    *expr = crate::render_plan::render_expr::map_render_expr(expr, &mut f);
 }
 
 /// #644 helper: find the single OPTIONAL variable-length GraphRel in `plan`

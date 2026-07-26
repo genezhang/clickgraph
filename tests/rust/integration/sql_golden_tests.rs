@@ -10243,8 +10243,7 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
              RETURN count(DISTINCT a) AS c";
         let sql_d = normalize(&render(&schema, cypher_d, SqlDialect::ClickHouse).await);
         assert!(
-            sql_d.contains("count(DISTINCT a.origin_code)")
-                && !sql_d.contains("a.code"),
+            sql_d.contains("count(DISTINCT a.origin_code)") && !sql_d.contains("a.code"),
             "#683: count(DISTINCT a) must also resolve to the physical id:\n{sql_d}"
         );
     }
