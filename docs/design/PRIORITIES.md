@@ -81,7 +81,9 @@ Open issues that are NOT the reverse-mapping class and are individually
 fixable: ~~#647~~ **DONE (#652, `91475be3`)**, #644 (denorm OPTIONAL-VLP anchor
 join, loud — **in flight**), ~~#646~~ **DONE (composite self-ref FK-edge)**, #641
 (#589 gate holes), #640 (EXISTS beyond single-hop), #636 (4-way shared-anchor),
-#635 (FK-edge coupled rel-var on VLP), ~~#648~~ **DONE (untyped count(r)
+~~#635~~ **DONE (#675 — not-a-bug: coupled rel-var VLP WHERE-filter already
+correct; +3 regression goldens; dangling `RETURN r`/`count(r)` shapes are
+schema-agnostic #620)**, ~~#648~~ **DONE (untyped count(r)
 multi-type)**, ~~#649~~ **DONE (leading UNWIND before MATCH)**. Prefer
 silent-wrong over loud-error fixes. Rule §1.6 applies: if root cause lands in
 the reverse-mapping class, gate loud + document, move on.
@@ -191,6 +193,27 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-25: **#635 FK-edge coupled rel-var VLP WHERE-filter** (P-1 bug lane,
+  #675, `04ac22da`) — **not-a-bug + regression lock**. #635 asked (its own words)
+  whether a coupled FK-edge rel-var in a `WHERE` on a variable-length pattern
+  dangles `r`. Investigation: it does NOT — the VLP filter push-down (the
+  "HOLISTIC FIX Dec 26, 2025", `vlp_rewrite.rs:784-788` + `cte_extraction.rs`
+  `relationship_filters`) binds coupled `r.<col>` to the edge-scan alias
+  (`start_node`/`new_start`) inside BOTH the base and recursive CTE scans,
+  implementing genuine all-hops semantics. `PLACED_BY` (fk_edge) is non-transitive
+  so `*1..2` collapses to single-hop (already #633); a real coupled VLP CTE needs
+  a self-ref FK-edge (`filesystem_single` PARENT), where WHERE-r works. Differential
+  matrix (coupled `filesystem_single PARENT*` vs standard `social FOLLOWS*`): every
+  genuinely-dangling shape (`RETURN r`, `count(r)`, post-WITH `WHERE r`) dangles
+  IDENTICALLY on coupled and standard → general VLP rel-var *projection* gap (#620),
+  NOT coupled-specific. Change is test-only (no source): +3 regression goldens
+  (outgoing / incoming-reversed / compound) on `fk_edge_self_ref`, all binding
+  `r.parent_id` to the edge-scan alias (no bare `r.` dangle). Corpus byte-identical
+  otherwise; sweep deterministic; ratchet net-zero; 515 integration tests. Adversarial
+  worktree review 0 findings (reviewer independently traced the recursion against
+  concrete filesystem rows to confirm all-hops semantics). Remaining dangling shapes
+  retargeted to #620.
 
 - 2026-07-25: **#646 composite self-ref FK-edge** (P-1 bug lane, follow-up to
   #632) — a self-referencing FK-edge (edge table == node table) with a COMPOSITE
