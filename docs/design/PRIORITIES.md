@@ -82,9 +82,9 @@ fixable: ~~#647~~ **DONE (#652, `91475be3`)**, #644 (denorm OPTIONAL-VLP anchor
 join, loud — **in flight**), #646 (composite self-ref FK-edge, loud), #641
 (#589 gate holes), #640 (EXISTS beyond single-hop), #636 (4-way shared-anchor),
 #635 (FK-edge coupled rel-var on VLP), #648 (untyped count(r) multi-type),
-#649 (leading UNWIND). Prefer silent-wrong over loud-error fixes. Rule §1.6
-applies: if root cause lands in the reverse-mapping class, gate loud + document,
-move on.
+~~#649~~ **DONE (leading UNWIND before MATCH)**. Prefer silent-wrong over
+loud-error fixes. Rule §1.6 applies: if root cause lands in the reverse-mapping
+class, gate loud + document, move on.
 
 ### P-2 — P1.2: the five WITH functions  ☑ (done — `refactor/p12-five-with-fns`)
 `REFACTORING_SAFETY_PLAN.md` §4.2. Delivered: the missing P1.1 `walk()` /

@@ -816,6 +816,21 @@ RETURN q.query, d.name, resolved_ip
 
 **Note**: UNWIND on array columns generates ClickHouse `ARRAY JOIN` for optimal performance.
 
+### Leading UNWIND (before MATCH)
+
+`UNWIND` may appear as the first clause, before `MATCH` — the Neo4j-legal form for
+driving a match from a list of values:
+
+```cypher
+-- For each name in the list, match the matching user
+UNWIND ['Alice', 'Bob', 'Charlie'] AS name
+MATCH (u:User) WHERE u.name = name
+RETURN u.name, u.email
+```
+
+This is equivalent to writing the `UNWIND` after the `MATCH`; both build the same
+`ARRAY JOIN` over the matched rows with the `WHERE` applied on top.
+
 ---
 
 ## ORDER BY, LIMIT, SKIP
