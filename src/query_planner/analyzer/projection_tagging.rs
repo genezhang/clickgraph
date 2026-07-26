@@ -1425,6 +1425,82 @@ impl ProjectionTagging {
                                     continue;
                                 }
 
+                                // #648: a relationship alias bound to a MULTI-TYPE
+                                // relationship (two+ candidate rel types between
+                                // labeled endpoints, e.g. `(u:TestUser)-[r]->(o:TestUser)`
+                                // with both TEST_FOLLOWS and TEST_FRIENDS_WITH) is
+                                // materialized by a `vlp_multi_type_*` UNION-ALL CTE
+                                // aliased `AS t` with generic label-agnostic columns
+                                // (`start_id`/`end_id`/`r_from_id`/...), NOT by any single
+                                // rel type's edge table. The per-label resolution below
+                                // would (incorrectly) pick the FIRST candidate type's
+                                // `from_id` (e.g. `follower_id`) and keep the Cypher rel
+                                // alias `r` — but that column doesn't exist on the CTE and
+                                // `r` is unbound (the CTE alias is `t`), so ClickHouse
+                                // errors Code 47. Route through the CTE's own `start_id`
+                                // (always projected, non-NULL on a real edge row), aliased
+                                // `t` — mirroring the `pattern_union` branch above and the
+                                // NODE-side `node_is_multi_type_rel_endpoint` handling.
+                                //
+                                // NOTE: `rel_alias_uses_multi_type_vlp` intentionally does
+                                // NOT recurse past a `WITH` barrier (unlike the
+                                // pattern_union predicate), so the hardcoded `t`
+                                // (VLP_CTE_FROM_ALIAS) is only used while `t` is genuinely
+                                // in scope. Post-`WITH` the outer FROM is `with_r_cte_0 AS r`
+                                // and `t` is gone; that continuation-alias case is the
+                                // #602/#616 forward-resolution problem and is left as-is
+                                // (still loud) rather than emitting a dangling `t`.
+                                if input_plan
+                                    .is_some_and(|p| p.rel_alias_uses_multi_type_vlp(t_alias))
+                                {
+                                    let access = |col: &str| {
+                                        LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(
+                                                crate::query_planner::join_context::VLP_CTE_FROM_ALIAS
+                                                    .to_string(),
+                                            ),
+                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                col.to_string(),
+                                            ),
+                                        })
+                                    };
+                                    let count_arg = if is_distinct {
+                                        // Full row identity across label spaces, matching
+                                        // the pattern_union DISTINCT shape above.
+                                        let path_rel_first = LogicalExpr::ArraySubscript {
+                                            array: Box::new(access("path_relationships")),
+                                            index: Box::new(LogicalExpr::Literal(
+                                                crate::query_planner::logical_expr::Literal::Integer(0),
+                                            )),
+                                        };
+                                        LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                                            operator: Operator::Distinct,
+                                            operands: vec![LogicalExpr::ScalarFnCall(
+                                                ScalarFnCall {
+                                                    name: "tuple".to_string(),
+                                                    args: vec![
+                                                        access("start_type"),
+                                                        access("start_id"),
+                                                        access("end_type"),
+                                                        access("end_id"),
+                                                        path_rel_first,
+                                                    ],
+                                                },
+                                            )],
+                                        })
+                                    } else {
+                                        // NULL-sensitive single-column count on the
+                                        // always-projected `start_id` (#502 style).
+                                        access("start_id")
+                                    };
+                                    item.expression =
+                                        LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                            name: aggregate_fn_call.name.clone(),
+                                            args: vec![count_arg],
+                                        });
+                                    continue;
+                                }
+
                                 // For relationships:
                                 // - count(r) -> count(<first edge_id column>) NULL-sensitive:
                                 //   under OPTIONAL MATCH a LEFT JOIN miss leaves the edge's own

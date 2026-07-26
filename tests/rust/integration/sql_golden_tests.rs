@@ -4123,6 +4123,90 @@ async fn denorm_count_relationship_resolves_edge_id_column_502() {
     }
 }
 
+/// #648 regression: untyped `count(r)` over a MULTI-TYPE relationship (two+
+/// candidate rel types between labeled endpoints) must count the
+/// `vlp_multi_type_*` CTE's own always-projected `start_id` column via the CTE
+/// alias `t` — NOT `count(r.<first-type's-from_id>)`, which references a column
+/// that doesn't exist on the CTE and an alias (`r`) that is never bound (the
+/// CTE is aliased `t`), a ClickHouse Code 47 at runtime. The rel-var sibling of
+/// #526's `pattern_union` fix (unlabeled endpoints) and #494's node-side
+/// multi-type-endpoint handling. `count(*)`, typed `count(r)`, single-type
+/// untyped `count(r)`, and fully-unlabeled `count(r)` are unaffected.
+#[tokio::test]
+async fn untyped_count_relationship_multi_type_uses_cte_column_648() {
+    let schema = load_schema("schemas/test/test_fixtures.yaml");
+
+    // TestUser->TestUser has TWO rel types (TEST_FOLLOWS, TEST_FRIENDS_WITH),
+    // so untyped `r` materializes a vlp_multi_type CTE aliased `t`.
+    let cypher = "MATCH (u:TestUser)-[r]->(other:TestUser) RETURN count(r) AS total";
+    let first = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+    for _ in 0..5 {
+        let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#648: render is nondeterministic:\nFIRST:\n{first}\nAGAIN:\n{again}"
+        );
+    }
+    // Must count the CTE's own column via alias `t`, never the first rel type's
+    // FK column against the unbound alias `r`.
+    assert!(
+        first.contains("count(t.start_id)"),
+        "#648: expected `count(t.start_id)` over the multi-type CTE, got:\n{first}"
+    );
+    assert!(
+        !first.contains("count(r."),
+        "#648: count(r) still references the unbound `r` alias / a per-type FK \
+         column that doesn't exist on the vlp_multi_type CTE (Code 47):\n{first}"
+    );
+
+    // count(DISTINCT r) must build a label-agnostic identity tuple over `t`,
+    // not a per-type edge_id tuple against `r`.
+    let distinct_cypher =
+        "MATCH (u:TestUser)-[r]->(other:TestUser) RETURN count(DISTINCT r) AS total";
+    let distinct = normalize(&render(&schema, distinct_cypher, SqlDialect::ClickHouse).await);
+    assert!(
+        distinct.contains("count(DISTINCT tuple(t.start_type, t.start_id"),
+        "#648: count(DISTINCT r) over multi-type CTE must use the label-agnostic \
+         `t` identity tuple, got:\n{distinct}"
+    );
+
+    // Guardrails: the fix must NOT touch the single-type untyped path (real
+    // edge table, alias `r`) — TestUser->TestProduct has only TEST_PURCHASED.
+    let single = normalize(
+        &render(
+            &schema,
+            "MATCH (u:TestUser)-[r]->(p:TestProduct) RETURN count(r) AS total",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        single.contains("count(r.user_id)") && single.contains("purchases AS r"),
+        "#648: single-type untyped count(r) must stay on the real edge-table \
+         path (regression guard), got:\n{single}"
+    );
+
+    // Regression guard: the multi-type guard deliberately does NOT fire across a
+    // WITH barrier — post-WITH the CTE alias `t` is out of scope (the outer FROM
+    // is `with_r_cte_0 AS r`), so emitting `count(t.start_id)` there would dangle.
+    // The correct post-WITH continuation alias is the #602/#616 forward-
+    // resolution problem; until then this shape must stay exactly as before
+    // (still loud), never regress to a dangling `t`.
+    let with_barrier = normalize(
+        &render(
+            &schema,
+            "MATCH (u:TestUser)-[r]->(o:TestUser) WITH r RETURN count(r) AS total",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        !with_barrier.contains("count(t.start_id)"),
+        "#648: multi-type guard must NOT fire post-WITH (dangling `t` alias — \
+         the #602/#616 continuation problem), got:\n{with_barrier}"
+    );
+}
+
 /// #506 regression: an INCOMING-direction OPTIONAL MATCH on a denormalized
 /// schema (`MATCH (a:Airport) OPTIONAL MATCH (a)<-[:FLIGHT]-(b) ...`) must
 /// render the same shape as the OUTGOING direction — an anchor
