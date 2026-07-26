@@ -508,6 +508,22 @@ Fixes the size()-pattern member of the residue (candidate **#613**).
 `RenderExpr::Raw(not_exists_sql)` at `:1630` with a structured type carrying the
 pattern; render at `to_sql`. Corpus byte-identical.
 
+> **⚠️ F5 cost/value note (2026-07-25, deferred — not started).** Unlike F3/F4
+> (cheap field-adds to an existing struct), F5 needs a **new `RenderExpr`
+> variant** because `Raw(String)` is a bare string shared by ~86 uses across the
+> codebase, of which NOT-EXISTS is only ONE producer (the single bake site at the
+> `LogicalExpr::OperatorApplicationExp` `NOT (PathPattern)` arm). NOT-EXISTS `Raw`
+> is textually **indistinguishable** from every other `Raw`, so a `NotExists`
+> sibling variant forces a behavior decision at ~20+ `RenderExpr::Raw(...)` match
+> sites across 8 files (many exhaustive, no `_` arm): `to_sql_query.rs`,
+> `plan_optimizer.rs` (5 arms), `cte_extraction.rs`, `variable_scope.rs`,
+> `expression_utils.rs`, `write_to_sql.rs`, `pattern_comprehension_sql.rs`,
+> `plan_builder_utils.rs`. That is a large byte-identical slice whose only
+> consumer (#583 render rework) is architecturally **deferred** — high cost, no
+> near-term payoff. **Recommendation: skip F5 until #583 is actually being worked**
+> (do it as part of that, or when Phase C is otherwise on the critical path).
+> F3/F4 already gave the two cheap de-opaques their structural setup.
+
 ### Phase D — final cleanup
 
 **F6 — delete residual reverse scaffolding + `set_property_mapping`** (now the
