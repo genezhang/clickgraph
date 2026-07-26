@@ -79,13 +79,16 @@ Exit: one fully green scheduled nightly run + xpass count ~0.
 ### P-1 — Keep a small silent-wrong bug lane open  (standing, ≤1 agent)
 Open issues that are NOT the reverse-mapping class and are individually
 fixable: ~~#647~~ **DONE (#652, `91475be3`)**, #644 (denorm OPTIONAL-VLP anchor
-join, loud — **in flight**), ~~#646~~ **DONE (composite self-ref FK-edge)**, #641
-(#589 gate holes), #640 (EXISTS beyond single-hop), #636 (4-way shared-anchor),
+join, loud — **in flight**), ~~#646~~ **DONE (composite self-ref FK-edge)**, ~~#641~~
+**DONE (#680, `fe6de435` — #589 gate holes: swallowed-in-UNION + orientation-asymmetric,
+both silent→loud)**, #640 (EXISTS beyond single-hop), #636 (4-way shared-anchor),
 ~~#635~~ **DONE (#675 — not-a-bug: coupled rel-var VLP WHERE-filter already
 correct; +3 regression goldens; dangling `RETURN r`/`count(r)` shapes are
 schema-agnostic #620)**, ~~#620 id-projection~~ **DONE (#677, `079571fc` — VLP
 WITH-item endpoint id-property → `start_id`/`end_id`; corrected a silently-broken
-directed-VLP golden; FK-edge/denorm/closed-VLP residue split to #678)**, ~~#648~~
+directed-VLP golden; FK-edge/denorm/closed-VLP residue split to #678)**,
+~~#659~~ **INVESTIGATED (denorm OPTIONAL-VLP `count(b)`→`end_code`; loud/safe;
+clean fix overturns #545/#558/#559 dotted-column contract → dedicated PR)**, ~~#648~~
 **DONE (untyped count(r) multi-type)**, ~~#649~~ **DONE (leading UNWIND before
 MATCH)**. Prefer
 silent-wrong over loud-error fixes. Rule §1.6 applies: if root cause lands in
@@ -196,6 +199,27 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-25: **#641 chained-undirected-optional loud-gate holes** (P-1 bug lane,
+  #680, `fe6de435`) — two shapes slipped past the #589 loud gate and stayed
+  silently single-direction (dropping the undirected hop's reverse-orientation
+  rows). **Hole 1:** the `LogicalPlan::Union` arm of `transform_bidirectional`
+  (`bidirectional_union.rs`) caught ALL errors (`Err(_) => input.clone()`),
+  swallowing the fatal `UnsupportedPattern`; a chained-undirected-optional inside
+  a UNION branch kept rendering single-direction. Fixed by propagating
+  `UnsupportedPattern` (matching the analyzer/mod.rs call-site contract) while
+  still tolerating other errors — rewrote the `.map()` as a `for` loop so the
+  early return is expressible. **Hole 2:** `has_chained_optional_nested_undirected_edge`
+  keyed only on the OUTER hop being `Direction::Either`, so undirected-inner +
+  directed-outer slipped through; widened to fire when the chained optional pair
+  (junction not a CartesianProduct = outcome #2) has the outer OR nested-inner hop
+  undirected. Both remain loud-only (real fix needs the anchor-LEFT-JOIN-onto-match-
+  union render, #589/#583). Over-fire boundary held by the `inner.is_optional ==
+  Some(true)` guard (#492-B3 shared-alias REQUIRED chains stay OK). +2 unit tests,
+  +2 corpus `.err` goldens. Adversarial review: full 1201-query differential, only
+  the 2 new queries flip OK→loud (zero regressions), loud verdict confirmed
+  justified by inspecting main's NULL-anchor-garbage / single-direction SQL. Corpus
+  byte-identical otherwise; 1611 lib + ratchet net-zero.
 
 - 2026-07-25: **#620 VLP WITH-item endpoint id-projection** (P-1 bug lane, #677,
   `079571fc`) — `WITH a.user_id AS x` (also DISTINCT / `count(b)` / mixed) over a
