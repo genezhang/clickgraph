@@ -1469,7 +1469,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 // 🔧 CRITICAL: Rewrite JOIN conditions for UNION branches with VLP
                 // If this render plan has UNIONs with VLP CTEs, we need to rewrite
                 // JOIN conditions that reference Cypher aliases to use VLP CTE columns
-                rewrite_vlp_union_branch_aliases(&mut render_plan)?;
+                rewrite_vlp_union_branch_aliases(&mut render_plan, self, schema)?;
 
                 // 🔧 FIX: Rewrite aggregate arguments for VLP end nodes
                 // Problem: COUNT(DISTINCT b) where b is VLP end node generates b.end_id
@@ -3901,7 +3901,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 log::debug!(
                     "❌❌❌ Union handler: About to call rewrite_vlp_union_branch_aliases ❌❌❌"
                 );
-                rewrite_vlp_union_branch_aliases(&mut base_plan)?;
+                rewrite_vlp_union_branch_aliases(&mut base_plan, self, schema)?;
                 log::debug!(
                     "❌❌❌ Union handler: Finished rewrite_vlp_union_branch_aliases ❌❌❌"
                 );
@@ -5639,7 +5639,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     variable_registry: None,
                 };
 
-                rewrite_vlp_union_branch_aliases(&mut render_plan)?;
+                rewrite_vlp_union_branch_aliases(&mut render_plan, self, schema)?;
                 rewrite_vlp_aggregate_aliases(&mut render_plan)?;
 
                 // #644: reroute a denormalized OPTIONAL VLP anchor through its

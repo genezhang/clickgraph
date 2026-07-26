@@ -29,7 +29,7 @@ WITH RECURSIVE vlp_u_g AS (
 )
 SELECT 
       t.start_name AS "u.name", 
-      count(DISTINCT t.end_group_id) AS "groups_reached"
+      count(DISTINCT t.end_id) AS "groups_reached"
 FROM vlp_u_g AS t
 GROUP BY t.start_name
 ORDER BY groups_reached DESC
