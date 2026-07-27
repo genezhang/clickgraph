@@ -14720,3 +14720,64 @@ async fn disconnected_cartesian_count_star_keeps_cross_join_601() {
         );
     }
 }
+
+/// Regression for #580: a MULTI-TYPE VLP (`[:R1|R2*1..n]`) endpoint's id
+/// property (e.g. `u.user_id`) must project the CTE's native, label-agnostic
+/// `start_id`/`end_id` column — NOT `JSONExtractString(start_properties, ...)`.
+///
+/// Two live-verified failures the JSON path caused:
+///   1. Code 215 NOT_AN_AGGREGATE — the GROUP BY builder resolves the same
+///      id-property to `t.start_id`, so the SELECT's `JSONExtractString(...) AS
+///      "u.user_id"` and the GROUP BY key were DIFFERENT expressions.
+///   2. Silent-empty results — when the property name is ambiguous across the
+///      branch's JOINed tables (e.g. `user_id` on both users_bench and
+///      authored_bench), ClickHouse qualifies the JSON key as `"u_1.user_id"`,
+///      so `JSONExtractString(blob, 'user_id')` returns '' for every row.
+///
+/// Projecting the native `start_id`/`end_id` fixes both (the single-type VLP
+/// path already does this). Scoped to single-column node_id; composite-id and
+/// non-id properties stay on the JSON path (broader follow-up). Both start
+/// (left_connection) and end (right_connection) endpoints are covered.
+#[tokio::test]
+async fn multi_type_vlp_endpoint_id_uses_native_column_580() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // Aggregate over a multi-type VLP grouping by the START endpoint's id.
+    let agg = "MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x) WHERE u.user_id = 1 \
+               RETURN labels(x)[1] AS node_type, u.user_id, count(*)";
+    // End endpoint id via a reversed pattern (u is right_connection).
+    let end = "MATCH (x)-[:FOLLOWS|AUTHORED*1..2]->(u:User) WHERE u.user_id = 2 \
+               RETURN u.user_id, count(*)";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // Alias quoting differs by dialect: ClickHouse double-quotes, Databricks
+        // backticks. GROUP BY keys are backtick-quoted in both.
+        let q = match dialect {
+            SqlDialect::ClickHouse => '"',
+            _ => '`',
+        };
+        let sql = render(&schema, agg, dialect).await;
+        // START endpoint id → native start_id, not a JSON extract.
+        assert!(
+            sql.contains(&format!("t.start_id AS {q}u.user_id{q}")),
+            "#580: start endpoint id must project native t.start_id for {dialect:?}, got:\n{sql}"
+        );
+        assert!(
+            !sql.contains("start_properties, 'user_id'")
+                && !sql.contains("start_properties, '$.user_id'"),
+            "#580: start endpoint id must NOT JSON-extract for {dialect:?}, got:\n{sql}"
+        );
+        // GROUP BY must reference the projected alias (unified via the
+        // expression→alias map), never a dangling `t.start_id` sentinel.
+        assert!(
+            sql.contains("GROUP BY `node_type`, `u.user_id`"),
+            "#580: GROUP BY must reference the projected id alias for {dialect:?}, got:\n{sql}"
+        );
+
+        let end_sql = render(&schema, end, dialect).await;
+        assert!(
+            end_sql.contains(&format!("t.end_id AS {q}u.user_id{q}")),
+            "#580: end endpoint id must project native t.end_id for {dialect:?}, got:\n{end_sql}"
+        );
+    }
+}

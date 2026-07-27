@@ -14,7 +14,7 @@ INNER JOIN test_integration.post_likes_test r1 ON u_1.user_id = r1.user_id
 INNER JOIN test_integration.posts_test p2 ON r1.post_id = p2.post_id
 )
 SELECT 
-      JSONExtractString(t.start_properties, 'user_id') AS "u.user_id", 
+      t.start_id AS "u.user_id", 
       t.path_relationships[1] AS "type(r)", 
       count(*) AS "action_count"
 FROM vlp_multi_type_u_target AS t

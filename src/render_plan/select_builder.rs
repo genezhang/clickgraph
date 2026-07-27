@@ -1073,6 +1073,76 @@ impl SelectBuilder for LogicalPlan {
                                         "end"
                                     };
 
+                                    // #580: when the accessed property IS the endpoint
+                                    // node's (single-column) id, project the CTE's native
+                                    // label-agnostic `start_id`/`end_id` column instead of
+                                    // extracting from the `{position}_properties` JSON blob.
+                                    // Two reasons, both live-verified:
+                                    //   1. Silent-empty: the CTE builds the JSON blob via
+                                    //      `formatRowNoNewline('JSONEachRow', alias.col, …)`
+                                    //      (json_builder.rs), and when the property name is
+                                    //      AMBIGUOUS across the branch's JOINed tables (e.g.
+                                    //      `user_id` on both users_bench and authored_bench)
+                                    //      ClickHouse qualifies the JSON key as
+                                    //      `"u_1.user_id"`, so `JSONExtractString(blob,
+                                    //      'user_id')` returns '' for every row.
+                                    //   2. Code 215 crash: the GROUP BY builder
+                                    //      (group_by_builder.rs / find_id_column_for_alias
+                                    //      #538) independently resolves the same id-property
+                                    //      to the native `start_id`/`end_id`, so the SELECT's
+                                    //      `JSONExtractString(...) AS "u.user_id"` and the
+                                    //      GROUP BY key `t.start_id` are DIFFERENT expressions
+                                    //      — the projected non-aggregate is neither grouped
+                                    //      nor aggregated (NOT_AN_AGGREGATE).
+                                    // Projecting `t.start_id`/`t.end_id` here makes both
+                                    // sides reference the same expression, which
+                                    // `build_aliased_group_by` then unifies via its
+                                    // expression→alias map. Mirrors the working single-type
+                                    // VLP path (which already projects `t.start_id AS ...`).
+                                    // Scoped to SINGLE-column node_id: composite-id endpoints
+                                    // expose `start_id`/`end_id` as a CONCATENATED String in
+                                    // the multi-type CTE (multi_type_vlp_joins.rs), so a
+                                    // single-property access can't map onto it — those fall
+                                    // through to the JSON path unchanged. The broader
+                                    // ambiguous-JSON-key silent-empty bug for NON-id
+                                    // properties is a separate, wider issue (follow-up).
+                                    if !has_pattern_combinations {
+                                        if let Some(id_col) = plan_ctx.and_then(|ctx| {
+                                            single_column_node_id_for_alias(ctx, cypher_alias)
+                                        }) {
+                                            if id_col == *col_name {
+                                                let native_id_col = format!("{}_id", position);
+                                                log::info!(
+                                                    "🎯 Multi-type VLP id-property '{}.{}' -> native CTE column '{}.{}' (#580)",
+                                                    cypher_alias, col_name, cte_alias, native_id_col
+                                                );
+                                                select_items.push(SelectItem {
+                                                    expression: RenderExpr::PropertyAccessExp(
+                                                        PropertyAccess {
+                                                            table_alias: RenderTableAlias(
+                                                                cte_alias.clone(),
+                                                            ),
+                                                            column: PropertyValue::Column(
+                                                                native_id_col,
+                                                            ),
+                                                        },
+                                                    ),
+                                                    col_alias: item
+                                                        .col_alias
+                                                        .as_ref()
+                                                        .map(|ca| ColumnAlias(ca.0.clone()))
+                                                        .or_else(|| {
+                                                            Some(ColumnAlias(format!(
+                                                                "{}.{}",
+                                                                cypher_alias, col_name
+                                                            )))
+                                                        }),
+                                                });
+                                                continue;
+                                            }
+                                        }
+                                    }
+
                                     log::info!(
                                         "🎯 Multi-type VLP property access: '{}.{}' -> extracting from {}_properties JSON in CTE '{}'",
                                         cypher_alias, col_name, position, cte_alias
@@ -1761,6 +1831,47 @@ impl SelectBuilder for LogicalPlan {
 
         Ok(select_items)
     }
+}
+
+/// #580: resolve the SINGLE-column `node_id` DB column for `alias`, or `None`.
+///
+/// Used by the multi-type-VLP endpoint property rewrite to decide whether an
+/// accessed property is the endpoint node's id — in which case the CTE's native
+/// label-agnostic `start_id`/`end_id` column is the correct (and only
+/// GROUP-BY-consistent) source, rather than a `JSONExtractString` over the
+/// per-node properties blob. Returns `None` when:
+///   - the alias isn't a resolvable node variable (relation / path / unknown),
+///   - the endpoint resolves to MORE THAN ONE label (a genuinely multi-label
+///     endpoint has no single native id column — leave it on the JSON path),
+///   - or the node's `node_id` is COMPOSITE (the multi-type CTE exposes those
+///     as a concatenated String in `start_id`/`end_id`, which a single-property
+///     access can't map onto — leave it on the JSON path).
+///
+/// Reads labels via `PlanCtx`'s `TableCtx` registry (edge-direction label
+/// inference), matching `node_alias_id_expr`; the id column comes from the
+/// task-local schema (CLAUDE.md rule 3), so this stays schema-shape agnostic.
+fn single_column_node_id_for_alias(
+    plan_ctx: &crate::query_planner::plan_ctx::PlanCtx,
+    alias: &str,
+) -> Option<String> {
+    let table_ctx = plan_ctx.get_table_ctx(alias).ok()?;
+    if table_ctx.is_relation() || table_ctx.is_path_variable() {
+        return None;
+    }
+    let labels = table_ctx.get_labels()?;
+    // A single native id column only exists for a single-label endpoint.
+    if labels.len() != 1 {
+        return None;
+    }
+    let schema = crate::server::query_context::get_current_schema_with_fallback()?;
+    let node_schema = schema.node_schema(&labels[0]).ok()?;
+    let cols = node_schema.node_id.columns();
+    // Composite ids surface as a concatenated String in the multi-type CTE's
+    // start_id/end_id — not addressable via a single property. Leave to JSON.
+    if cols.len() != 1 {
+        return None;
+    }
+    Some(cols[0].to_string())
 }
 
 /// #509: build the id-column `PropertyAccess` (or multi-label `coalesce(...)`
