@@ -95,6 +95,13 @@ pub(crate) use super::clause_extractors::{
     extract_having, extract_limit, extract_order_by, extract_skip, extract_sorted_properties,
 };
 
+// P2.4 (REFACTORING_SAFETY_PLAN.md §5.1): the WITH-detection predicate group
+// moved to `plan_predicates.rs`; re-exported here so existing
+// `super::plan_builder_utils::*` call sites resolve during the transition.
+// (`has_with_clause_in_tree` has no production caller here — only the test
+// module below uses it, importing it directly — so it is not re-exported.)
+pub(crate) use super::plan_predicates::{has_with_clause_in_graph_rel, plan_contains_with_clause};
+
 /// Build property mapping from select items for CTE column resolution.
 /// Maps (alias, property) -> column_name for property access resolution.
 ///
@@ -542,6 +549,10 @@ pub fn collect_aliases_from_single_render_expr(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // P2.4: `has_with_clause_in_tree` moved to `plan_predicates` and is not
+    // re-exported (no production caller); the characterization tests below use
+    // it directly.
+    use super::super::plan_predicates::has_with_clause_in_tree;
 
     #[test]
     fn test_placeholder_functions() {
@@ -2003,98 +2014,6 @@ pub fn hoist_nested_ctes(from: &mut RenderPlan, to: &mut Vec<Cte>) {
         );
         to.extend(nested_ctes);
     }
-}
-
-/// Check if there's a `WithClause` anywhere in the logical plan tree.
-///
-/// This is the single canonical WITH-existence predicate (§4.2 unify). It is
-/// built on the exhaustive [`LogicalPlan::any_node`] walk, so it reaches EVERY
-/// child edge — `GraphRel.center`, `Cte.input`, `ViewScan.input`, and the
-/// write-op inputs — and can never drift out of sync with the plan structure.
-/// The walk is iterative (explicit stack), so it cannot overflow on deep plans;
-/// the old manual `depth`-guard recursion is therefore gone.
-///
-/// [`plan_contains_with_clause`] is a synonym that delegates here — they were
-/// two hand-rolled copies that had historically drifted (the §6 bug class);
-/// they are now one implementation with two names kept for call-site clarity.
-pub fn has_with_clause_in_tree(plan: &LogicalPlan) -> bool {
-    plan.any_node(|node| matches!(node, LogicalPlan::WithClause(_)))
-}
-
-/// Check if plan has WITH clause in GraphRel.right (WITH+MATCH pattern)
-pub fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
-    log::debug!(
-        "🔍 has_with_clause_in_graph_rel: Called with plan type: {:?}",
-        std::mem::discriminant(plan)
-    );
-    fn check_graph_rel_right(plan: &LogicalPlan) -> bool {
-        log::debug!(
-            "🔍 check_graph_rel_right: Checking plan type: {:?}",
-            std::mem::discriminant(plan)
-        );
-        match plan {
-            LogicalPlan::GraphRel(gr) => {
-                log::debug!(
-                    "🔍 check_graph_rel: Found GraphRel, checking left: {:?}, right: {:?}",
-                    std::mem::discriminant(&*gr.left),
-                    std::mem::discriminant(&*gr.right)
-                );
-                // Check BOTH left and right sides for WITH clauses
-                let has_in_left = has_with_clause_in_tree(&gr.left);
-                let has_in_right = has_with_clause_in_tree(&gr.right);
-                let recursive_left = check_graph_rel_right(&gr.left);
-                let recursive_right = check_graph_rel_right(&gr.right);
-                log::debug!(
-            "🔍 check_graph_rel: has_in_left: {}, has_in_right: {}, recursive_left: {}, recursive_right: {}",
-                    has_in_left, has_in_right, recursive_left, recursive_right
-                );
-                has_in_left || has_in_right || recursive_left || recursive_right
-            }
-            LogicalPlan::GraphJoins(gj) => {
-                log::debug!(
-                    "🔍 check_graph_rel_right: Found GraphJoins, checking input: {:?}",
-                    std::mem::discriminant(&*gj.input)
-                );
-                check_graph_rel_right(&gj.input)
-            }
-            LogicalPlan::Projection(p) => {
-                log::debug!(
-                    "🔍 check_graph_rel_right: Found Projection, checking input: {:?}",
-                    std::mem::discriminant(&*p.input)
-                );
-                check_graph_rel_right(&p.input)
-            }
-            LogicalPlan::Filter(f) => {
-                log::debug!(
-                    "🔍 check_graph_rel_right: Found Filter, checking input: {:?}",
-                    std::mem::discriminant(&*f.input)
-                );
-                check_graph_rel_right(&f.input)
-            }
-            // Handle the unknown Discriminant(7) case - assume it might contain WITH clauses
-            _ => {
-                log::debug!("🔍 check_graph_rel_right: Unknown plan type {:?}, checking with has_with_clause_in_tree", std::mem::discriminant(plan));
-                has_with_clause_in_tree(plan)
-            }
-        }
-    }
-    let result = check_graph_rel_right(plan);
-    log::debug!("🔍 has_with_clause_in_graph_rel: Final result: {}", result);
-    result
-}
-
-/// Check if plan contains a `WithClause` node — synonym for
-/// [`has_with_clause_in_tree`].
-///
-/// These were two independently hand-rolled walkers that drifted apart (the §6
-/// infinite-iteration / lost-WITH bug class: `plan_contains_with_clause` had at
-/// one point missed `GraphRel.center`, `Cte`, and `ViewScan.input`). They are
-/// now the SAME implementation — this one delegates — so the CLAUDE.md rule-5
-/// "these must agree" invariant is structural, not a convention to police. The
-/// name is retained because call sites in the WITH→CTE builder read more
-/// clearly as "does this sub-tree still contain a WITH to process?".
-pub fn plan_contains_with_clause(plan: &LogicalPlan) -> bool {
-    has_with_clause_in_tree(plan)
 }
 
 pub(crate) fn generate_swapped_joins_for_optional_match(

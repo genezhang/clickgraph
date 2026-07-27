@@ -462,7 +462,7 @@ Split along the audited seams, **pure groups first** (lowest risk):
 | `render_plan/vlp_rewrite.rs` | VLP expr rewriting, 115–812 + `extract_vlp_alias_mappings` :1296 | pure `&mut RenderExpr` transforms — **move first** |
 | `render_plan/pattern_comprehension_sql.rs` | ✅ **moved (P2.2, Jul 2026)** — the pattern-comprehension SQL *string* emitters (31 fns, ~2,600 lines): emits SQL text, a different layer from the rest | cohesive, separable |
 | `render_plan/clause_extractors.rs` | ✅ **moved (P2.3, Jul 2026)** — the pure clause extractors that remained (`extract_having/order_by/limit/skip` + `extract_sorted_properties`, was 1467–1560). NOTE: `extract_filters/from/group_by/distinct` from the original group had already migrated to `filter_builder.rs`/`group_by_builder.rs` via incremental work | the only externally-consumed group; mostly pure |
-| `render_plan/plan_predicates.rs` | WITH-detection + alias/table lookups 3850–4247, 4418–4519 | pure read-only walkers — natural home for the §4 `walk()` rewrites |
+| `render_plan/plan_predicates.rs` | ✅ **WITH-detection group moved (P2.4, Jul 2026)** — `has_with_clause_in_tree`/`has_with_clause_in_graph_rel`/`plan_contains_with_clause`. NOTE: the fresh-scan/with-exported alias walkers (`find_fresh_table_scan_aliases_in_plan`/`collect_fresh_scan_aliases`/`with_exported_aliases_in_branch`) are private helpers coupled to P2.5's cte_rewrite fns, so they ride with P2.5, not here | pure read-only walkers — natural home for the §4 `walk()` rewrites |
 | `render_plan/cte_rewrite.rs` | CTE-ref extraction + CTE/alias rewriting 813–1295, 3323–3849, 6102–6970 | pure-ish (RenderPlan/RenderExpr + maps) |
 | `render_plan/with_to_cte/` (dir) | 6999–15491: the two giant builders + their orbit | **entangled core** — moved in Phase 2, decomposed in Phase 4 |
 
@@ -996,7 +996,12 @@ this slice). ·
 `extract_sorted_properties` → `render_plan/clause_extractors.rs`, `pub(crate)`
 re-exports; `extract_filters/from/group_by/distinct` had already migrated to
 `filter_builder`/`group_by_builder`; byte-identical corpus + goldens, ratchet
-net-zero) · ☐ P2.4 plan_predicates move ·
+net-zero) · ☑ P2.4 plan_predicates move (WITH-detection group
+`has_with_clause_in_tree`/`has_with_clause_in_graph_rel`/`plan_contains_with_clause`
+→ `render_plan/plan_predicates.rs`, `pub(crate)` re-exports; the private
+fresh-scan/with-exported alias walkers ride with P2.5 cte_rewrite, and the
+`plan_builder_helpers` `has_with_clause_in_graph_rel` D-cluster copy is untouched;
+byte-identical corpus + goldens, ratchet net-zero) ·
 ☐ P2.5 cte_rewrite move (+D2) · ☐ P2.6 with_to_cte move · ☐ P2.7 D1 ·
 ☐ P2.8 D6 · ☐ P2.9 D8 · ☐ P2.10 import hygiene + remaining dead_code
 

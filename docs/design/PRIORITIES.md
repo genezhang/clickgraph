@@ -143,7 +143,7 @@ P-3). Latent finding filed in-report: `has_with_clause_in_graph_rel` is
 duplicated (utils + helpers) with a DIFFERENT semantic — a future consolidation
 candidate, not touched here (§8.3 no-drive-by).
 
-### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ◐ (P2.1, P2.2, P2.3 merged — P2.4 next)
+### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ◐ (P2.1–P2.4 merged — P2.5 next)
 The dead-code sweep shrank plan_builder_utils.rs to ~14.5K lines. §5.1 moves are
 now underway. Pure groups first (vlp_rewrite →
 pattern_comprehension_sql → clause_extractors → plan_predicates →
@@ -161,8 +161,15 @@ pure clause extractors that remained (`extract_having/order_by/limit/skip` +
 `pub(crate)` re-exports, byte-identical goldens + corpus, ratchet net-zero. NOTE:
 the original §5.1 group also named `extract_filters/from/group_by/distinct`, but
 those had already migrated to `filter_builder.rs`/`group_by_builder.rs` via
-incremental work, so P2.3's real scope was the 5-function remainder. **Next: P2.4
-plan_predicates move.**
+incremental work, so P2.3's real scope was the 5-function remainder. **P2.4
+(plan_predicates move) delivered** — the WITH-detection predicate group
+(`has_with_clause_in_tree`/`has_with_clause_in_graph_rel`/`plan_contains_with_clause`)
+extracted to `render_plan/plan_predicates.rs`, `pub(crate)` re-exports,
+byte-identical goldens + corpus, ratchet net-zero. Scoped down from §5.1's
+premise: the private fresh-scan/with-exported alias walkers named there are
+coupled to P2.5's cte_rewrite fns, so they ride with P2.5 (§8.3 no-drive-by); the
+`plan_builder_helpers` `has_with_clause_in_graph_rel` D-cluster copy stays
+untouched. **Next: P2.5 cte_rewrite move.**
 
 ### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1+F1b/#602+#662+F2a+F3+F4 done; F2b/F5 and F1b residue open)
 **Concrete staged plan written: `docs/design/FORWARD_RESOLUTION_PLAN.md`.** It
@@ -246,6 +253,25 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-27: **P2.4 — plan_predicates module move** (P-3 refactor lane) — the
+  WITH-detection predicate group (`has_with_clause_in_tree`,
+  `has_with_clause_in_graph_rel`, `plan_contains_with_clause`, old lines
+  2008–2098) extracted verbatim to a new `render_plan/plan_predicates.rs`.
+  `pub(crate) use` re-exports for the two production-called names left in
+  `plan_builder_utils`; `has_with_clause_in_tree` has no production caller (only
+  the P1.2 characterization tests use it) so it is imported directly by the test
+  module instead of re-exported (keeps the lib build warning-free). Zero logic
+  edits. **Scoped down from §5.1's premise**: the band also listed the private
+  fresh-scan / with-exported alias walkers, but those are coupled to P2.5's
+  cte_rewrite fns (`update_graph_joins_cte_refs`/`rewrite_logical_expr_cte_refs`),
+  so they ride with P2.5 rather than churn visibility ahead of their callers
+  (§8.3 no-drive-by); the `plan_builder_helpers` second copy of
+  `has_with_clause_in_graph_rel` (`pub(super)`, different semantics) is the
+  flagged D-cluster duplicate and is left untouched (separate dedup). §5.1 table
+  + §9 checklist + P-3 updated. Gates: 1612 lib + 529 integration (incl.
+  `corpus_sweep` + sql_golden) + 1 ratchet + 7 unit, 0 failures; **byte-identical**
+  (moved-fn bodies diff-clean vs main, no golden churn, ratchet net-zero);
+  fmt/clippy clean. Next refactor slice: P2.5 cte_rewrite.
 - 2026-07-27: **P2.3 — clause_extractors module move** (P-3 refactor lane) — the
   pure clause extractors remaining in `plan_builder_utils.rs`
   (`extract_having`/`extract_order_by`/`extract_limit`/`extract_skip` +
