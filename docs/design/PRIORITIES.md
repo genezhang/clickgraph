@@ -143,7 +143,7 @@ P-3). Latent finding filed in-report: `has_with_clause_in_graph_rel` is
 duplicated (utils + helpers) with a DIFFERENT semantic — a future consolidation
 candidate, not touched here (§8.3 no-drive-by).
 
-### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ◐ (P2.1–P2.4 merged; P2.5 nearly done — only D2 dedup left)
+### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ◐ (P2.1–P2.5 done; P2.6 with_to_cte next)
 The dead-code sweep shrank plan_builder_utils.rs to ~14.5K lines. §5.1 moves are
 now underway. Pure groups first (vlp_rewrite →
 pattern_comprehension_sql → clause_extractors → plan_predicates →
@@ -186,8 +186,15 @@ CTE-ref rewriters (`rewrite_logical_expr_cte_refs`, `update_graph_joins_cte_refs
 and the 3 alias walkers deferred from P2.4) extracted to a new
 `render_plan/cte_graph_joins_rewrite.rs` (the LogicalPlan companion to
 `cte_rewrite.rs`), fully byte-identical (no visibility changes needed), ratchet
-net-zero. Remaining P2.5: **D2 dedup only**. **Next: P2.5 D2 dedup, or P2.6
-with_to_cte.**
+net-zero. Remaining P2.5: **D2 dedup only**. **D2 dedup delivered**: the
+four-function CTE property-rewriter family collapsed to one operator core +
+`rewrite_render_expr_for_cte` + a `CteAliasPolicy` (`Keep`/`Rewrite`) enum,
+byte-identical (corpus + goldens unchanged) as a behavior-preserving dedup — the
+double-encoding guard still fires only under `Rewrite`; the plan's universal-guard
+idea is left as an open transition-assert follow-up (would change `Keep`
+semantics). **P2.5 COMPLETE. Next: P2.6 with_to_cte** — the "entangled core" (the
+two giant WITH→CTE builders + orbit); larger and higher-risk than P2.1–P2.5, moved
+in Phase 2 and decomposed in Phase 4.
 
 ### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1+F1b/#602+#662+F2a+F3+F4 done; F2b/F5 and F1b residue open)
 **Concrete staged plan written: `docs/design/FORWARD_RESOLUTION_PLAN.md`.** It
@@ -271,6 +278,26 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-27: **P2.5 D2 dedup — CTE property-rewriter family** (P-3 refactor lane)
+  — the four near-identical CTE property-rewriters (two operator wrappers
+  `rewrite_operator_application_for_cte`/`_join` + two `RenderExpr` helpers
+  `_simple`/`_operand`, all colocated in `cte_rewrite.rs` after sub-slices A–C)
+  collapsed into: the two public wrappers (unchanged signatures) → one shared
+  `rewrite_operator_application` core → one `rewrite_render_expr_for_cte` core,
+  parameterized by a `Copy` `CteAliasPolicy` enum (`Keep` = keep the property's
+  alias + unconditional encode; `Rewrite(cte_alias)` = rewrite alias + the
+  double-encode `is_cte_column` guard + the info log). **Byte-identical**: this is
+  a behavior-preserving dedup — each policy reproduces exactly one former
+  function's behavior, so corpus + goldens are unchanged (the equivalence proof,
+  since source structure changed and byte-diff-vs-main does not apply to a dedup).
+  The plan's §5.2 idea of applying the double-encode guard *universally* (under
+  `Keep` too) is the still-open transition-assert question — deliberately NOT
+  folded in, since it would change `Keep` semantics (ground rule: no semantic
+  change in a consolidation). Left as a separate follow-up. Net: −2 functions,
+  −~35 lines. **This completes P2.5.** Gates: 1612 lib + 529 integration (incl.
+  `corpus_sweep` + sql_golden) + 1 ratchet + 7 unit, 0 failures; no golden churn;
+  ratchet net-zero; fmt/clippy clean; warning-free `--tests` build. Next: P2.6
+  with_to_cte.
 - 2026-07-27: **P2.5 sub-slice D — cte_graph_joins_rewrite (LogicalPlan-level CTE
   rewriters)** (P-3 refactor lane) — the contiguous LogicalPlan-level CTE-ref
   rewrite block (`rewrite_logical_expr_cte_refs`, the 3 alias walkers deferred

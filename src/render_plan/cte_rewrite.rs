@@ -10,12 +10,13 @@
 //!
 //! Scope note: P2.5's §5.1 home covers the whole CTE-ref extraction + rewriting
 //! group. Landing incrementally — done so far: the expression-rewriting cluster
-//! (`rewrite_operator_application_for_cte`/`_join`, `rewrite_render_expr_for_cte_*`),
-//! the CTE-name remap pair (`remap_cte_names_in_expr`/`_in_render_plan`), and the
-//! join-condition rewrite group (`collect_with_cte_table_aliases`,
-//! `strip_table_alias_from_resolved`, `rewrite_join_conditions_for_cte_aliases`).
-//! Remaining: `rewrite_logical_expr_cte_refs`, `update_graph_joins_cte_refs`, the
-//! alias walkers deferred from P2.4, and the D2 dedup.
+//! (`rewrite_operator_application_for_cte`/`_join`), the CTE-name remap pair
+//! (`remap_cte_names_in_expr`/`_in_render_plan`), and the join-condition rewrite
+//! group (`collect_with_cte_table_aliases`, `strip_table_alias_from_resolved`,
+//! `rewrite_join_conditions_for_cte_aliases`). The D2 dedup (§5.2) collapsed the
+//! four-function property-rewriter family into one operator core +
+//! `rewrite_render_expr_for_cte` + the `CteAliasPolicy` enum. The LogicalPlan-level
+//! rewriters live in the sibling `cte_graph_joins_rewrite.rs` (P2.5 sub-slice D).
 
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::render_plan::render_expr::{
@@ -35,17 +36,7 @@ pub(crate) fn rewrite_operator_application_for_cte_join(
     cte_alias: &str,
     cte_references: &HashMap<String, String>,
 ) -> OperatorApplication {
-    // Rewrite operands to use CTE column names
-    let rewritten_operands: Vec<RenderExpr> = op_app
-        .operands
-        .iter()
-        .map(|operand| rewrite_render_expr_for_cte_operand(operand, cte_alias, cte_references))
-        .collect();
-
-    OperatorApplication {
-        operator: op_app.operator,
-        operands: rewritten_operands,
-    }
+    rewrite_operator_application(op_app, cte_references, CteAliasPolicy::Rewrite(cte_alias))
 }
 
 /// Public version for use by join_builder
@@ -55,11 +46,44 @@ pub fn rewrite_operator_application_for_cte(
     op_app: &OperatorApplication,
     cte_references: &HashMap<String, String>,
 ) -> OperatorApplication {
-    // Rewrite operands to use CTE column names
+    rewrite_operator_application(op_app, cte_references, CteAliasPolicy::Keep)
+}
+
+/// D2 (`REFACTORING_SAFETY_PLAN.md` §5.2): the CTE property-rewriter family was
+/// four near-identical functions (two operator wrappers + two `RenderExpr`
+/// helpers) differing only in **alias policy**. This enum carries that policy so
+/// the family collapses to one operator core + one expression core.
+///
+/// The two policies are *behaviorally distinct* and both live callers depend on
+/// their exact behavior, so this dedup is **byte-identical** — it does NOT unify
+/// the double-encoding guard (that guard fires only under `Rewrite`, exactly as
+/// before). Whether the guard is safe to apply universally under `Keep` is the
+/// plan's open transition-assert question, deliberately left as a separate
+/// follow-up rather than folded in here (ground rule: never change semantics in
+/// a consolidation slice).
+#[derive(Clone, Copy)]
+enum CteAliasPolicy<'a> {
+    /// Keep the property's existing table alias; encode the column as
+    /// `cte_column_name(alias, col)` unconditionally. (`..._for_cte` /
+    /// `..._simple` behavior.)
+    Keep,
+    /// Rewrite the property's table alias to `cte_alias`; skip re-encoding a
+    /// column that is already CTE-encoded (the double-encode guard) and log the
+    /// rewrite. (`..._for_cte_join` / `..._operand` behavior.)
+    Rewrite(&'a str),
+}
+
+/// Operator-application core shared by both public entry points: rewrite each
+/// operand under `policy`, preserving the operator.
+fn rewrite_operator_application(
+    op_app: &OperatorApplication,
+    cte_references: &HashMap<String, String>,
+    policy: CteAliasPolicy,
+) -> OperatorApplication {
     let rewritten_operands: Vec<RenderExpr> = op_app
         .operands
         .iter()
-        .map(|operand| rewrite_render_expr_for_cte_simple(operand, cte_references))
+        .map(|operand| rewrite_render_expr_for_cte(operand, cte_references, policy))
         .collect();
 
     OperatorApplication {
@@ -68,73 +92,59 @@ pub fn rewrite_operator_application_for_cte(
     }
 }
 
-/// Simple CTE expression rewriting - just prefixes column names, keeps table alias the same.
-/// E.g., o.user_id -> o.o_user_id (when "o" is in cte_references)
-fn rewrite_render_expr_for_cte_simple(
+/// Expression core shared by both policies. A `PropertyAccessExp` whose alias is
+/// a CTE reference is rewritten per `policy`; an `OperatorApplicationExp` recurses
+/// (carrying the same policy); everything else is cloned as-is.
+fn rewrite_render_expr_for_cte(
     expr: &RenderExpr,
     cte_references: &HashMap<String, String>,
+    policy: CteAliasPolicy,
 ) -> RenderExpr {
     match expr {
         RenderExpr::PropertyAccessExp(pa) => {
             // Check if this alias is from a CTE
             if cte_references.contains_key(&pa.table_alias.0) {
-                // Rewrite column to use CTE naming: alias_column
-                // Keep the same table alias (e.g., "o" stays "o")
-                let cte_column = cte_column_name(&pa.table_alias.0, pa.column.raw());
-                RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: pa.table_alias.clone(), // Keep same table alias
-                    column: PropertyValue::Column(cte_column),
-                })
+                match policy {
+                    CteAliasPolicy::Keep => {
+                        // Rewrite column to use CTE naming: alias_column
+                        // Keep the same table alias (e.g., "o" stays "o")
+                        let cte_column = cte_column_name(&pa.table_alias.0, pa.column.raw());
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: pa.table_alias.clone(), // Keep same table alias
+                            column: PropertyValue::Column(cte_column),
+                        })
+                    }
+                    CteAliasPolicy::Rewrite(cte_alias) => {
+                        // Rewrite to use CTE alias and column naming.
+                        // Skip re-encoding if the column is already a CTE-encoded name (p{N}_...)
+                        // to avoid double-encoding like p20_a_allNeighboursCount_p1_a_user_id
+                        let raw_col = pa.column.raw();
+                        let cte_column = if crate::utils::cte_column_naming::is_cte_column(raw_col)
+                        {
+                            raw_col.to_string()
+                        } else {
+                            cte_column_name(&pa.table_alias.0, raw_col)
+                        };
+                        log::info!(
+                            "🔧 Rewriting property access: {}.{} -> {}.{}",
+                            pa.table_alias.0,
+                            pa.column.raw(),
+                            cte_alias,
+                            cte_column
+                        );
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(cte_alias.to_string()),
+                            column: PropertyValue::Column(cte_column),
+                        })
+                    }
+                }
             } else {
                 // Not a CTE reference, keep as-is
                 expr.clone()
             }
         }
         RenderExpr::OperatorApplicationExp(inner_op) => RenderExpr::OperatorApplicationExp(
-            rewrite_operator_application_for_cte(inner_op, cte_references),
-        ),
-        _ => expr.clone(),
-    }
-}
-
-/// Rewrite a RenderExpr operand to use CTE column names where applicable.
-/// Helper function that avoids needing cte_schemas parameter.
-fn rewrite_render_expr_for_cte_operand(
-    expr: &RenderExpr,
-    cte_alias: &str,
-    cte_references: &HashMap<String, String>,
-) -> RenderExpr {
-    match expr {
-        RenderExpr::PropertyAccessExp(pa) => {
-            // Check if this alias is from a CTE
-            if cte_references.contains_key(&pa.table_alias.0) {
-                // Rewrite to use CTE alias and column naming.
-                // Skip re-encoding if the column is already a CTE-encoded name (p{N}_...)
-                // to avoid double-encoding like p20_a_allNeighboursCount_p1_a_user_id
-                let raw_col = pa.column.raw();
-                let cte_column = if crate::utils::cte_column_naming::is_cte_column(raw_col) {
-                    raw_col.to_string()
-                } else {
-                    cte_column_name(&pa.table_alias.0, raw_col)
-                };
-                log::info!(
-                    "🔧 Rewriting property access: {}.{} -> {}.{}",
-                    pa.table_alias.0,
-                    pa.column.raw(),
-                    cte_alias,
-                    cte_column
-                );
-                RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: TableAlias(cte_alias.to_string()),
-                    column: PropertyValue::Column(cte_column),
-                })
-            } else {
-                // Not a CTE reference, keep as-is
-                expr.clone()
-            }
-        }
-        RenderExpr::OperatorApplicationExp(inner_op) => RenderExpr::OperatorApplicationExp(
-            rewrite_operator_application_for_cte_join(inner_op, cte_alias, cte_references),
+            rewrite_operator_application(inner_op, cte_references, policy),
         ),
         _ => expr.clone(),
     }
