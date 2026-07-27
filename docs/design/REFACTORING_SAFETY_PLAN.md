@@ -525,8 +525,13 @@ One PR per cluster from §1.4's table. Canonical survivors:
   `get_graph_rel_from_plan`) + `find_label_for_alias` from `alias_utils`
   ungated, plus `get_anchor_alias_from_plan`/`strip_database_prefix` gated
   `#[cfg(test)]` (they are test-only — a shadowing hazard the glob masked, exactly
-  what §5.3 targets). `filter_builder.rs` + `plan_builder.rs`'s three remaining
-  globs are the next slice.
+  what §5.3 targets). **Slice 3 done — glob bullet CLOSED**: the last three target
+  globs (`filter_builder.rs` ×1, `plan_builder.rs` ×2) replaced with named imports
+  (filter_builder: 7 from `plan_builder_helpers`; plan_builder: 5 from
+  `plan_builder_helpers` + `strip_database_prefix` from `alias_utils`), stale
+  `#[allow(unused_imports)]` dropped. No `plan_builder_helpers::*` /
+  `alias_utils::*` glob remains anywhere in `src/`. All three slices behavior-identical
+  (corpus + goldens byte-identical, ratchet net-zero).
 - Delete the three files' `#![allow(dead_code)]`; delete what the compiler
   then flags (investigate before deleting, per the late-stage-project rule —
   but the blanket allow has hidden dead surface for months).

@@ -14,7 +14,12 @@ use crate::render_plan::cte_extraction::{
     extract_relationship_columns, table_to_id_column, RelationshipColumns,
 };
 use crate::render_plan::errors::RenderBuildError;
-use crate::render_plan::plan_builder_helpers::*;
+// P2.10 import hygiene: named imports (the exact set the compiler requires) so
+// shadowing becomes visible; previously a `plan_builder_helpers::*` glob.
+use crate::render_plan::plan_builder_helpers::{
+    apply_property_mapping_to_expr, collect_graphrel_predicates, collect_schema_filters,
+    collect_schema_filters_with_alias, extract_id_column, extract_table_name, is_node_denormalized,
+};
 use crate::render_plan::render_expr::{Operator, OperatorApplication, RenderExpr};
 
 /// Result type for filter builder operations
