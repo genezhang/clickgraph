@@ -472,8 +472,14 @@ transition; no logic edits in a move PR; corpus sweep byte-identical.
 ### 5.2 Duplication kill list
 
 One PR per cluster from §1.4's table. Canonical survivors:
-- **D1**: keep one `with_clause_key()` in `utils/` next to `cte_naming`;
-  delete the other two.
+- **D1**: ✅ **done (Jul 2026, `src/utils/with_clause_key.rs`)** — the three
+  local WITH-key helpers in `render_plan/with_to_cte/mod.rs`
+  (`generate_with_key_from_with_clause`, `get_with_key`, `get_with_clause_key`)
+  collapsed to one canonical `with_clause_key()` next to `cte_naming`. Unified on
+  the *rich* variant (exported_aliases else item-extraction else `"with_var"`) —
+  the version `find_all_with_clauses_grouped` already used; the other two were
+  simpler copies that skipped the item-extraction fallback. Behavior-preserving:
+  `corpus_sweep` + `sql_golden` byte-identical, ratchet net-zero.
 - **D2**: ✅ **done (Jul 2026, in `render_plan/cte_rewrite.rs`)** — collapsed to
   one `rewrite_render_expr_for_cte(expr, cte_references, policy)` + a shared
   operator core, where `policy` is a `CteAliasPolicy` enum (`Keep` = keep alias,
@@ -1033,7 +1039,16 @@ as the plan's open transition-assert follow-up (not folded in). **P2.5 COMPLETE.
 `build_chained_with_match_cte_plan` + `WithBarrierScope`/`CteNameAllocator` + the
 24-helper widening. `plan_builder_utils.rs` 13,339 → 4,874 lines; the entangled
 core now lives in `render_plan/with_to_cte/mod.rs`. **P2.6 COMPLETE.** ·
-☐ P2.7 D1 ·
+☑ P2.7 D1 (done): the three near-duplicate WITH-key helpers collapsed to one
+canonical `with_clause_key()` in `src/utils/with_clause_key.rs`. NOTE the "verbatim
+triplicate" premise was only half-true — `get_with_key`/`get_with_clause_key` were
+byte-identical *simple* copies (exported_aliases → sorted-join, else `"with_var"`),
+but `generate_with_key_from_with_clause` was a *richer* variant with an extra
+item-extraction fallback, and it was the one the authoritative
+`find_all_with_clauses_grouped` relied on. Unified on the rich variant; the corpus
+(`corpus_sweep` + `sql_golden`, 529 tests) is byte-identical, proving the two simple
+copies never actually reached their divergent branch in practice. Ratchet net-zero
+(no axis tokens moved). ·
 ☐ P2.8 D6 · ☐ P2.9 D8 · ☐ P2.10 import hygiene + remaining dead_code
 
 Phase 3: ◐ Slices 1–2 merged 2026-07-13: GraphNode/ViewScan + query_planner

@@ -55,6 +55,7 @@ use crate::render_plan::{
 use crate::sql_generator::function_mapper::current_function_mapper;
 use crate::utils::cte_column_naming::{cte_column_name, parse_cte_column};
 use crate::utils::cte_naming::generate_cte_name;
+use crate::utils::with_clause_key::with_clause_key;
 use std::collections::{HashMap, HashSet};
 // `plan_contains_with_clause` is a `plan_predicates` (P2.4) predicate that
 // `replace_with_clause_with_cte_reference_v2` gates its GraphRel recursion on.
@@ -448,15 +449,6 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
     }
 
     // Helper to generate a key for a WithClause (matches the key generation in find_all_with_clauses_grouped)
-    fn get_with_clause_key(wc: &crate::query_planner::logical_plan::WithClause) -> String {
-        if !wc.exported_aliases.is_empty() {
-            let mut aliases = wc.exported_aliases.clone();
-            aliases.sort();
-            return aliases.join("_");
-        }
-        "with_var".to_string()
-    }
-
     // Helper to remap PropertyAccess expressions to use CTE column names
     // CRITICAL: After creating a CTE reference, PropertyAccess expressions in downstream nodes
     // (like Projection) still have the OLD column names from FilterTagging (which used the
@@ -828,7 +820,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
         // Key insight: Check if this WithClause's generated key matches the alias we're looking for
         LogicalPlan::WithClause(wc) => {
             // Generate key same way as find_all_with_clauses_grouped does
-            let this_wc_key = get_with_clause_key(wc);
+            let this_wc_key = with_clause_key(wc);
             let is_target_with = this_wc_key == with_alias;
             let has_nested = plan_contains_with_clause(&wc.input);
             log::debug!(
@@ -1523,113 +1515,7 @@ pub(crate) fn find_all_with_clauses_grouped(
         "🔍 find_all_with_clauses_grouped: Called with plan type: {:?}",
         std::mem::discriminant(plan)
     );
-    use crate::query_planner::logical_expr::LogicalExpr;
-    use crate::query_planner::logical_plan::ProjectionItem;
     use std::collections::HashMap;
-
-    /// Extract the alias from a WITH projection item.
-    /// Priority: explicit col_alias > inferred from expression (variable name, table alias)
-    /// Note: Strips ".*" suffix from col_alias (e.g., "friend.*" -> "friend")
-    fn extract_with_alias(item: &ProjectionItem) -> Option<String> {
-        // First check for explicit alias
-        if let Some(ref alias) = item.col_alias {
-            // Strip ".*" suffix if present (added by projection_tagging.rs for node expansions)
-            let clean_alias = alias.0.strip_suffix(".*").unwrap_or(&alias.0).to_string();
-            log::info!(
-                "🔍 extract_with_alias: Found explicit col_alias: {} -> {}",
-                alias.0,
-                clean_alias
-            );
-            return Some(clean_alias);
-        }
-
-        // Helper to extract alias from nested expression
-        fn extract_alias_from_expr(expr: &LogicalExpr) -> Option<String> {
-            match expr {
-                LogicalExpr::ColumnAlias(ca) => {
-                    log::debug!("🔍 extract_with_alias: ColumnAlias: {}", ca.0);
-                    Some(ca.0.clone())
-                }
-                LogicalExpr::TableAlias(ta) => {
-                    log::debug!("🔍 extract_with_alias: TableAlias: {}", ta.0);
-                    Some(ta.0.clone())
-                }
-                LogicalExpr::Column(col) => {
-                    // A bare column name - this is often the variable name in WITH
-                    // e.g., WITH friend -> Column("friend")
-                    // Skip "*" since it's not a real variable name
-                    if col.0 == "*" {
-                        log::debug!("🔍 extract_with_alias: Skipping Column('*')");
-                        None
-                    } else {
-                        log::debug!("🔍 extract_with_alias: Column: {}", col.0);
-                        Some(col.0.clone())
-                    }
-                }
-                LogicalExpr::PropertyAccessExp(pa) => {
-                    // For property access like `friend.name`, use the table alias
-                    log::info!(
-                        "🔍 extract_with_alias: PropertyAccessExp: {}.{:?}",
-                        pa.table_alias.0,
-                        pa.column
-                    );
-                    Some(pa.table_alias.0.clone())
-                }
-                LogicalExpr::OperatorApplicationExp(op_app) => {
-                    // Handle operators like DISTINCT that wrap other expressions
-                    // Try to extract alias from the first operand
-                    log::debug!("🔍 extract_with_alias: OperatorApplicationExp with {:?}, checking operands", op_app.operator);
-                    for operand in &op_app.operands {
-                        if let Some(alias) = extract_alias_from_expr(operand) {
-                            return Some(alias);
-                        }
-                    }
-                    None
-                }
-                other => {
-                    log::info!(
-                        "🔍 extract_with_alias: Unhandled expression type in nested: {:?}",
-                        std::mem::discriminant(other)
-                    );
-                    None
-                }
-            }
-        }
-
-        // Try to infer from expression
-        log::info!(
-            "🔍 extract_with_alias: Expression type: {:?}",
-            std::mem::discriminant(&item.expression)
-        );
-        extract_alias_from_expr(&item.expression)
-    }
-
-    /// Generate a unique key for a WITH clause based on all its projection items.
-    /// This allows distinguishing "WITH friend" from "WITH friend, post".
-    /// Generate a unique key for a WithClause based on its exported aliases or projection items.
-    fn generate_with_key_from_with_clause(
-        wc: &crate::query_planner::logical_plan::WithClause,
-    ) -> String {
-        // First try exported_aliases (preferred, already computed)
-        if !wc.exported_aliases.is_empty() {
-            let mut aliases = wc.exported_aliases.clone();
-            aliases.sort();
-            return aliases.join("_");
-        }
-        // Fall back to extracting from items
-        let mut aliases: Vec<String> = wc
-            .items
-            .iter()
-            .filter_map(extract_with_alias)
-            .filter(|a| a != "*")
-            .collect();
-        aliases.sort();
-        if aliases.is_empty() {
-            "with_var".to_string()
-        } else {
-            aliases.join("_")
-        }
-    }
 
     /// Find the first WITH clause key in a plan subtree (non-recursive into Union)
     fn find_first_with_key(plan: &LogicalPlan) -> Option<String> {
@@ -1639,19 +1525,19 @@ pub(crate) fn find_all_with_clauses_grouped(
         );
         match plan {
             // NEW: Handle WithClause type
-            LogicalPlan::WithClause(wc) => Some(generate_with_key_from_with_clause(wc)),
+            LogicalPlan::WithClause(wc) => Some(with_clause_key(wc)),
             LogicalPlan::GraphRel(graph_rel) => {
                 // Check for WithClause in right
                 if let LogicalPlan::WithClause(wc) = graph_rel.right.as_ref() {
-                    return Some(generate_with_key_from_with_clause(wc));
+                    return Some(with_clause_key(wc));
                 }
                 // Check for WithClause in left
                 if let LogicalPlan::WithClause(wc) = graph_rel.left.as_ref() {
-                    return Some(generate_with_key_from_with_clause(wc));
+                    return Some(with_clause_key(wc));
                 }
                 if let LogicalPlan::GraphJoins(gj) = graph_rel.right.as_ref() {
                     if let LogicalPlan::WithClause(wc) = gj.input.as_ref() {
-                        return Some(generate_with_key_from_with_clause(wc));
+                        return Some(with_clause_key(wc));
                     }
                 }
                 None
@@ -1682,7 +1568,7 @@ pub(crate) fn find_all_with_clauses_grouped(
         match plan {
             // NEW: Handle WithClause type directly
             LogicalPlan::WithClause(wc) => {
-                let alias = generate_with_key_from_with_clause(wc);
+                let alias = with_clause_key(wc);
                 log::debug!(
                     "🔍 find_all_with_clauses_impl: Found WithClause directly, key='{}'",
                     alias
@@ -1705,7 +1591,7 @@ pub(crate) fn find_all_with_clauses_grouped(
 
                 // Check for WithClause in right
                 if let LogicalPlan::WithClause(wc) = graph_rel.right.as_ref() {
-                    let key = generate_with_key_from_with_clause(wc);
+                    let key = with_clause_key(wc);
                     let alias = if key == "with_var" {
                         graph_rel.right_connection.clone()
                     } else {
@@ -1719,7 +1605,7 @@ pub(crate) fn find_all_with_clauses_grouped(
                 }
                 // Check for WithClause in left
                 if let LogicalPlan::WithClause(wc) = graph_rel.left.as_ref() {
-                    let key = generate_with_key_from_with_clause(wc);
+                    let key = with_clause_key(wc);
                     let alias = if key == "with_var" {
                         graph_rel.left_connection.clone()
                     } else {
@@ -1735,7 +1621,7 @@ pub(crate) fn find_all_with_clauses_grouped(
                 if !handled_right {
                     if let LogicalPlan::GraphJoins(gj) = graph_rel.right.as_ref() {
                         if let LogicalPlan::WithClause(wc) = gj.input.as_ref() {
-                            let key = generate_with_key_from_with_clause(wc);
+                            let key = with_clause_key(wc);
                             let alias = if key == "with_var" {
                                 graph_rel.right_connection.clone()
                             } else {
@@ -1752,7 +1638,7 @@ pub(crate) fn find_all_with_clauses_grouped(
                 if !handled_left {
                     if let LogicalPlan::GraphJoins(gj) = graph_rel.left.as_ref() {
                         if let LogicalPlan::WithClause(wc) = gj.input.as_ref() {
-                            let key = generate_with_key_from_with_clause(wc);
+                            let key = with_clause_key(wc);
                             let alias = if key == "with_var" {
                                 graph_rel.left_connection.clone()
                             } else {
@@ -1875,19 +1761,9 @@ pub(crate) fn collapse_passthrough_with(
         std::mem::discriminant(plan), target_alias, target_cte_name
     );
 
-    /// Generate a key for a WithClause (same logic as find_all_with_clauses_grouped)
-    fn get_with_key(wc: &WithClause) -> String {
-        if !wc.exported_aliases.is_empty() {
-            let mut aliases = wc.exported_aliases.clone();
-            aliases.sort();
-            return aliases.join("_");
-        }
-        "with_var".to_string()
-    }
-
     match plan {
         LogicalPlan::WithClause(wc) => {
-            let key = get_with_key(wc);
+            let key = with_clause_key(wc);
             let this_cte_name = wc
                 .cte_references
                 .get(target_alias)
