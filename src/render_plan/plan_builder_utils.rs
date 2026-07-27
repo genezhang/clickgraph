@@ -69,16 +69,19 @@ use crate::render_plan::{
 use crate::utils::cte_column_naming::{cte_column_name, parse_cte_column};
 use crate::utils::cte_naming::is_generated_cte_name;
 
-// Import ALL helper functions from the dedicated helpers module using glob import
-// This allows existing code to call helpers without changes (e.g., extract_table_name())
-// The compiler will use the module functions when available
-#[allow(unused_imports)]
-use super::plan_builder_helpers::*;
-
-// Import ALL alias utility functions from the dedicated module using glob import
-// This consolidates duplicate functions and provides a single source of truth
-#[allow(unused_imports)]
-use super::utils::alias_utils::*;
+// P2.10 import hygiene: this file reaches a handful of `plan_builder_helpers` /
+// `alias_utils` helpers by bare name — previously via two `*` globs. Named
+// imports (the exact set the compiler requires) so shadowing becomes visible;
+// other helpers are reached by explicit `super::…::` paths.
+use super::plan_builder_helpers::{
+    denorm_scan_cte_anchor_id_property, denorm_scan_cte_anchor_properties,
+    extract_parameterized_table_ref, extract_table_name, get_graph_rel_from_plan,
+};
+use super::utils::alias_utils::find_label_for_alias;
+// `get_anchor_alias_from_plan` / `strip_database_prefix` are used only by the
+// `#[cfg(test)]` module below — gate them so the non-test lib build stays clean.
+#[cfg(test)]
+use super::utils::alias_utils::{get_anchor_alias_from_plan, strip_database_prefix};
 
 type RenderPlanBuilderResult<T> = Result<T, RenderBuildError>;
 
