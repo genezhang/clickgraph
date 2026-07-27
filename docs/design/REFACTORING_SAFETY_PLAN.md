@@ -534,7 +534,21 @@ One PR per cluster from §1.4's table. Canonical survivors:
   (corpus + goldens byte-identical, ratchet net-zero).
 - Delete the three files' `#![allow(dead_code)]`; delete what the compiler
   then flags (investigate before deleting, per the late-stage-project rule —
-  but the blanket allow has hidden dead surface for months).
+  but the blanket allow has hidden dead surface for months). **◐ in progress —
+  `plan_builder_helpers.rs` done (Jul 2026)**: removed that file's blanket
+  `#![allow(dead_code)]`, which exposed 31 masked functions. Triaged by
+  call-graph reachability closure (roots = every compiler-live fn ∪ every test
+  fn): **29 genuinely dead → deleted** (all `pub(super)`/private, zero
+  qualified-path callers, unreachable from any live/test root; several were dead
+  *duplicates* whose live twins live in `cte_extraction.rs` /
+  `to_sql_query.rs`), **2 test-only-live → gated `#[cfg(test)]`**
+  (`rewrite_with_aliases_to_cte`, `generate_polymorphic_edge_filters` — exercised
+  solely by unit tests). File 7,311 → 6,348 lines. Corpus + goldens
+  byte-identical, ratchet net-zero (deleted fns carried no tracked axis tokens),
+  warning-free lib + `--tests`. The other blanket allows (`plan_builder_utils`
+  already lost its module-level one in an earlier phase; `filter_pipeline`,
+  `cte_generation`, `expression_utils`, `cte_extraction`, `feature_flags` remain)
+  are follow-up slices.
 - Fix the stale header docstrings; update `render_plan/AGENTS.md`'s module
   diagram in the same PRs.
 
