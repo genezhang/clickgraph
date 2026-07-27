@@ -143,7 +143,7 @@ P-3). Latent finding filed in-report: `has_with_clause_in_graph_rel` is
 duplicated (utils + helpers) with a DIFFERENT semantic — a future consolidation
 candidate, not touched here (§8.3 no-drive-by).
 
-### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ☑ (P2.1–P2.6 done; P2.7 D1 next)
+### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ☑ (P2.1–P2.6 + P2.7 D1 done; P2.8 D6 next)
 The dead-code sweep shrank plan_builder_utils.rs to ~14.5K lines. §5.1 moves are
 now underway. Pure groups first (vlp_rewrite →
 pattern_comprehension_sql → clause_extractors → plan_predicates →
@@ -203,6 +203,17 @@ depth) so the moved bodies' `super::…` paths stay byte-identical — a sub-fil
 is a Phase-4 logic edit, not a move. `plan_builder_utils.rs` 13,339 → 4,874 lines.
 **Next: P2.7 (D1 `with_clause_key` dedup)** or Phase-4 decomposition of the moved
 giants (§7.1).
+
+**P2.7 D1 done**: the three near-duplicate WITH-key helpers that P2.6 co-located
+in `render_plan/with_to_cte/mod.rs` collapsed to one canonical `with_clause_key()`
+in `src/utils/with_clause_key.rs` (next to `cte_naming`, per §5.2). The D1 "verbatim
+triplicate" premise was half-wrong: two were byte-identical simple copies, but
+`generate_with_key_from_with_clause` carried an extra item-extraction fallback and
+was the version `find_all_with_clauses_grouped` relied on. Unified on that rich
+variant; `corpus_sweep` + `sql_golden` byte-identical (529 tests), ratchet net-zero,
+`with_to_cte/mod.rs` shed 148 lines (also deleted the now-orphaned nested
+`extract_with_alias`, whose logic moved into the util). **Next: P2.8 (D6) / P2.9
+(D8)** or Phase-4 decomposition of the moved giants (§7.1).
 
 ### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1+F1b/#602+#662+F2a+F3+F4 done; F2b/F5 and F1b residue open)
 **Concrete staged plan written: `docs/design/FORWARD_RESOLUTION_PLAN.md`.** It
@@ -285,6 +296,26 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-27: **P2.7 D1 — `with_clause_key` dedup** (P-3 refactor lane) — the three
+  near-duplicate WITH-key helpers that P2.6 co-located in
+  `render_plan/with_to_cte/mod.rs` (`generate_with_key_from_with_clause`,
+  `get_with_key`, `get_with_clause_key`) collapsed to one canonical
+  `with_clause_key()` in `src/utils/with_clause_key.rs` (next to `cte_naming`, per
+  §5.2). **Correction to the D1 premise**: the kill-list called this a "verbatim
+  triplicate", but it was not — `get_with_key`/`get_with_clause_key` were
+  byte-identical *simple* copies (`exported_aliases` → sorted-join, else
+  `"with_var"`), whereas `generate_with_key_from_with_clause` had an extra
+  item-extraction fallback and was the variant the authoritative
+  `find_all_with_clauses_grouped` relied on. Unified on the **rich** variant so
+  grouping and barrier-matching can never disagree on a WITH's identity. The corpus
+  is the oracle: `corpus_sweep` + `sql_golden` (529 tests) **byte-identical**,
+  proving the two simple copies never actually reached their divergent branch on any
+  corpus query. Also deleted the now-orphaned nested `extract_with_alias` (its logic
+  moved into the util) and its two dead imports. Gates: 1612 lib + 529 integration +
+  1 ratchet, 0 failures; goldens/corpus byte-identical; ratchet net-zero (no axis
+  tokens moved); fmt/clippy clean; warning-free `--tests`. `with_to_cte/mod.rs` shed
+  148 lines. Next: P2.8 (D6) / P2.9 (D8) or Phase-4 §7.1 decomposition.
 
 - 2026-07-27: **P2.6 — with_to_cte move (the entangled core)** (P-3 refactor lane,
   4 stacked PRs) — the WITH→CTE "entangled core" extracted verbatim from the
