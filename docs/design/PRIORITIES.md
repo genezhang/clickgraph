@@ -175,9 +175,12 @@ CTE-expression-rewriting cluster (`rewrite_operator_application_for_cte`/`_join`
 `render_plan/cte_rewrite.rs`, `pub(crate)` re-exports, byte-identical (one
 `fn`→`pub(crate) fn` visibility widening for the re-export), ratchet net-zero.
 P2.5 is being sub-sliced because its §5.1 home is ~13 fns across 3 scattered
-bands (much larger/entangled than P2.1–P2.4); remaining: `remap_cte_names_*`,
+bands (much larger/entangled than P2.1–P2.4); **sub-slice B delivered**: the
+CTE-name remap pair (`remap_cte_names_in_expr`/`_in_render_plan`) extracted to the
+same `cte_rewrite.rs`, byte-identical, ratchet net-zero. Remaining P2.5:
+`collect_with_cte_table_aliases`, `rewrite_join_conditions_for_cte_aliases`,
 `rewrite_logical_expr_cte_refs`, `update_graph_joins_cte_refs`, the deferred P2.4
-alias walkers, D2 dedup. **Next: P2.5 sub-slice B.**
+alias walkers, D2 dedup. **Next: P2.5 sub-slice C.**
 
 ### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1+F1b/#602+#662+F2a+F3+F4 done; F2b/F5 and F1b residue open)
 **Concrete staged plan written: `docs/design/FORWARD_RESOLUTION_PLAN.md`.** It
@@ -261,6 +264,20 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-27: **P2.5 sub-slice B — cte_rewrite (CTE-name remap pair)** (P-3
+  refactor lane) — the tightly-coupled CTE-name remap pair
+  (`remap_cte_names_in_expr` + `remap_cte_names_in_render_plan`, old lines
+  1385–1469 and 1513–1567) extracted verbatim into the existing
+  `render_plan/cte_rewrite.rs`. Two non-contiguous deletions (they were separated
+  by the unrelated `rewrite_count_to_conditional` / `quote_qualified_col` helpers,
+  which stay put). `pub(crate) use` re-export for `remap_cte_names_in_render_plan`
+  (2 internal callers); `remap_cte_names_in_expr` has no caller left in
+  plan_builder_utils (it was only invoked by the two moved fns) so it is not
+  re-exported — it lives on as a `pub fn` used internally by `_in_render_plan`.
+  Zero logic edits. Gates: 1612 lib + 529 integration (incl. `corpus_sweep` +
+  sql_golden) + 1 ratchet + 7 unit, 0 failures; **byte-identical** (both fn bodies
+  diff-clean vs main, no golden churn, ratchet net-zero); fmt/clippy clean;
+  warning-free `--tests` build. Next: P2.5 sub-slice C.
 - 2026-07-27: **P2.5 sub-slice A — cte_rewrite (expression-rewriting cluster)**
   (P-3 refactor lane) — the self-contained CTE-expression-rewriting cluster
   (`rewrite_operator_application_for_cte`, `rewrite_operator_application_for_cte_join`,
