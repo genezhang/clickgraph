@@ -1,8 +1,4 @@
 //! CTE generation utilities for variable-length path queries
-//!
-//! Some structures and methods in this module are reserved for future use.
-// Note: NodeRole enum and some helper methods are intentionally kept for future CTE enhancements
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 
@@ -11,23 +7,16 @@ use crate::clickhouse_query_generator::NodeProperty;
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
-use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::query_planner::logical_plan::ShortestPathMode;
 use crate::query_planner::logical_plan::VariableLengthSpec;
-use crate::render_plan::cte_extraction::extract_node_label_from_viewscan;
 use crate::render_plan::render_expr::RenderExpr;
 
 /// Context for CTE generation - holds property requirements and other metadata
 #[derive(Debug, Clone, Default)]
 pub struct CteGenerationContext {
-    /// Properties needed for variable-length paths, keyed by "left_alias-right_alias"
-    variable_length_properties: HashMap<String, Vec<NodeProperty>>,
     /// WHERE filter expression to apply to variable-length CTEs
     filter_expr: Option<RenderExpr>,
-    /// Cypher aliases for start and end nodes (for filter rewriting)
-    start_cypher_alias: Option<String>,
-    end_cypher_alias: Option<String>,
     /// Graph schema for this query (enables multi-schema support)
     schema: Option<GraphSchema>,
     /// Fixed-length path inline JOINs (from_table, from_alias, joins)
@@ -85,12 +74,13 @@ impl CteGenerationContext {
         Self::default()
     }
 
+    /// Construct a context seeded with a schema. Test-only-live: exercised
+    /// solely by the `cte_manager` unit tests (production code builds contexts
+    /// via `new()` + `with_schema_owned()`).
+    #[cfg(test)]
     pub(crate) fn with_schema(schema: GraphSchema) -> Self {
         Self {
-            variable_length_properties: HashMap::new(),
             filter_expr: None,
-            start_cypher_alias: None,
-            end_cypher_alias: None,
             schema: Some(schema),
             fixed_length_joins: HashMap::new(),
             spec: VariableLengthSpec::default(),
@@ -180,50 +170,16 @@ impl CteGenerationContext {
         self.schema.as_ref()
     }
 
-    pub(crate) fn get_properties(&self, left_alias: &str, right_alias: &str) -> Vec<NodeProperty> {
-        let key = format!("{}-{}", left_alias, right_alias);
-        self.variable_length_properties
-            .get(&key)
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    // 🆕 IMMUTABLE BUILDER PATTERN: Returns new context instead of mutating
-    pub(crate) fn with_properties(
-        mut self,
-        left_alias: &str,
-        right_alias: &str,
-        properties: Vec<NodeProperty>,
-    ) -> Self {
-        let key = format!("{}-{}", left_alias, right_alias);
-        self.variable_length_properties.insert(key, properties);
-        self
-    }
-
+    /// Read accessor for the WHERE filter. Currently unused: `with_filter`
+    /// (live, called from `cte_extraction`) populates `filter_expr`, but no
+    /// consumer reads it back yet. Kept as the paired getter for that field.
+    #[allow(dead_code)]
     pub(crate) fn get_filter(&self) -> Option<&RenderExpr> {
         self.filter_expr.as_ref()
     }
 
     pub(crate) fn with_filter(mut self, filter: RenderExpr) -> Self {
         self.filter_expr = Some(filter);
-        self
-    }
-
-    pub(crate) fn get_start_cypher_alias(&self) -> Option<&str> {
-        self.start_cypher_alias.as_deref()
-    }
-
-    pub(crate) fn with_start_cypher_alias(mut self, alias: String) -> Self {
-        self.start_cypher_alias = Some(alias);
-        self
-    }
-
-    pub(crate) fn get_end_cypher_alias(&self) -> Option<&str> {
-        self.end_cypher_alias.as_deref()
-    }
-
-    pub(crate) fn with_end_cypher_alias(mut self, alias: String) -> Self {
-        self.end_cypher_alias = Some(alias);
         self
     }
 
@@ -246,7 +202,11 @@ impl CteGenerationContext {
             .insert(key, (from_table, from_alias, joins));
     }
 
-    /// Retrieve fixed-length path inline JOINs if available
+    /// Retrieve fixed-length path inline JOINs if available. Currently unused:
+    /// `set_fixed_length_joins` (live, called from `cte_extraction`) populates
+    /// `fixed_length_joins`, but no consumer reads it back yet. Kept as the
+    /// paired getter for that field.
+    #[allow(dead_code)]
     pub(crate) fn get_fixed_length_joins(
         &self,
         start_alias: &str,
@@ -255,47 +215,6 @@ impl CteGenerationContext {
         let key = format!("{}-{}", start_alias, end_alias);
         self.fixed_length_joins.get(&key)
     }
-}
-
-/// Extract node label from a GraphNode plan
-fn extract_node_label_from_plan(plan: &LogicalPlan) -> String {
-    match plan {
-        LogicalPlan::GraphNode(node) => {
-            // Look for ViewScan in the input
-            if let Some(label) = extract_node_label_from_viewscan(&node.input) {
-                return label;
-            }
-            // Fallback to alias if no label found
-            node.alias.clone()
-        }
-        _ => "User".to_string(), // fallback
-    }
-}
-
-/// Analyze the plan to determine what properties are needed for variable-length CTEs
-pub(crate) fn analyze_property_requirements(
-    plan: &LogicalPlan,
-    schema: &GraphSchema,
-) -> CteGenerationContext {
-    let context = CteGenerationContext::with_schema(schema.clone());
-
-    // Find variable-length relationships and their required properties
-    if let Some((left_alias, right_alias, left_label, right_label, rel_type)) =
-        get_variable_length_info(plan)
-    {
-        let properties = extract_var_len_properties(
-            plan,
-            &left_alias,
-            &right_alias,
-            &left_label,
-            &right_label,
-            Some(&rel_type),
-        );
-        // 🆕 IMMUTABLE PATTERN: Chain the builder method
-        return context.with_properties(&left_alias, &right_alias, properties);
-    }
-
-    context
 }
 
 /// Extract properties referenced in a RenderExpr (e.g., from filters)
@@ -385,185 +304,6 @@ fn extract_properties_from_expr_recursive(
     }
 }
 
-/// Extract property requirements from projection for variable-length paths
-/// Returns a vector of properties that need to be included in the CTE
-/// Recursively searches through the plan to find the Projection node
-///
-/// # Denormalized Property Access
-/// If `relationship_type` is provided, properties are checked against denormalized
-/// edge tables first before falling back to node tables. This enables 10-100x faster
-/// queries by eliminating JOINs in variable-length path traversals.
-pub(crate) fn extract_var_len_properties(
-    plan: &LogicalPlan,
-    left_alias: &str,
-    right_alias: &str,
-    left_label: &str,
-    right_label: &str,
-    relationship_type: Option<&str>,
-) -> Vec<NodeProperty> {
-    let mut properties = Vec::new();
-
-    // Find the projection in the plan (recursively)
-    match plan {
-        LogicalPlan::Projection(proj) => {
-            for item in &proj.items {
-                // Check if this is a property access expression
-                if let LogicalExpr::PropertyAccessExp(prop_acc) = &item.expression {
-                    let node_alias = prop_acc.table_alias.0.as_str();
-                    let property_name = prop_acc.column.raw();
-
-                    // Determine if this is for the left or right node
-                    if node_alias == left_alias || node_alias == right_alias {
-                        // Determine which node label to use
-                        let node_label = if node_alias == left_alias {
-                            left_label
-                        } else {
-                            right_label
-                        };
-
-                        // Handle wildcard property selection
-                        if property_name == "*" {
-                            // Expand * to all properties for this node type
-                            if let Some(schema) =
-                                crate::server::query_context::get_current_schema_with_fallback()
-                            {
-                                if let Some(node_schema) = schema.all_node_schemas().get(node_label)
-                                {
-                                    // Create a property for each mapping (sorted for deterministic ordering)
-                                    let mut sorted_props: Vec<_> =
-                                        node_schema.property_mappings.iter().collect();
-                                    sorted_props.sort_by_key(|(k, _)| k.as_str());
-                                    for (prop_name, prop_value) in sorted_props {
-                                        properties.push(NodeProperty {
-                                            cypher_alias: node_alias.to_string(),
-                                            column_name: prop_value.raw().to_string(),
-                                            alias: prop_name.clone(),
-                                        });
-                                    }
-                                }
-                            }
-                        } else {
-                            // Regular property - use denormalized-aware mapping
-                            let column_name = map_property_to_column_with_relationship_context(
-                                property_name,
-                                node_label,
-                                relationship_type,
-                                None,
-                                None,
-                            )
-                            .unwrap_or_else(|_| property_name.to_string());
-                            let alias = property_name.to_string();
-
-                            properties.push(NodeProperty {
-                                cypher_alias: node_alias.to_string(),
-                                column_name,
-                                alias,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        // Recursively search in child plans
-        LogicalPlan::Filter(filter) => {
-            return extract_var_len_properties(
-                &filter.input,
-                left_alias,
-                right_alias,
-                left_label,
-                right_label,
-                relationship_type,
-            );
-        }
-        LogicalPlan::OrderBy(order_by) => {
-            return extract_var_len_properties(
-                &order_by.input,
-                left_alias,
-                right_alias,
-                left_label,
-                right_label,
-                relationship_type,
-            );
-        }
-        LogicalPlan::Skip(skip) => {
-            return extract_var_len_properties(
-                &skip.input,
-                left_alias,
-                right_alias,
-                left_label,
-                right_label,
-                relationship_type,
-            );
-        }
-        LogicalPlan::Limit(limit) => {
-            return extract_var_len_properties(
-                &limit.input,
-                left_alias,
-                right_alias,
-                left_label,
-                right_label,
-                relationship_type,
-            );
-        }
-        LogicalPlan::GroupBy(group_by) => {
-            return extract_var_len_properties(
-                &group_by.input,
-                left_alias,
-                right_alias,
-                left_label,
-                right_label,
-                relationship_type,
-            );
-        }
-        LogicalPlan::GraphJoins(joins) => {
-            return extract_var_len_properties(
-                &joins.input,
-                left_alias,
-                right_alias,
-                left_label,
-                right_label,
-                relationship_type,
-            );
-        }
-        _ => {}
-    }
-
-    properties
-}
-
-/// Extract alias from a plan node
-fn extract_alias_from_plan(plan: &LogicalPlan) -> Option<String> {
-    match plan {
-        LogicalPlan::GraphNode(node) => Some(node.alias.clone()),
-        LogicalPlan::ViewScan(_) => None, // ViewScan doesn't have an alias field
-        _ => None,
-    }
-}
-
-/// Get variable length info from plan
-fn get_variable_length_info(
-    plan: &LogicalPlan,
-) -> Option<(String, String, String, String, String)> {
-    match plan {
-        LogicalPlan::GraphRel(graph_rel) => {
-            if graph_rel.variable_length.is_some() {
-                let left_alias = extract_alias_from_plan(&graph_rel.left)?;
-                let right_alias = extract_alias_from_plan(&graph_rel.right)?;
-                let left_label = extract_node_label_from_viewscan(&graph_rel.left)?;
-                let right_label = extract_node_label_from_viewscan(&graph_rel.right)?;
-                let rel_type = graph_rel.labels.as_ref()?.first()?.clone();
-                Some((left_alias, right_alias, left_label, right_label, rel_type))
-            } else {
-                None
-            }
-        }
-        LogicalPlan::GraphNode(node) => get_variable_length_info(&node.input),
-        LogicalPlan::Filter(filter) => get_variable_length_info(&filter.input),
-        LogicalPlan::Projection(proj) => get_variable_length_info(&proj.input),
-        _ => None,
-    }
-}
-
 /// Schema-aware property mapping using GraphSchema
 /// Map a property to column with schema awareness
 /// Returns an error if the schema is not available or the property mapping is not found
@@ -577,17 +317,6 @@ pub(crate) fn map_property_to_column_with_schema(
     node_label: &str,
 ) -> Result<String, String> {
     map_property_to_column_with_relationship_context(property, node_label, None, None, None)
-}
-
-/// Map property to column with explicit schema context (preferred)
-/// When schema_name is provided, it searches ONLY that schema (deterministic)
-/// When schema_name is None, it searches all schemas (legacy behavior)
-pub(crate) fn map_property_to_column_with_schema_context(
-    property: &str,
-    node_label: &str,
-    schema_name: Option<&str>,
-) -> Result<String, String> {
-    map_property_to_column_with_relationship_context(property, node_label, None, None, schema_name)
 }
 
 /// Schema-aware property mapping with relationship context
@@ -906,17 +635,4 @@ pub fn map_relationship_property_to_column(
     })?;
 
     Ok(column.raw().to_string())
-}
-
-/// Get node schema by table name
-fn get_node_schema_by_table<'a>(
-    schema: &'a GraphSchema,
-    table_name: &str,
-) -> Option<(&'a str, &'a crate::graph_catalog::graph_schema::NodeSchema)> {
-    for (label, node_schema) in schema.all_node_schemas() {
-        if node_schema.table_name == table_name {
-            return Some((label.as_str(), node_schema));
-        }
-    }
-    None
 }
