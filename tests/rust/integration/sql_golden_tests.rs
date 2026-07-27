@@ -8531,6 +8531,66 @@ async fn denormalized_vlp_range_uses_edge_uniqueness_606() {
     );
 }
 
+/// #606 (FK-edge variant): the self-referencing FK-edge VLP generators
+/// (`generate_fk_edge_base_case` + `generate_fk_edge_recursive_append` /
+/// `_recursive_prepend` in `variable_length_cte.rs`) enforced NODE-uniqueness
+/// (`NOT has(vp.path_nodes, <new>.<id>)`) and carried no `path_edges` column at
+/// all, silently dropping valid node-revisiting paths. FK-edge relationships
+/// have no separate edge table / edge-id column — the edge IS the
+/// `(from_id, to_id)` node-id pair — so relationship-uniqueness dedups on that
+/// tuple. This mirrors the #598 / denorm (#709) fix into the FK-edge arms.
+///
+/// Live-verified against a cyclic FK fixture (PARENT edges child→parent
+/// 1→2, 2→3, 3→1, 4→1): the edge-unique walk returns 12 trails over `*1..3`
+/// (including the cycle-closing 1→2→3→1, 2→3→1→2, 3→1→2→3) versus the old
+/// node-unique walk's 9 — exactly the 3 valid paths that were silently dropped,
+/// with no edge reused.
+#[tokio::test]
+async fn fk_edge_vlp_range_uses_edge_uniqueness_606() {
+    let schema = load_schema("schemas/examples/filesystem_single.yaml");
+
+    // Range VLP (min_hops >= 1, not shortestPath): edge-unique in every
+    // expansion form (append when the start is filtered, prepend otherwise).
+    for cypher in [
+        // prepend form (no start filter)
+        "MATCH (a:Object)-[:PARENT*1..3]->(b:Object) RETURN a.object_id, b.object_id",
+        // append form (start filter present)
+        "MATCH (a:Object)-[:PARENT*1..3]->(b:Object) WHERE a.name = 'notes.txt' \
+         RETURN b.object_id",
+        // wrapper form (min_hops > 1)
+        "MATCH (a:Object)-[:PARENT*2..3]->(b:Object) RETURN a.object_id, b.object_id",
+    ] {
+        let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+        // Base seeds the (from_id, to_id) edge tuple.
+        assert!(
+            sql.contains("[tuple(start_node.object_id, end_node.object_id)] as path_edges"),
+            "[{cypher}] #606 FK-edge: base must seed path_edges with the \
+             (from_id,to_id) tuple; got:\n{sql}"
+        );
+        // Recursive step extends path_edges and the cycle check is edge-unique
+        // on the tuple — NOT node-unique on the endpoint id.
+        assert!(
+            sql.contains("has(vp.path_edges, tuple(") && !sql.contains("NOT has(vp.path_nodes,"),
+            "[{cypher}] #606 FK-edge: recursive cycle check must test edge-tuple \
+             membership in path_edges, not node membership in path_nodes; got:\n{sql}"
+        );
+    }
+
+    // Zero-hop (*0..N) and shortestPath stay NODE-unique (base carries no edge
+    // to seed the tuple / revisiting a node never shortens a path).
+    for cypher in [
+        "MATCH (a:Object)-[:PARENT*0..3]->(b:Object) RETURN a.object_id, b.object_id",
+        "MATCH p = shortestPath((a:Object)-[:PARENT*1..3]->(b:Object)) RETURN length(p)",
+    ] {
+        let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            sql.contains("NOT has(vp.path_nodes,") && !sql.contains("has(vp.path_edges, tuple("),
+            "[{cypher}] #606 FK-edge: zero-hop / shortestPath must stay \
+             node-unique; got:\n{sql}"
+        );
+    }
+}
+
 /// #511: a hardcoded `LIMIT 1000` "safety cap" on every `pattern_union` CTE
 /// branch (unlabeled/multi-type relationship scans, e.g.
 /// `MATCH ()-[r]->() RETURN ...`) silently truncated results — with no
