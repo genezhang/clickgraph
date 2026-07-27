@@ -1,6 +1,6 @@
 # Work priorities & dispatch queue
 
-Status: **canonical**. Last reconciled: 2026-07-19.
+Status: **canonical**. Last reconciled: 2026-07-27.
 
 This is the single source of truth for **what to work on next** across all
 workstreams. The design docs say *how* to do each slice
@@ -79,8 +79,25 @@ Exit met: one fully green nightly run + xpass count 0.
   (live VLP-then-fixed-hop-polymorphic 500).
 
 ### P-1 — Keep a small silent-wrong bug lane open  (standing, ≤1 agent)
-Open issues that are NOT the reverse-mapping class and are individually
-fixable: ~~#647~~ **DONE (#652, `91475be3`)**, #644 (denorm OPTIONAL-VLP anchor
+**Lane state (2026-07-27): the clean single-iteration pool is exhausted.** Since
+the 07-19 reconcile this lane shipped ~20 fixes (all live- or SQL-gen-verified,
+newest first): #580 (multi-type VLP endpoint id, #715), #606 denorm + fk-edge
+VLP relationship-uniqueness variants (#709/#712), #705 (shared EXISTS predicate
+rewriter, #707), #640 shapes 1 & 3 (#694/#704), #642 (VLP multi-sub-CTE union
+collision, #698), #672 part 2 (#696), #678 (#692), #636 (#674), #683 r1 (#685),
+#659 (#682), #641 (#680), #620 (#677, closed via #700), #635 (#675, not-a-bug),
+#646 (#671), #648 (#670), #649 (#669), #595 (closed via #702), #647 (#652).
+Every remaining open issue is either **design-cycle-sized** (#604/#627/#643/
+#673/#628, #640 shapes 2/4/5, #683 residual-2) or in the **reverse-mapping /
+systemic class** owned by P-4 (#592/#583/#613/#615). The correctness candidates
+that need live-DB oracle verification (#606 remaining variants: weighted/mixed/
+hetero-poly/undirected/multi-type; #504 coupled OPTIONAL collapse) are the next
+clean picks **now that ClickHouse is up** — but each needs a purpose-built cyclic
+fixture (corpus data is acyclic). See memory `p1-lane-remaining-pool-2026-07-26`.
+Do not force a per-shape patch of the systemic class (§1.6).
+
+Historical detail (individually-fixable, NOT reverse-mapping class):
+~~#647~~ **DONE (#652, `91475be3`)**, #644 (denorm OPTIONAL-VLP anchor
 join, loud — **in flight**), ~~#646~~ **DONE (composite self-ref FK-edge; follow-up
 #672 part 2 ~~non-self-ref composite from_id/to_id malformed~~ DONE (#696,
 `03d61403`); #672 part 1 loud order/arity guard remains)**, ~~#641~~
@@ -126,21 +143,21 @@ P-3). Latent finding filed in-report: `has_with_clause_in_graph_rel` is
 duplicated (utils + helpers) with a DIFFERENT semantic — a future consolidation
 candidate, not touched here (§8.3 no-drive-by).
 
-### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ◐ (P2.1, P2.2 done — P2.3 next)
-The dead-code sweep shrank plan_builder_utils.rs to ~17.7K lines. §5.1 moves are
+### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ◐ (P2.1, P2.2 merged — P2.3 next)
+The dead-code sweep shrank plan_builder_utils.rs to ~14.5K lines. §5.1 moves are
 now underway. Pure groups first (vlp_rewrite →
 pattern_comprehension_sql → clause_extractors → plan_predicates →
 cte_rewrite → with_to_cte), one move per PR, no logic edits, `pub(crate)`
 re-exports during transition. D-cluster dedups (D1/D2/D3/D6/D8 remainder)
 ride with their §5.1 home module per the plan. **P2.1 (vlp_rewrite move) merged
 (#657)** — VLP expr-rewriting group extracted to `render_plan/vlp_rewrite.rs`,
-byte-identical, D3 dedup deferred (follow-up). **P2.2 (pattern_comprehension_sql move)
-delivered** (`refactor/p22-pattern-comprehension-move`) — the pattern-comprehension SQL
-string-emitting group (31 fns, `render_plan/pattern_comprehension_sql.rs`, 2,629 lines)
-extracted verbatim, `pub(crate)` re-exports, byte-identical goldens + corpus, ratchet
+byte-identical, D3 dedup deferred (follow-up). **P2.2 (pattern_comprehension_sql
+move) MERGED (#660, `3776d0a9`)** — the pattern-comprehension SQL string-emitting
+group (31 fns, `render_plan/pattern_comprehension_sql.rs`, 2,629 lines) extracted
+verbatim, `pub(crate)` re-exports, byte-identical goldens + corpus, ratchet
 net-zero; D7-rest deferred. **Next: P2.3 clause_extractors move.**
 
-### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1+F1b/#602+F2a+F3+F4 done; F2b/F5 and F1b residue open)
+### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1+F1b/#602+#662+F2a+F3+F4 done; F2b/F5 and F1b residue open)
 **Concrete staged plan written: `docs/design/FORWARD_RESOLUTION_PLAN.md`.** It
 supersedes the stale `render_plan/AGENTS.md` §10 premise: the `reverse_mapping`
 field §10 says to delete was already removed in #115 (Feb 2026); the debt forked
@@ -165,9 +182,15 @@ carrying the node label forward across barriers (`WithBarrierScope::carried_labe
 a forward-data thread, +3 regression goldens, corpus byte-identical. **F2a done** —
 deleted the M2 legacy mechanism (`cte_property_mappings` task-local field + its
 populators + 3 consumers), byte-identical (2,156 tests), de-risked by a stub-probe
-experiment that proved M2 fully covered by the forward path. **Next: F2b**
-(reconcile/fold M3) or Phase C (F3 PatternCount / F4 EXISTS de-opaque), or the
-remaining **F1b** residue (#595→F4, #613→F3, #643 planner-topology). Per-shape
+experiment that proved M2 fully covered by the forward path. **F3 merged**
+(PatternCount carry-pattern) and **F4 merged** (ExistsSubquery carry-subplan) —
+both Phase-C de-opaque slices, byte-identical (C1 carry + validated cache), so a
+later rewriter can recurse into the pattern/subplan. **#602 follow-up #662 done**
+(#663, `17be0351` — carry the node label under the *source* alias so a
+rename-at-barrier resolves; the #602 carry was keyed only by published name).
+**#595 closed** (#702, verified-fixed as collateral of #587 + carry-id-across-
+barrier). **Next: F2b** (reconcile/fold M3) or the remaining **F1b** residue
+(#613→F3 machinery now in place, #643 planner-topology). Per-shape
 patching of this class stays forbidden (§1.6). Remaining Phase-1 pass migrations
 (P1.4+) and Phase-3 §6.2 slices are fill-in work alongside, not blockers.
 
@@ -216,6 +239,16 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-27: **Doc reconcile + branch prune** (housekeeping, no code) — §2 queue
+  status lines brought current after the 07-19..27 batch: P-1 marked
+  clean-pool-exhausted with the full shipped list (~20 fixes) + the next picks
+  (live-DB-oracle #606 variants / #504, ClickHouse now up); P-3 P2.2 marked MERGED
+  (#660, `3776d0a9`); P-4 header + Next updated (F3/F4 merged, #602 follow-up #662
+  merged as #663, #595 closed). Pruned all merged branches: 5 dead local
+  (`fix/662`, `refactor/f2c`, `review-641/659/683` — all already on main via
+  squash) + 9 merged remote `fix/*` families (#465/#484/#504/#524/#536/#543/#544/
+  #546/#549); `git fetch --prune` cleared the rest. Only `main` + the two
+  `release/v0.6.{4,5}-dev` branches remain.
 - 2026-07-27: **#580 — multi-type VLP endpoint id-property crash / silent-empty**
   (P-1 bug lane, #715, `c2789908`) — a multi-type VLP (`[:R1|R2*..]`, or untyped
   `[r]`) endpoint's id property (`u.user_id`) was projected as
