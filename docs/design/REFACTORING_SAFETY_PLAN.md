@@ -463,7 +463,7 @@ Split along the audited seams, **pure groups first** (lowest risk):
 | `render_plan/pattern_comprehension_sql.rs` | ✅ **moved (P2.2, Jul 2026)** — the pattern-comprehension SQL *string* emitters (31 fns, ~2,600 lines): emits SQL text, a different layer from the rest | cohesive, separable |
 | `render_plan/clause_extractors.rs` | ✅ **moved (P2.3, Jul 2026)** — the pure clause extractors that remained (`extract_having/order_by/limit/skip` + `extract_sorted_properties`, was 1467–1560). NOTE: `extract_filters/from/group_by/distinct` from the original group had already migrated to `filter_builder.rs`/`group_by_builder.rs` via incremental work | the only externally-consumed group; mostly pure |
 | `render_plan/plan_predicates.rs` | ✅ **WITH-detection group moved (P2.4, Jul 2026)** — `has_with_clause_in_tree`/`has_with_clause_in_graph_rel`/`plan_contains_with_clause`. NOTE: the fresh-scan/with-exported alias walkers (`find_fresh_table_scan_aliases_in_plan`/`collect_fresh_scan_aliases`/`with_exported_aliases_in_branch`) are private helpers coupled to P2.5's cte_rewrite fns, so they ride with P2.5, not here | pure read-only walkers — natural home for the §4 `walk()` rewrites |
-| `render_plan/cte_rewrite.rs` | ◐ **in progress (P2.5, sub-sliced)** — CTE-ref extraction + CTE/alias rewriting. Sub-slice A: expression-rewriting cluster. Sub-slice B: CTE-name remap pair. Sub-slice C: join-condition rewrite group (`collect_with_cte_table_aliases`, `strip_table_alias_from_resolved`, `rewrite_join_conditions_for_cte_aliases`). Remaining: `rewrite_logical_expr_cte_refs`, `update_graph_joins_cte_refs`, deferred P2.4 alias walkers, D2 dedup | pure-ish (RenderPlan/RenderExpr + maps) |
+| `render_plan/cte_rewrite.rs` (+ `cte_graph_joins_rewrite.rs`) | ◐ **in progress (P2.5, sub-sliced)** — CTE-ref extraction + rewriting. RenderExpr/RenderPlan level in `cte_rewrite.rs` (sub-slices A–C: expression-rewriting cluster, CTE-name remap pair, join-condition rewrite group). LogicalPlan level in `cte_graph_joins_rewrite.rs` (sub-slice D: `rewrite_logical_expr_cte_refs`, `update_graph_joins_cte_refs`, the 3 fresh-scan/with-exported alias walkers). Remaining: D2 dedup only | pure-ish (RenderPlan/RenderExpr + maps) |
 | `render_plan/with_to_cte/` (dir) | 6999–15491: the two giant builders + their orbit | **entangled core** — moved in Phase 2, decomposed in Phase 4 |
 
 Rules for the move slices: `pub(crate)` re-exports from the old path during
@@ -1011,9 +1011,13 @@ ratchet net-zero. Sub-slice B done: the CTE-name remap pair
 ratchet net-zero. Sub-slice C done: the join-condition rewrite group
 (`collect_with_cte_table_aliases`, `strip_table_alias_from_resolved`,
 `rewrite_join_conditions_for_cte_aliases`) → same module, byte-identical (three
-`fn`→`pub(crate) fn` widenings), ratchet net-zero. Remaining P2.5:
-`rewrite_logical_expr_cte_refs`, `update_graph_joins_cte_refs`, the deferred P2.4
-alias walkers, D2 dedup ·
+`fn`→`pub(crate) fn` widenings), ratchet net-zero. Sub-slice D done: the
+LogicalPlan-level CTE-ref rewriters (`rewrite_logical_expr_cte_refs`,
+`update_graph_joins_cte_refs`, and the 3 alias walkers deferred from P2.4 —
+`find_fresh_table_scan_aliases_in_plan`/`collect_fresh_scan_aliases`/`with_exported_aliases_in_branch`)
+→ new `render_plan/cte_graph_joins_rewrite.rs` (LogicalPlan companion to
+`cte_rewrite.rs`), fully byte-identical (no visibility changes needed), ratchet
+net-zero. Remaining P2.5: D2 dedup only ·
 ☐ P2.6 with_to_cte move · ☐ P2.7 D1 ·
 ☐ P2.8 D6 · ☐ P2.9 D8 · ☐ P2.10 import hygiene + remaining dead_code
 

@@ -1,6 +1,7 @@
 pub(crate) mod clause_extractors;
 pub mod cte_extraction;
 pub mod cte_generation;
+pub(crate) mod cte_graph_joins_rewrite;
 pub mod cte_manager;
 pub(crate) mod cte_rewrite;
 pub(crate) mod expression_utils;
