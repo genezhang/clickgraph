@@ -26,6 +26,7 @@ pub mod utils;
 pub mod variable_scope;
 mod view_table_ref;
 pub(crate) mod vlp_rewrite;
+pub(crate) mod with_to_cte;
 
 use errors::RenderBuildError;
 use render_expr::{ColumnAlias, OperatorApplication, RenderExpr};
