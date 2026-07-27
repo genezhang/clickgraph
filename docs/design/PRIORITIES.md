@@ -216,6 +216,30 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-27: **#580 — multi-type VLP endpoint id-property crash / silent-empty**
+  (P-1 bug lane, #715, `c2789908`) — a multi-type VLP (`[:R1|R2*..]`, or untyped
+  `[r]`) endpoint's id property (`u.user_id`) was projected as
+  `JSONExtractString(t.{start,end}_properties,'user_id')`. Two failures: (1) Code
+  215 NOT_AN_AGGREGATE — the GROUP BY builder resolves the same id to native
+  `t.start_id` (#538), so SELECT and GROUP BY were different expressions; (2)
+  silent-empty non-aggregate — the JSON blob key is qualified `"u_1.user_id"`
+  when the column name is ambiguous across the branch's JOINed tables, so
+  `JSONExtractString(blob,'user_id')` returns `''`. Fix: when the property is the
+  endpoint node's single-column `node_id` AND the endpoint is genuinely
+  single-type, project the native `start_id`/`end_id` (matching the working
+  single-type path); `build_aliased_group_by` then unifies both sides. The
+  single-vs-multi discriminator reads the resolved `TYPE::FROM::TO` composite keys
+  in `gr.labels` (orientation-correct side) — the planner collapses a
+  genuinely-multi-type endpoint to one inferred GraphNode label, so `TableCtx`/
+  `extract_node_labels` can't be trusted. LIVE-VERIFIED: typed agg → Post 1 5 /
+  User 1 7; end `u:User` → 2 6; untyped-`[r]` agg → 1/AUTHORED/2, 1/FOLLOWS/3,
+  1/LIKED/1 (bonus crash fix); multi-type far endpoint `x.post_id` stays JSON (no
+  over-fire); single-type unchanged. Adversarially reviewed (first cut over-fired
+  onto the collapsed-label far endpoint; refined to composite-key discriminator +
+  boundary test). Net golden diff = the untyped-`[r]` case only, both dialects.
+  Pre-existing broader non-id ambiguous-JSON-key silent-empty (e.g. `u.city`
+  grouping) + composite-id multi-type mismatch → follow-up #716.
+
 - 2026-07-26: **#606 — self-ref FK-edge VLP relationship-uniqueness** (P-1 bug
   lane, #712, `07268010`) — `generate_fk_edge_base_case` + `_recursive_append` /
   `_recursive_prepend` enforced node-uniqueness and carried no `path_edges` at
