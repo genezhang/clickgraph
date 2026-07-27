@@ -15,6 +15,7 @@ pub(crate) mod pattern_comprehension_sql;
 pub mod plan_builder_helpers; // Made public for JOIN dependency sorting in SQL generation
 mod plan_builder_utils;
 pub mod plan_optimizer;
+pub(crate) mod plan_predicates;
 mod properties_builder;
 pub mod property_expansion;
 mod select_builder;
