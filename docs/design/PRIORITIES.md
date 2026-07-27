@@ -216,6 +216,20 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-26: **#606 — self-ref FK-edge VLP relationship-uniqueness** (P-1 bug
+  lane, #712, `07268010`) — `generate_fk_edge_base_case` + `_recursive_append` /
+  `_recursive_prepend` enforced node-uniqueness and carried no `path_edges` at
+  all. Added `build_fk_edge_tuple`; `path_edges` seeds `(from_id,to_id)` in the
+  base and extends the per-hop `(child,parent)` tuple in both arms, cycle check on
+  the tuple. Same `uses_edge_uniqueness()` gate (shortestPath + zero-hop stay
+  node-unique). LIVE-VERIFIED against a cyclic FK fixture: 12 edge-unique trails
+  vs old 9 over `*1..3` (recovers 3 cycle-closing paths). Adversarially reviewed
+  (0 blocker; rendered every arm, confirmed all tuples canonically (child,parent);
+  multi-hop base stub is dead code; wrapper carries path_edges via SELECT *).
+  MINOR pre-existing (composite-id FK-edge not composite-aware, identical on main)
+  → follow-up #713. Second #606 variant done; weighted/mixed/hetero-poly/
+  undirected/multi-type stay open.
+
 - 2026-07-26: **#606 — denormalized VLP relationship-uniqueness** (P-1 bug lane,
   #709, `1b4feba2`) — `DenormalizedCteStrategy` range VLP enforced node-uniqueness
   (`NOT has(vp.path_nodes, next.to)`), silently dropping valid node-revisiting
