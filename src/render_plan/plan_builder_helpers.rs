@@ -10,7 +10,7 @@
 //! - Polymorphic edge filter generation
 
 use super::render_expr::{
-    AggregateFnCall, Column, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr,
+    AggregateFnCall, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr,
     ScalarFnCall, TableAlias,
 };
 use crate::graph_catalog::expression_parser::PropertyValue;
@@ -18,9 +18,7 @@ use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
 use crate::render_plan::cte_extraction::{
     get_node_label_for_alias, get_relationship_type_for_alias,
 };
-use crate::render_plan::expression_utils::{
-    flatten_addition_operands, has_string_operand, ExprVisitor,
-};
+use crate::render_plan::expression_utils::{flatten_addition_operands, has_string_operand};
 // Note: Direction import commented out until Issue #1 (Undirected Multi-Hop SQL) is fixed
 // use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::logical_plan::LogicalPlan;
@@ -1865,49 +1863,6 @@ pub(super) fn find_anchor_node(
         log::warn!("⚠️ No clear anchor, using fallback: {}", alias);
     }
     fallback
-}
-
-/// Visitor for rewriting path function calls to CTE column references
-/// Converts: length(p) → hop_count, nodes(p) → path_nodes, relationships(p) → path_relationships
-struct PathFunctionRewriter {
-    path_var_name: String,
-    table_alias: String,
-}
-
-impl ExprVisitor for PathFunctionRewriter {
-    fn transform_scalar_fn_call(&mut self, name: &str, args: Vec<RenderExpr>) -> RenderExpr {
-        // Check if this is a path function call with the path variable as argument
-        if args.len() == 1 {
-            if let RenderExpr::TableAlias(TableAlias(alias)) = &args[0] {
-                if alias == &self.path_var_name {
-                    // Convert path functions to CTE column references
-                    let column_name = match name {
-                        "length" => Some("hop_count"),
-                        "nodes" => Some("path_nodes"),
-                        "relationships" => Some("path_relationships"),
-                        _ => None,
-                    };
-
-                    if let Some(col_name) = column_name {
-                        return if self.table_alias.is_empty() {
-                            RenderExpr::Column(Column(PropertyValue::Column(col_name.to_string())))
-                        } else {
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(self.table_alias.clone()),
-                                column: PropertyValue::Column(col_name.to_string()),
-                            })
-                        };
-                    }
-                }
-            }
-        }
-
-        // Default: recursively handled args + rebuild call
-        RenderExpr::ScalarFnCall(ScalarFnCall {
-            name: name.to_string(),
-            args,
-        })
-    }
 }
 
 use super::cte_extraction::FixedPathInfo;
