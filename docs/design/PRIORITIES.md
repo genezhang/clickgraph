@@ -177,10 +177,13 @@ CTE-expression-rewriting cluster (`rewrite_operator_application_for_cte`/`_join`
 P2.5 is being sub-sliced because its §5.1 home is ~13 fns across 3 scattered
 bands (much larger/entangled than P2.1–P2.4); **sub-slice B delivered**: the
 CTE-name remap pair (`remap_cte_names_in_expr`/`_in_render_plan`) extracted to the
-same `cte_rewrite.rs`, byte-identical, ratchet net-zero. Remaining P2.5:
-`collect_with_cte_table_aliases`, `rewrite_join_conditions_for_cte_aliases`,
-`rewrite_logical_expr_cte_refs`, `update_graph_joins_cte_refs`, the deferred P2.4
-alias walkers, D2 dedup. **Next: P2.5 sub-slice C.**
+same `cte_rewrite.rs`, byte-identical, ratchet net-zero. **Sub-slice C delivered**:
+the join-condition rewrite group (`collect_with_cte_table_aliases`,
+`strip_table_alias_from_resolved`, `rewrite_join_conditions_for_cte_aliases`)
+extracted to the same module, byte-identical (three `fn`→`pub(crate) fn`
+widenings), ratchet net-zero. Remaining P2.5: `rewrite_logical_expr_cte_refs`,
+`update_graph_joins_cte_refs`, the deferred P2.4 alias walkers, D2 dedup.
+**Next: P2.5 sub-slice D.**
 
 ### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1+F1b/#602+#662+F2a+F3+F4 done; F2b/F5 and F1b residue open)
 **Concrete staged plan written: `docs/design/FORWARD_RESOLUTION_PLAN.md`.** It
@@ -264,6 +267,22 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-27: **P2.5 sub-slice C — cte_rewrite (join-condition rewrite group)**
+  (P-3 refactor lane) — the contiguous join-condition CTE-rewrite group
+  (`collect_with_cte_table_aliases`, `strip_table_alias_from_resolved`,
+  `rewrite_join_conditions_for_cte_aliases`, old lines 1430–1627) extracted
+  verbatim into the existing `render_plan/cte_rewrite.rs`. All three had zero
+  external callers (earlier grep "hits" in join_builder were comments), so the
+  `pub(crate) use` re-export serves only this module's internal call sites (3
+  distinct + the one recursive self-call that moved with its fn). The only
+  non-verbatim change is widening all three `fn`→`pub(crate) fn` so the re-export
+  reaches them (documented at each site). `super::`-qualified deps (`CteSchemas`,
+  `render_expr::*`, `UnionItems`, `FromTableItem`, `map_render_expr`) resolve from
+  the new sibling module unchanged. Zero logic edits. Gates: 1612 lib + 529
+  integration (incl. `corpus_sweep` + sql_golden) + 1 ratchet + 7 unit, 0
+  failures; **byte-identical** (moved block diff-clean vs main modulo the 3
+  visibility lines, no golden churn, ratchet net-zero); fmt/clippy clean;
+  warning-free `--tests` build. Next: P2.5 sub-slice D.
 - 2026-07-27: **P2.5 sub-slice B — cte_rewrite (CTE-name remap pair)** (P-3
   refactor lane) — the tightly-coupled CTE-name remap pair
   (`remap_cte_names_in_expr` + `remap_cte_names_in_render_plan`, old lines
