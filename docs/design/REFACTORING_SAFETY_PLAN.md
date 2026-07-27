@@ -563,11 +563,25 @@ One PR per cluster from §1.4's table. Canonical survivors:
   deleted `VLPExprRewriter` (−458 lines). Applied the #736 lesson (verified from a
   wiped incremental cache). Ratchet: −10 `is_denormalized` schema-axis tokens
   (a genuine reduction, baseline regenerated to lock it). Corpus + goldens
-  byte-identical. The remaining blanket allows (`plan_builder_utils` already lost
-  its module-level one in an earlier phase; `cte_generation` — dead methods/fields
-  on the LIVE `CteGenerationContext`, whose test-only setters in `cte_manager`
-  tests make it a more delicate standalone slice; `cte_extraction` — a large
-  central file warranting its own pass) are the last follow-up slices.
+  byte-identical. **`cte_generation` dead-code swept (Jul 2026)**: removed its
+  blanket allow and deleted two fully-dead sub-features on `CteGenerationContext`
+  — the `variable_length_properties` field + `get_properties`/`with_properties`,
+  and the `start_cypher_alias`/`end_cypher_alias` fields + their getters + their
+  test-only setters (whose only callers were 7 `.with_*_cypher_alias(…)` chains in
+  `cte_manager` unit tests, removed with them since the values were set-but-never-
+  read) — plus 7 genuinely-dead free fns (`extract_node_label_from_plan`,
+  `analyze_property_requirements`, `extract_var_len_properties`,
+  `extract_alias_from_plan`, `get_variable_length_info`,
+  `map_property_to_column_with_schema_context`, `get_node_schema_by_table`, several
+  of which formed an internal mutually-dead cluster that fools naive grep). Two
+  half-dead getters (`get_filter`, `get_fixed_length_joins`) were KEPT behind a
+  scoped `#[allow(dead_code)]` — their sibling setters (`with_filter`,
+  `set_fixed_length_joins`) are live-called from `cte_extraction`, so deleting the
+  getters would make the fields write-only and cascade a warning onto production
+  code (a separate decision, deliberately deferred). `with_schema` was gated
+  `#[cfg(test)]` (test-only-live). −302 lines, ratchet net-zero. **The remaining
+  blanket allow (`cte_extraction` — a large central file warranting its own pass)
+  is the last follow-up slice.**
 - Fix the stale header docstrings; update `render_plan/AGENTS.md`'s module
   diagram in the same PRs.
 

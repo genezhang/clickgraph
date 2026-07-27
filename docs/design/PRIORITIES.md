@@ -297,6 +297,31 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-27: **P2.10 dead_code tail — `cte_generation`** (P-3 refactor lane) —
+  third slice of the §5.3 tail. Removed the blanket `#![allow(dead_code)]` and
+  deleted two fully-dead sub-features on `CteGenerationContext`: the
+  `variable_length_properties` field + `get_properties`/`with_properties`, and the
+  `start_cypher_alias`/`end_cypher_alias` fields + getters + test-only setters
+  (whose only callers were 7 `.with_*_cypher_alias(…)` builder chains in
+  `cte_manager` tests — removed with them, as the values were set-but-never-read).
+  Also deleted 7 genuinely-dead free fns (`extract_node_label_from_plan`,
+  `analyze_property_requirements`, `extract_var_len_properties`,
+  `extract_alias_from_plan`, `get_variable_length_info`,
+  `map_property_to_column_with_schema_context`, `get_node_schema_by_table` — some
+  formed an internal *mutually-dead* cluster reachable only from each other, which
+  the reachability closure catches but grep does not). **Scope decision (user):**
+  the two half-dead getters `get_filter` / `get_fixed_length_joins` were KEPT
+  behind a scoped `#[allow(dead_code)]` with an explanatory comment — their sibling
+  setters (`with_filter`, `set_fixed_length_joins`) are live-called from
+  `cte_extraction`, so deleting the getters would make the fields write-only and
+  cascade a dead-code warning onto production code; that write-path pruning is a
+  separate, deferred decision. `with_schema` was gated `#[cfg(test)]`
+  (test-only-live — flagged dead by the clean lib compile since its callers are all
+  `#[cfg(test)]`). −302 lines. Verified from a WIPED incremental cache (#736
+  lesson). Behavior-identical: `corpus_sweep` + `sql_golden` byte-identical, 1607
+  lib + 529 integration + ratchet net-zero, fmt/clippy clean, warning-free
+  lib + `--tests`. Remaining tail: `cte_extraction.rs` (large central file).
+
 - 2026-07-27: **P2.10 dead_code tail — delete `expression_utils` + `filter_pipeline`
   dead cluster** (P-3 refactor lane) — second slice of the §5.3 tail. The two
   files were a single cross-referencing dead cluster: `filter_pipeline`'s 5 unused

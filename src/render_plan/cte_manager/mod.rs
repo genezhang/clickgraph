@@ -3518,9 +3518,7 @@ mod tests {
         .with_spec(VariableLengthSpec {
             min_hops: Some(1),
             max_hops: Some(3),
-        })
-        .with_start_cypher_alias("u1".to_string())
-        .with_end_cypher_alias("u2".to_string());
+        });
 
         // Test with empty properties and filters
         let properties = vec![];
@@ -3595,13 +3593,10 @@ mod tests {
             HashMap::new(),
         ));
         let strategy = DenormalizedCteStrategy::new(&pattern_ctx, schema).unwrap();
-        let context = CteGenerationContext::new()
-            .with_spec(VariableLengthSpec {
-                min_hops: Some(1),
-                max_hops: Some(3),
-            })
-            .with_start_cypher_alias("f1".to_string())
-            .with_end_cypher_alias("f2".to_string());
+        let context = CteGenerationContext::new().with_spec(VariableLengthSpec {
+            min_hops: Some(1),
+            max_hops: Some(3),
+        });
         (strategy, context)
     }
 
@@ -3717,13 +3712,10 @@ mod tests {
         let strategy = strategy.unwrap();
 
         // Create context
-        let context = CteGenerationContext::new()
-            .with_spec(VariableLengthSpec {
-                min_hops: Some(1),
-                max_hops: Some(3),
-            })
-            .with_start_cypher_alias("f1".to_string())
-            .with_end_cypher_alias("f2".to_string());
+        let context = CteGenerationContext::new().with_spec(VariableLengthSpec {
+            min_hops: Some(1),
+            max_hops: Some(3),
+        });
 
         // Test with empty properties and filters
         let properties = vec![];
@@ -3836,13 +3828,10 @@ mod tests {
         let strategy = strategy_result.unwrap();
 
         // Create context
-        let context = CteGenerationContext::new()
-            .with_spec(VariableLengthSpec {
-                min_hops: Some(1),
-                max_hops: Some(3),
-            })
-            .with_start_cypher_alias("parent".to_string())
-            .with_end_cypher_alias("child".to_string());
+        let context = CteGenerationContext::new().with_spec(VariableLengthSpec {
+            min_hops: Some(1),
+            max_hops: Some(3),
+        });
 
         // Test with empty properties and filters
         let properties = vec![];
@@ -3914,13 +3903,10 @@ mod tests {
         assert!(strategy.validate(&pattern_ctx).is_ok());
 
         // Test SQL generation
-        let context = CteGenerationContext::new()
-            .with_spec(VariableLengthSpec {
-                min_hops: Some(1),
-                max_hops: Some(3),
-            })
-            .with_start_cypher_alias("u".to_string())
-            .with_end_cypher_alias("p".to_string());
+        let context = CteGenerationContext::new().with_spec(VariableLengthSpec {
+            min_hops: Some(1),
+            max_hops: Some(3),
+        });
 
         let properties = vec![
             NodeProperty {
@@ -4012,9 +3998,7 @@ mod tests {
         .with_spec(VariableLengthSpec {
             min_hops: Some(1),
             max_hops: Some(3),
-        })
-        .with_start_cypher_alias("f1".to_string())
-        .with_end_cypher_alias("f2".to_string());
+        });
 
         // Test with empty properties and filters
         let properties = vec![];
@@ -4090,9 +4074,7 @@ mod tests {
         .with_spec(VariableLengthSpec {
             min_hops: Some(1),
             max_hops: Some(1), // Coupled edges typically represent single hops
-        })
-        .with_start_cypher_alias("n1".to_string())
-        .with_end_cypher_alias("n2".to_string());
+        });
 
         // Test with empty properties and filters
         let properties = vec![];
