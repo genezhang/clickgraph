@@ -551,12 +551,23 @@ One PR per cluster from §1.4's table. Canonical survivors:
   `mod feature_flags;` was its only mention outside its own tests; every
   extraction it gated is now a permanent module move, so the flags gate nothing.
   Removed the file + its `mod` line (−141 lines, lib 1612 → 1609 tests = its 3
-  self-tests); corpus + goldens byte-identical. The remaining blanket allows
-  (`plan_builder_utils` already lost its module-level one in an earlier phase;
-  `filter_pipeline`, `cte_generation`, `expression_utils`, `cte_extraction`
-  remain — the first three are a single cross-referencing dead cluster, best
-  swept together; `cte_extraction` is a large central file warranting its own
-  pass) are follow-up slices.
+  self-tests); corpus + goldens byte-identical. **`expression_utils` +
+  `filter_pipeline` dead cluster deleted together (Jul 2026)**: these two were a
+  single cross-referencing dead cluster — `filter_pipeline`'s 5 unused VLP
+  rewrite fns were the SOLE callers of `expression_utils`'s dead `VLPExprRewriter`
+  / `AliasRewriter` / `property_access_expr`, so neither file's dead surface was
+  visible until both blanket allows came off at once. Removed both
+  `#![allow(dead_code)]`, the 5 filter_pipeline fns + 6 expression_utils items
+  (`CTERewriteContext`, the 3 rewriter structs + impls, `create_property_access`,
+  `property_access_expr`), the orphaned imports, and 3 stale comments naming the
+  deleted `VLPExprRewriter` (−458 lines). Applied the #736 lesson (verified from a
+  wiped incremental cache). Ratchet: −10 `is_denormalized` schema-axis tokens
+  (a genuine reduction, baseline regenerated to lock it). Corpus + goldens
+  byte-identical. The remaining blanket allows (`plan_builder_utils` already lost
+  its module-level one in an earlier phase; `cte_generation` — dead methods/fields
+  on the LIVE `CteGenerationContext`, whose test-only setters in `cte_manager`
+  tests make it a more delicate standalone slice; `cte_extraction` — a large
+  central file warranting its own pass) are the last follow-up slices.
 - Fix the stale header docstrings; update `render_plan/AGENTS.md`'s module
   diagram in the same PRs.
 
