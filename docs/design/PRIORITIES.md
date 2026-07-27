@@ -143,7 +143,7 @@ P-3). Latent finding filed in-report: `has_with_clause_in_graph_rel` is
 duplicated (utils + helpers) with a DIFFERENT semantic — a future consolidation
 candidate, not touched here (§8.3 no-drive-by).
 
-### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ◐ (P2.1–P2.4 merged; P2.5 in progress, sub-sliced)
+### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ◐ (P2.1–P2.4 merged; P2.5 nearly done — only D2 dedup left)
 The dead-code sweep shrank plan_builder_utils.rs to ~14.5K lines. §5.1 moves are
 now underway. Pure groups first (vlp_rewrite →
 pattern_comprehension_sql → clause_extractors → plan_predicates →
@@ -181,9 +181,13 @@ same `cte_rewrite.rs`, byte-identical, ratchet net-zero. **Sub-slice C delivered
 the join-condition rewrite group (`collect_with_cte_table_aliases`,
 `strip_table_alias_from_resolved`, `rewrite_join_conditions_for_cte_aliases`)
 extracted to the same module, byte-identical (three `fn`→`pub(crate) fn`
-widenings), ratchet net-zero. Remaining P2.5: `rewrite_logical_expr_cte_refs`,
-`update_graph_joins_cte_refs`, the deferred P2.4 alias walkers, D2 dedup.
-**Next: P2.5 sub-slice D.**
+widenings), ratchet net-zero. **Sub-slice D delivered**: the LogicalPlan-level
+CTE-ref rewriters (`rewrite_logical_expr_cte_refs`, `update_graph_joins_cte_refs`,
+and the 3 alias walkers deferred from P2.4) extracted to a new
+`render_plan/cte_graph_joins_rewrite.rs` (the LogicalPlan companion to
+`cte_rewrite.rs`), fully byte-identical (no visibility changes needed), ratchet
+net-zero. Remaining P2.5: **D2 dedup only**. **Next: P2.5 D2 dedup, or P2.6
+with_to_cte.**
 
 ### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1+F1b/#602+#662+F2a+F3+F4 done; F2b/F5 and F1b residue open)
 **Concrete staged plan written: `docs/design/FORWARD_RESOLUTION_PLAN.md`.** It
@@ -267,6 +271,26 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-27: **P2.5 sub-slice D — cte_graph_joins_rewrite (LogicalPlan-level CTE
+  rewriters)** (P-3 refactor lane) — the contiguous LogicalPlan-level CTE-ref
+  rewrite block (`rewrite_logical_expr_cte_refs`, the 3 alias walkers deferred
+  from P2.4 — `find_fresh_table_scan_aliases_in_plan`/`collect_fresh_scan_aliases`/
+  `with_exported_aliases_in_branch` — and the ~400-line `update_graph_joins_cte_refs`,
+  old lines 3547–4120, ~574 lines) extracted verbatim to a NEW
+  `render_plan/cte_graph_joins_rewrite.rs`. Kept as a separate module from
+  `cte_rewrite.rs` because it operates on `query_planner::logical_expr`/`logical_plan`
+  types, not render types (the LogicalPlan companion). Only
+  `update_graph_joins_cte_refs` has in-module callers (2 sites, already `pub(crate)`)
+  so it alone is re-exported; the other 4 are called solely within the new module
+  and stay private. **Fully byte-identical — zero visibility changes needed**
+  (unlike sub-slices A/C). Ruled out a false-positive external caller
+  (`Self::collect_fresh_scan_aliases` in analyzer/graph_join/inference.rs is an
+  unrelated same-named method). This completes the P2.5 function moves; only the D2
+  dedup remains. Gates: 1612 lib + 529 integration (incl. `corpus_sweep` +
+  sql_golden) + 1 ratchet + 7 unit, 0 failures; **byte-identical** (moved block
+  diff-clean vs main, no golden churn, ratchet net-zero); fmt/clippy clean;
+  warning-free `--tests` build. `plan_builder_utils.rs` 13908 → ~13335. Next: P2.5
+  D2 dedup or P2.6 with_to_cte.
 - 2026-07-27: **P2.5 sub-slice C — cte_rewrite (join-condition rewrite group)**
   (P-3 refactor lane) — the contiguous join-condition CTE-rewrite group
   (`collect_with_cte_table_aliases`, `strip_table_alias_from_resolved`,
