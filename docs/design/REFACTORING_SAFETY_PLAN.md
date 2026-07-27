@@ -510,7 +510,16 @@ One PR per cluster from §1.4's table. Canonical survivors:
   they already thread `plan_ctx` explicitly; entanglement is intra-function
   `RefCell`s, not globals, so this is mechanical).
 - Replace glob imports (`plan_builder_helpers::*`, `alias_utils::*`) with
-  named imports so shadowing becomes visible.
+  named imports so shadowing becomes visible. **◐ in progress (P2.10 slice 1,
+  Jul 2026)**: `with_to_cte/mod.rs`'s two `*` globs replaced with the exact
+  6-name set the compiler requires (`combine_optional_filters_with_and`,
+  `extract_predicates_for_alias_logical`, `has_with_clause_in_graph_rel`,
+  `rewrite_logical_path_functions` from `plan_builder_helpers`;
+  `collect_aliases_from_plan`, `find_cte_reference_alias` from `alias_utils`).
+  The compiler was the enumerator — grep under-counted because
+  `plan_builder_helpers` exports many `pub(super) fn`. Byte-identical corpus +
+  goldens, ratchet net-zero. `plan_builder_utils.rs`'s twin globs are the next
+  slice.
 - Delete the three files' `#![allow(dead_code)]`; delete what the compiler
   then flags (investigate before deleting, per the late-stage-project rule —
   but the blanket allow has hidden dead surface for months).
@@ -1049,7 +1058,25 @@ item-extraction fallback, and it was the one the authoritative
 (`corpus_sweep` + `sql_golden`, 529 tests) is byte-identical, proving the two simple
 copies never actually reached their divergent branch in practice. Ratchet net-zero
 (no axis tokens moved). ·
-☐ P2.8 D6 · ☐ P2.9 D8 · ☐ P2.10 import hygiene + remaining dead_code
+☑ P2.8 D6 (already resolved by attrition — verified Jul 2026): the inline
+`expand_table_alias_to_select_items` twin (`alias_prefix_underscore`/`_dot`
+signature) that §1.4 flagged at old-file :8337–8388 no longer exists; the fn now
+has a single definition and a single call site. Prior P2.x moves + dead-code
+sweeps already collapsed it. The `STEP 2/3/4` markers that remain in the giant are
+an unrelated VLP-CTE-metadata registration block, not the D6 target. The #411
+entanglement note stands but there is no duplication left to consolidate first. ·
+☑ P2.9 D8 (already resolved by attrition — verified Jul 2026): the three named
+nested-redeclaration twins (`extract_alias_from_expr` ×2, `is_cte_reference` ×2,
+`contains_aggregate`/`expr_contains_aggregate` ×2 all *within* the old file) are
+gone. Remaining same-named fns live in *different* modules with *different*
+signatures/semantics and are legitimately distinct — `is_cte_reference` is `bool`
+in `from_builder` vs `Option<String>` in `plan_builder_utils`;
+`collect_live_table_aliases`' vs `collect_exists_scope_aliases`' nested `collect`
+helpers deliberately diverge on `Union` per #596; `with_clause_key`'s
+`extract_alias_from_expr` handles more operators than `logical_plan`'s. Merging any
+pair would change behavior — not a mechanical hoist. ·
+◐ P2.10 import hygiene — slice 1 done (`with_to_cte/mod.rs` globs → named, §5.3);
+`plan_builder_utils.rs` twin globs + remaining dead_code next.
 
 Phase 3: ◐ Slices 1–2 merged 2026-07-13: GraphNode/ViewScan + query_planner
 `is_denormalized` reads routed through canonical wrappers (162f9338/7d0f81bd) ·
