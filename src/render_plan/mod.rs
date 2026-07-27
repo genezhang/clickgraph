@@ -5,7 +5,6 @@ pub(crate) mod cte_graph_joins_rewrite;
 pub mod cte_manager;
 pub(crate) mod cte_rewrite;
 pub(crate) mod expression_utils;
-mod feature_flags;
 mod filter_builder;
 mod filter_pipeline;
 mod from_builder;

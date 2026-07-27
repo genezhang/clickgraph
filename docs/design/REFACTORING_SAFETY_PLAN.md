@@ -545,10 +545,18 @@ One PR per cluster from §1.4's table. Canonical survivors:
   (`rewrite_with_aliases_to_cte`, `generate_polymorphic_edge_filters` — exercised
   solely by unit tests). File 7,311 → 6,348 lines. Corpus + goldens
   byte-identical, ratchet net-zero (deleted fns carried no tracked axis tokens),
-  warning-free lib + `--tests`. The other blanket allows (`plan_builder_utils`
-  already lost its module-level one in an earlier phase; `filter_pipeline`,
-  `cte_generation`, `expression_utils`, `cte_extraction`, `feature_flags` remain)
-  are follow-up slices.
+  warning-free lib + `--tests`. **`feature_flags.rs` deleted wholesale (Jul
+  2026)**: the module was completed-refactoring rollback scaffolding
+  (`PlanBuilderFeatureFlags` + env parser) with ZERO production references —
+  `mod feature_flags;` was its only mention outside its own tests; every
+  extraction it gated is now a permanent module move, so the flags gate nothing.
+  Removed the file + its `mod` line (−141 lines, lib 1612 → 1609 tests = its 3
+  self-tests); corpus + goldens byte-identical. The remaining blanket allows
+  (`plan_builder_utils` already lost its module-level one in an earlier phase;
+  `filter_pipeline`, `cte_generation`, `expression_utils`, `cte_extraction`
+  remain — the first three are a single cross-referencing dead cluster, best
+  swept together; `cte_extraction` is a large central file warranting its own
+  pass) are follow-up slices.
 - Fix the stale header docstrings; update `render_plan/AGENTS.md`'s module
   diagram in the same PRs.
 

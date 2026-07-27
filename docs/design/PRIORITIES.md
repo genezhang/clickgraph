@@ -297,6 +297,21 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-27: **P2.10 dead_code tail — delete `feature_flags.rs`** (P-3 refactor
+  lane) — first slice of the §5.3 dead_code tail after `plan_builder_helpers`.
+  `render_plan/feature_flags.rs` was completed-refactoring rollback scaffolding
+  (`PlanBuilderFeatureFlags` + `PLAN_BUILDER_FEATURE_FLAGS` env parser) whose
+  blanket `#![allow(dead_code)]` masked a module with **zero production
+  references** — `mod feature_flags;` in `render_plan/mod.rs` was its only mention
+  outside its own unit tests, and every extraction the flags gated is now a
+  permanent module move (so the flags gate nothing and the "rollback" is
+  illusory). Deleted the file + its `mod` line wholesale (−141 lines). Behavior-
+  identical: `corpus_sweep` + `sql_golden` byte-identical, 1609 lib (−3 = the
+  module's own self-tests) + 529 integration + ratchet net-zero, fmt/clippy clean,
+  warning-free lib + `--tests`. Remaining tail: `filter_pipeline` +
+  `cte_generation` + `expression_utils` (a single cross-referencing dead cluster,
+  swept together next) and `cte_extraction` (large central file, its own pass).
+
 - 2026-07-27: **P2.10 dead_code sweep — `plan_builder_helpers.rs`** (P-3 refactor
   lane) — removed the module-level `#![allow(dead_code)]`, which had masked 31
   functions. Triaged rigorously by **call-graph reachability closure** (roots =
