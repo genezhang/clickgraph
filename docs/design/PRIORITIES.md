@@ -297,6 +297,22 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-27: **P2.10 import hygiene — slice 2 (`plan_builder_utils` globs → named)**
+  (P-3 refactor lane) — replaced the two `*` globs in
+  `render_plan/plan_builder_utils.rs` with the 6 names the file uses:
+  `denorm_scan_cte_anchor_id_property`, `denorm_scan_cte_anchor_properties`,
+  `extract_parameterized_table_ref`, `extract_table_name`,
+  `get_graph_rel_from_plan` (from `plan_builder_helpers`) + `find_label_for_alias`
+  (from `alias_utils`), plus `get_anchor_alias_from_plan`/`strip_database_prefix`
+  gated `#[cfg(test)]`. **This slice caught the exact shadowing hazard §5.3 warns
+  about**: those last two names *looked* glob-provided but are used only by the
+  file's test module — the glob masked that they weren't part of the production
+  surface. Same compiler-as-enumerator method as slice 1 (grep under-counts the
+  `pub(super) fn` surface). Behavior-identical: `corpus_sweep` + `sql_golden`
+  byte-identical, 1612 lib + 529 integration + ratchet net-zero, fmt/clippy clean,
+  warning-free lib AND `--tests` builds. Remaining target globs live in
+  `filter_builder.rs` + `plan_builder.rs` (3 total) — next slice.
+
 - 2026-07-27: **P2.10 import hygiene — slice 1 (`with_to_cte` globs → named)**
   (P-3 refactor lane) — replaced the two `*` glob imports in
   `render_plan/with_to_cte/mod.rs` (`plan_builder_helpers::*`,

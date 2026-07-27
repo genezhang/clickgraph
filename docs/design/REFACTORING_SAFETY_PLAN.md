@@ -518,8 +518,15 @@ One PR per cluster from §1.4's table. Canonical survivors:
   `collect_aliases_from_plan`, `find_cte_reference_alias` from `alias_utils`).
   The compiler was the enumerator — grep under-counted because
   `plan_builder_helpers` exports many `pub(super) fn`. Byte-identical corpus +
-  goldens, ratchet net-zero. `plan_builder_utils.rs`'s twin globs are the next
-  slice.
+  goldens, ratchet net-zero. **Slice 2 done**: `plan_builder_utils.rs`'s twin
+  globs replaced with 6 named imports — 5 from `plan_builder_helpers`
+  (`denorm_scan_cte_anchor_id_property`, `denorm_scan_cte_anchor_properties`,
+  `extract_parameterized_table_ref`, `extract_table_name`,
+  `get_graph_rel_from_plan`) + `find_label_for_alias` from `alias_utils`
+  ungated, plus `get_anchor_alias_from_plan`/`strip_database_prefix` gated
+  `#[cfg(test)]` (they are test-only — a shadowing hazard the glob masked, exactly
+  what §5.3 targets). `filter_builder.rs` + `plan_builder.rs`'s three remaining
+  globs are the next slice.
 - Delete the three files' `#![allow(dead_code)]`; delete what the compiler
   then flags (investigate before deleting, per the late-stage-project rule —
   but the blanket allow has hidden dead surface for months).
