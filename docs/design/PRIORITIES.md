@@ -143,7 +143,7 @@ P-3). Latent finding filed in-report: `has_with_clause_in_graph_rel` is
 duplicated (utils + helpers) with a DIFFERENT semantic — a future consolidation
 candidate, not touched here (§8.3 no-drive-by).
 
-### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ◐ (P2.1–P2.5 done; P2.6 with_to_cte next)
+### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ☑ (P2.1–P2.6 done; P2.7 D1 next)
 The dead-code sweep shrank plan_builder_utils.rs to ~14.5K lines. §5.1 moves are
 now underway. Pure groups first (vlp_rewrite →
 pattern_comprehension_sql → clause_extractors → plan_predicates →
@@ -192,9 +192,17 @@ four-function CTE property-rewriter family collapsed to one operator core +
 byte-identical (corpus + goldens unchanged) as a behavior-preserving dedup — the
 double-encoding guard still fires only under `Rewrite`; the plan's universal-guard
 idea is left as an open transition-assert follow-up (would change `Keep`
-semantics). **P2.5 COMPLETE. Next: P2.6 with_to_cte** — the "entangled core" (the
-two giant WITH→CTE builders + orbit); larger and higher-risk than P2.1–P2.5, moved
-in Phase 2 and decomposed in Phase 4.
+semantics). **P2.5 COMPLETE.** **P2.6 with_to_cte COMPLETE** — the "entangled
+core" (the two giant WITH→CTE builders + orbit) moved verbatim into a new
+`render_plan/with_to_cte/mod.rs` across four byte-identical sub-slice PRs: (1) the
+#529 property guards, (2) `replace_with_clause_with_cte_reference_v2`, (3) the
+WITH-discovery/pruning cluster, (4) `build_chained_with_match_cte_plan` (~5,478
+lines) + its `WithBarrierScope`/`CteNameAllocator` orbit structs + widening the 24
+private helpers it calls back into. Kept in a single `mod.rs` (at `render_plan`
+depth) so the moved bodies' `super::…` paths stay byte-identical — a sub-file split
+is a Phase-4 logic edit, not a move. `plan_builder_utils.rs` 13,339 → 4,874 lines.
+**Next: P2.7 (D1 `with_clause_key` dedup)** or Phase-4 decomposition of the moved
+giants (§7.1).
 
 ### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1+F1b/#602+#662+F2a+F3+F4 done; F2b/F5 and F1b residue open)
 **Concrete staged plan written: `docs/design/FORWARD_RESOLUTION_PLAN.md`.** It
@@ -277,6 +285,42 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-27: **P2.6 — with_to_cte move (the entangled core)** (P-3 refactor lane,
+  4 stacked PRs) — the WITH→CTE "entangled core" extracted verbatim from the
+  ~13.3K-line `plan_builder_utils.rs` into a new `render_plan/with_to_cte/mod.rs`,
+  one byte-identical MOVE per sub-slice: **(1)** the #529 shape-1 loud-guard
+  property helpers (`table_role_dependent_property_names`,
+  `collect_property_accesses` + tests); **(2)**
+  `replace_with_clause_with_cte_reference_v2` (~1,080 ln, exactly byte-identical,
+  no widening); **(3)** the WITH-discovery/pruning cluster
+  (`find_all_with_clauses_grouped`, `collapse_passthrough_with`,
+  `node_is_concrete_labeled`, `alias_has_pattern_correlation`,
+  `prune_joins_covered_by_cte`; one widening —
+  `alias_has_pattern_correlation`); **(4)** the giant
+  `build_chained_with_match_cte_plan` (~5,478 ln) + its orbit structs
+  `WithBarrierScope`/`CteNameAllocator`, plus widening the **24** private
+  `plan_builder_utils` helpers it calls back into (`fn` → `pub(crate) fn`) so the
+  moved function can back-import them. **Key mechanic**: everything lands in ONE
+  `mod.rs` (kept at `render_plan` depth), so the moved bodies' `super::…` /
+  `super::super::…` path-expressions resolve byte-identically — a sub-file split
+  would force non-verbatim path edits (that's Phase-4 §7.1 decomposition, out of
+  scope). `build_chained` + both structs verified **exactly byte-identical** (diff
+  clean vs their pre-move text); the smaller slices byte-identical modulo the
+  documented widenings. Re-exports left in `plan_builder_utils` during the
+  transition (`build_chained` for `plan_builder.rs`'s 4 sites; the test-only
+  `find_all_with_clauses_grouped` / `plan_contains_with_clause` gated `#[cfg(test)]`);
+  now-dead re-exports and header imports pruned (each move flips their last
+  producer/consumer). Ratchet: slice 2's regeneration relocated the moved
+  schema-axis tokens (`is_denormalized` ×4, `from/to_node_properties`,
+  `from/to_label_column`, `type_column`) from `plan_builder_utils.rs` to
+  `with_to_cte/mod.rs` — a **pure net-zero relocation** (totals conserved, no new
+  axis branching, §2.1); slices 1/3/4 net-zero with no baseline change.
+  `plan_builder_utils.rs` **13,339 → 4,874 lines**. Gates each slice: 1612 lib +
+  529 integration (incl `corpus_sweep` + `sql_golden`) + 1 ratchet + 7 unit, 0
+  failures; goldens + corpus byte-identical (no churn); fmt/clippy clean;
+  warning-free `--tests` build. **This completes Phase-2 §5.1 module moves.** Next:
+  P2.7 (D1 `with_clause_key` dedup) or Phase-4 decomposition of the moved giants.
 
 - 2026-07-27: **P2.5 D2 dedup — CTE property-rewriter family** (P-3 refactor lane)
   — the four near-identical CTE property-rewriters (two operator wrappers

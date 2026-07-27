@@ -464,7 +464,7 @@ Split along the audited seams, **pure groups first** (lowest risk):
 | `render_plan/clause_extractors.rs` | ✅ **moved (P2.3, Jul 2026)** — the pure clause extractors that remained (`extract_having/order_by/limit/skip` + `extract_sorted_properties`, was 1467–1560). NOTE: `extract_filters/from/group_by/distinct` from the original group had already migrated to `filter_builder.rs`/`group_by_builder.rs` via incremental work | the only externally-consumed group; mostly pure |
 | `render_plan/plan_predicates.rs` | ✅ **WITH-detection group moved (P2.4, Jul 2026)** — `has_with_clause_in_tree`/`has_with_clause_in_graph_rel`/`plan_contains_with_clause`. NOTE: the fresh-scan/with-exported alias walkers (`find_fresh_table_scan_aliases_in_plan`/`collect_fresh_scan_aliases`/`with_exported_aliases_in_branch`) are private helpers coupled to P2.5's cte_rewrite fns, so they ride with P2.5, not here | pure read-only walkers — natural home for the §4 `walk()` rewrites |
 | `render_plan/cte_rewrite.rs` (+ `cte_graph_joins_rewrite.rs`) | ☑ **done (P2.5)** — CTE-ref extraction + rewriting. RenderExpr/RenderPlan level in `cte_rewrite.rs` (sub-slices A–C + the D2 dedup: expression-rewriting core via `CteAliasPolicy`, CTE-name remap pair, join-condition rewrite group). LogicalPlan level in `cte_graph_joins_rewrite.rs` (sub-slice D). All byte-identical | pure-ish (RenderPlan/RenderExpr + maps) |
-| `render_plan/with_to_cte/` (dir) | 6999–15491: the two giant builders + their orbit | **entangled core** — moved in Phase 2, decomposed in Phase 4 |
+| `render_plan/with_to_cte/` (dir) | ☑ **done (P2.6)** — the two giant builders + their orbit. Moved verbatim into a single `with_to_cte/mod.rs` (kept at `render_plan` depth so the bodies' `super::…` path-expressions stay byte-identical; a sub-file split is a Phase-4 logic edit, not a move). Slices: (1) #529 property guards, (2) `replace_with_clause_with_cte_reference_v2`, (3) the WITH-discovery/pruning cluster, (4) `build_chained_with_match_cte_plan` + `WithBarrierScope`/`CteNameAllocator` + widening the 24 private helpers it calls back into. All byte-identical | **entangled core** — moved in Phase 2, decomposed in Phase 4 |
 
 Rules for the move slices: `pub(crate)` re-exports from the old path during
 transition; no logic edits in a move PR; corpus sweep byte-identical.
@@ -1028,7 +1028,12 @@ to one operator core + `rewrite_render_expr_for_cte` + a `CteAliasPolicy`
 a behavior-preserving dedup: the double-encoding guard still fires only under
 `Rewrite`, exactly as before; whether it is safe universally under `Keep` is left
 as the plan's open transition-assert follow-up (not folded in). **P2.5 COMPLETE.** ·
-☐ P2.6 with_to_cte move · ☐ P2.7 D1 ·
+☑ P2.6 with_to_cte move (slices 1–4, all byte-identical): #529 property guards ·
+`replace_with_clause_with_cte_reference_v2` · WITH-discovery/pruning cluster ·
+`build_chained_with_match_cte_plan` + `WithBarrierScope`/`CteNameAllocator` + the
+24-helper widening. `plan_builder_utils.rs` 13,339 → 4,874 lines; the entangled
+core now lives in `render_plan/with_to_cte/mod.rs`. **P2.6 COMPLETE.** ·
+☐ P2.7 D1 ·
 ☐ P2.8 D6 · ☐ P2.9 D8 · ☐ P2.10 import hygiene + remaining dead_code
 
 Phase 3: ◐ Slices 1–2 merged 2026-07-13: GraphNode/ViewScan + query_planner
