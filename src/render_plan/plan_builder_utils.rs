@@ -102,12 +102,15 @@ pub(crate) use super::clause_extractors::{
 // module below uses it, importing it directly — so it is not re-exported.)
 pub(crate) use super::plan_predicates::{has_with_clause_in_graph_rel, plan_contains_with_clause};
 
-// P2.5 (REFACTORING_SAFETY_PLAN.md §5.1, first sub-slice): the CTE-expression
-// rewriting cluster moved to `cte_rewrite.rs`; re-exported here so
-// `join_builder`'s external call and the two internal `_join` call sites resolve
-// during the transition.
+// P2.5 (REFACTORING_SAFETY_PLAN.md §5.1): CTE-rewrite functions moved to
+// `cte_rewrite.rs`; re-exported here so remaining in-module / external call sites
+// resolve during the transition. Sub-slice A: the expression-rewriting cluster
+// (`join_builder`'s external call + the two internal `_join` sites). Sub-slice B:
+// `remap_cte_names_in_render_plan` (2 internal sites; `remap_cte_names_in_expr`
+// has no caller left here so it is not re-exported).
 pub(crate) use super::cte_rewrite::{
-    rewrite_operator_application_for_cte, rewrite_operator_application_for_cte_join,
+    remap_cte_names_in_render_plan, rewrite_operator_application_for_cte,
+    rewrite_operator_application_for_cte_join,
 };
 
 /// Build property mapping from select items for CTE column resolution.
@@ -1382,92 +1385,6 @@ graph_schema:
 // CTE Expression Rewriting Functions
 // ============================================================================
 
-/// Apply CTE name remapping to RenderExpr recursively
-///
-/// # Arguments
-/// * `expr` - The expression to rewrite
-/// * `cte_name_mapping` - Maps analyzer CTE names to actual CTE names
-pub fn remap_cte_names_in_expr(
-    expr: crate::render_plan::render_expr::RenderExpr,
-    cte_name_mapping: &std::collections::HashMap<String, String>,
-) -> crate::render_plan::render_expr::RenderExpr {
-    use crate::render_plan::render_expr::*;
-
-    match expr {
-        RenderExpr::PropertyAccessExp(pa) => {
-            let table_alias = &pa.table_alias.0;
-
-            // Check if this table_alias is a CTE name that needs remapping
-            if let Some(actual_cte_name) = cte_name_mapping.get(table_alias) {
-                log::debug!("🔧 remap_cte_names: {} → {}", table_alias, actual_cte_name);
-                RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: TableAlias(actual_cte_name.clone()),
-                    column: pa.column,
-                })
-            } else {
-                RenderExpr::PropertyAccessExp(pa)
-            }
-        }
-        RenderExpr::AggregateFnCall(agg) => {
-            let new_args = agg
-                .args
-                .into_iter()
-                .map(|arg| remap_cte_names_in_expr(arg, cte_name_mapping))
-                .collect();
-            RenderExpr::AggregateFnCall(AggregateFnCall {
-                name: agg.name,
-                args: new_args,
-            })
-        }
-        RenderExpr::ScalarFnCall(func) => {
-            let new_args = func
-                .args
-                .into_iter()
-                .map(|arg| remap_cte_names_in_expr(arg, cte_name_mapping))
-                .collect();
-            RenderExpr::ScalarFnCall(ScalarFnCall {
-                name: func.name,
-                args: new_args,
-            })
-        }
-        RenderExpr::OperatorApplicationExp(op) => {
-            let new_operands = op
-                .operands
-                .into_iter()
-                .map(|operand| remap_cte_names_in_expr(operand, cte_name_mapping))
-                .collect();
-            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator,
-                operands: new_operands,
-            })
-        }
-        RenderExpr::Case(case) => {
-            let new_when_then = case
-                .when_then
-                .into_iter()
-                .map(|(when, then)| {
-                    (
-                        remap_cte_names_in_expr(when, cte_name_mapping),
-                        remap_cte_names_in_expr(then, cte_name_mapping),
-                    )
-                })
-                .collect();
-            let new_expr = case
-                .expr
-                .map(|e| Box::new(remap_cte_names_in_expr(*e, cte_name_mapping)));
-            let new_else = case
-                .else_expr
-                .map(|e| Box::new(remap_cte_names_in_expr(*e, cte_name_mapping)));
-            RenderExpr::Case(RenderCase {
-                expr: new_expr,
-                when_then: new_when_then,
-                else_expr: new_else,
-            })
-        }
-        other => other,
-    }
-}
-
 /// Rewrite a `count(x)` aggregate so a WHERE predicate that was hoisted into
 /// the aggregate becomes a conditional count — dialect-aware.
 ///
@@ -1508,62 +1425,6 @@ fn rewrite_count_to_conditional(agg: &mut AggregateFnCall, cond: RenderExpr) {
 /// variables that lack the `p{N}_{alias}_{prop}` column shape.
 pub(crate) fn quote_qualified_col(alias: &str, col: &str) -> String {
     format!("{}.{}", alias, current_function_mapper().quote_alias(col))
-}
-
-/// Apply CTE name remapping to all expressions in a RenderPlan
-pub fn remap_cte_names_in_render_plan(
-    plan: &mut crate::render_plan::RenderPlan,
-    cte_name_mapping: &std::collections::HashMap<String, String>,
-) {
-    use crate::render_plan::render_expr::RenderExpr;
-
-    if cte_name_mapping.is_empty() {
-        return;
-    }
-
-    log::info!(
-        "🔧 remap_cte_names_in_render_plan: Applying {} CTE name mappings",
-        cte_name_mapping.len()
-    );
-    for (from, to) in cte_name_mapping {
-        log::debug!("🔧   {} → {}", from, to);
-    }
-
-    // Rewrite SELECT items
-    for item in &mut plan.select.items {
-        item.expression = remap_cte_names_in_expr(item.expression.clone(), cte_name_mapping);
-    }
-
-    // Rewrite JOIN conditions
-    for join in &mut plan.joins.0 {
-        for op in &mut join.joining_on {
-            // Recursively rewrite the OperatorApplication
-            if let RenderExpr::OperatorApplicationExp(new_op) = remap_cte_names_in_expr(
-                RenderExpr::OperatorApplicationExp(op.clone()),
-                cte_name_mapping,
-            ) {
-                *op = new_op;
-            }
-        }
-    }
-
-    // Rewrite WHERE clause
-    if let Some(filter) = &plan.filters.0 {
-        plan.filters.0 = Some(remap_cte_names_in_expr(filter.clone(), cte_name_mapping));
-    }
-
-    // Rewrite GROUP BY
-    plan.group_by.0 = plan
-        .group_by
-        .0
-        .iter()
-        .map(|expr| remap_cte_names_in_expr(expr.clone(), cte_name_mapping))
-        .collect();
-
-    // Rewrite ORDER BY
-    for item in &mut plan.order_by.0 {
-        item.expression = remap_cte_names_in_expr(item.expression.clone(), cte_name_mapping);
-    }
 }
 
 /// Collect all `with_*_cte_*` table aliases referenced in a RenderPlan's expressions.

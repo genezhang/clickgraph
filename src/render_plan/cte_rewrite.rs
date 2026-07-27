@@ -9,10 +9,12 @@
 //! keeps resolving.
 //!
 //! Scope note: P2.5's §5.1 home covers the whole CTE-ref extraction + rewriting
-//! group (`remap_cte_names_*`, `rewrite_logical_expr_cte_refs`,
-//! `update_graph_joins_cte_refs`, the alias walkers deferred from P2.4, and the
-//! D2 dedup). Those are landing incrementally; this first sub-slice is the
-//! self-contained 4-function expression-rewriting cluster.
+//! group. Landing incrementally — done so far: the expression-rewriting cluster
+//! (`rewrite_operator_application_for_cte`/`_join`, `rewrite_render_expr_for_cte_*`)
+//! and the CTE-name remap pair (`remap_cte_names_in_expr`/`_in_render_plan`).
+//! Remaining: `collect_with_cte_table_aliases`, `rewrite_join_conditions_for_cte_aliases`,
+//! `rewrite_logical_expr_cte_refs`, `update_graph_joins_cte_refs`, the alias
+//! walkers deferred from P2.4, and the D2 dedup.
 
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::render_plan::render_expr::{
@@ -134,5 +136,147 @@ fn rewrite_render_expr_for_cte_operand(
             rewrite_operator_application_for_cte_join(inner_op, cte_alias, cte_references),
         ),
         _ => expr.clone(),
+    }
+}
+
+/// Apply CTE name remapping to RenderExpr recursively
+///
+/// # Arguments
+/// * `expr` - The expression to rewrite
+/// * `cte_name_mapping` - Maps analyzer CTE names to actual CTE names
+pub fn remap_cte_names_in_expr(
+    expr: crate::render_plan::render_expr::RenderExpr,
+    cte_name_mapping: &std::collections::HashMap<String, String>,
+) -> crate::render_plan::render_expr::RenderExpr {
+    use crate::render_plan::render_expr::*;
+
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => {
+            let table_alias = &pa.table_alias.0;
+
+            // Check if this table_alias is a CTE name that needs remapping
+            if let Some(actual_cte_name) = cte_name_mapping.get(table_alias) {
+                log::debug!("🔧 remap_cte_names: {} → {}", table_alias, actual_cte_name);
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(actual_cte_name.clone()),
+                    column: pa.column,
+                })
+            } else {
+                RenderExpr::PropertyAccessExp(pa)
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            let new_args = agg
+                .args
+                .into_iter()
+                .map(|arg| remap_cte_names_in_expr(arg, cte_name_mapping))
+                .collect();
+            RenderExpr::AggregateFnCall(AggregateFnCall {
+                name: agg.name,
+                args: new_args,
+            })
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            let new_args = func
+                .args
+                .into_iter()
+                .map(|arg| remap_cte_names_in_expr(arg, cte_name_mapping))
+                .collect();
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: func.name,
+                args: new_args,
+            })
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            let new_operands = op
+                .operands
+                .into_iter()
+                .map(|operand| remap_cte_names_in_expr(operand, cte_name_mapping))
+                .collect();
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator,
+                operands: new_operands,
+            })
+        }
+        RenderExpr::Case(case) => {
+            let new_when_then = case
+                .when_then
+                .into_iter()
+                .map(|(when, then)| {
+                    (
+                        remap_cte_names_in_expr(when, cte_name_mapping),
+                        remap_cte_names_in_expr(then, cte_name_mapping),
+                    )
+                })
+                .collect();
+            let new_expr = case
+                .expr
+                .map(|e| Box::new(remap_cte_names_in_expr(*e, cte_name_mapping)));
+            let new_else = case
+                .else_expr
+                .map(|e| Box::new(remap_cte_names_in_expr(*e, cte_name_mapping)));
+            RenderExpr::Case(RenderCase {
+                expr: new_expr,
+                when_then: new_when_then,
+                else_expr: new_else,
+            })
+        }
+        other => other,
+    }
+}
+
+/// Apply CTE name remapping to all expressions in a RenderPlan
+pub fn remap_cte_names_in_render_plan(
+    plan: &mut crate::render_plan::RenderPlan,
+    cte_name_mapping: &std::collections::HashMap<String, String>,
+) {
+    use crate::render_plan::render_expr::RenderExpr;
+
+    if cte_name_mapping.is_empty() {
+        return;
+    }
+
+    log::info!(
+        "🔧 remap_cte_names_in_render_plan: Applying {} CTE name mappings",
+        cte_name_mapping.len()
+    );
+    for (from, to) in cte_name_mapping {
+        log::debug!("🔧   {} → {}", from, to);
+    }
+
+    // Rewrite SELECT items
+    for item in &mut plan.select.items {
+        item.expression = remap_cte_names_in_expr(item.expression.clone(), cte_name_mapping);
+    }
+
+    // Rewrite JOIN conditions
+    for join in &mut plan.joins.0 {
+        for op in &mut join.joining_on {
+            // Recursively rewrite the OperatorApplication
+            if let RenderExpr::OperatorApplicationExp(new_op) = remap_cte_names_in_expr(
+                RenderExpr::OperatorApplicationExp(op.clone()),
+                cte_name_mapping,
+            ) {
+                *op = new_op;
+            }
+        }
+    }
+
+    // Rewrite WHERE clause
+    if let Some(filter) = &plan.filters.0 {
+        plan.filters.0 = Some(remap_cte_names_in_expr(filter.clone(), cte_name_mapping));
+    }
+
+    // Rewrite GROUP BY
+    plan.group_by.0 = plan
+        .group_by
+        .0
+        .iter()
+        .map(|expr| remap_cte_names_in_expr(expr.clone(), cte_name_mapping))
+        .collect();
+
+    // Rewrite ORDER BY
+    for item in &mut plan.order_by.0 {
+        item.expression = remap_cte_names_in_expr(item.expression.clone(), cte_name_mapping);
     }
 }
