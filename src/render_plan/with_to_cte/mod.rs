@@ -60,14 +60,16 @@ use std::collections::{HashMap, HashSet};
 // `plan_contains_with_clause` is a `plan_predicates` (P2.4) predicate that
 // `replace_with_clause_with_cte_reference_v2` gates its GraphRel recursion on.
 use super::plan_predicates::plan_contains_with_clause;
-// Reproduce the two glob imports the moved bodies relied on in `plan_builder_utils`
-// (`build_chained_with_match_cte_plan` and the WITH-discovery cluster call e.g.
-// `collect_aliases_from_plan`, `find_cte_reference_alias`,
-// `remap_coupled_rel_vars_in_filter` by bare name).
-#[allow(unused_imports)]
-use super::plan_builder_helpers::*;
-#[allow(unused_imports)]
-use super::utils::alias_utils::*;
+// P2.10 import hygiene: the moved bodies (`build_chained_with_match_cte_plan` +
+// the WITH-discovery cluster) reach a handful of `plan_builder_helpers` /
+// `alias_utils` helpers by bare name — previously via two `*` globs the old file
+// relied on. Named imports (the exact set the compiler requires) so shadowing is
+// visible; other helpers are still reached by explicit `super::…::` paths.
+use super::plan_builder_helpers::{
+    combine_optional_filters_with_and, extract_predicates_for_alias_logical,
+    has_with_clause_in_graph_rel, rewrite_logical_path_functions,
+};
+use super::utils::alias_utils::{collect_aliases_from_plan, find_cte_reference_alias};
 // P2.6 slice 4: `build_chained_with_match_cte_plan` calls these P2.2/P2.5-moved
 // rewriters (in sibling modules) by bare name — the old file reached them via
 // its own re-exports/globs. Mirror of `pattern_comprehension_sql.rs`'s back-import.

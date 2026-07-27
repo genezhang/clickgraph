@@ -143,7 +143,7 @@ P-3). Latent finding filed in-report: `has_with_clause_in_graph_rel` is
 duplicated (utils + helpers) with a DIFFERENT semantic — a future consolidation
 candidate, not touched here (§8.3 no-drive-by).
 
-### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ☑ (P2.1–P2.6 + P2.7 D1 done; P2.8 D6 next)
+### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ☑ (P2.1–P2.6 + P2.7 D1 done; D6/D8 already resolved; P2.10 import hygiene in progress)
 The dead-code sweep shrank plan_builder_utils.rs to ~14.5K lines. §5.1 moves are
 now underway. Pure groups first (vlp_rewrite →
 pattern_comprehension_sql → clause_extractors → plan_predicates →
@@ -296,6 +296,28 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-27: **P2.10 import hygiene — slice 1 (`with_to_cte` globs → named)**
+  (P-3 refactor lane) — replaced the two `*` glob imports in
+  `render_plan/with_to_cte/mod.rs` (`plan_builder_helpers::*`,
+  `utils::alias_utils::*`) with the exact 6-name set the moved bodies actually use
+  (`combine_optional_filters_with_and`, `extract_predicates_for_alias_logical`,
+  `has_with_clause_in_graph_rel`, `rewrite_logical_path_functions`;
+  `collect_aliases_from_plan`, `find_cte_reference_alias`), per
+  REFACTORING_SAFETY_PLAN §5.3 ("named imports so shadowing becomes visible").
+  **Method note**: grep under-counted the glob surface (4 vs the real 6) because
+  `plan_builder_helpers` exports many `pub(super) fn` that a `pub fn` grep misses —
+  disabled the globs and let the compiler enumerate the unresolved names (the
+  E0282 "type annotations needed" cascade was fallout from the unresolved calls and
+  vanished once resolved). Pure hygiene, behavior-identical: `corpus_sweep` +
+  `sql_golden` byte-identical, 1612 lib + 529 integration + ratchet net-zero,
+  fmt/clippy clean, warning-free `--tests`. Scoped to `with_to_cte` only (no
+  drive-by); `plan_builder_utils.rs`'s twin globs are the next slice. **Also
+  verified D6/D8 are already resolved by attrition** (documented in §9): D6's inline
+  `expand_table_alias_to_select_items` twin and D8's three named nested twins were
+  already collapsed by prior P2.x moves + dead-code sweeps; remaining same-named
+  fns are legitimately distinct (different modules/signatures/semantics, e.g. the
+  #596 `Union`-boundary divergence). Nothing left to dedup there.
 
 - 2026-07-27: **P2.7 D1 — `with_clause_key` dedup** (P-3 refactor lane) — the three
   near-duplicate WITH-key helpers that P2.6 co-located in
