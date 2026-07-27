@@ -1073,6 +1073,79 @@ impl SelectBuilder for LogicalPlan {
                                         "end"
                                     };
 
+                                    // #580: when the accessed property IS the endpoint
+                                    // node's (single-column) id, project the CTE's native
+                                    // label-agnostic `start_id`/`end_id` column instead of
+                                    // extracting from the `{position}_properties` JSON blob.
+                                    // Two reasons, both live-verified:
+                                    //   1. Silent-empty: the CTE builds the JSON blob via
+                                    //      `formatRowNoNewline('JSONEachRow', alias.col, …)`
+                                    //      (json_builder.rs), and when the property name is
+                                    //      AMBIGUOUS across the branch's JOINed tables (e.g.
+                                    //      `user_id` on both users_bench and authored_bench)
+                                    //      ClickHouse qualifies the JSON key as
+                                    //      `"u_1.user_id"`, so `JSONExtractString(blob,
+                                    //      'user_id')` returns '' for every row.
+                                    //   2. Code 215 crash: the GROUP BY builder
+                                    //      (group_by_builder.rs / find_id_column_for_alias
+                                    //      #538) independently resolves the same id-property
+                                    //      to the native `start_id`/`end_id`, so the SELECT's
+                                    //      `JSONExtractString(...) AS "u.user_id"` and the
+                                    //      GROUP BY key `t.start_id` are DIFFERENT expressions
+                                    //      — the projected non-aggregate is neither grouped
+                                    //      nor aggregated (NOT_AN_AGGREGATE).
+                                    // Projecting `t.start_id`/`t.end_id` here makes both
+                                    // sides reference the same expression, which
+                                    // `build_aliased_group_by` then unifies via its
+                                    // expression→alias map. Mirrors the working single-type
+                                    // VLP path (which already projects `t.start_id AS ...`).
+                                    // Scoped to SINGLE-column node_id: composite-id endpoints
+                                    // expose `start_id`/`end_id` as a CONCATENATED String in
+                                    // the multi-type CTE (multi_type_vlp_joins.rs), so a
+                                    // single-property access can't map onto it — those fall
+                                    // through to the JSON path unchanged. The broader
+                                    // ambiguous-JSON-key silent-empty bug for NON-id
+                                    // properties is a separate, wider issue (follow-up).
+                                    if !has_pattern_combinations {
+                                        if let Some(id_col) =
+                                            single_column_node_id_for_vlp_endpoint(
+                                                gr,
+                                                position == "start",
+                                            )
+                                        {
+                                            if id_col == *col_name {
+                                                let native_id_col = format!("{}_id", position);
+                                                log::info!(
+                                                    "🎯 Multi-type VLP id-property '{}.{}' -> native CTE column '{}.{}' (#580)",
+                                                    cypher_alias, col_name, cte_alias, native_id_col
+                                                );
+                                                select_items.push(SelectItem {
+                                                    expression: RenderExpr::PropertyAccessExp(
+                                                        PropertyAccess {
+                                                            table_alias: RenderTableAlias(
+                                                                cte_alias.clone(),
+                                                            ),
+                                                            column: PropertyValue::Column(
+                                                                native_id_col,
+                                                            ),
+                                                        },
+                                                    ),
+                                                    col_alias: item
+                                                        .col_alias
+                                                        .as_ref()
+                                                        .map(|ca| ColumnAlias(ca.0.clone()))
+                                                        .or_else(|| {
+                                                            Some(ColumnAlias(format!(
+                                                                "{}.{}",
+                                                                cypher_alias, col_name
+                                                            )))
+                                                        }),
+                                                });
+                                                continue;
+                                            }
+                                        }
+                                    }
+
                                     log::info!(
                                         "🎯 Multi-type VLP property access: '{}.{}' -> extracting from {}_properties JSON in CTE '{}'",
                                         cypher_alias, col_name, position, cte_alias
@@ -1761,6 +1834,148 @@ impl SelectBuilder for LogicalPlan {
 
         Ok(select_items)
     }
+}
+
+/// #580: resolve the SINGLE-column `node_id` DB column for a multi-type-VLP
+/// endpoint `alias`, or `None` — used to decide whether an accessed property is
+/// the endpoint node's id (in which case the CTE's native label-agnostic
+/// `start_id`/`end_id` column is the correct, GROUP-BY-consistent source rather
+/// than a `JSONExtractString` over the properties blob).
+///
+/// The endpoint-label set is taken from the GraphRel's endpoint child via
+/// `extract_node_labels` — the SAME derivation `cte_extraction.rs` uses to build
+/// the CTE — NOT `TableCtx::get_labels()`, which collapses a genuinely
+/// multi-label endpoint (e.g. `(u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)` where `x`
+/// is `User|Post`) down to a single inferred label and would fire wrongly,
+/// conflating `x.post_id` onto `end_id` for the User-typed rows.
+///
+/// Returns `None` (→ leave on the JSON path, unchanged) when:
+///   - the endpoint has no explicit/inferred single label (unlabeled, or
+///     MULTI-label: `extract_node_labels` returns `None` or a >1 set),
+///   - or the node's `node_id` is COMPOSITE (the multi-type CTE exposes those as
+///     a concatenated String in `start_id`/`end_id`, unaddressable by a single
+///     property).
+///
+/// The id column comes from the task-local schema (CLAUDE.md rule 3).
+/// #580: resolve the SINGLE-column `node_id` DB column for a multi-type-VLP
+/// endpoint, or `None` — used to decide whether an accessed property is the
+/// endpoint node's id (→ project the CTE's native label-agnostic
+/// `start_id`/`end_id` column instead of a `JSONExtractString` over the
+/// properties blob).
+///
+/// The endpoint's TRUE candidate-label set is derived from the VLP's RESOLVED
+/// relationship types — the fully-qualified `TYPE::FROM::TO` composite keys in
+/// `gr.labels` that type inference kept — reading the orientation-correct side
+/// (START = `FROM`, END = `TO`; swapped for Incoming, unioned for `Either`).
+/// This is essential because the planner collapses a genuinely multi-label VLP
+/// endpoint down to a SINGLE `GraphNode { label: Some(one_type), .. }`, so
+/// neither `extract_node_labels` nor `TableCtx` reveals the multiplicity —
+/// firing there would conflate e.g. `x.post_id` onto `end_id` for the User rows
+/// of `(u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)` (`x` ∈ {User via FOLLOWS, Post
+/// via AUTHORED}). The composite keys encode the real endpoints:
+///   - `RETURN u.user_id` (start): keys `FOLLOWS::User::User` + `AUTHORED::User::Post`
+///     → FROM-side = {User} → single → fire.
+///   - `RETURN x.post_id` (end): same keys → TO-side = {User, Post} → decline.
+///   - `(x)-[:FOLLOWS|AUTHORED*..]->(u:User)`: AUTHORED can't end at User so it
+///     stays BARE/unresolved while FOLLOWS resolves to `FOLLOWS::User::User`
+///     → TO-side of composites = {User} → fire.
+///
+/// BARE `TYPE` entries (no `::`) are handled by context: when co-listed with
+/// composite keys they are unresolved leftovers and ignored; when ALL labels
+/// are bare (an untyped `[r]` expanded to every rel type) each is schema-
+/// expanded on the orientation-correct side, since all are valid traversals.
+/// The endpoint fires only if the resulting candidate set is exactly one type.
+///
+/// Returns `None` (→ leave on the JSON path, unchanged) when the endpoint can be
+/// MORE THAN ONE node type, when a rel variant is polymorphic (`$any`), or when
+/// the (single) candidate's `node_id` is COMPOSITE (the multi-type CTE
+/// concatenates those into `start_id`/`end_id` as a String, unaddressable by a
+/// single property).
+///
+/// The id column comes from the task-local schema (CLAUDE.md rule 3).
+fn single_column_node_id_for_vlp_endpoint(
+    gr: &crate::query_planner::logical_plan::GraphRel,
+    endpoint_is_start: bool,
+) -> Option<String> {
+    use crate::query_planner::logical_expr::Direction;
+
+    let schema = crate::server::query_context::get_current_schema_with_fallback()?;
+    let rel_types = gr.labels.as_ref()?;
+    if rel_types.is_empty() {
+        return None;
+    }
+
+    // Which schema side does THIS endpoint sit on, per the pattern direction?
+    //   Outgoing: start = from_node, end = to_node.
+    //   Incoming: start = to_node,   end = from_node.
+    //   Either  : both sides possible → collect from AND to (usually multi-type).
+    let (take_from, take_to) = match (&gr.direction, endpoint_is_start) {
+        (Direction::Outgoing, true) | (Direction::Incoming, false) => (true, false),
+        (Direction::Outgoing, false) | (Direction::Incoming, true) => (false, true),
+        _ => (true, true), // Either / undirected
+    };
+
+    // Derive the endpoint's candidate node types from the VLP's relationship
+    // types, reading the orientation-correct schema side.
+    //
+    // Two label forms appear in `gr.labels`, and they must be handled
+    // differently:
+    //   - Fully-qualified `TYPE::FROM::TO` composite keys = the RESOLVED
+    //     traversals type inference kept. When ANY composite key is present,
+    //     they are authoritative: a BARE co-listed `TYPE` is a leftover that
+    //     inference did NOT bind to a concrete endpoint for THIS pattern (e.g.
+    //     `[:FOLLOWS|AUTHORED*..]->(u:User)` keeps `FOLLOWS::User::User` but
+    //     AUTHORED — which cannot end at User — stays bare), so schema-expanding
+    //     it would re-introduce the impossible endpoint. Use composites only.
+    //   - When ALL labels are bare (e.g. an untyped `[r]` that expanded to every
+    //     rel type as `["FOLLOWS", "AUTHORED", "LIKED"]`), every listed type IS a
+    //     valid traversal, so schema-expand each and read the endpoint side.
+    let has_composite = rel_types.iter().any(|t| t.split("::").count() == 3);
+    let mut candidate_labels: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for rel_type in rel_types {
+        let parts: Vec<&str> = rel_type.split("::").collect();
+        if parts.len() == 3 {
+            let (from_node, to_node) = (parts[1], parts[2]);
+            if (take_from && from_node == "$any") || (take_to && to_node == "$any") {
+                return None;
+            }
+            if take_from {
+                candidate_labels.insert(from_node.to_string());
+            }
+            if take_to {
+                candidate_labels.insert(to_node.to_string());
+            }
+        } else if !has_composite {
+            // All-bare case: expand this type via the schema (both variants).
+            for rel_schema in schema.get_all_rel_schemas_for_type(rel_type) {
+                if (take_from && rel_schema.from_node == "$any")
+                    || (take_to && rel_schema.to_node == "$any")
+                {
+                    return None;
+                }
+                if take_from {
+                    candidate_labels.insert(rel_schema.from_node.clone());
+                }
+                if take_to {
+                    candidate_labels.insert(rel_schema.to_node.clone());
+                }
+            }
+        }
+        // else: bare label co-listed with composites → ignore (unresolved).
+    }
+
+    if candidate_labels.len() != 1 {
+        return None;
+    }
+    let label = candidate_labels.into_iter().next()?;
+    let node_schema = schema.node_schema(&label).ok()?;
+    let cols = node_schema.node_id.columns();
+    // Composite ids surface as a concatenated String in the multi-type CTE's
+    // start_id/end_id — not addressable via a single property. Leave to JSON.
+    if cols.len() != 1 {
+        return None;
+    }
+    Some(cols[0].to_string())
 }
 
 /// #509: build the id-column `PropertyAccess` (or multi-label `coalesce(...)`
