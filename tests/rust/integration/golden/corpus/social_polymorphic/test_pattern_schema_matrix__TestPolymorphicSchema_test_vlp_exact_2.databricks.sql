@@ -400,8 +400,8 @@ INNER JOIN brahmand.users_bench u3 ON r2.to_id = u3.user_id
 WHERE r1.interaction_type = 'SHARED' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'SHARED' AND r2.from_type = 'User' AND r2.to_type = 'User'
 )
 SELECT 
-      t.start_id AS `a.user_id`, 
-      t.end_id AS `b.user_id`
+      get_json_object(t.start_properties, '$.user_id') AS `a.user_id`, 
+      get_json_object(t.end_properties, '$.user_id') AS `b.user_id`
 FROM vlp_multi_type_a_b AS t
 INNER JOIN brahmand.interactions AS r1 ON t.start_id = r1.from_id
 WHERE t.start_id <> t.end_id

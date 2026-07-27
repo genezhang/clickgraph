@@ -5430,7 +5430,7 @@ INNER JOIN brahmand.users_bench u4 ON r3.to_id = u4.user_id
 WHERE r1.interaction_type = 'SHARED' AND r1.from_type = 'User' AND r1.to_type = 'User' AND r2.interaction_type = 'SHARED' AND r2.from_type = 'User' AND r2.to_type = 'User' AND r3.interaction_type = 'SHARED' AND r3.from_type = 'User' AND r3.to_type = 'User'
 )
 SELECT 
-      t.start_id AS `a.user_id`, 
-      t.end_id AS `b.user_id`
+      get_json_object(t.start_properties, '$.user_id') AS `a.user_id`, 
+      get_json_object(t.end_properties, '$.user_id') AS `b.user_id`
 FROM vlp_multi_type_a_b AS t
 LIMIT 10

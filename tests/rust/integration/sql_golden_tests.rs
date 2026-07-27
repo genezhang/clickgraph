@@ -14781,3 +14781,42 @@ async fn multi_type_vlp_endpoint_id_uses_native_column_580() {
         );
     }
 }
+
+/// #580 boundary coverage: the native-id rewrite must fire ONLY when the VLP
+/// endpoint is genuinely single-type, and must NOT over-fire onto a
+/// genuinely-multi-type endpoint (which the planner collapses to one inferred
+/// GraphNode label, so the guard derives the true cardinality from the resolved
+/// `TYPE::FROM::TO` composite keys instead).
+#[tokio::test]
+async fn multi_type_vlp_endpoint_id_scoping_580() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let q = match dialect {
+            SqlDialect::ClickHouse => '"',
+            _ => '`',
+        };
+
+        // (a) Untyped `[r]` from a single-label start: `u` is unambiguously User
+        // (every rel type leaves User on the from-side) → native start_id. This
+        // is the same GROUP BY crash as the typed case.
+        let untyped = "MATCH (u:User)-[r]->(target) WHERE u.user_id = 1 \
+                       RETURN u.user_id, type(r), count(*) AS c";
+        let sql = render(&schema, untyped, dialect).await;
+        assert!(
+            sql.contains(&format!("t.start_id AS {q}u.user_id{q}")),
+            "#580: untyped-[r] single-type start id must be native t.start_id for {dialect:?}, got:\n{sql}"
+        );
+
+        // (b) OVER-FIRE GUARD: the FAR endpoint `x` of a multi-type VLP is
+        // genuinely User|Post; `x.post_id` must stay on the JSON path (projecting
+        // end_id would return the User rows' id as a bogus post_id).
+        let multi_far = "MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x) WHERE u.user_id = 1 \
+                         RETURN x.post_id, count(*)";
+        let far_sql = render(&schema, multi_far, dialect).await;
+        assert!(
+            !far_sql.contains(&format!("t.end_id AS {q}x.post_id{q}")),
+            "#580: multi-type far endpoint id must NOT collapse to native end_id for {dialect:?}, got:\n{far_sql}"
+        );
+    }
+}
