@@ -461,7 +461,7 @@ Split along the audited seams, **pure groups first** (lowest risk):
 |---|---|---|
 | `render_plan/vlp_rewrite.rs` | VLP expr rewriting, 115–812 + `extract_vlp_alias_mappings` :1296 | pure `&mut RenderExpr` transforms — **move first** |
 | `render_plan/pattern_comprehension_sql.rs` | ✅ **moved (P2.2, Jul 2026)** — the pattern-comprehension SQL *string* emitters (31 fns, ~2,600 lines): emits SQL text, a different layer from the rest | cohesive, separable |
-| `render_plan/clause_extractors.rs` | the `extract_*` pipeline 1418–3300 (`extract_filters/from/group_by/having/order_by/limit/skip/distinct` + embedded tests) | the only externally-consumed group; mostly pure |
+| `render_plan/clause_extractors.rs` | ✅ **moved (P2.3, Jul 2026)** — the pure clause extractors that remained (`extract_having/order_by/limit/skip` + `extract_sorted_properties`, was 1467–1560). NOTE: `extract_filters/from/group_by/distinct` from the original group had already migrated to `filter_builder.rs`/`group_by_builder.rs` via incremental work | the only externally-consumed group; mostly pure |
 | `render_plan/plan_predicates.rs` | WITH-detection + alias/table lookups 3850–4247, 4418–4519 | pure read-only walkers — natural home for the §4 `walk()` rewrites |
 | `render_plan/cte_rewrite.rs` | CTE-ref extraction + CTE/alias rewriting 813–1295, 3323–3849, 6102–6970 | pure-ish (RenderPlan/RenderExpr + maps) |
 | `render_plan/with_to_cte/` (dir) | 6999–15491: the two giant builders + their orbit | **entangled core** — moved in Phase 2, decomposed in Phase 4 |
@@ -992,7 +992,11 @@ updated for the pure relocation of schema/dialect axis tokens
 (`from_label_column`/`to_label_column`/`type_column`/`Dialect::`/`databricks`)
 plan_builder_utils → pattern_comprehension_sql, all net-zero. D7-rest deferred (pure move
 this slice). ·
-☐ P2.3 clause_extractors move · ☐ P2.4 plan_predicates move ·
+☑ P2.3 clause_extractors move (`extract_having/order_by/limit/skip` +
+`extract_sorted_properties` → `render_plan/clause_extractors.rs`, `pub(crate)`
+re-exports; `extract_filters/from/group_by/distinct` had already migrated to
+`filter_builder`/`group_by_builder`; byte-identical corpus + goldens, ratchet
+net-zero) · ☐ P2.4 plan_predicates move ·
 ☐ P2.5 cte_rewrite move (+D2) · ☐ P2.6 with_to_cte move · ☐ P2.7 D1 ·
 ☐ P2.8 D6 · ☐ P2.9 D8 · ☐ P2.10 import hygiene + remaining dead_code
 

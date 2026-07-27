@@ -143,7 +143,7 @@ P-3). Latent finding filed in-report: `has_with_clause_in_graph_rel` is
 duplicated (utils + helpers) with a DIFFERENT semantic — a future consolidation
 candidate, not touched here (§8.3 no-drive-by).
 
-### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ◐ (P2.1, P2.2 merged — P2.3 next)
+### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ◐ (P2.1, P2.2, P2.3 merged — P2.4 next)
 The dead-code sweep shrank plan_builder_utils.rs to ~14.5K lines. §5.1 moves are
 now underway. Pure groups first (vlp_rewrite →
 pattern_comprehension_sql → clause_extractors → plan_predicates →
@@ -155,7 +155,14 @@ byte-identical, D3 dedup deferred (follow-up). **P2.2 (pattern_comprehension_sql
 move) MERGED (#660, `3776d0a9`)** — the pattern-comprehension SQL string-emitting
 group (31 fns, `render_plan/pattern_comprehension_sql.rs`, 2,629 lines) extracted
 verbatim, `pub(crate)` re-exports, byte-identical goldens + corpus, ratchet
-net-zero; D7-rest deferred. **Next: P2.3 clause_extractors move.**
+net-zero; D7-rest deferred. **P2.3 (clause_extractors move) delivered** — the
+pure clause extractors that remained (`extract_having/order_by/limit/skip` +
+`extract_sorted_properties`) extracted to `render_plan/clause_extractors.rs`,
+`pub(crate)` re-exports, byte-identical goldens + corpus, ratchet net-zero. NOTE:
+the original §5.1 group also named `extract_filters/from/group_by/distinct`, but
+those had already migrated to `filter_builder.rs`/`group_by_builder.rs` via
+incremental work, so P2.3's real scope was the 5-function remainder. **Next: P2.4
+plan_predicates move.**
 
 ### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1+F1b/#602+#662+F2a+F3+F4 done; F2b/F5 and F1b residue open)
 **Concrete staged plan written: `docs/design/FORWARD_RESOLUTION_PLAN.md`.** It
@@ -239,6 +246,22 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-27: **P2.3 — clause_extractors module move** (P-3 refactor lane) — the
+  pure clause extractors remaining in `plan_builder_utils.rs`
+  (`extract_having`/`extract_order_by`/`extract_limit`/`extract_skip` +
+  `extract_sorted_properties`, old lines 1467–1560) extracted verbatim to a new
+  `render_plan/clause_extractors.rs`, `pub(crate) use` re-exports left in
+  `plan_builder_utils` so all `super::plan_builder_utils::extract_*` call sites
+  and `properties_builder`'s direct import keep resolving. Zero logic edits.
+  **Stale-premise correction**: §5.1 named an 8-function group
+  (`filters/from/group_by/having/order_by/limit/skip/distinct`) but
+  `extract_filters/from/group_by/distinct` had already migrated to
+  `filter_builder.rs`/`group_by_builder.rs` via incremental work, so P2.3's real
+  scope was the 5-function remainder (§5.1 table + §9 checklist updated to match).
+  Gates: 1612 lib + 529 integration (incl. `corpus_sweep` + sql_golden) + 1
+  ratchet + 7 unit, 0 failures; **byte-identical** (no golden churn, corpus
+  snapshot unchanged, ratchet net-zero); fmt/clippy clean. Next refactor slice:
+  P2.4 plan_predicates.
 - 2026-07-27: **Doc reconcile + branch prune** (housekeeping, no code) — §2 queue
   status lines brought current after the 07-19..27 batch: P-1 marked
   clean-pool-exhausted with the full shipped list (~20 fixes) + the next picks

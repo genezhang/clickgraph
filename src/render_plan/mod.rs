@@ -1,3 +1,4 @@
+pub(crate) mod clause_extractors;
 pub mod cte_extraction;
 pub mod cte_generation;
 pub mod cte_manager;
