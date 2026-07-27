@@ -2,6 +2,7 @@ pub(crate) mod clause_extractors;
 pub mod cte_extraction;
 pub mod cte_generation;
 pub mod cte_manager;
+pub(crate) mod cte_rewrite;
 pub(crate) mod expression_utils;
 mod feature_flags;
 mod filter_builder;
