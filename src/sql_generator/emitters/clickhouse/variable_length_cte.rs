@@ -1209,6 +1209,30 @@ impl<'a> VariableLengthCteGenerator<'a> {
         }
     }
 
+    /// Build the `(from_id, to_id)` edge-identity tuple for ONE FK-edge hop,
+    /// reading the two node-id columns off the given SQL aliases.
+    ///
+    /// FK-edge relationships have no separate edge table and no dedicated
+    /// edge-id column — the edge IS the `from_alias.<from_id> → to_alias.<to_id>`
+    /// node pair (e.g. `child.parent_id → parent.object_id`). So for #606
+    /// relationship-uniqueness the ordered node-id pair uniquely identifies the
+    /// physical edge row. `from_id_col`/`to_id_col` are the node id columns for
+    /// each side (self-referencing FK-edge → same column name on both sides).
+    fn build_fk_edge_tuple(
+        &self,
+        from_alias: &str,
+        from_id_col: &str,
+        to_alias: &str,
+        to_id_col: &str,
+    ) -> String {
+        let tuple_ctor =
+            crate::sql_generator::function_mapper::current_function_mapper().tuple_constructor();
+        format!(
+            "{}({}.{}, {}.{})",
+            tuple_ctor, from_alias, from_id_col, to_alias, to_id_col
+        )
+    }
+
     /// Get the ClickHouse array type for path_edges
     /// Returns type like: `Array(Tuple(UInt32, UInt32))` or `Array(Tuple(String, String, ...))`
     #[allow(dead_code)]
@@ -3092,6 +3116,24 @@ impl<'a> VariableLengthCteGenerator<'a> {
             ))
         ));
 
+        // #606: seed path_edges with this hop's `(from_id, to_id)` edge tuple so
+        // the recursive step can enforce relationship-uniqueness (Cypher default:
+        // an edge may not repeat, but a node MAY be revisited). FK-edge has no
+        // dedicated edge-id column, so the ordered node-id pair is the identity.
+        // Gated by uses_edge_uniqueness() (shortestPath / zero-hop stay
+        // node-unique via path_nodes, keeping base/recursive column shape agreed).
+        if self.uses_edge_uniqueness() {
+            select_items.push(format!(
+                "{} as path_edges",
+                arr(&self.build_fk_edge_tuple(
+                    &self.start_node_alias,
+                    &self.start_node_id_column,
+                    &self.end_node_alias,
+                    &self.end_node_id_column,
+                ))
+            ));
+        }
+
         // Add properties for start and end nodes
         for prop in &self.properties {
             if prop.cypher_alias == self.start_cypher_alias {
@@ -3216,6 +3258,21 @@ impl<'a> VariableLengthCteGenerator<'a> {
             "{ac}(vp.path_nodes, {}) as path_nodes",
             arr(&format!("new_end.{}", self.end_node_id_column))
         ));
+        // #606: APPEND this hop's edge tuple. The hop is current_node -> new_end
+        // (previous end following its FK to its parent), so the edge identity is
+        // (current_node.<end_id>, new_end.<end_id>). Gated by uses_edge_uniqueness()
+        // to agree with the base seed and the cycle check below.
+        if self.uses_edge_uniqueness() {
+            select_items.push(format!(
+                "{ac}(vp.path_edges, {}) as path_edges",
+                arr(&self.build_fk_edge_tuple(
+                    "current_node",
+                    &self.end_node_id_column,
+                    "new_end",
+                    &self.end_node_id_column,
+                ))
+            ));
+        }
 
         // Add properties: start properties from CTE, end properties from new joined node
         for prop in &self.properties {
@@ -3234,7 +3291,17 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
-            emit_cycle_check(&format!("new_end.{}", self.end_node_id_column)),
+            // #606: edge-unique when uses_edge_uniqueness(), else legacy node-unique.
+            if self.uses_edge_uniqueness() {
+                emit_edge_cycle_check(&self.build_fk_edge_tuple(
+                    "current_node",
+                    &self.end_node_id_column,
+                    "new_end",
+                    &self.end_node_id_column,
+                ))
+            } else {
+                emit_cycle_check(&format!("new_end.{}", self.end_node_id_column))
+            },
         ];
 
         // Add edge constraints if defined in schema
@@ -3302,6 +3369,22 @@ impl<'a> VariableLengthCteGenerator<'a> {
             "{ac}({}, vp.path_nodes) as path_nodes",
             arr(&format!("new_start.{}", self.start_node_id_column))
         ));
+        // #606: PREPEND this hop's edge tuple (path grows at the front here). The
+        // hop is new_start -> current_node (a child pointing via its FK to the
+        // previous start), so the edge identity is
+        // (new_start.<start_id>, current_node.<start_id>). Gated by
+        // uses_edge_uniqueness() to agree with the base seed and cycle check.
+        if self.uses_edge_uniqueness() {
+            select_items.push(format!(
+                "{ac}({}, vp.path_edges) as path_edges",
+                arr(&self.build_fk_edge_tuple(
+                    "new_start",
+                    &self.start_node_id_column,
+                    "current_node",
+                    &self.start_node_id_column,
+                ))
+            ));
+        }
 
         // Add properties: end properties from CTE, start properties from new joined node
         for prop in &self.properties {
@@ -3320,7 +3403,17 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
-            emit_cycle_check(&format!("new_start.{}", self.start_node_id_column)),
+            // #606: edge-unique when uses_edge_uniqueness(), else legacy node-unique.
+            if self.uses_edge_uniqueness() {
+                emit_edge_cycle_check(&self.build_fk_edge_tuple(
+                    "new_start",
+                    &self.start_node_id_column,
+                    "current_node",
+                    &self.start_node_id_column,
+                ))
+            } else {
+                emit_cycle_check(&format!("new_start.{}", self.start_node_id_column))
+            },
         ];
 
         // Add edge constraints if defined in schema
