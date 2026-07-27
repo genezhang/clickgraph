@@ -23,12 +23,13 @@ use crate::graph_catalog::GraphSchema;
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::render_expr::RenderExpr;
-// `find_all_with_clauses_grouped` still lives in `plan_builder_utils` (it moves
-// into this module in P2.6 slice 3); import it during the transition.
-use super::plan_builder_utils::find_all_with_clauses_grouped;
 // `plan_contains_with_clause` is a `plan_predicates` (P2.4) predicate that
 // `replace_with_clause_with_cte_reference_v2` gates its GraphRel recursion on.
 use super::plan_predicates::plan_contains_with_clause;
+// `find_cte_reference_alias` is an `alias_utils` helper the WITH-discovery
+// cluster (`find_all_with_clauses_grouped`) uses; imported by name here (the
+// original file brought it in via `use super::utils::alias_utils::*`).
+use super::utils::alias_utils::find_cte_reference_alias;
 // Types referenced by bare name from the `#[cfg(test)]` module below via its
 // `use super::*` — kept here so that glob keeps resolving after the move.
 #[cfg(test)]
@@ -1428,6 +1429,962 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
         }
 
         other => Ok(other.clone()),
+    }
+}
+
+/// Find the INNERMOST WITH clause subplan in a nested plan structure.
+///
+/// KEY INSIGHT: With chained WITH clauses (e.g., WITH a MATCH...WITH a,b MATCH...),
+/// we need to process them from innermost to outermost. The innermost WITH is
+/// the one whose INPUT has NO other WITH clauses nested inside it.
+///
+/// This function recursively searches for WITH clauses and returns the one
+/// whose input is "clean" (contains no nested WITH).
+///
+/// Returns (with_clause_plan, alias_name) if found.
+///
+/// Find all WITH clauses in a plan grouped by their alias.
+///
+/// Returns HashMap where each alias maps to all WITH clause plans with that alias.
+/// This handles the case where Union branches each have their own WITH clause with the same alias.
+/// Returns owned (cloned) LogicalPlans to avoid lifetime issues with mutations.
+pub(crate) fn find_all_with_clauses_grouped(
+    plan: &LogicalPlan,
+) -> std::collections::HashMap<String, Vec<LogicalPlan>> {
+    log::debug!(
+        "🔍 find_all_with_clauses_grouped: Called with plan type: {:?}",
+        std::mem::discriminant(plan)
+    );
+    use crate::query_planner::logical_expr::LogicalExpr;
+    use crate::query_planner::logical_plan::ProjectionItem;
+    use std::collections::HashMap;
+
+    /// Extract the alias from a WITH projection item.
+    /// Priority: explicit col_alias > inferred from expression (variable name, table alias)
+    /// Note: Strips ".*" suffix from col_alias (e.g., "friend.*" -> "friend")
+    fn extract_with_alias(item: &ProjectionItem) -> Option<String> {
+        // First check for explicit alias
+        if let Some(ref alias) = item.col_alias {
+            // Strip ".*" suffix if present (added by projection_tagging.rs for node expansions)
+            let clean_alias = alias.0.strip_suffix(".*").unwrap_or(&alias.0).to_string();
+            log::info!(
+                "🔍 extract_with_alias: Found explicit col_alias: {} -> {}",
+                alias.0,
+                clean_alias
+            );
+            return Some(clean_alias);
+        }
+
+        // Helper to extract alias from nested expression
+        fn extract_alias_from_expr(expr: &LogicalExpr) -> Option<String> {
+            match expr {
+                LogicalExpr::ColumnAlias(ca) => {
+                    log::debug!("🔍 extract_with_alias: ColumnAlias: {}", ca.0);
+                    Some(ca.0.clone())
+                }
+                LogicalExpr::TableAlias(ta) => {
+                    log::debug!("🔍 extract_with_alias: TableAlias: {}", ta.0);
+                    Some(ta.0.clone())
+                }
+                LogicalExpr::Column(col) => {
+                    // A bare column name - this is often the variable name in WITH
+                    // e.g., WITH friend -> Column("friend")
+                    // Skip "*" since it's not a real variable name
+                    if col.0 == "*" {
+                        log::debug!("🔍 extract_with_alias: Skipping Column('*')");
+                        None
+                    } else {
+                        log::debug!("🔍 extract_with_alias: Column: {}", col.0);
+                        Some(col.0.clone())
+                    }
+                }
+                LogicalExpr::PropertyAccessExp(pa) => {
+                    // For property access like `friend.name`, use the table alias
+                    log::info!(
+                        "🔍 extract_with_alias: PropertyAccessExp: {}.{:?}",
+                        pa.table_alias.0,
+                        pa.column
+                    );
+                    Some(pa.table_alias.0.clone())
+                }
+                LogicalExpr::OperatorApplicationExp(op_app) => {
+                    // Handle operators like DISTINCT that wrap other expressions
+                    // Try to extract alias from the first operand
+                    log::debug!("🔍 extract_with_alias: OperatorApplicationExp with {:?}, checking operands", op_app.operator);
+                    for operand in &op_app.operands {
+                        if let Some(alias) = extract_alias_from_expr(operand) {
+                            return Some(alias);
+                        }
+                    }
+                    None
+                }
+                other => {
+                    log::info!(
+                        "🔍 extract_with_alias: Unhandled expression type in nested: {:?}",
+                        std::mem::discriminant(other)
+                    );
+                    None
+                }
+            }
+        }
+
+        // Try to infer from expression
+        log::info!(
+            "🔍 extract_with_alias: Expression type: {:?}",
+            std::mem::discriminant(&item.expression)
+        );
+        extract_alias_from_expr(&item.expression)
+    }
+
+    /// Generate a unique key for a WITH clause based on all its projection items.
+    /// This allows distinguishing "WITH friend" from "WITH friend, post".
+    /// Generate a unique key for a WithClause based on its exported aliases or projection items.
+    fn generate_with_key_from_with_clause(
+        wc: &crate::query_planner::logical_plan::WithClause,
+    ) -> String {
+        // First try exported_aliases (preferred, already computed)
+        if !wc.exported_aliases.is_empty() {
+            let mut aliases = wc.exported_aliases.clone();
+            aliases.sort();
+            return aliases.join("_");
+        }
+        // Fall back to extracting from items
+        let mut aliases: Vec<String> = wc
+            .items
+            .iter()
+            .filter_map(extract_with_alias)
+            .filter(|a| a != "*")
+            .collect();
+        aliases.sort();
+        if aliases.is_empty() {
+            "with_var".to_string()
+        } else {
+            aliases.join("_")
+        }
+    }
+
+    /// Find the first WITH clause key in a plan subtree (non-recursive into Union)
+    fn find_first_with_key(plan: &LogicalPlan) -> Option<String> {
+        log::debug!(
+            "🔍 find_first_with_key: plan type: {:?}",
+            std::mem::discriminant(plan)
+        );
+        match plan {
+            // NEW: Handle WithClause type
+            LogicalPlan::WithClause(wc) => Some(generate_with_key_from_with_clause(wc)),
+            LogicalPlan::GraphRel(graph_rel) => {
+                // Check for WithClause in right
+                if let LogicalPlan::WithClause(wc) = graph_rel.right.as_ref() {
+                    return Some(generate_with_key_from_with_clause(wc));
+                }
+                // Check for WithClause in left
+                if let LogicalPlan::WithClause(wc) = graph_rel.left.as_ref() {
+                    return Some(generate_with_key_from_with_clause(wc));
+                }
+                if let LogicalPlan::GraphJoins(gj) = graph_rel.right.as_ref() {
+                    if let LogicalPlan::WithClause(wc) = gj.input.as_ref() {
+                        return Some(generate_with_key_from_with_clause(wc));
+                    }
+                }
+                None
+            }
+            LogicalPlan::GraphJoins(gj) => find_first_with_key(&gj.input),
+            LogicalPlan::Projection(p) => find_first_with_key(&p.input),
+            LogicalPlan::Filter(f) => find_first_with_key(&f.input),
+            _ => None,
+        }
+    }
+
+    fn find_all_with_clauses_impl(
+        plan: &LogicalPlan,
+        results: &mut Vec<(LogicalPlan, String)>,
+        depth: usize,
+    ) {
+        if depth > crate::render_plan::MAX_TRAVERSAL_DEPTH {
+            log::warn!(
+                "find_all_with_clauses_impl: depth limit {} exceeded, stopping traversal",
+                depth
+            );
+            return;
+        }
+        log::debug!(
+            "🔍 find_all_with_clauses_impl: Checking plan type: {:?}",
+            std::mem::discriminant(plan)
+        );
+        match plan {
+            // NEW: Handle WithClause type directly
+            LogicalPlan::WithClause(wc) => {
+                let alias = generate_with_key_from_with_clause(wc);
+                log::debug!(
+                    "🔍 find_all_with_clauses_impl: Found WithClause directly, key='{}'",
+                    alias
+                );
+                results.push((plan.clone(), alias));
+                // Recurse into input to find nested WITH clauses
+                // They will be processed innermost-first due to sorting by underscore count
+                find_all_with_clauses_impl(&wc.input, results, depth + 1);
+            }
+            LogicalPlan::GraphRel(graph_rel) => {
+                log::debug!(
+                    "🔍 find_all_with_clauses_impl: GraphRel - right type: {:?}, left type: {:?}",
+                    std::mem::discriminant(graph_rel.right.as_ref()),
+                    std::mem::discriminant(graph_rel.left.as_ref())
+                );
+
+                // Track which branches we've already recursed into to avoid duplicates
+                let mut handled_right = false;
+                let mut handled_left = false;
+
+                // Check for WithClause in right
+                if let LogicalPlan::WithClause(wc) = graph_rel.right.as_ref() {
+                    let key = generate_with_key_from_with_clause(wc);
+                    let alias = if key == "with_var" {
+                        graph_rel.right_connection.clone()
+                    } else {
+                        key
+                    };
+                    log::debug!("🔍 find_all_with_clauses_impl: Found WithClause in GraphRel.right, key='{}' (connection='{}')",
+                               alias, graph_rel.right_connection);
+                    results.push((graph_rel.right.as_ref().clone(), alias));
+                    find_all_with_clauses_impl(&wc.input, results, depth + 1);
+                    handled_right = true;
+                }
+                // Check for WithClause in left
+                if let LogicalPlan::WithClause(wc) = graph_rel.left.as_ref() {
+                    let key = generate_with_key_from_with_clause(wc);
+                    let alias = if key == "with_var" {
+                        graph_rel.left_connection.clone()
+                    } else {
+                        key
+                    };
+                    log::debug!("🔍 find_all_with_clauses_impl: Found WithClause in GraphRel.left, key='{}' (connection='{}')",
+                               alias, graph_rel.left_connection);
+                    results.push((graph_rel.left.as_ref().clone(), alias));
+                    find_all_with_clauses_impl(&wc.input, results, depth + 1);
+                    handled_left = true;
+                }
+                // Also check GraphJoins wrapped inside GraphRel
+                if !handled_right {
+                    if let LogicalPlan::GraphJoins(gj) = graph_rel.right.as_ref() {
+                        if let LogicalPlan::WithClause(wc) = gj.input.as_ref() {
+                            let key = generate_with_key_from_with_clause(wc);
+                            let alias = if key == "with_var" {
+                                graph_rel.right_connection.clone()
+                            } else {
+                                key
+                            };
+                            log::debug!("🔍 find_all_with_clauses_impl: Found WithClause in GraphJoins inside GraphRel.right, key='{}' (connection='{}')",
+                                       alias, graph_rel.right_connection);
+                            results.push((gj.input.as_ref().clone(), alias));
+                            find_all_with_clauses_impl(&wc.input, results, depth + 1);
+                            handled_right = true;
+                        }
+                    }
+                }
+                if !handled_left {
+                    if let LogicalPlan::GraphJoins(gj) = graph_rel.left.as_ref() {
+                        if let LogicalPlan::WithClause(wc) = gj.input.as_ref() {
+                            let key = generate_with_key_from_with_clause(wc);
+                            let alias = if key == "with_var" {
+                                graph_rel.left_connection.clone()
+                            } else {
+                                key
+                            };
+                            log::debug!("🔍 find_all_with_clauses_impl: Found WithClause in GraphJoins inside GraphRel.left, key='{}' (connection='{}')",
+                                       alias, graph_rel.left_connection);
+                            results.push((gj.input.as_ref().clone(), alias));
+                            find_all_with_clauses_impl(&wc.input, results, depth + 1);
+                            handled_left = true;
+                        }
+                    }
+                }
+
+                // Continue traversal on branches not already handled
+                if !handled_left {
+                    find_all_with_clauses_impl(&graph_rel.left, results, depth + 1);
+                }
+                find_all_with_clauses_impl(&graph_rel.center, results, depth + 1);
+                if !handled_right {
+                    find_all_with_clauses_impl(&graph_rel.right, results, depth + 1);
+                }
+            }
+            LogicalPlan::Union(union) => {
+                // For Union (bidirectional patterns), check if WITH clauses exist inside.
+                // If so, the entire Union should be treated as a single WITH-bearing structure,
+                // not collected multiple times from each branch.
+                //
+                // Strategy: Check if all branches have matching WITH clauses (same key).
+                // If yes, collect the WITH key but note that the Union itself needs to be rendered.
+                // If branches have different WITH structures, recurse into each.
+
+                let mut branch_with_keys: Vec<Option<String>> = Vec::new();
+                for (i, input) in union.inputs.iter().enumerate() {
+                    log::debug!(
+                        "🔍 find_all_with_clauses_impl: Union branch {} plan type: {:?}",
+                        i,
+                        std::mem::discriminant(input.as_ref())
+                    );
+                    // Find the first Projection(With) in this branch
+                    if let Some(key) = find_first_with_key(input) {
+                        branch_with_keys.push(Some(key));
+                    } else {
+                        branch_with_keys.push(None);
+                    }
+                }
+
+                // Check if all branches have the same WITH key
+                let first_key = branch_with_keys.first().and_then(|k| k.clone());
+                let all_same = branch_with_keys.iter().all(|k| k == &first_key);
+
+                if all_same {
+                    if let Some(key) = first_key.as_ref() {
+                        // All branches have the same WITH key - this is a bidirectional pattern
+                        // Collect from just the first branch to avoid duplicates
+                        // The Union structure will be preserved when we render the parent GraphRel
+                        log::debug!("🔍 find_all_with_clauses_impl: Union has matching WITH key '{}' in all branches, collecting from first only", key);
+                        if let Some(first_input) = union.inputs.first() {
+                            find_all_with_clauses_impl(first_input, results, depth + 1);
+                        }
+                    } else {
+                        // All branches have None key — WITH clauses may be deeper in the tree
+                        // Recurse into the first branch to find them
+                        log::debug!("🔍 find_all_with_clauses_impl: Union branches have no top-level WITH key, recursing into first branch");
+                        if let Some(first_input) = union.inputs.first() {
+                            find_all_with_clauses_impl(first_input, results, depth + 1);
+                        }
+                    }
+                } else {
+                    // Branches have different WITH structures - recurse into each
+                    for input in &union.inputs {
+                        find_all_with_clauses_impl(input, results, depth + 1);
+                    }
+                }
+            }
+            // All other variants carry no special WITH-collection logic — they
+            // simply recurse into every direct child. Route through the
+            // exhaustive `children()` API so the traversal can never drift out
+            // of sync with the plan structure (covers Projection, Filter,
+            // GroupBy, GraphJoins, Limit, OrderBy, Skip, CartesianProduct,
+            // ViewScan.input, GraphNode, Cte, Unwind, and write-op inputs;
+            // leaves are a no-op). WithClause / GraphRel / Union are handled
+            // above because they compute WITH keys / dedup, so they never reach
+            // this arm.
+            other => {
+                other.for_each_child(|child| find_all_with_clauses_impl(child, results, depth + 1))
+            }
+        }
+    }
+
+    let mut all_withs: Vec<(LogicalPlan, String)> = Vec::new();
+    find_all_with_clauses_impl(plan, &mut all_withs, 0);
+
+    // Group by alias
+    let mut grouped: HashMap<String, Vec<LogicalPlan>> = HashMap::new();
+    for (plan, alias) in all_withs {
+        grouped.entry(alias).or_default().push(plan);
+    }
+
+    grouped
+}
+
+/// Collapse a passthrough WITH clause by replacing it with its input.
+/// A passthrough WITH is one that simply wraps a CTE reference without any transformations:
+/// - Single item that's just a TableAlias
+/// - No DISTINCT, ORDER BY, SKIP, LIMIT, WHERE
+///
+/// This function finds the passthrough WITH for the given alias and replaces it with its input.
+/// Uses the analyzer's CTE name to distinguish between multiple consecutive WITHs with same alias.
+pub(crate) fn collapse_passthrough_with(
+    plan: &LogicalPlan,
+    target_alias: &str,
+    target_cte_name: &str, // Analyzer's CTE name (e.g., "with_lnm_cte_4")
+) -> RenderPlanBuilderResult<LogicalPlan> {
+    use crate::query_planner::logical_plan::*;
+    use std::sync::Arc;
+
+    log::debug!(
+        "🔧 collapse_passthrough_with: ENTERING with plan type {:?}, target_alias='{}', target_cte_name='{}'",
+        std::mem::discriminant(plan), target_alias, target_cte_name
+    );
+
+    /// Generate a key for a WithClause (same logic as find_all_with_clauses_grouped)
+    fn get_with_key(wc: &WithClause) -> String {
+        if !wc.exported_aliases.is_empty() {
+            let mut aliases = wc.exported_aliases.clone();
+            aliases.sort();
+            return aliases.join("_");
+        }
+        "with_var".to_string()
+    }
+
+    match plan {
+        LogicalPlan::WithClause(wc) => {
+            let key = get_with_key(wc);
+            let this_cte_name = wc
+                .cte_references
+                .get(target_alias)
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            log::debug!(
+                "🔧 collapse_passthrough_with: ENTERING WithClause match, wc.cte_references={:?}, exported_aliases={:?}",
+                wc.cte_references, wc.exported_aliases
+            );
+            log::debug!(
+                "🔧 collapse_passthrough_with: Checking WithClause key='{}' target='{}' this_cte='{}' target_cte='{}'",
+                key, target_alias, this_cte_name, target_cte_name
+            );
+            if key == target_alias {
+                // FORCE COLLAPSE for passthrough WITHs
+                Ok(wc.input.as_ref().clone())
+            } else {
+                // Not the target - recurse into input
+                let new_input =
+                    collapse_passthrough_with(&wc.input, target_alias, target_cte_name)?;
+                Ok(LogicalPlan::WithClause(
+                    wc.with_new_input(Arc::new(new_input)),
+                ))
+            }
+        }
+        LogicalPlan::Projection(proj) => {
+            let new_input = collapse_passthrough_with(&proj.input, target_alias, target_cte_name)?;
+            Ok(LogicalPlan::Projection(Projection {
+                input: Arc::new(new_input),
+                items: proj.items.clone(),
+                distinct: proj.distinct,
+                pattern_comprehensions: proj.pattern_comprehensions.clone(),
+            }))
+        }
+        LogicalPlan::Filter(f) => {
+            let new_input = collapse_passthrough_with(&f.input, target_alias, target_cte_name)?;
+            Ok(LogicalPlan::Filter(Filter {
+                input: Arc::new(new_input),
+                predicate: f.predicate.clone(),
+            }))
+        }
+        LogicalPlan::Limit(lim) => {
+            let new_input = collapse_passthrough_with(&lim.input, target_alias, target_cte_name)?;
+            Ok(LogicalPlan::Limit(Limit {
+                input: Arc::new(new_input),
+                count: lim.count,
+            }))
+        }
+        LogicalPlan::GraphJoins(gj) => {
+            let new_input = collapse_passthrough_with(&gj.input, target_alias, target_cte_name)?;
+            Ok(LogicalPlan::GraphJoins(GraphJoins {
+                input: Arc::new(new_input),
+                joins: gj.joins.clone(),
+                optional_aliases: gj.optional_aliases.clone(),
+                anchor_table: gj.anchor_table.clone(),
+                cte_references: gj.cte_references.clone(),
+                correlation_predicates: gj.correlation_predicates.clone(),
+            }))
+        }
+        LogicalPlan::Skip(skip) => {
+            let new_input = collapse_passthrough_with(&skip.input, target_alias, target_cte_name)?;
+            Ok(LogicalPlan::Skip(Skip {
+                input: Arc::new(new_input),
+                count: skip.count,
+            }))
+        }
+        LogicalPlan::OrderBy(ob) => {
+            let new_input = collapse_passthrough_with(&ob.input, target_alias, target_cte_name)?;
+            Ok(LogicalPlan::OrderBy(OrderBy {
+                input: Arc::new(new_input),
+                items: ob.items.clone(),
+            }))
+        }
+        LogicalPlan::GroupBy(gb) => {
+            let new_input = collapse_passthrough_with(&gb.input, target_alias, target_cte_name)?;
+            Ok(LogicalPlan::GroupBy(GroupBy {
+                input: Arc::new(new_input),
+                expressions: gb.expressions.clone(),
+                having_clause: gb.having_clause.clone(),
+                is_materialization_boundary: gb.is_materialization_boundary,
+                exposed_alias: gb.exposed_alias.clone(),
+            }))
+        }
+        LogicalPlan::GraphRel(gr) => {
+            let new_left = collapse_passthrough_with(&gr.left, target_alias, target_cte_name)?;
+            let new_right = collapse_passthrough_with(&gr.right, target_alias, target_cte_name)?;
+            Ok(LogicalPlan::GraphRel(GraphRel {
+                left: Arc::new(new_left),
+                center: gr.center.clone(),
+                right: Arc::new(new_right),
+                alias: gr.alias.clone(),
+                direction: gr.direction.clone(),
+                left_connection: gr.left_connection.clone(),
+                right_connection: gr.right_connection.clone(),
+                is_rel_anchor: gr.is_rel_anchor,
+                variable_length: gr.variable_length.clone(),
+                shortest_path_mode: gr.shortest_path_mode.clone(),
+                path_variable: gr.path_variable.clone(),
+                where_predicate: gr.where_predicate.clone(),
+                labels: gr.labels.clone(),
+                is_optional: gr.is_optional,
+                anchor_connection: gr.anchor_connection.clone(),
+                cte_references: gr.cte_references.clone(),
+                pattern_combinations: gr.pattern_combinations.clone(),
+                was_undirected: gr.was_undirected,
+                match_clause_index: gr.match_clause_index, // #586
+                optional_anchor_where: gr.optional_anchor_where.clone(), // #597: preserve
+            }))
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            let new_left = collapse_passthrough_with(&cp.left, target_alias, target_cte_name)?;
+            let new_right = collapse_passthrough_with(&cp.right, target_alias, target_cte_name)?;
+            Ok(LogicalPlan::CartesianProduct(CartesianProduct {
+                left: Arc::new(new_left),
+                right: Arc::new(new_right),
+                is_optional: cp.is_optional,
+                join_condition: cp.join_condition.clone(),
+            }))
+        }
+        LogicalPlan::Union(u) => {
+            let new_inputs = u
+                .inputs
+                .iter()
+                .map(|i| collapse_passthrough_with(i, target_alias, target_cte_name).map(Arc::new))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(LogicalPlan::Union(Union {
+                inputs: new_inputs,
+                union_type: u.union_type.clone(),
+                is_cypher_union: u.is_cypher_union,
+            }))
+        }
+        LogicalPlan::Unwind(uw) => {
+            let new_input = collapse_passthrough_with(&uw.input, target_alias, target_cte_name)?;
+            Ok(LogicalPlan::Unwind(Unwind {
+                input: Arc::new(new_input),
+                expression: uw.expression.clone(),
+                alias: uw.alias.clone(),
+                label: uw.label.clone(),
+                tuple_properties: uw.tuple_properties.clone(),
+            }))
+        }
+        LogicalPlan::Cte(c) => {
+            let new_input = collapse_passthrough_with(&c.input, target_alias, target_cte_name)?;
+            Ok(LogicalPlan::Cte(Cte {
+                input: Arc::new(new_input),
+                name: c.name.clone(),
+            }))
+        }
+        // For other node types (leaves) return unchanged
+        other => Ok(other.clone()),
+    }
+}
+
+/// Find a `GraphNode` with the given `alias` anywhere in the plan and report
+/// whether it is a *concrete, resolvable* node — i.e. it carries an explicit
+/// label. Unlabeled endpoints (e.g. the `(o)` in a Neo4j-Browser `(a)--(o)`
+/// expand) are the separate browser/denorm-foreign-edge bug family (see the
+/// `browser-*` and `denorm-foreign-edge` notes) whose correlation resolution is
+/// not solved here; requiring a label on BOTH endpoints keeps the CTE-join
+/// hardening scoped to the labeled node-to-node family this fix addresses.
+fn node_is_concrete_labeled(plan: &LogicalPlan, alias: &str) -> bool {
+    use crate::query_planner::logical_plan::LogicalPlan;
+    match plan {
+        LogicalPlan::GraphNode(gn) if gn.alias == alias => gn.label.is_some(),
+        LogicalPlan::GraphNode(gn) => node_is_concrete_labeled(&gn.input, alias),
+        LogicalPlan::GraphRel(gr) => {
+            node_is_concrete_labeled(&gr.left, alias)
+                || node_is_concrete_labeled(&gr.center, alias)
+                || node_is_concrete_labeled(&gr.right, alias)
+        }
+        LogicalPlan::GraphJoins(gj) => node_is_concrete_labeled(&gj.input, alias),
+        LogicalPlan::Projection(p) => node_is_concrete_labeled(&p.input, alias),
+        LogicalPlan::Filter(f) => node_is_concrete_labeled(&f.input, alias),
+        LogicalPlan::GroupBy(g) => node_is_concrete_labeled(&g.input, alias),
+        LogicalPlan::OrderBy(o) => node_is_concrete_labeled(&o.input, alias),
+        LogicalPlan::Skip(s) => node_is_concrete_labeled(&s.input, alias),
+        LogicalPlan::Limit(l) => node_is_concrete_labeled(&l.input, alias),
+        LogicalPlan::Unwind(u) => node_is_concrete_labeled(&u.input, alias),
+        LogicalPlan::WithClause(w) => node_is_concrete_labeled(&w.input, alias),
+        LogicalPlan::CartesianProduct(cp) => {
+            node_is_concrete_labeled(&cp.left, alias) || node_is_concrete_labeled(&cp.right, alias)
+        }
+        LogicalPlan::Union(u) => u.inputs.iter().any(|i| node_is_concrete_labeled(i, alias)),
+        _ => false,
+    }
+}
+
+/// Returns true if `alias` is joined by a *resolvable* graph-pattern edge to a
+/// distinct node — a non-VLP `GraphRel` whose BOTH endpoints are concrete,
+/// labeled nodes (the check is label presence only; denormalized nodes with a
+/// label pass, but in practice denormalized patterns are transformed before
+/// reaching the fallback this guards). When true, a WITH-CTE JOIN to `alias`
+/// MUST carry a real ON condition; a cartesian `ON 1 = 1` would silently change
+/// the query's semantics (wrong row count), so the renderer errors instead of
+/// emitting it. Deliberately narrow: a scalar carry-forward (`WITH count(*)`)
+/// has no such edge, and the unlabeled-endpoint browser family is intentionally
+/// excluded (its correlation gaps predate and are out of scope for this fix —
+/// see #451 scope note). Used to harden the CTE-JOIN fallback.
+// P2.6 slice 3: widened `fn` → `pub(crate) fn` (the sole change vs the original)
+// so the transition re-export in `plan_builder_utils` reaches it — it is called
+// from `build_chained_with_match_cte_plan`, which still lives there; body is
+// verbatim.
+pub(crate) fn alias_has_pattern_correlation(root: &LogicalPlan, alias: &str) -> bool {
+    fn walk(node: &LogicalPlan, root: &LogicalPlan, alias: &str) -> bool {
+        use crate::query_planner::logical_plan::LogicalPlan;
+        match node {
+            LogicalPlan::GraphRel(gr) => {
+                let l = gr.left_connection.as_str();
+                let r = gr.right_connection.as_str();
+                let counterpart = if l == alias {
+                    Some(r)
+                } else if r == alias {
+                    Some(l)
+                } else {
+                    None
+                };
+                if let Some(cp) = counterpart {
+                    if cp != alias
+                        && !cp.is_empty()
+                        && gr.variable_length.is_none()
+                        && node_is_concrete_labeled(root, alias)
+                        && node_is_concrete_labeled(root, cp)
+                    {
+                        return true;
+                    }
+                }
+                walk(&gr.left, root, alias)
+                    || walk(&gr.center, root, alias)
+                    || walk(&gr.right, root, alias)
+            }
+            LogicalPlan::GraphJoins(gj) => walk(&gj.input, root, alias),
+            LogicalPlan::Projection(p) => walk(&p.input, root, alias),
+            LogicalPlan::Filter(f) => walk(&f.input, root, alias),
+            LogicalPlan::GraphNode(gn) => walk(&gn.input, root, alias),
+            LogicalPlan::GroupBy(g) => walk(&g.input, root, alias),
+            LogicalPlan::OrderBy(o) => walk(&o.input, root, alias),
+            LogicalPlan::Skip(s) => walk(&s.input, root, alias),
+            LogicalPlan::Limit(l) => walk(&l.input, root, alias),
+            LogicalPlan::Unwind(u) => walk(&u.input, root, alias),
+            LogicalPlan::WithClause(w) => walk(&w.input, root, alias),
+            LogicalPlan::CartesianProduct(cp) => {
+                walk(&cp.left, root, alias) || walk(&cp.right, root, alias)
+            }
+            LogicalPlan::Union(u) => u.inputs.iter().any(|i| walk(i, root, alias)),
+            _ => false,
+        }
+    }
+    walk(root, root, alias)
+}
+
+/// When we have a query like:
+///   WITH a MATCH (a)-[:F]->(b) WITH a,b MATCH (b)-[:F]->(c)
+///
+/// After processing, we have:
+/// - CTE: with_a_b_cte2 (contains the pattern for a→b)
+/// - Final plan: GraphJoins with joins for [a→t1→b, b→t2→c]
+///
+/// The joins [a→t1→b] are already materialized in the CTE, so they should be removed.
+/// Only [b→t2→c] should remain in the final query.
+///
+/// This function:
+/// 1. Traverses the plan to find GraphJoins nodes
+/// 2. Builds an adjacency graph from join ON conditions (alias connectivity)
+/// 3. Seeds the removable set with CTE-backed aliases (exported_aliases)
+/// 4. Fixed-point expansion: non-CTE joins are removable if ALL neighbors are removable
+/// 5. Keeps joins whose alias is NOT in the removable set
+pub(crate) fn prune_joins_covered_by_cte(
+    plan: &LogicalPlan,
+    cte_name: &str,
+    exported_aliases: &std::collections::HashSet<&str>,
+    _cte_schemas: &crate::render_plan::CteSchemas,
+    removed_correlations: &mut Vec<crate::query_planner::logical_expr::LogicalExpr>,
+) -> RenderPlanBuilderResult<LogicalPlan> {
+    use crate::query_planner::logical_plan::*;
+    use std::sync::Arc;
+
+    log::info!(
+        "🔧 prune_joins_covered_by_cte: Processing plan for CTE '{}' with aliases {:?}",
+        cte_name,
+        exported_aliases
+    );
+
+    match plan {
+        LogicalPlan::GraphJoins(gj) => {
+            log::info!(
+                "🔧 prune_joins_covered_by_cte: Found GraphJoins with {} joins and anchor '{:?}'",
+                gj.joins.len(),
+                gj.anchor_table
+            );
+
+            // Build adjacency graph from join ON conditions, then use fixed-point
+            // expansion to find all joins fully internal to the CTE subgraph.
+
+            // Helper: extract table aliases from join condition operands
+            fn extract_condition_aliases(
+                operands: &[crate::query_planner::logical_expr::LogicalExpr],
+                aliases: &mut std::collections::HashSet<String>,
+            ) {
+                for operand in operands {
+                    match operand {
+                        crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) => {
+                            aliases.insert(pa.table_alias.0.clone());
+                        }
+                        crate::query_planner::logical_expr::LogicalExpr::OperatorApplicationExp(
+                            nested,
+                        ) => {
+                            extract_condition_aliases(&nested.operands, aliases);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // 1. Build adjacency graph from join conditions
+            let mut adjacency: std::collections::HashMap<
+                String,
+                std::collections::HashSet<String>,
+            > = std::collections::HashMap::new();
+
+            // Register all join aliases and anchor
+            if let Some(ref anchor) = gj.anchor_table {
+                adjacency.entry(anchor.clone()).or_default();
+            }
+            for join in &gj.joins {
+                adjacency.entry(join.table_alias.clone()).or_default();
+            }
+
+            // Add edges from join conditions
+            for join in &gj.joins {
+                let mut condition_aliases = std::collections::HashSet::new();
+                for op in &join.joining_on {
+                    extract_condition_aliases(&op.operands, &mut condition_aliases);
+                }
+                // Add bidirectional edges between join alias and all aliases in its conditions
+                for alias in &condition_aliases {
+                    if alias != &join.table_alias {
+                        adjacency
+                            .entry(join.table_alias.clone())
+                            .or_default()
+                            .insert(alias.clone());
+                        adjacency
+                            .entry(alias.clone())
+                            .or_default()
+                            .insert(join.table_alias.clone());
+                    }
+                }
+            }
+
+            log::info!(
+                "🔧 prune_joins_covered_by_cte: Adjacency graph: {:?}",
+                adjacency
+            );
+
+            // 2. Seed removable set with CTE-backed aliases
+            let mut removable = std::collections::HashSet::new();
+            for join in &gj.joins {
+                if exported_aliases.contains(join.table_alias.as_str()) {
+                    removable.insert(join.table_alias.clone());
+                }
+            }
+            if let Some(ref anchor) = gj.anchor_table {
+                if exported_aliases.contains(anchor.as_str()) {
+                    removable.insert(anchor.clone());
+                }
+            }
+
+            log::info!(
+                "🔧 prune_joins_covered_by_cte: Initial removable set (CTE-backed): {:?}",
+                removable
+            );
+
+            // 3. Fixed-point expansion: a non-CTE join is removable if ALL its neighbors
+            //    are already removable
+            //
+            //    #461 investigation note (R4): tried tightening this to require
+            //    2+ neighbors (reasoning: a join with exactly ONE neighbor that
+            //    happens to be CTE-exported isn't necessarily already inside the
+            //    CTE — it can be a fresh, post-WITH join hanging directly off a
+            //    single-alias anchor, e.g. two sibling patterns sharing anchor
+            //    `c`: `MATCH (c) WITH c MATCH (o)-[:PLACED_BY]->(c) OPTIONAL
+            //    MATCH (o2)-[:PLACED_BY]->(c) ...` swept BOTH `o` and `o2` out of
+            //    the final query even though neither was ever inside the CTE —
+            //    #461 shape 1's actual over-pruning bug). That tightening DID fix
+            //    the over-pruning for the star/branch shape above, but broke the
+            //    single-OPTIONAL-pattern case this loop is ALSO relied on for
+            //    (#453/#460/#462/#472/#473's family, e.g. `WITH c OPTIONAL MATCH
+            //    (o)-[:PLACED_BY]->(c) ...`): there, the sole post-WITH `o` join
+            //    similarly has exactly ONE neighbor (`c`) and genuinely MUST be
+            //    pruned here — `build_chained_with_match_cte_plan`'s
+            //    `post_with_optional_restructure` (#453) independently rebuilds
+            //    the optional JOIN from `render_plan.from`/correlation predicates
+            //    and expects `prune_joins_covered_by_cte` to have already removed
+            //    the raw `o` join entry; leaving it in place breaks that
+            //    restructure. Reverted — the fix needs to distinguish "single
+            //    fresh join hanging off the anchor" (prune — #453 rebuilds it)
+            //    from "MULTIPLE sibling fresh joins hanging off the same anchor"
+            //    (don't prune any of them — #461 shape 1), not a blanket
+            //    neighbor-count threshold. Deferred; see the `fk_edge_461_*`
+            //    characterization test for the current (unfixed) state.
+            loop {
+                let mut changed = false;
+                for join in &gj.joins {
+                    if removable.contains(&join.table_alias) {
+                        continue;
+                    }
+                    if let Some(neighbors) = adjacency.get(&join.table_alias) {
+                        if !neighbors.is_empty() && neighbors.iter().all(|n| removable.contains(n))
+                        {
+                            removable.insert(join.table_alias.clone());
+                            changed = true;
+                        }
+                    }
+                }
+                if !changed {
+                    break;
+                }
+            }
+
+            log::info!(
+                "🔧 prune_joins_covered_by_cte: Final removable set: {:?}",
+                removable
+            );
+
+            // 4. Partition joins into kept/removed
+            let mut kept_joins = Vec::new();
+            let mut removed_joins = Vec::new();
+            for (idx, join) in gj.joins.iter().enumerate() {
+                if removable.contains(&join.table_alias) {
+                    log::debug!(
+                        "🔧 prune_joins_covered_by_cte: REMOVING join {} to '{}'",
+                        idx,
+                        join.table_alias
+                    );
+                    // Capture cross-barrier correlations: a removed join whose ON
+                    // condition references at least one NON-removable (fresh, post-WITH)
+                    // alias is a graph-pattern correlation between the CTE and a fresh
+                    // node (e.g. an FK-edge `c.customer_id = o.customer_id`). It is NOT
+                    // reproduced by `original_correlation_predicates` (which only carries
+                    // explicit WHERE-style predicates), so without capturing it here the
+                    // CTE JOIN would degrade to a cartesian `ON 1 = 1`. #451
+                    for op in &join.joining_on {
+                        let mut cond_aliases = std::collections::HashSet::new();
+                        extract_condition_aliases(&op.operands, &mut cond_aliases);
+                        // Cross-barrier iff the condition ties a CTE-exported alias to a
+                        // fresh (non-exported) alias. Compare against `exported_aliases`,
+                        // NOT `removable` — the fixed-point expansion may have pulled the
+                        // fresh endpoint into `removable`, which would mask the correlation.
+                        let references_exported = cond_aliases
+                            .iter()
+                            .any(|a| exported_aliases.contains(a.as_str()));
+                        let references_fresh = cond_aliases
+                            .iter()
+                            .any(|a| !exported_aliases.contains(a.as_str()));
+                        if references_exported && references_fresh {
+                            log::info!(
+                                "🔧 prune_joins_covered_by_cte: Capturing cross-barrier correlation from removed join '{}': {:?}",
+                                join.table_alias,
+                                op
+                            );
+                            removed_correlations.push(
+                                crate::query_planner::logical_expr::LogicalExpr::OperatorApplicationExp(
+                                    op.clone(),
+                                ),
+                            );
+                        }
+                    }
+                    removed_joins.push(join.clone());
+                } else {
+                    log::info!(
+                        "🔧 prune_joins_covered_by_cte: KEEPING join {} to '{}'",
+                        idx,
+                        join.table_alias
+                    );
+                    kept_joins.push(join.clone());
+                }
+            }
+
+            log::info!(
+                "🔧 prune_joins_covered_by_cte: Kept {} joins, removed {} joins",
+                kept_joins.len(),
+                removed_joins.len()
+            );
+
+            // If we removed joins, update the anchor_table to use the GraphNode alias that references the CTE
+            // The anchor should be the alias of the GraphNode whose ViewScan.source_table matches cte_name
+            let new_anchor = if !removed_joins.is_empty() {
+                // Find the GraphNode that references this CTE
+                if let Some(cte_ref_alias) = find_cte_reference_alias(&gj.input, cte_name) {
+                    log::debug!("🔧 prune_joins_covered_by_cte: Updating anchor from '{:?}' to CTE reference alias '{}'",
+                               gj.anchor_table, cte_ref_alias);
+                    Some(cte_ref_alias)
+                } else {
+                    log::debug!("🔧 prune_joins_covered_by_cte: Could not find GraphNode referencing CTE '{}'", cte_name);
+                    gj.anchor_table.clone()
+                }
+            } else {
+                gj.anchor_table.clone()
+            };
+
+            // Recursively process the input
+            let new_input = prune_joins_covered_by_cte(
+                &gj.input,
+                cte_name,
+                exported_aliases,
+                _cte_schemas,
+                removed_correlations,
+            )?;
+
+            Ok(LogicalPlan::GraphJoins(GraphJoins {
+                input: Arc::new(new_input),
+                joins: kept_joins,
+                optional_aliases: gj.optional_aliases.clone(),
+                anchor_table: new_anchor,
+                cte_references: gj.cte_references.clone(),
+                correlation_predicates: vec![],
+            }))
+        }
+        LogicalPlan::Projection(proj) => {
+            let new_input = prune_joins_covered_by_cte(
+                &proj.input,
+                cte_name,
+                exported_aliases,
+                _cte_schemas,
+                removed_correlations,
+            )?;
+            Ok(LogicalPlan::Projection(Projection {
+                input: Arc::new(new_input),
+                items: proj.items.clone(),
+                distinct: proj.distinct,
+                pattern_comprehensions: proj.pattern_comprehensions.clone(),
+            }))
+        }
+        LogicalPlan::Limit(limit) => {
+            let new_input = prune_joins_covered_by_cte(
+                &limit.input,
+                cte_name,
+                exported_aliases,
+                _cte_schemas,
+                removed_correlations,
+            )?;
+            Ok(LogicalPlan::Limit(Limit {
+                input: Arc::new(new_input),
+                count: limit.count,
+            }))
+        }
+        LogicalPlan::OrderBy(order) => {
+            let new_input = prune_joins_covered_by_cte(
+                &order.input,
+                cte_name,
+                exported_aliases,
+                _cte_schemas,
+                removed_correlations,
+            )?;
+            Ok(LogicalPlan::OrderBy(OrderBy {
+                input: Arc::new(new_input),
+                items: order.items.clone(),
+            }))
+        }
+        _ => {
+            log::debug!(
+                "🔧 prune_joins_covered_by_cte: No pruning needed for plan type {:?}",
+                std::mem::discriminant(plan)
+            );
+            Ok(plan.clone())
+        }
     }
 }
 
