@@ -579,9 +579,17 @@ One PR per cluster from §1.4's table. Canonical survivors:
   `set_fixed_length_joins`) are live-called from `cte_extraction`, so deleting the
   getters would make the fields write-only and cascade a warning onto production
   code (a separate decision, deliberately deferred). `with_schema` was gated
-  `#[cfg(test)]` (test-only-live). −302 lines, ratchet net-zero. **The remaining
-  blanket allow (`cte_extraction` — a large central file warranting its own pass)
-  is the last follow-up slice.**
+  `#[cfg(test)]` (test-only-live). −302 lines, ratchet net-zero. **`cte_extraction`
+  swept (Jul 2026) — §5.3 dead_code bullet now COMPLETE.** Despite being the
+  largest tail file (~8.5K lines), it carried only 4 dead private free fns:
+  `extract_node_alias` (recursive — self-calls fool grep, dead by reachability
+  closure), `table_to_id_column_for_label`, `get_relationship_columns_from_schema`,
+  `get_node_info_from_schema` (the live sibling `get_relationship_columns_by_table`
+  sat between the last three and was preserved). Removed them + the blanket allow;
+  no orphaned imports (all called only live shared helpers). −~30 lines, ratchet
+  net-zero (deleted fns carried no axis tokens), verified from a wiped incremental
+  cache. **No module-level `#![allow(dead_code)]` remains anywhere under
+  `src/render_plan/`.**
 - Fix the stale header docstrings; update `render_plan/AGENTS.md`'s module
   diagram in the same PRs.
 
