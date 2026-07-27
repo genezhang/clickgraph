@@ -297,6 +297,26 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-27: **P2.10 import hygiene — slice 3 (final globs; §5.3 glob bullet
+  CLOSED)** (P-3 refactor lane) — replaced the last three `plan_builder_helpers::*`
+  / `alias_utils::*` globs (`filter_builder.rs` ×1, `plan_builder.rs` ×2) with named
+  imports: filter_builder gets 7 from `plan_builder_helpers`
+  (`apply_property_mapping_to_expr`, `collect_graphrel_predicates`,
+  `collect_schema_filters`, `collect_schema_filters_with_alias`, `extract_id_column`,
+  `extract_table_name`, `is_node_denormalized`); plan_builder gets 5 from
+  `plan_builder_helpers` (`apply_property_mapping_to_expr`,
+  `combine_predicates_with_and_logical`, `extract_end_node_id_column`,
+  `references_only_alias_logical`, `split_and_predicates_logical`) +
+  `strip_database_prefix` from `alias_utils`. Also dropped a stale
+  `#[allow(unused_imports)]` on plan_builder's old glob. **No
+  `plan_builder_helpers::*` / `alias_utils::*` glob remains anywhere in `src/`** —
+  §5.3's glob-import bullet is fully closed. Same compiler-as-enumerator method;
+  both files have no test module so all names are production. Behavior-identical:
+  `corpus_sweep` + `sql_golden` byte-identical, 1612 lib + 529 integration + ratchet
+  net-zero, fmt/clippy clean, warning-free lib + `--tests`. Remaining §5.3 items:
+  the utils↔plan_builder cycle note (already mechanical/mostly-satisfied) + stale
+  header docstrings; the `dead_code` allow sweep is P2.10's remaining tail.
+
 - 2026-07-27: **P2.10 import hygiene — slice 2 (`plan_builder_utils` globs → named)**
   (P-3 refactor lane) — replaced the two `*` globs in
   `render_plan/plan_builder_utils.rs` with the 6 names the file uses:

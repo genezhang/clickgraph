@@ -28,13 +28,14 @@ use super::{
 };
 use crate::render_plan::cte_extraction::extract_ctes_with_context;
 
-// Import ALL helper functions from the dedicated helpers module using glob import
-// This allows existing code to call helpers without changes (e.g., extract_table_name())
-// The compiler will use the module functions when available
-#[allow(unused_imports)]
-use super::plan_builder_helpers::*;
+// P2.10 import hygiene: named imports (the exact set the compiler requires) so
+// shadowing becomes visible; previously two `*` globs.
+use super::plan_builder_helpers::{
+    apply_property_mapping_to_expr, combine_predicates_with_and_logical,
+    extract_end_node_id_column, references_only_alias_logical, split_and_predicates_logical,
+};
 use super::plan_builder_utils::{rewrite_vlp_aggregate_aliases, rewrite_vlp_union_branch_aliases};
-use super::utils::alias_utils::*;
+use super::utils::alias_utils::strip_database_prefix;
 use super::CteGenerationContext;
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
