@@ -297,6 +297,26 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-27: **P2.10 dead_code sweep — `plan_builder_helpers.rs`** (P-3 refactor
+  lane) — removed the module-level `#![allow(dead_code)]`, which had masked 31
+  functions. Triaged rigorously by **call-graph reachability closure** (roots =
+  every compiler-live fn ∪ every test fn; a fn is dead iff no path reaches it):
+  **29 deleted** (genuinely dead — all `pub(super)`/private, zero qualified-path
+  callers, unreachable from any live/test root; notably several were dead
+  *duplicates* whose live twins live in `cte_extraction.rs` / `to_sql_query.rs`,
+  e.g. `get_node_info_from_schema`, `get_relationship_columns_by_table`,
+  `rewrite_fixed_path_functions`), **2 gated `#[cfg(test)]`**
+  (`rewrite_with_aliases_to_cte`, `generate_polymorphic_edge_filters` — test-only-live,
+  exercised solely by unit tests). **Method note**: first attempts at line-span
+  deletion clipped a block comment / left orphaned `}` (brace-counter drifted on
+  char literals); the robust cut used the file's column-0 `}` close-brace invariant
+  + verified no target span contained another top-level `fn`. File 7,311 → 6,348
+  lines. Behavior-identical: `corpus_sweep` + `sql_golden` byte-identical, 1612 lib
+  + 529 integration + ratchet net-zero (deleted fns carried no tracked axis tokens,
+  so no baseline change), fmt/clippy clean, warning-free lib + `--tests`. Remaining
+  §5.3 dead_code tail: blanket allows in `filter_pipeline`, `cte_generation`,
+  `expression_utils`, `cte_extraction`, `feature_flags`.
+
 - 2026-07-27: **P2.10 import hygiene — slice 3 (final globs; §5.3 glob bullet
   CLOSED)** (P-3 refactor lane) — replaced the last three `plan_builder_helpers::*`
   / `alias_utils::*` globs (`filter_builder.rs` ×1, `plan_builder.rs` ×2) with named
