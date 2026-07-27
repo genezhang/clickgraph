@@ -297,6 +297,43 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-27: **P2.10 dead_code tail — delete `expression_utils` + `filter_pipeline`
+  dead cluster** (P-3 refactor lane) — second slice of the §5.3 tail. The two
+  files were a single cross-referencing dead cluster: `filter_pipeline`'s 5 unused
+  VLP rewrite fns (`clean_last_node_filters`, `rewrite_expr_for_var_len_cte`,
+  `rewrite_vlp_internal_to_cypher_alias`, `rewrite_expr_for_mixed_denormalized_cte`,
+  `rewrite_labels_subscript_for_multi_type_vlp`) were the SOLE callers of
+  `expression_utils`'s dead `VLPExprRewriter` / `AliasRewriter` /
+  `property_access_expr`, so the dead surface only became visible with both blanket
+  `#![allow(dead_code)]` removed at once. Deleted those + `CTERewriteContext`,
+  `MutablePropertyColumnRewriter`, `create_property_access` (the analyzer-local
+  `create_property_access` test helper is a DISTINCT fn — returns `LogicalExpr`,
+  untouched), the orphaned imports, and 3 stale comments naming the deleted
+  `VLPExprRewriter` (plan_ctx / query_context / cte_extraction). LIVE kept:
+  `categorize_filters`, `CategorizedFilters`, `ExprVisitor`, `references_alias`,
+  `rewrite_aliases`, `contains_string_literal`, `has_string_operand`,
+  `flatten_addition_operands`. −458 lines. **Applied the #736 lesson**: verified
+  from a WIPED incremental cache so no newly-orphaned type slips past. Ratchet:
+  −10 `is_denormalized` schema-axis tokens (genuine reduction; baseline
+  regenerated to lock it). Behavior-identical: `corpus_sweep` + `sql_golden`
+  byte-identical, 1607 lib (kept `test_references_alias` for the still-live fn;
+  dropped only the 2 dead-fn tests that rode in the deleted block) + 529
+  integration + ratchet green, fmt/clippy clean,
+  warning-free lib + `--tests`.
+
+- 2026-07-27: **P2.10 hotfix — orphaned `PathFunctionRewriter`** (#736, `8aae2459`)
+  — the #734 sweep deleted the path-function rewriter fns but left their sole
+  consumer, the `PathFunctionRewriter` visitor struct + its `ExprVisitor` impl,
+  orphaned. A never-constructed struct is not an `E0425` name-resolution error, so
+  it never surfaced in the list the sweep was driven from, and local *incremental*
+  clippy masked it — CI's from-clean `cargo clippy --all-targets -- -D warnings`
+  correctly flagged it, turning **main red at `2641ae61`**. Fix: delete the
+  orphaned struct + impl + its 2 now-unused imports (`Column`, `ExprVisitor`).
+  **Method fix banked**: after any dead-code deletion, also hunt orphaned
+  types/impls the deleted code exclusively used, and always re-run the gate under a
+  wiped incremental cache before merging. Verified from-clean: clippy clean, 1612
+  lib + 529 integration byte-identical, ratchet net-zero.
+
 - 2026-07-27: **P2.10 dead_code tail — delete `feature_flags.rs`** (P-3 refactor
   lane) — first slice of the §5.3 dead_code tail after `plan_builder_helpers`.
   `render_plan/feature_flags.rs` was completed-refactoring rollback scaffolding

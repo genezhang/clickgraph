@@ -4679,8 +4679,8 @@ pub fn extract_ctes_with_context(
                     )?;
 
                     // TODO(multi-vlp): Per-VLP unique aliases (vt0, vt1) are used in
-                    // inference-phase join conditions, but the render phase (VLPExprRewriter,
-                    // select_builder, to_sql_query, from_builder) still uses VLP_CTE_FROM_ALIAS
+                    // inference-phase join conditions, but the render phase
+                    // (select_builder, to_sql_query, from_builder) still uses VLP_CTE_FROM_ALIAS
                     // ("t") for FROM alias and expression rendering. Until all render-phase
                     // code is updated to use per-VLP aliases, we keep from_alias as "t" and
                     // don't call register_vlp_cte_outer_alias(). Wiring it up prematurely

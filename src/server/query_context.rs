@@ -610,7 +610,7 @@ pub fn get_vlp_exact_path_hops(path_var: &str) -> Option<u32> {
 /// Register a VLP CTE's outer-query alias (e.g., "vlp_u1_u2" → "vt0")
 ///
 /// NOTE: Currently intentionally not called. The render phase (select_builder,
-/// to_sql_query, VLPExprRewriter) still uses hardcoded VLP_CTE_FROM_ALIAS ("t")
+/// to_sql_query) still uses hardcoded VLP_CTE_FROM_ALIAS ("t")
 /// for expression rendering. Until render-phase code is updated for per-VLP aliases,
 /// calling this would cause FROM alias / expression reference mismatches.
 /// See TODO(multi-vlp) in cte_extraction.rs.

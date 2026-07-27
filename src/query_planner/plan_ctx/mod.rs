@@ -1185,7 +1185,7 @@ impl PlanCtx {
         }
 
         // #559: A VLP endpoint's table alias is ALWAYS bound through the VLP
-        // CTE at render time (VLPExprRewriter / select_builder / from_builder
+        // CTE at render time (select_builder / from_builder / to_sql_query
         // all resolve VLP endpoints via VLP_CTE_FROM_ALIAS = "t"), never
         // through a fixed-hop's table — even when the same alias is ALSO a
         // fixed-hop endpoint elsewhere in the query (e.g. `(x)-[:R]->(a)-[:R*1..2]->(b)`,
