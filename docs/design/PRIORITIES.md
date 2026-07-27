@@ -143,7 +143,7 @@ P-3). Latent finding filed in-report: `has_with_clause_in_graph_rel` is
 duplicated (utils + helpers) with a DIFFERENT semantic — a future consolidation
 candidate, not touched here (§8.3 no-drive-by).
 
-### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ☑ (P2.1–P2.6 + P2.7 D1 done; D6/D8 already resolved; P2.10 import hygiene in progress)
+### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ☑ (P2.1–P2.6 + P2.7 D1 done; D6/D8 already resolved; P2.10 import hygiene + dead_code tail COMPLETE — no module-level allow(dead_code) remains under src/render_plan/)
 The dead-code sweep shrank plan_builder_utils.rs to ~14.5K lines. §5.1 moves are
 now underway. Pure groups first (vlp_rewrite →
 pattern_comprehension_sql → clause_extractors → plan_predicates →
@@ -296,6 +296,21 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-27: **P2.10 dead_code tail — `cte_extraction` (§5.3 bullet COMPLETE)**
+  (P-3 refactor lane) — final slice. Despite being the largest tail file (~8.5K
+  lines), `cte_extraction.rs` carried only **4 dead private free fns**:
+  `extract_node_alias` (recursive — its self-calls fool naive grep, dead by
+  reachability closure), `table_to_id_column_for_label`,
+  `get_relationship_columns_from_schema`, `get_node_info_from_schema`. The live
+  sibling `get_relationship_columns_by_table` sat *between* the last three and was
+  preserved. Removed them + the blanket `#![allow(dead_code)]`; no orphaned imports
+  (the deleted fns called only live shared helpers). Verified from a WIPED
+  incremental cache (#736 lesson). **No module-level `#![allow(dead_code)]` remains
+  anywhere under `src/render_plan/` — the §5.3 dead_code bullet is closed.**
+  Behavior-identical: `corpus_sweep` + `sql_golden` byte-identical, 1607 lib + 529
+  integration + ratchet net-zero (deleted fns carried no axis tokens), fmt/clippy
+  clean, warning-free lib + `--tests`.
 
 - 2026-07-27: **P2.10 dead_code tail — `cte_generation`** (P-3 refactor lane) —
   third slice of the §5.3 tail. Removed the blanket `#![allow(dead_code)]` and

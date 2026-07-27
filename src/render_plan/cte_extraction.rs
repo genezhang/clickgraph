@@ -1,8 +1,4 @@
 //! CTE extraction utilities for variable-length path handling
-//!
-//! Some functions in this module are reserved for future use or used only in specific code paths.
-// Note: Helper functions for VLP CTE generation are kept for complex path patterns
-#![allow(dead_code)]
 
 use crate::clickhouse_query_generator::quote_identifier;
 use crate::clickhouse_query_generator::variable_length_cte::NodeProperty;
@@ -774,17 +770,6 @@ fn collect_parameters_recursive(expr: &RenderExpr, params: &mut Vec<String>) {
         | RenderExpr::ExistsSubquery(_)
         | RenderExpr::PatternCount(_)
         | RenderExpr::CteEntityRef(_) => {}
-    }
-}
-
-/// Helper function to extract the node alias from a GraphNode
-fn extract_node_alias(plan: &LogicalPlan) -> Option<String> {
-    match plan {
-        LogicalPlan::GraphNode(node) => Some(node.alias.clone()),
-        LogicalPlan::Filter(filter) => extract_node_alias(&filter.input),
-        LogicalPlan::Projection(proj) => extract_node_alias(&proj.input),
-        LogicalPlan::WithClause(wc) => extract_node_alias(&wc.input),
-        _ => None,
     }
 }
 
@@ -2260,29 +2245,10 @@ pub fn table_to_id_column(table: &str) -> String {
     "id".to_string()
 }
 
-/// Get ID column for a label
-fn table_to_id_column_for_label(label: &str) -> String {
-    table_to_id_column(&label_to_table_name(label))
-}
-
-/// Get relationship columns from schema
-fn get_relationship_columns_from_schema(rel_type: &str) -> Option<(String, String)> {
-    let table = rel_type_to_table_name(rel_type);
-    let cols = extract_relationship_columns_from_table(&table);
-    Some((cols.from_id.to_string(), cols.to_id.to_string()))
-}
-
 /// Get relationship columns by table name
 fn get_relationship_columns_by_table(table_name: &str) -> Option<(String, String)> {
     let cols = extract_relationship_columns_from_table(table_name);
     Some((cols.from_id.to_string(), cols.to_id.to_string()))
-}
-
-/// Get node info from schema
-fn get_node_info_from_schema(node_label: &str) -> Option<(String, String)> {
-    let table = label_to_table_name(node_label);
-    let id_col = table_to_id_column(&table);
-    Some((table, id_col))
 }
 
 /// Apply property mapping to an expression
