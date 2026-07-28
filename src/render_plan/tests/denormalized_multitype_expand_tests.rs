@@ -313,3 +313,86 @@ graph_schema:
         "a denormalized self-loop missing to_node_properties must be rejected by validation"
     );
 }
+
+/// Slice-4 divergence-coverage fixture (REFACTORING_SAFETY_PLAN.md §6.2).
+///
+/// The multi-type `pattern_combinations` UNION render path
+/// (`cte_extraction.rs` ~4765) decides whether each endpoint is denormalized
+/// with an INLINE predicate (`is_denormalized && raw_table == rel_table`) that
+/// DELIBERATELY ignores which direction's property map is present — unlike
+/// canonical `is_node_denormalized_on_edge`, which additionally requires the
+/// direction-specific `has_denormalized_props`. The corpus/golden nets never
+/// exercised a denormalized endpoint on THIS path (they only reach it with
+/// standard, non-denormalized nodes), so the two predicates' agreement there
+/// was untested — a slice-4 migration to canonical could have changed output
+/// silently.
+///
+/// This test closes that gap with a REACHABLE denormalized self-loop: `Actor`
+/// is a virtual node embedded in the `events` edge table, defining BOTH
+/// direction maps (a partial map is validator-rejected — see
+/// `partial_denorm_self_loop_rejected_by_schema_validation`), reached through
+/// two edge types (`SENT`/`RECEIVED`) so an anonymous `(a)-[r]->(b)` pattern is
+/// multi-type. It byte-locks the denorm-endpoint output on the divergent path:
+/// the self-loop endpoints must NOT be self-joined and the virtual `actor_id`
+/// must resolve through the denorm maps to `src_actor`/`dst_actor`. Because the
+/// only inputs on which inline and canonical DIVERGE are exactly the ones the
+/// validator forbids, these locks encode that on every admissible schema the
+/// map-agnostic inline predicate is a no-op-equivalent belt-and-suspenders
+/// guard — and any future change that broke that would flip this test.
+#[test]
+fn denorm_self_loop_multitype_no_self_join() {
+    let yaml = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/schemas/test/denorm_selfloop_multitype.yaml"
+    ))
+    .expect("read denorm_selfloop_multitype fixture");
+    let graph_schema = GraphSchemaConfig::from_yaml_str(&yaml)
+        .expect("parse fixture yaml")
+        .to_graph_schema()
+        .expect("build graph schema");
+
+    let ast = open_cypher_parser::parse_query("MATCH (a)-[r]->(b) RETURN a.name, b.name")
+        .expect("parse cypher");
+    let (logical_plan, mut plan_ctx) =
+        build_logical_plan(&ast, &graph_schema, None, None, None).expect("build logical plan");
+    use crate::query_planner::{analyzer, optimizer};
+    let logical_plan =
+        analyzer::initial_analyzing(logical_plan, &mut plan_ctx, &graph_schema).unwrap();
+    let logical_plan =
+        analyzer::intermediate_analyzing(logical_plan, &mut plan_ctx, &graph_schema).unwrap();
+    let logical_plan = optimizer::initial_optimization(logical_plan, &mut plan_ctx).unwrap();
+    let logical_plan = optimizer::final_optimization(logical_plan, &mut plan_ctx).unwrap();
+    let render_plan = logical_plan.to_render_plan(&graph_schema).expect("render");
+    let sql = clickhouse_query_generator::generate_sql(render_plan, 100);
+
+    // The self-loop denorm endpoints reuse the edge table directly — no aliased
+    // self-join, and no tautology join on the (virtual) endpoint id.
+    assert!(
+        !sql.contains("AS from_node") && !sql.contains("AS to_node"),
+        "denormalized self-loop endpoints must not be self-joined; SQL:\n{sql}"
+    );
+    assert!(
+        !sql.contains("db_denorm_selfloop.events.src_actor = db_denorm_selfloop.events.src_actor")
+            && !sql.contains(
+                "db_denorm_selfloop.events.dst_actor = db_denorm_selfloop.events.dst_actor"
+            ),
+        "no tautology self-join on the endpoint id; SQL:\n{sql}"
+    );
+    // The virtual node_id `actor_id` is resolved away through the denorm maps to
+    // the real physical columns (src_actor / dst_actor); it is never referenced.
+    assert!(
+        !sql.contains(".actor_id"),
+        "virtual node_id `actor_id` must resolve to a physical column, never be referenced; SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains("db_denorm_selfloop.events.src_actor")
+            && sql.contains("db_denorm_selfloop.events.dst_actor"),
+        "start/end ids must resolve to src_actor / dst_actor; SQL:\n{sql}"
+    );
+    // Both edge types expand into the multi-type UNION (proves we hit the
+    // pattern_combinations path, not a single-hop shortcut).
+    assert!(
+        sql.contains("['SENT']") && sql.contains("['RECEIVED']") && sql.contains("UNION ALL"),
+        "both edge types must expand into the multi-type UNION path; SQL:\n{sql}"
+    );
+}

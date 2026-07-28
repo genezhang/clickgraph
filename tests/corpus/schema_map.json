@@ -7,6 +7,10 @@
     "subschema": null,
     "yaml": "examples/data_security/data_security.yaml"
   },
+  "denorm_selfloop_multitype": {
+    "subschema": null,
+    "yaml": "schemas/test/denorm_selfloop_multitype.yaml"
+  },
   "denormalized_flights": {
     "subschema": null,
     "yaml": "schemas/test/denormalized_flights.yaml"

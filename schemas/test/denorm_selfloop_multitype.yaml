@@ -1,0 +1,81 @@
+# Denormalized self-loop node reached through a MULTI-TYPE anonymous pattern.
+#
+# Purpose: exercise the multi-label `pattern_combinations` UNION render path
+# (src/render_plan/cte_extraction.rs ~4765) with a DENORMALIZED endpoint —
+# coverage the corpus/golden nets otherwise lacked (they only reach that path
+# with standard, non-denormalized nodes). This is the site where the inline
+# `from_denorm`/`to_denorm` predicate (cte_extraction.rs:4825 —
+# `is_denormalized && raw_table == rel_table`, deliberately map-agnostic) is
+# compared against canonical `is_node_denormalized_on_edge` (graph_schema.rs:2061,
+# which additionally requires the direction-specific `has_denormalized_props`).
+# See REFACTORING_SAFETY_PLAN.md §6.2 slice-4.
+#
+# Finding this fixture encodes: the ONLY inputs on which the two predicates
+# diverge — a self-loop node defining just ONE direction's property map — are
+# rejected at schema-build time (config.rs:2058; see the test
+# `partial_denorm_self_loop_rejected_by_schema_validation`). On every schema the
+# validator admits (both maps present, as here), inline and canonical AGREE, so
+# the map-agnostic inline form is a no-op-equivalent belt-and-suspenders guard,
+# not a live output dependency. These byte-locked goldens make any future change
+# to that equivalence visible.
+#
+# Single denormalized table `events` holds a self-referencing actor graph:
+#   events
+#   +--------+-----------+-----------+----------+----------+--------+---------+
+#   | evt_id | src_actor | dst_actor | src_name | dst_name | weight | channel |
+#   +--------+-----------+-----------+----------+----------+--------+---------+
+# `Actor` is a VIRTUAL node embedded in `events`, with a virtual `actor_id` that
+# resolves through from_node_properties (src_actor) / to_node_properties
+# (dst_actor). Two edge types (SENT, RECEIVED) share the table, so an anonymous
+# `(a)-[r]->(b)` pattern is multi-type → the planner emits `pattern_combinations`
+# and the self-loop Actor endpoints hit the divergent branch as real denorm
+# endpoints (no spurious self-join; virtual id resolved to the physical column).
+
+name: denorm_selfloop_multitype
+version: "1.0"
+description: "Denormalized self-loop node via multi-type anonymous pattern — slice-4 divergence-coverage fixture"
+
+graph_schema:
+  nodes:
+    - label: Actor
+      database: db_denorm_selfloop
+      table: events
+      node_id: actor_id
+      property_mappings: {}
+      # A self-loop denorm node MUST define BOTH directions (a partial map is
+      # rejected at schema-build time — see
+      # `partial_denorm_self_loop_rejected_by_schema_validation`). Both roles of
+      # the virtual Actor resolve through the role-appropriate map; the
+      # join-skip decision (cte_extraction.rs from_denorm/to_denorm) treats
+      # either role as denormalized.
+      from_node_properties:
+        actor_id: src_actor
+        name: src_name
+      to_node_properties:
+        actor_id: dst_actor
+        name: dst_name
+
+  edges:
+    - type: SENT
+      database: db_denorm_selfloop
+      table: events
+      from_id: src_actor
+      to_id: dst_actor
+      from_node: Actor
+      to_node: Actor
+      edge_id: evt_id
+      property_mappings:
+        evt_id: evt_id
+        weight: weight
+
+    - type: RECEIVED
+      database: db_denorm_selfloop
+      table: events
+      from_id: dst_actor
+      to_id: src_actor
+      from_node: Actor
+      to_node: Actor
+      edge_id: evt_id
+      property_mappings:
+        evt_id: evt_id
+        channel: channel
