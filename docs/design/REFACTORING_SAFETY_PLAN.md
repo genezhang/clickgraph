@@ -633,6 +633,52 @@ One PR per cluster from §1.4's table. Canonical survivors:
    `filter_pipeline.rs:448`) → computed once in `PatternSchemaContext`,
    carried in the existing `VlpConfig`/CTE contexts instead of re-derived.
 
+**§6.2 disposition (2026-07-28, scouted against source — line refs above are
+stale/pre-move):** the clean mechanical migrations are done; what remains is
+either legitimate non-debt or genuine divergence that must NOT be silently
+migrated. Per item:
+- **Slice 3 (`first_col`) — ✅ DONE (#793, byte-identical).** Local reimpl in
+  `graph_join/join_generation.rs` → `Identifier::first_column`, 14 sites. The
+  only behavioral difference (empty-`Composite` fallback) is unreachable. Not a
+  ratchet-tracked token, so no baseline move.
+- **Slice 4 (`view_scan.rs` denorm re-derivation) — RESOLVED as a JUSTIFIED
+  NON-MIGRATION (2026-07-28, transition-assert investigation).** The live inline
+  site is `cte_extraction.rs:~4826` (`from_denorm = node.is_denormalized &&
+  raw_from_table == rel_table`), inside the multi-label `pattern_combinations`
+  UNION path. A debug transition-assert vs canonical
+  `is_node_denormalized_on_edge` was run over the full corpus (`integration`
+  target, `corpus_sweep`): the site is reached **148×**, **0 divergences** — BUT
+  all 148 are `from_denorm=false/to_denorm=false` on **standard** (non-denorm)
+  schemas, so the agreement is **vacuous** (the corpus never exercises a
+  denormalized endpoint on this path). Static analysis then shows the two
+  predicates *genuinely* diverge: canonical additionally requires
+  direction-specific `has_denormalized_props` in its same-table branch, whereas
+  the inline site **deliberately** ignores which property map is present — its
+  own comment documents that this avoids a spurious unaliased self-join for a
+  self-loop node defining only one of `from_`/`to_properties`. Migrating would
+  **reintroduce that bug** on an un-goldened path. **Verdict: keep the inline
+  predicate; it is intentionally and correctly divergent from canonical.** (The
+  raw `is_denormalized` token here is a legitimate schema-field read, not a
+  branch to route through dispatch.) Method/lesson: the corpus only covers
+  standard-schema multi-label patterns, so a null transition-assert here is a
+  false-negative — a real check needs a denormalized-endpoint multi-label
+  fixture, which does not exist and would be a purpose-built design cycle.
+- **Slice 2 (`is_fk_edge` proxy, `multi_type_vlp_joins.rs:~764/~1471`) — NOT a
+  clean slice.** (a) The ratchet is a substring counter and the canonical answer
+  is a field literally named `is_fk_edge`, so migration cannot register as
+  progress and risks a spurious bump. (b) The proxy `rel_table == end_table`
+  is a genuinely different predicate than canonical `is_fk_edge`
+  (`from/to_props.is_none() && (from|to_table == edge_table)`). Same
+  investigate-then-decide shape as slice 4; deferred as a divergence check, not a
+  byte-identical migration.
+- **Slices 1 & 5 (denorm re-derivation cluster) — largely already migrated.**
+  The cited sites now read `pattern_ctx.{left,right}_node.is_embedded()`
+  (`cte_extraction.rs:~4345`); residual `is_denormalized` tokens are struct field
+  names (`start_is_denormalized`), schema-field reads (`node_schema.is_denormalized`
+  — the canonical source), plan-carried writes (`view_scan.is_denormalized = …`,
+  which §6.2 item 1 says to KEEP), and log strings. None are inline re-derivations
+  to route through dispatch.
+
 ### 6.3 Retire the parallel legacy path
 
 `cte_extraction.rs` ~3591–3645 runs `pattern_ctx` alongside the legacy scalar
@@ -640,6 +686,13 @@ flags. Once Phase 0 goldens cover all variations **and** the §6.2 slices are
 in, delete the legacy branch (its own PR; goldens are the guard). Then remove
 `#![allow(dead_code)]` from `pattern_schema.rs` and delete whatever is still
 genuinely unused.
+
+**§6.3 status (2026-07-28, scouted):** the legacy scalar-flag branch that ran
+alongside `pattern_ctx` at `cte_extraction.rs:~3591` is **already gone** — that
+region now recreates `PatternSchemaContext` unconditionally and returns an error
+if it can't (`cte_extraction.rs:~4317`); there is no parallel legacy path left to
+delete. Remaining §6.3 work is only the `pattern_schema.rs` `#![allow(dead_code)]`
+audit (separate from the branch deletion, low priority).
 
 **Explicit non-goal**: forcing single-hop rendering through `CteStrategy`.
 That's a bigger architectural bet; this phase only consolidates *predicates
@@ -1252,8 +1305,17 @@ pair would change behavior — not a mechanical hoist. ·
 
 Phase 3: ◐ Slices 1–2 merged 2026-07-13: GraphNode/ViewScan + query_planner
 `is_denormalized` reads routed through canonical wrappers (162f9338/7d0f81bd) ·
-☐ remaining §6.2 sites (fk-edge re-derivations, first_col, view_scan.rs,
-start/end_is_denormalized cluster) · ☐ P3.6 legacy-path deletion
+☑ slice 3 `first_col` → `Identifier::first_column` (#793, 2026-07-28,
+byte-identical) · ☑ §6.2 residue triaged (2026-07-28): slice 4 (view_scan denorm)
+RESOLVED as a justified non-migration — transition-assert found the inline
+predicate intentionally divergent from canonical `is_node_denormalized_on_edge`
+(migrating would reintroduce a spurious-self-join bug); slice 2 (`is_fk_edge`
+proxy) is a divergence-check not a clean slice + ratchet-neutral; slices 1/5 are
+legit field-reads/plan-state, not re-derivations · ☑ §6.3 legacy scalar-flag
+path already gone (region recreates `PatternSchemaContext` unconditionally) ·
+**Phase 3 substantially complete** — mechanical migrations done; what's left is
+divergence investigation (design-cycle, needs denormalized-endpoint multi-label
+fixtures that don't exist) + the `pattern_schema.rs` dead_code audit. See §6.2/§6.3.
 
 Phase 4: ◐ early hoists landed OUT OF ORDER 2026-07-14 (low-risk, accepted):
 3 diagnostic helpers (fe968442), 10 self-contained nested fns (b9ce1d94),
