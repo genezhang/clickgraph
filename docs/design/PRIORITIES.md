@@ -79,22 +79,28 @@ Exit met: one fully green nightly run + xpass count 0.
   (live VLP-then-fixed-hop-polymorphic 500).
 
 ### P-1 — Keep a small silent-wrong bug lane open  (standing, ≤1 agent)
-**Lane state (2026-07-27): the clean single-iteration pool is exhausted.** Since
-the 07-19 reconcile this lane shipped ~20 fixes (all live- or SQL-gen-verified,
-newest first): #580 (multi-type VLP endpoint id, #715), #606 denorm + fk-edge
+**Lane state (2026-07-28): pool near-exhausted; #716 was the last clean pick.** Since
+the 07-19 reconcile this lane shipped ~21 fixes (all live- or SQL-gen-verified,
+newest first): **#716 (multi-type VLP non-id endpoint property → native CTE column,
+#787)**, #580 (multi-type VLP endpoint id, #715), #606 denorm + fk-edge
 VLP relationship-uniqueness variants (#709/#712), #705 (shared EXISTS predicate
 rewriter, #707), #640 shapes 1 & 3 (#694/#704), #642 (VLP multi-sub-CTE union
 collision, #698), #672 part 2 (#696), #678 (#692), #636 (#674), #683 r1 (#685),
 #659 (#682), #641 (#680), #620 (#677, closed via #700), #635 (#675, not-a-bug),
 #646 (#671), #648 (#670), #649 (#669), #595 (closed via #702), #647 (#652).
 Every remaining open issue is either **design-cycle-sized** (#604/#627/#643/
-#673/#628, #640 shapes 2/4/5, #683 residual-2) or in the **reverse-mapping /
-systemic class** owned by P-4 (#592/#583/#613/#615). The correctness candidates
-that need live-DB oracle verification (#606 remaining variants: weighted/mixed/
-hetero-poly/undirected/multi-type; #504 coupled OPTIONAL collapse) are the next
-clean picks **now that ClickHouse is up** — but each needs a purpose-built cyclic
-fixture (corpus data is acyclic). See memory `p1-lane-remaining-pool-2026-07-26`.
-Do not force a per-shape patch of the systemic class (§1.6).
+#673/#628, #640 shapes 2/4/5, #683 residual-2, #788 multi-type-VLP aggregate
+ORDER-BY-on-endpoint) or in the **reverse-mapping / systemic class** owned by P-4
+(#592/#583/#613/#615). **#504 (coupled OPTIONAL collapse) triaged as design-cycle,
+NOT a P-1 pick**: root cause is an array-valued `node_id` never ARRAY-JOIN-flattened
+(not CoupledSameRow — scalar coupled OPTIONAL renders a correct LEFT JOIN), which
+prior work (`f741fcb1`) already concluded "needs a schema-level array flag + ARRAY
+JOIN wiring — out of scope for a bounded fix"; array-ness isn't knowable at plan
+time (no column types in schema, no sql_only introspection), so even a loud gate
+needs the same infra. #606 remaining variants (weighted=not-a-bug, mixed/hetero-poly/
+multi-type-uniqueness) all need purpose-built cyclic fixtures = design-cycle-sized.
+See memory `p1-lane-remaining-pool-2026-07-26`. Do not force a per-shape patch of the
+systemic class (§1.6).
 
 Historical detail (individually-fixable, NOT reverse-mapping class):
 ~~#647~~ **DONE (#652, `91475be3`)**, #644 (denorm OPTIONAL-VLP anchor
