@@ -2941,6 +2941,26 @@ fn apply_from_fallback_to_last_cte(render_plan: &mut RenderPlan, all_ctes: &[Cte
     }
 }
 
+/// Post-render remapping pass (finalization tail of
+/// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// When passthrough WITH clauses are skipped, expressions in `render_plan` may
+/// still reference the analyzer's original CTE names. Rewrite them to the actual
+/// names the renderer created, using the allocator's analyzer→actual remapping.
+/// No-op when the allocator recorded no remappings.
+fn apply_passthrough_cte_name_remappings(
+    render_plan: &mut RenderPlan,
+    cte_name_allocator: &CteNameAllocator,
+) {
+    if cte_name_allocator.has_remappings() {
+        log::info!(
+            "🔧 build_chained_with_match_cte_plan: Applying CTE name remapping ({} entries)",
+            cte_name_allocator.remapping().len()
+        );
+        remap_cte_names_in_render_plan(render_plan, cte_name_allocator.remapping());
+    }
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -7306,13 +7326,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
     // CRITICAL FIX: Apply CTE name remapping for passthrough WITHs
     // When WITHs are skipped, expressions may still reference the analyzer's CTE names.
     // Remap them to the actual CTE names that were created.
-    if cte_name_allocator.has_remappings() {
-        log::info!(
-            "🔧 build_chained_with_match_cte_plan: Applying CTE name remapping ({} entries)",
-            cte_name_allocator.remapping().len()
-        );
-        remap_cte_names_in_render_plan(&mut render_plan, cte_name_allocator.remapping());
-    }
+    apply_passthrough_cte_name_remappings(&mut render_plan, &cte_name_allocator);
 
     // Comprehensive CTE name fixup: the analyzer assigns CTE names with its own counter
     // (e.g., _cte_5) but the renderer creates CTEs with sequential numbering (_cte_1).
