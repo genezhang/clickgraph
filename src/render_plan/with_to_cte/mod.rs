@@ -3031,6 +3031,87 @@ fn add_cte_cross_joins_to_union_branches(
     }
 }
 
+/// Post-render weighted-shortestPath fixup (finalization tail of
+/// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// When a weight CTE is registered (task-local `get_weight_cte_config`) and the
+/// render plan contains VLP CTEs, the outer query would otherwise wrongly
+/// cross-join the weight CTE with the VLP. Restructure it to use the first VLP
+/// CTE as the sole `FROM` (aliased `t`), clear all joins, drop the UNION
+/// branches (bidirectional shortestPath builds two VLPs but weighted mode needs
+/// only one — both yield the same minimum weight), rewrite each SELECT item's
+/// expression onto the VLP columns, and clear GROUP BY. No-op when no weight CTE
+/// is configured or no VLP CTE is present.
+fn apply_weighted_shortest_path_restructure(render_plan: &mut RenderPlan) {
+    if let Some(weight_config) = crate::server::query_context::get_weight_cte_config() {
+        // VLP CTEs are in render_plan.ctes (not all_ctes yet — they get moved later)
+        let has_vlp = render_plan
+            .ctes
+            .0
+            .iter()
+            .any(|c| c.vlp_path_variable.is_some());
+        log::info!(
+            "🔧 Weighted shortestPath check: weight_config={}, has_vlp={}, render_plan.ctes={}",
+            weight_config.cte_name,
+            has_vlp,
+            render_plan.ctes.0.len()
+        );
+        if has_vlp {
+            // Find the first VLP CTE (the one that resolves person1→person2)
+            if let Some(vlp_cte) = render_plan
+                .ctes
+                .0
+                .iter()
+                .find(|c| c.vlp_path_variable.is_some())
+            {
+                let vlp_cte_name = vlp_cte.cte_name.clone();
+                let path_variable = vlp_cte.vlp_path_variable.clone();
+                let start_alias = vlp_cte.vlp_cypher_start_alias.clone();
+                let end_alias = vlp_cte.vlp_cypher_end_alias.clone();
+                log::info!(
+                    "🔧 Weighted shortestPath: restructuring outer query to use VLP CTE '{}' (weight CTE: '{}', path_var: {:?})",
+                    vlp_cte_name,
+                    weight_config.cte_name,
+                    path_variable
+                );
+
+                // Replace FROM with VLP CTE
+                render_plan.from = FromTableItem(Some(ViewTableRef {
+                    source: std::sync::Arc::new(LogicalPlan::Empty),
+                    name: vlp_cte_name,
+                    alias: Some("t".to_string()),
+                    use_final: false,
+                }));
+
+                // Clear all joins — VLP CTE is self-contained
+                render_plan.joins = JoinItems(vec![]);
+
+                // Remove UNION branches (bidirectional shortestPath creates two VLPs,
+                // but with weighted mode we only need one — both give same minimum weight)
+                render_plan.union = UnionItems(None);
+
+                // Rewrite SELECT items using VLP column mappings
+                // The RETURN expressions (nodes(path), cost(path)) are rewritten to
+                // VLP CTE columns (t.path_nodes, t.total_weight)
+                for item in &mut render_plan.select.items {
+                    let rewritten =
+                        crate::clickhouse_query_generator::to_sql_query::rewrite_expr_for_vlp(
+                            &item.expression,
+                            &start_alias,
+                            &end_alias,
+                            &path_variable,
+                            false,
+                        );
+                    item.expression = rewritten;
+                }
+
+                // Remove group_by (no aggregation in outer query)
+                render_plan.group_by = super::GroupByExpressions(vec![]);
+            }
+        }
+    }
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -8287,73 +8368,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
     // When weight CTE is detected and VLP CTEs exist, the outer query incorrectly
     // cross-joins the weight CTE with VLP. Fix: use VLP CTE as sole FROM source,
     // remove all joins and UNION branches, and rewrite SELECT to use VLP columns.
-    if let Some(weight_config) = crate::server::query_context::get_weight_cte_config() {
-        // VLP CTEs are in render_plan.ctes (not all_ctes yet — they get moved later)
-        let has_vlp = render_plan
-            .ctes
-            .0
-            .iter()
-            .any(|c| c.vlp_path_variable.is_some());
-        log::info!(
-            "🔧 Weighted shortestPath check: weight_config={}, has_vlp={}, render_plan.ctes={}",
-            weight_config.cte_name,
-            has_vlp,
-            render_plan.ctes.0.len()
-        );
-        if has_vlp {
-            // Find the first VLP CTE (the one that resolves person1→person2)
-            if let Some(vlp_cte) = render_plan
-                .ctes
-                .0
-                .iter()
-                .find(|c| c.vlp_path_variable.is_some())
-            {
-                let vlp_cte_name = vlp_cte.cte_name.clone();
-                let path_variable = vlp_cte.vlp_path_variable.clone();
-                let start_alias = vlp_cte.vlp_cypher_start_alias.clone();
-                let end_alias = vlp_cte.vlp_cypher_end_alias.clone();
-                log::info!(
-                    "🔧 Weighted shortestPath: restructuring outer query to use VLP CTE '{}' (weight CTE: '{}', path_var: {:?})",
-                    vlp_cte_name,
-                    weight_config.cte_name,
-                    path_variable
-                );
-
-                // Replace FROM with VLP CTE
-                render_plan.from = FromTableItem(Some(ViewTableRef {
-                    source: std::sync::Arc::new(LogicalPlan::Empty),
-                    name: vlp_cte_name,
-                    alias: Some("t".to_string()),
-                    use_final: false,
-                }));
-
-                // Clear all joins — VLP CTE is self-contained
-                render_plan.joins = JoinItems(vec![]);
-
-                // Remove UNION branches (bidirectional shortestPath creates two VLPs,
-                // but with weighted mode we only need one — both give same minimum weight)
-                render_plan.union = UnionItems(None);
-
-                // Rewrite SELECT items using VLP column mappings
-                // The RETURN expressions (nodes(path), cost(path)) are rewritten to
-                // VLP CTE columns (t.path_nodes, t.total_weight)
-                for item in &mut render_plan.select.items {
-                    let rewritten =
-                        crate::clickhouse_query_generator::to_sql_query::rewrite_expr_for_vlp(
-                            &item.expression,
-                            &start_alias,
-                            &end_alias,
-                            &path_variable,
-                            false,
-                        );
-                    item.expression = rewritten;
-                }
-
-                // Remove group_by (no aggregation in outer query)
-                render_plan.group_by = super::GroupByExpressions(vec![]);
-            }
-        }
-    }
+    apply_weighted_shortest_path_restructure(&mut render_plan);
 
     // Add all CTEs (innermost first, which is correct order for SQL)
     all_ctes.extend(render_plan.ctes.0);
