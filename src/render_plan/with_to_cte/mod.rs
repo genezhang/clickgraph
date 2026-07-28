@@ -6680,6 +6680,32 @@ fn fix_composite_alias_refs_and_augment_scope(
     }
 }
 
+/// Render a WITH segment's body plan to a `RenderPlan` (a STEP of the main loop's
+/// inner render-loop in `build_chained_with_match_cte_plan`, Phase-4 §7.1
+/// extraction).
+///
+/// When the body itself contains nested WITH clauses, recurse through
+/// `build_chained_with_match_cte_plan` (our own logic, avoiding infinite loops);
+/// otherwise render directly via `to_render_plan_with_ctx`. Both paths thread the
+/// accumulated `body_scope_ref` so CTE-body rendering resolves variables from prior
+/// WITHs.
+fn render_with_cte_body(
+    plan_to_render: &LogicalPlan,
+    schema: &GraphSchema,
+    plan_ctx: Option<&PlanCtx>,
+    body_scope_ref: Option<&super::variable_scope::VariableScope>,
+) -> RenderPlanBuilderResult<RenderPlan> {
+    if has_with_clause_in_graph_rel(plan_to_render) {
+        // The plan has nested WITH clauses - process them using our own logic
+        log::debug!("🔧 build_chained_with_match_cte_plan: Plan has nested WITH clauses, processing recursively with our own logic");
+        build_chained_with_match_cte_plan(plan_to_render, schema, plan_ctx, body_scope_ref)
+    } else {
+        // No nested WITH clauses - render directly
+        log::debug!("🔧 build_chained_with_match_cte_plan: Plan has no nested WITH clauses, rendering directly with plan_ctx");
+        plan_to_render.to_render_plan_with_ctx(schema, plan_ctx, body_scope_ref)
+    }
+}
+
 /// Destructure a WITH-alias-group plan into the parts the render loop needs (a
 /// STEP of the main loop's inner render-loop in `build_chained_with_match_cte_plan`,
 /// Phase-4 §7.1 extraction).
@@ -8515,20 +8541,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 } else {
                     Some(&body_scope)
                 };
-                let mut rendered = if has_with_clause_in_graph_rel(plan_to_render) {
-                    // The plan has nested WITH clauses - process them using our own logic
-                    log::debug!("🔧 build_chained_with_match_cte_plan: Plan has nested WITH clauses, processing recursively with our own logic");
-                    build_chained_with_match_cte_plan(
-                        plan_to_render,
-                        schema,
-                        plan_ctx,
-                        body_scope_ref,
-                    )?
-                } else {
-                    // No nested WITH clauses - render directly
-                    log::debug!("🔧 build_chained_with_match_cte_plan: Plan has no nested WITH clauses, rendering directly with plan_ctx");
-                    plan_to_render.to_render_plan_with_ctx(schema, plan_ctx, body_scope_ref)?
-                };
+                // Render the plan body (recursing on nested WITHs, else direct).
+                // See `render_with_cte_body`.
+                let mut rendered =
+                    render_with_cte_body(plan_to_render, schema, plan_ctx, body_scope_ref)?;
 
                 // Re-attach UNWIND array joins the CTE-body render may have dropped.
                 // See `reattach_unwind_array_joins` (issue #401).
