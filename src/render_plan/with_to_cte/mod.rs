@@ -6680,6 +6680,263 @@ fn fix_composite_alias_refs_and_augment_scope(
     }
 }
 
+/// Apply the WITH segment's ORDER BY / SKIP / LIMIT and WHERE→HAVING to the
+/// rendered CTE body (a STEP of the main loop's inner render-loop in
+/// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// Builds a scope-aware `ExpressionRewriteContext` (mapping Cypher property names
+/// to CTE columns), then: applies ORDER BY (stripping table aliases when CTE scope
+/// was used), SKIP, and LIMIT; and applies the WITH WHERE — reverse-mapping renamed
+/// aliases, rewriting through scope + denormalized-property resolution, and routing
+/// it to HAVING when GROUP BY is present (else combining into the filters, including
+/// the BidirectionalUnion / denorm from/to UNION branches). Mutates `rendered`; the
+/// four modifier params are consumed. Returns `Err` only on WHERE `try_into`.
+#[allow(clippy::too_many_arguments)]
+fn apply_with_order_by_skip_limit_where(
+    rendered: &mut RenderPlan,
+    plan_to_render: &LogicalPlan,
+    body_scope_ref: Option<&super::variable_scope::VariableScope>,
+    with_order_by: Option<Vec<crate::query_planner::logical_plan::OrderByItem>>,
+    with_skip: Option<u64>,
+    with_limit: Option<u64>,
+    with_where_clause: Option<crate::query_planner::logical_expr::LogicalExpr>,
+    with_items: &Option<Vec<crate::query_planner::logical_plan::ProjectionItem>>,
+    cte_from_alias: &Option<String>,
+) -> RenderPlanBuilderResult<()> {
+    // Build scope-aware rewrite context for ORDER BY and WHERE/HAVING
+    // from WithClause. This maps Cypher property names to CTE column names.
+    use crate::query_planner::logical_expr::expression_rewriter::{
+        rewrite_expression_with_property_mapping, ExpressionRewriteContext,
+    };
+    let with_rewrite_ctx = if let Some(s) = body_scope_ref {
+        ExpressionRewriteContext::with_scope(plan_to_render, s)
+    } else {
+        ExpressionRewriteContext::new(plan_to_render)
+    };
+
+    // Apply WithClause's ORDER BY, SKIP, LIMIT to the rendered plan
+    if let Some(order_by_items) = with_order_by {
+        log::debug!("🔧 build_chained_with_match_cte_plan: Applying ORDER BY from WithClause");
+        let has_cte_scope = body_scope_ref.is_some();
+        let render_order_by: Vec<OrderByItem> = order_by_items
+            .iter()
+            .filter_map(|item| {
+                let rewritten =
+                    rewrite_expression_with_property_mapping(&item.expression, &with_rewrite_ctx);
+                let expr_result: Result<RenderExpr, _> = rewritten.try_into();
+                expr_result.ok().map(|expr| {
+                    // Strip table aliases only when CTE scope was used.
+                    // CTE scope resolves to CTE names as table aliases,
+                    // which need stripping for bare output column references
+                    // (especially after GROUP BY over UNION subqueries).
+                    // Without scope (first WITH), keep original table aliases
+                    // since they reference actual FROM/JOIN tables.
+                    let final_expr = if has_cte_scope {
+                        strip_table_alias_from_resolved(&expr)
+                    } else {
+                        expr
+                    };
+                    OrderByItem {
+                        expression: final_expr,
+                        order: match item.order {
+                            crate::query_planner::logical_plan::OrderByOrder::Asc => {
+                                OrderByOrder::Asc
+                            }
+                            crate::query_planner::logical_plan::OrderByOrder::Desc => {
+                                OrderByOrder::Desc
+                            }
+                        },
+                    }
+                })
+            })
+            .collect();
+        rendered.order_by = OrderByItems(render_order_by);
+    }
+    if let Some(skip_count) = with_skip {
+        log::debug!(
+            "🔧 build_chained_with_match_cte_plan: Applying SKIP {} from WithClause",
+            skip_count
+        );
+        rendered.skip = SkipItem(Some(skip_count as i64));
+    }
+    if let Some(limit_count) = with_limit {
+        log::debug!(
+            "🔧 build_chained_with_match_cte_plan: Applying LIMIT {} from WithClause",
+            limit_count
+        );
+        rendered.limit = LimitItem(Some(limit_count as i64));
+    }
+
+    // Apply WHERE clause from WITH - becomes HAVING if we have GROUP BY
+    if let Some(where_predicate) = with_where_clause {
+        log::debug!("🔧 build_chained_with_match_cte_plan: Applying WHERE clause from WITH");
+
+        // 🔧 FIX: Rewrite renamed aliases back to source aliases in WHERE clause.
+        // For `WITH u AS person WHERE person.user_id = 1`, "person" must become "u"
+        // so that property mapping resolution can find the correct schema mappings.
+        let where_predicate = if let Some(ref items) = with_items {
+            let mut reverse_map = std::collections::HashMap::new();
+            for item in items {
+                if let (LogicalExpr::TableAlias(ta), Some(col_alias)) =
+                    (&item.expression, &item.col_alias)
+                {
+                    reverse_map.insert(col_alias.0.clone(), ta.0.clone());
+                }
+            }
+            if reverse_map.is_empty() {
+                where_predicate
+            } else {
+                log::info!("🔧 Rewriting WITH WHERE aliases: {:?}", reverse_map);
+                rewrite_logical_expr_aliases(&where_predicate, &reverse_map)
+            }
+        } else {
+            where_predicate
+        };
+
+        // Rewrite through scope to map Cypher properties to CTE columns
+        let where_rewritten =
+            rewrite_expression_with_property_mapping(&where_predicate, &with_rewrite_ctx);
+        let mut where_render_expr: RenderExpr = where_rewritten.try_into()?;
+
+        // #633: resolve an FK-edge coupled relationship variable in the
+        // post-WITH WHERE (`r.<col>`) to its coupled node alias when the
+        // CTE body's FROM binds the node (not the rel var). Same gate +
+        // self-ref guard as the pre-WITH filter path; no-op otherwise.
+        super::plan_builder_helpers::remap_coupled_rel_vars_in_filter(
+            &mut where_render_expr,
+            plan_to_render,
+            cte_from_alias.as_deref(),
+        );
+
+        if !rendered.group_by.0.is_empty() {
+            // We have GROUP BY - WHERE becomes HAVING
+            log::debug!("🔧 build_chained_with_match_cte_plan: Converting WHERE to HAVING (GROUP BY present)");
+            rendered.having_clause = Some(where_render_expr);
+        } else {
+            // No GROUP BY - apply as regular WHERE filter
+            log::debug!("🔧 build_chained_with_match_cte_plan: Applying WHERE as filter predicate");
+
+            // Combine with existing filters (base plan = first UNION branch)
+            let new_filter = if let Some(existing_filter) = rendered.filters.0.take() {
+                RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::And,
+                    operands: vec![existing_filter, where_render_expr.clone()],
+                })
+            } else {
+                where_render_expr.clone()
+            };
+            rendered.filters = FilterItems(Some(new_filter));
+
+            // 🔧 FIX: Also propagate WHERE to UNION branches
+            // When the CTE body is a UNION ALL (from BidirectionalUnion),
+            // the base plan's filter only applies to branch 1.
+            // We must also apply the post-WITH WHERE to all remaining branches.
+            // Use where_render_expr (the raw WHERE predicate), not new_filter
+            // (which already includes branch 1's existing filters).
+            //
+            // For a coupled-denormalized from/to UNION, `where_render_expr` was
+            // resolved position-blind — the label→column mapping always yields
+            // the from/origin column (e.g. `a.origin_state`). Copying it verbatim
+            // to the dest branch filters the WRONG physical column (`origin_state`
+            // instead of `dest_state`), polluting the exported node set (#456,
+            // with_match_chain: 7 rows vs 4). Re-point each column reference per
+            // branch to that branch's OWN column for the same exported property,
+            // using the branch SELECT items (property alias ↔ db column). For a
+            // homogeneous UNION (non-denorm BidirectionalUnion) every branch
+            // projects the same columns, so the remap is the identity.
+            if let Some(ref mut union) = rendered.union.0 {
+                log::info!(
+                    "🔧 build_chained_with_match_cte_plan: Propagating post-WITH WHERE to {} UNION branches",
+                    union.input.len()
+                );
+
+                /// Re-points a filter's column references to a target
+                /// branch's columns: `db_col → exported alias → branch db_col`.
+                /// Implemented on `ExprVisitor` so every expression wrapper
+                /// (CASE, lists, subscripts/slices, subqueries, …) is walked
+                /// by the default recursive `transform_expr` — a hand-rolled
+                /// walk here previously missed CASE and left the dest branch
+                /// filtering the origin column inside it (#456 follow-up).
+                struct BranchWhereColRemapper<'a> {
+                    col_to_alias: &'a std::collections::HashMap<String, String>,
+                    alias_to_col: &'a std::collections::HashMap<String, String>,
+                }
+                impl super::expression_utils::ExprVisitor for BranchWhereColRemapper<'_> {
+                    fn transform_property_access(&mut self, prop: &PropertyAccess) -> RenderExpr {
+                        let cur = prop.column.raw().to_string();
+                        if let Some(alias) = self.col_to_alias.get(&cur) {
+                            if let Some(new_col) = self.alias_to_col.get(alias) {
+                                if *new_col != cur {
+                                    return RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: prop.table_alias.clone(),
+                                        column: PropertyValue::Column(new_col.clone()),
+                                    });
+                                }
+                            }
+                        }
+                        RenderExpr::PropertyAccessExp(prop.clone())
+                    }
+                }
+
+                // Global db_column → exported property alias (col_alias),
+                // gathered across all branches (e.g. origin_state→p1_a_state
+                // AND dest_state→p1_a_state).
+                //
+                // HAZARD: this map is keyed on the bare db column and the
+                // remap ignores `pa.table_alias` (last write wins). If a CTE
+                // body ever materializes TWO aliases whose branches project
+                // the SAME physical column under DIFFERENT exported aliases,
+                // the predicate could be re-pointed through the wrong export.
+                // Today the denorm from/to UNION materializes a single node
+                // alias, so the keys are unambiguous per CTE.
+                let mut col_to_alias: std::collections::HashMap<String, String> =
+                    std::collections::HashMap::new();
+                for branch in union.input.iter() {
+                    for item in &branch.select.items {
+                        if let (RenderExpr::PropertyAccessExp(pa), Some(ca)) =
+                            (&item.expression, &item.col_alias)
+                        {
+                            col_to_alias.insert(pa.column.raw().to_string(), ca.0.clone());
+                        }
+                    }
+                }
+
+                for branch in union.input.iter_mut() {
+                    // This branch's exported alias → db column.
+                    let mut alias_to_col: std::collections::HashMap<String, String> =
+                        std::collections::HashMap::new();
+                    for item in &branch.select.items {
+                        if let (RenderExpr::PropertyAccessExp(pa), Some(ca)) =
+                            (&item.expression, &item.col_alias)
+                        {
+                            alias_to_col.insert(ca.0.clone(), pa.column.raw().to_string());
+                        }
+                    }
+
+                    use super::expression_utils::ExprVisitor as _;
+                    let mut remapper = BranchWhereColRemapper {
+                        col_to_alias: &col_to_alias,
+                        alias_to_col: &alias_to_col,
+                    };
+                    let branch_where = remapper.transform_expr(&where_render_expr);
+
+                    branch.filters = match branch.filters.0.take() {
+                        Some(existing) => FilterItems(Some(RenderExpr::OperatorApplicationExp(
+                            OperatorApplication {
+                                operator: Operator::And,
+                                operands: vec![existing, branch_where],
+                            },
+                        ))),
+                        None => FilterItems(Some(branch_where)),
+                    };
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Apply the WITH-items projection to a rendered CTE body (a STEP of the main
 /// loop's inner render-loop in `build_chained_with_match_cte_plan`, Phase-4 §7.1
 /// extraction).
@@ -8289,253 +8546,19 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     &flattened_compound_keys,
                 )?;
 
-                // Build scope-aware rewrite context for ORDER BY and WHERE/HAVING
-                // from WithClause. This maps Cypher property names to CTE column names.
-                use crate::query_planner::logical_expr::expression_rewriter::{
-                    rewrite_expression_with_property_mapping, ExpressionRewriteContext,
-                };
-                let with_rewrite_ctx = if let Some(s) = body_scope_ref {
-                    ExpressionRewriteContext::with_scope(plan_to_render, s)
-                } else {
-                    ExpressionRewriteContext::new(plan_to_render)
-                };
-
-                // Apply WithClause's ORDER BY, SKIP, LIMIT to the rendered plan
-                if let Some(order_by_items) = with_order_by {
-                    log::debug!(
-                        "🔧 build_chained_with_match_cte_plan: Applying ORDER BY from WithClause"
-                    );
-                    let has_cte_scope = body_scope_ref.is_some();
-                    let render_order_by: Vec<OrderByItem> = order_by_items
-                        .iter()
-                        .filter_map(|item| {
-                            let rewritten = rewrite_expression_with_property_mapping(
-                                &item.expression,
-                                &with_rewrite_ctx,
-                            );
-                            let expr_result: Result<RenderExpr, _> = rewritten.try_into();
-                            expr_result.ok().map(|expr| {
-                                // Strip table aliases only when CTE scope was used.
-                                // CTE scope resolves to CTE names as table aliases,
-                                // which need stripping for bare output column references
-                                // (especially after GROUP BY over UNION subqueries).
-                                // Without scope (first WITH), keep original table aliases
-                                // since they reference actual FROM/JOIN tables.
-                                let final_expr = if has_cte_scope {
-                                    strip_table_alias_from_resolved(&expr)
-                                } else {
-                                    expr
-                                };
-                                OrderByItem {
-                                    expression: final_expr,
-                                    order: match item.order {
-                                        crate::query_planner::logical_plan::OrderByOrder::Asc => {
-                                            OrderByOrder::Asc
-                                        }
-                                        crate::query_planner::logical_plan::OrderByOrder::Desc => {
-                                            OrderByOrder::Desc
-                                        }
-                                    },
-                                }
-                            })
-                        })
-                        .collect();
-                    rendered.order_by = OrderByItems(render_order_by);
-                }
-                if let Some(skip_count) = with_skip {
-                    log::debug!(
-                        "🔧 build_chained_with_match_cte_plan: Applying SKIP {} from WithClause",
-                        skip_count
-                    );
-                    rendered.skip = SkipItem(Some(skip_count as i64));
-                }
-                if let Some(limit_count) = with_limit {
-                    log::debug!(
-                        "🔧 build_chained_with_match_cte_plan: Applying LIMIT {} from WithClause",
-                        limit_count
-                    );
-                    rendered.limit = LimitItem(Some(limit_count as i64));
-                }
-
-                // Apply WHERE clause from WITH - becomes HAVING if we have GROUP BY
-                if let Some(where_predicate) = with_where_clause {
-                    log::debug!(
-                        "🔧 build_chained_with_match_cte_plan: Applying WHERE clause from WITH"
-                    );
-
-                    // 🔧 FIX: Rewrite renamed aliases back to source aliases in WHERE clause.
-                    // For `WITH u AS person WHERE person.user_id = 1`, "person" must become "u"
-                    // so that property mapping resolution can find the correct schema mappings.
-                    let where_predicate = if let Some(ref items) = with_items {
-                        let mut reverse_map = std::collections::HashMap::new();
-                        for item in items {
-                            if let (LogicalExpr::TableAlias(ta), Some(col_alias)) =
-                                (&item.expression, &item.col_alias)
-                            {
-                                reverse_map.insert(col_alias.0.clone(), ta.0.clone());
-                            }
-                        }
-                        if reverse_map.is_empty() {
-                            where_predicate
-                        } else {
-                            log::info!("🔧 Rewriting WITH WHERE aliases: {:?}", reverse_map);
-                            rewrite_logical_expr_aliases(&where_predicate, &reverse_map)
-                        }
-                    } else {
-                        where_predicate
-                    };
-
-                    // Rewrite through scope to map Cypher properties to CTE columns
-                    let where_rewritten = rewrite_expression_with_property_mapping(
-                        &where_predicate,
-                        &with_rewrite_ctx,
-                    );
-                    let mut where_render_expr: RenderExpr = where_rewritten.try_into()?;
-
-                    // #633: resolve an FK-edge coupled relationship variable in the
-                    // post-WITH WHERE (`r.<col>`) to its coupled node alias when the
-                    // CTE body's FROM binds the node (not the rel var). Same gate +
-                    // self-ref guard as the pre-WITH filter path; no-op otherwise.
-                    super::plan_builder_helpers::remap_coupled_rel_vars_in_filter(
-                        &mut where_render_expr,
-                        plan_to_render,
-                        cte_from_alias.as_deref(),
-                    );
-
-                    if !rendered.group_by.0.is_empty() {
-                        // We have GROUP BY - WHERE becomes HAVING
-                        log::debug!("🔧 build_chained_with_match_cte_plan: Converting WHERE to HAVING (GROUP BY present)");
-                        rendered.having_clause = Some(where_render_expr);
-                    } else {
-                        // No GROUP BY - apply as regular WHERE filter
-                        log::debug!("🔧 build_chained_with_match_cte_plan: Applying WHERE as filter predicate");
-
-                        // Combine with existing filters (base plan = first UNION branch)
-                        let new_filter = if let Some(existing_filter) = rendered.filters.0.take() {
-                            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                                operator: Operator::And,
-                                operands: vec![existing_filter, where_render_expr.clone()],
-                            })
-                        } else {
-                            where_render_expr.clone()
-                        };
-                        rendered.filters = FilterItems(Some(new_filter));
-
-                        // 🔧 FIX: Also propagate WHERE to UNION branches
-                        // When the CTE body is a UNION ALL (from BidirectionalUnion),
-                        // the base plan's filter only applies to branch 1.
-                        // We must also apply the post-WITH WHERE to all remaining branches.
-                        // Use where_render_expr (the raw WHERE predicate), not new_filter
-                        // (which already includes branch 1's existing filters).
-                        //
-                        // For a coupled-denormalized from/to UNION, `where_render_expr` was
-                        // resolved position-blind — the label→column mapping always yields
-                        // the from/origin column (e.g. `a.origin_state`). Copying it verbatim
-                        // to the dest branch filters the WRONG physical column (`origin_state`
-                        // instead of `dest_state`), polluting the exported node set (#456,
-                        // with_match_chain: 7 rows vs 4). Re-point each column reference per
-                        // branch to that branch's OWN column for the same exported property,
-                        // using the branch SELECT items (property alias ↔ db column). For a
-                        // homogeneous UNION (non-denorm BidirectionalUnion) every branch
-                        // projects the same columns, so the remap is the identity.
-                        if let Some(ref mut union) = rendered.union.0 {
-                            log::info!(
-                                "🔧 build_chained_with_match_cte_plan: Propagating post-WITH WHERE to {} UNION branches",
-                                union.input.len()
-                            );
-
-                            /// Re-points a filter's column references to a target
-                            /// branch's columns: `db_col → exported alias → branch db_col`.
-                            /// Implemented on `ExprVisitor` so every expression wrapper
-                            /// (CASE, lists, subscripts/slices, subqueries, …) is walked
-                            /// by the default recursive `transform_expr` — a hand-rolled
-                            /// walk here previously missed CASE and left the dest branch
-                            /// filtering the origin column inside it (#456 follow-up).
-                            struct BranchWhereColRemapper<'a> {
-                                col_to_alias: &'a std::collections::HashMap<String, String>,
-                                alias_to_col: &'a std::collections::HashMap<String, String>,
-                            }
-                            impl super::expression_utils::ExprVisitor for BranchWhereColRemapper<'_> {
-                                fn transform_property_access(
-                                    &mut self,
-                                    prop: &PropertyAccess,
-                                ) -> RenderExpr {
-                                    let cur = prop.column.raw().to_string();
-                                    if let Some(alias) = self.col_to_alias.get(&cur) {
-                                        if let Some(new_col) = self.alias_to_col.get(alias) {
-                                            if *new_col != cur {
-                                                return RenderExpr::PropertyAccessExp(
-                                                    PropertyAccess {
-                                                        table_alias: prop.table_alias.clone(),
-                                                        column: PropertyValue::Column(
-                                                            new_col.clone(),
-                                                        ),
-                                                    },
-                                                );
-                                            }
-                                        }
-                                    }
-                                    RenderExpr::PropertyAccessExp(prop.clone())
-                                }
-                            }
-
-                            // Global db_column → exported property alias (col_alias),
-                            // gathered across all branches (e.g. origin_state→p1_a_state
-                            // AND dest_state→p1_a_state).
-                            //
-                            // HAZARD: this map is keyed on the bare db column and the
-                            // remap ignores `pa.table_alias` (last write wins). If a CTE
-                            // body ever materializes TWO aliases whose branches project
-                            // the SAME physical column under DIFFERENT exported aliases,
-                            // the predicate could be re-pointed through the wrong export.
-                            // Today the denorm from/to UNION materializes a single node
-                            // alias, so the keys are unambiguous per CTE.
-                            let mut col_to_alias: std::collections::HashMap<String, String> =
-                                std::collections::HashMap::new();
-                            for branch in union.input.iter() {
-                                for item in &branch.select.items {
-                                    if let (RenderExpr::PropertyAccessExp(pa), Some(ca)) =
-                                        (&item.expression, &item.col_alias)
-                                    {
-                                        col_to_alias
-                                            .insert(pa.column.raw().to_string(), ca.0.clone());
-                                    }
-                                }
-                            }
-
-                            for branch in union.input.iter_mut() {
-                                // This branch's exported alias → db column.
-                                let mut alias_to_col: std::collections::HashMap<String, String> =
-                                    std::collections::HashMap::new();
-                                for item in &branch.select.items {
-                                    if let (RenderExpr::PropertyAccessExp(pa), Some(ca)) =
-                                        (&item.expression, &item.col_alias)
-                                    {
-                                        alias_to_col
-                                            .insert(ca.0.clone(), pa.column.raw().to_string());
-                                    }
-                                }
-
-                                use super::expression_utils::ExprVisitor as _;
-                                let mut remapper = BranchWhereColRemapper {
-                                    col_to_alias: &col_to_alias,
-                                    alias_to_col: &alias_to_col,
-                                };
-                                let branch_where = remapper.transform_expr(&where_render_expr);
-
-                                branch.filters = match branch.filters.0.take() {
-                                    Some(existing) => FilterItems(Some(
-                                        RenderExpr::OperatorApplicationExp(OperatorApplication {
-                                            operator: Operator::And,
-                                            operands: vec![existing, branch_where],
-                                        }),
-                                    )),
-                                    None => FilterItems(Some(branch_where)),
-                                };
-                            }
-                        }
-                    }
-                }
+                // Apply the WITH segment's ORDER BY / SKIP / LIMIT and WHERE→HAVING.
+                // See `apply_with_order_by_skip_limit_where`.
+                apply_with_order_by_skip_limit_where(
+                    &mut rendered,
+                    plan_to_render,
+                    body_scope_ref,
+                    with_order_by,
+                    with_skip,
+                    with_limit,
+                    with_where_clause,
+                    &with_items,
+                    &cte_from_alias,
+                )?;
 
                 // Rewrite join conditions that reference CTE aliases to use CTE column names,
                 // then prune orphaned JOINs. See `rewrite_cte_join_conditions_and_prune_orphans`.
