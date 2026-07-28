@@ -780,6 +780,155 @@ fn create_cte_reference(
     })
 }
 
+/// Handle the `Projection` arm of `replace_with_clause_with_cte_reference_v2`
+/// (Phase-4 §7.1 extraction).
+///
+/// Recurse into the projection input; if it became a CTE reference for
+/// `with_alias`, remap the projection items' PropertyAccess expressions onto the
+/// CTE's column names (per-alias `property_mapping` / `db_to_cypher` rebuilt from
+/// the CTE schema), then rebuild the `Projection` over the new input.
+fn replace_v2_projection_arm(
+    proj: &crate::query_planner::logical_plan::Projection,
+    with_alias: &str,
+    cte_name: &str,
+    pre_with_aliases: &std::collections::HashSet<String>,
+    cte_schemas: &crate::render_plan::CteSchemas,
+) -> RenderPlanBuilderResult<LogicalPlan> {
+    use crate::query_planner::logical_plan::Projection;
+    use std::sync::Arc;
+
+    log::info!(
+        "🔀 replace_v2: Processing Projection, input type: {:?}",
+        std::mem::discriminant(proj.input.as_ref())
+    );
+    let new_input = replace_with_clause_with_cte_reference_v2(
+        &proj.input,
+        with_alias,
+        cte_name,
+        pre_with_aliases,
+        cte_schemas,
+    )?;
+    log::info!(
+        "🔀 replace_v2: Projection new_input type: {:?}",
+        std::mem::discriminant(&new_input)
+    );
+
+    // CRITICAL: Check if new_input is a CTE reference (GraphNode wrapping ViewScan for CTE)
+    // If so, remap PropertyAccess expressions in projection items to use CTE column names
+    let should_remap = match &new_input {
+        LogicalPlan::GraphNode(gn) => {
+            if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                vs.source_table.starts_with("with_") && gn.alias == with_alias
+            } else {
+                false
+            }
+        }
+        _ => false,
+    };
+
+    let remapped_items = if should_remap {
+        // Extract property_mapping from the CTE reference and rebuild per-alias mappings
+        if let LogicalPlan::GraphNode(gn) = &new_input {
+            if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                // Build per-alias property mappings from CTE columns
+                // For composite alias "fids_p", individual aliases are "fids" and "p"
+                // CTE column "p1_p_id" maps to alias="p", property="id"
+                let mut per_alias_mappings: HashMap<
+                    String,
+                    HashMap<String, crate::graph_catalog::expression_parser::PropertyValue>,
+                > = HashMap::new();
+                let mut per_alias_db_to_cypher: HashMap<String, HashMap<String, String>> =
+                    HashMap::new();
+
+                if let Some(meta) = cte_schemas.get(&vs.source_table) {
+                    for item in &meta.select_items {
+                        if let Some(cte_col_alias) = &item.col_alias {
+                            let cte_col_name = &cte_col_alias.0;
+                            if let Some((col_alias, cypher_prop)) =
+                                crate::utils::cte_column_naming::parse_cte_column(cte_col_name)
+                            {
+                                // Add to per-alias property mapping
+                                per_alias_mappings
+                                    .entry(col_alias.to_string())
+                                    .or_default()
+                                    .insert(
+                                        cypher_prop.to_string(),
+                                        crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                            cte_col_name.clone(),
+                                        ),
+                                    );
+
+                                // Build reverse DB→Cypher mapping per alias
+                                if let RenderExpr::PropertyAccessExp(prop_access) = &item.expression
+                                {
+                                    let db_col = prop_access.column.raw();
+                                    per_alias_db_to_cypher
+                                        .entry(col_alias.to_string())
+                                        .or_default()
+                                        .insert(db_col.to_string(), cypher_prop.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                log::info!(
+                    "🔧 replace_v2: Remapping Projection items for CTE '{}' (alias='{}') with {} per-alias mappings: {:?}",
+                    vs.source_table,
+                    with_alias,
+                    per_alias_mappings.len(),
+                    per_alias_mappings.keys().collect::<Vec<_>>()
+                );
+
+                // Remap each projection item against each individual alias
+                let mut items: Vec<crate::query_planner::logical_plan::ProjectionItem> =
+                    proj.items.clone();
+                for (alias, alias_mapping) in &per_alias_mappings {
+                    let alias_db_to_cypher = per_alias_db_to_cypher
+                        .get(alias)
+                        .cloned()
+                        .unwrap_or_default();
+                    items = items
+                        .into_iter()
+                        .map(|item| {
+                            remap_projection_item(item, alias, alias_mapping, &alias_db_to_cypher)
+                        })
+                        .collect();
+                }
+
+                // Also remap against composite alias for non-property columns (e.g., "fids")
+                let composite_db_to_cypher = HashMap::new();
+                items = items
+                    .into_iter()
+                    .map(|item| {
+                        remap_projection_item(
+                            item,
+                            with_alias,
+                            &vs.property_mapping,
+                            &composite_db_to_cypher,
+                        )
+                    })
+                    .collect();
+
+                items
+            } else {
+                proj.items.clone()
+            }
+        } else {
+            proj.items.clone()
+        }
+    } else {
+        proj.items.clone()
+    };
+
+    Ok(LogicalPlan::Projection(Projection {
+        input: Arc::new(new_input),
+        items: remapped_items,
+        distinct: proj.distinct,
+        pattern_comprehensions: proj.pattern_comprehensions.clone(),
+    }))
+}
+
 pub(crate) fn replace_with_clause_with_cte_reference_v2(
     plan: &LogicalPlan,
     with_alias: &str,
@@ -788,7 +937,6 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
     cte_schemas: &crate::render_plan::CteSchemas,
 ) -> RenderPlanBuilderResult<LogicalPlan> {
     use crate::query_planner::logical_plan::*;
-    use std::collections::HashMap;
     use std::sync::Arc;
 
     log::debug!(
@@ -1009,147 +1157,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
         }
 
         LogicalPlan::Projection(proj) => {
-            log::info!(
-                "🔀 replace_v2: Processing Projection, input type: {:?}",
-                std::mem::discriminant(proj.input.as_ref())
-            );
-            let new_input = replace_with_clause_with_cte_reference_v2(
-                &proj.input,
-                with_alias,
-                cte_name,
-                pre_with_aliases,
-                cte_schemas,
-            )?;
-            log::info!(
-                "🔀 replace_v2: Projection new_input type: {:?}",
-                std::mem::discriminant(&new_input)
-            );
-
-            // CRITICAL: Check if new_input is a CTE reference (GraphNode wrapping ViewScan for CTE)
-            // If so, remap PropertyAccess expressions in projection items to use CTE column names
-            let should_remap = match &new_input {
-                LogicalPlan::GraphNode(gn) => {
-                    if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
-                        vs.source_table.starts_with("with_") && gn.alias == with_alias
-                    } else {
-                        false
-                    }
-                }
-                _ => false,
-            };
-
-            let remapped_items = if should_remap {
-                // Extract property_mapping from the CTE reference and rebuild per-alias mappings
-                if let LogicalPlan::GraphNode(gn) = &new_input {
-                    if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
-                        // Build per-alias property mappings from CTE columns
-                        // For composite alias "fids_p", individual aliases are "fids" and "p"
-                        // CTE column "p1_p_id" maps to alias="p", property="id"
-                        let mut per_alias_mappings: HashMap<
-                            String,
-                            HashMap<String, crate::graph_catalog::expression_parser::PropertyValue>,
-                        > = HashMap::new();
-                        let mut per_alias_db_to_cypher: HashMap<String, HashMap<String, String>> =
-                            HashMap::new();
-
-                        if let Some(meta) = cte_schemas.get(&vs.source_table) {
-                            for item in &meta.select_items {
-                                if let Some(cte_col_alias) = &item.col_alias {
-                                    let cte_col_name = &cte_col_alias.0;
-                                    if let Some((col_alias, cypher_prop)) =
-                                        crate::utils::cte_column_naming::parse_cte_column(
-                                            cte_col_name,
-                                        )
-                                    {
-                                        // Add to per-alias property mapping
-                                        per_alias_mappings
-                                            .entry(col_alias.to_string())
-                                            .or_default()
-                                            .insert(
-                                                cypher_prop.to_string(),
-                                                crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                    cte_col_name.clone(),
-                                                ),
-                                            );
-
-                                        // Build reverse DB→Cypher mapping per alias
-                                        if let RenderExpr::PropertyAccessExp(prop_access) =
-                                            &item.expression
-                                        {
-                                            let db_col = prop_access.column.raw();
-                                            per_alias_db_to_cypher
-                                                .entry(col_alias.to_string())
-                                                .or_default()
-                                                .insert(
-                                                    db_col.to_string(),
-                                                    cypher_prop.to_string(),
-                                                );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        log::info!(
-                            "🔧 replace_v2: Remapping Projection items for CTE '{}' (alias='{}') with {} per-alias mappings: {:?}",
-                            vs.source_table,
-                            with_alias,
-                            per_alias_mappings.len(),
-                            per_alias_mappings.keys().collect::<Vec<_>>()
-                        );
-
-                        // Remap each projection item against each individual alias
-                        let mut items: Vec<crate::query_planner::logical_plan::ProjectionItem> =
-                            proj.items.clone();
-                        for (alias, alias_mapping) in &per_alias_mappings {
-                            let alias_db_to_cypher = per_alias_db_to_cypher
-                                .get(alias)
-                                .cloned()
-                                .unwrap_or_default();
-                            items = items
-                                .into_iter()
-                                .map(|item| {
-                                    remap_projection_item(
-                                        item,
-                                        alias,
-                                        alias_mapping,
-                                        &alias_db_to_cypher,
-                                    )
-                                })
-                                .collect();
-                        }
-
-                        // Also remap against composite alias for non-property columns (e.g., "fids")
-                        let composite_db_to_cypher = HashMap::new();
-                        items = items
-                            .into_iter()
-                            .map(|item| {
-                                remap_projection_item(
-                                    item,
-                                    with_alias,
-                                    &vs.property_mapping,
-                                    &composite_db_to_cypher,
-                                )
-                            })
-                            .collect();
-
-                        items
-                    } else {
-                        proj.items.clone()
-                    }
-                } else {
-                    proj.items.clone()
-                }
-            } else {
-                proj.items.clone()
-            };
-
-            Ok(LogicalPlan::Projection(Projection {
-                input: Arc::new(new_input),
-                items: remapped_items,
-                distinct: proj.distinct,
-                pattern_comprehensions: proj.pattern_comprehensions.clone(),
-            }))
+            replace_v2_projection_arm(proj, with_alias, cte_name, pre_with_aliases, cte_schemas)
         }
 
         LogicalPlan::Filter(filter) => {
