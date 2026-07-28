@@ -1206,3 +1206,7 @@
 {"cypher": "MATCH (a:Airport)-[:FLIGHT*2..3]->(b:Airport) RETURN a.code, b.city", "name": "test_659_denorm_vlp_endpoint_prop_projection_control", "schema": "denormalized_flights"}
 {"cypher": "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*2..3]->(b:Airport) RETURN count(a) AS c", "name": "test_683_denorm_optional_vlp_anchor_count", "schema": "denormalized_flights"}
 {"cypher": "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*2..3]->(b:Airport) RETURN count(DISTINCT a) AS c", "name": "test_683_denorm_optional_vlp_anchor_count_distinct", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a)-[r]->(b) RETURN a.name, b.name", "name": "denorm_selfloop_multitype__directed_multitype_expand", "schema": "denorm_selfloop_multitype"}
+{"cypher": "MATCH (a)-[r]-(b) RETURN a.name, b.name", "name": "denorm_selfloop_multitype__undirected_multitype_expand", "schema": "denorm_selfloop_multitype"}
+{"cypher": "MATCH p=(a)-[]->(b) RETURN p LIMIT 5", "name": "denorm_selfloop_multitype__path_multitype_expand", "schema": "denorm_selfloop_multitype"}
+{"cypher": "MATCH (a)-[r]->(b) RETURN count(*) AS cnt", "name": "denorm_selfloop_multitype__count_multitype_expand", "schema": "denorm_selfloop_multitype"}
