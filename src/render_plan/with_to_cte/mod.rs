@@ -6680,6 +6680,103 @@ fn fix_composite_alias_refs_and_augment_scope(
     }
 }
 
+/// Destructure a WITH-alias-group plan into the parts the render loop needs (a
+/// STEP of the main loop's inner render-loop in `build_chained_with_match_cte_plan`,
+/// Phase-4 §7.1 extraction).
+///
+/// Returns `(plan_to_render, with_items, with_distinct, with_order_by, with_skip,
+/// with_limit, with_where_clause, input_cte_refs)`. For a `WithClause` this unwraps
+/// its input + modifiers + analyzer CTE references; for any other plan shape it
+/// renders the plan as-is with no modifiers. `plan_to_render` borrows `with_plan`.
+#[allow(clippy::type_complexity)]
+fn extract_with_plan_parts<'a>(
+    with_plan: &'a LogicalPlan,
+    with_alias: &str,
+) -> (
+    &'a LogicalPlan,
+    Option<Vec<crate::query_planner::logical_plan::ProjectionItem>>,
+    bool,
+    Option<Vec<crate::query_planner::logical_plan::OrderByItem>>,
+    Option<u64>,
+    Option<u64>,
+    Option<crate::query_planner::logical_expr::LogicalExpr>,
+    HashMap<String, String>,
+) {
+    match with_plan {
+        LogicalPlan::WithClause(wc) => {
+            log::debug!("� DEBUG: Unwrapping WithClause for alias '{}'", with_alias);
+            log::debug!("🐛 DEBUG: WithClause has {} items", wc.items.len());
+            for (i, item) in wc.items.iter().enumerate() {
+                log::debug!("🐛 DEBUG: wc.items[{}]: {:?}", i, item);
+            }
+            log::debug!(
+                "�🔧 build_chained_with_match_cte_plan: Unwrapping WithClause, rendering input"
+            );
+
+            // Use CTE references from this WithClause (populated by analyzer)
+            let input_cte_refs = wc.cte_references.clone();
+            log::info!(
+                "🔧 build_chained_with_match_cte_plan: CTE refs from WithClause: {:?}",
+                input_cte_refs
+            );
+            // Debug: if it's GraphJoins, log the joins
+            if let LogicalPlan::GraphJoins(gj) = wc.input.as_ref() {
+                log::debug!(
+                    "🔧 build_chained_with_match_cte_plan: wc.input is GraphJoins with {} joins",
+                    gj.joins.len()
+                );
+                for (i, join) in gj.joins.iter().enumerate() {
+                    log::debug!("🔧 build_chained_with_match_cte_plan: GraphJoins join {}: table_name={}, table_alias={}, joining_on={:?}",
+                    i, join.table_name.as_str(), join.table_alias.as_str(), join.joining_on);
+                }
+            }
+            (
+                wc.input.as_ref(),
+                Some(wc.items.clone()),
+                wc.distinct,
+                wc.order_by.clone(),
+                wc.skip,
+                wc.limit,
+                wc.where_clause.clone(),
+                input_cte_refs,
+            )
+        }
+        LogicalPlan::Projection(proj) => {
+            log::debug!(
+                "🔧 build_chained_with_match_cte_plan: WITH projection input type: {:?}",
+                std::mem::discriminant(proj.input.as_ref())
+            );
+            // Check if input contains CTE reference
+            if let LogicalPlan::Filter(filter) = proj.input.as_ref() {
+                log::info!(
+                    "🔧 build_chained_with_match_cte_plan: Filter input type: {:?}",
+                    std::mem::discriminant(filter.input.as_ref())
+                );
+            }
+            (
+                with_plan as &LogicalPlan,
+                None,
+                false,
+                None,
+                None,
+                None,
+                None,
+                std::collections::HashMap::new(),
+            )
+        }
+        _ => (
+            with_plan as &LogicalPlan,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+            std::collections::HashMap::new(),
+        ),
+    }
+}
+
 /// Collapse a simple passthrough WITH whose input is already a CTE reference (a
 /// STEP of the main loop's inner render-loop in `build_chained_with_match_cte_plan`,
 /// Phase-4 §7.1 extraction).
@@ -8395,72 +8492,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     with_limit,
                     with_where_clause,
                     _with_cte_refs,
-                ) = match with_plan {
-                    LogicalPlan::WithClause(wc) => {
-                        log::debug!("� DEBUG: Unwrapping WithClause for alias '{}'", with_alias);
-                        log::debug!("🐛 DEBUG: WithClause has {} items", wc.items.len());
-                        for (i, item) in wc.items.iter().enumerate() {
-                            log::debug!("🐛 DEBUG: wc.items[{}]: {:?}", i, item);
-                        }
-                        log::debug!("�🔧 build_chained_with_match_cte_plan: Unwrapping WithClause, rendering input");
-
-                        // Use CTE references from this WithClause (populated by analyzer)
-                        let input_cte_refs = wc.cte_references.clone();
-                        log::info!(
-                            "🔧 build_chained_with_match_cte_plan: CTE refs from WithClause: {:?}",
-                            input_cte_refs
-                        );
-                        // Debug: if it's GraphJoins, log the joins
-                        if let LogicalPlan::GraphJoins(gj) = wc.input.as_ref() {
-                            log::debug!("🔧 build_chained_with_match_cte_plan: wc.input is GraphJoins with {} joins", gj.joins.len());
-                            for (i, join) in gj.joins.iter().enumerate() {
-                                log::debug!("🔧 build_chained_with_match_cte_plan: GraphJoins join {}: table_name={}, table_alias={}, joining_on={:?}",
-                                    i, join.table_name.as_str(), join.table_alias.as_str(), join.joining_on);
-                            }
-                        }
-                        (
-                            wc.input.as_ref(),
-                            Some(wc.items.clone()),
-                            wc.distinct,
-                            wc.order_by.clone(),
-                            wc.skip,
-                            wc.limit,
-                            wc.where_clause.clone(),
-                            input_cte_refs,
-                        )
-                    }
-                    LogicalPlan::Projection(proj) => {
-                        log::debug!("🔧 build_chained_with_match_cte_plan: WITH projection input type: {:?}",
-                                   std::mem::discriminant(proj.input.as_ref()));
-                        // Check if input contains CTE reference
-                        if let LogicalPlan::Filter(filter) = proj.input.as_ref() {
-                            log::info!(
-                                "🔧 build_chained_with_match_cte_plan: Filter input type: {:?}",
-                                std::mem::discriminant(filter.input.as_ref())
-                            );
-                        }
-                        (
-                            with_plan as &LogicalPlan,
-                            None,
-                            false,
-                            None,
-                            None,
-                            None,
-                            None,
-                            std::collections::HashMap::new(),
-                        )
-                    }
-                    _ => (
-                        with_plan as &LogicalPlan,
-                        None,
-                        false,
-                        None,
-                        None,
-                        None,
-                        None,
-                        std::collections::HashMap::new(),
-                    ),
-                };
+                ) = extract_with_plan_parts(with_plan, &with_alias);
 
                 // Save plan_to_render for ID column computation (used after loop)
                 inner_plans_for_id.push(plan_to_render.clone());
