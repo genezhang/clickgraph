@@ -130,11 +130,11 @@ pub fn generate_pattern_joins(
             let edge_join = |bind_left: bool, bind_right: bool| -> Join {
                 let mut b = JoinBuilder::new(t.rel_table, t.rel_alias)
                     .pre_filter(pre_filter.clone())
-                    .from_id(first_col(&rel_schema.from_id))
-                    .to_id(first_col(&rel_schema.to_id));
+                    .from_id(rel_schema.from_id.first_column().to_string())
+                    .to_id(rel_schema.to_id.first_column().to_string());
                 if bind_left {
                     if left_is_vlp {
-                        let from_col = first_col(&rel_schema.from_id);
+                        let from_col = rel_schema.from_id.first_column().to_string();
                         let (va, vc) = plan_ctx.get_vlp_join_reference(t.left_alias, &from_col);
                         b = b.add_condition(t.rel_alias, from_col, va, vc);
                     } else {
@@ -148,7 +148,7 @@ pub fn generate_pattern_joins(
                 }
                 if bind_right {
                     if right_is_vlp {
-                        let to_col = first_col(&rel_schema.to_id);
+                        let to_col = rel_schema.to_id.first_column().to_string();
                         let (va, vc) = plan_ctx.get_vlp_join_reference(t.right_alias, &to_col);
                         b = b.add_condition(t.rel_alias, to_col, va, vc);
                     } else {
@@ -222,8 +222,8 @@ pub fn generate_pattern_joins(
             } else {
                 let mut builder = JoinBuilder::new(t.rel_table, t.rel_alias)
                     .pre_filter(pre_filter)
-                    .from_id(first_col(&rel_schema.from_id))
-                    .to_id(first_col(&rel_schema.to_id));
+                    .from_id(rel_schema.from_id.first_column().to_string())
+                    .to_id(rel_schema.to_id.first_column().to_string());
 
                 // #521: a fixed hop adjacent to a variable-length hop (e.g.
                 // `(a)-[:FLIGHT*1..2]->(b)-[:FLIGHT]->(c)`) binds its left
@@ -240,12 +240,12 @@ pub fn generate_pattern_joins(
                 // strategy join condition (which already has a condition to
                 // rewrite; SingleTableScan's bare FROM-marker has none).
                 if plan_ctx.is_vlp_endpoint(t.left_alias) {
-                    let from_col = first_col(&rel_schema.from_id);
+                    let from_col = rel_schema.from_id.first_column().to_string();
                     let (vlp_alias, vlp_col) =
                         plan_ctx.get_vlp_join_reference(t.left_alias, &from_col);
                     builder = builder.add_condition(t.rel_alias, from_col, vlp_alias, vlp_col);
                 } else if plan_ctx.is_vlp_endpoint(t.right_alias) {
-                    let to_col = first_col(&rel_schema.to_id);
+                    let to_col = rel_schema.to_id.first_column().to_string();
                     let (vlp_alias, vlp_col) =
                         plan_ctx.get_vlp_join_reference(t.right_alias, &to_col);
                     builder = builder.add_condition(t.rel_alias, to_col, vlp_alias, vlp_col);
@@ -281,8 +281,8 @@ pub fn generate_pattern_joins(
                 (false, false) => vec![
                     JoinBuilder::from_marker(t.rel_table, t.rel_alias)
                         .pre_filter(pre_filter)
-                        .from_id(first_col(&rel_schema.from_id))
-                        .to_id(first_col(&rel_schema.to_id))
+                        .from_id(rel_schema.from_id.first_column().to_string())
+                        .to_id(rel_schema.to_id.first_column().to_string())
                         .build(),
                     JoinBuilder::new(node_table, node_alias)
                         .add_identifier_condition(node_alias, &r_node_id, t.rel_alias, &r_join_col)
@@ -299,8 +299,8 @@ pub fn generate_pattern_joins(
                     JoinBuilder::new(t.rel_table, t.rel_alias)
                         .add_identifier_condition(t.rel_alias, &r_join_col, node_alias, &r_node_id)
                         .pre_filter(pre_filter)
-                        .from_id(first_col(&rel_schema.from_id))
-                        .to_id(first_col(&rel_schema.to_id))
+                        .from_id(rel_schema.from_id.first_column().to_string())
+                        .to_id(rel_schema.to_id.first_column().to_string())
                         .build(),
                 ],
                 (true, true) => vec![], // Both available, nothing to add
@@ -313,8 +313,8 @@ pub fn generate_pattern_joins(
         JoinStrategy::EdgeToEdge { links } => {
             let mut b = JoinBuilder::new(t.rel_table, t.rel_alias)
                 .pre_filter(pre_filter)
-                .from_id(first_col(&rel_schema.from_id))
-                .to_id(first_col(&rel_schema.to_id));
+                .from_id(rel_schema.from_id.first_column().to_string())
+                .to_id(rel_schema.to_id.first_column().to_string());
             for link in links {
                 b = b.add_condition(
                     t.rel_alias,
@@ -1033,14 +1033,6 @@ fn own_table_id(strategy: &NodeAccessStrategy, context: &str) -> AnalyzerResult<
         _ => Err(AnalyzerError::OptimizerError {
             message: format!("{} requires OwnTable node, got {:?}", context, strategy),
         }),
-    }
-}
-
-/// Get the first column name from an Identifier.
-fn first_col(id: &Identifier) -> String {
-    match id {
-        Identifier::Single(col) => col.clone(),
-        Identifier::Composite(cols) => cols.first().cloned().unwrap_or_default(),
     }
 }
 
