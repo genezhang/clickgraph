@@ -667,8 +667,8 @@ Exit criterion: no function in the module exceeds ~500 lines; the STEP
 pipeline of the WITH→CTE build is readable top-to-bottom in the entry
 function.
 
-**Progress (2026-07-28):** ◐ **in progress** — 28 byte-identical/behavior-preserving
-PRs merged (#740–#768). A structural correction to the protocol: `build_chained`
+**Progress (2026-07-28):** ◐ **in progress** — 39 byte-identical/behavior-preserving
+PRs merged (#740–#780). A structural correction to the protocol: `build_chained`
 has **no** named nested `fn`s or `RefCell`-capturing closures to hoist (the
 anticipated shape). It is a linear body — setup → a
 `while has_with_clause_in_graph_rel` loop → a **finalization tail** of
@@ -706,13 +706,30 @@ as a param. So the decomposition hoists each self-contained region into a named
   (Projection/GraphJoins/GraphRel/Union/WithClause) are extracted into
   `replace_v2_<variant>_arm` handlers (#764–#768). replace_v2 ~1070 → **212
   lines**; remaining arms are all 12–43 ln.
-- ☐ **Remaining: `build_chained`'s ~1970-line inner `for with_plan in with_plans`
-  render-loop** — the one hard core. Its phases mutate shared locals
-  (`rendered`/`plan_to_render`/`rendered_plans`/`inner_plans_for_id`/
-  `has_optional_match_input`) AND contain `break 'alias_loop`/`continue`/`?` that
-  escape the loop. Needs a `ControlFlow`/action-enum return pattern or the
-  `WithCteBuildState` context struct — a step-change from the byte-identical
-  hoists. Deferred pending an explicit go-ahead.
+- ☑ **`build_chained`'s inner `for with_plan in with_plans` render-loop —
+  fully decomposed** (11 PRs, #770–#780). The one hard core: its phases mutate
+  shared locals (`rendered`/`plan_to_render`/`rendered_plans`/…) AND it owned
+  `break 'alias_loop` + fn-level `?`. The anticipated `WithCteBuildState`
+  context-struct / `ControlFlow` machinery proved **unnecessary** — the standard
+  `&mut`-param + `-> RenderPlanBuilderResult<T>` technique worked, since only the
+  passthrough-collapse phase owned the labeled `break`, extracted via a
+  **signal-return** (`fn … -> RenderPlanBuilderResult<bool>`, `Ok(true)` →
+  caller does `if …? { break 'alias_loop; }`, keeping the label binding at the
+  call site). The 14 STEP phases are now module-level `fn`s called top-to-bottom:
+  `try_collapse_passthrough_with` (P1, signal-return), `extract_with_plan_parts`
+  (P2, pure 8-tuple), `render_with_cte_body` (P4), `reattach_unwind_array_joins`
+  (P5), `extract_nested_cte_schemas` (P6), `register_vlp_cte_schemas` (P7),
+  `compute_pc_skip_aliases` (P8, pure), `apply_with_items_projection` (P9,
+  ~660 ln, 16 params), `apply_with_order_by_skip_limit_where` (P10+P11),
+  `rewrite_cte_join_conditions_and_prune_orphans` (P12),
+  `fix_composite_alias_refs_and_augment_scope` (P13). Every extraction verified
+  byte-identical-modulo-mechanical (dedent, `&mut`-deref, `?`-hoist, borrow-drop)
+  by corpus_sweep + sql_golden with no golden regeneration, and adversarially
+  subagent-reviewed. `build_chained` is 5478 → **850 lines**; the inner-loop body
+  now reads as a linear pipeline of named STEP calls (the readability half of the
+  exit criterion is met). Remaining to reach the ~500-line size half: the
+  accumulator-heavy pre-loop setup + `'alias_loop` glue, most of which is the
+  loop's irreducible mutable-state frame.
 
 
 ### 7.2 Forward resolution through CTE scope (§10)
