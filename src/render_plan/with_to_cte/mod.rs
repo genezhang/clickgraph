@@ -7203,6 +7203,245 @@ fn apply_with_order_by_skip_limit_where(
     Ok(())
 }
 
+/// Build the WITH-projection `SelectItem`s (Phase-4 §7.1 extraction from
+/// `apply_with_items_projection`).
+///
+/// Expands each WITH item into CTE SELECT columns: a bare `TableAlias` fans out
+/// to all of the node's columns (UNWIND aliases stay simple column refs), while
+/// non-alias expressions get path-function rewriting, property-mapping, `collect`
+/// → `groupArray` expansion, `head(collect(MapLiteral))` flattening (accumulating
+/// compound keys into `flattened_compound_keys`), and VLP-CTE column rewriting
+/// when FROM is a `vlp_…` CTE. Pure w.r.t. `rendered` (reads `rendered.from` only).
+#[allow(clippy::too_many_arguments)]
+fn build_with_projection_select_items(
+    items: &[crate::query_planner::logical_plan::ProjectionItem],
+    plan_to_render: &LogicalPlan,
+    rendered: &RenderPlan,
+    has_aggregation: bool,
+    cte_schemas: &crate::render_plan::CteSchemas,
+    cte_references_for_rendering: &HashMap<String, String>,
+    cte_from_alias: &Option<String>,
+    plan_ctx: Option<&PlanCtx>,
+    body_scope_ref: Option<&super::variable_scope::VariableScope>,
+    vlp_cte_metadata: &HashMap<String, (String, Vec<super::CteColumnMetadata>)>,
+    flattened_compound_keys: &std::cell::RefCell<Vec<(String, String)>>,
+) -> Vec<SelectItem> {
+    let mut unwind_aliases = std::collections::HashSet::new();
+    collect_unwind_aliases(plan_to_render, &mut unwind_aliases);
+
+    items.iter()
+                    .flat_map(|item| {
+                        // Check if this is a TableAlias that needs expansion to ALL columns
+                        match &item.expression {
+                            crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
+                                // UNWIND aliases are ARRAY JOIN columns — emit a simple column reference
+                                if unwind_aliases.contains(alias.0.as_str()) {
+                                    log::debug!("🔧 build_chained_with_match_cte_plan: UNWIND alias '{}' — simple column reference", alias.0);
+                                    return vec![SelectItem {
+                                        expression: super::render_expr::RenderExpr::ColumnAlias(
+                                            super::render_expr::ColumnAlias(alias.0.clone()),
+                                        ),
+                                        col_alias: Some(ColumnAlias(alias.0.clone())),
+                                    }];
+                                }
+
+                                // Use unified expansion helper (Dec 2025)
+                                // CRITICAL: Use cte_references_for_rendering (includes ALL previous CTEs),
+                                // NOT with_cte_refs (only includes CTEs visible in this WITH's immediate input)
+                                // This allows "WITH a, b, c" to find "a" and "b" from previous CTEs
+                                //
+                                // The unified helper automatically handles anyLast() wrapping when has_aggregation=true
+                                let expanded = expand_table_alias_to_select_items(
+                                    &alias.0,
+                                    plan_to_render,
+                                    cte_schemas,
+                                    cte_references_for_rendering,
+                                    has_aggregation,  // Enables anyLast() wrapping in unified function
+                                    plan_ctx,  // Pass Option<&PlanCtx> for property pruning
+                                    Some(vlp_cte_metadata)  // Pass VLP CTE metadata for FROM alias lookup
+                                );
+                                log::debug!("🔧 build_chained_with_match_cte_plan: Expanded alias '{}' to {} items (aggregation={})",
+                                           alias.0, expanded.len(), has_aggregation);
+
+                                expanded
+                            }
+                            _ => {
+                                // Not a TableAlias, convert normally
+                                // First, check if we need to rewrite path functions
+                                // For variable-length paths, convert length(path) → hop_count, etc.
+                                let logical_expr = if let Some(path_var_name) = get_path_variable(plan_to_render) {
+                                    // Rewrite path functions in the logical expression BEFORE converting to RenderExpr
+                                    rewrite_logical_path_functions(&item.expression, path_var_name.as_str())
+                                } else {
+                                    item.expression.clone()
+                                };
+
+                                // 🔧 CRITICAL FIX: Apply property mapping for WITH expressions
+                                // Maps Cypher property names (e.g., u.name) to DB columns (e.g., full_name)
+                                // This is the same rewriting that RETURN clause does
+                                // SCOPE: Use body_scope_ref to resolve CTE-scoped variables
+                                // (e.g., post.creationDate → CTE column after a prior WITH)
+                                use crate::query_planner::logical_expr::expression_rewriter::{
+                                    ExpressionRewriteContext, rewrite_expression_with_property_mapping,
+                                };
+                                let rewrite_ctx = if let Some(s) = body_scope_ref {
+                                    ExpressionRewriteContext::with_scope(plan_to_render, s)
+                                } else {
+                                    ExpressionRewriteContext::new(plan_to_render)
+                                };
+                                let rewritten_expr = rewrite_expression_with_property_mapping(&logical_expr, &rewrite_ctx);
+                                log::info!(
+                                    "🔧 build_chained_with_match_cte_plan: Rewrote WITH expression with property mapping"
+                                );
+
+                                // CRITICAL: Expand collect(node) to groupArray(tuple(...)) BEFORE converting to RenderExpr
+                                // This must happen in WITH context too, not just in extract_select_items()
+                                let expanded_expr = if let crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(ref agg) = rewritten_expr {
+                                    if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
+                                        if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(ref alias) = agg.args[0] {
+                                            log::debug!("🔧 WITH context: Expanding collect({}) to groupArray(tuple(...))", alias.0);
+
+                                            // Extract property requirements for pruning
+                                            let property_requirements = plan_ctx.and_then(|ctx| ctx.get_property_requirements());
+
+                                            // Get all properties for this alias
+                                            match plan_to_render.get_properties_with_table_alias(&alias.0) {
+                                                Ok((props, _actual_alias)) if !props.is_empty() => {
+                                                    log::debug!("🔧 Found {} properties for alias '{}', expanding", props.len(), alias.0);
+
+                                                    // For collect(node), only collect the ID property to produce groupArray(id).
+                                                    // Semantically, collect(node) gathers node identities, and groupArray(id)
+                                                    // is compatible with downstream IN/has() checks (Array(T) vs scalar T).
+                                                    // groupArray(tuple(...)) would produce Array(Tuple) which fails has() type checks.
+                                                    let id_only_props: Vec<_> = props.iter()
+                                                        .filter(|(prop_name, _)| prop_name == "id")
+                                                        .cloned()
+                                                        .collect();
+                                                    let collect_props = if id_only_props.is_empty() {
+                                                        log::debug!("🔧 collect({}): no 'id' property found, using all {} properties", alias.0, props.len());
+                                                        props
+                                                    } else {
+                                                        log::debug!("🔧 collect({}): using ID-only for groupArray (compatible with IN/has())", alias.0);
+                                                        id_only_props
+                                                    };
+
+                                                    // Use centralized expansion utility with property requirements
+                                                    use crate::render_plan::property_expansion::expand_collect_to_group_array;
+                                                    expand_collect_to_group_array(&alias.0, collect_props, property_requirements)
+                                                }
+                                                _ => {
+                                                    log::warn!("⚠️  Could not expand collect({}) in WITH - no properties found, keeping as-is", alias.0);
+                                                    rewritten_expr
+                                                }
+                                            }
+                                        } else {
+                                            rewritten_expr
+                                        }
+                                    } else {
+                                        rewritten_expr
+                                    }
+                                } else {
+                                    rewritten_expr
+                                };
+
+                                // 🔧 FIX: Flatten head(collect(MapLiteral)) with node values
+                                // ClickHouse map() requires homogeneous value types, but nodes
+                                // have no single value. Expand each map entry to separate CTE columns.
+                                log::info!("🔧 Checking for head(collect(MapLiteral)) flattening, alias={:?}, expanded_expr={:?}",
+                                    item.col_alias.as_ref().map(|a| &a.0),
+                                    std::mem::discriminant(&expanded_expr));
+                                if let Some((flattened_items, compound_keys)) = try_flatten_head_collect_map_literal(
+                                    &expanded_expr,
+                                    item.col_alias.as_ref().map(|a| a.0.as_str()),
+                                    plan_to_render,
+                                    plan_ctx,
+                                    body_scope_ref,
+                                ) {
+                                    log::info!("🔧 Flattened head(collect(MapLiteral)) into {} columns with {} compound keys",
+                                        flattened_items.len(), compound_keys.len());
+                                    flattened_compound_keys.borrow_mut().extend(compound_keys);
+                                    return flattened_items;
+                                }
+
+                                let expr_result: Result<RenderExpr, _> = expanded_expr.try_into();
+                                expr_result.ok().map(|mut expr| {
+                                    // Rewrite denormalized node aliases (e.g., a → r)
+                                    resolve_denormalized_property_in_expr_impl(&mut expr, plan_to_render, cte_from_alias.as_deref());
+
+                                    // 🔧 FIX: VLP CTE column rewriting for non-TableAlias WITH items
+                                    // When FROM is a VLP/multi-type CTE, PropertyAccess references
+                                    // (e.g., message.content) must be rewritten to CTE columns
+                                    // (e.g., t.start_content)
+                                    if let Some(from_ref) = &rendered.from.0 {
+                                        if from_ref.name.starts_with("vlp_") {
+                                            let from_alias = from_ref.alias.as_deref().unwrap_or("t");
+                                            // Build mappings: cypher_alias → "start_node" or "end_node"
+                                            if let Some((_from_alias_meta, col_metadata)) = vlp_cte_metadata.get(&from_ref.name) {
+                                                let mut mappings: HashMap<String, String> = HashMap::new();
+                                                for col_meta in col_metadata {
+                                                    if !mappings.contains_key(&col_meta.cypher_alias) {
+                                                        if let Some(pos) = &col_meta.vlp_position {
+                                                            let internal_alias = match pos {
+                                                                super::cte_manager::VlpColumnPosition::Start => "start_node".to_string(),
+                                                                super::cte_manager::VlpColumnPosition::End => "end_node".to_string(),
+                                                            };
+                                                            mappings.insert(col_meta.cypher_alias.clone(), internal_alias);
+                                                        }
+                                                    }
+                                                }
+                                                if !mappings.is_empty() {
+                                                    // Build DB→Cypher property name mapping for VLP column name translation.
+                                                    // VLP CTE columns use Cypher names (start_name) but PropertyAccessExp
+                                                    // may have DB column names (full_name) after schema resolution.
+                                                    let mut db_to_cypher: HashMap<(String, String), String> = HashMap::new();
+                                                    for col_meta in col_metadata {
+                                                        if col_meta.db_column != col_meta.cypher_property {
+                                                            db_to_cypher.insert(
+                                                                (col_meta.cypher_alias.clone(), col_meta.db_column.clone()),
+                                                                col_meta.cypher_property.clone(),
+                                                            );
+                                                        }
+                                                    }
+                                                    if !db_to_cypher.is_empty() {
+                                                        translate_db_columns_to_cypher_properties(&mut expr, &db_to_cypher);
+                                                    }
+                                                    // #620: rewrite endpoint id-property access
+                                                    // (a.user_id) to the VLP CTE's authoritative id
+                                                    // column (t.start_id/t.end_id) BEFORE the generic
+                                                    // prefix rewrite, which would otherwise blindly
+                                                    // build `start_user_id` (a column the CTE never
+                                                    // projects → Code 47).
+                                                    let mut id_columns: HashMap<String, String> = HashMap::new();
+                                                    for col_meta in col_metadata {
+                                                        if col_meta.is_id_column {
+                                                            id_columns.insert(
+                                                                col_meta.cypher_alias.clone(),
+                                                                col_meta.cypher_property.clone(),
+                                                            );
+                                                        }
+                                                    }
+                                                    if !id_columns.is_empty() {
+                                                        crate::render_plan::vlp_rewrite::rewrite_vlp_id_property_columns(
+                                                            &mut expr, &mappings, &id_columns, from_alias,
+                                                        );
+                                                    }
+                                                    log::debug!("🔧 VLP WITH item rewrite: mappings={:?}, from_alias={}", mappings, from_alias);
+                                                    rewrite_render_expr_for_vlp_with_from_alias(&mut expr, &mappings, from_alias);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    SelectItem {
+                                        expression: expr,
+                                        col_alias: item.col_alias.as_ref().map(|a| crate::render_plan::render_expr::ColumnAlias(a.0.clone())),
+                                    }
+                                }).into_iter().collect()
+                            }
+                        }
+                    })
+                    .collect()
+}
+
 /// Apply the WITH-items projection to a rendered CTE body (a STEP of the main
 /// loop's inner render-loop in `build_chained_with_match_cte_plan`, Phase-4 §7.1
 /// extraction).
@@ -7336,220 +7575,19 @@ fn apply_with_items_projection(
             // columns and must NOT be re-emitted as bare columns. The similar
             // `find_unwind_aliases` helper below DOES cross the barrier on purpose
             // (for ID-column detection), so the two are not interchangeable.
-            let mut unwind_aliases = std::collections::HashSet::new();
-            collect_unwind_aliases(plan_to_render, &mut unwind_aliases);
-
-            let select_items: Vec<SelectItem> = items.iter()
-                        .flat_map(|item| {
-                            // Check if this is a TableAlias that needs expansion to ALL columns
-                            match &item.expression {
-                                crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
-                                    // UNWIND aliases are ARRAY JOIN columns — emit a simple column reference
-                                    if unwind_aliases.contains(alias.0.as_str()) {
-                                        log::debug!("🔧 build_chained_with_match_cte_plan: UNWIND alias '{}' — simple column reference", alias.0);
-                                        return vec![SelectItem {
-                                            expression: super::render_expr::RenderExpr::ColumnAlias(
-                                                super::render_expr::ColumnAlias(alias.0.clone()),
-                                            ),
-                                            col_alias: Some(ColumnAlias(alias.0.clone())),
-                                        }];
-                                    }
-
-                                    // Use unified expansion helper (Dec 2025)
-                                    // CRITICAL: Use cte_references_for_rendering (includes ALL previous CTEs),
-                                    // NOT with_cte_refs (only includes CTEs visible in this WITH's immediate input)
-                                    // This allows "WITH a, b, c" to find "a" and "b" from previous CTEs
-                                    //
-                                    // The unified helper automatically handles anyLast() wrapping when has_aggregation=true
-                                    let expanded = expand_table_alias_to_select_items(
-                                        &alias.0,
-                                        plan_to_render,
-                                        cte_schemas,
-                                        cte_references_for_rendering,
-                                        has_aggregation,  // Enables anyLast() wrapping in unified function
-                                        plan_ctx,  // Pass Option<&PlanCtx> for property pruning
-                                        Some(vlp_cte_metadata)  // Pass VLP CTE metadata for FROM alias lookup
-                                    );
-                                    log::debug!("🔧 build_chained_with_match_cte_plan: Expanded alias '{}' to {} items (aggregation={})",
-                                               alias.0, expanded.len(), has_aggregation);
-
-                                    expanded
-                                }
-                                _ => {
-                                    // Not a TableAlias, convert normally
-                                    // First, check if we need to rewrite path functions
-                                    // For variable-length paths, convert length(path) → hop_count, etc.
-                                    let logical_expr = if let Some(path_var_name) = get_path_variable(plan_to_render) {
-                                        // Rewrite path functions in the logical expression BEFORE converting to RenderExpr
-                                        rewrite_logical_path_functions(&item.expression, path_var_name.as_str())
-                                    } else {
-                                        item.expression.clone()
-                                    };
-
-                                    // 🔧 CRITICAL FIX: Apply property mapping for WITH expressions
-                                    // Maps Cypher property names (e.g., u.name) to DB columns (e.g., full_name)
-                                    // This is the same rewriting that RETURN clause does
-                                    // SCOPE: Use body_scope_ref to resolve CTE-scoped variables
-                                    // (e.g., post.creationDate → CTE column after a prior WITH)
-                                    use crate::query_planner::logical_expr::expression_rewriter::{
-                                        ExpressionRewriteContext, rewrite_expression_with_property_mapping,
-                                    };
-                                    let rewrite_ctx = if let Some(s) = body_scope_ref {
-                                        ExpressionRewriteContext::with_scope(plan_to_render, s)
-                                    } else {
-                                        ExpressionRewriteContext::new(plan_to_render)
-                                    };
-                                    let rewritten_expr = rewrite_expression_with_property_mapping(&logical_expr, &rewrite_ctx);
-                                    log::info!(
-                                        "🔧 build_chained_with_match_cte_plan: Rewrote WITH expression with property mapping"
-                                    );
-
-                                    // CRITICAL: Expand collect(node) to groupArray(tuple(...)) BEFORE converting to RenderExpr
-                                    // This must happen in WITH context too, not just in extract_select_items()
-                                    let expanded_expr = if let crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(ref agg) = rewritten_expr {
-                                        if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
-                                            if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(ref alias) = agg.args[0] {
-                                                log::debug!("🔧 WITH context: Expanding collect({}) to groupArray(tuple(...))", alias.0);
-
-                                                // Extract property requirements for pruning
-                                                let property_requirements = plan_ctx.and_then(|ctx| ctx.get_property_requirements());
-
-                                                // Get all properties for this alias
-                                                match plan_to_render.get_properties_with_table_alias(&alias.0) {
-                                                    Ok((props, _actual_alias)) if !props.is_empty() => {
-                                                        log::debug!("🔧 Found {} properties for alias '{}', expanding", props.len(), alias.0);
-
-                                                        // For collect(node), only collect the ID property to produce groupArray(id).
-                                                        // Semantically, collect(node) gathers node identities, and groupArray(id)
-                                                        // is compatible with downstream IN/has() checks (Array(T) vs scalar T).
-                                                        // groupArray(tuple(...)) would produce Array(Tuple) which fails has() type checks.
-                                                        let id_only_props: Vec<_> = props.iter()
-                                                            .filter(|(prop_name, _)| prop_name == "id")
-                                                            .cloned()
-                                                            .collect();
-                                                        let collect_props = if id_only_props.is_empty() {
-                                                            log::debug!("🔧 collect({}): no 'id' property found, using all {} properties", alias.0, props.len());
-                                                            props
-                                                        } else {
-                                                            log::debug!("🔧 collect({}): using ID-only for groupArray (compatible with IN/has())", alias.0);
-                                                            id_only_props
-                                                        };
-
-                                                        // Use centralized expansion utility with property requirements
-                                                        use crate::render_plan::property_expansion::expand_collect_to_group_array;
-                                                        expand_collect_to_group_array(&alias.0, collect_props, property_requirements)
-                                                    }
-                                                    _ => {
-                                                        log::warn!("⚠️  Could not expand collect({}) in WITH - no properties found, keeping as-is", alias.0);
-                                                        rewritten_expr
-                                                    }
-                                                }
-                                            } else {
-                                                rewritten_expr
-                                            }
-                                        } else {
-                                            rewritten_expr
-                                        }
-                                    } else {
-                                        rewritten_expr
-                                    };
-
-                                    // 🔧 FIX: Flatten head(collect(MapLiteral)) with node values
-                                    // ClickHouse map() requires homogeneous value types, but nodes
-                                    // have no single value. Expand each map entry to separate CTE columns.
-                                    log::info!("🔧 Checking for head(collect(MapLiteral)) flattening, alias={:?}, expanded_expr={:?}",
-                                        item.col_alias.as_ref().map(|a| &a.0),
-                                        std::mem::discriminant(&expanded_expr));
-                                    if let Some((flattened_items, compound_keys)) = try_flatten_head_collect_map_literal(
-                                        &expanded_expr,
-                                        item.col_alias.as_ref().map(|a| a.0.as_str()),
-                                        plan_to_render,
-                                        plan_ctx,
-                                        body_scope_ref,
-                                    ) {
-                                        log::info!("🔧 Flattened head(collect(MapLiteral)) into {} columns with {} compound keys",
-                                            flattened_items.len(), compound_keys.len());
-                                        flattened_compound_keys.borrow_mut().extend(compound_keys);
-                                        return flattened_items;
-                                    }
-
-                                    let expr_result: Result<RenderExpr, _> = expanded_expr.try_into();
-                                    expr_result.ok().map(|mut expr| {
-                                        // Rewrite denormalized node aliases (e.g., a → r)
-                                        resolve_denormalized_property_in_expr_impl(&mut expr, plan_to_render, cte_from_alias.as_deref());
-
-                                        // 🔧 FIX: VLP CTE column rewriting for non-TableAlias WITH items
-                                        // When FROM is a VLP/multi-type CTE, PropertyAccess references
-                                        // (e.g., message.content) must be rewritten to CTE columns
-                                        // (e.g., t.start_content)
-                                        if let Some(from_ref) = &rendered.from.0 {
-                                            if from_ref.name.starts_with("vlp_") {
-                                                let from_alias = from_ref.alias.as_deref().unwrap_or("t");
-                                                // Build mappings: cypher_alias → "start_node" or "end_node"
-                                                if let Some((_from_alias_meta, col_metadata)) = vlp_cte_metadata.get(&from_ref.name) {
-                                                    let mut mappings: HashMap<String, String> = HashMap::new();
-                                                    for col_meta in col_metadata {
-                                                        if !mappings.contains_key(&col_meta.cypher_alias) {
-                                                            if let Some(pos) = &col_meta.vlp_position {
-                                                                let internal_alias = match pos {
-                                                                    super::cte_manager::VlpColumnPosition::Start => "start_node".to_string(),
-                                                                    super::cte_manager::VlpColumnPosition::End => "end_node".to_string(),
-                                                                };
-                                                                mappings.insert(col_meta.cypher_alias.clone(), internal_alias);
-                                                            }
-                                                        }
-                                                    }
-                                                    if !mappings.is_empty() {
-                                                        // Build DB→Cypher property name mapping for VLP column name translation.
-                                                        // VLP CTE columns use Cypher names (start_name) but PropertyAccessExp
-                                                        // may have DB column names (full_name) after schema resolution.
-                                                        let mut db_to_cypher: HashMap<(String, String), String> = HashMap::new();
-                                                        for col_meta in col_metadata {
-                                                            if col_meta.db_column != col_meta.cypher_property {
-                                                                db_to_cypher.insert(
-                                                                    (col_meta.cypher_alias.clone(), col_meta.db_column.clone()),
-                                                                    col_meta.cypher_property.clone(),
-                                                                );
-                                                            }
-                                                        }
-                                                        if !db_to_cypher.is_empty() {
-                                                            translate_db_columns_to_cypher_properties(&mut expr, &db_to_cypher);
-                                                        }
-                                                        // #620: rewrite endpoint id-property access
-                                                        // (a.user_id) to the VLP CTE's authoritative id
-                                                        // column (t.start_id/t.end_id) BEFORE the generic
-                                                        // prefix rewrite, which would otherwise blindly
-                                                        // build `start_user_id` (a column the CTE never
-                                                        // projects → Code 47).
-                                                        let mut id_columns: HashMap<String, String> = HashMap::new();
-                                                        for col_meta in col_metadata {
-                                                            if col_meta.is_id_column {
-                                                                id_columns.insert(
-                                                                    col_meta.cypher_alias.clone(),
-                                                                    col_meta.cypher_property.clone(),
-                                                                );
-                                                            }
-                                                        }
-                                                        if !id_columns.is_empty() {
-                                                            crate::render_plan::vlp_rewrite::rewrite_vlp_id_property_columns(
-                                                                &mut expr, &mappings, &id_columns, from_alias,
-                                                            );
-                                                        }
-                                                        log::debug!("🔧 VLP WITH item rewrite: mappings={:?}, from_alias={}", mappings, from_alias);
-                                                        rewrite_render_expr_for_vlp_with_from_alias(&mut expr, &mappings, from_alias);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        SelectItem {
-                                            expression: expr,
-                                            col_alias: item.col_alias.as_ref().map(|a| crate::render_plan::render_expr::ColumnAlias(a.0.clone())),
-                                        }
-                                    }).into_iter().collect()
-                                }
-                            }
-                        })
-                        .collect();
+            let select_items = build_with_projection_select_items(
+                items,
+                plan_to_render,
+                rendered,
+                has_aggregation,
+                cte_schemas,
+                cte_references_for_rendering,
+                cte_from_alias,
+                plan_ctx,
+                body_scope_ref,
+                vlp_cte_metadata,
+                flattened_compound_keys,
+            );
 
             log::debug!(
                 "🔧 build_chained_with_match_cte_plan: Total select_items after expansion: {}",
