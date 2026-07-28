@@ -6032,6 +6032,116 @@ fn register_cte_alias_references(
     log::debug!("🔧 build_chained_with_match_cte_plan: Updated cte_references_for_rendering with {} entries", cte_references_for_rendering.len());
 }
 
+/// Publish each exported alias's CTE scope for downstream resolution (a STEP of
+/// the main loop's `'alias_loop` in `build_chained_with_match_cte_plan`,
+/// Phase-4 §7.1 extraction).
+///
+/// For every non-empty exported alias, extract its per-alias
+/// `cypher_property → cte_column` mapping (looking up under the ORIGINAL alias
+/// when it was renamed via `WITH u AS person`, since CTE columns are prefixed
+/// with the original), resolve its node labels (renamed alias, then original,
+/// then the WITH bodies — #411), and publish it to `with_scope` for the
+/// variable registry PLUS to the narrow `set_cte_scope_for_correlation`
+/// task-local channel that `generate_exists_sql` reads for EXISTS correlation
+/// variables. Finally register any map-typed expression's keys on the scope var.
+#[allow(clippy::too_many_arguments)]
+fn publish_cte_alias_scopes(
+    with_scope: &mut WithBarrierScope,
+    original_exported_aliases: &[String],
+    alias_rename_map: &HashMap<String, String>,
+    property_mapping: &HashMap<(String, String), String>,
+    current_plan: &LogicalPlan,
+    with_plans: &[LogicalPlan],
+    cte_name: &str,
+    select_items_for_schema: &[SelectItem],
+) {
+    for alias in original_exported_aliases {
+        if alias.is_empty() {
+            continue;
+        }
+        // For renamed aliases (e.g., "person" from "WITH u AS person"),
+        // look up properties under the original alias name ("u") since
+        // CTE columns are prefixed with the original alias (p1_u_*).
+        let lookup_alias = alias_rename_map.get(alias).unwrap_or(alias);
+
+        // Extract per-alias property mapping: cypher_prop → cte_column
+        let per_alias_mapping: HashMap<String, String> = property_mapping
+            .iter()
+            .filter(|((a, _), _)| a == lookup_alias)
+            .map(|((_, prop), col)| (prop.clone(), col.clone()))
+            .collect();
+
+        // Get labels from current plan tree — try renamed alias first,
+        // then fall back to original alias (for renamed variables).
+        // After the WITH→CTE rewrite, `current_plan` may no longer expose the
+        // source node (e.g. a graph-rel MATCH gets restructured), so also fall
+        // back to the WITH bodies (`with_plans`), which still contain the source
+        // GraphNode and its label. Missing labels break generic `.id` resolution
+        // for renamed node_ids. (issue #411)
+        use crate::query_planner::logical_expr::expression_rewriter::find_label_for_alias_in_plan;
+        let labels = find_label_for_alias_in_plan(current_plan, alias)
+            .or_else(|| find_label_for_alias_in_plan(current_plan, lookup_alias))
+            .or_else(|| {
+                with_plans.iter().find_map(|p| {
+                    find_label_for_alias_in_plan(p, alias)
+                        .or_else(|| find_label_for_alias_in_plan(p, lookup_alias))
+                })
+            })
+            .map(|l| vec![l])
+            .unwrap_or_default();
+
+        with_scope.publish_alias(alias, lookup_alias, cte_name, &per_alias_mapping, &labels);
+
+        // Publish this alias's CTE scope (FROM alias + Cypher-property →
+        // CTE-column mapping) to a narrow, purpose-built task-local
+        // channel for EXISTS correlation-variable resolution
+        // (`render_expr::resolve_correlation_id_sql`).
+        //
+        // NOT the same as `var_registry` above: `VariableRegistry::
+        // define_node`/`define_scalar` still construct an EMPTY
+        // `property_mapping` for a WITH-CTE `VariableSource::Cte` node
+        // export, so `resolve_with_current_registry` does not carry a
+        // per-property node map here. Ordinary property access across
+        // CTE barriers resolves forward via the render-site registry
+        // identity self-map + `plan_ctx` CTE columns (the F0/F1
+        // forward-resolution work; the legacy task-local
+        // `cte_property_mappings` reparse was removed in F2a). This
+        // channel remains the purpose-built path for the one case the
+        // forward registry cannot serve mid-build: an EXISTS
+        // correlation variable that must resolve through the CTE scope
+        // active *at this exact point* in `build_chained_with_match_cte_plan`,
+        // before the variable moves on to a later WITH clause's CTE. It
+        // is written only here and read only by `generate_exists_sql`'s
+        // `GraphRel` branch, so it cannot affect any other resolution.
+        crate::server::query_context::set_cte_scope_for_correlation(
+            alias.clone(),
+            extract_from_alias_from_cte_name(cte_name).to_string(),
+            per_alias_mapping.clone(),
+        );
+
+        log::info!(
+            "🔧 build_chained: scope_cte_variables updated for alias '{}' → CTE '{}'",
+            alias,
+            cte_name
+        );
+        // Detect map-typed expressions and register map keys
+        for item in select_items_for_schema {
+            if let Some(col_alias) = &item.col_alias {
+                if col_alias.0 == *alias {
+                    if let Some(keys) =
+                        super::variable_scope::extract_map_keys_from_expr(&item.expression)
+                    {
+                        if let Some(info) = with_scope.scope_cte_variables_mut().get_mut(alias) {
+                            info.map_keys = Some(keys);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -8402,99 +8512,18 @@ pub(crate) fn build_chained_with_match_cte_plan(
             let body_registry = with_scope.snapshot_body_registry();
             with_scope.reset();
 
-            for alias in &original_exported_aliases {
-                if alias.is_empty() {
-                    continue;
-                }
-                // For renamed aliases (e.g., "person" from "WITH u AS person"),
-                // look up properties under the original alias name ("u") since
-                // CTE columns are prefixed with the original alias (p1_u_*).
-                let lookup_alias = alias_rename_map.get(alias).unwrap_or(alias);
-
-                // Extract per-alias property mapping: cypher_prop → cte_column
-                let per_alias_mapping: HashMap<String, String> = property_mapping
-                    .iter()
-                    .filter(|((a, _), _)| a == lookup_alias)
-                    .map(|((_, prop), col)| (prop.clone(), col.clone()))
-                    .collect();
-
-                // Get labels from current plan tree — try renamed alias first,
-                // then fall back to original alias (for renamed variables).
-                // After the WITH→CTE rewrite, `current_plan` may no longer expose the
-                // source node (e.g. a graph-rel MATCH gets restructured), so also fall
-                // back to the WITH bodies (`with_plans`), which still contain the source
-                // GraphNode and its label. Missing labels break generic `.id` resolution
-                // for renamed node_ids. (issue #411)
-                use crate::query_planner::logical_expr::expression_rewriter::find_label_for_alias_in_plan;
-                let labels = find_label_for_alias_in_plan(&current_plan, alias)
-                    .or_else(|| find_label_for_alias_in_plan(&current_plan, lookup_alias))
-                    .or_else(|| {
-                        with_plans.iter().find_map(|p| {
-                            find_label_for_alias_in_plan(p, alias)
-                                .or_else(|| find_label_for_alias_in_plan(p, lookup_alias))
-                        })
-                    })
-                    .map(|l| vec![l])
-                    .unwrap_or_default();
-
-                with_scope.publish_alias(
-                    alias,
-                    lookup_alias,
-                    &cte_name,
-                    &per_alias_mapping,
-                    &labels,
-                );
-
-                // Publish this alias's CTE scope (FROM alias + Cypher-property →
-                // CTE-column mapping) to a narrow, purpose-built task-local
-                // channel for EXISTS correlation-variable resolution
-                // (`render_expr::resolve_correlation_id_sql`).
-                //
-                // NOT the same as `var_registry` above: `VariableRegistry::
-                // define_node`/`define_scalar` still construct an EMPTY
-                // `property_mapping` for a WITH-CTE `VariableSource::Cte` node
-                // export, so `resolve_with_current_registry` does not carry a
-                // per-property node map here. Ordinary property access across
-                // CTE barriers resolves forward via the render-site registry
-                // identity self-map + `plan_ctx` CTE columns (the F0/F1
-                // forward-resolution work; the legacy task-local
-                // `cte_property_mappings` reparse was removed in F2a). This
-                // channel remains the purpose-built path for the one case the
-                // forward registry cannot serve mid-build: an EXISTS
-                // correlation variable that must resolve through the CTE scope
-                // active *at this exact point* in `build_chained_with_match_cte_plan`,
-                // before the variable moves on to a later WITH clause's CTE. It
-                // is written only here and read only by `generate_exists_sql`'s
-                // `GraphRel` branch, so it cannot affect any other resolution.
-                crate::server::query_context::set_cte_scope_for_correlation(
-                    alias.clone(),
-                    extract_from_alias_from_cte_name(&cte_name).to_string(),
-                    per_alias_mapping.clone(),
-                );
-
-                log::info!(
-                    "🔧 build_chained: scope_cte_variables updated for alias '{}' → CTE '{}'",
-                    alias,
-                    cte_name
-                );
-                // Detect map-typed expressions and register map keys
-                for item in &select_items_for_schema {
-                    if let Some(col_alias) = &item.col_alias {
-                        if col_alias.0 == *alias {
-                            if let Some(keys) =
-                                super::variable_scope::extract_map_keys_from_expr(&item.expression)
-                            {
-                                if let Some(info) =
-                                    with_scope.scope_cte_variables_mut().get_mut(alias)
-                                {
-                                    info.map_keys = Some(keys);
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
+            // Publish each exported alias's CTE scope (variable registry +
+            // EXISTS-correlation channel). See `publish_cte_alias_scopes`.
+            publish_cte_alias_scopes(
+                &mut with_scope,
+                &original_exported_aliases,
+                &alias_rename_map,
+                &property_mapping,
+                &current_plan,
+                &with_plans,
+                &cte_name,
+                &select_items_for_schema,
+            );
 
             // CRITICAL FIX: Also add the COMPOSITE alias (e.g., "countWindow1_tag") to scope_cte_variables.
             // The analyzer creates expressions with the composite alias as table_alias in PropertyAccessExp.
