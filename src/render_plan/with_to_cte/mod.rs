@@ -929,6 +929,123 @@ fn replace_v2_projection_arm(
     }))
 }
 
+/// Handle the `GraphJoins` arm of `replace_with_clause_with_cte_reference_v2`
+/// (Phase-4 §7.1 extraction).
+///
+/// Recurse into the joins' input; if it became a CTE reference for `with_alias`,
+/// rewrite the join list and anchor so they reference the CTE columns, then
+/// rebuild the `GraphJoins` over the new input.
+fn replace_v2_graph_joins_arm(
+    graph_joins: &crate::query_planner::logical_plan::GraphJoins,
+    with_alias: &str,
+    cte_name: &str,
+    pre_with_aliases: &std::collections::HashSet<String>,
+    cte_schemas: &crate::render_plan::CteSchemas,
+) -> RenderPlanBuilderResult<LogicalPlan> {
+    use crate::query_planner::logical_plan::GraphJoins;
+    use std::sync::Arc;
+
+    let new_input = replace_with_clause_with_cte_reference_v2(
+        &graph_joins.input,
+        with_alias,
+        cte_name,
+        pre_with_aliases,
+        cte_schemas,
+    )?;
+
+    // Helper to check if a join condition references any stale alias
+    fn condition_has_stale_refs(
+        join: &crate::query_planner::logical_plan::Join,
+        stale_aliases: &std::collections::HashSet<String>,
+    ) -> bool {
+        for op in &join.joining_on {
+            for operand in &op.operands {
+                if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) =
+                    operand
+                {
+                    if stale_aliases.contains(&pa.table_alias.0) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    // Filter out joins from the pre-WITH scope AND update joins for the WITH alias
+    // Also filter out joins that have stale references in their conditions
+    let updated_joins: Vec<crate::query_planner::logical_plan::Join> = graph_joins
+        .joins
+        .iter()
+        .filter_map(|j| {
+            // Filter out joins that are from the pre-WITH scope
+            if pre_with_aliases.contains(&j.table_alias) {
+                log::debug!(
+                    "🔧 replace_v2: Filtering out pre-WITH join for alias '{}'",
+                    j.table_alias
+                );
+                return None;
+            }
+
+            // Filter out joins whose conditions reference stale aliases
+            if condition_has_stale_refs(j, pre_with_aliases) {
+                log::debug!(
+                    "🔧 replace_v2: Filtering out join with stale condition for alias '{}'",
+                    j.table_alias
+                );
+                return None;
+            }
+
+            // Update joins that reference the WITH alias to use the CTE
+            if j.table_alias == with_alias {
+                log::debug!(
+                    "🔧 replace_v2: Updating join for alias '{}' to use CTE '{}'",
+                    with_alias,
+                    cte_name
+                );
+                Some(crate::query_planner::logical_plan::Join {
+                    table_name: cte_name.to_string(),
+                    table_alias: j.table_alias.clone(),
+                    joining_on: j.joining_on.clone(),
+                    join_type: j.join_type.clone(),
+                    pre_filter: j.pre_filter.clone(),
+                    from_id_column: j.from_id_column.clone(),
+                    to_id_column: j.to_id_column.clone(),
+                    graph_rel: None,
+                    is_cartesian: false,
+                })
+            } else {
+                Some(j.clone())
+            }
+        })
+        .collect();
+
+    // Update anchor_table if it was in pre-WITH scope
+    let new_anchor = if let Some(ref anchor) = graph_joins.anchor_table {
+        if pre_with_aliases.contains(anchor) {
+            log::debug!(
+                "🔧 replace_v2: Updating anchor from '{}' to '{}'",
+                anchor,
+                with_alias
+            );
+            Some(with_alias.to_string())
+        } else {
+            Some(anchor.clone())
+        }
+    } else {
+        None
+    };
+
+    Ok(LogicalPlan::GraphJoins(GraphJoins {
+        input: Arc::new(new_input),
+        joins: updated_joins,
+        optional_aliases: graph_joins.optional_aliases.clone(),
+        anchor_table: new_anchor,
+        cte_references: graph_joins.cte_references.clone(),
+        correlation_predicates: vec![],
+    }))
+}
+
 pub(crate) fn replace_with_clause_with_cte_reference_v2(
     plan: &LogicalPlan,
     with_alias: &str,
@@ -1191,108 +1308,13 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
             }))
         }
 
-        LogicalPlan::GraphJoins(graph_joins) => {
-            let new_input = replace_with_clause_with_cte_reference_v2(
-                &graph_joins.input,
-                with_alias,
-                cte_name,
-                pre_with_aliases,
-                cte_schemas,
-            )?;
-
-            // Helper to check if a join condition references any stale alias
-            fn condition_has_stale_refs(
-                join: &crate::query_planner::logical_plan::Join,
-                stale_aliases: &std::collections::HashSet<String>,
-            ) -> bool {
-                for op in &join.joining_on {
-                    for operand in &op.operands {
-                        if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
-                            pa,
-                        ) = operand
-                        {
-                            if stale_aliases.contains(&pa.table_alias.0) {
-                                return true;
-                            }
-                        }
-                    }
-                }
-                false
-            }
-
-            // Filter out joins from the pre-WITH scope AND update joins for the WITH alias
-            // Also filter out joins that have stale references in their conditions
-            let updated_joins: Vec<crate::query_planner::logical_plan::Join> = graph_joins
-                .joins
-                .iter()
-                .filter_map(|j| {
-                    // Filter out joins that are from the pre-WITH scope
-                    if pre_with_aliases.contains(&j.table_alias) {
-                        log::debug!(
-                            "🔧 replace_v2: Filtering out pre-WITH join for alias '{}'",
-                            j.table_alias
-                        );
-                        return None;
-                    }
-
-                    // Filter out joins whose conditions reference stale aliases
-                    if condition_has_stale_refs(j, pre_with_aliases) {
-                        log::debug!(
-                            "🔧 replace_v2: Filtering out join with stale condition for alias '{}'",
-                            j.table_alias
-                        );
-                        return None;
-                    }
-
-                    // Update joins that reference the WITH alias to use the CTE
-                    if j.table_alias == with_alias {
-                        log::debug!(
-                            "🔧 replace_v2: Updating join for alias '{}' to use CTE '{}'",
-                            with_alias,
-                            cte_name
-                        );
-                        Some(crate::query_planner::logical_plan::Join {
-                            table_name: cte_name.to_string(),
-                            table_alias: j.table_alias.clone(),
-                            joining_on: j.joining_on.clone(),
-                            join_type: j.join_type.clone(),
-                            pre_filter: j.pre_filter.clone(),
-                            from_id_column: j.from_id_column.clone(),
-                            to_id_column: j.to_id_column.clone(),
-                            graph_rel: None,
-                            is_cartesian: false,
-                        })
-                    } else {
-                        Some(j.clone())
-                    }
-                })
-                .collect();
-
-            // Update anchor_table if it was in pre-WITH scope
-            let new_anchor = if let Some(ref anchor) = graph_joins.anchor_table {
-                if pre_with_aliases.contains(anchor) {
-                    log::debug!(
-                        "🔧 replace_v2: Updating anchor from '{}' to '{}'",
-                        anchor,
-                        with_alias
-                    );
-                    Some(with_alias.to_string())
-                } else {
-                    Some(anchor.clone())
-                }
-            } else {
-                None
-            };
-
-            Ok(LogicalPlan::GraphJoins(GraphJoins {
-                input: Arc::new(new_input),
-                joins: updated_joins,
-                optional_aliases: graph_joins.optional_aliases.clone(),
-                anchor_table: new_anchor,
-                cte_references: graph_joins.cte_references.clone(),
-                correlation_predicates: vec![],
-            }))
-        }
+        LogicalPlan::GraphJoins(graph_joins) => replace_v2_graph_joins_arm(
+            graph_joins,
+            with_alias,
+            cte_name,
+            pre_with_aliases,
+            cte_schemas,
+        ),
 
         LogicalPlan::Limit(limit) => {
             let new_input = replace_with_clause_with_cte_reference_v2(
