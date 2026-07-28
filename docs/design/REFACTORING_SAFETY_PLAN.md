@@ -730,6 +730,31 @@ as a param. So the decomposition hoists each self-contained region into a named
   exit criterion is met). Remaining to reach the ~500-line size half: the
   accumulator-heavy pre-loop setup + `'alias_loop` glue, most of which is the
   loop's irreducible mutable-state frame.
+- ☑ **Over-budget *extracted helpers* brought under ~500 ln** (4 PRs, #782–#785,
+  2026-07-28). The inner-loop decomposition (#770–#780) left several of the
+  helpers it produced still over the module-wide exit target; each is now
+  sub-decomposed one byte-identical slice per PR, scout-verified seam + adversarial
+  review:
+  - `resolve_cross_table_with_cte_joins` 775 → **355** — extracted
+    `generate_vlp_with_cte_join_conditions` (the VLP `start_id`/`end_id` join-cond
+    generator, #782) and `restructure_post_with_optional_or_insert_cte_join` (the
+    #453 post-WITH OPTIONAL anchor restructure, which owns two `return Err` →
+    `&mut`-param + call-site-`?`, #783).
+  - `apply_with_items_projection` 660 → **459** — extracted
+    `build_with_projection_select_items` (the `items.iter().flat_map(…).collect()`
+    WITH-item → SELECT-column builder; a pure expression with closure-local
+    returns, `rendered` narrowed to `&RenderPlan`, #784).
+  - `restructure_post_with_optional_match` 529 → **71** — extracted
+    `restructure_optional_cte_bridge` (445 ln; the CTE-body bridge restructure).
+    Borrow-clean seam: `from_ref` (shared borrow of `with_cte_render.from`) used in
+    the body only for one log arg → pre-clone `from_name` at the call site so its
+    borrow is dead before the `&mut` helper call (#785).
+  Result: **`build_chained_with_match_cte_plan` (850 ln) is now the ONLY function
+  in `with_to_cte/mod.rs` over ~500 lines** — the deliberately-parked irreducible
+  accumulator frame. Every helper extracted during §7.1 is at/under the target
+  (next-largest: `apply_with_items_projection` 459, `restructure_optional_cte_bridge`
+  445, `apply_pattern_comprehensions` 440). The module-wide exit criterion is met
+  except for that single frame.
 
 
 ### 7.2 Forward resolution through CTE scope (§10)
