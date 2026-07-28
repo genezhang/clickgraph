@@ -149,7 +149,7 @@ P-3). Latent finding filed in-report: `has_with_clause_in_graph_rel` is
 duplicated (utils + helpers) with a DIFFERENT semantic — a future consolidation
 candidate, not touched here (§8.3 no-drive-by).
 
-### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ☑ (P2.1–P2.6 + P2.7 D1 done; D6/D8 already resolved; P2.10 import hygiene + dead_code tail COMPLETE — no module-level allow(dead_code) remains under src/render_plan/) · ◐ Phase-4 §7.1 `build_chained` decomposition IN PROGRESS (43 PRs #740–#785; tail + main-loop + inner render-loop decomposed AND every over-budget extracted helper sub-decomposed under ~500 ln — `build_chained` itself 5478 → 850 ln is now the SOLE remaining >500-ln fn in with_to_cte/mod.rs, the deliberately-parked accumulator frame — see §4 + REFACTORING_SAFETY_PLAN §7.1)
+### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ☑ (P2.1–P2.6 + P2.7 D1 done; D6/D8 already resolved; P2.10 import hygiene + dead_code tail COMPLETE — no module-level allow(dead_code) remains under src/render_plan/) · ☑ Phase-4 §7.1 `build_chained` decomposition **DONE / CLOSED** (43 PRs #740–#785; tail + main-loop + inner render-loop decomposed AND every over-budget extracted helper sub-decomposed under ~500 ln; `replace_v2` 1070 → 212 ln; `build_chained` itself 5478 → 850 ln is the SOLE remaining >500-ln fn in with_to_cte/mod.rs — its irreducible accumulator frame, exit criterion met, the ~19-param whole-loop lift explicitly declined — see §4 + REFACTORING_SAFETY_PLAN §7.1)
 The dead-code sweep shrank plan_builder_utils.rs to ~14.5K lines. §5.1 moves are
 now underway. Pure groups first (vlp_rewrite →
 pattern_comprehension_sql → clause_extractors → plan_predicates →
@@ -303,6 +303,20 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-28: **Phase-4 §7.1 — FORMALLY CLOSED** (P-3 lane; docs-only). The
+  entangled-core decomposition is declared complete: across 43 byte-identical/
+  behavior-preserving PRs (#740–#785) `replace_v2` went 1070 → 212 ln and
+  `build_chained_with_match_cte_plan` went 5478 → 850 ln, with every *extractable*
+  helper at/under the ~500-ln target (next-largest 459/445/440). The lone survivor
+  — `build_chained` at 850 ln — is its irreducible mutable-state frame (~10 `let mut`
+  accumulators + the `while`/`'alias_loop` glue between already-extracted STEP
+  helpers + tracing), not an un-decomposed body; the readability half of the exit
+  criterion (STEP pipeline readable top-to-bottom) is met. The only path under 500
+  is lifting the whole `'alias_loop` into one ~19-param signal-return helper, which
+  trades param-plumbing for line count with no readability gain — **explicitly
+  declined**. The remaining substantial refactor work is now **Phase-4 §7.2**
+  (forward resolution / delete `reverse_mapping`), tracked as the **P-4 lane**
+  (`FORWARD_RESOLUTION_PLAN.md`). See `REFACTORING_SAFETY_PLAN.md` §7.1.
 - 2026-07-28: **Phase-4 §7.1 — over-budget extracted helpers brought under ~500
   ln** (P-3 lane; PRs #782–#785). The inner-loop decomposition (#770–#780) left
   several of the helpers it produced still over the module-wide exit target; each

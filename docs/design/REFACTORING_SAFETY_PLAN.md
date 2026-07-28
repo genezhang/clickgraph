@@ -667,8 +667,9 @@ Exit criterion: no function in the module exceeds ~500 lines; the STEP
 pipeline of the WITH→CTE build is readable top-to-bottom in the entry
 function.
 
-**Progress (2026-07-28):** ◐ **in progress** — 39 byte-identical/behavior-preserving
-PRs merged (#740–#780). A structural correction to the protocol: `build_chained`
+**Progress (2026-07-28): ☑ COMPLETE — exit criterion met.** 43
+byte-identical/behavior-preserving PRs merged (#740–#785). A structural
+correction to the protocol: `build_chained`
 has **no** named nested `fn`s or `RefCell`-capturing closures to hoist (the
 anticipated shape). It is a linear body — setup → a
 `while has_with_clause_in_graph_rel` loop → a **finalization tail** of
@@ -753,8 +754,22 @@ as a param. So the decomposition hoists each self-contained region into a named
   in `with_to_cte/mod.rs` over ~500 lines** — the deliberately-parked irreducible
   accumulator frame. Every helper extracted during §7.1 is at/under the target
   (next-largest: `apply_with_items_projection` 459, `restructure_optional_cte_bridge`
-  445, `apply_pattern_comprehensions` 440). The module-wide exit criterion is met
-  except for that single frame.
+  445, `apply_pattern_comprehensions` 440).
+
+**§7.1 is CLOSED (2026-07-28, user decision).** The exit criterion — "no function
+exceeds ~500 lines; the STEP pipeline is readable top-to-bottom in the entry
+function" — is met in substance: the entry function reads as a linear pipeline of
+named STEP/finalization calls, and every *extractable* unit is ≤459 ln. The single
+survivor, `build_chained` at 850 ln, is not an un-decomposed god-function but its
+**irreducible mutable-state frame**: ~10 `let mut` accumulators (`current_plan`,
+`all_ctes`, `cte_schemas`, `cte_references`, `cte_name_allocator`, `with_scope`,
+the `flattened_compound_keys` RefCell, …), the `while has_with_clause_in_graph_rel`
+/ `'alias_loop` control glue between already-extracted helpers, and per-phase
+tracing. The only way to force it under 500 is to lift the whole `'alias_loop`
+body into a single ~19-parameter signal-return helper — trading param-plumbing for
+raw line count with **no readability gain** (arguably a loss). That lift is
+explicitly **declined** as not worth the cost; the frame stays as the documented
+terminal state of §7.1.
 
 
 ### 7.2 Forward resolution through CTE scope (§10)
@@ -1243,9 +1258,14 @@ start/end_is_denormalized cluster) · ☐ P3.6 legacy-path deletion
 Phase 4: ◐ early hoists landed OUT OF ORDER 2026-07-14 (low-risk, accepted):
 3 diagnostic helpers (fe968442), 10 self-contained nested fns (b9ce1d94),
 final self-contained batch (c7317091), `WithBarrierScope` extracted (51ea82fe),
-`CteNameAllocator` extracted (1428324a) — the god-function core remains ~5K
-lines · ☐ P4.1..n remaining hoists (RefCell-capturing helpers need the
-`WithCteBuildState` struct) · ☐ P4.x §10 phases 1–3 · ☐ P4.final #411
+`CteNameAllocator` extracted (1428324a) ·
+☑ **§7.1 DONE (2026-07-28)** — `build_chained` 5478 → 850 ln (the irreducible
+accumulator frame, deliberately parked) + `replace_v2` 1070 → 212 ln, across 43
+byte-identical/behavior-preserving PRs (#740–#785); every extracted helper ≤459 ln;
+exit criterion met (see §7.1) ·
+◐ **§7.2 §10 phases 1–3** = the P-4 forward-resolution lane (F0/F1/F1b/F2a/F3/F4
+done; F2b/F5 + F1b residue open — tracked in `FORWARD_RESOLUTION_PLAN.md`) ·
+☐ P4.final #411 (gated on §7.2)
 
 ## 10. Risks / what NOT to do
 
