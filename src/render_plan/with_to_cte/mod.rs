@@ -4254,6 +4254,66 @@ fn build_iteration_worklist(
     )
 }
 
+/// Prepare a WITH alias group's plans for rendering and collect its pre-WITH
+/// aliases (a STEP of the main loop's `'alias_loop` in
+/// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// Refreshes every plan's `GraphJoins.cte_references` from the
+/// previous-iterations-only snapshot (so GraphRel nodes see the CTEs available
+/// before this alias's own CTE is built), then collects the table aliases
+/// defined INSIDE the WITH clauses (`Projection(With)` input) that must be
+/// filtered out of the outer query's joins — excluding the WITH boundary
+/// variable itself and any alias that is already a CTE reference from an earlier
+/// iteration (`processed_cte_aliases`).
+///
+/// Returns `(refreshed_with_plans, pre_with_aliases)`.
+fn prepare_with_plans_and_pre_aliases(
+    with_plans: Vec<LogicalPlan>,
+    cte_references_for_rendering: &HashMap<String, String>,
+    with_alias: &str,
+    processed_cte_aliases: &std::collections::HashSet<String>,
+) -> RenderPlanBuilderResult<(Vec<LogicalPlan>, std::collections::HashSet<String>)> {
+    let with_plans: Vec<LogicalPlan> = with_plans
+        .into_iter()
+        .map(|plan| {
+            update_graph_joins_cte_refs(
+                &plan,
+                cte_references_for_rendering,
+                &std::collections::HashMap::new(),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Collect aliases from the pre-WITH scope (inside the WITH clauses)
+    // These aliases should be filtered out from the outer query's joins
+    let mut pre_with_aliases = std::collections::HashSet::new();
+    for with_plan in with_plans.iter() {
+        // For Projection(With), the input contains the pre-WITH pattern
+        if let LogicalPlan::Projection(proj) = with_plan {
+            let inner_aliases = collect_aliases_from_plan(&proj.input);
+            pre_with_aliases.extend(inner_aliases);
+        }
+    }
+    // Don't filter out the WITH variable itself - it's the boundary variable
+    pre_with_aliases.remove(with_alias);
+    // Don't filter out aliases that are already CTEs (processed in earlier iterations)
+    // These are now references to CTEs, not original tables
+    for cte_alias in processed_cte_aliases {
+        if pre_with_aliases.remove(cte_alias) {
+            log::debug!(
+                "🔧 build_chained_with_match_cte_plan: Keeping '{}' (already a CTE reference)",
+                cte_alias
+            );
+        }
+    }
+    log::info!(
+        "🔧 build_chained_with_match_cte_plan: Pre-WITH aliases to filter: {:?}",
+        pre_with_aliases
+    );
+
+    Ok((with_plans, pre_with_aliases))
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -4457,40 +4517,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
             // Use the snapshot from PREVIOUS iterations only (not including current alias)
             log::debug!("🔧 build_chained_with_match_cte_plan: Updating cte_references for {} plans before rendering. Using previous CTEs: {:?}", with_plans.len(), cte_references_for_rendering);
 
-            let with_plans: Vec<LogicalPlan> = with_plans
-                .into_iter()
-                .map(|plan| {
-                    update_graph_joins_cte_refs(
-                        &plan,
-                        &cte_references_for_rendering,
-                        &std::collections::HashMap::new(),
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-
-            // Collect aliases from the pre-WITH scope (inside the WITH clauses)
-            // These aliases should be filtered out from the outer query's joins
-            let mut pre_with_aliases = std::collections::HashSet::new();
-            for with_plan in with_plans.iter() {
-                // For Projection(With), the input contains the pre-WITH pattern
-                if let LogicalPlan::Projection(proj) = with_plan {
-                    let inner_aliases = collect_aliases_from_plan(&proj.input);
-                    pre_with_aliases.extend(inner_aliases);
-                }
-            }
-            // Don't filter out the WITH variable itself - it's the boundary variable
-            pre_with_aliases.remove(&with_alias);
-            // Don't filter out aliases that are already CTEs (processed in earlier iterations)
-            // These are now references to CTEs, not original tables
-            for cte_alias in &processed_cte_aliases {
-                if pre_with_aliases.remove(cte_alias) {
-                    log::debug!("🔧 build_chained_with_match_cte_plan: Keeping '{}' (already a CTE reference)", cte_alias);
-                }
-            }
-            log::info!(
-                "🔧 build_chained_with_match_cte_plan: Pre-WITH aliases to filter: {:?}",
-                pre_with_aliases
-            );
+            let (with_plans, pre_with_aliases) = prepare_with_plans_and_pre_aliases(
+                with_plans,
+                &cte_references_for_rendering,
+                &with_alias,
+                &processed_cte_aliases,
+            )?;
 
             // Render each WITH clause plan
             let mut rendered_plans: Vec<RenderPlan> = Vec::new();
