@@ -54,6 +54,27 @@ structural slice: **zero**; the intentional diffs (the actual #592/#595/#602/
 
 ## 1. Current-state map (verified against source)
 
+> **⚠️ STALE — §1.1 and §1.2 describe the PRE-F0 state (as of the original
+> writing). They are kept as the historical diagnosis that motivated F0. The
+> two central claims below are NO LONGER TRUE as of the landed slices
+> (verified against source 2026-07-28):**
+> - **M1 is no longer "DEAD for WITH-CTE vars (#592)".** F0 landed: every
+>   `define_*` in `typed_variable.rs` now **threads** `property_mapping` through
+>   (`define_node:766` → `node_from_cte(labels, cte_name, *property_mapping)`,
+>   and likewise `define_scalar`/`define_relationship`/`define_collection`). The
+>   empty-map hardcode survives only in the planning-phase `to_cte_sourced`
+>   (columns legitimately unknown then), not the render path. `set_property_mapping`
+>   is now genuinely dead (0 callers) **because the data is threaded at
+>   construction** — it was deleted in F6-partial (2026-07-28).
+> - **M3 is not "one path only".** `rewrite_render_plan_with_scope` has 4
+>   top-level call sites (`plan_builder.rs:4322/5487/5797/5941`) + 2 recursive
+>   union-branch calls.
+> - **The F0 M1-vs-M3 transition-assert already exists and passes** (a
+>   `#[cfg(debug_assertions)]` `debug_assert_eq!` in `publish_alias`,
+>   `with_to_cte/mod.rs:~2645`, over every mapped property). So **F2b's
+>   assert-half is already done**; its remaining fold/delete-M3 half is a
+>   **design cycle**, not a byte-identical slice — see the F2b note in §3.
+
 ### 1.1 There is no `reverse_mapping` field anymore — there are three forward-ish mechanisms
 
 `grep -rn reverse_mapping src/` returns **2 code hits, both comments** referring
@@ -431,6 +452,38 @@ render site).
 (`rewrite_render_plan_with_scope`) agree, then either delete M3 or reduce it to
 "apply M1's data". Corpus byte-identical.
 
+> **⚠️ F2b re-scoped (2026-07-28) — assert-half DONE, fold-half is a DESIGN
+> CYCLE, not byte-identical.** Feasibility-scouted against source. Two findings:
+> 1. **The transition-assert clause is already satisfied by F0** — the
+>    `#[cfg(debug_assertions)]` `debug_assert_eq!` in `publish_alias`
+>    (`with_to_cte/mod.rs:~2645`) checks M1 (`var_registry.resolve`) against M3's
+>    `scope_cte_variables[alias].property_mapping` for every mapped property.
+>    Both sides are built from the identical `per_alias_mapping` in the same
+>    function, so it is true by construction and F0 recorded zero corpus
+>    divergence. Nothing to add here.
+> 2. **"delete M3 / reduce to apply M1's data" is NOT a byte-identical slice.**
+>    M3 is the load-bearing *application pass* (whole-`RenderPlan` in-place
+>    rewrite: bare-node SELECT expansion + SELECT/WHERE/ORDER BY/GROUP
+>    BY/HAVING/JOIN rewrite) with genuine per-arm scoping
+>    (`scoped_to_referenced_ctes`, #593). M1 is a narrow *point lookup* consulted
+>    late per-`PropertyAccessExp` (`to_sql_query.rs:~6866`), and per F0 it is
+>    nearly dead **because** M3 already rewrote the expressions. Deleting M3
+>    breaks the corpus; M1 cannot replace it. Making M1 authoritative enough to
+>    delete M3 requires giving M1 the same per-arm scoping M3 has AND removing
+>    the render-site containment guard (`sql_alias == table_alias.0` +
+>    `!alias_is_base_table_in_branch`, `to_sql_query.rs:~6880`) — and removing
+>    that guard **shifts #593-class output** (which arm a shared alias resolves
+>    to). Also, M3's `CteVariableInfo` carries three fields M1's
+>    `VariableSource::Cte` does not (`from_alias_override`, `map_keys`, `labels`),
+>    so "collapse the storage" is a real migration, not plumbing.
+>
+> **Verdict: no bounded byte-identical F2b slice exists. The true F2b (arm-safe
+> M1 → delete M3) is an intentional-diff DESIGN CYCLE** on the most
+> regression-prone surface, sequenced when a #593-class bug forces it — not a
+> refactor-lane slice. The byte-identical residue of Phase B/D that WAS available
+> (delete the now-dead `set_property_mapping`) shipped as **F6-partial**
+> (2026-07-28).
+
 **F2c — delete the "also add DB column" arms** in
 `build_property_mapping_from_columns` (the 6 secondary inserts) and, if now
 unreferenced, `translate_db_columns_to_cypher_properties`. Corpus byte-identical
@@ -532,6 +585,15 @@ patch-in is unnecessary because `define_*` carries data directly), the
 `reverse_mapping`/`intermediate_reverse_mapping` comment stubs. Update
 `render_plan/AGENTS.md` §10/§11 to describe the single forward mechanism, and
 `PRIORITIES.md` §2/§4. Corpus byte-identical.
+
+> **◐ F6-partial landed (2026-07-28) — `set_property_mapping` deleted.** The
+> dead setter (`typed_variable.rs`, 0 callers — the map is threaded at
+> `define_*` construction time since F0, so no post-hoc patch-in is needed) is
+> removed. Byte-identical (no behavior — it had no callers). The rest of F6
+> (the `set_cte_scope_for_correlation` fourth channel, the
+> `reverse_mapping`/`intermediate_reverse_mapping` comment stubs, the AGENTS.md
+> §10/§11 rewrite) stays open — several pieces are gated on the F2b design cycle
+> and F5, so F6 finishes when those do.
 
 ### Issue → slice map
 

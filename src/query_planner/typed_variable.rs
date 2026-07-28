@@ -1126,56 +1126,6 @@ impl VariableRegistry {
             _ => ResolvedProperty::Unresolved,
         }
     }
-
-    /// Update the property mapping for a CTE-sourced variable.
-    ///
-    /// Called after CTE columns are known (during render plan building).
-    pub fn set_property_mapping(&mut self, alias: &str, mapping: HashMap<String, String>) {
-        if let Some(var) = self.variables.get_mut(alias) {
-            match var {
-                TypedVariable::Node(n) => {
-                    if let VariableSource::Cte {
-                        property_mapping, ..
-                    } = &mut n.source
-                    {
-                        **property_mapping = mapping;
-                    }
-                }
-                TypedVariable::Relationship(r) => {
-                    if let VariableSource::Cte {
-                        property_mapping, ..
-                    } = &mut r.source
-                    {
-                        **property_mapping = mapping;
-                    }
-                }
-                TypedVariable::Scalar(s) => {
-                    if let VariableSource::Cte {
-                        property_mapping, ..
-                    } = &mut s.source
-                    {
-                        **property_mapping = mapping;
-                    }
-                }
-                TypedVariable::Path(p) => {
-                    if let VariableSource::Cte {
-                        property_mapping, ..
-                    } = &mut p.source
-                    {
-                        **property_mapping = mapping;
-                    }
-                }
-                TypedVariable::Collection(c) => {
-                    if let VariableSource::Cte {
-                        property_mapping, ..
-                    } = &mut c.source
-                    {
-                        **property_mapping = mapping;
-                    }
-                }
-            }
-        }
-    }
 }
 
 // ============================================================================
