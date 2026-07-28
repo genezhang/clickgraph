@@ -2890,6 +2890,57 @@ fn reconcile_stale_cte_name_references(render_plan: &mut RenderPlan, all_ctes: &
     }
 }
 
+/// Post-render fallback (finalization tail of
+/// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// When every table reference in a chained-WITH query has been replaced by a
+/// CTE, the final `render_plan.from` can come back empty. Point it at the last
+/// `with_*` CTE so the query still has a FROM. The alias is the CTE's own
+/// exported-alias part (`with_tag_total_cte_1` → `tag_total`). No-op when there
+/// is no `with_*` CTE.
+///
+/// Caller gates this on `render_plan.from` being `None`, `all_ctes` non-empty,
+/// and no `Union` (each union branch carries its own FROM).
+fn apply_from_fallback_to_last_cte(render_plan: &mut RenderPlan, all_ctes: &[Cte]) {
+    // FALLBACK: If FROM is None but we have CTEs, set FROM to the last CTE
+    // This happens when WITH clauses are chained and all table references have been replaced with CTEs
+    // Skip when Union branches exist — each branch has its own FROM
+    if let Some(last_with_cte) = all_ctes
+        .iter()
+        .rev()
+        .find(|cte| cte.cte_name.starts_with("with_"))
+    {
+        log::debug!(
+            "🔧 build_chained_with_match_cte_plan: FROM clause missing, setting to last CTE: {}",
+            last_with_cte.cte_name
+        );
+
+        // Extract aliases from CTE name: "with_tag_total_cte_1" → "tag_total"
+        let with_alias_part = if let Some(stripped) = last_with_cte.cte_name.strip_prefix("with_") {
+            if let Some(cte_pos) = stripped.rfind("_cte") {
+                &stripped[..cte_pos]
+            } else {
+                stripped
+            }
+        } else {
+            ""
+        };
+
+        render_plan.from = FromTableItem(Some(ViewTableRef {
+            source: std::sync::Arc::new(LogicalPlan::Empty),
+            name: last_with_cte.cte_name.clone(),
+            alias: Some(with_alias_part.to_string()),
+            use_final: false,
+        }));
+
+        log::info!(
+            "🔧 build_chained_with_match_cte_plan: Set FROM to: {} AS '{}'",
+            last_with_cte.cte_name,
+            with_alias_part
+        );
+    }
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -7345,41 +7396,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
         && !all_ctes.is_empty()
         && render_plan.union.0.is_none()
     {
-        // FALLBACK: If FROM is None but we have CTEs, set FROM to the last CTE
-        // This happens when WITH clauses are chained and all table references have been replaced with CTEs
-        // Skip when Union branches exist — each branch has its own FROM
-        if let Some(last_with_cte) = all_ctes
-            .iter()
-            .rev()
-            .find(|cte| cte.cte_name.starts_with("with_"))
-        {
-            log::debug!("🔧 build_chained_with_match_cte_plan: FROM clause missing, setting to last CTE: {}", last_with_cte.cte_name);
-
-            // Extract aliases from CTE name: "with_tag_total_cte_1" → "tag_total"
-            let with_alias_part =
-                if let Some(stripped) = last_with_cte.cte_name.strip_prefix("with_") {
-                    if let Some(cte_pos) = stripped.rfind("_cte") {
-                        &stripped[..cte_pos]
-                    } else {
-                        stripped
-                    }
-                } else {
-                    ""
-                };
-
-            render_plan.from = FromTableItem(Some(ViewTableRef {
-                source: std::sync::Arc::new(LogicalPlan::Empty),
-                name: last_with_cte.cte_name.clone(),
-                alias: Some(with_alias_part.to_string()),
-                use_final: false,
-            }));
-
-            log::info!(
-                "🔧 build_chained_with_match_cte_plan: Set FROM to: {} AS '{}'",
-                last_with_cte.cte_name,
-                with_alias_part
-            );
-        }
+        apply_from_fallback_to_last_cte(&mut render_plan, &all_ctes);
     }
 
     // ==========================================================================
