@@ -221,7 +221,7 @@ variant; `corpus_sweep` + `sql_golden` byte-identical (529 tests), ratchet net-z
 `extract_with_alias`, whose logic moved into the util). **Next: P2.8 (D6) / P2.9
 (D8)** or Phase-4 decomposition of the moved giants (§7.1).
 
-### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1+F1b/#602+#662+F2a+F3+F4 done; F2b/F5 and F1b residue open)
+### P-4 — Phase 4 §7.2: forward resolution through CTE scope  ◐ (F0+F1+F1b/#602+#662+F2a+F3+F4+F6-partial done; **no bounded byte-identical slice remains** — F2b-fold/F2c/F5 are design-cycle/blocked/deferred, taken only when a bug forces them)
 **Concrete staged plan written: `docs/design/FORWARD_RESOLUTION_PLAN.md`.** It
 supersedes the stale `render_plan/AGENTS.md` §10 premise: the `reverse_mapping`
 field §10 says to delete was already removed in #115 (Feb 2026); the debt forked
@@ -253,10 +253,16 @@ later rewriter can recurse into the pattern/subplan. **#602 follow-up #662 done*
 (#663, `17be0351` — carry the node label under the *source* alias so a
 rename-at-barrier resolves; the #602 carry was keyed only by published name).
 **#595 closed** (#702, verified-fixed as collateral of #587 + carry-id-across-
-barrier). **Next: F2b** (reconcile/fold M3) or the remaining **F1b** residue
-(#613→F3 machinery now in place, #643 planner-topology). Per-shape
-patching of this class stays forbidden (§1.6). Remaining Phase-1 pass migrations
-(P1.4+) and Phase-3 §6.2 slices are fill-in work alongside, not blockers.
+barrier). **F6-partial done** (#791 — deleted the now-dead `set_property_mapping`;
+corrected the stale §1.1/§1.2 docs). **Next: nothing byte-identical remains.**
+F2b's assert-half is already satisfied by F0; its fold/delete-M3 half is a
+**design cycle** (arm-safe M1 + drop the containment guard → shifts #593-class
+output), taken only when a #593-class bug forces it — not a refactor slice. F2c
+is blocked (dual-name projection is load-bearing), F5 deferred (needs #583). The
+remaining **F1b** residue (#613→F3 machinery in place, #643 planner-topology) is
+bug-driven, not lane work. Per-shape patching of this class stays forbidden
+(§1.6). Remaining Phase-1 pass migrations (P1.4+) and Phase-3 §6.2 slices are
+fill-in work alongside, not blockers.
 
 ### P-5 — Stats-informed SQL generation  ◐ (S1 implemented on branch; S2/S3 open)
 New. Today all planning is rules/heuristics; the concrete gap is
@@ -303,6 +309,23 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-28: **Phase-4 §7.2 F6-partial — delete dead `set_property_mapping` +
+  correct stale forward-resolution docs** (P-4 lane; PR #791). Byte-identical
+  code deletion: the setter had **zero callers** (since F0 the `property_mapping`
+  is threaded at `define_*` construction time, so no post-hoc patch-in is
+  needed). Also corrected `FORWARD_RESOLUTION_PLAN.md`, whose §1.1/§1.2 still
+  described the **pre-F0** state and mis-scoped F2b: M1 is no longer starved
+  (#592 fixed by F0), M3 has 4+2 call sites (not "one path"), and the F0 M1-vs-M3
+  transition-assert already exists and passes — so **F2b's assert-half is done
+  and its fold-half is a design cycle, not a byte-identical slice**. A scout +
+  adversarial reviewer both verified the deletion and every corrected doc claim
+  against source (APPROVE, 0 defects). Gate: 1607 lib + 531 integration
+  (corpus_sweep + sql_golden byte-identical), ratchet net-zero, clippy clean from
+  a wiped incremental cache, fmt clean. **This is the last bounded byte-identical
+  slice in the whole refactoring mission** — Phases 0–2, §7.1, and every
+  shippable §7.2 slice (F0–F4, F6-partial) are now done; what remains in §7.2 is
+  design-cycle/blocked/deferred, bug-driven. See `FORWARD_RESOLUTION_PLAN.md`
+  §1.1/F2b/F6 and `REFACTORING_SAFETY_PLAN.md` §7.1/§7.2.
 - 2026-07-28: **Phase-4 §7.1 — FORMALLY CLOSED** (P-3 lane; docs-only). The
   entangled-core decomposition is declared complete: across 43 byte-identical/
   behavior-preserving PRs (#740–#785) `replace_v2` went 1070 → 212 ln and
