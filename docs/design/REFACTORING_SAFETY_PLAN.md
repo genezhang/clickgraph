@@ -663,6 +663,22 @@ migrated. Per item:
   standard-schema multi-label patterns, so a null transition-assert here is a
   false-negative — a real check needs a denormalized-endpoint multi-label
   fixture, which does not exist and would be a purpose-built design cycle.
+  **UPDATE (2026-07-28): the fixture was built and the check is no longer
+  vacuous.** `schemas/test/denorm_selfloop_multitype.yaml` is a REACHABLE
+  denorm self-loop (virtual `Actor` embedded in the `events` edge table, both
+  direction maps present, two edge types → multi-type `pattern_combinations`).
+  An in-process transition-assert over it hit the site with genuine denorm
+  endpoints and found **inline == canonical on every hit** (directed /
+  undirected / path). The reason is decisive: the ONLY inputs on which the two
+  predicates diverge — a self-loop node defining just ONE direction's map — are
+  **rejected at schema-build time** (`config.rs:2058`; test
+  `partial_denorm_self_loop_rejected_by_schema_validation`). So on every
+  *admissible* schema the map-agnostic inline form is a **no-op-equivalent**
+  belt-and-suspenders guard. This is now byte-locked: a new lib test
+  (`denorm_self_loop_multitype_no_self_join`) plus 4 corpus entries / 8 goldens
+  pin the denorm-endpoint output on this path, so any future slice-4 change that
+  altered it flips a golden. Verdict stands (keep the inline predicate) but is
+  now **positively covered**, not merely argued.
 - **Slice 2 (`is_fk_edge` proxy, `multi_type_vlp_joins.rs:~764/~1471`) — NOT a
   clean slice.** (a) The ratchet is a substring counter and the canonical answer
   is a field literally named `is_fk_edge`, so migration cannot register as
@@ -1309,13 +1325,17 @@ Phase 3: ◐ Slices 1–2 merged 2026-07-13: GraphNode/ViewScan + query_planner
 byte-identical) · ☑ §6.2 residue triaged (2026-07-28): slice 4 (view_scan denorm)
 RESOLVED as a justified non-migration — transition-assert found the inline
 predicate intentionally divergent from canonical `is_node_denormalized_on_edge`
-(migrating would reintroduce a spurious-self-join bug); slice 2 (`is_fk_edge`
+(migrating would reintroduce a spurious-self-join bug), and the divergence is now
+POSITIVELY COVERED by a purpose-built denorm self-loop multi-type fixture
+(`denorm_selfloop_multitype`, lib test + 8 corpus goldens) proving inline ==
+canonical on every admissible schema (the only divergent input is
+validator-rejected); slice 2 (`is_fk_edge`
 proxy) is a divergence-check not a clean slice + ratchet-neutral; slices 1/5 are
 legit field-reads/plan-state, not re-derivations · ☑ §6.3 legacy scalar-flag
 path already gone (region recreates `PatternSchemaContext` unconditionally) ·
 **Phase 3 substantially complete** — mechanical migrations done; what's left is
-divergence investigation (design-cycle, needs denormalized-endpoint multi-label
-fixtures that don't exist) + the `pattern_schema.rs` dead_code audit. See §6.2/§6.3.
+divergence investigation (slice 2, same shape as slice 4) + the
+`pattern_schema.rs` dead_code audit. See §6.2/§6.3.
 
 Phase 4: ◐ early hoists landed OUT OF ORDER 2026-07-14 (low-risk, accepted):
 3 diagnostic helpers (fe968442), 10 self-contained nested fns (b9ce1d94),
