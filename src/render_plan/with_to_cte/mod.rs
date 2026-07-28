@@ -4126,6 +4126,134 @@ fn prune_joins_covered_by_last_cte(
     Ok(())
 }
 
+/// Build the per-iteration WITH-processing work-list (a STEP of the main loop in
+/// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// Given the WITH clauses `find_all_with_clauses_grouped` produced for the
+/// current plan, this records the analyzer's CTE names (for later remapping
+/// after nested WITHs collapse), keeps only the INNERMOST WITH per alias (those
+/// whose input has no further nested WITH — the others process on subsequent
+/// iterations), and returns the aliases to process this iteration sorted
+/// innermost-first (fewer `_` = more inner, so `friend` before `friend_post`).
+///
+/// Returns `(all_analyzer_cte_names, filtered_grouped_withs, aliases_to_process)`.
+#[allow(clippy::type_complexity)]
+fn build_iteration_worklist(
+    current_plan: &LogicalPlan,
+    grouped_withs: std::collections::HashMap<String, Vec<LogicalPlan>>,
+) -> (
+    std::collections::HashSet<String>,
+    std::collections::HashMap<String, Vec<LogicalPlan>>,
+    Vec<(String, usize)>,
+) {
+    // CRITICAL: Collect ALL analyzer CTE names from ALL WITH clauses in the plan tree
+    // This includes nested WITHs that will be collapsed later. We need to record
+    // the analyzer's CTE names now so we can remap them after collapsing.
+
+    let mut all_analyzer_cte_names: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    collect_analyzer_cte_names(current_plan, &mut all_analyzer_cte_names);
+    log::info!(
+        "🔧 build_chained_with_match_cte_plan: Collected {} analyzer CTE names: {:?}",
+        all_analyzer_cte_names.len(),
+        all_analyzer_cte_names
+    );
+
+    // CRITICAL FIX: For aliases with multiple WITH clauses (nested consecutive WITH with same alias),
+    // we should only process the INNERMOST one per iteration. The others will be processed
+    // in subsequent iterations after the inner one is converted to a CTE.
+    //
+    // Filter strategy: For each alias, only keep the WITH clause whose input has NO nested WITH clauses.
+    // This is the "innermost" WITH that should be processed first.
+    let mut filtered_grouped_withs: std::collections::HashMap<String, Vec<LogicalPlan>> =
+        std::collections::HashMap::new();
+
+    // Also track the original analyzer CTE name for each innermost WithClause
+    let mut original_analyzer_cte_names: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
+    for (alias, plans) in grouped_withs {
+        // NOTE: We do NOT skip aliases that were processed in previous iterations.
+        // Multiple WITH clauses can share the same alias key (e.g., two consecutive
+        // "WITH DISTINCT country, a, b" barriers). Each must be processed as a separate CTE.
+        // The innermost filtering below handles ordering: only WITHs whose input has
+        // no nested WITH clauses are processed in each iteration.
+
+        // Record original count before filtering
+        let original_count = plans.len();
+
+        // Find plans that are innermost (no nested WITH in their input)
+        let innermost_plans: Vec<LogicalPlan> = plans
+                .into_iter()
+                .filter(|plan| {
+                    if let LogicalPlan::WithClause(wc) = plan {
+                        let has_nested = plan_contains_with_clause(&wc.input);
+                        if has_nested {
+                            log::debug!("🔧 build_chained_with_match_cte_plan: Skipping WITH '{}' with nested WITH clauses (will process in next iteration). Input plan type: {:?}", alias, std::mem::discriminant(wc.input.as_ref()));
+                            // Show what's inside this WITH's input tree
+                            show_plan_structure(&wc.input, 0);
+                        } else {
+                            log::debug!("🔧 build_chained_with_match_cte_plan: Keeping innermost WITH '{}' for processing", alias);
+                            // Capture the original analyzer CTE name for this innermost WithClause
+                            if let Some(analyzer_cte_name) = wc.cte_references.get(&alias) {
+                                original_analyzer_cte_names.insert(alias.clone(), analyzer_cte_name.clone());
+                                log::debug!("🔧 build_chained_with_match_cte_plan: Captured original analyzer CTE name '{}' for alias '{}'", analyzer_cte_name, alias);
+                            } else {
+                                log::debug!("🔧 build_chained_with_match_cte_plan: No analyzer CTE name found for innermost WITH '{}'", alias);
+                            }
+                        }
+                        !has_nested
+                    } else {
+                        log::debug!("🔧 build_chained_with_match_cte_plan: Plan for alias '{}' is not WithClause: {:?}", alias, std::mem::discriminant(plan));
+                        true  // Not a WithClause, keep it
+                    }
+                })
+                .collect();
+
+        if !innermost_plans.is_empty() {
+            log::debug!("🔧 build_chained_with_match_cte_plan: Alias '{}': filtered {} plan(s) to {} innermost",
+                           alias, original_count, innermost_plans.len());
+            filtered_grouped_withs.insert(alias, innermost_plans);
+        } else {
+            log::debug!("🔧 build_chained_with_match_cte_plan: Alias '{}': NO innermost plans after filtering {} total",
+                           alias, original_count);
+        }
+    }
+
+    // DEBUG: Log the contents of original_analyzer_cte_names right after population
+    log::debug!(
+        "🔧 DEBUG: original_analyzer_cte_names after innermost filtering: {:?}",
+        original_analyzer_cte_names
+    );
+
+    // Collect alias info for processing (to avoid holding references across mutation)
+    let mut aliases_to_process: Vec<(String, usize)> = filtered_grouped_withs
+        .iter()
+        .map(|(alias, plans)| (alias.clone(), plans.len()))
+        .collect();
+
+    // Sort aliases to process innermost first (simpler names = fewer underscores = more inner)
+    // This ensures "friend" is processed before "friend_post"
+    aliases_to_process.sort_by(|a, b| {
+        let a_depth = a.0.matches('_').count();
+        let b_depth = b.0.matches('_').count();
+        a_depth.cmp(&b_depth)
+    });
+    log::info!(
+        "🔧 build_chained_with_match_cte_plan: Sorted aliases: {:?}",
+        aliases_to_process
+            .iter()
+            .map(|(a, _)| a)
+            .collect::<Vec<_>>()
+    );
+
+    (
+        all_analyzer_cte_names,
+        filtered_grouped_withs,
+        aliases_to_process,
+    )
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -4281,106 +4409,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
             break;
         }
 
-        // CRITICAL: Collect ALL analyzer CTE names from ALL WITH clauses in the plan tree
-        // This includes nested WITHs that will be collapsed later. We need to record
-        // the analyzer's CTE names now so we can remap them after collapsing.
-
-        let mut all_analyzer_cte_names: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        collect_analyzer_cte_names(&current_plan, &mut all_analyzer_cte_names);
-        log::info!(
-            "🔧 build_chained_with_match_cte_plan: Collected {} analyzer CTE names: {:?}",
-            all_analyzer_cte_names.len(),
-            all_analyzer_cte_names
-        );
-
-        // CRITICAL FIX: For aliases with multiple WITH clauses (nested consecutive WITH with same alias),
-        // we should only process the INNERMOST one per iteration. The others will be processed
-        // in subsequent iterations after the inner one is converted to a CTE.
-        //
-        // Filter strategy: For each alias, only keep the WITH clause whose input has NO nested WITH clauses.
-        // This is the "innermost" WITH that should be processed first.
-        let mut filtered_grouped_withs: std::collections::HashMap<String, Vec<LogicalPlan>> =
-            std::collections::HashMap::new();
-
-        // Also track the original analyzer CTE name for each innermost WithClause
-        let mut original_analyzer_cte_names: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-
-        for (alias, plans) in grouped_withs {
-            // NOTE: We do NOT skip aliases that were processed in previous iterations.
-            // Multiple WITH clauses can share the same alias key (e.g., two consecutive
-            // "WITH DISTINCT country, a, b" barriers). Each must be processed as a separate CTE.
-            // The innermost filtering below handles ordering: only WITHs whose input has
-            // no nested WITH clauses are processed in each iteration.
-
-            // Record original count before filtering
-            let original_count = plans.len();
-
-            // Find plans that are innermost (no nested WITH in their input)
-            let innermost_plans: Vec<LogicalPlan> = plans
-                .into_iter()
-                .filter(|plan| {
-                    if let LogicalPlan::WithClause(wc) = plan {
-                        let has_nested = plan_contains_with_clause(&wc.input);
-                        if has_nested {
-                            log::debug!("🔧 build_chained_with_match_cte_plan: Skipping WITH '{}' with nested WITH clauses (will process in next iteration). Input plan type: {:?}", alias, std::mem::discriminant(wc.input.as_ref()));
-                            // Show what's inside this WITH's input tree
-                            show_plan_structure(&wc.input, 0);
-                        } else {
-                            log::debug!("🔧 build_chained_with_match_cte_plan: Keeping innermost WITH '{}' for processing", alias);
-                            // Capture the original analyzer CTE name for this innermost WithClause
-                            if let Some(analyzer_cte_name) = wc.cte_references.get(&alias) {
-                                original_analyzer_cte_names.insert(alias.clone(), analyzer_cte_name.clone());
-                                log::debug!("🔧 build_chained_with_match_cte_plan: Captured original analyzer CTE name '{}' for alias '{}'", analyzer_cte_name, alias);
-                            } else {
-                                log::debug!("🔧 build_chained_with_match_cte_plan: No analyzer CTE name found for innermost WITH '{}'", alias);
-                            }
-                        }
-                        !has_nested
-                    } else {
-                        log::debug!("🔧 build_chained_with_match_cte_plan: Plan for alias '{}' is not WithClause: {:?}", alias, std::mem::discriminant(plan));
-                        true  // Not a WithClause, keep it
-                    }
-                })
-                .collect();
-
-            if !innermost_plans.is_empty() {
-                log::debug!("🔧 build_chained_with_match_cte_plan: Alias '{}': filtered {} plan(s) to {} innermost",
-                           alias, original_count, innermost_plans.len());
-                filtered_grouped_withs.insert(alias, innermost_plans);
-            } else {
-                log::debug!("🔧 build_chained_with_match_cte_plan: Alias '{}': NO innermost plans after filtering {} total",
-                           alias, original_count);
-            }
-        }
-
-        // DEBUG: Log the contents of original_analyzer_cte_names right after population
-        log::debug!(
-            "🔧 DEBUG: original_analyzer_cte_names after innermost filtering: {:?}",
-            original_analyzer_cte_names
-        );
-
-        // Collect alias info for processing (to avoid holding references across mutation)
-        let mut aliases_to_process: Vec<(String, usize)> = filtered_grouped_withs
-            .iter()
-            .map(|(alias, plans)| (alias.clone(), plans.len()))
-            .collect();
-
-        // Sort aliases to process innermost first (simpler names = fewer underscores = more inner)
-        // This ensures "friend" is processed before "friend_post"
-        aliases_to_process.sort_by(|a, b| {
-            let a_depth = a.0.matches('_').count();
-            let b_depth = b.0.matches('_').count();
-            a_depth.cmp(&b_depth)
-        });
-        log::info!(
-            "🔧 build_chained_with_match_cte_plan: Sorted aliases: {:?}",
-            aliases_to_process
-                .iter()
-                .map(|(a, _)| a)
-                .collect::<Vec<_>>()
-        );
+        // Build this iteration's work-list: record analyzer CTE names, keep only
+        // the innermost WITH per alias, and sort aliases innermost-first.
+        let (all_analyzer_cte_names, filtered_grouped_withs, aliases_to_process) =
+            build_iteration_worklist(&current_plan, grouped_withs);
 
         // Track if any alias was actually processed in this iteration
         let mut any_processed_this_iteration = false;
