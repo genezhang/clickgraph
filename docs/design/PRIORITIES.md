@@ -297,6 +297,26 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-28: **Phase-4 §7.1 — `replace_with_clause_with_cte_reference_v2` DONE
+  + `build_chained` clean regions all extracted** (P-3 lane; PRs #749–#768, 20
+  more since the 2026-07-27 entry). `replace_v2` (the second §7.1 giant) is fully
+  decomposed **~1070 → 212 lines** (under the ~500-ln exit criterion): 4 nested
+  `fn`s hoisted to module level (#763, one renamed `extract_node_label_from_arc_plan`
+  to dodge a `cte_extraction.rs` same-name/different-sig collision) + its 5 large
+  `match`-arms (Projection/GraphJoins/GraphRel/Union/WithClause) extracted into
+  `replace_v2_<variant>_arm` handlers (#764–#768) — each arm reads only the 4 fn
+  params + its binding (pure recursive rewriter, no shared accumulator). SHADOW
+  LESSON (#767): the fn's `use logical_plan::*` shadows module-level type imports
+  (`logical_plan::Union` ≠ `render_plan::Union`), so hoisted handlers must
+  re-import the exact `logical_plan::` types. Meanwhile `build_chained` is 5478 →
+  **~2646 lines**: every control-flow-clean main-loop sub-region is now extracted
+  (#749–#762, incl. `apply_pattern_comprehensions` ~446 ln and the RefCell-slice
+  `build_with_cte_property_mapping` — no `WithCteBuildState` struct needed, pass
+  `&refcell.borrow()`). **Remaining:** only `build_chained`'s ~1970-ln inner
+  `for with_plan in with_plans` render-loop — its phases mutate shared locals +
+  contain `break 'alias_loop`/`?` that escape the loop, needing a
+  ControlFlow/action-enum or context-struct (step-change; deferred pending
+  go-ahead). See `REFACTORING_SAFETY_PLAN.md` §7.1.
 - 2026-07-27: **Phase-4 §7.1 — `build_chained_with_match_cte_plan` decomposition
   IN PROGRESS** (P-3 lane, follows P2.10). 11 PRs merged (#740–#750), each one
   self-contained region → named `fn` sibling, all gate-green (1607 lib + 529
