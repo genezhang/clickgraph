@@ -6680,6 +6680,59 @@ fn fix_composite_alias_refs_and_augment_scope(
     }
 }
 
+/// Compute the pattern-comprehension result aliases to skip in WITH-item
+/// projection (a STEP of the main loop's inner render-loop in
+/// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// Returns `(pc_result_aliases, pc_correlated_aliases)`. For the LEGACY CTE+JOIN
+/// path (no `pattern_hops`), PC result aliases go in the first set so their WITH
+/// items are skipped (results arrive via CTE LEFT JOINs). For the correlated
+/// subquery path (`pattern_hops` populated), they go in the second set so the
+/// items are kept and `count(*)` can be replaced inline. Pure function of the
+/// segment's first WITH plan.
+fn compute_pc_skip_aliases(
+    with_plans: &[LogicalPlan],
+) -> (
+    std::collections::HashSet<String>,
+    std::collections::HashSet<String>,
+) {
+    let (pc_result_aliases, pc_correlated_aliases): (
+        std::collections::HashSet<String>,
+        std::collections::HashSet<String>,
+    ) = with_plans
+        .first()
+        .and_then(|plan| match plan {
+            LogicalPlan::WithClause(wc) if !wc.pattern_comprehensions.is_empty() => {
+                // If any PC has pattern_hops, use correlated subquery path → don't skip
+                let has_pattern_hops = wc
+                    .pattern_comprehensions
+                    .iter()
+                    .any(|pc| !pc.pattern_hops.is_empty());
+                if has_pattern_hops {
+                    // Correlated subquery path: collect aliases that contain count(*)
+                    // placeholders — these will be replaced with scalar subqueries,
+                    // so they should NOT trigger has_aggregation.
+                    let correlated: std::collections::HashSet<String> = wc
+                        .pattern_comprehensions
+                        .iter()
+                        .map(|pc| pc.result_alias.clone())
+                        .collect();
+                    Some((std::collections::HashSet::new(), correlated))
+                } else {
+                    let legacy: std::collections::HashSet<String> = wc
+                        .pattern_comprehensions
+                        .iter()
+                        .map(|pc| pc.result_alias.clone())
+                        .collect();
+                    Some((legacy, std::collections::HashSet::new()))
+                }
+            }
+            _ => None,
+        })
+        .unwrap_or_default();
+    (pc_result_aliases, pc_correlated_aliases)
+}
+
 /// Register schemas for VLP CTEs used by this render segment (a STEP of the main
 /// loop's inner render-loop in `build_chained_with_match_cte_plan`, Phase-4 §7.1
 /// extraction).
@@ -7528,40 +7581,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 // (their results come from CTE LEFT JOINs, not from regular WITH item processing)
                 // NOTE: Only skip items for LEGACY CTE+JOIN path. For the new correlated subquery
                 // path (pattern_hops populated), keep items so count(*) can be replaced inline.
-                let (pc_result_aliases, pc_correlated_aliases): (
-                    std::collections::HashSet<String>,
-                    std::collections::HashSet<String>,
-                ) = with_plans
-                    .first()
-                    .and_then(|plan| match plan {
-                        LogicalPlan::WithClause(wc) if !wc.pattern_comprehensions.is_empty() => {
-                            // If any PC has pattern_hops, use correlated subquery path → don't skip
-                            let has_pattern_hops = wc
-                                .pattern_comprehensions
-                                .iter()
-                                .any(|pc| !pc.pattern_hops.is_empty());
-                            if has_pattern_hops {
-                                // Correlated subquery path: collect aliases that contain count(*)
-                                // placeholders — these will be replaced with scalar subqueries,
-                                // so they should NOT trigger has_aggregation.
-                                let correlated: std::collections::HashSet<String> = wc
-                                    .pattern_comprehensions
-                                    .iter()
-                                    .map(|pc| pc.result_alias.clone())
-                                    .collect();
-                                Some((std::collections::HashSet::new(), correlated))
-                            } else {
-                                let legacy: std::collections::HashSet<String> = wc
-                                    .pattern_comprehensions
-                                    .iter()
-                                    .map(|pc| pc.result_alias.clone())
-                                    .collect();
-                                Some((legacy, std::collections::HashSet::new()))
-                            }
-                        }
-                        _ => None,
-                    })
-                    .unwrap_or_default();
+                let (pc_result_aliases, pc_correlated_aliases) =
+                    compute_pc_skip_aliases(&with_plans);
 
                 // Apply WITH items projection if present
                 // This handles cases like `WITH friend.firstName AS name` or `WITH count(friend) AS cnt`
