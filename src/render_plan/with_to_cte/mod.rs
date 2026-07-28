@@ -4423,6 +4423,84 @@ fn derive_with_cte_name(
     (exported_aliases, pattern_comprehensions, cte_name)
 }
 
+/// Combine the rendered WITH plans for one alias group into a single CTE body
+/// (a STEP of the main loop's `'alias_loop` in
+/// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// A single render becomes the CTE body directly. Multiple renders (the same
+/// alias exported by several Union branches) are combined under a `UNION ALL`
+/// wrapper: the per-branch ORDER BY / SKIP / LIMIT / HAVING are cleared and
+/// lifted onto the wrapper (taken from the first render, since all branches
+/// carry the same WITH-clause modifiers).
+fn combine_with_renders_into_cte(
+    mut rendered_plans: Vec<RenderPlan>,
+    with_alias: &str,
+    cte_name: &str,
+) -> RenderPlan {
+    // Extract ORDER BY, SKIP, LIMIT from first rendered plan (they should all have the same modifiers)
+    // These come from the WithClause and were applied to each rendered plan earlier
+    let first_order_by = if !rendered_plans.is_empty() && !rendered_plans[0].order_by.0.is_empty() {
+        Some(rendered_plans[0].order_by.clone())
+    } else {
+        None
+    };
+    let first_skip = rendered_plans.first().and_then(|p| p.skip.0);
+    let first_limit = rendered_plans.first().and_then(|p| p.limit.0);
+
+    let with_cte_render = if rendered_plans.len() == 1 {
+        // Safety: len() == 1 guarantees pop() returns Some
+        rendered_plans
+            .pop()
+            .expect("rendered_plans has exactly one element")
+    } else {
+        // Multiple WITH clauses with same alias - create UNION ALL CTE
+        log::debug!("🔧 build_chained_with_match_cte_plan: Combining {} WITH renders with UNION ALL for alias '{}'",
+                   rendered_plans.len(), with_alias);
+
+        // Clear ORDER BY/SKIP/LIMIT/HAVING from individual plans - they'll be applied to the UNION wrapper
+        let first_having = rendered_plans.first().and_then(|p| p.having_clause.clone());
+        for plan in &mut rendered_plans {
+            plan.order_by = OrderByItems(vec![]);
+            plan.skip = SkipItem(None);
+            plan.limit = LimitItem(None);
+            plan.having_clause = None;
+        }
+
+        // Create a wrapper RenderPlan with UnionItems, preserving ORDER BY/SKIP/LIMIT/HAVING
+        RenderPlan {
+            ctes: CteItems(vec![]),
+            select: SelectItems {
+                items: vec![],
+                distinct: false,
+            },
+            from: FromTableItem(None),
+            joins: JoinItems(vec![]),
+            array_join: ArrayJoinItem(Vec::new()),
+            filters: FilterItems(None),
+            group_by: GroupByExpressions(vec![]),
+            having_clause: first_having,
+            order_by: first_order_by.unwrap_or_else(|| OrderByItems(vec![])),
+            skip: SkipItem(first_skip),
+            limit: LimitItem(first_limit),
+            union: UnionItems(Some(Union {
+                input: rendered_plans,
+                union_type: crate::render_plan::UnionType::All,
+                is_cypher_union: false,
+            })),
+            fixed_path_info: None,
+            is_multi_label_scan: false,
+            variable_registry: None,
+        }
+    };
+
+    log::info!(
+        "🔧 build_chained_with_match_cte_plan: Created CTE '{}'",
+        cte_name
+    );
+
+    with_cte_render
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -6622,68 +6700,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 &mut cte_name_allocator,
             );
 
-            // Create CTE content - if multiple renders, combine with UNION ALL
-            // Extract ORDER BY, SKIP, LIMIT from first rendered plan (they should all have the same modifiers)
-            // These come from the WithClause and were applied to each rendered plan earlier
-            let first_order_by =
-                if !rendered_plans.is_empty() && !rendered_plans[0].order_by.0.is_empty() {
-                    Some(rendered_plans[0].order_by.clone())
-                } else {
-                    None
-                };
-            let first_skip = rendered_plans.first().and_then(|p| p.skip.0);
-            let first_limit = rendered_plans.first().and_then(|p| p.limit.0);
-
-            let mut with_cte_render = if rendered_plans.len() == 1 {
-                // Safety: len() == 1 guarantees pop() returns Some
-                rendered_plans
-                    .pop()
-                    .expect("rendered_plans has exactly one element")
-            } else {
-                // Multiple WITH clauses with same alias - create UNION ALL CTE
-                log::debug!("🔧 build_chained_with_match_cte_plan: Combining {} WITH renders with UNION ALL for alias '{}'",
-                           rendered_plans.len(), with_alias);
-
-                // Clear ORDER BY/SKIP/LIMIT/HAVING from individual plans - they'll be applied to the UNION wrapper
-                let first_having = rendered_plans.first().and_then(|p| p.having_clause.clone());
-                for plan in &mut rendered_plans {
-                    plan.order_by = OrderByItems(vec![]);
-                    plan.skip = SkipItem(None);
-                    plan.limit = LimitItem(None);
-                    plan.having_clause = None;
-                }
-
-                // Create a wrapper RenderPlan with UnionItems, preserving ORDER BY/SKIP/LIMIT/HAVING
-                RenderPlan {
-                    ctes: CteItems(vec![]),
-                    select: SelectItems {
-                        items: vec![],
-                        distinct: false,
-                    },
-                    from: FromTableItem(None),
-                    joins: JoinItems(vec![]),
-                    array_join: ArrayJoinItem(Vec::new()),
-                    filters: FilterItems(None),
-                    group_by: GroupByExpressions(vec![]),
-                    having_clause: first_having,
-                    order_by: first_order_by.unwrap_or_else(|| OrderByItems(vec![])),
-                    skip: SkipItem(first_skip),
-                    limit: LimitItem(first_limit),
-                    union: UnionItems(Some(Union {
-                        input: rendered_plans,
-                        union_type: crate::render_plan::UnionType::All,
-                        is_cypher_union: false,
-                    })),
-                    fixed_path_info: None,
-                    is_multi_label_scan: false,
-                    variable_registry: None,
-                }
-            };
-
-            log::info!(
-                "🔧 build_chained_with_match_cte_plan: Created CTE '{}'",
-                cte_name
-            );
+            // Create CTE content - if multiple renders, combine with UNION ALL.
+            // See `combine_with_renders_into_cte`.
+            let mut with_cte_render =
+                combine_with_renders_into_cte(rendered_plans, &with_alias, &cte_name);
 
             // Extract nested CTEs from the rendered plan (e.g., VLP recursive CTEs)
             // These need to be hoisted to the top level before the WITH CTE
