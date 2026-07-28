@@ -1242,6 +1242,142 @@ fn replace_v2_union_arm(
     }))
 }
 
+/// Extract the node label from a plan tree by traversing through wrapper nodes.
+/// Hoisted out of `replace_with_clause_with_cte_reference_v2` (Phase-4 §7.1);
+/// renamed from `extract_node_label_from_plan` to avoid colliding with the
+/// different-signature (`&LogicalPlan`) fn of that name in `cte_extraction.rs`.
+fn extract_node_label_from_arc_plan(plan: &std::sync::Arc<LogicalPlan>) -> Option<String> {
+    match plan.as_ref() {
+        LogicalPlan::GraphNode(gn) => gn.label.clone(),
+        LogicalPlan::Filter(f) => extract_node_label_from_arc_plan(&f.input),
+        LogicalPlan::Projection(p) => extract_node_label_from_arc_plan(&p.input),
+        LogicalPlan::WithClause(wc) => extract_node_label_from_arc_plan(&wc.input),
+        _ => None,
+    }
+}
+
+/// Handle the `WithClause` arm of `replace_with_clause_with_cte_reference_v2`
+/// (Phase-4 §7.1 extraction).
+///
+/// If this WithClause is the innermost target (its key matches `with_alias` and
+/// its input has no further nested WITH), replace it with a CTE reference
+/// (preserving the underlying node label so VLP CTE extraction can determine the
+/// start/end node type); if it is the target but still has nested WITH, or is a
+/// non-target wrapper, recurse into the input and rebuild the WithClause.
+fn replace_v2_with_clause_arm(
+    wc: &crate::query_planner::logical_plan::WithClause,
+    with_alias: &str,
+    cte_name: &str,
+    pre_with_aliases: &std::collections::HashSet<String>,
+    cte_schemas: &crate::render_plan::CteSchemas,
+) -> RenderPlanBuilderResult<LogicalPlan> {
+    use std::sync::Arc;
+
+    // Generate key same way as find_all_with_clauses_grouped does
+    let this_wc_key = with_clause_key(wc);
+    let is_target_with = this_wc_key == with_alias;
+    let has_nested = plan_contains_with_clause(&wc.input);
+    log::debug!(
+        "🔧 replace_v2: WithClause with key '{}', looking for '{}', is_target: {}, has_nested: {}",
+        this_wc_key,
+        with_alias,
+        is_target_with,
+        has_nested
+    );
+
+    if is_target_with && !plan_contains_with_clause(&wc.input) {
+        // This is THE WithClause we're replacing, and it's innermost
+        log::debug!(
+            "🔧 replace_v2: FOUND AND REPLACING target innermost WithClause with key '{}' for alias '{}' with CTE '{}'",
+            this_wc_key, with_alias, cte_name
+        );
+        log::debug!(
+            "🔧 replace_v2: WithClause exported_aliases={:?}, input type={:?}",
+            wc.exported_aliases,
+            std::mem::discriminant(wc.input.as_ref())
+        );
+        let mut cte_ref = create_cte_reference(cte_name, with_alias, cte_schemas);
+        // Preserve the original node label from the WithClause's underlying plan
+        // so VLP CTE extraction can determine the start/end node type
+        if let LogicalPlan::GraphNode(ref mut gn) = cte_ref {
+            gn.label = extract_node_label_from_arc_plan(&wc.input);
+        }
+        Ok(cte_ref)
+    } else if is_target_with {
+        // This is THE WithClause, but it has nested WITH clauses - error case
+        // (We should be processing inner ones first)
+        log::debug!(
+            "🔧 replace_v2: Target WithClause has nested WITH - should process inner first!"
+        );
+        let new_input = replace_with_clause_with_cte_reference_v2(
+            &wc.input,
+            with_alias,
+            cte_name,
+            pre_with_aliases,
+            cte_schemas,
+        )?;
+
+        // DISABLED: Don't collapse passthrough WITHs here (same reason as above)
+        // Let the iteration loop handle them properly
+        //
+        // // Check if after recursion, the new_input is a CTE reference
+        // // and this WITH is a simple passthrough - if so, collapse it
+        // if is_simple_cte_passthrough(&new_input, wc) {
+        //     log::debug!(
+        //         "🔧 replace_v2: Collapsing passthrough WithClause to CTE reference"
+        //     );
+        //     return Ok(new_input);
+        // }
+
+        log::debug!(
+            "🔧 DEBUG replace_v2: Creating new outer WithClause with wc.cte_references = {:?}",
+            wc.cte_references
+        );
+
+        Ok(LogicalPlan::WithClause(
+            wc.with_new_input(Arc::new(new_input)),
+        ))
+    } else {
+        // This is NOT the WithClause we're looking for, but we need to recurse
+        // to find and replace the inner one
+        log::debug!(
+            "🔧 replace_v2: Not target WithClause (key='{}') - recursing into input to find '{}'",
+            this_wc_key,
+            with_alias
+        );
+        log::debug!(
+            "🔧 DEBUG replace_v2: outer wc.cte_references = {:?}",
+            wc.cte_references
+        );
+        let new_input = replace_with_clause_with_cte_reference_v2(
+            &wc.input,
+            with_alias,
+            cte_name,
+            pre_with_aliases,
+            cte_schemas,
+        )?;
+
+        // DISABLED: Don't collapse passthrough WITHs here.
+        // Instead, let the iteration loop handle them. When the outer WITH
+        // is processed in the next iteration, its cte_references will tell us
+        // the CTE name to use, and we can properly handle expression remapping.
+        //
+        // Previously, collapsing here caused expressions that reference the
+        // collapsed WITH's CTE name to become stale (the CTE was never created).
+        //
+        // // Check if after recursion, the new_input is a CTE reference
+        // // and this WITH is a simple passthrough - if so, collapse it
+        // if is_simple_cte_passthrough(&new_input, wc) {
+        //     log::debug!("🔧 replace_v2: Collapsing passthrough WithClause (not target) to CTE reference");
+        //     return Ok(new_input);
+        // }
+
+        Ok(LogicalPlan::WithClause(
+            wc.with_new_input(Arc::new(new_input)),
+        ))
+    }
+}
+
 pub(crate) fn replace_with_clause_with_cte_reference_v2(
     plan: &LogicalPlan,
     with_alias: &str,
@@ -1258,115 +1394,11 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
         with_alias
     );
 
-    /// Extract the node label from a plan tree by traversing through wrapper nodes
-    fn extract_node_label_from_plan(plan: &Arc<LogicalPlan>) -> Option<String> {
-        match plan.as_ref() {
-            LogicalPlan::GraphNode(gn) => gn.label.clone(),
-            LogicalPlan::Filter(f) => extract_node_label_from_plan(&f.input),
-            LogicalPlan::Projection(p) => extract_node_label_from_plan(&p.input),
-            LogicalPlan::WithClause(wc) => extract_node_label_from_plan(&wc.input),
-            _ => None,
-        }
-    }
-
     match plan {
         // NEW: Handle WithClause type
         // Key insight: Check if this WithClause's generated key matches the alias we're looking for
         LogicalPlan::WithClause(wc) => {
-            // Generate key same way as find_all_with_clauses_grouped does
-            let this_wc_key = with_clause_key(wc);
-            let is_target_with = this_wc_key == with_alias;
-            let has_nested = plan_contains_with_clause(&wc.input);
-            log::debug!(
-                "🔧 replace_v2: WithClause with key '{}', looking for '{}', is_target: {}, has_nested: {}",
-                this_wc_key,
-                with_alias,
-                is_target_with,
-                has_nested
-            );
-
-            if is_target_with && !plan_contains_with_clause(&wc.input) {
-                // This is THE WithClause we're replacing, and it's innermost
-                log::debug!(
-                    "🔧 replace_v2: FOUND AND REPLACING target innermost WithClause with key '{}' for alias '{}' with CTE '{}'",
-                    this_wc_key, with_alias, cte_name
-                );
-                log::debug!(
-                    "🔧 replace_v2: WithClause exported_aliases={:?}, input type={:?}",
-                    wc.exported_aliases,
-                    std::mem::discriminant(wc.input.as_ref())
-                );
-                let mut cte_ref = create_cte_reference(cte_name, with_alias, cte_schemas);
-                // Preserve the original node label from the WithClause's underlying plan
-                // so VLP CTE extraction can determine the start/end node type
-                if let LogicalPlan::GraphNode(ref mut gn) = cte_ref {
-                    gn.label = extract_node_label_from_plan(&wc.input);
-                }
-                Ok(cte_ref)
-            } else if is_target_with {
-                // This is THE WithClause, but it has nested WITH clauses - error case
-                // (We should be processing inner ones first)
-                log::debug!("🔧 replace_v2: Target WithClause has nested WITH - should process inner first!");
-                let new_input = replace_with_clause_with_cte_reference_v2(
-                    &wc.input,
-                    with_alias,
-                    cte_name,
-                    pre_with_aliases,
-                    cte_schemas,
-                )?;
-
-                // DISABLED: Don't collapse passthrough WITHs here (same reason as above)
-                // Let the iteration loop handle them properly
-                //
-                // // Check if after recursion, the new_input is a CTE reference
-                // // and this WITH is a simple passthrough - if so, collapse it
-                // if is_simple_cte_passthrough(&new_input, wc) {
-                //     log::debug!(
-                //         "🔧 replace_v2: Collapsing passthrough WithClause to CTE reference"
-                //     );
-                //     return Ok(new_input);
-                // }
-
-                log::debug!("🔧 DEBUG replace_v2: Creating new outer WithClause with wc.cte_references = {:?}", wc.cte_references);
-
-                Ok(LogicalPlan::WithClause(
-                    wc.with_new_input(Arc::new(new_input)),
-                ))
-            } else {
-                // This is NOT the WithClause we're looking for, but we need to recurse
-                // to find and replace the inner one
-                log::debug!("🔧 replace_v2: Not target WithClause (key='{}') - recursing into input to find '{}'", this_wc_key, with_alias);
-                log::debug!(
-                    "🔧 DEBUG replace_v2: outer wc.cte_references = {:?}",
-                    wc.cte_references
-                );
-                let new_input = replace_with_clause_with_cte_reference_v2(
-                    &wc.input,
-                    with_alias,
-                    cte_name,
-                    pre_with_aliases,
-                    cte_schemas,
-                )?;
-
-                // DISABLED: Don't collapse passthrough WITHs here.
-                // Instead, let the iteration loop handle them. When the outer WITH
-                // is processed in the next iteration, its cte_references will tell us
-                // the CTE name to use, and we can properly handle expression remapping.
-                //
-                // Previously, collapsing here caused expressions that reference the
-                // collapsed WITH's CTE name to become stale (the CTE was never created).
-                //
-                // // Check if after recursion, the new_input is a CTE reference
-                // // and this WITH is a simple passthrough - if so, collapse it
-                // if is_simple_cte_passthrough(&new_input, wc) {
-                //     log::debug!("🔧 replace_v2: Collapsing passthrough WithClause (not target) to CTE reference");
-                //     return Ok(new_input);
-                // }
-
-                Ok(LogicalPlan::WithClause(
-                    wc.with_new_input(Arc::new(new_input)),
-                ))
-            }
+            replace_v2_with_clause_arm(wc, with_alias, cte_name, pre_with_aliases, cte_schemas)
         }
 
         LogicalPlan::GraphRel(graph_rel) => replace_v2_graph_rel_arm(
