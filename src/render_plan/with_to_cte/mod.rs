@@ -6680,6 +6680,29 @@ fn fix_composite_alias_refs_and_augment_scope(
     }
 }
 
+/// Re-attach UNWIND array joins to a nested-WITH-rendered CTE body (a STEP of the
+/// main loop's inner render-loop in `build_chained_with_match_cte_plan`, Phase-4
+/// §7.1 extraction).
+///
+/// When a WITH segment contains an UNWIND (e.g. `UNWIND [1,2,3] AS x WITH x ...`),
+/// the CTE-body render path can drop the array expansion, leaving the unwound
+/// variable undefined. Re-extract the array joins from the segment and attach them
+/// so the CTE keeps its ARRAY JOIN / LATERAL VIEW. No-op when the render already
+/// carries array joins. (issue #401)
+fn reattach_unwind_array_joins(
+    rendered: &mut RenderPlan,
+    plan_to_render: &LogicalPlan,
+) -> RenderPlanBuilderResult<()> {
+    if rendered.array_join.0.is_empty() {
+        let array_joins =
+            <LogicalPlan as super::join_builder::JoinBuilder>::extract_array_join(plan_to_render)?;
+        if !array_joins.is_empty() {
+            rendered.array_join = ArrayJoinItem(array_joins);
+        }
+    }
+    Ok(())
+}
+
 /// Compute the pattern-comprehension result aliases to skip in WITH-item
 /// projection (a STEP of the main loop's inner render-loop in
 /// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
@@ -7516,22 +7539,9 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     plan_to_render.to_render_plan_with_ctx(schema, plan_ctx, body_scope_ref)?
                 };
 
-                // When a WITH segment contains an UNWIND (e.g. `UNWIND [1,2,3] AS x
-                // WITH x ...`), the CTE-body render path above can drop the array
-                // expansion, leaving the unwound variable undefined in the CTE body.
-                // Re-extract the array joins from the segment and attach them so the
-                // CTE keeps its ARRAY JOIN / LATERAL VIEW. The empty FROM falls back
-                // to the dialect's one-row base at SQL-generation time, exactly like a
-                // non-CTE UNWIND. (issue #401)
-                if rendered.array_join.0.is_empty() {
-                    let array_joins =
-                        <LogicalPlan as super::join_builder::JoinBuilder>::extract_array_join(
-                            plan_to_render,
-                        )?;
-                    if !array_joins.is_empty() {
-                        rendered.array_join = ArrayJoinItem(array_joins);
-                    }
-                }
+                // Re-attach UNWIND array joins the CTE-body render may have dropped.
+                // See `reattach_unwind_array_joins` (issue #401).
+                reattach_unwind_array_joins(&mut rendered, plan_to_render)?;
 
                 // Extract + register the schemas of any CTEs produced by a nested
                 // WITH render. See `extract_nested_cte_schemas`.
