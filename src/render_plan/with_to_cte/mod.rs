@@ -3201,6 +3201,782 @@ fn resolve_final_from_against_cte(
     }
 }
 
+/// Post-render cross-table WITH CTE-JOIN pass (finalization tail of
+/// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// Handles patterns like `WITH a, b MATCH (c)-[]->(d) WHERE a.x = c.x`: the
+/// final `render_plan.from` is the fresh post-WITH table (`c`), but the aliases
+/// exported by the WITH barrier (`a`, `b`) live in a CTE that isn't joined yet.
+/// When FROM is a real table (not a `with_*` CTE) and CTE references exist, add
+/// the CTE JOIN(s) — reconstructing each ON condition from the correlation
+/// predicates captured before the plan was transformed
+/// (`original_correlation_predicates`) / the pre-WITH filter, and rewrite the
+/// affected SELECT/JOIN references onto the CTE composite alias.
+///
+/// #593: skipped for a Cypher-UNION base arm (the caller passes
+/// `is_cypher_union_plan`) — that FROM is the first arm's own independent scan
+/// and must never be cross-joined to another arm's WITH-CTE, since the
+/// accumulated `cte_references` belongs to that other arm.
+#[allow(clippy::too_many_arguments)]
+fn resolve_cross_table_with_cte_joins(
+    render_plan: &mut RenderPlan,
+    cte_references: &HashMap<String, String>,
+    cte_schemas: &crate::render_plan::CteSchemas,
+    original_correlation_predicates: &[LogicalExpr],
+    current_plan: &LogicalPlan,
+    schema: &GraphSchema,
+    scope: Option<&super::variable_scope::VariableScope>,
+    is_cypher_union_plan: bool,
+) -> RenderPlanBuilderResult<()> {
+    if let FromTableItem(Some(from_ref)) = &render_plan.from {
+        // #593: skip for a Cypher-UNION base arm — its FROM is the first arm's
+        // own independent scan and must never be cross-joined to another arm's
+        // WITH-CTE (the accumulated `cte_references` belongs to that other arm).
+        // Check if FROM is NOT a CTE (i.e., it's a regular table from the second MATCH)
+        if !from_ref.name.starts_with("with_")
+            && !cte_references.is_empty()
+            && !is_cypher_union_plan
+        {
+            log::debug!(
+                "🔧 build_chained_with_match_cte_plan: FROM '{}' is not a CTE, checking for CTE joins needed",
+                from_ref.name
+            );
+            log::debug!(
+                "🔧 build_chained_with_match_cte_plan: Available CTE references: {:?}",
+                cte_references
+            );
+
+            // Collect all CTE aliases that need to be joined
+            // Group by CTE name since multiple aliases can come from the same CTE
+            let mut cte_join_needed: HashMap<String, Vec<String>> = HashMap::new();
+            for (alias, cte_name) in cte_references {
+                cte_join_needed
+                    .entry(cte_name.clone())
+                    .or_default()
+                    .push(alias.clone());
+            }
+
+            // For each CTE that's referenced, create a JOIN
+            // Sort for deterministic ordering
+            let mut sorted_cte_joins: Vec<_> = cte_join_needed.into_iter().collect();
+            sorted_cte_joins.sort_by(|a, b| a.0.cmp(&b.0));
+            for (cte_name, aliases) in sorted_cte_joins {
+                // Extract CTE alias part from name: "with_a_b_cte_1" -> "a_b"
+                let cte_alias = if let Some(stripped) = cte_name.strip_prefix("with_") {
+                    if let Some(cte_pos) = stripped.rfind("_cte") {
+                        stripped[..cte_pos].to_string()
+                    } else {
+                        stripped.to_string()
+                    }
+                } else {
+                    cte_name.clone()
+                };
+
+                log::debug!(
+                    "🔧 build_chained_with_match_cte_plan: Creating JOIN to CTE '{}' AS '{}' for aliases {:?}",
+                    cte_name, cte_alias, aliases
+                );
+
+                // Use the correlation predicates that were extracted from the ORIGINAL plan
+                // BEFORE transformations (stored in original_correlation_predicates)
+                log::debug!(
+                    "🔧 build_chained_with_match_cte_plan: Using {} ORIGINAL correlation predicates",
+                    original_correlation_predicates.len()
+                );
+
+                // Convert correlation predicates to join conditions using CTE column names
+                let mut join_conditions: Vec<OperatorApplication> = Vec::new();
+
+                // If we found correlation predicates, convert them to JOIN ON conditions
+                for pred in original_correlation_predicates {
+                    // Convert LogicalExpr predicate to RenderExpr and then extract OperatorApplication
+                    if let Ok(RenderExpr::OperatorApplicationExp(op_app)) =
+                        RenderExpr::try_from(pred.clone())
+                    {
+                        // Rewrite the operands to use CTE column names
+                        let rewritten = rewrite_operator_application_for_cte_join(
+                            &op_app,
+                            &cte_alias,
+                            cte_references,
+                        );
+                        log::debug!(
+                            "🔧 build_chained_with_match_cte_plan: Added JOIN condition from correlation predicate: {:?}",
+                            rewritten
+                        );
+                        join_conditions.push(rewritten);
+                    }
+                }
+
+                // If we have no correlation conditions but have filter predicates, try those
+                if join_conditions.is_empty() {
+                    if let Some(filter_expr) = &render_plan.filters.0 {
+                        log::debug!("🔧 build_chained_with_match_cte_plan: No correlation predicates, checking filters");
+                        // Try to extract join conditions from filters
+                        if let Some(join_cond) = extract_cte_join_condition_from_filter(
+                            filter_expr,
+                            &cte_alias,
+                            &aliases,
+                            cte_references,
+                            cte_schemas,
+                        ) {
+                            join_conditions.push(join_cond);
+                            log::debug!("🔧 build_chained_with_match_cte_plan: Extracted JOIN condition from filter");
+                        }
+                    }
+                }
+
+                // VLP-specific: when FROM is a VLP CTE, generate join condition
+                // connecting the WITH CTE's ID column to the VLP CTE's start_id or end_id
+                if join_conditions.is_empty() {
+                    if let FromTableItem(Some(from_ref)) = &render_plan.from {
+                        if from_ref.name.starts_with("vlp_") {
+                            // Find which VLP CTE this is and determine if the alias is start or end
+                            for vlp_cte in &render_plan.ctes.0 {
+                                if vlp_cte.cte_name == from_ref.name {
+                                    // Match when cte_alias equals or starts with the VLP alias
+                                    // e.g., cte_alias="a_allNeighboursCount" matches vlp start_alias="a"
+                                    let is_start = vlp_cte
+                                        .vlp_cypher_start_alias
+                                        .as_deref()
+                                        .is_some_and(|a| {
+                                            cte_alias == a
+                                                || cte_alias.starts_with(&format!("{}_", a))
+                                        });
+                                    let is_end =
+                                        vlp_cte.vlp_cypher_end_alias.as_deref().is_some_and(|a| {
+                                            cte_alias == a
+                                                || cte_alias.starts_with(&format!("{}_", a))
+                                        });
+                                    if is_start || is_end {
+                                        let vlp_id_col =
+                                            if is_start { "start_id" } else { "end_id" };
+                                        let from_alias = from_ref.alias.as_deref().unwrap_or("t");
+                                        // Find the ID column name in the WITH CTE
+                                        // Use cte_schemas which has the alias_to_id_column mapping
+                                        let vlp_alias = if is_start {
+                                            vlp_cte
+                                                .vlp_cypher_start_alias
+                                                .as_deref()
+                                                .unwrap_or(&cte_alias)
+                                        } else {
+                                            vlp_cte
+                                                .vlp_cypher_end_alias
+                                                .as_deref()
+                                                .unwrap_or(&cte_alias)
+                                        };
+                                        // Try cte_schemas first: look for {vlp_alias}_{something_id} in SELECT items
+                                        let id_col_name = if let Some(meta) =
+                                            cte_schemas.get(&cte_name)
+                                        {
+                                            // First try direct alias_to_id lookup
+                                            meta.alias_to_id
+                                                .get(vlp_alias)
+                                                .cloned()
+                                                .or_else(|| {
+                                                    // Search SELECT items for {vlp_alias}_*_id pattern
+                                                    let prefix = format!("{}_", vlp_alias);
+                                                    meta.select_items.iter().find_map(|item| {
+                                                        if let Some(col_alias) = &item.col_alias {
+                                                            let name = &col_alias.0;
+                                                            if name.starts_with(&prefix)
+                                                                && (name.ends_with("_id")
+                                                                    || name.ends_with("_id"))
+                                                            {
+                                                                return Some(name.clone());
+                                                            }
+                                                        }
+                                                        None
+                                                    })
+                                                })
+                                                .unwrap_or_else(|| {
+                                                    find_id_column_in_cte(
+                                                        &cte_name,
+                                                        vlp_alias,
+                                                        &render_plan.ctes,
+                                                    )
+                                                })
+                                        } else {
+                                            find_id_column_in_cte(
+                                                &cte_name,
+                                                vlp_alias,
+                                                &render_plan.ctes,
+                                            )
+                                        };
+
+                                        // Check if this node has a composite ID — if so, generate
+                                        // concat(toString(col1), '|', toString(col2)) to match
+                                        // the pipe-joined start_id/end_id in the VLP CTE
+                                        let rhs_expr = {
+                                            use crate::server::query_context::get_current_schema;
+                                            let composite_cols =
+                                                get_current_schema().and_then(|schema| {
+                                                    // Determine the node label from vlp_alias
+                                                    let _label = if is_start {
+                                                        vlp_cte.vlp_cypher_start_alias.as_deref()
+                                                    } else {
+                                                        vlp_cte.vlp_cypher_end_alias.as_deref()
+                                                    };
+                                                    // Look up by label_constraints or try all schemas
+                                                    for ns in schema.all_node_schemas().values() {
+                                                        if ns.node_id.is_composite() {
+                                                            // Check if the id_col_name matches one of this schema's columns
+                                                            let prefix = format!(
+                                                                "{}_",
+                                                                vlp_alias.to_owned()
+                                                            );
+                                                            let id_cols = ns.node_id.columns();
+                                                            let first_cte_col =
+                                                                format!("{}{}", prefix, id_cols[0]);
+                                                            if id_col_name == first_cte_col
+                                                                || id_col_name == id_cols[0]
+                                                            {
+                                                                return Some(
+                                                                    id_cols
+                                                                        .iter()
+                                                                        .map(|c| c.to_string())
+                                                                        .collect::<Vec<_>>(),
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                    None
+                                                });
+
+                                            if let Some(cols) = composite_cols {
+                                                // Composite ID: concat(toString(cte.a_col1), '|', toString(cte.a_col2))
+                                                let prefix = format!("{}_", vlp_alias);
+                                                let parts: Vec<RenderExpr> = cols.iter().enumerate().flat_map(|(i, col)| {
+                                                    let cte_col = format!("{}{}", prefix, col);
+                                                    let mut items = Vec::new();
+                                                    if i > 0 {
+                                                        items.push(RenderExpr::Literal(Literal::String("|".to_string())));
+                                                    }
+                                                    items.push(RenderExpr::ScalarFnCall(ScalarFnCall {
+                                                        name: current_function_mapper().cast_string().to_string(),
+                                                        args: vec![RenderExpr::Column(Column(
+                                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                                format!("{}.{}", cte_alias, cte_col)
+                                                            )
+                                                        ))],
+                                                    }));
+                                                    items
+                                                }).collect();
+                                                log::debug!(
+                                                    "🔧 VLP+WITH: Composite ID JOIN - concat {} columns for alias '{}'",
+                                                    cols.len(), vlp_alias
+                                                );
+                                                RenderExpr::ScalarFnCall(ScalarFnCall {
+                                                    name: "concat".to_string(),
+                                                    args: parts,
+                                                })
+                                            } else {
+                                                // Single ID: toString() to match the String type of
+                                                // start_id / end_id stored in the VLP CTE
+                                                RenderExpr::ScalarFnCall(ScalarFnCall {
+                                                    name: current_function_mapper().cast_string().to_string(),
+                                                    args: vec![RenderExpr::Column(Column(
+                                                        crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                            format!("{}.{}", cte_alias, id_col_name)
+                                                        )
+                                                    ))],
+                                                })
+                                            }
+                                        };
+
+                                        // Wrap VLP side in toString() too, ensuring both sides are String.
+                                        // VLP start_id/end_id may be UInt64 or String depending on
+                                        // generation path, and rhs_expr already uses toString().
+                                        let lhs_expr = RenderExpr::ScalarFnCall(ScalarFnCall {
+                                            name: current_function_mapper().cast_string().to_string(),
+                                            args: vec![RenderExpr::Column(Column(
+                                                crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                    format!("{}.{}", from_alias, vlp_id_col)
+                                                )
+                                            ))],
+                                        });
+                                        let join_cond = OperatorApplication {
+                                            operator: Operator::Equal,
+                                            operands: vec![lhs_expr, rhs_expr],
+                                        };
+                                        log::debug!(
+                                            "🔧 VLP+WITH: Generated JOIN condition for alias '{}' (is_start={})",
+                                            vlp_alias, is_start
+                                        );
+                                        join_conditions.push(join_cond);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Create the JOIN. `ON 1 = 1` (cartesian) is only correct for a
+                // scalar / uncorrelated CTE carry-forward. If the CTE alias is
+                // pattern-correlated to a fresh node (a graph edge connects them)
+                // but we failed to resolve a join key, emitting `ON 1 = 1` would
+                // silently produce a cartesian product with the wrong row count —
+                // a semantics change the engine must never make. Return a clean
+                // error instead. #451
+                let cte_join_conditions = if join_conditions.is_empty() {
+                    let correlated = aliases
+                        .iter()
+                        .any(|a| alias_has_pattern_correlation(current_plan, a))
+                        || alias_has_pattern_correlation(current_plan, &cte_alias);
+                    if correlated {
+                        return Err(RenderBuildError::InvalidRenderPlan(format!(
+                            "WITH-CTE '{}' is pattern-correlated to a fresh node via alias(es) {:?}, \
+                             but no join key could be resolved; refusing to emit a cartesian \
+                             `ON 1 = 1` join (would silently change query semantics)",
+                            cte_name, aliases
+                        )));
+                    }
+                    use crate::render_plan::render_expr::Literal as RenderLiteral;
+                    vec![OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::Literal(RenderLiteral::Integer(1)),
+                            RenderExpr::Literal(RenderLiteral::Integer(1)),
+                        ],
+                    }]
+                } else {
+                    join_conditions.clone()
+                };
+                let cte_join = super::Join {
+                    table_name: cte_name.clone(),
+                    table_alias: cte_alias.clone(),
+                    joining_on: cte_join_conditions,
+                    join_type: super::JoinType::Inner,
+                    pre_filter: None,
+                    from_id_column: None,
+                    to_id_column: None,
+                    graph_rel: None,
+                    is_cartesian: false,
+                };
+
+                // #453: Post-WITH OPTIONAL MATCH anchoring. When the fresh
+                // pattern after the WITH barrier is OPTIONAL, the *required* side
+                // arrives here as the CTE (`with_..._cte_N`) and the fresh
+                // pattern table is optional. The plain code below would leave the
+                // optional table as the FROM driver and INNER-join the CTE onto
+                // it — that both drops every anchor row with no match AND uses the
+                // wrong join type, silently violating OPTIONAL MATCH semantics.
+                // Instead, mirror the non-WITH OPTIONAL path: make the required
+                // CTE the FROM anchor and LEFT-join the optional pattern to it.
+                //
+                // Guarded tightly: only a genuinely correlated (non-`ON 1 = 1`),
+                // single-branch pattern whose FROM is a real optional table (not
+                // already the CTE, a nested WITH CTE, or a VLP CTE).
+                let post_with_optional_restructure = current_plan.is_optional_pattern()
+                    && !join_conditions.is_empty()
+                    && render_plan.union.0.is_none()
+                    && render_plan
+                        .from
+                        .0
+                        .as_ref()
+                        .map(|vr| {
+                            vr.alias.as_deref() != Some(cte_alias.as_str())
+                                && !vr.name.starts_with("with_")
+                                && !vr.name.starts_with("vlp_")
+                        })
+                        .unwrap_or(false);
+
+                if post_with_optional_restructure {
+                    // Demote the optional-side table currently in FROM to a LEFT
+                    // JOIN, and promote the required CTE to the FROM anchor.
+                    let old_from = render_plan
+                        .from
+                        .0
+                        .take()
+                        .expect("FROM guaranteed Some by post_with_optional_restructure guard");
+                    render_plan.from = FromTableItem(Some(super::ViewTableRef {
+                        source: std::sync::Arc::new(LogicalPlan::Empty),
+                        name: cte_name.clone(),
+                        alias: Some(cte_alias.clone()),
+                        use_final: false,
+                    }));
+                    // Everything already joined into the pattern is optional
+                    // relative to the anchor, so a partial match must still
+                    // NULL-extend: demote inner/cross joins to LEFT.
+                    for j in render_plan.joins.0.iter_mut() {
+                        if matches!(j.join_type, super::JoinType::Inner | super::JoinType::Join) {
+                            j.join_type = super::JoinType::Left;
+                        }
+                    }
+                    // LEFT JOIN the old FROM table back onto the CTE via the
+                    // resolved correlation keys (`join_conditions`).
+                    let optional_from_alias = old_from
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| old_from.name.clone());
+
+                    // Recover the OPTIONAL pattern's WHERE predicate. A `WHERE`
+                    // attached to the post-WITH OPTIONAL MATCH lives on the fresh
+                    // pattern's `GraphRel.where_predicate`. In this reversed-anchor
+                    // shape `collect_graphrel_predicates` DROPS the conjuncts that
+                    // reference ONLY the optional node or ONLY the relationship
+                    // alias from the outer WHERE (destined for a pre_filter on a
+                    // join this restructure rebuilds), while cross-alias / OR
+                    // conjuncts are (wrongly) routed to the outer WHERE. Without
+                    // recovery those predicates change query semantics (ground-rule
+                    // #1). We re-place each predicate class in its correct spot:
+                    //
+                    //   • optional-NODE-only conjuncts  -> LEFT JOIN pre_filter (#460)
+                    //   • relationship-alias-only conjuncts, on FK-edge where the
+                    //     rel shares the optional node's physical table, remap to
+                    //     that table's column and also go in the pre_filter (#462
+                    //     GAP 2). Applied BEFORE the join so no-match anchor rows
+                    //     stay NULL-extended.
+                    //   • conjuncts spanning the optional side AND the anchor CTE
+                    //     (incl. unsplittable OR) -> LEFT JOIN ON condition (#462
+                    //     GAP 1), handled after the join is built (below), so the
+                    //     predicate filters the match, never the anchor rows.
+                    let opt_where = find_graphrel_where_predicate(current_plan);
+                    let node_pre_filter = opt_where.and_then(|wp| {
+                        extract_predicates_for_alias_logical(wp, &optional_from_alias).0
+                    });
+
+                    // #462 GAP 2: recover relationship-alias-only conjuncts. Only
+                    // safe to fold into the optional NODE's pre_filter when the rel
+                    // and the node share the same physical table (the FK-edge
+                    // pattern), because the pre_filter renders as
+                    // `SELECT * FROM <node table> WHERE …` — the rel's columns must
+                    // exist on that table. Detect via the schema catalog (edge/node
+                    // `full_table_name()` equality, the same structural signal
+                    // `is_node_denormalized_on_edge` uses), never a raw pattern-flag
+                    // branch (axis-dispatch rule).
+                    let opt_graphrel = find_graphrel(current_plan);
+                    let rel_pre_filter = match (opt_where, opt_graphrel) {
+                        (Some(wp), Some(gr)) if !gr.alias.is_empty() => {
+                            let rel_shares_node_table = gr
+                                .labels
+                                .as_ref()
+                                .and_then(|ls| ls.first())
+                                .and_then(|rel_type| schema.get_relationships_schema_opt(rel_type))
+                                .map(|rel_schema| rel_schema.full_table_name() == old_from.name)
+                                .unwrap_or(false);
+                            if rel_shares_node_table {
+                                extract_predicates_for_alias_logical(wp, &gr.alias).0
+                            } else {
+                                // Rel is a distinct table: a separate join would be
+                                // required, which this restructure does not build.
+                                // Refuse to silently drop the predicate (#462).
+                                let rel_only =
+                                    extract_predicates_for_alias_logical(wp, &gr.alias).0;
+                                if rel_only.is_some() {
+                                    return Err(RenderBuildError::InvalidRenderPlan(format!(
+                                        "post-WITH OPTIONAL MATCH has a WHERE on relationship alias '{}' \
+                                         whose edge table is not the optional node '{}' table; the \
+                                         predicate cannot be placed without a separate edge join and \
+                                         must not be silently dropped (would change semantics)",
+                                        gr.alias, optional_from_alias
+                                    )));
+                                }
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+
+                    let optional_pre_filter =
+                        combine_optional_filters_with_and(vec![node_pre_filter, rel_pre_filter]);
+                    if optional_pre_filter.is_some() {
+                        log::info!(
+                            "🔧 build_chained_with_match_cte_plan: #460/#462 recovered optional-side WHERE predicate into LEFT JOIN pre_filter for alias '{}'",
+                            optional_from_alias
+                        );
+                    }
+
+                    // #462/#472: every conjunct in `render_plan.filters` at this
+                    // point belongs EXCLUSIVELY to this post-WITH OPTIONAL MATCH's
+                    // own WHERE (the tight `post_with_optional_restructure` guard
+                    // above ensures a single-branch optional pattern; any WHERE
+                    // attached to the WITH projection itself was already folded
+                    // into the CTE body and is not visible here). `
+                    // collect_graphrel_predicates` routed the whole thing to the
+                    // outer WHERE — wrong for OPTIONAL MATCH, since the outer WHERE
+                    // drops the NULL-extended no-match anchor rows. Move EVERY
+                    // conjunct into the LEFT JOIN's ON condition, including
+                    // pure-anchor ones (#472): for a LEFT JOIN a false ON condition
+                    // just NULL-extends the row rather than dropping it, so folding
+                    // the whole predicate into ON is always safe and never changes
+                    // which rows are kept vs. dropped when the FROM side is the
+                    // anchor CTE. (Anchor `c` references were already resolved to
+                    // CTE columns, e.g. `c.p1_c_customer_id`, when the filter was
+                    // rendered.) Nothing is left behind in the outer WHERE for this
+                    // segment.
+                    let mut extra_on_conditions: Vec<OperatorApplication> = Vec::new();
+                    if let Some(filter_expr) = render_plan.filters.0.take() {
+                        for conj in split_render_and_conjuncts(filter_expr) {
+                            match conj {
+                                RenderExpr::OperatorApplicationExp(op) => {
+                                    extra_on_conditions.push(op);
+                                }
+                                // A boolean conjunct that is not an operator
+                                // application (e.g. a bare scalar-fn predicate)
+                                // cannot be expressed as a joining_on
+                                // `OperatorApplication`. Rather than silently leave
+                                // it in the outer WHERE (wrong semantics) or drop
+                                // it, refuse with a clean error (#462/#472).
+                                other => {
+                                    return Err(RenderBuildError::InvalidRenderPlan(format!(
+                                        "post-WITH OPTIONAL MATCH WHERE conjunct is not an \
+                                         operator application and cannot be moved into the \
+                                         LEFT JOIN ON condition for alias '{}'; refusing to \
+                                         place it in the outer WHERE (would drop NULL-extended \
+                                         rows): {:?}",
+                                        optional_from_alias, other
+                                    )));
+                                }
+                            }
+                        }
+                        // No `kept` remainder: the whole post-OPTIONAL WHERE moves
+                        // into the ON condition, so `render_plan.filters` stays
+                        // cleared (no outer WHERE for this segment).
+                    }
+                    if !extra_on_conditions.is_empty() {
+                        log::info!(
+                            "🔧 build_chained_with_match_cte_plan: #462/#472 moved {} WHERE conjunct(s) (incl. pure-anchor) into LEFT JOIN ON for alias '{}'",
+                            extra_on_conditions.len(),
+                            optional_from_alias
+                        );
+                    }
+
+                    let mut optional_joining_on = join_conditions.clone();
+                    optional_joining_on.extend(extra_on_conditions);
+
+                    let optional_from_join = super::Join {
+                        table_name: old_from.name.clone(),
+                        table_alias: optional_from_alias.clone(),
+                        joining_on: optional_joining_on,
+                        join_type: super::JoinType::Left,
+                        pre_filter: optional_pre_filter,
+                        from_id_column: None,
+                        to_id_column: None,
+                        graph_rel: None,
+                        is_cartesian: false,
+                    };
+                    render_plan.joins.0.insert(0, optional_from_join);
+                    log::info!(
+                        "🔧 build_chained_with_match_cte_plan: #453 post-WITH OPTIONAL restructure — FROM={} AS {}, LEFT JOIN {} AS {}",
+                        cte_name, cte_alias, old_from.name, optional_from_alias
+                    );
+                } else {
+                    // Insert the CTE join at the BEGINNING of the joins list
+                    // (CTE should be joined first so its columns are available)
+                    // BUT: skip if a JOIN for this CTE alias already exists (from extract_joins)
+                    // OR if the FROM table already uses this alias (avoid duplicate alias error)
+                    let already_has_cte_join = render_plan
+                        .joins
+                        .0
+                        .iter()
+                        .any(|j| j.table_alias == cte_alias);
+                    let from_already_uses_alias = render_plan
+                        .from
+                        .0
+                        .as_ref()
+                        .map(|vr| vr.alias.as_deref() == Some(&cte_alias))
+                        .unwrap_or(false);
+                    if !already_has_cte_join && !from_already_uses_alias {
+                        render_plan.joins.0.insert(0, cte_join.clone());
+                        log::info!(
+                            "🔧 build_chained_with_match_cte_plan: Added CTE JOIN: {} AS {}",
+                            cte_name,
+                            cte_alias
+                        );
+                    } else {
+                        log::info!(
+                            "🔧 build_chained_with_match_cte_plan: Skipping CTE JOIN {} AS {} (already present from extract_joins)",
+                            cte_name,
+                            cte_alias
+                        );
+                    }
+                }
+
+                // Also add the WITH CTE JOIN to each Union branch
+                // The main plan's joins only apply to the first branch (outgoing).
+                // Incoming branches in union.input[] need their own JOIN.
+                if let Some(ref mut union) = render_plan.union.0 {
+                    for branch in union.input.iter_mut() {
+                        // Skip if this branch already has the CTE join
+                        let branch_already_has =
+                            branch.joins.0.iter().any(|j| j.table_alias == cte_alias);
+                        if branch_already_has {
+                            continue;
+                        }
+
+                        if let FromTableItem(Some(ref branch_from)) = branch.from {
+                            if branch_from.name.starts_with("vlp_") {
+                                // Find the VLP CTE metadata to determine the correct join column
+                                let mut branch_join_cond = Vec::new();
+                                for vlp_cte in &render_plan.ctes.0 {
+                                    if vlp_cte.cte_name == branch_from.name {
+                                        let is_start = vlp_cte.vlp_cypher_start_alias.as_deref()
+                                            == Some(cte_alias.as_str());
+                                        let is_end = vlp_cte.vlp_cypher_end_alias.as_deref()
+                                            == Some(cte_alias.as_str());
+                                        if is_start || is_end {
+                                            let vlp_id_col =
+                                                if is_start { "start_id" } else { "end_id" };
+                                            let from_alias =
+                                                branch_from.alias.as_deref().unwrap_or("t");
+                                            let vlp_alias_for_id = if is_start {
+                                                vlp_cte
+                                                    .vlp_cypher_start_alias
+                                                    .as_deref()
+                                                    .unwrap_or(&cte_alias)
+                                            } else {
+                                                vlp_cte
+                                                    .vlp_cypher_end_alias
+                                                    .as_deref()
+                                                    .unwrap_or(&cte_alias)
+                                            };
+                                            let id_col_name = if let Some(meta) =
+                                                cte_schemas.get(&cte_name)
+                                            {
+                                                meta.alias_to_id
+                                                    .get(vlp_alias_for_id)
+                                                    .cloned()
+                                                    .or_else(|| {
+                                                        let prefix =
+                                                            format!("{}_", vlp_alias_for_id);
+                                                        meta.select_items.iter().find_map(|item| {
+                                                            if let Some(col_alias) = &item.col_alias
+                                                            {
+                                                                let name = &col_alias.0;
+                                                                if name.starts_with(&prefix)
+                                                                    && name.ends_with("_id")
+                                                                {
+                                                                    return Some(name.clone());
+                                                                }
+                                                            }
+                                                            None
+                                                        })
+                                                    })
+                                                    .unwrap_or_else(|| {
+                                                        find_id_column_in_cte(
+                                                            &cte_name,
+                                                            vlp_alias_for_id,
+                                                            &render_plan.ctes,
+                                                        )
+                                                    })
+                                            } else {
+                                                find_id_column_in_cte(
+                                                    &cte_name,
+                                                    vlp_alias_for_id,
+                                                    &render_plan.ctes,
+                                                )
+                                            };
+                                            // Wrap BOTH sides in toString() to handle type mismatches:
+                                            // VLP start_id/end_id may be UInt64 or String depending on generation path.
+                                            // CTE columns are typically UInt64 (raw IDs). toString() on both sides
+                                            // ensures consistent String comparison regardless of input types.
+                                            let cond = OperatorApplication {
+                                                operator: Operator::Equal,
+                                                operands: vec![
+                                                    RenderExpr::ScalarFnCall(ScalarFnCall {
+                                                        name: current_function_mapper().cast_string().to_string(),
+                                                        args: vec![RenderExpr::Column(Column(
+                                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                                format!("{}.{}", from_alias, vlp_id_col)
+                                                            )
+                                                        ))],
+                                                    }),
+                                                    RenderExpr::ScalarFnCall(ScalarFnCall {
+                                                        name: current_function_mapper().cast_string().to_string(),
+                                                        args: vec![RenderExpr::Column(Column(
+                                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                                format!("{}.{}", cte_alias, id_col_name)
+                                                            )
+                                                        ))],
+                                                    }),
+                                                ],
+                                            };
+                                            log::debug!(
+                                                "🔧 VLP+WITH (branch): Generated JOIN for '{}': {}.{} = {}.{}",
+                                                branch_from.name, from_alias, vlp_id_col, cte_alias, id_col_name
+                                            );
+                                            branch_join_cond.push(cond);
+                                        }
+                                        break;
+                                    }
+                                }
+                                let branch_cte_join = super::Join {
+                                    table_name: cte_name.clone(),
+                                    table_alias: cte_alias.clone(),
+                                    joining_on: branch_join_cond,
+                                    join_type: super::JoinType::Inner,
+                                    pre_filter: None,
+                                    from_id_column: None,
+                                    to_id_column: None,
+                                    graph_rel: None,
+                                    is_cartesian: false,
+                                };
+                                branch.joins.0.insert(0, branch_cte_join);
+                                log::info!(
+                                    "🔧 build_chained_with_match_cte_plan: Added CTE JOIN to Union branch FROM '{}'",
+                                    branch_from.name
+                                );
+
+                                // Rewrite Union branch SELECT items to use CTE column names
+                                // Use scope-based rewriting (replaces removed rewrite_cte_expression)
+                                if let Some(scope) = scope {
+                                    use super::variable_scope::rewrite_render_expr;
+                                    for item in branch.select.items.iter_mut() {
+                                        item.expression =
+                                            rewrite_render_expr(&item.expression, scope);
+                                    }
+                                    log::info!(
+                                        "🔧 build_chained_with_match_cte_plan: Rewrote Union branch SELECT via scope for CTE"
+                                    );
+                                }
+                            } else {
+                                // Non-VLP branch (regular table FROM): add CTE as cross-join (ON 1=1)
+                                // This handles post-WITH MATCH patterns with undirected edges
+                                // where UnionDistribution created Union branches with regular table FROM
+                                use crate::render_plan::render_expr::Literal as RenderLiteral;
+                                let branch_cte_join = super::Join {
+                                    table_name: cte_name.clone(),
+                                    table_alias: cte_alias.clone(),
+                                    joining_on: if join_conditions.is_empty() {
+                                        vec![OperatorApplication {
+                                            operator: Operator::Equal,
+                                            operands: vec![
+                                                RenderExpr::Literal(RenderLiteral::Integer(1)),
+                                                RenderExpr::Literal(RenderLiteral::Integer(1)),
+                                            ],
+                                        }]
+                                    } else {
+                                        join_conditions.clone()
+                                    },
+                                    join_type: super::JoinType::Inner,
+                                    pre_filter: None,
+                                    from_id_column: None,
+                                    to_id_column: None,
+                                    graph_rel: None,
+                                    is_cartesian: false,
+                                };
+                                branch.joins.0.insert(0, branch_cte_join);
+                                log::info!(
+                                    "🔧 build_chained_with_match_cte_plan: Added CTE cross-JOIN to non-VLP Union branch FROM '{}'",
+                                    branch_from.name
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            // After adding CTE joins, we need to rewrite SELECT items that reference CTE aliases
+            // to use the CTE composite alias (e.g., a.name -> a_b.a_name)
+            log::debug!(
+                "🔧 build_chained_with_match_cte_plan: Rewriting SELECT items for CTE references"
+            );
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -7590,761 +8366,20 @@ pub(crate) fn build_chained_with_match_cte_plan(
     );
 
     // ==========================================================================
-    // CRITICAL FIX: Cross-table WITH pattern - add CTE JOINs
+    // CRITICAL FIX: Cross-table WITH pattern - add CTE JOINs (see fn doc + #593).
+    // WITH a, b MATCH (c)-[]->(d) WHERE a.x = c.x — FROM is table 'c', so JOIN
+    // the CTE holding a,b to make those aliases available for SELECT/WHERE.
     // ==========================================================================
-    // When we have patterns like: WITH a, b MATCH (c)-[]->(d) WHERE a.x = c.x
-    // The FROM is set to table 'c', but we need to JOIN the CTE containing 'a', 'b'
-    // to make those aliases available for SELECT/WHERE.
-    //
-    // Detection: FROM is NOT a CTE, but cte_references contains aliases that
-    // might be referenced in the query.
-    // ==========================================================================
-    if let FromTableItem(Some(from_ref)) = &render_plan.from {
-        // #593: skip for a Cypher-UNION base arm — its FROM is the first arm's
-        // own independent scan and must never be cross-joined to another arm's
-        // WITH-CTE (the accumulated `cte_references` belongs to that other arm).
-        // Check if FROM is NOT a CTE (i.e., it's a regular table from the second MATCH)
-        if !from_ref.name.starts_with("with_")
-            && !cte_references.is_empty()
-            && !is_cypher_union_plan
-        {
-            log::debug!(
-                "🔧 build_chained_with_match_cte_plan: FROM '{}' is not a CTE, checking for CTE joins needed",
-                from_ref.name
-            );
-            log::debug!(
-                "🔧 build_chained_with_match_cte_plan: Available CTE references: {:?}",
-                cte_references
-            );
-
-            // Collect all CTE aliases that need to be joined
-            // Group by CTE name since multiple aliases can come from the same CTE
-            let mut cte_join_needed: HashMap<String, Vec<String>> = HashMap::new();
-            for (alias, cte_name) in &cte_references {
-                cte_join_needed
-                    .entry(cte_name.clone())
-                    .or_default()
-                    .push(alias.clone());
-            }
-
-            // For each CTE that's referenced, create a JOIN
-            // Sort for deterministic ordering
-            let mut sorted_cte_joins: Vec<_> = cte_join_needed.into_iter().collect();
-            sorted_cte_joins.sort_by(|a, b| a.0.cmp(&b.0));
-            for (cte_name, aliases) in sorted_cte_joins {
-                // Extract CTE alias part from name: "with_a_b_cte_1" -> "a_b"
-                let cte_alias = if let Some(stripped) = cte_name.strip_prefix("with_") {
-                    if let Some(cte_pos) = stripped.rfind("_cte") {
-                        stripped[..cte_pos].to_string()
-                    } else {
-                        stripped.to_string()
-                    }
-                } else {
-                    cte_name.clone()
-                };
-
-                log::debug!(
-                    "🔧 build_chained_with_match_cte_plan: Creating JOIN to CTE '{}' AS '{}' for aliases {:?}",
-                    cte_name, cte_alias, aliases
-                );
-
-                // Use the correlation predicates that were extracted from the ORIGINAL plan
-                // BEFORE transformations (stored in original_correlation_predicates)
-                log::debug!(
-                    "🔧 build_chained_with_match_cte_plan: Using {} ORIGINAL correlation predicates",
-                    original_correlation_predicates.len()
-                );
-
-                // Convert correlation predicates to join conditions using CTE column names
-                let mut join_conditions: Vec<OperatorApplication> = Vec::new();
-
-                // If we found correlation predicates, convert them to JOIN ON conditions
-                for pred in &original_correlation_predicates {
-                    // Convert LogicalExpr predicate to RenderExpr and then extract OperatorApplication
-                    if let Ok(RenderExpr::OperatorApplicationExp(op_app)) =
-                        RenderExpr::try_from(pred.clone())
-                    {
-                        // Rewrite the operands to use CTE column names
-                        let rewritten = rewrite_operator_application_for_cte_join(
-                            &op_app,
-                            &cte_alias,
-                            &cte_references,
-                        );
-                        log::debug!(
-                            "🔧 build_chained_with_match_cte_plan: Added JOIN condition from correlation predicate: {:?}",
-                            rewritten
-                        );
-                        join_conditions.push(rewritten);
-                    }
-                }
-
-                // If we have no correlation conditions but have filter predicates, try those
-                if join_conditions.is_empty() {
-                    if let Some(filter_expr) = &render_plan.filters.0 {
-                        log::debug!("🔧 build_chained_with_match_cte_plan: No correlation predicates, checking filters");
-                        // Try to extract join conditions from filters
-                        if let Some(join_cond) = extract_cte_join_condition_from_filter(
-                            filter_expr,
-                            &cte_alias,
-                            &aliases,
-                            &cte_references,
-                            &cte_schemas,
-                        ) {
-                            join_conditions.push(join_cond);
-                            log::debug!("🔧 build_chained_with_match_cte_plan: Extracted JOIN condition from filter");
-                        }
-                    }
-                }
-
-                // VLP-specific: when FROM is a VLP CTE, generate join condition
-                // connecting the WITH CTE's ID column to the VLP CTE's start_id or end_id
-                if join_conditions.is_empty() {
-                    if let FromTableItem(Some(from_ref)) = &render_plan.from {
-                        if from_ref.name.starts_with("vlp_") {
-                            // Find which VLP CTE this is and determine if the alias is start or end
-                            for vlp_cte in &render_plan.ctes.0 {
-                                if vlp_cte.cte_name == from_ref.name {
-                                    // Match when cte_alias equals or starts with the VLP alias
-                                    // e.g., cte_alias="a_allNeighboursCount" matches vlp start_alias="a"
-                                    let is_start = vlp_cte
-                                        .vlp_cypher_start_alias
-                                        .as_deref()
-                                        .is_some_and(|a| {
-                                            cte_alias == a
-                                                || cte_alias.starts_with(&format!("{}_", a))
-                                        });
-                                    let is_end =
-                                        vlp_cte.vlp_cypher_end_alias.as_deref().is_some_and(|a| {
-                                            cte_alias == a
-                                                || cte_alias.starts_with(&format!("{}_", a))
-                                        });
-                                    if is_start || is_end {
-                                        let vlp_id_col =
-                                            if is_start { "start_id" } else { "end_id" };
-                                        let from_alias = from_ref.alias.as_deref().unwrap_or("t");
-                                        // Find the ID column name in the WITH CTE
-                                        // Use cte_schemas which has the alias_to_id_column mapping
-                                        let vlp_alias = if is_start {
-                                            vlp_cte
-                                                .vlp_cypher_start_alias
-                                                .as_deref()
-                                                .unwrap_or(&cte_alias)
-                                        } else {
-                                            vlp_cte
-                                                .vlp_cypher_end_alias
-                                                .as_deref()
-                                                .unwrap_or(&cte_alias)
-                                        };
-                                        // Try cte_schemas first: look for {vlp_alias}_{something_id} in SELECT items
-                                        let id_col_name = if let Some(meta) =
-                                            cte_schemas.get(&cte_name)
-                                        {
-                                            // First try direct alias_to_id lookup
-                                            meta.alias_to_id
-                                                .get(vlp_alias)
-                                                .cloned()
-                                                .or_else(|| {
-                                                    // Search SELECT items for {vlp_alias}_*_id pattern
-                                                    let prefix = format!("{}_", vlp_alias);
-                                                    meta.select_items.iter().find_map(|item| {
-                                                        if let Some(col_alias) = &item.col_alias {
-                                                            let name = &col_alias.0;
-                                                            if name.starts_with(&prefix)
-                                                                && (name.ends_with("_id")
-                                                                    || name.ends_with("_id"))
-                                                            {
-                                                                return Some(name.clone());
-                                                            }
-                                                        }
-                                                        None
-                                                    })
-                                                })
-                                                .unwrap_or_else(|| {
-                                                    find_id_column_in_cte(
-                                                        &cte_name,
-                                                        vlp_alias,
-                                                        &render_plan.ctes,
-                                                    )
-                                                })
-                                        } else {
-                                            find_id_column_in_cte(
-                                                &cte_name,
-                                                vlp_alias,
-                                                &render_plan.ctes,
-                                            )
-                                        };
-
-                                        // Check if this node has a composite ID — if so, generate
-                                        // concat(toString(col1), '|', toString(col2)) to match
-                                        // the pipe-joined start_id/end_id in the VLP CTE
-                                        let rhs_expr = {
-                                            use crate::server::query_context::get_current_schema;
-                                            let composite_cols =
-                                                get_current_schema().and_then(|schema| {
-                                                    // Determine the node label from vlp_alias
-                                                    let _label = if is_start {
-                                                        vlp_cte.vlp_cypher_start_alias.as_deref()
-                                                    } else {
-                                                        vlp_cte.vlp_cypher_end_alias.as_deref()
-                                                    };
-                                                    // Look up by label_constraints or try all schemas
-                                                    for ns in schema.all_node_schemas().values() {
-                                                        if ns.node_id.is_composite() {
-                                                            // Check if the id_col_name matches one of this schema's columns
-                                                            let prefix = format!(
-                                                                "{}_",
-                                                                vlp_alias.to_owned()
-                                                            );
-                                                            let id_cols = ns.node_id.columns();
-                                                            let first_cte_col =
-                                                                format!("{}{}", prefix, id_cols[0]);
-                                                            if id_col_name == first_cte_col
-                                                                || id_col_name == id_cols[0]
-                                                            {
-                                                                return Some(
-                                                                    id_cols
-                                                                        .iter()
-                                                                        .map(|c| c.to_string())
-                                                                        .collect::<Vec<_>>(),
-                                                                );
-                                                            }
-                                                        }
-                                                    }
-                                                    None
-                                                });
-
-                                            if let Some(cols) = composite_cols {
-                                                // Composite ID: concat(toString(cte.a_col1), '|', toString(cte.a_col2))
-                                                let prefix = format!("{}_", vlp_alias);
-                                                let parts: Vec<RenderExpr> = cols.iter().enumerate().flat_map(|(i, col)| {
-                                                    let cte_col = format!("{}{}", prefix, col);
-                                                    let mut items = Vec::new();
-                                                    if i > 0 {
-                                                        items.push(RenderExpr::Literal(Literal::String("|".to_string())));
-                                                    }
-                                                    items.push(RenderExpr::ScalarFnCall(ScalarFnCall {
-                                                        name: current_function_mapper().cast_string().to_string(),
-                                                        args: vec![RenderExpr::Column(Column(
-                                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                                format!("{}.{}", cte_alias, cte_col)
-                                                            )
-                                                        ))],
-                                                    }));
-                                                    items
-                                                }).collect();
-                                                log::debug!(
-                                                    "🔧 VLP+WITH: Composite ID JOIN - concat {} columns for alias '{}'",
-                                                    cols.len(), vlp_alias
-                                                );
-                                                RenderExpr::ScalarFnCall(ScalarFnCall {
-                                                    name: "concat".to_string(),
-                                                    args: parts,
-                                                })
-                                            } else {
-                                                // Single ID: toString() to match the String type of
-                                                // start_id / end_id stored in the VLP CTE
-                                                RenderExpr::ScalarFnCall(ScalarFnCall {
-                                                    name: current_function_mapper().cast_string().to_string(),
-                                                    args: vec![RenderExpr::Column(Column(
-                                                        crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                            format!("{}.{}", cte_alias, id_col_name)
-                                                        )
-                                                    ))],
-                                                })
-                                            }
-                                        };
-
-                                        // Wrap VLP side in toString() too, ensuring both sides are String.
-                                        // VLP start_id/end_id may be UInt64 or String depending on
-                                        // generation path, and rhs_expr already uses toString().
-                                        let lhs_expr = RenderExpr::ScalarFnCall(ScalarFnCall {
-                                            name: current_function_mapper().cast_string().to_string(),
-                                            args: vec![RenderExpr::Column(Column(
-                                                crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                    format!("{}.{}", from_alias, vlp_id_col)
-                                                )
-                                            ))],
-                                        });
-                                        let join_cond = OperatorApplication {
-                                            operator: Operator::Equal,
-                                            operands: vec![lhs_expr, rhs_expr],
-                                        };
-                                        log::debug!(
-                                            "🔧 VLP+WITH: Generated JOIN condition for alias '{}' (is_start={})",
-                                            vlp_alias, is_start
-                                        );
-                                        join_conditions.push(join_cond);
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Create the JOIN. `ON 1 = 1` (cartesian) is only correct for a
-                // scalar / uncorrelated CTE carry-forward. If the CTE alias is
-                // pattern-correlated to a fresh node (a graph edge connects them)
-                // but we failed to resolve a join key, emitting `ON 1 = 1` would
-                // silently produce a cartesian product with the wrong row count —
-                // a semantics change the engine must never make. Return a clean
-                // error instead. #451
-                let cte_join_conditions = if join_conditions.is_empty() {
-                    let correlated = aliases
-                        .iter()
-                        .any(|a| alias_has_pattern_correlation(&current_plan, a))
-                        || alias_has_pattern_correlation(&current_plan, &cte_alias);
-                    if correlated {
-                        return Err(RenderBuildError::InvalidRenderPlan(format!(
-                            "WITH-CTE '{}' is pattern-correlated to a fresh node via alias(es) {:?}, \
-                             but no join key could be resolved; refusing to emit a cartesian \
-                             `ON 1 = 1` join (would silently change query semantics)",
-                            cte_name, aliases
-                        )));
-                    }
-                    use crate::render_plan::render_expr::Literal as RenderLiteral;
-                    vec![OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            RenderExpr::Literal(RenderLiteral::Integer(1)),
-                            RenderExpr::Literal(RenderLiteral::Integer(1)),
-                        ],
-                    }]
-                } else {
-                    join_conditions.clone()
-                };
-                let cte_join = super::Join {
-                    table_name: cte_name.clone(),
-                    table_alias: cte_alias.clone(),
-                    joining_on: cte_join_conditions,
-                    join_type: super::JoinType::Inner,
-                    pre_filter: None,
-                    from_id_column: None,
-                    to_id_column: None,
-                    graph_rel: None,
-                    is_cartesian: false,
-                };
-
-                // #453: Post-WITH OPTIONAL MATCH anchoring. When the fresh
-                // pattern after the WITH barrier is OPTIONAL, the *required* side
-                // arrives here as the CTE (`with_..._cte_N`) and the fresh
-                // pattern table is optional. The plain code below would leave the
-                // optional table as the FROM driver and INNER-join the CTE onto
-                // it — that both drops every anchor row with no match AND uses the
-                // wrong join type, silently violating OPTIONAL MATCH semantics.
-                // Instead, mirror the non-WITH OPTIONAL path: make the required
-                // CTE the FROM anchor and LEFT-join the optional pattern to it.
-                //
-                // Guarded tightly: only a genuinely correlated (non-`ON 1 = 1`),
-                // single-branch pattern whose FROM is a real optional table (not
-                // already the CTE, a nested WITH CTE, or a VLP CTE).
-                let post_with_optional_restructure = current_plan.is_optional_pattern()
-                    && !join_conditions.is_empty()
-                    && render_plan.union.0.is_none()
-                    && render_plan
-                        .from
-                        .0
-                        .as_ref()
-                        .map(|vr| {
-                            vr.alias.as_deref() != Some(cte_alias.as_str())
-                                && !vr.name.starts_with("with_")
-                                && !vr.name.starts_with("vlp_")
-                        })
-                        .unwrap_or(false);
-
-                if post_with_optional_restructure {
-                    // Demote the optional-side table currently in FROM to a LEFT
-                    // JOIN, and promote the required CTE to the FROM anchor.
-                    let old_from = render_plan
-                        .from
-                        .0
-                        .take()
-                        .expect("FROM guaranteed Some by post_with_optional_restructure guard");
-                    render_plan.from = FromTableItem(Some(super::ViewTableRef {
-                        source: std::sync::Arc::new(LogicalPlan::Empty),
-                        name: cte_name.clone(),
-                        alias: Some(cte_alias.clone()),
-                        use_final: false,
-                    }));
-                    // Everything already joined into the pattern is optional
-                    // relative to the anchor, so a partial match must still
-                    // NULL-extend: demote inner/cross joins to LEFT.
-                    for j in render_plan.joins.0.iter_mut() {
-                        if matches!(j.join_type, super::JoinType::Inner | super::JoinType::Join) {
-                            j.join_type = super::JoinType::Left;
-                        }
-                    }
-                    // LEFT JOIN the old FROM table back onto the CTE via the
-                    // resolved correlation keys (`join_conditions`).
-                    let optional_from_alias = old_from
-                        .alias
-                        .clone()
-                        .unwrap_or_else(|| old_from.name.clone());
-
-                    // Recover the OPTIONAL pattern's WHERE predicate. A `WHERE`
-                    // attached to the post-WITH OPTIONAL MATCH lives on the fresh
-                    // pattern's `GraphRel.where_predicate`. In this reversed-anchor
-                    // shape `collect_graphrel_predicates` DROPS the conjuncts that
-                    // reference ONLY the optional node or ONLY the relationship
-                    // alias from the outer WHERE (destined for a pre_filter on a
-                    // join this restructure rebuilds), while cross-alias / OR
-                    // conjuncts are (wrongly) routed to the outer WHERE. Without
-                    // recovery those predicates change query semantics (ground-rule
-                    // #1). We re-place each predicate class in its correct spot:
-                    //
-                    //   • optional-NODE-only conjuncts  -> LEFT JOIN pre_filter (#460)
-                    //   • relationship-alias-only conjuncts, on FK-edge where the
-                    //     rel shares the optional node's physical table, remap to
-                    //     that table's column and also go in the pre_filter (#462
-                    //     GAP 2). Applied BEFORE the join so no-match anchor rows
-                    //     stay NULL-extended.
-                    //   • conjuncts spanning the optional side AND the anchor CTE
-                    //     (incl. unsplittable OR) -> LEFT JOIN ON condition (#462
-                    //     GAP 1), handled after the join is built (below), so the
-                    //     predicate filters the match, never the anchor rows.
-                    let opt_where = find_graphrel_where_predicate(&current_plan);
-                    let node_pre_filter = opt_where.and_then(|wp| {
-                        extract_predicates_for_alias_logical(wp, &optional_from_alias).0
-                    });
-
-                    // #462 GAP 2: recover relationship-alias-only conjuncts. Only
-                    // safe to fold into the optional NODE's pre_filter when the rel
-                    // and the node share the same physical table (the FK-edge
-                    // pattern), because the pre_filter renders as
-                    // `SELECT * FROM <node table> WHERE …` — the rel's columns must
-                    // exist on that table. Detect via the schema catalog (edge/node
-                    // `full_table_name()` equality, the same structural signal
-                    // `is_node_denormalized_on_edge` uses), never a raw pattern-flag
-                    // branch (axis-dispatch rule).
-                    let opt_graphrel = find_graphrel(&current_plan);
-                    let rel_pre_filter = match (opt_where, opt_graphrel) {
-                        (Some(wp), Some(gr)) if !gr.alias.is_empty() => {
-                            let rel_shares_node_table = gr
-                                .labels
-                                .as_ref()
-                                .and_then(|ls| ls.first())
-                                .and_then(|rel_type| schema.get_relationships_schema_opt(rel_type))
-                                .map(|rel_schema| rel_schema.full_table_name() == old_from.name)
-                                .unwrap_or(false);
-                            if rel_shares_node_table {
-                                extract_predicates_for_alias_logical(wp, &gr.alias).0
-                            } else {
-                                // Rel is a distinct table: a separate join would be
-                                // required, which this restructure does not build.
-                                // Refuse to silently drop the predicate (#462).
-                                let rel_only =
-                                    extract_predicates_for_alias_logical(wp, &gr.alias).0;
-                                if rel_only.is_some() {
-                                    return Err(RenderBuildError::InvalidRenderPlan(format!(
-                                        "post-WITH OPTIONAL MATCH has a WHERE on relationship alias '{}' \
-                                         whose edge table is not the optional node '{}' table; the \
-                                         predicate cannot be placed without a separate edge join and \
-                                         must not be silently dropped (would change semantics)",
-                                        gr.alias, optional_from_alias
-                                    )));
-                                }
-                                None
-                            }
-                        }
-                        _ => None,
-                    };
-
-                    let optional_pre_filter =
-                        combine_optional_filters_with_and(vec![node_pre_filter, rel_pre_filter]);
-                    if optional_pre_filter.is_some() {
-                        log::info!(
-                            "🔧 build_chained_with_match_cte_plan: #460/#462 recovered optional-side WHERE predicate into LEFT JOIN pre_filter for alias '{}'",
-                            optional_from_alias
-                        );
-                    }
-
-                    // #462/#472: every conjunct in `render_plan.filters` at this
-                    // point belongs EXCLUSIVELY to this post-WITH OPTIONAL MATCH's
-                    // own WHERE (the tight `post_with_optional_restructure` guard
-                    // above ensures a single-branch optional pattern; any WHERE
-                    // attached to the WITH projection itself was already folded
-                    // into the CTE body and is not visible here). `
-                    // collect_graphrel_predicates` routed the whole thing to the
-                    // outer WHERE — wrong for OPTIONAL MATCH, since the outer WHERE
-                    // drops the NULL-extended no-match anchor rows. Move EVERY
-                    // conjunct into the LEFT JOIN's ON condition, including
-                    // pure-anchor ones (#472): for a LEFT JOIN a false ON condition
-                    // just NULL-extends the row rather than dropping it, so folding
-                    // the whole predicate into ON is always safe and never changes
-                    // which rows are kept vs. dropped when the FROM side is the
-                    // anchor CTE. (Anchor `c` references were already resolved to
-                    // CTE columns, e.g. `c.p1_c_customer_id`, when the filter was
-                    // rendered.) Nothing is left behind in the outer WHERE for this
-                    // segment.
-                    let mut extra_on_conditions: Vec<OperatorApplication> = Vec::new();
-                    if let Some(filter_expr) = render_plan.filters.0.take() {
-                        for conj in split_render_and_conjuncts(filter_expr) {
-                            match conj {
-                                RenderExpr::OperatorApplicationExp(op) => {
-                                    extra_on_conditions.push(op);
-                                }
-                                // A boolean conjunct that is not an operator
-                                // application (e.g. a bare scalar-fn predicate)
-                                // cannot be expressed as a joining_on
-                                // `OperatorApplication`. Rather than silently leave
-                                // it in the outer WHERE (wrong semantics) or drop
-                                // it, refuse with a clean error (#462/#472).
-                                other => {
-                                    return Err(RenderBuildError::InvalidRenderPlan(format!(
-                                        "post-WITH OPTIONAL MATCH WHERE conjunct is not an \
-                                         operator application and cannot be moved into the \
-                                         LEFT JOIN ON condition for alias '{}'; refusing to \
-                                         place it in the outer WHERE (would drop NULL-extended \
-                                         rows): {:?}",
-                                        optional_from_alias, other
-                                    )));
-                                }
-                            }
-                        }
-                        // No `kept` remainder: the whole post-OPTIONAL WHERE moves
-                        // into the ON condition, so `render_plan.filters` stays
-                        // cleared (no outer WHERE for this segment).
-                    }
-                    if !extra_on_conditions.is_empty() {
-                        log::info!(
-                            "🔧 build_chained_with_match_cte_plan: #462/#472 moved {} WHERE conjunct(s) (incl. pure-anchor) into LEFT JOIN ON for alias '{}'",
-                            extra_on_conditions.len(),
-                            optional_from_alias
-                        );
-                    }
-
-                    let mut optional_joining_on = join_conditions.clone();
-                    optional_joining_on.extend(extra_on_conditions);
-
-                    let optional_from_join = super::Join {
-                        table_name: old_from.name.clone(),
-                        table_alias: optional_from_alias.clone(),
-                        joining_on: optional_joining_on,
-                        join_type: super::JoinType::Left,
-                        pre_filter: optional_pre_filter,
-                        from_id_column: None,
-                        to_id_column: None,
-                        graph_rel: None,
-                        is_cartesian: false,
-                    };
-                    render_plan.joins.0.insert(0, optional_from_join);
-                    log::info!(
-                        "🔧 build_chained_with_match_cte_plan: #453 post-WITH OPTIONAL restructure — FROM={} AS {}, LEFT JOIN {} AS {}",
-                        cte_name, cte_alias, old_from.name, optional_from_alias
-                    );
-                } else {
-                    // Insert the CTE join at the BEGINNING of the joins list
-                    // (CTE should be joined first so its columns are available)
-                    // BUT: skip if a JOIN for this CTE alias already exists (from extract_joins)
-                    // OR if the FROM table already uses this alias (avoid duplicate alias error)
-                    let already_has_cte_join = render_plan
-                        .joins
-                        .0
-                        .iter()
-                        .any(|j| j.table_alias == cte_alias);
-                    let from_already_uses_alias = render_plan
-                        .from
-                        .0
-                        .as_ref()
-                        .map(|vr| vr.alias.as_deref() == Some(&cte_alias))
-                        .unwrap_or(false);
-                    if !already_has_cte_join && !from_already_uses_alias {
-                        render_plan.joins.0.insert(0, cte_join.clone());
-                        log::info!(
-                            "🔧 build_chained_with_match_cte_plan: Added CTE JOIN: {} AS {}",
-                            cte_name,
-                            cte_alias
-                        );
-                    } else {
-                        log::info!(
-                            "🔧 build_chained_with_match_cte_plan: Skipping CTE JOIN {} AS {} (already present from extract_joins)",
-                            cte_name,
-                            cte_alias
-                        );
-                    }
-                }
-
-                // Also add the WITH CTE JOIN to each Union branch
-                // The main plan's joins only apply to the first branch (outgoing).
-                // Incoming branches in union.input[] need their own JOIN.
-                if let Some(ref mut union) = render_plan.union.0 {
-                    for branch in union.input.iter_mut() {
-                        // Skip if this branch already has the CTE join
-                        let branch_already_has =
-                            branch.joins.0.iter().any(|j| j.table_alias == cte_alias);
-                        if branch_already_has {
-                            continue;
-                        }
-
-                        if let FromTableItem(Some(ref branch_from)) = branch.from {
-                            if branch_from.name.starts_with("vlp_") {
-                                // Find the VLP CTE metadata to determine the correct join column
-                                let mut branch_join_cond = Vec::new();
-                                for vlp_cte in &render_plan.ctes.0 {
-                                    if vlp_cte.cte_name == branch_from.name {
-                                        let is_start = vlp_cte.vlp_cypher_start_alias.as_deref()
-                                            == Some(cte_alias.as_str());
-                                        let is_end = vlp_cte.vlp_cypher_end_alias.as_deref()
-                                            == Some(cte_alias.as_str());
-                                        if is_start || is_end {
-                                            let vlp_id_col =
-                                                if is_start { "start_id" } else { "end_id" };
-                                            let from_alias =
-                                                branch_from.alias.as_deref().unwrap_or("t");
-                                            let vlp_alias_for_id = if is_start {
-                                                vlp_cte
-                                                    .vlp_cypher_start_alias
-                                                    .as_deref()
-                                                    .unwrap_or(&cte_alias)
-                                            } else {
-                                                vlp_cte
-                                                    .vlp_cypher_end_alias
-                                                    .as_deref()
-                                                    .unwrap_or(&cte_alias)
-                                            };
-                                            let id_col_name = if let Some(meta) =
-                                                cte_schemas.get(&cte_name)
-                                            {
-                                                meta.alias_to_id
-                                                    .get(vlp_alias_for_id)
-                                                    .cloned()
-                                                    .or_else(|| {
-                                                        let prefix =
-                                                            format!("{}_", vlp_alias_for_id);
-                                                        meta.select_items.iter().find_map(|item| {
-                                                            if let Some(col_alias) = &item.col_alias
-                                                            {
-                                                                let name = &col_alias.0;
-                                                                if name.starts_with(&prefix)
-                                                                    && name.ends_with("_id")
-                                                                {
-                                                                    return Some(name.clone());
-                                                                }
-                                                            }
-                                                            None
-                                                        })
-                                                    })
-                                                    .unwrap_or_else(|| {
-                                                        find_id_column_in_cte(
-                                                            &cte_name,
-                                                            vlp_alias_for_id,
-                                                            &render_plan.ctes,
-                                                        )
-                                                    })
-                                            } else {
-                                                find_id_column_in_cte(
-                                                    &cte_name,
-                                                    vlp_alias_for_id,
-                                                    &render_plan.ctes,
-                                                )
-                                            };
-                                            // Wrap BOTH sides in toString() to handle type mismatches:
-                                            // VLP start_id/end_id may be UInt64 or String depending on generation path.
-                                            // CTE columns are typically UInt64 (raw IDs). toString() on both sides
-                                            // ensures consistent String comparison regardless of input types.
-                                            let cond = OperatorApplication {
-                                                operator: Operator::Equal,
-                                                operands: vec![
-                                                    RenderExpr::ScalarFnCall(ScalarFnCall {
-                                                        name: current_function_mapper().cast_string().to_string(),
-                                                        args: vec![RenderExpr::Column(Column(
-                                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                                format!("{}.{}", from_alias, vlp_id_col)
-                                                            )
-                                                        ))],
-                                                    }),
-                                                    RenderExpr::ScalarFnCall(ScalarFnCall {
-                                                        name: current_function_mapper().cast_string().to_string(),
-                                                        args: vec![RenderExpr::Column(Column(
-                                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                                format!("{}.{}", cte_alias, id_col_name)
-                                                            )
-                                                        ))],
-                                                    }),
-                                                ],
-                                            };
-                                            log::debug!(
-                                                "🔧 VLP+WITH (branch): Generated JOIN for '{}': {}.{} = {}.{}",
-                                                branch_from.name, from_alias, vlp_id_col, cte_alias, id_col_name
-                                            );
-                                            branch_join_cond.push(cond);
-                                        }
-                                        break;
-                                    }
-                                }
-                                let branch_cte_join = super::Join {
-                                    table_name: cte_name.clone(),
-                                    table_alias: cte_alias.clone(),
-                                    joining_on: branch_join_cond,
-                                    join_type: super::JoinType::Inner,
-                                    pre_filter: None,
-                                    from_id_column: None,
-                                    to_id_column: None,
-                                    graph_rel: None,
-                                    is_cartesian: false,
-                                };
-                                branch.joins.0.insert(0, branch_cte_join);
-                                log::info!(
-                                    "🔧 build_chained_with_match_cte_plan: Added CTE JOIN to Union branch FROM '{}'",
-                                    branch_from.name
-                                );
-
-                                // Rewrite Union branch SELECT items to use CTE column names
-                                // Use scope-based rewriting (replaces removed rewrite_cte_expression)
-                                if let Some(scope) = scope {
-                                    use super::variable_scope::rewrite_render_expr;
-                                    for item in branch.select.items.iter_mut() {
-                                        item.expression =
-                                            rewrite_render_expr(&item.expression, scope);
-                                    }
-                                    log::info!(
-                                        "🔧 build_chained_with_match_cte_plan: Rewrote Union branch SELECT via scope for CTE"
-                                    );
-                                }
-                            } else {
-                                // Non-VLP branch (regular table FROM): add CTE as cross-join (ON 1=1)
-                                // This handles post-WITH MATCH patterns with undirected edges
-                                // where UnionDistribution created Union branches with regular table FROM
-                                use crate::render_plan::render_expr::Literal as RenderLiteral;
-                                let branch_cte_join = super::Join {
-                                    table_name: cte_name.clone(),
-                                    table_alias: cte_alias.clone(),
-                                    joining_on: if join_conditions.is_empty() {
-                                        vec![OperatorApplication {
-                                            operator: Operator::Equal,
-                                            operands: vec![
-                                                RenderExpr::Literal(RenderLiteral::Integer(1)),
-                                                RenderExpr::Literal(RenderLiteral::Integer(1)),
-                                            ],
-                                        }]
-                                    } else {
-                                        join_conditions.clone()
-                                    },
-                                    join_type: super::JoinType::Inner,
-                                    pre_filter: None,
-                                    from_id_column: None,
-                                    to_id_column: None,
-                                    graph_rel: None,
-                                    is_cartesian: false,
-                                };
-                                branch.joins.0.insert(0, branch_cte_join);
-                                log::info!(
-                                    "🔧 build_chained_with_match_cte_plan: Added CTE cross-JOIN to non-VLP Union branch FROM '{}'",
-                                    branch_from.name
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-
-            // After adding CTE joins, we need to rewrite SELECT items that reference CTE aliases
-            // to use the CTE composite alias (e.g., a.name -> a_b.a_name)
-            log::debug!(
-                "🔧 build_chained_with_match_cte_plan: Rewriting SELECT items for CTE references"
-            );
-        }
-    }
+    resolve_cross_table_with_cte_joins(
+        &mut render_plan,
+        &cte_references,
+        &cte_schemas,
+        &original_correlation_predicates,
+        &current_plan,
+        schema,
+        scope,
+        is_cypher_union_plan,
+    )?;
 
     // When FROM is None (Union shell) but CTE references exist, add CTE cross-joins
     // to each Union branch directly. This handles the case where Direct Union rendering
