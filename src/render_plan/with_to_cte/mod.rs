@@ -6240,6 +6240,267 @@ fn publish_cte_alias_scopes(
     }
 }
 
+/// Rewrite a rendered WITH-CTE body's join conditions onto CTE columns and prune
+/// orphaned JOINs (a STEP of the main loop's inner render-loop in
+/// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// The analyzer emits joins with base-table columns (e.g. `friend.id`), but after
+/// a WITH barrier `friend` is a CTE with prefixed columns (e.g. `p6_friend_id`);
+/// `rewrite_join_conditions_for_cte_aliases` remaps them. That can leave a
+/// base-table JOIN whose ON condition no longer references the joined table (all
+/// refs rewritten to CTE columns) — those orphaned JOINs are removed, folding
+/// their conditions into the previous JOIN. No-op when there are no CTE
+/// references.
+fn rewrite_cte_join_conditions_and_prune_orphans(
+    rendered: &mut RenderPlan,
+    cte_references: &HashMap<String, String>,
+    cte_schemas: &crate::render_plan::CteSchemas,
+) {
+    if !cte_references.is_empty() {
+        rewrite_join_conditions_for_cte_aliases(rendered, cte_references, cte_schemas);
+
+        // Remove orphaned JOINs: when a CTE-backed node appears as a graph
+        // endpoint, a base-table JOIN is created. After CTE rewriting, the
+        // ON condition may no longer reference the joined table (all refs
+        // rewritten to CTE columns). Remove such JOINs, folding conditions
+        // into the previous JOIN.
+        {
+            use super::expression_utils::references_alias;
+            let mut orphaned_indices: Vec<usize> = Vec::new();
+            for (i, join) in rendered.joins.0.iter().enumerate() {
+                // Only consider JOINs for CTE-backed aliases
+                if !cte_references.contains_key(&join.table_alias) {
+                    continue;
+                }
+                // Skip CTE/VLP table JOINs — only remove base table JOINs
+                if join.table_name.starts_with("with_") || join.table_name.starts_with("vlp_") {
+                    continue;
+                }
+                // Skip if JOIN has pre_filter or no conditions
+                if join.pre_filter.is_some() || join.joining_on.is_empty() {
+                    continue;
+                }
+                let alias = &join.table_alias;
+
+                // Only remove if no MEANINGFUL non-CTE-backed JOINs follow.
+                // A trailing JOIN is "meaningful" if it's referenced in
+                // SELECT/WHERE/ORDER BY (i.e., it's not itself orphaned).
+                // This prevents removing mid-chain JOINs that downstream
+                // restructuring code (complex-5 countIf) depends on.
+                let has_meaningful_non_cte_after = rendered.joins.0[i + 1..].iter().any(|j| {
+                    if cte_references.contains_key(&j.table_alias)
+                        || j.table_name.starts_with("with_")
+                        || j.table_name.starts_with("vlp_")
+                    {
+                        return false; // CTE/VLP JOINs don't block
+                    }
+                    let ja = &j.table_alias;
+                    rendered
+                        .select
+                        .items
+                        .iter()
+                        .any(|item| references_alias(&item.expression, ja))
+                        || matches!(
+                            &rendered.filters,
+                            FilterItems(Some(ref f)) if references_alias(f, ja)
+                        )
+                        || rendered
+                            .order_by
+                            .0
+                            .iter()
+                            .any(|item| references_alias(&item.expression, ja))
+                        || rendered
+                            .group_by
+                            .0
+                            .iter()
+                            .any(|item| references_alias(item, ja))
+                });
+                if has_meaningful_non_cte_after {
+                    continue;
+                }
+
+                // Check if ON condition still references the joined table
+                let references_self = join.joining_on.iter().any(|cond| {
+                    references_alias(&RenderExpr::OperatorApplicationExp(cond.clone()), alias)
+                });
+                if references_self {
+                    continue;
+                }
+
+                // Check if alias is referenced ANYWHERE else in the query
+                let used_in_select = rendered
+                    .select
+                    .items
+                    .iter()
+                    .any(|item| references_alias(&item.expression, alias));
+                let used_in_filter = matches!(
+                    &rendered.filters,
+                    FilterItems(Some(ref f)) if references_alias(f, alias)
+                );
+                let used_in_order = rendered
+                    .order_by
+                    .0
+                    .iter()
+                    .any(|item| references_alias(&item.expression, alias));
+                let used_in_group_by = rendered
+                    .group_by
+                    .0
+                    .iter()
+                    .any(|item| references_alias(item, alias));
+                let used_in_having = rendered
+                    .having_clause
+                    .as_ref()
+                    .is_some_and(|h| references_alias(h, alias));
+                let used_in_other_joins = rendered.joins.0.iter().enumerate().any(|(j, jn)| {
+                    j != i
+                        && (jn.joining_on.iter().any(|c| {
+                            references_alias(&RenderExpr::OperatorApplicationExp(c.clone()), alias)
+                        }) || jn
+                            .pre_filter
+                            .as_ref()
+                            .is_some_and(|pf| references_alias(pf, alias)))
+                });
+
+                if used_in_select
+                    || used_in_filter
+                    || used_in_order
+                    || used_in_group_by
+                    || used_in_having
+                    || used_in_other_joins
+                {
+                    log::info!(
+                        "Orphan JOIN check: keeping {} (sel={} filt={} ord={} grp={} hav={} jn={})",
+                        alias,
+                        used_in_select,
+                        used_in_filter,
+                        used_in_order,
+                        used_in_group_by,
+                        used_in_having,
+                        used_in_other_joins
+                    );
+                    continue;
+                }
+
+                log::info!(
+                    "Orphan JOIN removal: removing orphaned JOIN {} (table {})",
+                    alias,
+                    join.table_name
+                );
+                orphaned_indices.push(i);
+            }
+
+            for &i in orphaned_indices.iter().rev() {
+                let removed = rendered.joins.0.remove(i);
+                // Fold conditions into previous JOIN
+                if i > 0 {
+                    if let Some(prev_join) = rendered.joins.0.get_mut(i - 1) {
+                        for cond in removed.joining_on {
+                            prev_join.joining_on.push(cond);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fix INNER→LEFT in OPTIONAL MATCH CTE bodies.
+        // When a CTE reference is LEFT JOINed (indicating OPTIONAL MATCH),
+        // any INNER JOINs after it should also be LEFT — the inference may
+        // generate INNER for endpoints (e.g., person2) that weren't in the
+        // optional_aliases set.
+        // We specifically require the CTE JOIN itself to be LEFT, not just
+        // any LEFT JOIN in the body, to avoid converting genuinely INNER JOINs
+        // in non-OPTIONAL contexts.
+        {
+            let first_left_cte_idx = rendered.joins.0.iter().position(|j| {
+                matches!(j.join_type, super::JoinType::Left)
+                    && (j.table_name.starts_with("with_") || j.table_name.starts_with("vlp_"))
+            });
+            if let Some(cte_idx) = first_left_cte_idx {
+                for j in rendered.joins.0[cte_idx..].iter_mut() {
+                    if matches!(j.join_type, super::JoinType::Inner) {
+                        log::info!(
+                            "OPTIONAL MATCH fix: converting INNER→LEFT for JOIN {} ({})",
+                            j.table_alias,
+                            j.table_name
+                        );
+                        j.join_type = super::JoinType::Left;
+                    }
+                }
+            }
+        }
+
+        // Remove spurious auto-generated duplicate JOINs.
+        // When the system creates aliases like t13 and t13_1 for the same
+        // relationship table, the suffixed one (t13_1) is a duplicate.
+        // Only remove suffixed duplicates (alias_N where alias also exists),
+        // and only if the suffixed alias is NOT referenced in SELECT/WHERE/etc.
+        {
+            use super::expression_utils::references_alias;
+            let alias_set: std::collections::HashSet<String> = rendered
+                .joins
+                .0
+                .iter()
+                .map(|j| j.table_alias.clone())
+                .collect();
+            let mut dup_indices: Vec<usize> = Vec::new();
+            for (i, j) in rendered.joins.0.iter().enumerate() {
+                // Check if alias matches pattern "base_N" where "base" also exists
+                if let Some(pos) = j.table_alias.rfind('_') {
+                    let base = &j.table_alias[..pos];
+                    let suffix = &j.table_alias[pos + 1..];
+                    if suffix.chars().all(|c| c.is_ascii_digit()) && alias_set.contains(base) {
+                        // Verify the suffixed alias isn't referenced anywhere
+                        let alias = &j.table_alias;
+                        let used = rendered
+                            .select
+                            .items
+                            .iter()
+                            .any(|item| references_alias(&item.expression, alias))
+                            || matches!(
+                                &rendered.filters,
+                                FilterItems(Some(ref f)) if references_alias(f, alias)
+                            )
+                            || rendered
+                                .order_by
+                                .0
+                                .iter()
+                                .any(|item| references_alias(&item.expression, alias))
+                            || rendered
+                                .group_by
+                                .0
+                                .iter()
+                                .any(|item| references_alias(item, alias))
+                            || rendered.joins.0.iter().enumerate().any(|(j2, jn)| {
+                                j2 != i
+                                    && jn.joining_on.iter().any(|c| {
+                                        references_alias(
+                                            &RenderExpr::OperatorApplicationExp(c.clone()),
+                                            alias,
+                                        )
+                                    })
+                            });
+                        if !used {
+                            dup_indices.push(i);
+                        }
+                    }
+                }
+            }
+            if !dup_indices.is_empty() {
+                dup_indices.sort_unstable();
+                dup_indices.dedup();
+                for &i in dup_indices.iter().rev() {
+                    log::info!(
+                        "Removing spurious duplicate JOIN {} ({})",
+                        rendered.joins.0[i].table_alias,
+                        rendered.joins.0[i].table_name
+                    );
+                    rendered.joins.0.remove(i);
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -7990,266 +8251,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     }
                 }
 
-                // Rewrite join conditions that reference CTE aliases to use CTE column names.
-                // The analyzer generates joins with base-table columns (e.g., friend.id),
-                // but after a WITH barrier, "friend" is a CTE with prefixed columns (e.g., p6_friend_id).
-                if !cte_references.is_empty() {
-                    rewrite_join_conditions_for_cte_aliases(
-                        &mut rendered,
-                        &cte_references,
-                        &cte_schemas,
-                    );
-
-                    // Remove orphaned JOINs: when a CTE-backed node appears as a graph
-                    // endpoint, a base-table JOIN is created. After CTE rewriting, the
-                    // ON condition may no longer reference the joined table (all refs
-                    // rewritten to CTE columns). Remove such JOINs, folding conditions
-                    // into the previous JOIN.
-                    {
-                        use super::expression_utils::references_alias;
-                        let mut orphaned_indices: Vec<usize> = Vec::new();
-                        for (i, join) in rendered.joins.0.iter().enumerate() {
-                            // Only consider JOINs for CTE-backed aliases
-                            if !cte_references.contains_key(&join.table_alias) {
-                                continue;
-                            }
-                            // Skip CTE/VLP table JOINs — only remove base table JOINs
-                            if join.table_name.starts_with("with_")
-                                || join.table_name.starts_with("vlp_")
-                            {
-                                continue;
-                            }
-                            // Skip if JOIN has pre_filter or no conditions
-                            if join.pre_filter.is_some() || join.joining_on.is_empty() {
-                                continue;
-                            }
-                            let alias = &join.table_alias;
-
-                            // Only remove if no MEANINGFUL non-CTE-backed JOINs follow.
-                            // A trailing JOIN is "meaningful" if it's referenced in
-                            // SELECT/WHERE/ORDER BY (i.e., it's not itself orphaned).
-                            // This prevents removing mid-chain JOINs that downstream
-                            // restructuring code (complex-5 countIf) depends on.
-                            let has_meaningful_non_cte_after =
-                                rendered.joins.0[i + 1..].iter().any(|j| {
-                                    if cte_references.contains_key(&j.table_alias)
-                                        || j.table_name.starts_with("with_")
-                                        || j.table_name.starts_with("vlp_")
-                                    {
-                                        return false; // CTE/VLP JOINs don't block
-                                    }
-                                    let ja = &j.table_alias;
-                                    rendered
-                                        .select
-                                        .items
-                                        .iter()
-                                        .any(|item| references_alias(&item.expression, ja))
-                                        || matches!(
-                                            &rendered.filters,
-                                            FilterItems(Some(ref f)) if references_alias(f, ja)
-                                        )
-                                        || rendered
-                                            .order_by
-                                            .0
-                                            .iter()
-                                            .any(|item| references_alias(&item.expression, ja))
-                                        || rendered
-                                            .group_by
-                                            .0
-                                            .iter()
-                                            .any(|item| references_alias(item, ja))
-                                });
-                            if has_meaningful_non_cte_after {
-                                continue;
-                            }
-
-                            // Check if ON condition still references the joined table
-                            let references_self = join.joining_on.iter().any(|cond| {
-                                references_alias(
-                                    &RenderExpr::OperatorApplicationExp(cond.clone()),
-                                    alias,
-                                )
-                            });
-                            if references_self {
-                                continue;
-                            }
-
-                            // Check if alias is referenced ANYWHERE else in the query
-                            let used_in_select = rendered
-                                .select
-                                .items
-                                .iter()
-                                .any(|item| references_alias(&item.expression, alias));
-                            let used_in_filter = matches!(
-                                &rendered.filters,
-                                FilterItems(Some(ref f)) if references_alias(f, alias)
-                            );
-                            let used_in_order = rendered
-                                .order_by
-                                .0
-                                .iter()
-                                .any(|item| references_alias(&item.expression, alias));
-                            let used_in_group_by = rendered
-                                .group_by
-                                .0
-                                .iter()
-                                .any(|item| references_alias(item, alias));
-                            let used_in_having = rendered
-                                .having_clause
-                                .as_ref()
-                                .is_some_and(|h| references_alias(h, alias));
-                            let used_in_other_joins =
-                                rendered.joins.0.iter().enumerate().any(|(j, jn)| {
-                                    j != i
-                                        && (jn.joining_on.iter().any(|c| {
-                                            references_alias(
-                                                &RenderExpr::OperatorApplicationExp(c.clone()),
-                                                alias,
-                                            )
-                                        }) || jn
-                                            .pre_filter
-                                            .as_ref()
-                                            .is_some_and(|pf| references_alias(pf, alias)))
-                                });
-
-                            if used_in_select
-                                || used_in_filter
-                                || used_in_order
-                                || used_in_group_by
-                                || used_in_having
-                                || used_in_other_joins
-                            {
-                                log::info!(
-                                    "Orphan JOIN check: keeping {} (sel={} filt={} ord={} grp={} hav={} jn={})",
-                                    alias, used_in_select, used_in_filter, used_in_order,
-                                    used_in_group_by, used_in_having, used_in_other_joins
-                                );
-                                continue;
-                            }
-
-                            log::info!(
-                                "Orphan JOIN removal: removing orphaned JOIN {} (table {})",
-                                alias,
-                                join.table_name
-                            );
-                            orphaned_indices.push(i);
-                        }
-
-                        for &i in orphaned_indices.iter().rev() {
-                            let removed = rendered.joins.0.remove(i);
-                            // Fold conditions into previous JOIN
-                            if i > 0 {
-                                if let Some(prev_join) = rendered.joins.0.get_mut(i - 1) {
-                                    for cond in removed.joining_on {
-                                        prev_join.joining_on.push(cond);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Fix INNER→LEFT in OPTIONAL MATCH CTE bodies.
-                    // When a CTE reference is LEFT JOINed (indicating OPTIONAL MATCH),
-                    // any INNER JOINs after it should also be LEFT — the inference may
-                    // generate INNER for endpoints (e.g., person2) that weren't in the
-                    // optional_aliases set.
-                    // We specifically require the CTE JOIN itself to be LEFT, not just
-                    // any LEFT JOIN in the body, to avoid converting genuinely INNER JOINs
-                    // in non-OPTIONAL contexts.
-                    {
-                        let first_left_cte_idx = rendered.joins.0.iter().position(|j| {
-                            matches!(j.join_type, super::JoinType::Left)
-                                && (j.table_name.starts_with("with_")
-                                    || j.table_name.starts_with("vlp_"))
-                        });
-                        if let Some(cte_idx) = first_left_cte_idx {
-                            for j in rendered.joins.0[cte_idx..].iter_mut() {
-                                if matches!(j.join_type, super::JoinType::Inner) {
-                                    log::info!(
-                                        "OPTIONAL MATCH fix: converting INNER→LEFT for JOIN {} ({})",
-                                        j.table_alias,
-                                        j.table_name
-                                    );
-                                    j.join_type = super::JoinType::Left;
-                                }
-                            }
-                        }
-                    }
-
-                    // Remove spurious auto-generated duplicate JOINs.
-                    // When the system creates aliases like t13 and t13_1 for the same
-                    // relationship table, the suffixed one (t13_1) is a duplicate.
-                    // Only remove suffixed duplicates (alias_N where alias also exists),
-                    // and only if the suffixed alias is NOT referenced in SELECT/WHERE/etc.
-                    {
-                        use super::expression_utils::references_alias;
-                        let alias_set: std::collections::HashSet<String> = rendered
-                            .joins
-                            .0
-                            .iter()
-                            .map(|j| j.table_alias.clone())
-                            .collect();
-                        let mut dup_indices: Vec<usize> = Vec::new();
-                        for (i, j) in rendered.joins.0.iter().enumerate() {
-                            // Check if alias matches pattern "base_N" where "base" also exists
-                            if let Some(pos) = j.table_alias.rfind('_') {
-                                let base = &j.table_alias[..pos];
-                                let suffix = &j.table_alias[pos + 1..];
-                                if suffix.chars().all(|c| c.is_ascii_digit())
-                                    && alias_set.contains(base)
-                                {
-                                    // Verify the suffixed alias isn't referenced anywhere
-                                    let alias = &j.table_alias;
-                                    let used = rendered
-                                        .select
-                                        .items
-                                        .iter()
-                                        .any(|item| references_alias(&item.expression, alias))
-                                        || matches!(
-                                            &rendered.filters,
-                                            FilterItems(Some(ref f)) if references_alias(f, alias)
-                                        )
-                                        || rendered
-                                            .order_by
-                                            .0
-                                            .iter()
-                                            .any(|item| references_alias(&item.expression, alias))
-                                        || rendered
-                                            .group_by
-                                            .0
-                                            .iter()
-                                            .any(|item| references_alias(item, alias))
-                                        || rendered.joins.0.iter().enumerate().any(|(j2, jn)| {
-                                            j2 != i
-                                                && jn.joining_on.iter().any(|c| {
-                                                    references_alias(
-                                                        &RenderExpr::OperatorApplicationExp(
-                                                            c.clone(),
-                                                        ),
-                                                        alias,
-                                                    )
-                                                })
-                                        });
-                                    if !used {
-                                        dup_indices.push(i);
-                                    }
-                                }
-                            }
-                        }
-                        if !dup_indices.is_empty() {
-                            dup_indices.sort_unstable();
-                            dup_indices.dedup();
-                            for &i in dup_indices.iter().rev() {
-                                log::info!(
-                                    "Removing spurious duplicate JOIN {} ({})",
-                                    rendered.joins.0[i].table_alias,
-                                    rendered.joins.0[i].table_name
-                                );
-                                rendered.joins.0.remove(i);
-                            }
-                        }
-                    }
-                }
+                // Rewrite join conditions that reference CTE aliases to use CTE column names,
+                // then prune orphaned JOINs. See `rewrite_cte_join_conditions_and_prune_orphans`.
+                rewrite_cte_join_conditions_and_prune_orphans(
+                    &mut rendered,
+                    &cte_references,
+                    &cte_schemas,
+                );
 
                 // Fix composite alias references in the rendered plan.
                 // CTE body plans may have expressions using composite aliases (e.g., "countWindow1_tag")
