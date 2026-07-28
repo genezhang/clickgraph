@@ -5073,6 +5073,72 @@ fn build_cte_column_metadata(
     )
 }
 
+/// Extract the WITH clause's original exported aliases and the renamed→original
+/// alias map (a STEP of the main loop's `'alias_loop` in
+/// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// `original_exported_aliases` are the WithClause's own exported aliases (falling
+/// back to splitting `with_alias` on `_`). The rename map handles `WITH u AS
+/// person`: it maps the renamed alias (`person`) back to the original (`u`) —
+/// derived from each projection item whose expression is a `TableAlias` or
+/// `PropertyAccessExp` and whose output name differs from that source alias — so
+/// downstream lookups can find CTE columns prefixed with the original alias in
+/// `property_mapping`.
+///
+/// Returns `(original_exported_aliases, alias_rename_map)`.
+fn build_alias_rename_map(
+    with_plans: &[LogicalPlan],
+    with_alias: &str,
+) -> (Vec<String>, HashMap<String, String>) {
+    let original_exported_aliases: Vec<String> = with_plans
+        .iter()
+        .find_map(|plan| {
+            if let LogicalPlan::WithClause(wc) = plan {
+                Some(wc.exported_aliases.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| with_alias.split('_').map(|s| s.to_string()).collect());
+
+    // Build rename mapping: renamed_alias → original_alias
+    // For "WITH u AS person", maps "person" → "u" so we can find
+    // CTE columns prefixed with the original alias in property_mapping.
+    let alias_rename_map: HashMap<String, String> = with_plans
+        .iter()
+        .find_map(|plan| {
+            if let LogicalPlan::WithClause(wc) = plan {
+                let mut renames = HashMap::new();
+                for item in &wc.items {
+                    if let Some(ref col_alias) = item.col_alias {
+                        let renamed = &col_alias.0;
+                        // Extract original alias from expression
+                        let original = match &item.expression {
+                            crate::query_planner::logical_expr::LogicalExpr::TableAlias(ta) => {
+                                Some(ta.0.clone())
+                            }
+                            crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
+                                pa,
+                            ) => Some(pa.table_alias.0.clone()),
+                            _ => None,
+                        };
+                        if let Some(orig) = original {
+                            if &orig != renamed {
+                                renames.insert(renamed.clone(), orig);
+                            }
+                        }
+                    }
+                }
+                Some(renames)
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+
+    (original_exported_aliases, alias_rename_map)
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -7307,48 +7373,11 @@ pub(crate) fn build_chained_with_match_cte_plan(
             let (select_items_for_schema, property_names_for_schema, cte_columns) =
                 build_cte_column_metadata(&with_cte_render, &with_alias, &cte_name);
 
-            // Extract original WITH exported aliases for cte_references mapping
-            let original_exported_aliases: Vec<String> = with_plans
-                .iter()
-                .find_map(|plan| {
-                    if let LogicalPlan::WithClause(wc) = plan {
-                        Some(wc.exported_aliases.clone())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_else(|| with_alias.split('_').map(|s| s.to_string()).collect());
-
-            // Build rename mapping: renamed_alias → original_alias
-            // For "WITH u AS person", maps "person" → "u" so we can find
-            // CTE columns prefixed with the original alias in property_mapping.
-            let alias_rename_map: HashMap<String, String> = with_plans
-                .iter()
-                .find_map(|plan| {
-                    if let LogicalPlan::WithClause(wc) = plan {
-                        let mut renames = HashMap::new();
-                        for item in &wc.items {
-                            if let Some(ref col_alias) = item.col_alias {
-                                let renamed = &col_alias.0;
-                                // Extract original alias from expression
-                                let original = match &item.expression {
-                                    crate::query_planner::logical_expr::LogicalExpr::TableAlias(ta) => Some(ta.0.clone()),
-                                    crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) => Some(pa.table_alias.0.clone()),
-                                    _ => None,
-                                };
-                                if let Some(orig) = original {
-                                    if &orig != renamed {
-                                        renames.insert(renamed.clone(), orig);
-                                    }
-                                }
-                            }
-                        }
-                        Some(renames)
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_default();
+            // Extract original WITH exported aliases + the renamed→original alias
+            // map for cte_references / property_mapping lookups.
+            // See `build_alias_rename_map`.
+            let (original_exported_aliases, alias_rename_map) =
+                build_alias_rename_map(&with_plans, &with_alias);
 
             // ==========================================================================
             // FIX: Post-WITH OPTIONAL MATCH CTE body restructuring
