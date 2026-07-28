@@ -2462,7 +2462,7 @@ fn is_vlp_path_is_null(expr: &RenderExpr, path_variable: &Option<String>) -> boo
 /// This would allow proper handling of arbitrary schema variations without hardcoding.
 ///
 /// FUTURE: Consider caching property mapping results to improve performance for repeated queries.
-fn derive_cypher_property_name(db_column: &str) -> String {
+pub(crate) fn derive_cypher_property_name(db_column: &str) -> String {
     // Common mappings for various schemas
     // Social benchmark schema
     match db_column {
