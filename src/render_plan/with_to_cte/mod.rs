@@ -2961,6 +2961,76 @@ fn apply_passthrough_cte_name_remappings(
     }
 }
 
+/// Post-render union-shell fixup (finalization tail of
+/// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// When the outer `render_plan.from` is `None` (a Union shell, produced when
+/// Direct Union rendering moved every branch into `union.input` for
+/// aggregation/GROUP BY) but CTE references exist, each union branch still needs
+/// those CTEs in scope. Add a `1 = 1` cross-JOIN for every referenced CTE to
+/// each branch that doesn't already join it. Sorted by CTE name for
+/// deterministic emitted JOIN order (`cte_references` is a `HashMap` with
+/// per-process-random iteration order, #480 class).
+///
+/// #593: never do this for a Cypher UNION — each arm is an independent query
+/// that must not be cross-joined to a sibling arm's WITH-CTE. Caller passes
+/// `is_cypher_union_plan` so this stays a no-op there.
+fn add_cte_cross_joins_to_union_branches(
+    render_plan: &mut RenderPlan,
+    cte_references: &HashMap<String, String>,
+    is_cypher_union_plan: bool,
+) {
+    if render_plan.from.0.is_none() && !cte_references.is_empty() && !is_cypher_union_plan {
+        if let Some(ref mut union_data) = render_plan.union.0 {
+            // Sorted: the emitted JOIN order in each Union branch follows this
+            // iteration and `cte_references` is a HashMap whose iteration order
+            // is per-process random (#480 class).
+            let mut sorted_cte_names: Vec<&String> = cte_references.values().collect();
+            sorted_cte_names.sort();
+            for cte_name in sorted_cte_names {
+                let cte_alias = if let Some(stripped) = cte_name.strip_prefix("with_") {
+                    if let Some(cte_pos) = stripped.rfind("_cte") {
+                        stripped[..cte_pos].to_string()
+                    } else {
+                        stripped.to_string()
+                    }
+                } else {
+                    cte_name.clone()
+                };
+
+                for branch in union_data.input.iter_mut() {
+                    let already_has = branch.joins.0.iter().any(|j| j.table_alias == cte_alias);
+                    if !already_has {
+                        use crate::render_plan::render_expr::Literal as RenderLiteral;
+                        let cte_join = super::Join {
+                            table_name: cte_name.clone(),
+                            table_alias: cte_alias.clone(),
+                            joining_on: vec![OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    RenderExpr::Literal(RenderLiteral::Integer(1)),
+                                    RenderExpr::Literal(RenderLiteral::Integer(1)),
+                                ],
+                            }],
+                            join_type: super::JoinType::Inner,
+                            pre_filter: None,
+                            from_id_column: None,
+                            to_id_column: None,
+                            graph_rel: None,
+                            is_cartesian: false,
+                        };
+                        branch.joins.0.insert(0, cte_join);
+                        log::info!(
+                            "🔧 build_chained_with_match_cte_plan: Added CTE cross-JOIN '{}' AS '{}' to Union branch (FROM=None shell)",
+                            cte_name, cte_alias
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -8176,55 +8246,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
     //
     // #593: never do this for a Cypher UNION — each arm is an independent query
     // that must not be cross-joined to a sibling arm's WITH-CTE.
-    if render_plan.from.0.is_none() && !cte_references.is_empty() && !is_cypher_union_plan {
-        if let Some(ref mut union_data) = render_plan.union.0 {
-            // Sorted: the emitted JOIN order in each Union branch follows this
-            // iteration and `cte_references` is a HashMap whose iteration order
-            // is per-process random (#480 class).
-            let mut sorted_cte_names: Vec<&String> = cte_references.values().collect();
-            sorted_cte_names.sort();
-            for cte_name in sorted_cte_names {
-                let cte_alias = if let Some(stripped) = cte_name.strip_prefix("with_") {
-                    if let Some(cte_pos) = stripped.rfind("_cte") {
-                        stripped[..cte_pos].to_string()
-                    } else {
-                        stripped.to_string()
-                    }
-                } else {
-                    cte_name.clone()
-                };
-
-                for branch in union_data.input.iter_mut() {
-                    let already_has = branch.joins.0.iter().any(|j| j.table_alias == cte_alias);
-                    if !already_has {
-                        use crate::render_plan::render_expr::Literal as RenderLiteral;
-                        let cte_join = super::Join {
-                            table_name: cte_name.clone(),
-                            table_alias: cte_alias.clone(),
-                            joining_on: vec![OperatorApplication {
-                                operator: Operator::Equal,
-                                operands: vec![
-                                    RenderExpr::Literal(RenderLiteral::Integer(1)),
-                                    RenderExpr::Literal(RenderLiteral::Integer(1)),
-                                ],
-                            }],
-                            join_type: super::JoinType::Inner,
-                            pre_filter: None,
-                            from_id_column: None,
-                            to_id_column: None,
-                            graph_rel: None,
-                            is_cartesian: false,
-                        };
-                        branch.joins.0.insert(0, cte_join);
-                        log::info!(
-                            "🔧 build_chained_with_match_cte_plan: Added CTE cross-JOIN '{}' AS '{}' to Union branch (FROM=None shell)",
-                            cte_name, cte_alias
-                        );
-                    }
-                }
-            }
-        }
-    }
+    add_cte_cross_joins_to_union_branches(&mut render_plan, &cte_references, is_cypher_union_plan);
 
     // Apply bare variable rewriting + orphan-alias fixing to the final (outer)
     // render plan. These resolve bare node aliases (e.g. `b` → `b.id`, `a` →
