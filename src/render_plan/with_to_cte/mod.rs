@@ -6680,6 +6680,119 @@ fn fix_composite_alias_refs_and_augment_scope(
     }
 }
 
+/// Collapse a simple passthrough WITH whose input is already a CTE reference (a
+/// STEP of the main loop's inner render-loop in `build_chained_with_match_cte_plan`,
+/// Phase-4 §7.1 extraction).
+///
+/// A passthrough is `WITH x` after an existing CTE for `x` — a single TableAlias
+/// item with no ORDER BY / SKIP / LIMIT / DISTINCT / WHERE. When detected, collapse
+/// it out of `current_plan`, map its exported aliases (and analyzer CTE-name
+/// remaps) onto the existing CTE, set `any_processed_this_iteration`, and return
+/// `Ok(true)` to signal the caller to `break 'alias_loop` and restart iteration
+/// (because `current_plan` changed). Returns `Ok(false)` when this WITH is not a
+/// collapsible passthrough (caller proceeds to render it normally).
+fn try_collapse_passthrough_with(
+    with_plan: &LogicalPlan,
+    with_alias: &str,
+    current_plan: &mut LogicalPlan,
+    cte_references: &mut HashMap<String, String>,
+    cte_name_allocator: &mut CteNameAllocator,
+    any_processed_this_iteration: &mut bool,
+) -> RenderPlanBuilderResult<bool> {
+    if let LogicalPlan::WithClause(wc) = with_plan {
+        if let Some(existing_cte) = is_cte_reference(&wc.input) {
+            // Check if this is a simple passthrough (same alias, no modifications)
+            let is_simple_passthrough = wc.items.len() == 1
+                && wc.order_by.is_none()
+                && wc.skip.is_none()
+                && wc.limit.is_none()
+                && !wc.distinct
+                && wc.where_clause.is_none()  // CRITICAL: WHERE clause makes it not a passthrough!
+                && matches!(
+                    &wc.items[0].expression,
+                    crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
+                );
+
+            log::debug!("🔧 build_chained_with_match_cte_plan: Checking passthrough: items={}, order_by={}, skip={}, limit={}, distinct={}, where_clause={}, is_table_alias={}, is_passthrough={}",
+                       wc.items.len(), wc.order_by.is_some(), wc.skip.is_some(), wc.limit.is_some(), wc.distinct,
+                       wc.where_clause.is_some(),
+                       matches!(&wc.items[0].expression, crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)),
+                       is_simple_passthrough);
+
+            if is_simple_passthrough {
+                log::debug!("TEST: This should show up");
+                log::debug!(
+                    "🔧 DEBUG: ENTERING passthrough collapse for '{}'",
+                    with_alias
+                );
+
+                // CRITICAL FIX: For passthrough WITHs, we need to collapse them too!
+                // They wrap an existing CTE reference and should be removed.
+                // For passthrough, use empty string to indicate passthrough collapse
+                let target_cte = "".to_string();
+                log::debug!(
+                    "🔧 build_chained_with_match_cte_plan: Collapsing passthrough WITH for '{}' with CTE '{}'",
+                    with_alias, target_cte
+                );
+                *current_plan = collapse_passthrough_with(current_plan, with_alias, &target_cte)?;
+                log::debug!(
+                    "🔧 build_chained_with_match_cte_plan: After passthrough collapse, plan discriminant: {:?}",
+                    std::mem::discriminant(&*current_plan)
+                );
+
+                // CRITICAL FIX: Update cte_references to map the skipped WITH's aliases
+                // to the actual CTE name. This ensures the final SELECT uses the correct CTE.
+                //
+                // Problem: Analyzer generates unique CTE names for each WITH clause
+                //   (e.g., with_name_cte_1, with_name_cte_2), but when passthrough WITHs
+                //   are skipped, the outer expressions still reference the skipped WITH's CTE name.
+                //
+                // Solution: Map all exported aliases of the skipped WITH to the existing CTE.
+                // ALSO: Extract the analyzer's CTE name for this WITH to collapse it properly.
+                for alias in &wc.exported_aliases {
+                    log::info!(
+                        "🔧 build_chained_with_match_cte_plan: Mapping skipped alias '{}' → existing CTE '{}'",
+                        alias, existing_cte
+                    );
+                    cte_references.insert(alias.clone(), existing_cte.clone());
+
+                    // Also record CTE name remapping: analyzer's CTE name → actual CTE name
+                    // The analyzer assigned a unique CTE name to this WITH, but we're skipping it.
+                    // We need to remap expressions that reference the analyzer's name.
+                    log::debug!(
+                        "🔧 DEBUG: wc.cte_references = {:?}, looking for alias '{}'",
+                        wc.cte_references,
+                        alias
+                    );
+                    if let Some(analyzer_cte_name) = wc.cte_references.get(alias) {
+                        log::debug!(
+                            "🔧 DEBUG: Found analyzer_cte_name '{}', existing_cte = '{}'",
+                            analyzer_cte_name,
+                            existing_cte
+                        );
+                        if analyzer_cte_name != &existing_cte {
+                            log::info!(
+                                "🔧 build_chained_with_match_cte_plan: Recording CTE name remap: '{}' → '{}'",
+                                analyzer_cte_name, existing_cte
+                            );
+                            cte_name_allocator
+                                .record_remapping(analyzer_cte_name.clone(), existing_cte.clone());
+                        }
+                    }
+                }
+
+                // Mark that we processed something (collapsing passthrough is processing)
+                *any_processed_this_iteration = true;
+
+                // Collapsed a passthrough WITH — signal the caller to break
+                // 'alias_loop and restart iteration (current_plan changed).
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// Apply the WITH segment's ORDER BY / SKIP / LIMIT and WHERE→HAVING to the
 /// rendered CTE body (a STEP of the main loop's inner render-loop in
 /// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
@@ -8256,102 +8369,18 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 log::debug!("🔧 build_chained_with_match_cte_plan: Rendering WITH plan for '{}' - plan type: {:?}",
                            with_alias, std::mem::discriminant(with_plan));
 
-                // Check if this is a passthrough WITH whose input is already a CTE reference
-                // E.g., `WITH fof` after `WITH DISTINCT fof` - the second WITH just passes through
-                // Skip creating another CTE and use the existing one
-                if let LogicalPlan::WithClause(wc) = with_plan {
-                    if let Some(existing_cte) = is_cte_reference(&wc.input) {
-                        // Check if this is a simple passthrough (same alias, no modifications)
-                        let is_simple_passthrough = wc.items.len() == 1
-                            && wc.order_by.is_none()
-                            && wc.skip.is_none()
-                            && wc.limit.is_none()
-                            && !wc.distinct
-                            && wc.where_clause.is_none()  // CRITICAL: WHERE clause makes it not a passthrough!
-                            && matches!(
-                                &wc.items[0].expression,
-                                crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
-                            );
-
-                        log::debug!("🔧 build_chained_with_match_cte_plan: Checking passthrough: items={}, order_by={}, skip={}, limit={}, distinct={}, where_clause={}, is_table_alias={}, is_passthrough={}",
-                                   wc.items.len(), wc.order_by.is_some(), wc.skip.is_some(), wc.limit.is_some(), wc.distinct,
-                                   wc.where_clause.is_some(),
-                                   matches!(&wc.items[0].expression, crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)),
-                                   is_simple_passthrough);
-
-                        if is_simple_passthrough {
-                            log::debug!("TEST: This should show up");
-                            log::debug!(
-                                "🔧 DEBUG: ENTERING passthrough collapse for '{}'",
-                                with_alias
-                            );
-
-                            // CRITICAL FIX: For passthrough WITHs, we need to collapse them too!
-                            // They wrap an existing CTE reference and should be removed.
-                            // For passthrough, use empty string to indicate passthrough collapse
-                            let target_cte = "".to_string();
-                            log::debug!(
-                                "🔧 build_chained_with_match_cte_plan: Collapsing passthrough WITH for '{}' with CTE '{}'",
-                                with_alias, target_cte
-                            );
-                            current_plan =
-                                collapse_passthrough_with(&current_plan, &with_alias, &target_cte)?;
-                            log::debug!(
-                                "🔧 build_chained_with_match_cte_plan: After passthrough collapse, plan discriminant: {:?}",
-                                std::mem::discriminant(&current_plan)
-                            );
-
-                            // CRITICAL FIX: Update cte_references to map the skipped WITH's aliases
-                            // to the actual CTE name. This ensures the final SELECT uses the correct CTE.
-                            //
-                            // Problem: Analyzer generates unique CTE names for each WITH clause
-                            //   (e.g., with_name_cte_1, with_name_cte_2), but when passthrough WITHs
-                            //   are skipped, the outer expressions still reference the skipped WITH's CTE name.
-                            //
-                            // Solution: Map all exported aliases of the skipped WITH to the existing CTE.
-                            // ALSO: Extract the analyzer's CTE name for this WITH to collapse it properly.
-                            for alias in &wc.exported_aliases {
-                                log::info!(
-                                    "🔧 build_chained_with_match_cte_plan: Mapping skipped alias '{}' → existing CTE '{}'",
-                                    alias, existing_cte
-                                );
-                                cte_references.insert(alias.clone(), existing_cte.clone());
-
-                                // Also record CTE name remapping: analyzer's CTE name → actual CTE name
-                                // The analyzer assigned a unique CTE name to this WITH, but we're skipping it.
-                                // We need to remap expressions that reference the analyzer's name.
-                                log::debug!(
-                                    "🔧 DEBUG: wc.cte_references = {:?}, looking for alias '{}'",
-                                    wc.cte_references,
-                                    alias
-                                );
-                                if let Some(analyzer_cte_name) = wc.cte_references.get(alias) {
-                                    log::debug!(
-                                        "🔧 DEBUG: Found analyzer_cte_name '{}', existing_cte = '{}'",
-                                        analyzer_cte_name, existing_cte
-                                    );
-                                    if analyzer_cte_name != &existing_cte {
-                                        log::info!(
-                                            "🔧 build_chained_with_match_cte_plan: Recording CTE name remap: '{}' → '{}'",
-                                            analyzer_cte_name, existing_cte
-                                        );
-                                        cte_name_allocator.record_remapping(
-                                            analyzer_cte_name.clone(),
-                                            existing_cte.clone(),
-                                        );
-                                    }
-                                }
-                            }
-
-                            // Mark that we processed something (collapsing passthrough is processing)
-                            any_processed_this_iteration = true;
-
-                            // CRITICAL: Break out of BOTH loops to restart iteration.
-                            // We modified current_plan, so we need to re-run find_all_with_clauses_grouped.
-                            // Using a labeled break to exit the outer for loop too.
-                            break 'alias_loop;
-                        }
-                    }
+                // Collapse a simple passthrough WITH onto its existing CTE, if this
+                // is one. On collapse, current_plan changed → break 'alias_loop to
+                // restart iteration. See `try_collapse_passthrough_with`.
+                if try_collapse_passthrough_with(
+                    with_plan,
+                    &with_alias,
+                    &mut current_plan,
+                    &mut cte_references,
+                    &mut cte_name_allocator,
+                    &mut any_processed_this_iteration,
+                )? {
+                    break 'alias_loop;
                 }
 
                 // Extract the plan to render, WITH items, and modifiers (ORDER BY, SKIP, LIMIT, WHERE)
