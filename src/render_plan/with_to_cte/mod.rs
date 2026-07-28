@@ -6501,6 +6501,185 @@ fn rewrite_cte_join_conditions_and_prune_orphans(
     }
 }
 
+/// Rewrite orphaned composite alias references and apply the augmented CTE scope
+/// to a rendered WITH-CTE body (a STEP of the main loop's inner render-loop in
+/// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// A CTE body may reference composite aliases (e.g. `countWindow1_tag`) while its
+/// FROM/JOINs use the individual aliases (`tag`). Build an augmented `VariableScope`
+/// = the current WITH scope PLUS the variable→column mappings extracted from any
+/// VLP CTEs already hoisted into `all_ctes` (so bare vars like `friend` resolve to
+/// `t.end_id`), then run the bare-variable / orphan-table-alias / CTE-property
+/// rewrites over `rendered`. Must run AFTER all other modifications to `rendered`.
+fn fix_composite_alias_refs_and_augment_scope(
+    rendered: &mut RenderPlan,
+    all_ctes: &[Cte],
+    cte_references: &HashMap<String, String>,
+    current_plan: &LogicalPlan,
+    with_scope: &WithBarrierScope,
+    schema: &GraphSchema,
+    body_scope_ref: Option<&super::variable_scope::VariableScope>,
+) {
+    // Fix composite alias references in the rendered plan.
+    // CTE body plans may have expressions using composite aliases (e.g., "countWindow1_tag")
+    // while the FROM/JOINs use individual aliases (e.g., "tag"). This post-processing step
+    // rewrites orphaned composite alias references to match the actual FROM/JOIN aliases.
+    // MUST be called AFTER all modifications to `rendered` (SELECT, GROUP BY, ORDER BY, etc.)
+    //
+    // Build an augmented scope that includes VLP-derived variables from all_ctes.
+    // VLP CTEs have been hoisted into all_ctes by this point, so we can extract
+    // variable→column mappings for bare variable rewriting (e.g., `friend` → `t.end_id`).
+    let augmented_scope = {
+        let mut vars = with_scope.scope_cte_variables().clone();
+        for vlp_cte in all_ctes {
+            // Only process actual VLP CTEs (which have from_alias set).
+            // Normal WITH CTEs may have non-empty columns but no from_alias.
+            if vlp_cte.columns.is_empty() || vlp_cte.from_alias.is_none() {
+                continue;
+            }
+            let vlp_from_alias = vlp_cte.from_alias.clone().unwrap();
+            // Group columns by cypher_alias to build per-alias property mappings
+            let mut alias_props: HashMap<String, HashMap<String, String>> = HashMap::new();
+            let mut alias_labels: HashMap<String, Vec<String>> = HashMap::new();
+            for col in &vlp_cte.columns {
+                if col.cypher_alias.is_empty() {
+                    continue;
+                }
+                alias_props
+                    .entry(col.cypher_alias.clone())
+                    .or_default()
+                    .insert(col.cypher_property.clone(), col.cte_column_name.clone());
+            }
+            if let Some(ref start_alias) = vlp_cte.vlp_cypher_start_alias {
+                if let Some(ref table) = vlp_cte.vlp_start_table {
+                    let label = table.rsplit('.').next().unwrap_or(table);
+                    alias_labels
+                        .entry(start_alias.clone())
+                        .or_default()
+                        .push(label.to_string());
+                }
+            }
+            if let Some(ref end_alias) = vlp_cte.vlp_cypher_end_alias {
+                if let Some(ref table) = vlp_cte.vlp_end_table {
+                    let label = table.rsplit('.').next().unwrap_or(table);
+                    alias_labels
+                        .entry(end_alias.clone())
+                        .or_default()
+                        .push(label.to_string());
+                }
+            }
+            for (alias, prop_map) in alias_props {
+                if vars.contains_key(&alias) {
+                    continue; // Don't overwrite prior WITH variables
+                }
+                log::debug!(
+                "🔧 Augmenting scope with VLP variable '{}' from CTE '{}' ({} props, from_alias='{}')",
+                alias, vlp_cte.cte_name, prop_map.len(), vlp_from_alias
+            );
+                vars.insert(
+                    alias.clone(),
+                    super::variable_scope::CteVariableInfo {
+                        cte_name: vlp_cte.cte_name.clone(),
+                        property_mapping: prop_map,
+                        labels: alias_labels.remove(&alias).unwrap_or_default(),
+                        from_alias_override: Some(vlp_from_alias.clone()),
+                        map_keys: None,
+                    },
+                );
+            }
+        }
+        // Also add composite alias entries from cte_references, but ONLY if
+        // the composite alias is actually referenced as a table prefix in the
+        // rendered plan. This avoids spurious CROSS JOINs for unreferenced CTEs.
+        // After scope_cte_variables.clear(), composite aliases from earlier WITHs
+        // are lost (only individual aliases from the current WITH are present).
+        // This allows fix_orphan_table_aliases to map composite aliases
+        // (e.g., "country_messageCount_months_zombie") to the correct FROM/JOIN alias.
+        let mut used_aliases = std::collections::HashSet::new();
+        for item in &rendered.select.items {
+            collect_aliases_from_single_render_expr(&item.expression, &mut used_aliases);
+        }
+        if let FilterItems(Some(ref filter)) = rendered.filters {
+            collect_aliases_from_single_render_expr(filter, &mut used_aliases);
+        }
+        for gi in &rendered.group_by.0 {
+            collect_aliases_from_single_render_expr(gi, &mut used_aliases);
+        }
+        for oi in &rendered.order_by.0 {
+            collect_aliases_from_single_render_expr(&oi.expression, &mut used_aliases);
+        }
+        if let Some(ref having) = rendered.having_clause {
+            collect_aliases_from_single_render_expr(having, &mut used_aliases);
+        }
+        for (ref_alias, ref_cte_name) in cte_references {
+            if vars.contains_key(ref_alias) {
+                continue; // Already in scope (individual alias or VLP)
+            }
+            if !ref_cte_name.starts_with("with_") {
+                continue;
+            }
+            if !used_aliases.contains(ref_alias) {
+                continue; // Not referenced in rendered expressions
+            }
+            // Only add TRUE composite aliases (multi-alias combinations like
+            // "country_messageCount_months_zombie"). Skip individual aliases
+            // to avoid polluting the scope with stale CTE references.
+            // A composite alias has the form "alias1_alias2_..." and the CTE
+            // name is "with_{composite}_cte_{N}".
+            let expected_cte_prefix = format!("with_{}_cte_", ref_alias);
+            if !ref_cte_name.starts_with(&expected_cte_prefix) {
+                continue; // Not a composite alias for this CTE
+            }
+            // Build property mapping from the CTE's columns in all_ctes
+            let mut cte_prop_map: HashMap<String, String> = HashMap::new();
+            for cte in all_ctes {
+                if cte.cte_name == *ref_cte_name {
+                    for col in &cte.columns {
+                        if !col.cypher_property.is_empty() {
+                            cte_prop_map
+                                .insert(col.cypher_property.clone(), col.cte_column_name.clone());
+                        }
+                    }
+                    break;
+                }
+            }
+            log::debug!(
+                "🔧 Augmenting scope with composite alias '{}' → CTE '{}' ({} props)",
+                ref_alias,
+                ref_cte_name,
+                cte_prop_map.len()
+            );
+            vars.insert(
+                ref_alias.clone(),
+                super::variable_scope::CteVariableInfo {
+                    cte_name: ref_cte_name.clone(),
+                    property_mapping: cte_prop_map,
+                    labels: vec![],
+                    from_alias_override: None,
+                    map_keys: None,
+                },
+            );
+        }
+        vars
+    };
+    let has_augmented = !augmented_scope.is_empty();
+    if has_augmented || body_scope_ref.is_some() {
+        let aug_scope = super::variable_scope::VariableScope::with_cte_variables(
+            schema,
+            current_plan,
+            augmented_scope,
+        );
+        // Order matters: rewrite_bare_variables converts bare TableAlias/ColumnAlias
+        // (e.g., "score") into PropertyAccessExp (e.g., "composite_alias.score").
+        // Then fix_orphan_table_aliases rewrites the composite alias to the actual
+        // FROM/JOIN alias (e.g., "person1.score"). Running fix_orphan first would
+        // miss expressions that rewrite_bare_variables creates later.
+        super::variable_scope::rewrite_bare_variables_in_plan(rendered, &aug_scope);
+        super::variable_scope::fix_orphan_table_aliases(rendered, &aug_scope);
+        super::variable_scope::rewrite_cte_property_columns(rendered, &aug_scope);
+    }
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -8259,174 +8438,17 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     &cte_schemas,
                 );
 
-                // Fix composite alias references in the rendered plan.
-                // CTE body plans may have expressions using composite aliases (e.g., "countWindow1_tag")
-                // while the FROM/JOINs use individual aliases (e.g., "tag"). This post-processing step
-                // rewrites orphaned composite alias references to match the actual FROM/JOIN aliases.
-                // MUST be called AFTER all modifications to `rendered` (SELECT, GROUP BY, ORDER BY, etc.)
-                //
-                // Build an augmented scope that includes VLP-derived variables from all_ctes.
-                // VLP CTEs have been hoisted into all_ctes by this point, so we can extract
-                // variable→column mappings for bare variable rewriting (e.g., `friend` → `t.end_id`).
-                let augmented_scope = {
-                    let mut vars = with_scope.scope_cte_variables().clone();
-                    for vlp_cte in &all_ctes {
-                        // Only process actual VLP CTEs (which have from_alias set).
-                        // Normal WITH CTEs may have non-empty columns but no from_alias.
-                        if vlp_cte.columns.is_empty() || vlp_cte.from_alias.is_none() {
-                            continue;
-                        }
-                        let vlp_from_alias = vlp_cte.from_alias.clone().unwrap();
-                        // Group columns by cypher_alias to build per-alias property mappings
-                        let mut alias_props: HashMap<String, HashMap<String, String>> =
-                            HashMap::new();
-                        let mut alias_labels: HashMap<String, Vec<String>> = HashMap::new();
-                        for col in &vlp_cte.columns {
-                            if col.cypher_alias.is_empty() {
-                                continue;
-                            }
-                            alias_props
-                                .entry(col.cypher_alias.clone())
-                                .or_default()
-                                .insert(col.cypher_property.clone(), col.cte_column_name.clone());
-                        }
-                        if let Some(ref start_alias) = vlp_cte.vlp_cypher_start_alias {
-                            if let Some(ref table) = vlp_cte.vlp_start_table {
-                                let label = table.rsplit('.').next().unwrap_or(table);
-                                alias_labels
-                                    .entry(start_alias.clone())
-                                    .or_default()
-                                    .push(label.to_string());
-                            }
-                        }
-                        if let Some(ref end_alias) = vlp_cte.vlp_cypher_end_alias {
-                            if let Some(ref table) = vlp_cte.vlp_end_table {
-                                let label = table.rsplit('.').next().unwrap_or(table);
-                                alias_labels
-                                    .entry(end_alias.clone())
-                                    .or_default()
-                                    .push(label.to_string());
-                            }
-                        }
-                        for (alias, prop_map) in alias_props {
-                            if vars.contains_key(&alias) {
-                                continue; // Don't overwrite prior WITH variables
-                            }
-                            log::debug!(
-                                "🔧 Augmenting scope with VLP variable '{}' from CTE '{}' ({} props, from_alias='{}')",
-                                alias, vlp_cte.cte_name, prop_map.len(), vlp_from_alias
-                            );
-                            vars.insert(
-                                alias.clone(),
-                                super::variable_scope::CteVariableInfo {
-                                    cte_name: vlp_cte.cte_name.clone(),
-                                    property_mapping: prop_map,
-                                    labels: alias_labels.remove(&alias).unwrap_or_default(),
-                                    from_alias_override: Some(vlp_from_alias.clone()),
-                                    map_keys: None,
-                                },
-                            );
-                        }
-                    }
-                    // Also add composite alias entries from cte_references, but ONLY if
-                    // the composite alias is actually referenced as a table prefix in the
-                    // rendered plan. This avoids spurious CROSS JOINs for unreferenced CTEs.
-                    // After scope_cte_variables.clear(), composite aliases from earlier WITHs
-                    // are lost (only individual aliases from the current WITH are present).
-                    // This allows fix_orphan_table_aliases to map composite aliases
-                    // (e.g., "country_messageCount_months_zombie") to the correct FROM/JOIN alias.
-                    let mut used_aliases = std::collections::HashSet::new();
-                    for item in &rendered.select.items {
-                        collect_aliases_from_single_render_expr(
-                            &item.expression,
-                            &mut used_aliases,
-                        );
-                    }
-                    if let FilterItems(Some(ref filter)) = rendered.filters {
-                        collect_aliases_from_single_render_expr(filter, &mut used_aliases);
-                    }
-                    for gi in &rendered.group_by.0 {
-                        collect_aliases_from_single_render_expr(gi, &mut used_aliases);
-                    }
-                    for oi in &rendered.order_by.0 {
-                        collect_aliases_from_single_render_expr(&oi.expression, &mut used_aliases);
-                    }
-                    if let Some(ref having) = rendered.having_clause {
-                        collect_aliases_from_single_render_expr(having, &mut used_aliases);
-                    }
-                    for (ref_alias, ref_cte_name) in &cte_references {
-                        if vars.contains_key(ref_alias) {
-                            continue; // Already in scope (individual alias or VLP)
-                        }
-                        if !ref_cte_name.starts_with("with_") {
-                            continue;
-                        }
-                        if !used_aliases.contains(ref_alias) {
-                            continue; // Not referenced in rendered expressions
-                        }
-                        // Only add TRUE composite aliases (multi-alias combinations like
-                        // "country_messageCount_months_zombie"). Skip individual aliases
-                        // to avoid polluting the scope with stale CTE references.
-                        // A composite alias has the form "alias1_alias2_..." and the CTE
-                        // name is "with_{composite}_cte_{N}".
-                        let expected_cte_prefix = format!("with_{}_cte_", ref_alias);
-                        if !ref_cte_name.starts_with(&expected_cte_prefix) {
-                            continue; // Not a composite alias for this CTE
-                        }
-                        // Build property mapping from the CTE's columns in all_ctes
-                        let mut cte_prop_map: HashMap<String, String> = HashMap::new();
-                        for cte in &all_ctes {
-                            if cte.cte_name == *ref_cte_name {
-                                for col in &cte.columns {
-                                    if !col.cypher_property.is_empty() {
-                                        cte_prop_map.insert(
-                                            col.cypher_property.clone(),
-                                            col.cte_column_name.clone(),
-                                        );
-                                    }
-                                }
-                                break;
-                            }
-                        }
-                        log::debug!(
-                            "🔧 Augmenting scope with composite alias '{}' → CTE '{}' ({} props)",
-                            ref_alias,
-                            ref_cte_name,
-                            cte_prop_map.len()
-                        );
-                        vars.insert(
-                            ref_alias.clone(),
-                            super::variable_scope::CteVariableInfo {
-                                cte_name: ref_cte_name.clone(),
-                                property_mapping: cte_prop_map,
-                                labels: vec![],
-                                from_alias_override: None,
-                                map_keys: None,
-                            },
-                        );
-                    }
-                    vars
-                };
-                let has_augmented = !augmented_scope.is_empty();
-                if has_augmented || body_scope_ref.is_some() {
-                    let aug_scope = super::variable_scope::VariableScope::with_cte_variables(
-                        schema,
-                        &current_plan,
-                        augmented_scope,
-                    );
-                    // Order matters: rewrite_bare_variables converts bare TableAlias/ColumnAlias
-                    // (e.g., "score") into PropertyAccessExp (e.g., "composite_alias.score").
-                    // Then fix_orphan_table_aliases rewrites the composite alias to the actual
-                    // FROM/JOIN alias (e.g., "person1.score"). Running fix_orphan first would
-                    // miss expressions that rewrite_bare_variables creates later.
-                    super::variable_scope::rewrite_bare_variables_in_plan(
-                        &mut rendered,
-                        &aug_scope,
-                    );
-                    super::variable_scope::fix_orphan_table_aliases(&mut rendered, &aug_scope);
-                    super::variable_scope::rewrite_cte_property_columns(&mut rendered, &aug_scope);
-                }
-
+                // Rewrite orphaned composite alias references + apply the augmented
+                // CTE scope. See `fix_composite_alias_refs_and_augment_scope`.
+                fix_composite_alias_refs_and_augment_scope(
+                    &mut rendered,
+                    &all_ctes,
+                    &cte_references,
+                    &current_plan,
+                    &with_scope,
+                    schema,
+                    body_scope_ref,
+                );
                 rendered_plans.push(rendered);
             }
 
