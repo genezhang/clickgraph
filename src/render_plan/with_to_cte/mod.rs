@@ -3473,6 +3473,264 @@ fn generate_vlp_with_cte_join_conditions(
     }
 }
 
+/// Post-WITH OPTIONAL MATCH anchor restructure, else insert the CTE JOIN
+/// (Phase-4 §7.1 extraction from `resolve_cross_table_with_cte_joins`).
+///
+/// #453: when the fresh post-WITH pattern is OPTIONAL, the required side is the
+/// WITH CTE and the fresh table is optional — so (tightly guarded) promote the
+/// CTE to the FROM anchor and LEFT-join the optional table, recovering the
+/// optional side's WHERE into the join `pre_filter`/`ON` (#460/#462/#472) rather
+/// than dropping NULL-extended rows. Otherwise insert `cte_join` at the head of
+/// the joins list (skipping a duplicate alias). Returns `Err` if an
+/// OPTIONAL-side predicate cannot be placed without silently changing semantics.
+fn restructure_post_with_optional_or_insert_cte_join(
+    render_plan: &mut RenderPlan,
+    current_plan: &LogicalPlan,
+    cte_name: &str,
+    cte_alias: &str,
+    join_conditions: &[OperatorApplication],
+    cte_join: &super::Join,
+    schema: &GraphSchema,
+) -> RenderPlanBuilderResult<()> {
+    // #453: Post-WITH OPTIONAL MATCH anchoring. When the fresh
+    // pattern after the WITH barrier is OPTIONAL, the *required* side
+    // arrives here as the CTE (`with_..._cte_N`) and the fresh
+    // pattern table is optional. The plain code below would leave the
+    // optional table as the FROM driver and INNER-join the CTE onto
+    // it — that both drops every anchor row with no match AND uses the
+    // wrong join type, silently violating OPTIONAL MATCH semantics.
+    // Instead, mirror the non-WITH OPTIONAL path: make the required
+    // CTE the FROM anchor and LEFT-join the optional pattern to it.
+    //
+    // Guarded tightly: only a genuinely correlated (non-`ON 1 = 1`),
+    // single-branch pattern whose FROM is a real optional table (not
+    // already the CTE, a nested WITH CTE, or a VLP CTE).
+    let post_with_optional_restructure = current_plan.is_optional_pattern()
+        && !join_conditions.is_empty()
+        && render_plan.union.0.is_none()
+        && render_plan
+            .from
+            .0
+            .as_ref()
+            .map(|vr| {
+                vr.alias.as_deref() != Some(cte_alias)
+                    && !vr.name.starts_with("with_")
+                    && !vr.name.starts_with("vlp_")
+            })
+            .unwrap_or(false);
+
+    if post_with_optional_restructure {
+        // Demote the optional-side table currently in FROM to a LEFT
+        // JOIN, and promote the required CTE to the FROM anchor.
+        let old_from = render_plan
+            .from
+            .0
+            .take()
+            .expect("FROM guaranteed Some by post_with_optional_restructure guard");
+        render_plan.from = FromTableItem(Some(super::ViewTableRef {
+            source: std::sync::Arc::new(LogicalPlan::Empty),
+            name: cte_name.to_string(),
+            alias: Some(cte_alias.to_string()),
+            use_final: false,
+        }));
+        // Everything already joined into the pattern is optional
+        // relative to the anchor, so a partial match must still
+        // NULL-extend: demote inner/cross joins to LEFT.
+        for j in render_plan.joins.0.iter_mut() {
+            if matches!(j.join_type, super::JoinType::Inner | super::JoinType::Join) {
+                j.join_type = super::JoinType::Left;
+            }
+        }
+        // LEFT JOIN the old FROM table back onto the CTE via the
+        // resolved correlation keys (`join_conditions`).
+        let optional_from_alias = old_from
+            .alias
+            .clone()
+            .unwrap_or_else(|| old_from.name.clone());
+
+        // Recover the OPTIONAL pattern's WHERE predicate. A `WHERE`
+        // attached to the post-WITH OPTIONAL MATCH lives on the fresh
+        // pattern's `GraphRel.where_predicate`. In this reversed-anchor
+        // shape `collect_graphrel_predicates` DROPS the conjuncts that
+        // reference ONLY the optional node or ONLY the relationship
+        // alias from the outer WHERE (destined for a pre_filter on a
+        // join this restructure rebuilds), while cross-alias / OR
+        // conjuncts are (wrongly) routed to the outer WHERE. Without
+        // recovery those predicates change query semantics (ground-rule
+        // #1). We re-place each predicate class in its correct spot:
+        //
+        //   • optional-NODE-only conjuncts  -> LEFT JOIN pre_filter (#460)
+        //   • relationship-alias-only conjuncts, on FK-edge where the
+        //     rel shares the optional node's physical table, remap to
+        //     that table's column and also go in the pre_filter (#462
+        //     GAP 2). Applied BEFORE the join so no-match anchor rows
+        //     stay NULL-extended.
+        //   • conjuncts spanning the optional side AND the anchor CTE
+        //     (incl. unsplittable OR) -> LEFT JOIN ON condition (#462
+        //     GAP 1), handled after the join is built (below), so the
+        //     predicate filters the match, never the anchor rows.
+        let opt_where = find_graphrel_where_predicate(current_plan);
+        let node_pre_filter = opt_where
+            .and_then(|wp| extract_predicates_for_alias_logical(wp, &optional_from_alias).0);
+
+        // #462 GAP 2: recover relationship-alias-only conjuncts. Only
+        // safe to fold into the optional NODE's pre_filter when the rel
+        // and the node share the same physical table (the FK-edge
+        // pattern), because the pre_filter renders as
+        // `SELECT * FROM <node table> WHERE …` — the rel's columns must
+        // exist on that table. Detect via the schema catalog (edge/node
+        // `full_table_name()` equality, the same structural signal
+        // `is_node_denormalized_on_edge` uses), never a raw pattern-flag
+        // branch (axis-dispatch rule).
+        let opt_graphrel = find_graphrel(current_plan);
+        let rel_pre_filter = match (opt_where, opt_graphrel) {
+            (Some(wp), Some(gr)) if !gr.alias.is_empty() => {
+                let rel_shares_node_table = gr
+                    .labels
+                    .as_ref()
+                    .and_then(|ls| ls.first())
+                    .and_then(|rel_type| schema.get_relationships_schema_opt(rel_type))
+                    .map(|rel_schema| rel_schema.full_table_name() == old_from.name)
+                    .unwrap_or(false);
+                if rel_shares_node_table {
+                    extract_predicates_for_alias_logical(wp, &gr.alias).0
+                } else {
+                    // Rel is a distinct table: a separate join would be
+                    // required, which this restructure does not build.
+                    // Refuse to silently drop the predicate (#462).
+                    let rel_only = extract_predicates_for_alias_logical(wp, &gr.alias).0;
+                    if rel_only.is_some() {
+                        return Err(RenderBuildError::InvalidRenderPlan(format!(
+                            "post-WITH OPTIONAL MATCH has a WHERE on relationship alias '{}' \
+                             whose edge table is not the optional node '{}' table; the \
+                             predicate cannot be placed without a separate edge join and \
+                             must not be silently dropped (would change semantics)",
+                            gr.alias, optional_from_alias
+                        )));
+                    }
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        let optional_pre_filter =
+            combine_optional_filters_with_and(vec![node_pre_filter, rel_pre_filter]);
+        if optional_pre_filter.is_some() {
+            log::info!(
+                "🔧 build_chained_with_match_cte_plan: #460/#462 recovered optional-side WHERE predicate into LEFT JOIN pre_filter for alias '{}'",
+                optional_from_alias
+            );
+        }
+
+        // #462/#472: every conjunct in `render_plan.filters` at this
+        // point belongs EXCLUSIVELY to this post-WITH OPTIONAL MATCH's
+        // own WHERE (the tight `post_with_optional_restructure` guard
+        // above ensures a single-branch optional pattern; any WHERE
+        // attached to the WITH projection itself was already folded
+        // into the CTE body and is not visible here). `
+        // collect_graphrel_predicates` routed the whole thing to the
+        // outer WHERE — wrong for OPTIONAL MATCH, since the outer WHERE
+        // drops the NULL-extended no-match anchor rows. Move EVERY
+        // conjunct into the LEFT JOIN's ON condition, including
+        // pure-anchor ones (#472): for a LEFT JOIN a false ON condition
+        // just NULL-extends the row rather than dropping it, so folding
+        // the whole predicate into ON is always safe and never changes
+        // which rows are kept vs. dropped when the FROM side is the
+        // anchor CTE. (Anchor `c` references were already resolved to
+        // CTE columns, e.g. `c.p1_c_customer_id`, when the filter was
+        // rendered.) Nothing is left behind in the outer WHERE for this
+        // segment.
+        let mut extra_on_conditions: Vec<OperatorApplication> = Vec::new();
+        if let Some(filter_expr) = render_plan.filters.0.take() {
+            for conj in split_render_and_conjuncts(filter_expr) {
+                match conj {
+                    RenderExpr::OperatorApplicationExp(op) => {
+                        extra_on_conditions.push(op);
+                    }
+                    // A boolean conjunct that is not an operator
+                    // application (e.g. a bare scalar-fn predicate)
+                    // cannot be expressed as a joining_on
+                    // `OperatorApplication`. Rather than silently leave
+                    // it in the outer WHERE (wrong semantics) or drop
+                    // it, refuse with a clean error (#462/#472).
+                    other => {
+                        return Err(RenderBuildError::InvalidRenderPlan(format!(
+                            "post-WITH OPTIONAL MATCH WHERE conjunct is not an \
+                             operator application and cannot be moved into the \
+                             LEFT JOIN ON condition for alias '{}'; refusing to \
+                             place it in the outer WHERE (would drop NULL-extended \
+                             rows): {:?}",
+                            optional_from_alias, other
+                        )));
+                    }
+                }
+            }
+            // No `kept` remainder: the whole post-OPTIONAL WHERE moves
+            // into the ON condition, so `render_plan.filters` stays
+            // cleared (no outer WHERE for this segment).
+        }
+        if !extra_on_conditions.is_empty() {
+            log::info!(
+                "🔧 build_chained_with_match_cte_plan: #462/#472 moved {} WHERE conjunct(s) (incl. pure-anchor) into LEFT JOIN ON for alias '{}'",
+                extra_on_conditions.len(),
+                optional_from_alias
+            );
+        }
+
+        let mut optional_joining_on = join_conditions.to_vec();
+        optional_joining_on.extend(extra_on_conditions);
+
+        let optional_from_join = super::Join {
+            table_name: old_from.name.clone(),
+            table_alias: optional_from_alias.clone(),
+            joining_on: optional_joining_on,
+            join_type: super::JoinType::Left,
+            pre_filter: optional_pre_filter,
+            from_id_column: None,
+            to_id_column: None,
+            graph_rel: None,
+            is_cartesian: false,
+        };
+        render_plan.joins.0.insert(0, optional_from_join);
+        log::info!(
+            "🔧 build_chained_with_match_cte_plan: #453 post-WITH OPTIONAL restructure — FROM={} AS {}, LEFT JOIN {} AS {}",
+            cte_name, cte_alias, old_from.name, optional_from_alias
+        );
+    } else {
+        // Insert the CTE join at the BEGINNING of the joins list
+        // (CTE should be joined first so its columns are available)
+        // BUT: skip if a JOIN for this CTE alias already exists (from extract_joins)
+        // OR if the FROM table already uses this alias (avoid duplicate alias error)
+        let already_has_cte_join = render_plan
+            .joins
+            .0
+            .iter()
+            .any(|j| j.table_alias == cte_alias);
+        let from_already_uses_alias = render_plan
+            .from
+            .0
+            .as_ref()
+            .map(|vr| vr.alias.as_deref() == Some(cte_alias))
+            .unwrap_or(false);
+        if !already_has_cte_join && !from_already_uses_alias {
+            render_plan.joins.0.insert(0, cte_join.clone());
+            log::info!(
+                "🔧 build_chained_with_match_cte_plan: Added CTE JOIN: {} AS {}",
+                cte_name,
+                cte_alias
+            );
+        } else {
+            log::info!(
+                "🔧 build_chained_with_match_cte_plan: Skipping CTE JOIN {} AS {} (already present from extract_joins)",
+                cte_name,
+                cte_alias
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Post-render cross-table WITH CTE-JOIN pass (finalization tail of
 /// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
 ///
@@ -3652,244 +3910,16 @@ fn resolve_cross_table_with_cte_joins(
                     is_cartesian: false,
                 };
 
-                // #453: Post-WITH OPTIONAL MATCH anchoring. When the fresh
-                // pattern after the WITH barrier is OPTIONAL, the *required* side
-                // arrives here as the CTE (`with_..._cte_N`) and the fresh
-                // pattern table is optional. The plain code below would leave the
-                // optional table as the FROM driver and INNER-join the CTE onto
-                // it — that both drops every anchor row with no match AND uses the
-                // wrong join type, silently violating OPTIONAL MATCH semantics.
-                // Instead, mirror the non-WITH OPTIONAL path: make the required
-                // CTE the FROM anchor and LEFT-join the optional pattern to it.
-                //
-                // Guarded tightly: only a genuinely correlated (non-`ON 1 = 1`),
-                // single-branch pattern whose FROM is a real optional table (not
-                // already the CTE, a nested WITH CTE, or a VLP CTE).
-                let post_with_optional_restructure = current_plan.is_optional_pattern()
-                    && !join_conditions.is_empty()
-                    && render_plan.union.0.is_none()
-                    && render_plan
-                        .from
-                        .0
-                        .as_ref()
-                        .map(|vr| {
-                            vr.alias.as_deref() != Some(cte_alias.as_str())
-                                && !vr.name.starts_with("with_")
-                                && !vr.name.starts_with("vlp_")
-                        })
-                        .unwrap_or(false);
-
-                if post_with_optional_restructure {
-                    // Demote the optional-side table currently in FROM to a LEFT
-                    // JOIN, and promote the required CTE to the FROM anchor.
-                    let old_from = render_plan
-                        .from
-                        .0
-                        .take()
-                        .expect("FROM guaranteed Some by post_with_optional_restructure guard");
-                    render_plan.from = FromTableItem(Some(super::ViewTableRef {
-                        source: std::sync::Arc::new(LogicalPlan::Empty),
-                        name: cte_name.clone(),
-                        alias: Some(cte_alias.clone()),
-                        use_final: false,
-                    }));
-                    // Everything already joined into the pattern is optional
-                    // relative to the anchor, so a partial match must still
-                    // NULL-extend: demote inner/cross joins to LEFT.
-                    for j in render_plan.joins.0.iter_mut() {
-                        if matches!(j.join_type, super::JoinType::Inner | super::JoinType::Join) {
-                            j.join_type = super::JoinType::Left;
-                        }
-                    }
-                    // LEFT JOIN the old FROM table back onto the CTE via the
-                    // resolved correlation keys (`join_conditions`).
-                    let optional_from_alias = old_from
-                        .alias
-                        .clone()
-                        .unwrap_or_else(|| old_from.name.clone());
-
-                    // Recover the OPTIONAL pattern's WHERE predicate. A `WHERE`
-                    // attached to the post-WITH OPTIONAL MATCH lives on the fresh
-                    // pattern's `GraphRel.where_predicate`. In this reversed-anchor
-                    // shape `collect_graphrel_predicates` DROPS the conjuncts that
-                    // reference ONLY the optional node or ONLY the relationship
-                    // alias from the outer WHERE (destined for a pre_filter on a
-                    // join this restructure rebuilds), while cross-alias / OR
-                    // conjuncts are (wrongly) routed to the outer WHERE. Without
-                    // recovery those predicates change query semantics (ground-rule
-                    // #1). We re-place each predicate class in its correct spot:
-                    //
-                    //   • optional-NODE-only conjuncts  -> LEFT JOIN pre_filter (#460)
-                    //   • relationship-alias-only conjuncts, on FK-edge where the
-                    //     rel shares the optional node's physical table, remap to
-                    //     that table's column and also go in the pre_filter (#462
-                    //     GAP 2). Applied BEFORE the join so no-match anchor rows
-                    //     stay NULL-extended.
-                    //   • conjuncts spanning the optional side AND the anchor CTE
-                    //     (incl. unsplittable OR) -> LEFT JOIN ON condition (#462
-                    //     GAP 1), handled after the join is built (below), so the
-                    //     predicate filters the match, never the anchor rows.
-                    let opt_where = find_graphrel_where_predicate(current_plan);
-                    let node_pre_filter = opt_where.and_then(|wp| {
-                        extract_predicates_for_alias_logical(wp, &optional_from_alias).0
-                    });
-
-                    // #462 GAP 2: recover relationship-alias-only conjuncts. Only
-                    // safe to fold into the optional NODE's pre_filter when the rel
-                    // and the node share the same physical table (the FK-edge
-                    // pattern), because the pre_filter renders as
-                    // `SELECT * FROM <node table> WHERE …` — the rel's columns must
-                    // exist on that table. Detect via the schema catalog (edge/node
-                    // `full_table_name()` equality, the same structural signal
-                    // `is_node_denormalized_on_edge` uses), never a raw pattern-flag
-                    // branch (axis-dispatch rule).
-                    let opt_graphrel = find_graphrel(current_plan);
-                    let rel_pre_filter = match (opt_where, opt_graphrel) {
-                        (Some(wp), Some(gr)) if !gr.alias.is_empty() => {
-                            let rel_shares_node_table = gr
-                                .labels
-                                .as_ref()
-                                .and_then(|ls| ls.first())
-                                .and_then(|rel_type| schema.get_relationships_schema_opt(rel_type))
-                                .map(|rel_schema| rel_schema.full_table_name() == old_from.name)
-                                .unwrap_or(false);
-                            if rel_shares_node_table {
-                                extract_predicates_for_alias_logical(wp, &gr.alias).0
-                            } else {
-                                // Rel is a distinct table: a separate join would be
-                                // required, which this restructure does not build.
-                                // Refuse to silently drop the predicate (#462).
-                                let rel_only =
-                                    extract_predicates_for_alias_logical(wp, &gr.alias).0;
-                                if rel_only.is_some() {
-                                    return Err(RenderBuildError::InvalidRenderPlan(format!(
-                                        "post-WITH OPTIONAL MATCH has a WHERE on relationship alias '{}' \
-                                         whose edge table is not the optional node '{}' table; the \
-                                         predicate cannot be placed without a separate edge join and \
-                                         must not be silently dropped (would change semantics)",
-                                        gr.alias, optional_from_alias
-                                    )));
-                                }
-                                None
-                            }
-                        }
-                        _ => None,
-                    };
-
-                    let optional_pre_filter =
-                        combine_optional_filters_with_and(vec![node_pre_filter, rel_pre_filter]);
-                    if optional_pre_filter.is_some() {
-                        log::info!(
-                            "🔧 build_chained_with_match_cte_plan: #460/#462 recovered optional-side WHERE predicate into LEFT JOIN pre_filter for alias '{}'",
-                            optional_from_alias
-                        );
-                    }
-
-                    // #462/#472: every conjunct in `render_plan.filters` at this
-                    // point belongs EXCLUSIVELY to this post-WITH OPTIONAL MATCH's
-                    // own WHERE (the tight `post_with_optional_restructure` guard
-                    // above ensures a single-branch optional pattern; any WHERE
-                    // attached to the WITH projection itself was already folded
-                    // into the CTE body and is not visible here). `
-                    // collect_graphrel_predicates` routed the whole thing to the
-                    // outer WHERE — wrong for OPTIONAL MATCH, since the outer WHERE
-                    // drops the NULL-extended no-match anchor rows. Move EVERY
-                    // conjunct into the LEFT JOIN's ON condition, including
-                    // pure-anchor ones (#472): for a LEFT JOIN a false ON condition
-                    // just NULL-extends the row rather than dropping it, so folding
-                    // the whole predicate into ON is always safe and never changes
-                    // which rows are kept vs. dropped when the FROM side is the
-                    // anchor CTE. (Anchor `c` references were already resolved to
-                    // CTE columns, e.g. `c.p1_c_customer_id`, when the filter was
-                    // rendered.) Nothing is left behind in the outer WHERE for this
-                    // segment.
-                    let mut extra_on_conditions: Vec<OperatorApplication> = Vec::new();
-                    if let Some(filter_expr) = render_plan.filters.0.take() {
-                        for conj in split_render_and_conjuncts(filter_expr) {
-                            match conj {
-                                RenderExpr::OperatorApplicationExp(op) => {
-                                    extra_on_conditions.push(op);
-                                }
-                                // A boolean conjunct that is not an operator
-                                // application (e.g. a bare scalar-fn predicate)
-                                // cannot be expressed as a joining_on
-                                // `OperatorApplication`. Rather than silently leave
-                                // it in the outer WHERE (wrong semantics) or drop
-                                // it, refuse with a clean error (#462/#472).
-                                other => {
-                                    return Err(RenderBuildError::InvalidRenderPlan(format!(
-                                        "post-WITH OPTIONAL MATCH WHERE conjunct is not an \
-                                         operator application and cannot be moved into the \
-                                         LEFT JOIN ON condition for alias '{}'; refusing to \
-                                         place it in the outer WHERE (would drop NULL-extended \
-                                         rows): {:?}",
-                                        optional_from_alias, other
-                                    )));
-                                }
-                            }
-                        }
-                        // No `kept` remainder: the whole post-OPTIONAL WHERE moves
-                        // into the ON condition, so `render_plan.filters` stays
-                        // cleared (no outer WHERE for this segment).
-                    }
-                    if !extra_on_conditions.is_empty() {
-                        log::info!(
-                            "🔧 build_chained_with_match_cte_plan: #462/#472 moved {} WHERE conjunct(s) (incl. pure-anchor) into LEFT JOIN ON for alias '{}'",
-                            extra_on_conditions.len(),
-                            optional_from_alias
-                        );
-                    }
-
-                    let mut optional_joining_on = join_conditions.clone();
-                    optional_joining_on.extend(extra_on_conditions);
-
-                    let optional_from_join = super::Join {
-                        table_name: old_from.name.clone(),
-                        table_alias: optional_from_alias.clone(),
-                        joining_on: optional_joining_on,
-                        join_type: super::JoinType::Left,
-                        pre_filter: optional_pre_filter,
-                        from_id_column: None,
-                        to_id_column: None,
-                        graph_rel: None,
-                        is_cartesian: false,
-                    };
-                    render_plan.joins.0.insert(0, optional_from_join);
-                    log::info!(
-                        "🔧 build_chained_with_match_cte_plan: #453 post-WITH OPTIONAL restructure — FROM={} AS {}, LEFT JOIN {} AS {}",
-                        cte_name, cte_alias, old_from.name, optional_from_alias
-                    );
-                } else {
-                    // Insert the CTE join at the BEGINNING of the joins list
-                    // (CTE should be joined first so its columns are available)
-                    // BUT: skip if a JOIN for this CTE alias already exists (from extract_joins)
-                    // OR if the FROM table already uses this alias (avoid duplicate alias error)
-                    let already_has_cte_join = render_plan
-                        .joins
-                        .0
-                        .iter()
-                        .any(|j| j.table_alias == cte_alias);
-                    let from_already_uses_alias = render_plan
-                        .from
-                        .0
-                        .as_ref()
-                        .map(|vr| vr.alias.as_deref() == Some(&cte_alias))
-                        .unwrap_or(false);
-                    if !already_has_cte_join && !from_already_uses_alias {
-                        render_plan.joins.0.insert(0, cte_join.clone());
-                        log::info!(
-                            "🔧 build_chained_with_match_cte_plan: Added CTE JOIN: {} AS {}",
-                            cte_name,
-                            cte_alias
-                        );
-                    } else {
-                        log::info!(
-                            "🔧 build_chained_with_match_cte_plan: Skipping CTE JOIN {} AS {} (already present from extract_joins)",
-                            cte_name,
-                            cte_alias
-                        );
-                    }
-                }
+                // #453: post-WITH OPTIONAL restructure, else insert the CTE JOIN.
+                restructure_post_with_optional_or_insert_cte_join(
+                    render_plan,
+                    current_plan,
+                    &cte_name,
+                    &cte_alias,
+                    &join_conditions,
+                    &cte_join,
+                    schema,
+                )?;
 
                 // Also add the WITH CTE JOIN to each Union branch
                 // The main plan's joins only apply to the first branch (outgoing).
