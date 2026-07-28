@@ -14820,3 +14820,96 @@ async fn multi_type_vlp_endpoint_id_scoping_580() {
         );
     }
 }
+
+/// Regression for #716: a NON-id property (`u.city`, `u.name`) of a SINGLE-type
+/// VLP endpoint must project the CTE's native `{start,end}_{prop}` column —
+/// NOT `JSONExtractString({start,end}_properties, ...)`. The non-id sibling of
+/// #580 (which fixed the id-column case and documented this as a follow-up).
+///
+/// The GROUP BY builder (`rewrite_expr_for_vlp` → `derive_cypher_property_name`)
+/// already resolves the same property to the native `t.start_city` column, so
+/// the JSON-extract projection was a DIFFERENT expression from the grouping key
+/// → Code 215 NOT_AN_AGGREGATE (live-verified on the social benchmark). Routing
+/// the SELECT to the identical native column lets `build_aliased_group_by` unify
+/// them. Both start (left_connection) and end (right_connection) endpoints, and
+/// the db→cypher-renamed property (`full_name` → native `start_name`), covered.
+#[tokio::test]
+async fn multi_type_vlp_endpoint_non_id_property_uses_native_column_716() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // Aggregate over a multi-type VLP grouping by a NON-id START property.
+    let agg = "MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x) WHERE u.user_id = 1 \
+               RETURN u.city, count(*)";
+    // A db→cypher-renamed property (`name` maps to `full_name`) — the native
+    // column must use the cypher name (`start_name`), matching the GROUP BY.
+    let renamed = "MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x) WHERE u.user_id = 1 \
+                   RETURN u.name, count(*)";
+    // End endpoint non-id property via a reversed pattern (u is right_connection).
+    let end = "MATCH (x)-[:FOLLOWS|AUTHORED*1..2]->(u:User) WHERE u.user_id = 2 \
+               RETURN u.city, count(*)";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(&schema, agg, dialect).await;
+        // START endpoint non-id property → native start_city, not a JSON extract.
+        assert!(
+            sql.contains("t.start_city"),
+            "#716: start endpoint non-id property must project native t.start_city \
+             for {dialect:?}, got:\n{sql}"
+        );
+        assert!(
+            !sql.contains("start_properties, 'city'")
+                && !sql.contains("start_properties, '$.city'"),
+            "#716: start endpoint non-id property must NOT JSON-extract for {dialect:?}, got:\n{sql}"
+        );
+        // SELECT and GROUP BY reference the SAME native column (the unification
+        // that removes Code 215).
+        assert!(
+            sql.contains("GROUP BY `t.start_city`"),
+            "#716: GROUP BY must reference the native start_city column for {dialect:?}, got:\n{sql}"
+        );
+
+        // db→cypher rename: `u.name` (db `full_name`) → native `start_name`,
+        // matching the GROUP BY's derive_cypher_property_name mapping.
+        let renamed_sql = render(&schema, renamed, dialect).await;
+        assert!(
+            renamed_sql.contains("t.start_name") && renamed_sql.contains("GROUP BY `t.start_name`"),
+            "#716: renamed non-id property must project + group by native start_name \
+             for {dialect:?}, got:\n{renamed_sql}"
+        );
+        assert!(
+            !renamed_sql.contains("start_properties, 'full_name'"),
+            "#716: renamed non-id property must NOT JSON-extract for {dialect:?}, got:\n{renamed_sql}"
+        );
+
+        // END endpoint non-id property → native end_city.
+        let end_sql = render(&schema, end, dialect).await;
+        assert!(
+            end_sql.contains("t.end_city") && !end_sql.contains("end_properties, 'city'"),
+            "#716: end endpoint non-id property must project native end_city for {dialect:?}, got:\n{end_sql}"
+        );
+    }
+}
+
+/// #716 boundary coverage: the native-column rewrite must fire ONLY when the VLP
+/// endpoint is genuinely single-type. A genuinely-multi-type far endpoint's
+/// non-id property must STAY on the JSON path (a native `{position}_{prop}`
+/// column does not exist for it — the CTE emits only the properties JSON blob).
+#[tokio::test]
+async fn multi_type_vlp_endpoint_non_id_property_scoping_716() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // OVER-FIRE GUARD: the FAR endpoint `x` of a multi-type VLP is genuinely
+        // User|Post; `x.content` (a Post property) must stay on the JSON path —
+        // no native `end_content` column exists for a multi-type endpoint.
+        let multi_far = "MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x) WHERE u.user_id = 1 \
+                         RETURN x.content, count(*)";
+        let far_sql = render(&schema, multi_far, dialect).await;
+        assert!(
+            far_sql.contains("end_properties, 'post_content'")
+                || far_sql.contains("end_properties, '$.post_content'"),
+            "#716: multi-type far endpoint non-id property must stay on the JSON path \
+             for {dialect:?}, got:\n{far_sql}"
+        );
+    }
+}

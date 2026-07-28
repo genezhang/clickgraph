@@ -1146,6 +1146,54 @@ impl SelectBuilder for LogicalPlan {
                                         }
                                     }
 
+                                    // #716: a NON-id property of a SINGLE-type VLP
+                                    // endpoint has a native `{position}_{prop}`
+                                    // column in the multi_type_vlp CTE (only
+                                    // multi-type endpoints are JSON-only). Project
+                                    // it directly, byte-identical to the GROUP BY /
+                                    // ORDER BY key `rewrite_expr_for_vlp` produces,
+                                    // so `build_aliased_group_by` unifies them.
+                                    // Otherwise the SELECT's `JSONExtractString(...)`
+                                    // and the GROUP BY's `t.{position}_{prop}` are
+                                    // DIFFERENT expressions → Code 215
+                                    // NOT_AN_AGGREGATE (the non-id sibling of #580;
+                                    // this is #580's documented follow-up). Multi-type
+                                    // / polymorphic / composite-id-`id` cases return
+                                    // None and fall through to the JSON path below.
+                                    if !has_pattern_combinations {
+                                        if let Some(native_col) = native_vlp_endpoint_column(
+                                            gr,
+                                            position == "start",
+                                            col_name,
+                                        ) {
+                                            log::info!(
+                                                "🎯 Multi-type VLP non-id property '{}.{}' -> native CTE column '{}.{}' (#716)",
+                                                cypher_alias, col_name, cte_alias, native_col
+                                            );
+                                            select_items.push(SelectItem {
+                                                expression: RenderExpr::PropertyAccessExp(
+                                                    PropertyAccess {
+                                                        table_alias: RenderTableAlias(
+                                                            cte_alias.clone(),
+                                                        ),
+                                                        column: PropertyValue::Column(native_col),
+                                                    },
+                                                ),
+                                                col_alias: item
+                                                    .col_alias
+                                                    .as_ref()
+                                                    .map(|ca| ColumnAlias(ca.0.clone()))
+                                                    .or_else(|| {
+                                                        Some(ColumnAlias(format!(
+                                                            "{}.{}",
+                                                            cypher_alias, col_name
+                                                        )))
+                                                    }),
+                                            });
+                                            continue;
+                                        }
+                                    }
+
                                     log::info!(
                                         "🎯 Multi-type VLP property access: '{}.{}' -> extracting from {}_properties JSON in CTE '{}'",
                                         cypher_alias, col_name, position, cte_alias
@@ -1897,6 +1945,34 @@ fn single_column_node_id_for_vlp_endpoint(
     gr: &crate::query_planner::logical_plan::GraphRel,
     endpoint_is_start: bool,
 ) -> Option<String> {
+    let label = single_vlp_endpoint_label(gr, endpoint_is_start)?;
+    let schema = crate::server::query_context::get_current_schema_with_fallback()?;
+    let node_schema = schema.node_schema(&label).ok()?;
+    let cols = node_schema.node_id.columns();
+    // Composite ids surface as a concatenated String in the multi-type CTE's
+    // start_id/end_id — not addressable by a single property. Leave to JSON.
+    if cols.len() != 1 {
+        return None;
+    }
+    Some(cols[0].to_string())
+}
+
+/// Resolve the SINGLE concrete node label at a multi-type VLP endpoint, or
+/// `None` when the endpoint is genuinely multi-type. Shared by the #580 id-column
+/// routing (`single_column_node_id_for_vlp_endpoint`) and the #716 non-id native
+/// property routing (`native_vlp_endpoint_column`): both are only valid when the
+/// endpoint collapses to exactly one label, because that is precisely when
+/// `multi_type_vlp_joins` emits native per-property `{start,end}_{prop}` columns
+/// (a genuinely multi-type endpoint carries only the `{start,end}_properties`
+/// JSON blob).
+///
+/// Returns `None` when the endpoint resolves to MORE THAN ONE node type or when
+/// a rel variant is polymorphic (`$any`). The single-column-id check is NOT done
+/// here — id-vs-non-id concerns belong to the callers.
+fn single_vlp_endpoint_label(
+    gr: &crate::query_planner::logical_plan::GraphRel,
+    endpoint_is_start: bool,
+) -> Option<String> {
     use crate::query_planner::logical_expr::Direction;
 
     let schema = crate::server::query_context::get_current_schema_with_fallback()?;
@@ -1967,15 +2043,66 @@ fn single_column_node_id_for_vlp_endpoint(
     if candidate_labels.len() != 1 {
         return None;
     }
-    let label = candidate_labels.into_iter().next()?;
-    let node_schema = schema.node_schema(&label).ok()?;
-    let cols = node_schema.node_id.columns();
-    // Composite ids surface as a concatenated String in the multi-type CTE's
-    // start_id/end_id — not addressable via a single property. Leave to JSON.
-    if cols.len() != 1 {
+    candidate_labels.into_iter().next()
+}
+
+/// #716: for a NON-id property (`u.city`, `u.name`) accessed at a multi-type VLP
+/// endpoint, return the CTE's native `{start,end}_{cypher_prop}` column name when
+/// one exists — i.e. when the endpoint is single-type (`single_vlp_endpoint_label`)
+/// and the property is a genuine schema `Column` mapping that
+/// `multi_type_vlp_joins` emitted as an individual native column.
+///
+/// The returned suffix is derived via [`derive_cypher_property_name`] — the SAME
+/// rewrite the GROUP BY / ORDER BY builder applies (`rewrite_expr_for_vlp`) — so
+/// the projected column is BYTE-IDENTICAL to the grouping key
+/// (`t.{position}_{suffix}`). That identity is the whole point: it lets
+/// `build_aliased_group_by` unify the SELECT expression with the GROUP BY key,
+/// which is what fixes the Code 215 NOT_AN_AGGREGATE crash (the JSON-extract
+/// projection was a DIFFERENT expression from the native grouping key).
+///
+/// Returns `None` (caller keeps the JSONExtract path) when:
+///   - the endpoint is genuinely multi-type / polymorphic (no native columns), or
+///   - the property is the node's `id` (served by the #580 id path, and skipped
+///     by the CTE because `{position}_id` would collide with the reserved
+///     `start_id`/`end_id` columns), or
+///   - the property has no single-`Column` schema mapping (the CTE emits no
+///     native column for computed / multi-column properties).
+///
+/// Composite-id nodes are fine here: compositeness only concatenates the ID
+/// column; non-id properties still get their own native `{position}_{prop}`
+/// column, so — unlike the id path — this does NOT reject composite-id endpoints.
+fn native_vlp_endpoint_column(
+    gr: &crate::query_planner::logical_plan::GraphRel,
+    endpoint_is_start: bool,
+    col_name: &str,
+) -> Option<String> {
+    use crate::graph_catalog::expression_parser::PropertyValue;
+
+    let position = if endpoint_is_start { "start" } else { "end" };
+    let label = single_vlp_endpoint_label(gr, endpoint_is_start)?;
+
+    // Match the GROUP BY builder's suffix derivation exactly (rewrite_expr_for_vlp
+    // → derive_cypher_property_name), so SELECT and GROUP BY reference one column.
+    let suffix =
+        crate::sql_generator::emitters::clickhouse::to_sql_query::derive_cypher_property_name(
+            col_name,
+        );
+
+    // The id property maps to `{position}_id`, which the CTE deliberately skips
+    // (reserved-column collision with `start_id`/`end_id`) and the #580 id path
+    // already serves. Leave it alone.
+    if suffix == "id" {
         return None;
     }
-    Some(cols[0].to_string())
+
+    // Only route when the CTE actually emitted a native column for this property:
+    // it must be a single-`Column` schema mapping on the single candidate label.
+    let schema = crate::server::query_context::get_current_schema_with_fallback()?;
+    let node_schema = schema.node_schema(&label).ok()?;
+    match node_schema.property_mappings.get(&suffix) {
+        Some(PropertyValue::Column(_)) => Some(format!("{}_{}", position, suffix)),
+        _ => None,
+    }
 }
 
 /// #509: build the id-column `PropertyAccess` (or multi-label `coalesce(...)`
