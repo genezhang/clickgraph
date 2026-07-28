@@ -143,7 +143,7 @@ P-3). Latent finding filed in-report: `has_with_clause_in_graph_rel` is
 duplicated (utils + helpers) with a DIFFERENT semantic — a future consolidation
 candidate, not touched here (§8.3 no-drive-by).
 
-### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ☑ (P2.1–P2.6 + P2.7 D1 done; D6/D8 already resolved; P2.10 import hygiene + dead_code tail COMPLETE — no module-level allow(dead_code) remains under src/render_plan/) · ◐ Phase-4 §7.1 `build_chained` decomposition IN PROGRESS (39 PRs #740–#780; tail + main-loop + inner render-loop all decomposed, build_chained 5478 → 850 ln — see §4 + REFACTORING_SAFETY_PLAN §7.1)
+### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ☑ (P2.1–P2.6 + P2.7 D1 done; D6/D8 already resolved; P2.10 import hygiene + dead_code tail COMPLETE — no module-level allow(dead_code) remains under src/render_plan/) · ◐ Phase-4 §7.1 `build_chained` decomposition IN PROGRESS (43 PRs #740–#785; tail + main-loop + inner render-loop decomposed AND every over-budget extracted helper sub-decomposed under ~500 ln — `build_chained` itself 5478 → 850 ln is now the SOLE remaining >500-ln fn in with_to_cte/mod.rs, the deliberately-parked accumulator frame — see §4 + REFACTORING_SAFETY_PLAN §7.1)
 The dead-code sweep shrank plan_builder_utils.rs to ~14.5K lines. §5.1 moves are
 now underway. Pure groups first (vlp_rewrite →
 pattern_comprehension_sql → clause_extractors → plan_predicates →
@@ -297,6 +297,23 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-28: **Phase-4 §7.1 — over-budget extracted helpers brought under ~500
+  ln** (P-3 lane; PRs #782–#785). The inner-loop decomposition (#770–#780) left
+  several of the helpers it produced still over the module-wide exit target; each
+  is now sub-decomposed one byte-identical slice per PR (scout-verified seam +
+  adversarial review, both agent-driven in parallel). `resolve_cross_table_with_cte_joins`
+  775 → **355** (extracted `generate_vlp_with_cte_join_conditions` #782 + the
+  two-`return Err` `restructure_post_with_optional_or_insert_cte_join` #783);
+  `apply_with_items_projection` 660 → **459** (extracted the pure
+  `build_with_projection_select_items` flat_map builder, #784);
+  `restructure_post_with_optional_match` 529 → **71** (extracted the 445-ln
+  `restructure_optional_cte_bridge` via a borrow-clean pre-clone-`from_name` seam,
+  #785). **`build_chained_with_match_cte_plan` (850 ln) is now the SOLE function
+  in `with_to_cte/mod.rs` over ~500 ln** — the deliberately-parked accumulator
+  frame; every §7.1-extracted helper is at/under target. Module-wide exit
+  criterion met except that one frame. Method note banked: whitespace-free
+  char-multiset identity is a reliable proof that fmt-reflow-heavy dedents added
+  no semantic token. See `REFACTORING_SAFETY_PLAN.md` §7.1.
 - 2026-07-28: **Phase-4 §7.1 — `build_chained` inner render-loop FULLY
   DECOMPOSED** (P-3 lane; PRs #770–#780, 11 more since the earlier 2026-07-28
   entry). The last hard core — the `for with_plan in with_plans` render-loop —
