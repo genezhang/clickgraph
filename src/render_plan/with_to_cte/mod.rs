@@ -4314,6 +4314,115 @@ fn prepare_with_plans_and_pre_aliases(
     Ok((with_plans, pre_with_aliases))
 }
 
+/// Derive the CTE name (plus exported-alias / pattern-comprehension metadata)
+/// for one WITH alias group (a STEP of the main loop's `'alias_loop` in
+/// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// Takes the exported aliases and pattern-comprehension metadata from the first
+/// WITH plan, then resolves the CTE name: preferring `WithClause.cte_name` (set
+/// once by the analyzer's `CteSchemaResolver` — the single source of truth,
+/// consistent counters) and only falling back to a freshly generated name when
+/// absent. The name is then deduped against hoisted/analyzer collisions
+/// (`sync_hoisted` + `resolve_unique_name`, which advances the sequence
+/// counter), and the analyzer→final remapping is recorded
+/// (`record_base_remapping`) — hence the `&mut CteNameAllocator`.
+///
+/// Returns `(exported_aliases, pattern_comprehensions, cte_name)`.
+fn derive_with_cte_name(
+    with_plans: &[LogicalPlan],
+    with_alias: &str,
+    all_ctes: &[Cte],
+    all_analyzer_cte_names: &std::collections::HashSet<String>,
+    cte_name_allocator: &mut CteNameAllocator,
+) -> (
+    Vec<String>,
+    Vec<crate::query_planner::logical_plan::PatternComprehensionMeta>,
+    String,
+) {
+    // Extract ALL exported aliases from the first WITH clause plan
+    // Use them to generate the CTE name (not just the grouped alias)
+    // This matches what the analyzer expects: with_<all_aliases>_cte_<seq>
+    let exported_aliases: Vec<String> = with_plans
+        .first()
+        .and_then(|plan| match plan {
+            LogicalPlan::WithClause(wc) => Some(wc.exported_aliases.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| vec![with_alias.to_string()]);
+
+    // Extract pattern comprehension metadata from the WithClause
+    let pattern_comprehensions: Vec<crate::query_planner::logical_plan::PatternComprehensionMeta> = with_plans
+        .first()
+        .and_then(|plan| match plan {
+            LogicalPlan::WithClause(wc) if !wc.pattern_comprehensions.is_empty() => {
+                log::info!(
+                    "🔧 build_chained_with_match_cte_plan: Found {} pattern comprehensions for alias '{}'",
+                    wc.pattern_comprehensions.len(), with_alias
+                );
+                Some(wc.pattern_comprehensions.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    // Sorted aliases string used for sequence tracking and uniqueness
+    let mut sorted_exported_aliases = exported_aliases.clone();
+    sorted_exported_aliases.sort();
+    let aliases_key = sorted_exported_aliases.join("_");
+
+    // CRITICAL FIX: Use CTE name from analyzer's cte_references if available
+    // **ARCHITECTURAL FIX (Jan 25, 2026)**: Use WithClause.cte_name directly from analysis phase
+    // The CteSchemaResolver in the analyzer already generated the final CTE name with counter
+    // and stored it in WithClause.cte_name. We should use it directly instead of regenerating.
+    //
+    // Why this is the right approach:
+    // 1. CTE names are generated ONCE during analysis with consistent counters (plan_ctx.cte_counter)
+    // 2. WithClause.cte_name stores the final name (e.g., "with_a_b_cte_1")
+    // 3. Rendering should just USE this name, not try to regenerate with different counters
+    //
+    // The old approach tried to extract from cte_references HashMap, which is:
+    // - Incomplete: only contains CTEs that other nodes explicitly reference
+    // - Inconsistent: regenerates counters instead of using analysis phase values
+    // - Source of two-phase mismatch: analysis generates "with_a_b_cte_1", rendering tries "with_a_b_cte_2"
+    let cte_name = with_plans
+        .first()
+        .and_then(|plan| match plan {
+            LogicalPlan::WithClause(wc) => {
+                // Use the CTE name set by CteSchemaResolver in analysis phase
+                // This is the single source of truth for the WITH clause's CTE name
+                wc.cte_name.clone()
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            cte_name_allocator.next_fallback_name(
+                &aliases_key,
+                &sorted_exported_aliases,
+                &exported_aliases,
+            )
+        });
+
+    // Ensure used_cte_names contains any CTEs hoisted earlier in this pass
+    cte_name_allocator.sync_hoisted(all_ctes);
+
+    // Resolve to a unique name (dedup against hoisted/analyzer collisions) and
+    // advance the sequence counter based on its suffix.
+    let cte_name =
+        cte_name_allocator.resolve_unique_name(cte_name, &aliases_key, &sorted_exported_aliases);
+
+    log::debug!(
+        "🔧 build_chained_with_match_cte_plan: Using CTE name '{}' for exported aliases {:?}",
+        cte_name,
+        exported_aliases
+    );
+
+    // CRITICAL: Collect CTE name remapping from analyzer's CTE names to our generated name.
+    // Any analyzer CTE name with the same base alias pattern is remapped to our name.
+    cte_name_allocator.record_base_remapping(&cte_name, all_analyzer_cte_names);
+
+    (exported_aliases, pattern_comprehensions, cte_name)
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -6503,86 +6612,15 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 )));
             }
 
-            // Extract ALL exported aliases from the first WITH clause plan
-            // Use them to generate the CTE name (not just the grouped alias)
-            // This matches what the analyzer expects: with_<all_aliases>_cte_<seq>
-            let exported_aliases: Vec<String> = with_plans
-                .first()
-                .and_then(|plan| match plan {
-                    LogicalPlan::WithClause(wc) => Some(wc.exported_aliases.clone()),
-                    _ => None,
-                })
-                .unwrap_or_else(|| vec![with_alias.clone()]);
-
-            // Extract pattern comprehension metadata from the WithClause
-            let pattern_comprehensions: Vec<crate::query_planner::logical_plan::PatternComprehensionMeta> = with_plans
-                .first()
-                .and_then(|plan| match plan {
-                    LogicalPlan::WithClause(wc) if !wc.pattern_comprehensions.is_empty() => {
-                        log::info!(
-                            "🔧 build_chained_with_match_cte_plan: Found {} pattern comprehensions for alias '{}'",
-                            wc.pattern_comprehensions.len(), with_alias
-                        );
-                        Some(wc.pattern_comprehensions.clone())
-                    }
-                    _ => None,
-                })
-                .unwrap_or_default();
-
-            // Sorted aliases string used for sequence tracking and uniqueness
-            let mut sorted_exported_aliases = exported_aliases.clone();
-            sorted_exported_aliases.sort();
-            let aliases_key = sorted_exported_aliases.join("_");
-
-            // CRITICAL FIX: Use CTE name from analyzer's cte_references if available
-            // **ARCHITECTURAL FIX (Jan 25, 2026)**: Use WithClause.cte_name directly from analysis phase
-            // The CteSchemaResolver in the analyzer already generated the final CTE name with counter
-            // and stored it in WithClause.cte_name. We should use it directly instead of regenerating.
-            //
-            // Why this is the right approach:
-            // 1. CTE names are generated ONCE during analysis with consistent counters (plan_ctx.cte_counter)
-            // 2. WithClause.cte_name stores the final name (e.g., "with_a_b_cte_1")
-            // 3. Rendering should just USE this name, not try to regenerate with different counters
-            //
-            // The old approach tried to extract from cte_references HashMap, which is:
-            // - Incomplete: only contains CTEs that other nodes explicitly reference
-            // - Inconsistent: regenerates counters instead of using analysis phase values
-            // - Source of two-phase mismatch: analysis generates "with_a_b_cte_1", rendering tries "with_a_b_cte_2"
-            let cte_name = with_plans
-                .first()
-                .and_then(|plan| match plan {
-                    LogicalPlan::WithClause(wc) => {
-                        // Use the CTE name set by CteSchemaResolver in analysis phase
-                        // This is the single source of truth for the WITH clause's CTE name
-                        wc.cte_name.clone()
-                    }
-                    _ => None,
-                })
-                .unwrap_or_else(|| {
-                    cte_name_allocator.next_fallback_name(
-                        &aliases_key,
-                        &sorted_exported_aliases,
-                        &exported_aliases,
-                    )
-                });
-
-            // Ensure used_cte_names contains any CTEs hoisted earlier in this pass
-            cte_name_allocator.sync_hoisted(&all_ctes);
-
-            // Resolve to a unique name (dedup against hoisted/analyzer collisions) and
-            // advance the sequence counter based on its suffix.
-            let cte_name = cte_name_allocator.resolve_unique_name(
-                cte_name,
-                &aliases_key,
-                &sorted_exported_aliases,
+            // Derive the CTE name (and the exported-alias / pattern-comprehension
+            // metadata) for this WITH alias group. See `derive_with_cte_name`.
+            let (exported_aliases, pattern_comprehensions, cte_name) = derive_with_cte_name(
+                &with_plans,
+                &with_alias,
+                &all_ctes,
+                &all_analyzer_cte_names,
+                &mut cte_name_allocator,
             );
-
-            log::debug!("🔧 build_chained_with_match_cte_plan: Using CTE name '{}' for exported aliases {:?}",
-                       cte_name, exported_aliases);
-
-            // CRITICAL: Collect CTE name remapping from analyzer's CTE names to our generated name.
-            // Any analyzer CTE name with the same base alias pattern is remapped to our name.
-            cte_name_allocator.record_base_remapping(&cte_name, &all_analyzer_cte_names);
 
             // Create CTE content - if multiple renders, combine with UNION ALL
             // Extract ORDER BY, SKIP, LIMIT from first rendered plan (they should all have the same modifiers)
