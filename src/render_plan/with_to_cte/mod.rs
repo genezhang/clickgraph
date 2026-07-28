@@ -1046,6 +1046,122 @@ fn replace_v2_graph_joins_arm(
     }))
 }
 
+/// Handle the `GraphRel` arm of `replace_with_clause_with_cte_reference_v2`
+/// (Phase-4 §7.1 extraction).
+///
+/// Recurse into whichever GraphRel sub-plans still need processing (left/right
+/// connection / center — a nested `needs_processing` walk decides), then rebuild
+/// the `GraphRel` with the rewritten children (its own `cte_references` reset to
+/// empty — the outer wrapper repopulates them).
+fn replace_v2_graph_rel_arm(
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+    with_alias: &str,
+    cte_name: &str,
+    pre_with_aliases: &std::collections::HashSet<String>,
+    cte_schemas: &crate::render_plan::CteSchemas,
+) -> RenderPlanBuilderResult<LogicalPlan> {
+    use crate::query_planner::logical_plan::GraphRel;
+    use std::sync::Arc;
+
+    // Helper to check if we need to process this branch
+    // We need to process it if:
+    // 1. It contains a WITH clause, OR
+    // 2. It has a GraphNode with the matching alias
+    fn needs_processing(plan: &LogicalPlan, with_alias: &str, depth: usize) -> bool {
+        if depth > crate::render_plan::MAX_TRAVERSAL_DEPTH {
+            log::warn!("needs_processing: depth limit {} exceeded", depth);
+            return false;
+        }
+        let result = match plan {
+            // A GraphNode is the structural target: this branch needs
+            // processing iff its alias matches. Terminal by design — we
+            // do NOT descend into node.input here (that narrowing is
+            // intentional and preserved).
+            LogicalPlan::GraphNode(node) => node.alias == with_alias,
+            // Structural-wrapper variants: recurse into every direct
+            // child looking for the target alias. Routed through the
+            // exhaustive `children()` API instead of hand-listing each
+            // child (this also makes nested GraphRel.center reachable,
+            // which the caller clones verbatim, so the extra coverage is
+            // behavior-neutral).
+            LogicalPlan::WithClause(_)
+            | LogicalPlan::GraphRel(_)
+            | LogicalPlan::Projection(_)
+            | LogicalPlan::GraphJoins(_)
+            | LogicalPlan::Filter(_)
+            | LogicalPlan::Unwind(_)
+            | LogicalPlan::CartesianProduct(_) => plan
+                .children()
+                .iter()
+                .any(|child| needs_processing(child, with_alias, depth + 1)),
+            // Any other variant: fall back to WITH-containment (the
+            // original semantics — alias-matching does not descend
+            // through these node types).
+            _ => plan_contains_with_clause(plan),
+        };
+        log::debug!(
+            "🔧 replace_v2: needs_processing({:?}, '{}') = {}",
+            std::mem::discriminant(plan),
+            with_alias,
+            result
+        );
+        result
+    }
+    // Always recurse for WithClause - the WithClause case will handle replacement
+    // Don't shortcut with is_innermost_with_clause check because the WithClause's input
+    // might contain a GraphNode that needs updating from a previous iteration
+    let new_left: Arc<LogicalPlan> = if plan_contains_with_clause(&graph_rel.left)
+        || needs_processing(&graph_rel.left, with_alias, 0)
+    {
+        Arc::new(replace_with_clause_with_cte_reference_v2(
+            &graph_rel.left,
+            with_alias,
+            cte_name,
+            pre_with_aliases,
+            cte_schemas,
+        )?)
+    } else {
+        graph_rel.left.clone()
+    };
+
+    let new_right: Arc<LogicalPlan> = if plan_contains_with_clause(&graph_rel.right)
+        || needs_processing(&graph_rel.right, with_alias, 0)
+    {
+        Arc::new(replace_with_clause_with_cte_reference_v2(
+            &graph_rel.right,
+            with_alias,
+            cte_name,
+            pre_with_aliases,
+            cte_schemas,
+        )?)
+    } else {
+        graph_rel.right.clone()
+    };
+
+    Ok(LogicalPlan::GraphRel(GraphRel {
+        left: new_left,
+        center: graph_rel.center.clone(),
+        right: new_right,
+        alias: graph_rel.alias.clone(),
+        direction: graph_rel.direction.clone(),
+        left_connection: graph_rel.left_connection.clone(),
+        right_connection: graph_rel.right_connection.clone(),
+        is_rel_anchor: graph_rel.is_rel_anchor,
+        variable_length: graph_rel.variable_length.clone(),
+        shortest_path_mode: graph_rel.shortest_path_mode.clone(),
+        path_variable: graph_rel.path_variable.clone(),
+        where_predicate: graph_rel.where_predicate.clone(),
+        labels: graph_rel.labels.clone(),
+        is_optional: graph_rel.is_optional,
+        anchor_connection: graph_rel.anchor_connection.clone(),
+        cte_references: std::collections::HashMap::new(),
+        pattern_combinations: None,
+        was_undirected: graph_rel.was_undirected,
+        match_clause_index: graph_rel.match_clause_index, // #586
+        optional_anchor_where: graph_rel.optional_anchor_where.clone(), // #597: preserve
+    }))
+}
+
 pub(crate) fn replace_with_clause_with_cte_reference_v2(
     plan: &LogicalPlan,
     with_alias: &str,
@@ -1173,105 +1289,13 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
             }
         }
 
-        LogicalPlan::GraphRel(graph_rel) => {
-            // Helper to check if we need to process this branch
-            // We need to process it if:
-            // 1. It contains a WITH clause, OR
-            // 2. It has a GraphNode with the matching alias
-            fn needs_processing(plan: &LogicalPlan, with_alias: &str, depth: usize) -> bool {
-                if depth > crate::render_plan::MAX_TRAVERSAL_DEPTH {
-                    log::warn!("needs_processing: depth limit {} exceeded", depth);
-                    return false;
-                }
-                let result = match plan {
-                    // A GraphNode is the structural target: this branch needs
-                    // processing iff its alias matches. Terminal by design — we
-                    // do NOT descend into node.input here (that narrowing is
-                    // intentional and preserved).
-                    LogicalPlan::GraphNode(node) => node.alias == with_alias,
-                    // Structural-wrapper variants: recurse into every direct
-                    // child looking for the target alias. Routed through the
-                    // exhaustive `children()` API instead of hand-listing each
-                    // child (this also makes nested GraphRel.center reachable,
-                    // which the caller clones verbatim, so the extra coverage is
-                    // behavior-neutral).
-                    LogicalPlan::WithClause(_)
-                    | LogicalPlan::GraphRel(_)
-                    | LogicalPlan::Projection(_)
-                    | LogicalPlan::GraphJoins(_)
-                    | LogicalPlan::Filter(_)
-                    | LogicalPlan::Unwind(_)
-                    | LogicalPlan::CartesianProduct(_) => plan
-                        .children()
-                        .iter()
-                        .any(|child| needs_processing(child, with_alias, depth + 1)),
-                    // Any other variant: fall back to WITH-containment (the
-                    // original semantics — alias-matching does not descend
-                    // through these node types).
-                    _ => plan_contains_with_clause(plan),
-                };
-                log::debug!(
-                    "🔧 replace_v2: needs_processing({:?}, '{}') = {}",
-                    std::mem::discriminant(plan),
-                    with_alias,
-                    result
-                );
-                result
-            }
-            // Always recurse for WithClause - the WithClause case will handle replacement
-            // Don't shortcut with is_innermost_with_clause check because the WithClause's input
-            // might contain a GraphNode that needs updating from a previous iteration
-            let new_left: Arc<LogicalPlan> = if plan_contains_with_clause(&graph_rel.left)
-                || needs_processing(&graph_rel.left, with_alias, 0)
-            {
-                Arc::new(replace_with_clause_with_cte_reference_v2(
-                    &graph_rel.left,
-                    with_alias,
-                    cte_name,
-                    pre_with_aliases,
-                    cte_schemas,
-                )?)
-            } else {
-                graph_rel.left.clone()
-            };
-
-            let new_right: Arc<LogicalPlan> = if plan_contains_with_clause(&graph_rel.right)
-                || needs_processing(&graph_rel.right, with_alias, 0)
-            {
-                Arc::new(replace_with_clause_with_cte_reference_v2(
-                    &graph_rel.right,
-                    with_alias,
-                    cte_name,
-                    pre_with_aliases,
-                    cte_schemas,
-                )?)
-            } else {
-                graph_rel.right.clone()
-            };
-
-            Ok(LogicalPlan::GraphRel(GraphRel {
-                left: new_left,
-                center: graph_rel.center.clone(),
-                right: new_right,
-                alias: graph_rel.alias.clone(),
-                direction: graph_rel.direction.clone(),
-                left_connection: graph_rel.left_connection.clone(),
-                right_connection: graph_rel.right_connection.clone(),
-                is_rel_anchor: graph_rel.is_rel_anchor,
-                variable_length: graph_rel.variable_length.clone(),
-                shortest_path_mode: graph_rel.shortest_path_mode.clone(),
-                path_variable: graph_rel.path_variable.clone(),
-                where_predicate: graph_rel.where_predicate.clone(),
-                labels: graph_rel.labels.clone(),
-                is_optional: graph_rel.is_optional,
-                anchor_connection: graph_rel.anchor_connection.clone(),
-                cte_references: std::collections::HashMap::new(),
-                pattern_combinations: None,
-                was_undirected: graph_rel.was_undirected,
-                match_clause_index: graph_rel.match_clause_index, // #586
-                optional_anchor_where: graph_rel.optional_anchor_where.clone(), // #597: preserve
-            }))
-        }
+        LogicalPlan::GraphRel(graph_rel) => replace_v2_graph_rel_arm(
+            graph_rel,
+            with_alias,
+            cte_name,
+            pre_with_aliases,
+            cte_schemas,
+        ),
 
         LogicalPlan::Projection(proj) => {
             replace_v2_projection_arm(proj, with_alias, cte_name, pre_with_aliases, cte_schemas)
