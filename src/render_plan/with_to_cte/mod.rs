@@ -5793,6 +5793,97 @@ fn maybe_add_bidirectional_weight_cte(
     }
 }
 
+/// Compute each exported alias's ID column within the WITH CTE (a STEP of the
+/// main loop's `'alias_loop` in `build_chained_with_match_cte_plan`, Phase-4
+/// §7.1 extraction).
+///
+/// Maps `alias → the CTE column holding that alias's node id`, by priority:
+/// (1) inherit from an upstream CTE when the alias is already CTE-backed (most
+/// reliable for chained WITH — a plan-level lookup could otherwise pick a stale
+/// VLP endpoint like `end_id` over the CTE's renamed `id`); else a direct
+/// column match (bare UNWIND scalar); (2) the deterministic
+/// `compute_cte_id_column_for_alias` over the inner plan then the current plan;
+/// (3) ARRAY JOIN scalar detection — an `UNWIND … AS alias` makes the bare
+/// column itself the id. Returns the `alias → id_column` map.
+fn compute_alias_id_columns(
+    exported_aliases: &[String],
+    inner_plans_for_id: &[LogicalPlan],
+    current_plan: &LogicalPlan,
+    cte_references: &HashMap<String, String>,
+    cte_schemas: &crate::render_plan::CteSchemas,
+    cte_name: &str,
+) -> HashMap<String, String> {
+    let mut alias_to_id_column: HashMap<String, String> = HashMap::new();
+
+    // Use individual exported aliases (e.g., ["a", "allNeighboursCount"]) not combined with_alias
+    // compute_cte_id_column_for_alias needs the actual node alias to find the GraphNode.
+    // CRITICAL: Check CTE references FIRST — if the alias is already CTE-backed from an
+    // upstream WITH, inherit its ID column. Otherwise, plan-level lookup may find stale
+    // VLP endpoints (e.g., end_id) instead of the CTE's renamed column (e.g., id).
+    let id_lookup_plan = inner_plans_for_id.first().unwrap_or(current_plan);
+    for alias in exported_aliases {
+        // Priority 1: Inherit from upstream CTE (most reliable for chained WITH)
+        if let Some(prev_cte_name) = cte_references.get(alias) {
+            if let Some(meta) = cte_schemas.get(prev_cte_name) {
+                if let Some(prev_id) = meta.alias_to_id.get(alias) {
+                    log::info!(
+                        "📊 WITH CTE '{}': ID for alias '{}' -> '{}' (inherited from CTE '{}')",
+                        cte_name,
+                        alias,
+                        prev_id,
+                        prev_cte_name
+                    );
+                    alias_to_id_column.insert(alias.clone(), prev_id.clone());
+                    continue;
+                } else if meta.column_names.contains(alias) {
+                    // Fallback: CTE has a direct column matching alias (e.g. UNWIND scalar)
+                    log::info!(
+                        "📊 WITH CTE '{}': ID for alias '{}' -> '{}' (bare column from CTE '{}')",
+                        cte_name,
+                        alias,
+                        alias,
+                        prev_cte_name
+                    );
+                    alias_to_id_column.insert(alias.clone(), alias.clone());
+                    continue;
+                }
+            }
+        }
+        // Priority 2: Compute from plan structure (inner plan first, then current)
+        if let Some(id_col_name) = compute_cte_id_column_for_alias(alias, id_lookup_plan)
+            .or_else(|| compute_cte_id_column_for_alias(alias, current_plan))
+        {
+            log::info!(
+                "📊 WITH CTE '{}': ID for alias '{}' -> '{}' (deterministic)",
+                cte_name,
+                alias,
+                id_col_name
+            );
+            alias_to_id_column.insert(alias.clone(), id_col_name.clone());
+            continue;
+        }
+
+        // Priority 3: ARRAY JOIN scalar detection.
+        // If the plan has an Unwind node producing this alias (e.g., UNWIND ... AS person),
+        // the alias IS the ID value (a scalar from ARRAY JOIN).
+        let mut unwind_aliases = Vec::new();
+        // Check all plans that contributed to this CTE
+        for ip in inner_plans_for_id {
+            find_unwind_aliases(ip, &mut unwind_aliases);
+        }
+        find_unwind_aliases(current_plan, &mut unwind_aliases);
+        if unwind_aliases.contains(alias) {
+            log::info!(
+                        "📊 WITH CTE '{}': ID for alias '{}' -> '{}' (ARRAY JOIN scalar — bare column IS the ID)",
+                        cte_name, alias, alias
+                    );
+            alias_to_id_column.insert(alias.clone(), alias.clone());
+        }
+    }
+
+    alias_to_id_column
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -8072,71 +8163,16 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
             // Store CTE schema for later reference creation
 
-            // Compute ID column mappings for this CTE using the DETERMINISTIC formula
-            // Maps: alias → CTE column name that holds the ID
-            // Uses compute_cte_id_column_for_alias which matches the naming convention
-            // used when generating the SELECT items
-            let mut alias_to_id_column: HashMap<String, String> = HashMap::new();
-
-            // Use individual exported aliases (e.g., ["a", "allNeighboursCount"]) not combined with_alias
-            // compute_cte_id_column_for_alias needs the actual node alias to find the GraphNode.
-            // CRITICAL: Check CTE references FIRST — if the alias is already CTE-backed from an
-            // upstream WITH, inherit its ID column. Otherwise, plan-level lookup may find stale
-            // VLP endpoints (e.g., end_id) instead of the CTE's renamed column (e.g., id).
-            let id_lookup_plan = inner_plans_for_id.first().unwrap_or(&current_plan);
-            for alias in &exported_aliases {
-                // Priority 1: Inherit from upstream CTE (most reliable for chained WITH)
-                if let Some(prev_cte_name) = cte_references.get(alias) {
-                    if let Some(meta) = cte_schemas.get(prev_cte_name) {
-                        if let Some(prev_id) = meta.alias_to_id.get(alias) {
-                            log::info!(
-                                "📊 WITH CTE '{}': ID for alias '{}' -> '{}' (inherited from CTE '{}')",
-                                cte_name, alias, prev_id, prev_cte_name
-                            );
-                            alias_to_id_column.insert(alias.clone(), prev_id.clone());
-                            continue;
-                        } else if meta.column_names.contains(alias) {
-                            // Fallback: CTE has a direct column matching alias (e.g. UNWIND scalar)
-                            log::info!(
-                                "📊 WITH CTE '{}': ID for alias '{}' -> '{}' (bare column from CTE '{}')",
-                                cte_name, alias, alias, prev_cte_name
-                            );
-                            alias_to_id_column.insert(alias.clone(), alias.clone());
-                            continue;
-                        }
-                    }
-                }
-                // Priority 2: Compute from plan structure (inner plan first, then current)
-                if let Some(id_col_name) = compute_cte_id_column_for_alias(alias, id_lookup_plan)
-                    .or_else(|| compute_cte_id_column_for_alias(alias, &current_plan))
-                {
-                    log::info!(
-                        "📊 WITH CTE '{}': ID for alias '{}' -> '{}' (deterministic)",
-                        cte_name,
-                        alias,
-                        id_col_name
-                    );
-                    alias_to_id_column.insert(alias.clone(), id_col_name.clone());
-                    continue;
-                }
-
-                // Priority 3: ARRAY JOIN scalar detection.
-                // If the plan has an Unwind node producing this alias (e.g., UNWIND ... AS person),
-                // the alias IS the ID value (a scalar from ARRAY JOIN).
-                let mut unwind_aliases = Vec::new();
-                // Check all plans that contributed to this CTE
-                for ip in &inner_plans_for_id {
-                    find_unwind_aliases(ip, &mut unwind_aliases);
-                }
-                find_unwind_aliases(&current_plan, &mut unwind_aliases);
-                if unwind_aliases.contains(alias) {
-                    log::info!(
-                        "📊 WITH CTE '{}': ID for alias '{}' -> '{}' (ARRAY JOIN scalar — bare column IS the ID)",
-                        cte_name, alias, alias
-                    );
-                    alias_to_id_column.insert(alias.clone(), alias.clone());
-                }
-            }
+            // Compute ID column mappings for this CTE (alias → CTE column holding
+            // the id). See `compute_alias_id_columns`.
+            let alias_to_id_column = compute_alias_id_columns(
+                &exported_aliases,
+                &inner_plans_for_id,
+                &current_plan,
+                &cte_references,
+                &cte_schemas,
+                &cte_name,
+            );
 
             // Build explicit property mapping for WITH CTE
             let mut property_mapping =
