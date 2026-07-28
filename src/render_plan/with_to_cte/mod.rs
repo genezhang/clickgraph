@@ -5976,6 +5976,62 @@ fn build_with_cte_property_mapping(
     property_mapping
 }
 
+/// Register a freshly-built WITH CTE's alias references (a STEP of the main
+/// loop's `'alias_loop` in `build_chained_with_match_cte_plan`, Phase-4 §7.1
+/// extraction).
+///
+/// Marks `with_alias` processed (so later iterations don't filter it), points
+/// `cte_references` at the NEW CTE name for both the composite key (`a_b`) and
+/// each individual exported alias (`a`, `b` — so `WITH a, b, c` can resolve
+/// columns for each from `with_a_b_cte_N`), and refreshes
+/// `cte_references_for_rendering` from `cte_references` so subsequent WITH
+/// clauses in THIS iteration can already reference the new CTE.
+fn register_cte_alias_references(
+    processed_cte_aliases: &mut std::collections::HashSet<String>,
+    cte_references: &mut HashMap<String, String>,
+    cte_references_for_rendering: &mut HashMap<String, String>,
+    with_alias: &str,
+    cte_name: &str,
+    original_exported_aliases: &[String],
+) {
+    // Track that this alias is now a CTE (so subsequent iterations don't filter it)
+    // Add the full composite alias
+    processed_cte_aliases.insert(with_alias.to_string());
+
+    // CRITICAL: Update cte_references to point to the NEW CTE name
+    // This ensures subsequent references to this alias (in the final query or later CTEs)
+    // use the MOST RECENT CTE, not the original one from the analyzer
+    //
+    // For composite aliases like "a_b", we need to add BOTH:
+    // 1. The composite key "a_b" → CTE (for replacement logic)
+    // 2. Individual aliases "a" → CTE and "b" → CTE (for expand_table_alias_to_select_items)
+    //
+    // This allows "WITH a, b, c" to find columns for both "a" and "b" from the "with_a_b_cte_1"
+    cte_references.insert(with_alias.to_string(), cte_name.to_string());
+
+    // Also add individual aliases — use exported_aliases from the WITH clause
+    // (splitting with_alias by '_' fails for aliases containing underscores like "__expand")
+    for alias in original_exported_aliases {
+        if !alias.is_empty() {
+            cte_references.insert(alias.clone(), cte_name.to_string());
+            log::info!(
+                "🔧 build_chained_with_match_cte_plan: Added individual mapping: '{}' → '{}'",
+                alias,
+                cte_name
+            );
+        }
+    }
+
+    log::debug!("🔧 build_chained_with_match_cte_plan: Updated cte_references: '{}' → '{}' (plus {} individual aliases)",
+               with_alias, cte_name, original_exported_aliases.len());
+
+    // CRITICAL: Also update cte_references_for_rendering!
+    // This allows subsequent WITH clauses in THIS ITERATION to reference the new CTE
+    // Example: "WITH count(*) AS total" then "WITH total, year" - second WITH needs "total" in cte_references_for_rendering
+    *cte_references_for_rendering = cte_references.clone();
+    log::debug!("🔧 build_chained_with_match_cte_plan: Updated cte_references_for_rendering with {} entries", cte_references_for_rendering.len());
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -8326,42 +8382,17 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 with_alias
             );
 
-            // Track that this alias is now a CTE (so subsequent iterations don't filter it)
-            // Add the full composite alias
-            processed_cte_aliases.insert(with_alias.clone());
-
-            // CRITICAL: Update cte_references to point to the NEW CTE name
-            // This ensures subsequent references to this alias (in the final query or later CTEs)
-            // use the MOST RECENT CTE, not the original one from the analyzer
-            //
-            // For composite aliases like "a_b", we need to add BOTH:
-            // 1. The composite key "a_b" → CTE (for replacement logic)
-            // 2. Individual aliases "a" → CTE and "b" → CTE (for expand_table_alias_to_select_items)
-            //
-            // This allows "WITH a, b, c" to find columns for both "a" and "b" from the "with_a_b_cte_1"
-            cte_references.insert(with_alias.clone(), cte_name.clone());
-
-            // Also add individual aliases — use exported_aliases from the WITH clause
-            // (splitting with_alias by '_' fails for aliases containing underscores like "__expand")
-            for alias in &original_exported_aliases {
-                if !alias.is_empty() {
-                    cte_references.insert(alias.clone(), cte_name.clone());
-                    log::info!(
-                        "🔧 build_chained_with_match_cte_plan: Added individual mapping: '{}' → '{}'",
-                        alias,
-                        cte_name
-                    );
-                }
-            }
-
-            log::debug!("🔧 build_chained_with_match_cte_plan: Updated cte_references: '{}' → '{}' (plus {} individual aliases)",
-                       with_alias, cte_name, original_exported_aliases.len());
-
-            // CRITICAL: Also update cte_references_for_rendering!
-            // This allows subsequent WITH clauses in THIS ITERATION to reference the new CTE
-            // Example: "WITH count(*) AS total" then "WITH total, year" - second WITH needs "total" in cte_references_for_rendering
-            cte_references_for_rendering = cte_references.clone();
-            log::debug!("🔧 build_chained_with_match_cte_plan: Updated cte_references_for_rendering with {} entries", cte_references_for_rendering.len());
+            // Register this alias as CTE-backed: mark it processed, point
+            // cte_references (composite + individual aliases) at the new CTE, and
+            // refresh the per-iteration snapshot. See `register_cte_alias_references`.
+            register_cte_alias_references(
+                &mut processed_cte_aliases,
+                &mut cte_references,
+                &mut cte_references_for_rendering,
+                &with_alias,
+                &cte_name,
+                &original_exported_aliases,
+            );
 
             // Update scope CTE variables: record each exported alias's property mapping
             // so downstream rendering resolves CTE variables correctly.
