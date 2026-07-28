@@ -4014,6 +4014,118 @@ fn apply_final_outer_scope_passes(
     }
 }
 
+/// Pre-render join pruning against the last CTE (finalization tail of
+/// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// The last CTE (the one with the most exported aliases) already covers some of
+/// the joins the final plan still carries. Pattern: `WITH a, b … MATCH
+/// (b)-[]->(c)` leaves GraphJoins for `a→t1→b` and `b→t2→c`, but `a→t1→b` is
+/// already inside `with_a_b_cte…`. Derive the exported aliases from the last CTE
+/// name (`with_{aliases}_cte{N}` → `{aliases}`), prune the covered joins, and
+/// refresh `GraphJoins.cte_references` with the latest mapping.
+///
+/// #451: cross-barrier correlations that pruning removes (e.g. an FK-edge join
+/// `c.customer_id = o.customer_id` connecting the CTE alias to a fresh post-WITH
+/// node) are captured and folded into `original_correlation_predicates`, so the
+/// CTE JOIN is later rebuilt with the real ON condition instead of a cartesian
+/// `ON 1 = 1`. No-op when there are no CTEs or the last CTE exports no aliases.
+fn prune_joins_covered_by_last_cte(
+    current_plan: &mut LogicalPlan,
+    original_correlation_predicates: &mut Vec<LogicalExpr>,
+    all_ctes: &[Cte],
+    cte_schemas: &crate::render_plan::CteSchemas,
+    cte_references: &HashMap<String, String>,
+    with_scope: &WithBarrierScope,
+) -> RenderPlanBuilderResult<()> {
+    log::info!(
+        "🔧 build_chained_with_match_cte_plan: PRE-RENDER CHECK - have {} CTEs",
+        all_ctes.len()
+    );
+
+    if !all_ctes.is_empty() {
+        // Get the last CTE's exported aliases (from its name, e.g., "with_a_b_cte2" → ["a", "b"])
+        // Safety: !is_empty() guarantees last() returns Some
+        let last_cte = all_ctes.last().expect("all_ctes is non-empty");
+        let last_cte_name = &last_cte.cte_name;
+
+        // Extract aliases from CTE name: "with_a_b_cte2" → "a_b"
+        // Format is: with_{aliases}_cte{N}
+        // Strategy: trim "with_", then remove "_cte{N}" suffix
+        let alias_part = if let Some(stripped) = last_cte_name.strip_prefix("with_") {
+            // Find the last occurrence of "_cte" and take everything before it
+            if let Some(cte_pos) = stripped.rfind("_cte") {
+                &stripped[..cte_pos]
+            } else {
+                stripped
+            }
+        } else {
+            ""
+        };
+
+        log::info!(
+            "🔧 build_chained_with_match_cte_plan: Last CTE '{}' exports alias_part: '{}'",
+            last_cte_name,
+            alias_part
+        );
+
+        // For composite aliases like "a_b", split into individual aliases
+        if !alias_part.is_empty() {
+            let exported_aliases: Vec<&str> = alias_part.split('_').collect();
+            let exported_aliases_set: std::collections::HashSet<&str> =
+                exported_aliases.iter().copied().collect();
+
+            log::info!(
+                "🔧 build_chained_with_match_cte_plan: Exported aliases: {:?}",
+                exported_aliases
+            );
+
+            // Now we need to prune joins from GraphJoins that are covered by this CTE
+            // AND update any GraphNode that matches an exported alias to reference the CTE
+            log::debug!(
+                "🔀 UNION_TRACE before prune_joins: has_union={}",
+                current_plan.has_union_anywhere()
+            );
+            // Cross-barrier correlations that prune removes (e.g. the FK-edge join
+            // `c.customer_id = o.customer_id` connecting the CTE alias to a fresh
+            // post-WITH node) are captured here and folded into the correlation
+            // predicates so the CTE JOIN is rebuilt with the real ON condition
+            // instead of a cartesian `ON 1 = 1`. #451
+            let mut pruned_correlations: Vec<crate::query_planner::logical_expr::LogicalExpr> =
+                Vec::new();
+            *current_plan = prune_joins_covered_by_cte(
+                current_plan,
+                last_cte_name,
+                &exported_aliases_set,
+                cte_schemas,
+                &mut pruned_correlations,
+            )?;
+            if !pruned_correlations.is_empty() {
+                log::info!(
+                    "🔧 build_chained_with_match_cte_plan: Recovered {} cross-barrier correlation(s) from pruned joins",
+                    pruned_correlations.len()
+                );
+                original_correlation_predicates.extend(pruned_correlations);
+            }
+
+            // CRITICAL: Update all GraphJoins.cte_references with the latest CTE mapping
+            // After replacement, the plan may have GraphJoins with stale cte_references from analyzer
+            // Build property mappings from scope_cte_variables for column resolution
+            let cte_prop_mappings: std::collections::HashMap<
+                String,
+                std::collections::HashMap<String, String>,
+            > = with_scope
+                .scope_cte_variables()
+                .iter()
+                .map(|(alias, info)| (alias.clone(), info.property_mapping.clone()))
+                .collect();
+            log::debug!("🔧 build_chained_with_match_cte_plan: Updating GraphJoins.cte_references with latest mapping: {:?}", cte_references);
+            *current_plan =
+                update_graph_joins_cte_refs(current_plan, cte_references, &cte_prop_mappings)?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -8249,98 +8361,16 @@ pub(crate) fn build_chained_with_match_cte_plan(
         }
     }
 
-    // CRITICAL FIX: Before rendering, check if the final plan has GraphJoins with joins
-    // that should be covered by the LAST CTE (the one with the most aliases).
-    // Pattern: WITH a, b ... MATCH (b)-[]->(c)
-    // The GraphJoins will have joins for: a→t1→b, b→t2→c
-    // But a→t1→b is already in with_a_b_cte2, so we need to remove those joins!
-
-    log::info!(
-        "🔧 build_chained_with_match_cte_plan: PRE-RENDER CHECK - have {} CTEs",
-        all_ctes.len()
-    );
-
-    if !all_ctes.is_empty() {
-        // Get the last CTE's exported aliases (from its name, e.g., "with_a_b_cte2" → ["a", "b"])
-        // Safety: !is_empty() guarantees last() returns Some
-        let last_cte = all_ctes.last().expect("all_ctes is non-empty");
-        let last_cte_name = &last_cte.cte_name;
-
-        // Extract aliases from CTE name: "with_a_b_cte2" → "a_b"
-        // Format is: with_{aliases}_cte{N}
-        // Strategy: trim "with_", then remove "_cte{N}" suffix
-        let alias_part = if let Some(stripped) = last_cte_name.strip_prefix("with_") {
-            // Find the last occurrence of "_cte" and take everything before it
-            if let Some(cte_pos) = stripped.rfind("_cte") {
-                &stripped[..cte_pos]
-            } else {
-                stripped
-            }
-        } else {
-            ""
-        };
-
-        log::info!(
-            "🔧 build_chained_with_match_cte_plan: Last CTE '{}' exports alias_part: '{}'",
-            last_cte_name,
-            alias_part
-        );
-
-        // For composite aliases like "a_b", split into individual aliases
-        if !alias_part.is_empty() {
-            let exported_aliases: Vec<&str> = alias_part.split('_').collect();
-            let exported_aliases_set: std::collections::HashSet<&str> =
-                exported_aliases.iter().copied().collect();
-
-            log::info!(
-                "🔧 build_chained_with_match_cte_plan: Exported aliases: {:?}",
-                exported_aliases
-            );
-
-            // Now we need to prune joins from GraphJoins that are covered by this CTE
-            // AND update any GraphNode that matches an exported alias to reference the CTE
-            log::debug!(
-                "🔀 UNION_TRACE before prune_joins: has_union={}",
-                current_plan.has_union_anywhere()
-            );
-            // Cross-barrier correlations that prune removes (e.g. the FK-edge join
-            // `c.customer_id = o.customer_id` connecting the CTE alias to a fresh
-            // post-WITH node) are captured here and folded into the correlation
-            // predicates so the CTE JOIN is rebuilt with the real ON condition
-            // instead of a cartesian `ON 1 = 1`. #451
-            let mut pruned_correlations: Vec<crate::query_planner::logical_expr::LogicalExpr> =
-                Vec::new();
-            current_plan = prune_joins_covered_by_cte(
-                &current_plan,
-                last_cte_name,
-                &exported_aliases_set,
-                &cte_schemas,
-                &mut pruned_correlations,
-            )?;
-            if !pruned_correlations.is_empty() {
-                log::info!(
-                    "🔧 build_chained_with_match_cte_plan: Recovered {} cross-barrier correlation(s) from pruned joins",
-                    pruned_correlations.len()
-                );
-                original_correlation_predicates.extend(pruned_correlations);
-            }
-
-            // CRITICAL: Update all GraphJoins.cte_references with the latest CTE mapping
-            // After replacement, the plan may have GraphJoins with stale cte_references from analyzer
-            // Build property mappings from scope_cte_variables for column resolution
-            let cte_prop_mappings: std::collections::HashMap<
-                String,
-                std::collections::HashMap<String, String>,
-            > = with_scope
-                .scope_cte_variables()
-                .iter()
-                .map(|(alias, info)| (alias.clone(), info.property_mapping.clone()))
-                .collect();
-            log::debug!("🔧 build_chained_with_match_cte_plan: Updating GraphJoins.cte_references with latest mapping: {:?}", cte_references);
-            current_plan =
-                update_graph_joins_cte_refs(&current_plan, &cte_references, &cte_prop_mappings)?;
-        }
-    }
+    // CRITICAL FIX: Before rendering, prune GraphJoins covered by the LAST CTE
+    // (the one with the most aliases). See `prune_joins_covered_by_last_cte`.
+    prune_joins_covered_by_last_cte(
+        &mut current_plan,
+        &mut original_correlation_predicates,
+        &all_ctes,
+        &cte_schemas,
+        &cte_references,
+        &with_scope,
+    )?;
 
     // Scope-aware join cleanup: remove ALL pre-computed joins whose aliases are now CTE-scoped.
     // These joins are stale — they reference table-level tables from before the WITH barrier.
