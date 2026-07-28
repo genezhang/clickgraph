@@ -143,7 +143,7 @@ P-3). Latent finding filed in-report: `has_with_clause_in_graph_rel` is
 duplicated (utils + helpers) with a DIFFERENT semantic — a future consolidation
 candidate, not touched here (§8.3 no-drive-by).
 
-### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ☑ (P2.1–P2.6 + P2.7 D1 done; D6/D8 already resolved; P2.10 import hygiene + dead_code tail COMPLETE — no module-level allow(dead_code) remains under src/render_plan/) · ◐ Phase-4 §7.1 `build_chained` decomposition IN PROGRESS (11 PRs #740–#750, tail done, main-loop teardown started — see §4 + REFACTORING_SAFETY_PLAN §7.1)
+### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ☑ (P2.1–P2.6 + P2.7 D1 done; D6/D8 already resolved; P2.10 import hygiene + dead_code tail COMPLETE — no module-level allow(dead_code) remains under src/render_plan/) · ◐ Phase-4 §7.1 `build_chained` decomposition IN PROGRESS (39 PRs #740–#780; tail + main-loop + inner render-loop all decomposed, build_chained 5478 → 850 ln — see §4 + REFACTORING_SAFETY_PLAN §7.1)
 The dead-code sweep shrank plan_builder_utils.rs to ~14.5K lines. §5.1 moves are
 now underway. Pure groups first (vlp_rewrite →
 pattern_comprehension_sql → clause_extractors → plan_predicates →
@@ -297,6 +297,25 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-28: **Phase-4 §7.1 — `build_chained` inner render-loop FULLY
+  DECOMPOSED** (P-3 lane; PRs #770–#780, 11 more since the earlier 2026-07-28
+  entry). The last hard core — the `for with_plan in with_plans` render-loop —
+  is now a linear pipeline of 14 module-level STEP `fn`s (P1–P14), called
+  top-to-bottom. The anticipated `WithCteBuildState`/`ControlFlow` machinery was
+  **not needed**: only the passthrough-collapse phase owned the labeled
+  `break 'alias_loop`, extracted via a **signal-return** (`try_collapse_passthrough_with
+  → RenderPlanBuilderResult<bool>`; `Ok(true)` → caller `if …? { break 'alias_loop; }`,
+  label binding stays at the call site). The other phases used the standard
+  `&mut`-param + `-> RenderPlanBuilderResult<T>` technique. Notable slices:
+  `apply_with_items_projection` (P9, ~660 ln, 16 params — the largest),
+  `apply_with_order_by_skip_limit_where` (P10+P11), `extract_with_plan_parts`
+  (P2, pure 8-tuple with a borrowed first element). Every slice verified
+  byte-identical-modulo-mechanical by corpus_sweep + sql_golden (no golden
+  regen) and adversarially subagent-reviewed clean. `build_chained` **5478 →
+  850 lines** (84% reduction); the readability half of the exit criterion is met.
+  Remaining to reach ~500: the accumulator-heavy pre-loop setup + `'alias_loop`
+  glue, most of which is the loop's irreducible mutable-state frame. See
+  `REFACTORING_SAFETY_PLAN.md` §7.1.
 - 2026-07-28: **Phase-4 §7.1 — `replace_with_clause_with_cte_reference_v2` DONE
   + `build_chained` clean regions all extracted** (P-3 lane; PRs #749–#768, 20
   more since the 2026-07-27 entry). `replace_v2` (the second §7.1 giant) is fully
