@@ -667,6 +667,38 @@ Exit criterion: no function in the module exceeds ~500 lines; the STEP
 pipeline of the WITH→CTE build is readable top-to-bottom in the entry
 function.
 
+**Progress (2026-07-27):** ◐ **in progress** — `build_chained` is down from
+5478 → ~4270 lines across 11 merged PRs. A structural correction to the
+protocol: the giant has **no** named nested `fn`s or `RefCell`-capturing
+closures to hoist (the anticipated shape). It is a linear body — setup → a
+`while has_with_clause_in_graph_rel` loop → a **finalization tail** that is a
+sequence of self-contained post-passes on the built `RenderPlan`. The
+`flattened_compound_keys` `RefCell` is used inline at 3 sites *inside* the loop,
+not captured. So the decomposition hoists each self-contained region into a
+named `fn` (sibling of `build_chained`, inheriting the file's imports).
+
+- ☑ **Finalization tail — fully decomposed** (9 PRs, #740–#748):
+  `reconcile_stale_cte_name_references`, `apply_from_fallback_to_last_cte`,
+  `apply_passthrough_cte_name_remappings`, `add_cte_cross_joins_to_union_branches`,
+  `apply_weighted_shortest_path_restructure`, `resolve_final_from_against_cte`,
+  `resolve_cross_table_with_cte_joins` (~746 ln), `apply_final_outer_scope_passes`,
+  `prune_joins_covered_by_last_cte`. Slices 7 & 9 are **behavior-preserving but
+  not byte-identical** (a tail block with an early `return Err`/owned-local
+  reassignment via `?`-returning helpers → `fn … -> RenderPlanBuilderResult<()>`
+  + call-site `?`, which propagates the same `Err` from the same point and skips
+  the same downstream; goldens stay byte-identical, proving it).
+- ◐ **Main loop — teardown started** (2 PRs, #749–#750):
+  `build_iteration_worklist` (the per-iteration work-list builder — no
+  cross-iteration state, no loop-control flow) and
+  `prepare_with_plans_and_pre_aliases` (first slice from inside the
+  `'alias_loop`). The `'alias_loop` interior (~3894 ln, dense
+  `break 'alias_loop`/`continue`/`return Err`) is extracted one **control-flow-
+  clean sub-region** per PR; only fn-level `?`/`return Err` are hoistable
+  (`continue`/`break` bind to an enclosing loop and stay inline).
+- ☐ Remaining: the rest of the `'alias_loop` interior (a long tail of small
+  bounded slices), then `replace_with_clause_with_cte_reference_v2` (step 4).
+
+
 ### 7.2 Forward resolution through CTE scope (§10)
 
 The true architectural fix, already fully designed in

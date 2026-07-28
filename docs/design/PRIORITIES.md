@@ -143,7 +143,7 @@ P-3). Latent finding filed in-report: `has_with_clause_in_graph_rel` is
 duplicated (utils + helpers) with a DIFFERENT semantic — a future consolidation
 candidate, not touched here (§8.3 no-drive-by).
 
-### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ☑ (P2.1–P2.6 + P2.7 D1 done; D6/D8 already resolved; P2.10 import hygiene + dead_code tail COMPLETE — no module-level allow(dead_code) remains under src/render_plan/)
+### P-3 — Phase 2 module moves (P2.1 → P2.6, in order)  ☑ (P2.1–P2.6 + P2.7 D1 done; D6/D8 already resolved; P2.10 import hygiene + dead_code tail COMPLETE — no module-level allow(dead_code) remains under src/render_plan/) · ◐ Phase-4 §7.1 `build_chained` decomposition IN PROGRESS (11 PRs #740–#750, tail done, main-loop teardown started — see §4 + REFACTORING_SAFETY_PLAN §7.1)
 The dead-code sweep shrank plan_builder_utils.rs to ~14.5K lines. §5.1 moves are
 now underway. Pure groups first (vlp_rewrite →
 pattern_comprehension_sql → clause_extractors → plan_predicates →
@@ -297,6 +297,23 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-27: **Phase-4 §7.1 — `build_chained_with_match_cte_plan` decomposition
+  IN PROGRESS** (P-3 lane, follows P2.10). 11 PRs merged (#740–#750), each one
+  self-contained region → named `fn` sibling, all gate-green (1607 lib + 529
+  integration byte-identical, no `UPDATE_GOLDEN`, + ratchet net-zero) and
+  adversarial-reviewed clean. `build_chained` **5478 → ~4270 lines**.
+  Structural correction: the giant has no nested `fn`s / `RefCell`-capturing
+  closures (the protocol's anticipated shape) — it's a linear setup → `while`
+  loop → finalization-tail body, so each self-contained region is hoisted
+  instead. **Finalization tail: fully decomposed** (9 PRs #740–#748;
+  `reconcile_stale_cte_name_references` … `prune_joins_covered_by_last_cte`;
+  slices #746/#748 behavior-preserving-not-byte-identical via `return Err`→
+  `RenderPlanBuilderResult<()>`+call-site-`?`, goldens still byte-identical).
+  **Main loop: teardown started** (2 PRs #749 `build_iteration_worklist`, #750
+  `prepare_with_plans_and_pre_aliases`); the `'alias_loop` interior (~3894 ln,
+  dense control flow) proceeds one control-flow-clean sub-region per PR.
+  Remaining: rest of the `'alias_loop`, then `replace_with_clause_with_cte_
+  reference_v2`. See `REFACTORING_SAFETY_PLAN.md` §7.1.
 - 2026-07-27: **P2.10 dead_code tail — `cte_extraction` (§5.3 bullet COMPLETE)**
   (P-3 refactor lane) — final slice. Despite being the largest tail file (~8.5K
   lines), `cte_extraction.rs` carried only **4 dead private free fns**:
