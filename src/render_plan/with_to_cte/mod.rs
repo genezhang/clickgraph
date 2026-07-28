@@ -5688,6 +5688,111 @@ fn restructure_post_with_optional_match(
     }
 }
 
+/// Materialize a bidirectional weight CTE for weighted shortest path (complex-14)
+/// (a STEP of the main loop's `'alias_loop` in
+/// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// A weight CTE is recognized by exactly 3 exported aliases — `source`,
+/// `target`, `weight` — AND the query containing a `shortestPath()` call
+/// downstream (the `plan_has_shortest_path` guard avoids false positives on
+/// unrelated queries that merely reuse those alias names). When matched, append
+/// a recursive `bidi_{cte}` CTE (base case = forward edges evaluated once;
+/// recursive step swaps source/target for the reverse edges, then `__depth = 1`
+/// stops the recursion), point the task-local weight config at it, and fix the
+/// base CTE's GROUP BY to exclude the aggregate-derived `weight` column. No-op
+/// when the query is not a weighted shortest path.
+fn maybe_add_bidirectional_weight_cte(
+    all_ctes: &mut Vec<Cte>,
+    original_exported_aliases: &[String],
+    cte_name: &str,
+    plan: &LogicalPlan,
+) {
+    if original_exported_aliases.len() == 3
+        && original_exported_aliases.contains(&"source".to_string())
+        && original_exported_aliases.contains(&"target".to_string())
+        && original_exported_aliases.contains(&"weight".to_string())
+        && plan_has_shortest_path(plan)
+    {
+        log::info!(
+            "🔧 Detected weight CTE '{}' for weighted shortest path",
+            cte_name
+        );
+        // Create a bidirectional weight CTE using recursive materialization.
+        // Base case: forward edges from weight CTE (evaluated once).
+        // Recursive step: swaps source/target to produce reverse edges,
+        // then __depth=1 causes WHERE __depth=0 to fail → recursion stops.
+        // Result: forward + reverse edges materialized, weight CTE's
+        // expensive multi-table join evaluated exactly once.
+        let bidi_cte_name = format!("bidi_{}", cte_name);
+        let cast_u8 = current_function_mapper().cast_uint8();
+        let bidi_sql = format!(
+            "SELECT source, target, weight, {cast_u8}(0) AS __depth FROM {cte} \
+                     UNION ALL \
+                     SELECT target AS source, source AS target, weight, __depth + 1 \
+                     FROM {bidi} WHERE __depth = 0",
+            cte = cte_name,
+            bidi = bidi_cte_name,
+        );
+        let bidi_cte = super::Cte {
+            cte_name: bidi_cte_name.clone(),
+            content: super::CteContent::RawSql(bidi_sql),
+            is_recursive: true,
+            vlp_start_alias: None,
+            vlp_end_alias: None,
+            vlp_start_table: None,
+            vlp_end_table: None,
+            vlp_cypher_start_alias: None,
+            vlp_cypher_end_alias: None,
+            vlp_start_id_col: None,
+            vlp_end_id_col: None,
+            vlp_path_variable: None,
+            columns: vec![],
+            from_alias: None,
+            outer_where_filters: None,
+            with_exported_aliases: vec![
+                "source".to_string(),
+                "target".to_string(),
+                "weight".to_string(),
+            ],
+            variable_registry: None,
+        };
+        all_ctes.push(bidi_cte);
+
+        // Point the weight config to the bidirectional CTE
+        crate::server::query_context::set_weight_cte_config(
+            crate::clickhouse_query_generator::WeightCteConfig {
+                cte_name: bidi_cte_name,
+                source_column: "source".to_string(),
+                target_column: "target".to_string(),
+                weight_column: "weight".to_string(),
+            },
+        );
+
+        // Fix GROUP BY: exclude aggregate-derived "weight" column.
+        // The SQL generator's build_union_inner_select handles per-branch
+        // aggregation correctly, but the GROUP BY must only contain
+        // the non-aggregate columns (source, target).
+        if let Some(cte) = all_ctes.iter_mut().find(|c| c.cte_name == cte_name) {
+            if let super::CteContent::Structured(ref mut render_plan) = cte.content {
+                let source_target_group_by: Vec<RenderExpr> = render_plan
+                    .select
+                    .items
+                    .iter()
+                    .filter(|item| {
+                        item.col_alias
+                            .as_ref()
+                            .is_some_and(|a| a.0 == "source" || a.0 == "target")
+                    })
+                    .map(|item| item.expression.clone())
+                    .collect();
+                if !source_target_group_by.is_empty() {
+                    render_plan.group_by = super::GroupByExpressions(source_target_group_by);
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -7956,95 +8061,14 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
             all_ctes.push(with_cte);
 
-            // Detect weight CTE for weighted shortest path (complex-14)
-            // A weight CTE has exactly 3 exported aliases: source, target, weight
-            // AND the query must contain a shortestPath() call downstream to avoid
-            // false positives on unrelated queries that happen to use these alias names.
-            if original_exported_aliases.len() == 3
-                && original_exported_aliases.contains(&"source".to_string())
-                && original_exported_aliases.contains(&"target".to_string())
-                && original_exported_aliases.contains(&"weight".to_string())
-                && plan_has_shortest_path(plan)
-            {
-                log::info!(
-                    "🔧 Detected weight CTE '{}' for weighted shortest path",
-                    cte_name
-                );
-                // Create a bidirectional weight CTE using recursive materialization.
-                // Base case: forward edges from weight CTE (evaluated once).
-                // Recursive step: swaps source/target to produce reverse edges,
-                // then __depth=1 causes WHERE __depth=0 to fail → recursion stops.
-                // Result: forward + reverse edges materialized, weight CTE's
-                // expensive multi-table join evaluated exactly once.
-                let bidi_cte_name = format!("bidi_{}", cte_name);
-                let cast_u8 = current_function_mapper().cast_uint8();
-                let bidi_sql = format!(
-                    "SELECT source, target, weight, {cast_u8}(0) AS __depth FROM {cte} \
-                     UNION ALL \
-                     SELECT target AS source, source AS target, weight, __depth + 1 \
-                     FROM {bidi} WHERE __depth = 0",
-                    cte = cte_name,
-                    bidi = bidi_cte_name,
-                );
-                let bidi_cte = super::Cte {
-                    cte_name: bidi_cte_name.clone(),
-                    content: super::CteContent::RawSql(bidi_sql),
-                    is_recursive: true,
-                    vlp_start_alias: None,
-                    vlp_end_alias: None,
-                    vlp_start_table: None,
-                    vlp_end_table: None,
-                    vlp_cypher_start_alias: None,
-                    vlp_cypher_end_alias: None,
-                    vlp_start_id_col: None,
-                    vlp_end_id_col: None,
-                    vlp_path_variable: None,
-                    columns: vec![],
-                    from_alias: None,
-                    outer_where_filters: None,
-                    with_exported_aliases: vec![
-                        "source".to_string(),
-                        "target".to_string(),
-                        "weight".to_string(),
-                    ],
-                    variable_registry: None,
-                };
-                all_ctes.push(bidi_cte);
-
-                // Point the weight config to the bidirectional CTE
-                crate::server::query_context::set_weight_cte_config(
-                    crate::clickhouse_query_generator::WeightCteConfig {
-                        cte_name: bidi_cte_name,
-                        source_column: "source".to_string(),
-                        target_column: "target".to_string(),
-                        weight_column: "weight".to_string(),
-                    },
-                );
-
-                // Fix GROUP BY: exclude aggregate-derived "weight" column.
-                // The SQL generator's build_union_inner_select handles per-branch
-                // aggregation correctly, but the GROUP BY must only contain
-                // the non-aggregate columns (source, target).
-                if let Some(cte) = all_ctes.iter_mut().find(|c| c.cte_name == cte_name) {
-                    if let super::CteContent::Structured(ref mut render_plan) = cte.content {
-                        let source_target_group_by: Vec<RenderExpr> = render_plan
-                            .select
-                            .items
-                            .iter()
-                            .filter(|item| {
-                                item.col_alias
-                                    .as_ref()
-                                    .is_some_and(|a| a.0 == "source" || a.0 == "target")
-                            })
-                            .map(|item| item.expression.clone())
-                            .collect();
-                        if !source_target_group_by.is_empty() {
-                            render_plan.group_by =
-                                super::GroupByExpressions(source_target_group_by);
-                        }
-                    }
-                }
-            }
+            // Detect + materialize a bidirectional weight CTE for weighted
+            // shortest path. See `maybe_add_bidirectional_weight_cte`.
+            maybe_add_bidirectional_weight_cte(
+                &mut all_ctes,
+                &original_exported_aliases,
+                &cte_name,
+                plan,
+            );
 
             // Store CTE schema for later reference creation
 
