@@ -4954,6 +4954,125 @@ fn apply_pattern_comprehensions(
     }
 }
 
+/// Build the CTE's column metadata from its rendered SELECT items (a STEP of the
+/// main loop's `'alias_loop` in `build_chained_with_match_cte_plan`, Phase-4
+/// §7.1 extraction).
+///
+/// Collects the schema-defining SELECT items (for a UNION CTE, from the first
+/// branch plus any wrapping items such as pattern-comprehension results;
+/// otherwise the CTE's own SELECT), their column-alias names, and per-column
+/// `CteColumnMetadata` mapping `(cypher_alias, cypher_property) → cte_column_name`.
+/// Each column alias is parsed with the new `p{N}_{alias}_{property}` format
+/// first, falling back to the legacy `{alias}_{property}` split; either way the
+/// alias must appear in `with_alias` (split on `_`) to be recorded.
+///
+/// Returns `(select_items_for_schema, property_names_for_schema, cte_columns)`.
+fn build_cte_column_metadata(
+    with_cte_render: &RenderPlan,
+    with_alias: &str,
+    cte_name: &str,
+) -> (
+    Vec<SelectItem>,
+    Vec<String>,
+    Vec<crate::render_plan::cte_manager::CteColumnMetadata>,
+) {
+    let (select_items_for_schema, property_names_for_schema) = match &with_cte_render.union {
+        UnionItems(Some(union)) if !union.input.is_empty() => {
+            // For UNION, take schema from first branch (all branches must have same schema)
+            let mut items = union.input[0].select.items.clone();
+            // Also include any wrapping SELECT items (e.g., pattern comprehension results)
+            // These are in with_cte_render.select alongside __union.* pass-through
+            for item in &with_cte_render.select.items {
+                if item.col_alias.is_some() {
+                    items.push(item.clone());
+                }
+            }
+            let names: Vec<String> = items
+                .iter()
+                .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
+                .collect();
+            (items, names)
+        }
+        _ => {
+            let items = with_cte_render.select.items.clone();
+            let names: Vec<String> = items
+                .iter()
+                .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
+                .collect();
+            (items, names)
+        }
+    };
+
+    // Build column metadata from SELECT items
+    // This extracts: (cypher_alias, cypher_property) -> cte_column_name
+    // Supports both new p{N} format and legacy underscore format
+    let mut cte_columns: Vec<crate::render_plan::cte_manager::CteColumnMetadata> = Vec::new();
+    for item in &select_items_for_schema {
+        if let Some(col_alias) = &item.col_alias {
+            let cte_col_name = col_alias.0.clone();
+
+            // Try new p{N} format first
+            if let Some((parsed_alias, parsed_property)) = parse_cte_column(&cte_col_name) {
+                // Verify alias appears in with_alias
+                let alias_parts: Vec<&str> = with_alias.split('_').collect();
+                if alias_parts.contains(&parsed_alias.as_str()) {
+                    cte_columns.push(crate::render_plan::cte_manager::CteColumnMetadata {
+                        cypher_alias: parsed_alias.clone(),
+                        cypher_property: parsed_property.clone(),
+                        cte_column_name: cte_col_name.clone(),
+                        db_column: parsed_property.clone(), // Approximation
+                        is_id_column: parsed_property.ends_with("_id") || parsed_property == "id",
+                        vlp_position: None,
+                    });
+                    log::debug!(
+                        "  Added CTE column metadata (p{{N}}): ({}, {}) -> {}",
+                        parsed_alias,
+                        parsed_property,
+                        cte_col_name
+                    );
+                }
+            }
+            // Fallback: legacy underscore format
+            else if let Some(first_underscore) = cte_col_name.find('_') {
+                let potential_alias = &cte_col_name[..first_underscore];
+                let potential_property = &cte_col_name[first_underscore + 1..];
+
+                // Verify this is likely correct by checking if alias appears in with_alias
+                let alias_parts: Vec<&str> = with_alias.split('_').collect();
+                if alias_parts.contains(&potential_alias) {
+                    cte_columns.push(crate::render_plan::cte_manager::CteColumnMetadata {
+                        cypher_alias: potential_alias.to_string(),
+                        cypher_property: potential_property.to_string(),
+                        cte_column_name: cte_col_name.clone(),
+                        db_column: potential_property.to_string(), // Approximation
+                        is_id_column: potential_property.ends_with("_id")
+                            || potential_property == "id",
+                        vlp_position: None,
+                    });
+                    log::debug!(
+                        "  Added CTE column metadata (legacy): ({}, {}) -> {}",
+                        potential_alias,
+                        potential_property,
+                        cte_col_name
+                    );
+                }
+            }
+        }
+    }
+
+    log::debug!(
+        "🔧 Extracted {} column metadata entries for CTE '{}'",
+        cte_columns.len(),
+        cte_name
+    );
+
+    (
+        select_items_for_schema,
+        property_names_for_schema,
+        cte_columns,
+    )
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -7182,100 +7301,11 @@ pub(crate) fn build_chained_with_match_cte_plan(
             // Removed in Phase 3: scope-based resolution in CTE body rendering
             // (via VariableScope passed to to_render_plan_with_ctx) now handles this.
 
-            // Extract SELECT items to build column metadata BEFORE creating the CTE
-            // This allows the Cte to store column information for later CTE registry population
-            let (select_items_for_schema, property_names_for_schema) = match &with_cte_render.union
-            {
-                UnionItems(Some(union)) if !union.input.is_empty() => {
-                    // For UNION, take schema from first branch (all branches must have same schema)
-                    let mut items = union.input[0].select.items.clone();
-                    // Also include any wrapping SELECT items (e.g., pattern comprehension results)
-                    // These are in with_cte_render.select alongside __union.* pass-through
-                    for item in &with_cte_render.select.items {
-                        if item.col_alias.is_some() {
-                            items.push(item.clone());
-                        }
-                    }
-                    let names: Vec<String> = items
-                        .iter()
-                        .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
-                        .collect();
-                    (items, names)
-                }
-                _ => {
-                    let items = with_cte_render.select.items.clone();
-                    let names: Vec<String> = items
-                        .iter()
-                        .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
-                        .collect();
-                    (items, names)
-                }
-            };
-
-            // Build column metadata from SELECT items
-            // This extracts: (cypher_alias, cypher_property) -> cte_column_name
-            // Supports both new p{N} format and legacy underscore format
-            let mut cte_columns: Vec<crate::render_plan::cte_manager::CteColumnMetadata> =
-                Vec::new();
-            for item in &select_items_for_schema {
-                if let Some(col_alias) = &item.col_alias {
-                    let cte_col_name = col_alias.0.clone();
-
-                    // Try new p{N} format first
-                    if let Some((parsed_alias, parsed_property)) = parse_cte_column(&cte_col_name) {
-                        // Verify alias appears in with_alias
-                        let alias_parts: Vec<&str> = with_alias.split('_').collect();
-                        if alias_parts.contains(&parsed_alias.as_str()) {
-                            cte_columns.push(crate::render_plan::cte_manager::CteColumnMetadata {
-                                cypher_alias: parsed_alias.clone(),
-                                cypher_property: parsed_property.clone(),
-                                cte_column_name: cte_col_name.clone(),
-                                db_column: parsed_property.clone(), // Approximation
-                                is_id_column: parsed_property.ends_with("_id")
-                                    || parsed_property == "id",
-                                vlp_position: None,
-                            });
-                            log::debug!(
-                                "  Added CTE column metadata (p{{N}}): ({}, {}) -> {}",
-                                parsed_alias,
-                                parsed_property,
-                                cte_col_name
-                            );
-                        }
-                    }
-                    // Fallback: legacy underscore format
-                    else if let Some(first_underscore) = cte_col_name.find('_') {
-                        let potential_alias = &cte_col_name[..first_underscore];
-                        let potential_property = &cte_col_name[first_underscore + 1..];
-
-                        // Verify this is likely correct by checking if alias appears in with_alias
-                        let alias_parts: Vec<&str> = with_alias.split('_').collect();
-                        if alias_parts.contains(&potential_alias) {
-                            cte_columns.push(crate::render_plan::cte_manager::CteColumnMetadata {
-                                cypher_alias: potential_alias.to_string(),
-                                cypher_property: potential_property.to_string(),
-                                cte_column_name: cte_col_name.clone(),
-                                db_column: potential_property.to_string(), // Approximation
-                                is_id_column: potential_property.ends_with("_id")
-                                    || potential_property == "id",
-                                vlp_position: None,
-                            });
-                            log::debug!(
-                                "  Added CTE column metadata (legacy): ({}, {}) -> {}",
-                                potential_alias,
-                                potential_property,
-                                cte_col_name
-                            );
-                        }
-                    }
-                }
-            }
-
-            log::debug!(
-                "🔧 Extracted {} column metadata entries for CTE '{}'",
-                cte_columns.len(),
-                cte_name
-            );
+            // Extract SELECT items to build column metadata BEFORE creating the CTE.
+            // This allows the Cte to store column information for later CTE registry
+            // population. See `build_cte_column_metadata`.
+            let (select_items_for_schema, property_names_for_schema, cte_columns) =
+                build_cte_column_metadata(&with_cte_render, &with_alias, &cte_name);
 
             // Extract original WITH exported aliases for cte_references mapping
             let original_exported_aliases: Vec<String> = with_plans
