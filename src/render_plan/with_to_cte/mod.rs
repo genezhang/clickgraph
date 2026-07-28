@@ -1162,6 +1162,86 @@ fn replace_v2_graph_rel_arm(
     }))
 }
 
+/// Handle the `Union` arm of `replace_with_clause_with_cte_reference_v2`
+/// (Phase-4 §7.1 extraction).
+///
+/// Recurse into each union branch and rebuild the `Union`. #593: a Cypher UNION
+/// branch that has no WITH clause for `with_alias` is left untouched (rewriting
+/// it would fold the untouched arm's alias into the OTHER arm's CTE — a cross-arm
+/// contamination bug); a BidirectionalUnion (`is_cypher_union == false`) shares
+/// one logical scope across branches so every branch is processed uniformly.
+fn replace_v2_union_arm(
+    union: &crate::query_planner::logical_plan::Union,
+    with_alias: &str,
+    cte_name: &str,
+    pre_with_aliases: &std::collections::HashSet<String>,
+    cte_schemas: &crate::render_plan::CteSchemas,
+) -> RenderPlanBuilderResult<LogicalPlan> {
+    use crate::query_planner::logical_plan::Union;
+    use std::sync::Arc;
+
+    log::info!(
+        "🔀 replace_v2: Processing Union with {} branches for alias '{}'",
+        union.inputs.len(),
+        with_alias
+    );
+    let new_inputs: Vec<Arc<LogicalPlan>> = union
+        .inputs
+        .iter()
+        .enumerate()
+        .map(|(i, input)| {
+            log::info!(
+                "🔀 replace_v2: Processing Union branch {} type: {:?}",
+                i,
+                std::mem::discriminant(input.as_ref())
+            );
+            // #517: a genuine Cypher UNION's arms are INDEPENDENT
+            // scopes — a WITH clause in one arm must never leak its
+            // CTE substitution into a sibling arm, even when that
+            // sibling reuses the same Cypher variable name (e.g.
+            // `u` bound fresh in both arms of `MATCH (u) WITH u...
+            // RETURN ... UNION MATCH (u) RETURN ...`). The
+            // GraphNode-matching check below (`with_parts.contains
+            // (&node.alias)`) is a plain by-name membership test
+            // with no scope awareness, so recursing into every
+            // branch unconditionally rewrites the untouched arm's
+            // `u` into the OTHER arm's CTE reference (a duplicate-
+            // alias self-join / cross-arm contamination bug).
+            // BidirectionalUnion (`is_cypher_union == false`)
+            // represents a single logical MATCH scope split purely
+            // for SQL rendering, so every branch legitimately
+            // shares the same WITH-derived scope there and must
+            // keep being processed uniformly.
+            if union.is_cypher_union
+                && !find_all_with_clauses_grouped(input).contains_key(with_alias)
+            {
+                log::debug!(
+                    "🔀 replace_v2: Cypher UNION branch {} has no WITH clause for key '{}' — leaving untouched",
+                    i, with_alias
+                );
+                return Ok(input.clone());
+            }
+            replace_with_clause_with_cte_reference_v2(
+                input,
+                with_alias,
+                cte_name,
+                pre_with_aliases,
+                cte_schemas,
+            )
+            .map(Arc::new)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    log::info!(
+        "🔀 replace_v2: Union result has {} branches",
+        new_inputs.len()
+    );
+    Ok(LogicalPlan::Union(Union {
+        inputs: new_inputs,
+        union_type: union.union_type.clone(),
+        is_cypher_union: union.is_cypher_union,
+    }))
+}
+
 pub(crate) fn replace_with_clause_with_cte_reference_v2(
     plan: &LogicalPlan,
     with_alias: &str,
@@ -1383,66 +1463,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
         }
 
         LogicalPlan::Union(union) => {
-            log::info!(
-                "🔀 replace_v2: Processing Union with {} branches for alias '{}'",
-                union.inputs.len(),
-                with_alias
-            );
-            let new_inputs: Vec<Arc<LogicalPlan>> = union
-                .inputs
-                .iter()
-                .enumerate()
-                .map(|(i, input)| {
-                    log::info!(
-                        "🔀 replace_v2: Processing Union branch {} type: {:?}",
-                        i,
-                        std::mem::discriminant(input.as_ref())
-                    );
-                    // #517: a genuine Cypher UNION's arms are INDEPENDENT
-                    // scopes — a WITH clause in one arm must never leak its
-                    // CTE substitution into a sibling arm, even when that
-                    // sibling reuses the same Cypher variable name (e.g.
-                    // `u` bound fresh in both arms of `MATCH (u) WITH u...
-                    // RETURN ... UNION MATCH (u) RETURN ...`). The
-                    // GraphNode-matching check below (`with_parts.contains
-                    // (&node.alias)`) is a plain by-name membership test
-                    // with no scope awareness, so recursing into every
-                    // branch unconditionally rewrites the untouched arm's
-                    // `u` into the OTHER arm's CTE reference (a duplicate-
-                    // alias self-join / cross-arm contamination bug).
-                    // BidirectionalUnion (`is_cypher_union == false`)
-                    // represents a single logical MATCH scope split purely
-                    // for SQL rendering, so every branch legitimately
-                    // shares the same WITH-derived scope there and must
-                    // keep being processed uniformly.
-                    if union.is_cypher_union
-                        && !find_all_with_clauses_grouped(input).contains_key(with_alias)
-                    {
-                        log::debug!(
-                            "🔀 replace_v2: Cypher UNION branch {} has no WITH clause for key '{}' — leaving untouched",
-                            i, with_alias
-                        );
-                        return Ok(input.clone());
-                    }
-                    replace_with_clause_with_cte_reference_v2(
-                        input,
-                        with_alias,
-                        cte_name,
-                        pre_with_aliases,
-                        cte_schemas,
-                    )
-                    .map(Arc::new)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            log::info!(
-                "🔀 replace_v2: Union result has {} branches",
-                new_inputs.len()
-            );
-            Ok(LogicalPlan::Union(Union {
-                inputs: new_inputs,
-                union_type: union.union_type.clone(),
-                is_cypher_union: union.is_cypher_union,
-            }))
+            replace_v2_union_arm(union, with_alias, cte_name, pre_with_aliases, cte_schemas)
         }
 
         LogicalPlan::GraphNode(node) => {
