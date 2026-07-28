@@ -3299,6 +3299,180 @@ fn resolve_final_from_against_cte(
     }
 }
 
+/// VLP-specific WITH→CTE join-condition generator (Phase-4 §7.1 extraction from
+/// `resolve_cross_table_with_cte_joins`).
+///
+/// When the outer FROM is a VLP CTE (`vlp_…`) and no correlation/filter join
+/// condition was resolved, connect the WITH CTE's ID column to the VLP CTE's
+/// `start_id`/`end_id` (handling composite IDs via `concat(toString(col), '|', …)`
+/// and wrapping both sides in `toString()` for the String-typed VLP endpoints).
+/// Pushes any generated condition into `join_conditions`; a no-op when FROM is not
+/// a VLP CTE or the alias is neither the VLP start nor end. The caller gates this
+/// on `join_conditions.is_empty()`.
+fn generate_vlp_with_cte_join_conditions(
+    render_plan: &RenderPlan,
+    cte_name: &str,
+    cte_alias: &str,
+    cte_schemas: &crate::render_plan::CteSchemas,
+    join_conditions: &mut Vec<OperatorApplication>,
+) {
+    if let FromTableItem(Some(from_ref)) = &render_plan.from {
+        if from_ref.name.starts_with("vlp_") {
+            // Find which VLP CTE this is and determine if the alias is start or end
+            for vlp_cte in &render_plan.ctes.0 {
+                if vlp_cte.cte_name == from_ref.name {
+                    // Match when cte_alias equals or starts with the VLP alias
+                    // e.g., cte_alias="a_allNeighboursCount" matches vlp start_alias="a"
+                    let is_start = vlp_cte.vlp_cypher_start_alias.as_deref().is_some_and(|a| {
+                        cte_alias == a || cte_alias.starts_with(&format!("{}_", a))
+                    });
+                    let is_end = vlp_cte.vlp_cypher_end_alias.as_deref().is_some_and(|a| {
+                        cte_alias == a || cte_alias.starts_with(&format!("{}_", a))
+                    });
+                    if is_start || is_end {
+                        let vlp_id_col = if is_start { "start_id" } else { "end_id" };
+                        let from_alias = from_ref.alias.as_deref().unwrap_or("t");
+                        // Find the ID column name in the WITH CTE
+                        // Use cte_schemas which has the alias_to_id_column mapping
+                        let vlp_alias = if is_start {
+                            vlp_cte
+                                .vlp_cypher_start_alias
+                                .as_deref()
+                                .unwrap_or(cte_alias)
+                        } else {
+                            vlp_cte.vlp_cypher_end_alias.as_deref().unwrap_or(cte_alias)
+                        };
+                        // Try cte_schemas first: look for {vlp_alias}_{something_id} in SELECT items
+                        let id_col_name = if let Some(meta) = cte_schemas.get(cte_name) {
+                            // First try direct alias_to_id lookup
+                            meta.alias_to_id
+                                .get(vlp_alias)
+                                .cloned()
+                                .or_else(|| {
+                                    // Search SELECT items for {vlp_alias}_*_id pattern
+                                    let prefix = format!("{}_", vlp_alias);
+                                    meta.select_items.iter().find_map(|item| {
+                                        if let Some(col_alias) = &item.col_alias {
+                                            let name = &col_alias.0;
+                                            if name.starts_with(&prefix)
+                                                && (name.ends_with("_id") || name.ends_with("_id"))
+                                            {
+                                                return Some(name.clone());
+                                            }
+                                        }
+                                        None
+                                    })
+                                })
+                                .unwrap_or_else(|| {
+                                    find_id_column_in_cte(cte_name, vlp_alias, &render_plan.ctes)
+                                })
+                        } else {
+                            find_id_column_in_cte(cte_name, vlp_alias, &render_plan.ctes)
+                        };
+
+                        // Check if this node has a composite ID — if so, generate
+                        // concat(toString(col1), '|', toString(col2)) to match
+                        // the pipe-joined start_id/end_id in the VLP CTE
+                        let rhs_expr = {
+                            use crate::server::query_context::get_current_schema;
+                            let composite_cols = get_current_schema().and_then(|schema| {
+                                // Determine the node label from vlp_alias
+                                let _label = if is_start {
+                                    vlp_cte.vlp_cypher_start_alias.as_deref()
+                                } else {
+                                    vlp_cte.vlp_cypher_end_alias.as_deref()
+                                };
+                                // Look up by label_constraints or try all schemas
+                                for ns in schema.all_node_schemas().values() {
+                                    if ns.node_id.is_composite() {
+                                        // Check if the id_col_name matches one of this schema's columns
+                                        let prefix = format!("{}_", vlp_alias.to_owned());
+                                        let id_cols = ns.node_id.columns();
+                                        let first_cte_col = format!("{}{}", prefix, id_cols[0]);
+                                        if id_col_name == first_cte_col || id_col_name == id_cols[0]
+                                        {
+                                            return Some(
+                                                id_cols
+                                                    .iter()
+                                                    .map(|c| c.to_string())
+                                                    .collect::<Vec<_>>(),
+                                            );
+                                        }
+                                    }
+                                }
+                                None
+                            });
+
+                            if let Some(cols) = composite_cols {
+                                // Composite ID: concat(toString(cte.a_col1), '|', toString(cte.a_col2))
+                                let prefix = format!("{}_", vlp_alias);
+                                let parts: Vec<RenderExpr> = cols.iter().enumerate().flat_map(|(i, col)| {
+                                        let cte_col = format!("{}{}", prefix, col);
+                                        let mut items = Vec::new();
+                                        if i > 0 {
+                                            items.push(RenderExpr::Literal(Literal::String("|".to_string())));
+                                        }
+                                        items.push(RenderExpr::ScalarFnCall(ScalarFnCall {
+                                            name: current_function_mapper().cast_string().to_string(),
+                                            args: vec![RenderExpr::Column(Column(
+                                                crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                    format!("{}.{}", cte_alias, cte_col)
+                                                )
+                                            ))],
+                                        }));
+                                        items
+                                    }).collect();
+                                log::debug!(
+                                        "🔧 VLP+WITH: Composite ID JOIN - concat {} columns for alias '{}'",
+                                        cols.len(), vlp_alias
+                                    );
+                                RenderExpr::ScalarFnCall(ScalarFnCall {
+                                    name: "concat".to_string(),
+                                    args: parts,
+                                })
+                            } else {
+                                // Single ID: toString() to match the String type of
+                                // start_id / end_id stored in the VLP CTE
+                                RenderExpr::ScalarFnCall(ScalarFnCall {
+                                        name: current_function_mapper().cast_string().to_string(),
+                                        args: vec![RenderExpr::Column(Column(
+                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                format!("{}.{}", cte_alias, id_col_name)
+                                            )
+                                        ))],
+                                    })
+                            }
+                        };
+
+                        // Wrap VLP side in toString() too, ensuring both sides are String.
+                        // VLP start_id/end_id may be UInt64 or String depending on
+                        // generation path, and rhs_expr already uses toString().
+                        let lhs_expr = RenderExpr::ScalarFnCall(ScalarFnCall {
+                            name: current_function_mapper().cast_string().to_string(),
+                            args: vec![RenderExpr::Column(Column(
+                                crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                    format!("{}.{}", from_alias, vlp_id_col),
+                                ),
+                            ))],
+                        });
+                        let join_cond = OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![lhs_expr, rhs_expr],
+                        };
+                        log::debug!(
+                            "🔧 VLP+WITH: Generated JOIN condition for alias '{}' (is_start={})",
+                            vlp_alias,
+                            is_start
+                        );
+                        join_conditions.push(join_cond);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+}
+
 /// Post-render cross-table WITH CTE-JOIN pass (finalization tail of
 /// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
 ///
@@ -3426,187 +3600,13 @@ fn resolve_cross_table_with_cte_joins(
                 // VLP-specific: when FROM is a VLP CTE, generate join condition
                 // connecting the WITH CTE's ID column to the VLP CTE's start_id or end_id
                 if join_conditions.is_empty() {
-                    if let FromTableItem(Some(from_ref)) = &render_plan.from {
-                        if from_ref.name.starts_with("vlp_") {
-                            // Find which VLP CTE this is and determine if the alias is start or end
-                            for vlp_cte in &render_plan.ctes.0 {
-                                if vlp_cte.cte_name == from_ref.name {
-                                    // Match when cte_alias equals or starts with the VLP alias
-                                    // e.g., cte_alias="a_allNeighboursCount" matches vlp start_alias="a"
-                                    let is_start = vlp_cte
-                                        .vlp_cypher_start_alias
-                                        .as_deref()
-                                        .is_some_and(|a| {
-                                            cte_alias == a
-                                                || cte_alias.starts_with(&format!("{}_", a))
-                                        });
-                                    let is_end =
-                                        vlp_cte.vlp_cypher_end_alias.as_deref().is_some_and(|a| {
-                                            cte_alias == a
-                                                || cte_alias.starts_with(&format!("{}_", a))
-                                        });
-                                    if is_start || is_end {
-                                        let vlp_id_col =
-                                            if is_start { "start_id" } else { "end_id" };
-                                        let from_alias = from_ref.alias.as_deref().unwrap_or("t");
-                                        // Find the ID column name in the WITH CTE
-                                        // Use cte_schemas which has the alias_to_id_column mapping
-                                        let vlp_alias = if is_start {
-                                            vlp_cte
-                                                .vlp_cypher_start_alias
-                                                .as_deref()
-                                                .unwrap_or(&cte_alias)
-                                        } else {
-                                            vlp_cte
-                                                .vlp_cypher_end_alias
-                                                .as_deref()
-                                                .unwrap_or(&cte_alias)
-                                        };
-                                        // Try cte_schemas first: look for {vlp_alias}_{something_id} in SELECT items
-                                        let id_col_name = if let Some(meta) =
-                                            cte_schemas.get(&cte_name)
-                                        {
-                                            // First try direct alias_to_id lookup
-                                            meta.alias_to_id
-                                                .get(vlp_alias)
-                                                .cloned()
-                                                .or_else(|| {
-                                                    // Search SELECT items for {vlp_alias}_*_id pattern
-                                                    let prefix = format!("{}_", vlp_alias);
-                                                    meta.select_items.iter().find_map(|item| {
-                                                        if let Some(col_alias) = &item.col_alias {
-                                                            let name = &col_alias.0;
-                                                            if name.starts_with(&prefix)
-                                                                && (name.ends_with("_id")
-                                                                    || name.ends_with("_id"))
-                                                            {
-                                                                return Some(name.clone());
-                                                            }
-                                                        }
-                                                        None
-                                                    })
-                                                })
-                                                .unwrap_or_else(|| {
-                                                    find_id_column_in_cte(
-                                                        &cte_name,
-                                                        vlp_alias,
-                                                        &render_plan.ctes,
-                                                    )
-                                                })
-                                        } else {
-                                            find_id_column_in_cte(
-                                                &cte_name,
-                                                vlp_alias,
-                                                &render_plan.ctes,
-                                            )
-                                        };
-
-                                        // Check if this node has a composite ID — if so, generate
-                                        // concat(toString(col1), '|', toString(col2)) to match
-                                        // the pipe-joined start_id/end_id in the VLP CTE
-                                        let rhs_expr = {
-                                            use crate::server::query_context::get_current_schema;
-                                            let composite_cols =
-                                                get_current_schema().and_then(|schema| {
-                                                    // Determine the node label from vlp_alias
-                                                    let _label = if is_start {
-                                                        vlp_cte.vlp_cypher_start_alias.as_deref()
-                                                    } else {
-                                                        vlp_cte.vlp_cypher_end_alias.as_deref()
-                                                    };
-                                                    // Look up by label_constraints or try all schemas
-                                                    for ns in schema.all_node_schemas().values() {
-                                                        if ns.node_id.is_composite() {
-                                                            // Check if the id_col_name matches one of this schema's columns
-                                                            let prefix = format!(
-                                                                "{}_",
-                                                                vlp_alias.to_owned()
-                                                            );
-                                                            let id_cols = ns.node_id.columns();
-                                                            let first_cte_col =
-                                                                format!("{}{}", prefix, id_cols[0]);
-                                                            if id_col_name == first_cte_col
-                                                                || id_col_name == id_cols[0]
-                                                            {
-                                                                return Some(
-                                                                    id_cols
-                                                                        .iter()
-                                                                        .map(|c| c.to_string())
-                                                                        .collect::<Vec<_>>(),
-                                                                );
-                                                            }
-                                                        }
-                                                    }
-                                                    None
-                                                });
-
-                                            if let Some(cols) = composite_cols {
-                                                // Composite ID: concat(toString(cte.a_col1), '|', toString(cte.a_col2))
-                                                let prefix = format!("{}_", vlp_alias);
-                                                let parts: Vec<RenderExpr> = cols.iter().enumerate().flat_map(|(i, col)| {
-                                                    let cte_col = format!("{}{}", prefix, col);
-                                                    let mut items = Vec::new();
-                                                    if i > 0 {
-                                                        items.push(RenderExpr::Literal(Literal::String("|".to_string())));
-                                                    }
-                                                    items.push(RenderExpr::ScalarFnCall(ScalarFnCall {
-                                                        name: current_function_mapper().cast_string().to_string(),
-                                                        args: vec![RenderExpr::Column(Column(
-                                                            crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                                format!("{}.{}", cte_alias, cte_col)
-                                                            )
-                                                        ))],
-                                                    }));
-                                                    items
-                                                }).collect();
-                                                log::debug!(
-                                                    "🔧 VLP+WITH: Composite ID JOIN - concat {} columns for alias '{}'",
-                                                    cols.len(), vlp_alias
-                                                );
-                                                RenderExpr::ScalarFnCall(ScalarFnCall {
-                                                    name: "concat".to_string(),
-                                                    args: parts,
-                                                })
-                                            } else {
-                                                // Single ID: toString() to match the String type of
-                                                // start_id / end_id stored in the VLP CTE
-                                                RenderExpr::ScalarFnCall(ScalarFnCall {
-                                                    name: current_function_mapper().cast_string().to_string(),
-                                                    args: vec![RenderExpr::Column(Column(
-                                                        crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                            format!("{}.{}", cte_alias, id_col_name)
-                                                        )
-                                                    ))],
-                                                })
-                                            }
-                                        };
-
-                                        // Wrap VLP side in toString() too, ensuring both sides are String.
-                                        // VLP start_id/end_id may be UInt64 or String depending on
-                                        // generation path, and rhs_expr already uses toString().
-                                        let lhs_expr = RenderExpr::ScalarFnCall(ScalarFnCall {
-                                            name: current_function_mapper().cast_string().to_string(),
-                                            args: vec![RenderExpr::Column(Column(
-                                                crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                    format!("{}.{}", from_alias, vlp_id_col)
-                                                )
-                                            ))],
-                                        });
-                                        let join_cond = OperatorApplication {
-                                            operator: Operator::Equal,
-                                            operands: vec![lhs_expr, rhs_expr],
-                                        };
-                                        log::debug!(
-                                            "🔧 VLP+WITH: Generated JOIN condition for alias '{}' (is_start={})",
-                                            vlp_alias, is_start
-                                        );
-                                        join_conditions.push(join_cond);
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
+                    generate_vlp_with_cte_join_conditions(
+                        render_plan,
+                        &cte_name,
+                        &cte_alias,
+                        cte_schemas,
+                        &mut join_conditions,
+                    );
                 }
 
                 // Create the JOIN. `ON 1 = 1` (cartesian) is only correct for a
