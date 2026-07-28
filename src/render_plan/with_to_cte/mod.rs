@@ -3977,6 +3977,43 @@ fn resolve_cross_table_with_cte_joins(
     Ok(())
 }
 
+/// Final outer-scope resolution pass (finalization tail of
+/// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// Resolves bare node aliases (`b` → `b.id`, `a` → `cte.p1_a_id`) and composite
+/// orphan aliases in the outer query's SELECT / WHERE / JOIN / GROUP BY, and
+/// (`fix_orphan_table_aliases`) adds a CROSS JOIN for any scope CTE not already
+/// in FROM/JOINs. The caller gates this on `!with_scope.is_empty()` and runs it
+/// AFTER cross-table CTE JOINs are added so JOIN conditions are rewritten too.
+///
+/// #593: for a Cypher UNION each arm is an independent query already resolved
+/// per-arm during branch rendering, yet `final_scope` carries EVERY arm's
+/// WITH-CTE variables — running the whole-plan passes with it would leak one
+/// arm's CTE into a sibling that merely reuses the same Cypher alias name (e.g.
+/// `u.user_id` rewritten to another arm's `c_u.p1_u_user_id`, or a spurious
+/// CROSS JOIN onto that CTE). So for a union we detach the arms first, process
+/// the base in isolation, then each `union.input` branch on its own — none
+/// recursing into siblings with the base's scope.
+fn apply_final_outer_scope_passes(
+    render_plan: &mut RenderPlan,
+    final_scope: &super::variable_scope::VariableScope,
+    is_cypher_union_plan: bool,
+) {
+    if is_cypher_union_plan {
+        let detached_union = render_plan.union.0.take();
+        apply_outer_scope_passes(render_plan, final_scope);
+        if let Some(mut union_data) = detached_union {
+            for branch in &mut union_data.input {
+                apply_outer_scope_passes(branch, final_scope);
+            }
+            render_plan.union = UnionItems(Some(union_data));
+        }
+    } else {
+        super::variable_scope::rewrite_bare_variables_in_plan(render_plan, final_scope);
+        super::variable_scope::fix_orphan_table_aliases(render_plan, final_scope);
+    }
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -8397,31 +8434,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
     //
     // Must run AFTER CTE JOINs are added (above) so JOIN conditions are rewritten too.
     if !with_scope.is_empty() {
-        if is_cypher_union_plan {
-            // #593: a Cypher UNION's arms are independent queries that were
-            // already fully resolved per-arm during branch rendering.
-            // `final_scope` carries EVERY arm's WITH-CTE variables, so running
-            // these whole-plan passes with it leaks one arm's CTE into a
-            // sibling arm that merely reuses the same Cypher alias name (e.g.
-            // `u.user_id` in a plain arm rewritten to the WITH arm's
-            // `c_u.p1_u_user_id`, or a spurious CROSS JOIN onto that CTE).
-            // Process each arm (base + every `union.input` branch) on its own,
-            // each with a scope filtered to just the CTEs that arm's own
-            // FROM/JOINs reference. The union arms are detached first so the
-            // base is processed in isolation and the passes do not recurse into
-            // siblings with the base's scope.
-            let detached_union = render_plan.union.0.take();
-            apply_outer_scope_passes(&mut render_plan, &final_scope);
-            if let Some(mut union_data) = detached_union {
-                for branch in &mut union_data.input {
-                    apply_outer_scope_passes(branch, &final_scope);
-                }
-                render_plan.union = UnionItems(Some(union_data));
-            }
-        } else {
-            super::variable_scope::rewrite_bare_variables_in_plan(&mut render_plan, &final_scope);
-            super::variable_scope::fix_orphan_table_aliases(&mut render_plan, &final_scope);
-        }
+        apply_final_outer_scope_passes(&mut render_plan, &final_scope, is_cypher_union_plan);
     }
 
     // Weighted shortestPath fix: restructure outer query to use VLP CTE as FROM.
