@@ -667,36 +667,52 @@ Exit criterion: no function in the module exceeds ~500 lines; the STEP
 pipeline of the WITH→CTE build is readable top-to-bottom in the entry
 function.
 
-**Progress (2026-07-27):** ◐ **in progress** — `build_chained` is down from
-5478 → ~4270 lines across 11 merged PRs. A structural correction to the
-protocol: the giant has **no** named nested `fn`s or `RefCell`-capturing
-closures to hoist (the anticipated shape). It is a linear body — setup → a
-`while has_with_clause_in_graph_rel` loop → a **finalization tail** that is a
-sequence of self-contained post-passes on the built `RenderPlan`. The
-`flattened_compound_keys` `RefCell` is used inline at 3 sites *inside* the loop,
-not captured. So the decomposition hoists each self-contained region into a
-named `fn` (sibling of `build_chained`, inheriting the file's imports).
+**Progress (2026-07-28):** ◐ **in progress** — 28 byte-identical/behavior-preserving
+PRs merged (#740–#768). A structural correction to the protocol: `build_chained`
+has **no** named nested `fn`s or `RefCell`-capturing closures to hoist (the
+anticipated shape). It is a linear body — setup → a
+`while has_with_clause_in_graph_rel` loop → a **finalization tail** of
+self-contained post-passes on the built `RenderPlan`. The
+`flattened_compound_keys` `RefCell` is used inline (not captured), and it turned
+out **no `WithCteBuildState` context struct was needed**: a phase that reads the
+RefCell takes `&flattened_compound_keys.borrow()` (a `&[(String,String)]` slice)
+as a param. So the decomposition hoists each self-contained region into a named
+`fn` (sibling, inheriting the file's imports).
 
-- ☑ **Finalization tail — fully decomposed** (9 PRs, #740–#748):
+- ☑ **`build_chained` finalization tail — fully decomposed** (9 PRs, #740–#748):
   `reconcile_stale_cte_name_references`, `apply_from_fallback_to_last_cte`,
   `apply_passthrough_cte_name_remappings`, `add_cte_cross_joins_to_union_branches`,
   `apply_weighted_shortest_path_restructure`, `resolve_final_from_against_cte`,
   `resolve_cross_table_with_cte_joins` (~746 ln), `apply_final_outer_scope_passes`,
   `prune_joins_covered_by_last_cte`. Slices 7 & 9 are **behavior-preserving but
-  not byte-identical** (a tail block with an early `return Err`/owned-local
-  reassignment via `?`-returning helpers → `fn … -> RenderPlanBuilderResult<()>`
-  + call-site `?`, which propagates the same `Err` from the same point and skips
-  the same downstream; goldens stay byte-identical, proving it).
-- ◐ **Main loop — teardown started** (2 PRs, #749–#750):
-  `build_iteration_worklist` (the per-iteration work-list builder — no
-  cross-iteration state, no loop-control flow) and
-  `prepare_with_plans_and_pre_aliases` (first slice from inside the
-  `'alias_loop`). The `'alias_loop` interior (~3894 ln, dense
-  `break 'alias_loop`/`continue`/`return Err`) is extracted one **control-flow-
-  clean sub-region** per PR; only fn-level `?`/`return Err` are hoistable
-  (`continue`/`break` bind to an enclosing loop and stay inline).
-- ☐ Remaining: the rest of the `'alias_loop` interior (a long tail of small
-  bounded slices), then `replace_with_clause_with_cte_reference_v2` (step 4).
+  not byte-identical** (an early `return Err`/owned-local reassignment via
+  `?`-returning helpers → `fn … -> RenderPlanBuilderResult<()>` + call-site `?`,
+  propagating the same `Err` from the same point; goldens stay byte-identical).
+- ☑ **`build_chained` main-loop clean regions — extracted** (5 PRs, #749–#750,
+  #752, #755–#756, #759–#762): `build_iteration_worklist`,
+  `prepare_with_plans_and_pre_aliases`, `derive_with_cte_name`,
+  `combine_with_renders_into_cte`, `build_cte_column_metadata`,
+  `build_alias_rename_map`, `compute_alias_id_columns`,
+  `build_with_cte_property_mapping` (the RefCell-slice one),
+  `register_cte_alias_references`, `publish_cte_alias_scopes`,
+  `apply_pattern_comprehensions` (~446 ln). Every control-flow-clean sub-region
+  is out; `build_chained` is 5478 → **~2646 lines**.
+- ☑ **`replace_with_clause_with_cte_reference_v2` (step 4) — DONE, under the exit
+  criterion** (5 PRs, #763–#768). It genuinely had the anticipated shape: 4
+  nested `fn`s (hoisted to module level in #763, one renamed
+  `extract_node_label_from_arc_plan` to avoid a `cte_extraction.rs` collision) +
+  a 13-arm `match plan {}` where each arm is a self-contained per-node rewriter
+  reading only the 4 fn params. Its 5 large arms
+  (Projection/GraphJoins/GraphRel/Union/WithClause) are extracted into
+  `replace_v2_<variant>_arm` handlers (#764–#768). replace_v2 ~1070 → **212
+  lines**; remaining arms are all 12–43 ln.
+- ☐ **Remaining: `build_chained`'s ~1970-line inner `for with_plan in with_plans`
+  render-loop** — the one hard core. Its phases mutate shared locals
+  (`rendered`/`plan_to_render`/`rendered_plans`/`inner_plans_for_id`/
+  `has_optional_match_input`) AND contain `break 'alias_loop`/`continue`/`?` that
+  escape the loop. Needs a `ControlFlow`/action-enum return pattern or the
+  `WithCteBuildState` context struct — a step-change from the byte-identical
+  hoists. Deferred pending an explicit go-ahead.
 
 
 ### 7.2 Forward resolution through CTE scope (§10)
