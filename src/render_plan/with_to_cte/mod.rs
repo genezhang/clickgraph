@@ -6680,6 +6680,138 @@ fn fix_composite_alias_refs_and_augment_scope(
     }
 }
 
+/// Extract the schemas of CTEs produced by a nested WITH render and register
+/// them (a STEP of the main loop's inner render-loop in
+/// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// When a WITH segment's body itself contains nested WITHs, the recursive render
+/// builds CTEs whose schemas the outer build needs. For each such CTE in
+/// `rendered.ctes`, record its `CteSchemaMetadata` in `cte_schemas`, mark its
+/// name used in `cte_name_allocator`, map its exported aliases into
+/// `cte_references`, and hoist it into `all_ctes`. RawSql (VLP) CTEs are skipped
+/// here — their schema is inferred from the UNION that uses them. No-op when the
+/// rendered plan carries no CTEs.
+fn extract_nested_cte_schemas(
+    rendered: &mut RenderPlan,
+    all_ctes: &mut Vec<Cte>,
+    cte_schemas: &mut crate::render_plan::CteSchemas,
+    cte_references: &mut HashMap<String, String>,
+    cte_name_allocator: &mut CteNameAllocator,
+    vlp_cte_metadata: &mut HashMap<String, (String, Vec<super::CteColumnMetadata>)>,
+    processed_cte_aliases: &mut std::collections::HashSet<String>,
+) {
+    if !rendered.ctes.0.is_empty() {
+        for cte in &rendered.ctes.0 {
+            let select_items = match &cte.content {
+                super::CteContent::Structured(plan) => match &plan.union {
+                    UnionItems(Some(union)) if !union.input.is_empty() => {
+                        union.input[0].select.items.clone()
+                    }
+                    _ => plan.select.items.clone(),
+                },
+                super::CteContent::RawSql(_) => {
+                    // VLP CTEs are RawSql - can't extract schema directly
+                    // But we can infer from the UNION that uses them
+                    // Skip for now, will be handled when we see the UNION
+                    log::debug!("🔧 Skipping RawSql CTE '{}' (VLP CTE - schema will be inferred from UNION)", cte.cte_name);
+                    continue;
+                }
+            };
+            let property_names: Vec<String> = select_items
+                .iter()
+                .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
+                .collect();
+
+            // For nested CTEs, we don't have direct access to the plan to compute ID columns
+            // deterministically. These are typically VLP CTEs with dotted notation (friend.id)
+            // which we can safely extract since they follow a fixed pattern from VLP generation.
+            let mut alias_to_id_column: HashMap<String, String> = HashMap::new();
+            for item in &select_items {
+                if let Some(col_alias) = &item.col_alias {
+                    let alias_str = col_alias.0.as_str();
+                    // VLP CTEs use "alias.id" pattern which is unambiguous
+                    if let Some(dot_pos) = alias_str.rfind('.') {
+                        let (prefix, suffix) = alias_str.split_at(dot_pos);
+                        if suffix == ".id" {
+                            alias_to_id_column.insert(prefix.to_string(), alias_str.to_string());
+                            log::debug!(
+                                "📊 CTE '{}': Found ID column for alias '{}' -> '{}'",
+                                cte.cte_name,
+                                prefix,
+                                alias_str
+                            );
+                        }
+                    }
+                    // Note: We do NOT try to parse underscore patterns here as they are unreliable
+                    // The caller (build_chained_with_match_cte_plan) will compute these deterministically
+                }
+            }
+
+            // Build explicit property mapping
+            let property_mapping = build_property_mapping_from_columns(&select_items);
+
+            log::info!(
+                    "🔧 build_chained_with_match_cte_plan: Extracted nested CTE schema '{}': {} columns, {} aliases with ID, {} property mappings",
+                    cte.cte_name, property_names.len(), alias_to_id_column.len(), property_mapping.len()
+                );
+
+            cte_schemas.insert(
+                cte.cte_name.clone(),
+                crate::render_plan::CteSchemaMetadata {
+                    select_items,
+                    column_names: property_names,
+                    alias_to_id: alias_to_id_column,
+                    property_mapping,
+                },
+            );
+        }
+
+        // CRITICAL FIX (Jan 2026): Hoist CTEs from recursive call to prevent duplicates
+        // The recursive call created CTEs - we need to:
+        // 1. Add them to our all_ctes (so they appear in final SQL)
+        // 2. Track their names in used_cte_names (so we don't create duplicates)
+        // 3. Track their aliases in processed_cte_aliases (so we don't re-process them)
+        // 4. Capture VLP column metadata for deterministic lookups (Phase 3 CTE integration)
+        for cte in &rendered.ctes.0 {
+            log::debug!(
+                "🔧 build_chained_with_match_cte_plan: Hoisting CTE '{}' from recursive call",
+                cte.cte_name
+            );
+            cte_name_allocator.mark_used(cte.cte_name.clone());
+
+            // Capture VLP CTE metadata for deterministic column lookups
+            // This replaces heuristic lookups in expand_table_alias_to_group_by_id_only
+            if !cte.columns.is_empty() && cte.from_alias.is_some() {
+                let from_alias = cte.from_alias.clone().unwrap();
+                log::info!(
+                    "🔧 Capturing VLP CTE metadata: '{}' with {} columns, from_alias='{}'",
+                    cte.cte_name,
+                    cte.columns.len(),
+                    from_alias
+                );
+                vlp_cte_metadata.insert(cte.cte_name.clone(), (from_alias, cte.columns.clone()));
+            }
+
+            // Extract aliases from the CTE's stored exported_aliases (preferred)
+            // or from CTE name (fallback, may fail for aliases with underscores)
+            let aliases = if !cte.with_exported_aliases.is_empty() {
+                cte.with_exported_aliases.clone()
+            } else {
+                crate::utils::cte_naming::extract_aliases_from_cte_name(&cte.cte_name)
+                    .unwrap_or_default()
+            };
+            for alias in aliases {
+                if !alias.is_empty() {
+                    processed_cte_aliases.insert(alias.clone());
+                    cte_references.insert(alias, cte.cte_name.clone());
+                }
+            }
+        }
+        // Now hoist the actual CTEs
+        hoist_nested_ctes(rendered, all_ctes);
+    }
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -7128,119 +7260,17 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     }
                 }
 
-                // CRITICAL: Extract CTE schemas from nested rendering
-                // When rendering nested WITHs, the recursive call builds CTEs that we need
-                // to reference. Extract their schemas and add to our cte_schemas map.
-                if !rendered.ctes.0.is_empty() {
-                    for cte in &rendered.ctes.0 {
-                        let select_items = match &cte.content {
-                            super::CteContent::Structured(plan) => match &plan.union {
-                                UnionItems(Some(union)) if !union.input.is_empty() => {
-                                    union.input[0].select.items.clone()
-                                }
-                                _ => plan.select.items.clone(),
-                            },
-                            super::CteContent::RawSql(_) => {
-                                // VLP CTEs are RawSql - can't extract schema directly
-                                // But we can infer from the UNION that uses them
-                                // Skip for now, will be handled when we see the UNION
-                                log::debug!("🔧 Skipping RawSql CTE '{}' (VLP CTE - schema will be inferred from UNION)", cte.cte_name);
-                                continue;
-                            }
-                        };
-                        let property_names: Vec<String> = select_items
-                            .iter()
-                            .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
-                            .collect();
-
-                        // For nested CTEs, we don't have direct access to the plan to compute ID columns
-                        // deterministically. These are typically VLP CTEs with dotted notation (friend.id)
-                        // which we can safely extract since they follow a fixed pattern from VLP generation.
-                        let mut alias_to_id_column: HashMap<String, String> = HashMap::new();
-                        for item in &select_items {
-                            if let Some(col_alias) = &item.col_alias {
-                                let alias_str = col_alias.0.as_str();
-                                // VLP CTEs use "alias.id" pattern which is unambiguous
-                                if let Some(dot_pos) = alias_str.rfind('.') {
-                                    let (prefix, suffix) = alias_str.split_at(dot_pos);
-                                    if suffix == ".id" {
-                                        alias_to_id_column
-                                            .insert(prefix.to_string(), alias_str.to_string());
-                                        log::debug!(
-                                            "📊 CTE '{}': Found ID column for alias '{}' -> '{}'",
-                                            cte.cte_name,
-                                            prefix,
-                                            alias_str
-                                        );
-                                    }
-                                }
-                                // Note: We do NOT try to parse underscore patterns here as they are unreliable
-                                // The caller (build_chained_with_match_cte_plan) will compute these deterministically
-                            }
-                        }
-
-                        // Build explicit property mapping
-                        let property_mapping = build_property_mapping_from_columns(&select_items);
-
-                        log::info!(
-                                    "🔧 build_chained_with_match_cte_plan: Extracted nested CTE schema '{}': {} columns, {} aliases with ID, {} property mappings",
-                                    cte.cte_name, property_names.len(), alias_to_id_column.len(), property_mapping.len()
-                                );
-
-                        cte_schemas.insert(
-                            cte.cte_name.clone(),
-                            crate::render_plan::CteSchemaMetadata {
-                                select_items,
-                                column_names: property_names,
-                                alias_to_id: alias_to_id_column,
-                                property_mapping,
-                            },
-                        );
-                    }
-
-                    // CRITICAL FIX (Jan 2026): Hoist CTEs from recursive call to prevent duplicates
-                    // The recursive call created CTEs - we need to:
-                    // 1. Add them to our all_ctes (so they appear in final SQL)
-                    // 2. Track their names in used_cte_names (so we don't create duplicates)
-                    // 3. Track their aliases in processed_cte_aliases (so we don't re-process them)
-                    // 4. Capture VLP column metadata for deterministic lookups (Phase 3 CTE integration)
-                    for cte in &rendered.ctes.0 {
-                        log::debug!(
-                            "🔧 build_chained_with_match_cte_plan: Hoisting CTE '{}' from recursive call",
-                            cte.cte_name
-                        );
-                        cte_name_allocator.mark_used(cte.cte_name.clone());
-
-                        // Capture VLP CTE metadata for deterministic column lookups
-                        // This replaces heuristic lookups in expand_table_alias_to_group_by_id_only
-                        if !cte.columns.is_empty() && cte.from_alias.is_some() {
-                            let from_alias = cte.from_alias.clone().unwrap();
-                            log::info!(
-                                "🔧 Capturing VLP CTE metadata: '{}' with {} columns, from_alias='{}'",
-                                cte.cte_name, cte.columns.len(), from_alias
-                            );
-                            vlp_cte_metadata
-                                .insert(cte.cte_name.clone(), (from_alias, cte.columns.clone()));
-                        }
-
-                        // Extract aliases from the CTE's stored exported_aliases (preferred)
-                        // or from CTE name (fallback, may fail for aliases with underscores)
-                        let aliases = if !cte.with_exported_aliases.is_empty() {
-                            cte.with_exported_aliases.clone()
-                        } else {
-                            crate::utils::cte_naming::extract_aliases_from_cte_name(&cte.cte_name)
-                                .unwrap_or_default()
-                        };
-                        for alias in aliases {
-                            if !alias.is_empty() {
-                                processed_cte_aliases.insert(alias.clone());
-                                cte_references.insert(alias, cte.cte_name.clone());
-                            }
-                        }
-                    }
-                    // Now hoist the actual CTEs
-                    hoist_nested_ctes(&mut rendered, &mut all_ctes);
-                }
+                // Extract + register the schemas of any CTEs produced by a nested
+                // WITH render. See `extract_nested_cte_schemas`.
+                extract_nested_cte_schemas(
+                    &mut rendered,
+                    &mut all_ctes,
+                    &mut cte_schemas,
+                    &mut cte_references,
+                    &mut cte_name_allocator,
+                    &mut vlp_cte_metadata,
+                    &mut processed_cte_aliases,
+                );
 
                 log::info!(
                     "🔧 build_chained_with_match_cte_plan: Rendered SQL FROM: {:?}",
