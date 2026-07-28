@@ -5884,6 +5884,98 @@ fn compute_alias_id_columns(
     alias_to_id_column
 }
 
+/// Build the WITH CTE's explicit `(cypher_alias, cypher_property) → cte_column`
+/// property mapping (a STEP of the main loop's `'alias_loop` in
+/// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// Starts from `build_property_mapping_from_columns` over the CTE's SELECT
+/// items, rewrites dotted column names to underscores (WITH CTE columns are
+/// `friend_id`, not `friend.id`), folds in the compound-key mappings collected
+/// at generation time for flattened map literals (`flattened_compound_keys`,
+/// each `(map_key.property, base_alias_mapkey_property)` matched to its base
+/// alias by column-name prefix), and cross-references bare column aliases (an
+/// UNWIND scalar `person` gets `(person, "id") → person`). Returns the mapping.
+fn build_with_cte_property_mapping(
+    select_items_for_schema: &[SelectItem],
+    flattened_compound_keys: &[(String, String)],
+    exported_aliases: &[String],
+    alias_to_id_column: &HashMap<String, String>,
+) -> HashMap<(String, String), String> {
+    let mut property_mapping = build_property_mapping_from_columns(select_items_for_schema);
+
+    log::debug!(
+        "🔧 DEBUG: property_mapping BEFORE dot-to-underscore transformation: {} entries",
+        property_mapping.len()
+    );
+    for ((alias, property), cte_column) in property_mapping.iter() {
+        log::debug!("🔧   BEFORE: ({}, {}) → {}", alias, property, cte_column);
+    }
+
+    // Transform dotted column names to underscores for WITH CTEs
+    // (WITH CTE columns use "friend_id", not "friend.id")
+    property_mapping = property_mapping
+        .into_iter()
+        .map(|(k, v)| (k, v.replace('.', "_")))
+        .collect();
+
+    log::debug!(
+        "🔧 DEBUG: property_mapping AFTER dot-to-underscore transformation: {} entries",
+        property_mapping.len()
+    );
+    for ((alias, property), cte_column) in property_mapping.iter() {
+        log::debug!("🔧   AFTER: ({}, {}) → {}", alias, property, cte_column);
+    }
+
+    // 🔧 FIX: Add compound key mappings for flattened map literal columns.
+    // These were collected at generation time by try_flatten_head_collect_map_literal()
+    // to avoid ambiguous reverse-engineering from underscore-delimited column names.
+    // Each entry maps ("base_alias", "map_key.property") → "base_alias_mapkey_property".
+    {
+        for (compound_key, col_name) in flattened_compound_keys.iter() {
+            // Find which exported alias this column belongs to
+            for base_alias in exported_aliases {
+                let prefix = format!("{}_", base_alias);
+                if col_name.starts_with(&prefix) {
+                    log::info!(
+                        "🔧 property_mapping compound key: ({}, {}) → {}",
+                        base_alias,
+                        compound_key,
+                        col_name
+                    );
+                    property_mapping
+                        .insert((base_alias.clone(), compound_key.clone()), col_name.clone());
+                    break;
+                }
+            }
+        }
+    }
+
+    // Cross-reference: for bare column aliases (e.g. UNWIND scalar `person`),
+    // add (alias, "id") → alias so `person.id` resolves to the "person" column
+    for (alias, id_col) in alias_to_id_column {
+        if id_col == alias {
+            property_mapping
+                .entry((alias.clone(), "id".to_string()))
+                .or_insert_with(|| alias.clone());
+            log::info!(
+                "🔧 property_mapping cross-ref: ({}, id) → {} (bare column alias)",
+                alias,
+                alias
+            );
+        }
+    }
+
+    log::debug!(
+        "🔧 DEBUG: property_mapping AFTER dot-to-underscore transformation: {} entries",
+        property_mapping.len()
+    );
+    for ((alias, property), cte_column) in property_mapping.iter().take(10) {
+        log::debug!("🔧   ({}, {}) → {}", alias, property, cte_column);
+    }
+
+    property_mapping
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -8174,82 +8266,15 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 &cte_name,
             );
 
-            // Build explicit property mapping for WITH CTE
-            let mut property_mapping =
-                build_property_mapping_from_columns(&select_items_for_schema);
-
-            log::debug!(
-                "🔧 DEBUG: property_mapping BEFORE dot-to-underscore transformation: {} entries",
-                property_mapping.len()
+            // Build explicit property mapping for WITH CTE (column resolution +
+            // dot→underscore + compound-key + bare-alias cross-ref).
+            // See `build_with_cte_property_mapping`.
+            let property_mapping = build_with_cte_property_mapping(
+                &select_items_for_schema,
+                &flattened_compound_keys.borrow(),
+                &exported_aliases,
+                &alias_to_id_column,
             );
-            for ((alias, property), cte_column) in property_mapping.iter() {
-                log::debug!("🔧   BEFORE: ({}, {}) → {}", alias, property, cte_column);
-            }
-
-            // Transform dotted column names to underscores for WITH CTEs
-            // (WITH CTE columns use "friend_id", not "friend.id")
-            property_mapping = property_mapping
-                .into_iter()
-                .map(|(k, v)| (k, v.replace('.', "_")))
-                .collect();
-
-            log::debug!(
-                "🔧 DEBUG: property_mapping AFTER dot-to-underscore transformation: {} entries",
-                property_mapping.len()
-            );
-            for ((alias, property), cte_column) in property_mapping.iter() {
-                log::debug!("🔧   AFTER: ({}, {}) → {}", alias, property, cte_column);
-            }
-
-            // 🔧 FIX: Add compound key mappings for flattened map literal columns.
-            // These were collected at generation time by try_flatten_head_collect_map_literal()
-            // to avoid ambiguous reverse-engineering from underscore-delimited column names.
-            // Each entry maps ("base_alias", "map_key.property") → "base_alias_mapkey_property".
-            {
-                let stored_keys = flattened_compound_keys.borrow();
-                for (compound_key, col_name) in stored_keys.iter() {
-                    // Find which exported alias this column belongs to
-                    for base_alias in &exported_aliases {
-                        let prefix = format!("{}_", base_alias);
-                        if col_name.starts_with(&prefix) {
-                            log::info!(
-                                "🔧 property_mapping compound key: ({}, {}) → {}",
-                                base_alias,
-                                compound_key,
-                                col_name
-                            );
-                            property_mapping.insert(
-                                (base_alias.clone(), compound_key.clone()),
-                                col_name.clone(),
-                            );
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Cross-reference: for bare column aliases (e.g. UNWIND scalar `person`),
-            // add (alias, "id") → alias so `person.id` resolves to the "person" column
-            for (alias, id_col) in &alias_to_id_column {
-                if id_col == alias {
-                    property_mapping
-                        .entry((alias.clone(), "id".to_string()))
-                        .or_insert_with(|| alias.clone());
-                    log::info!(
-                        "🔧 property_mapping cross-ref: ({}, id) → {} (bare column alias)",
-                        alias,
-                        alias
-                    );
-                }
-            }
-
-            log::debug!(
-                "🔧 DEBUG: property_mapping AFTER dot-to-underscore transformation: {} entries",
-                property_mapping.len()
-            );
-            for ((alias, property), cte_column) in property_mapping.iter().take(10) {
-                log::debug!("🔧   ({}, {}) → {}", alias, property, cte_column);
-            }
 
             // Store CTE schema with full property mapping
             cte_schemas.insert(
