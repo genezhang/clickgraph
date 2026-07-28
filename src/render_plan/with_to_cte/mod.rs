@@ -6680,6 +6680,679 @@ fn fix_composite_alias_refs_and_augment_scope(
     }
 }
 
+/// Apply the WITH-items projection to a rendered CTE body (a STEP of the main
+/// loop's inner render-loop in `build_chained_with_match_cte_plan`, Phase-4 §7.1
+/// extraction).
+///
+/// Handles `WITH friend.firstName AS name`, `WITH count(friend) AS cnt`, and bare
+/// `WITH a` (TableAlias) items — expanding, rewriting (scope-aware, with
+/// denormalized-property resolution), filtering out pattern-comprehension result
+/// aliases, and setting `rendered.select` / `rendered.group_by` (plus the
+/// denormalized-UNION restructuring path). No-op when the segment carries no WITH
+/// items. Returns `Err` only on the unsupported-feature path. Mutates `rendered`;
+/// all other params are read-only inputs.
+#[allow(clippy::too_many_arguments)]
+fn apply_with_items_projection(
+    rendered: &mut RenderPlan,
+    plan_to_render: &LogicalPlan,
+    with_items: &Option<Vec<crate::query_planner::logical_plan::ProjectionItem>>,
+    with_distinct: bool,
+    pc_result_aliases: &std::collections::HashSet<String>,
+    pc_correlated_aliases: &std::collections::HashSet<String>,
+    with_plans: &[LogicalPlan],
+    with_alias: &str,
+    cte_from_alias: &Option<String>,
+    schema: &GraphSchema,
+    plan_ctx: Option<&PlanCtx>,
+    body_scope_ref: Option<&super::variable_scope::VariableScope>,
+    cte_schemas: &crate::render_plan::CteSchemas,
+    cte_references_for_rendering: &HashMap<String, String>,
+    vlp_cte_metadata: &HashMap<String, (String, Vec<super::CteColumnMetadata>)>,
+    flattened_compound_keys: &std::cell::RefCell<Vec<(String, String)>>,
+) -> RenderPlanBuilderResult<()> {
+    if let Some(ref items) = with_items {
+        log::debug!("🐛 DEBUG: with_items is Some, has {} items", items.len());
+        for (i, item) in items.iter().enumerate() {
+            log::debug!("🐛 DEBUG: with_item[{}]: {:?}", i, item);
+        }
+
+        // Filter out pattern comprehension items — their results come from CTE LEFT JOINs
+        let items: &Vec<_> = items;
+        let items_filtered: Vec<_> = if pc_result_aliases.is_empty() {
+            items.clone()
+        } else {
+            items
+                .iter()
+                .filter(|item| {
+                    let alias_str = item
+                        .col_alias
+                        .as_ref()
+                        .map(|a| a.0.clone())
+                        .unwrap_or_default();
+                    if pc_result_aliases.contains(&alias_str) {
+                        log::info!("🔧 Filtering out pattern comp WITH item '{}'", alias_str);
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .cloned()
+                .collect()
+        };
+        let _items = &items_filtered;
+        let items = &items_filtered;
+
+        let needs_projection = items.iter().any(|item| {
+            !matches!(
+                &item.expression,
+                crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
+            )
+        });
+
+        let has_aggregation = items.iter().any(|item| {
+            // Skip items that are pattern comprehension correlated subquery
+            // placeholders (count(*)) — they will be replaced with scalar
+            // subqueries and should not trigger aggregate mode.
+            if let Some(ref alias) = item.col_alias {
+                if pc_correlated_aliases.contains(&alias.0) {
+                    return false;
+                }
+            }
+            expr_contains_aggregate(&item.expression)
+        });
+
+        let has_table_alias = items.iter().any(|item| {
+            matches!(
+                &item.expression,
+                crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
+            )
+        });
+
+        log::debug!(
+            "🐛 DEBUG: needs_projection={}, has_aggregation={}, has_table_alias={}",
+            needs_projection,
+            has_aggregation,
+            has_table_alias
+        );
+
+        // Apply projection if we have non-TableAlias items, aggregations, OR TableAlias items
+        // TableAlias items need projection to generate CTE columns with simple names
+        if needs_projection || has_aggregation || has_table_alias {
+            log::debug!("🔧 build_chained_with_match_cte_plan: Applying WITH items projection (needs_projection={}, has_aggregation={}, has_table_alias={})",
+                               needs_projection, has_aggregation, has_table_alias);
+
+            // Convert LogicalExpr items to RenderExpr SelectItems
+            // CRITICAL: Expand TableAlias to ALL columns (not just ID)
+            // When WITH friend appears, it means "all properties of friend"
+            //
+            // Performance optimization: Wrap non-ID columns with ANY() when aggregating
+            // This allows GROUP BY to only include ID column (more efficient)
+
+            // Resolve denormalized property access in RenderExpr.
+            // For denormalized schemas (e.g., Airport properties in flights table):
+            // 1. Rewrites table alias: a → r (node alias → edge alias)
+            // 2. Rewrites property name: uses get_properties_with_table_alias()
+            //    to map Cypher property → correct DB column (from_node vs to_node aware)
+            //
+            // This centralizes what was previously split across:
+            // - rewrite_expression_with_property_mapping (property names via schema)
+            // - separate alias rewriting (table aliases)
+            // Both aspects are now handled here using the plan's
+            // get_properties_with_table_alias(), which knows the from/to position.
+
+            // Extract ALL UNWIND aliases from plan — UNWIND aliases are simple
+            // ARRAY JOIN column references, not table aliases to expand.
+            // Must recurse through wrapping nodes (Filter, Projection, etc.)
+            // AND through nested UNWINDs: `UNWIND .. AS x UNWIND .. AS y` binds
+            // both x and y, and each must be emitted as a column (not expanded
+            // as a graph alias, which would drop it from the CTE projection). (#404)
+            //
+            // NOTE: this deliberately STOPS at a WithClause barrier (no
+            // `WithClause` arm) — `plan_to_render` is already `wc.input`, so any
+            // deeper WithClause is a prior segment whose UNWIND vars are now CTE
+            // columns and must NOT be re-emitted as bare columns. The similar
+            // `find_unwind_aliases` helper below DOES cross the barrier on purpose
+            // (for ID-column detection), so the two are not interchangeable.
+            let mut unwind_aliases = std::collections::HashSet::new();
+            collect_unwind_aliases(plan_to_render, &mut unwind_aliases);
+
+            let select_items: Vec<SelectItem> = items.iter()
+                        .flat_map(|item| {
+                            // Check if this is a TableAlias that needs expansion to ALL columns
+                            match &item.expression {
+                                crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
+                                    // UNWIND aliases are ARRAY JOIN columns — emit a simple column reference
+                                    if unwind_aliases.contains(alias.0.as_str()) {
+                                        log::debug!("🔧 build_chained_with_match_cte_plan: UNWIND alias '{}' — simple column reference", alias.0);
+                                        return vec![SelectItem {
+                                            expression: super::render_expr::RenderExpr::ColumnAlias(
+                                                super::render_expr::ColumnAlias(alias.0.clone()),
+                                            ),
+                                            col_alias: Some(ColumnAlias(alias.0.clone())),
+                                        }];
+                                    }
+
+                                    // Use unified expansion helper (Dec 2025)
+                                    // CRITICAL: Use cte_references_for_rendering (includes ALL previous CTEs),
+                                    // NOT with_cte_refs (only includes CTEs visible in this WITH's immediate input)
+                                    // This allows "WITH a, b, c" to find "a" and "b" from previous CTEs
+                                    //
+                                    // The unified helper automatically handles anyLast() wrapping when has_aggregation=true
+                                    let expanded = expand_table_alias_to_select_items(
+                                        &alias.0,
+                                        plan_to_render,
+                                        cte_schemas,
+                                        cte_references_for_rendering,
+                                        has_aggregation,  // Enables anyLast() wrapping in unified function
+                                        plan_ctx,  // Pass Option<&PlanCtx> for property pruning
+                                        Some(vlp_cte_metadata)  // Pass VLP CTE metadata for FROM alias lookup
+                                    );
+                                    log::debug!("🔧 build_chained_with_match_cte_plan: Expanded alias '{}' to {} items (aggregation={})",
+                                               alias.0, expanded.len(), has_aggregation);
+
+                                    expanded
+                                }
+                                _ => {
+                                    // Not a TableAlias, convert normally
+                                    // First, check if we need to rewrite path functions
+                                    // For variable-length paths, convert length(path) → hop_count, etc.
+                                    let logical_expr = if let Some(path_var_name) = get_path_variable(plan_to_render) {
+                                        // Rewrite path functions in the logical expression BEFORE converting to RenderExpr
+                                        rewrite_logical_path_functions(&item.expression, path_var_name.as_str())
+                                    } else {
+                                        item.expression.clone()
+                                    };
+
+                                    // 🔧 CRITICAL FIX: Apply property mapping for WITH expressions
+                                    // Maps Cypher property names (e.g., u.name) to DB columns (e.g., full_name)
+                                    // This is the same rewriting that RETURN clause does
+                                    // SCOPE: Use body_scope_ref to resolve CTE-scoped variables
+                                    // (e.g., post.creationDate → CTE column after a prior WITH)
+                                    use crate::query_planner::logical_expr::expression_rewriter::{
+                                        ExpressionRewriteContext, rewrite_expression_with_property_mapping,
+                                    };
+                                    let rewrite_ctx = if let Some(s) = body_scope_ref {
+                                        ExpressionRewriteContext::with_scope(plan_to_render, s)
+                                    } else {
+                                        ExpressionRewriteContext::new(plan_to_render)
+                                    };
+                                    let rewritten_expr = rewrite_expression_with_property_mapping(&logical_expr, &rewrite_ctx);
+                                    log::info!(
+                                        "🔧 build_chained_with_match_cte_plan: Rewrote WITH expression with property mapping"
+                                    );
+
+                                    // CRITICAL: Expand collect(node) to groupArray(tuple(...)) BEFORE converting to RenderExpr
+                                    // This must happen in WITH context too, not just in extract_select_items()
+                                    let expanded_expr = if let crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(ref agg) = rewritten_expr {
+                                        if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
+                                            if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(ref alias) = agg.args[0] {
+                                                log::debug!("🔧 WITH context: Expanding collect({}) to groupArray(tuple(...))", alias.0);
+
+                                                // Extract property requirements for pruning
+                                                let property_requirements = plan_ctx.and_then(|ctx| ctx.get_property_requirements());
+
+                                                // Get all properties for this alias
+                                                match plan_to_render.get_properties_with_table_alias(&alias.0) {
+                                                    Ok((props, _actual_alias)) if !props.is_empty() => {
+                                                        log::debug!("🔧 Found {} properties for alias '{}', expanding", props.len(), alias.0);
+
+                                                        // For collect(node), only collect the ID property to produce groupArray(id).
+                                                        // Semantically, collect(node) gathers node identities, and groupArray(id)
+                                                        // is compatible with downstream IN/has() checks (Array(T) vs scalar T).
+                                                        // groupArray(tuple(...)) would produce Array(Tuple) which fails has() type checks.
+                                                        let id_only_props: Vec<_> = props.iter()
+                                                            .filter(|(prop_name, _)| prop_name == "id")
+                                                            .cloned()
+                                                            .collect();
+                                                        let collect_props = if id_only_props.is_empty() {
+                                                            log::debug!("🔧 collect({}): no 'id' property found, using all {} properties", alias.0, props.len());
+                                                            props
+                                                        } else {
+                                                            log::debug!("🔧 collect({}): using ID-only for groupArray (compatible with IN/has())", alias.0);
+                                                            id_only_props
+                                                        };
+
+                                                        // Use centralized expansion utility with property requirements
+                                                        use crate::render_plan::property_expansion::expand_collect_to_group_array;
+                                                        expand_collect_to_group_array(&alias.0, collect_props, property_requirements)
+                                                    }
+                                                    _ => {
+                                                        log::warn!("⚠️  Could not expand collect({}) in WITH - no properties found, keeping as-is", alias.0);
+                                                        rewritten_expr
+                                                    }
+                                                }
+                                            } else {
+                                                rewritten_expr
+                                            }
+                                        } else {
+                                            rewritten_expr
+                                        }
+                                    } else {
+                                        rewritten_expr
+                                    };
+
+                                    // 🔧 FIX: Flatten head(collect(MapLiteral)) with node values
+                                    // ClickHouse map() requires homogeneous value types, but nodes
+                                    // have no single value. Expand each map entry to separate CTE columns.
+                                    log::info!("🔧 Checking for head(collect(MapLiteral)) flattening, alias={:?}, expanded_expr={:?}",
+                                        item.col_alias.as_ref().map(|a| &a.0),
+                                        std::mem::discriminant(&expanded_expr));
+                                    if let Some((flattened_items, compound_keys)) = try_flatten_head_collect_map_literal(
+                                        &expanded_expr,
+                                        item.col_alias.as_ref().map(|a| a.0.as_str()),
+                                        plan_to_render,
+                                        plan_ctx,
+                                        body_scope_ref,
+                                    ) {
+                                        log::info!("🔧 Flattened head(collect(MapLiteral)) into {} columns with {} compound keys",
+                                            flattened_items.len(), compound_keys.len());
+                                        flattened_compound_keys.borrow_mut().extend(compound_keys);
+                                        return flattened_items;
+                                    }
+
+                                    let expr_result: Result<RenderExpr, _> = expanded_expr.try_into();
+                                    expr_result.ok().map(|mut expr| {
+                                        // Rewrite denormalized node aliases (e.g., a → r)
+                                        resolve_denormalized_property_in_expr_impl(&mut expr, plan_to_render, cte_from_alias.as_deref());
+
+                                        // 🔧 FIX: VLP CTE column rewriting for non-TableAlias WITH items
+                                        // When FROM is a VLP/multi-type CTE, PropertyAccess references
+                                        // (e.g., message.content) must be rewritten to CTE columns
+                                        // (e.g., t.start_content)
+                                        if let Some(from_ref) = &rendered.from.0 {
+                                            if from_ref.name.starts_with("vlp_") {
+                                                let from_alias = from_ref.alias.as_deref().unwrap_or("t");
+                                                // Build mappings: cypher_alias → "start_node" or "end_node"
+                                                if let Some((_from_alias_meta, col_metadata)) = vlp_cte_metadata.get(&from_ref.name) {
+                                                    let mut mappings: HashMap<String, String> = HashMap::new();
+                                                    for col_meta in col_metadata {
+                                                        if !mappings.contains_key(&col_meta.cypher_alias) {
+                                                            if let Some(pos) = &col_meta.vlp_position {
+                                                                let internal_alias = match pos {
+                                                                    super::cte_manager::VlpColumnPosition::Start => "start_node".to_string(),
+                                                                    super::cte_manager::VlpColumnPosition::End => "end_node".to_string(),
+                                                                };
+                                                                mappings.insert(col_meta.cypher_alias.clone(), internal_alias);
+                                                            }
+                                                        }
+                                                    }
+                                                    if !mappings.is_empty() {
+                                                        // Build DB→Cypher property name mapping for VLP column name translation.
+                                                        // VLP CTE columns use Cypher names (start_name) but PropertyAccessExp
+                                                        // may have DB column names (full_name) after schema resolution.
+                                                        let mut db_to_cypher: HashMap<(String, String), String> = HashMap::new();
+                                                        for col_meta in col_metadata {
+                                                            if col_meta.db_column != col_meta.cypher_property {
+                                                                db_to_cypher.insert(
+                                                                    (col_meta.cypher_alias.clone(), col_meta.db_column.clone()),
+                                                                    col_meta.cypher_property.clone(),
+                                                                );
+                                                            }
+                                                        }
+                                                        if !db_to_cypher.is_empty() {
+                                                            translate_db_columns_to_cypher_properties(&mut expr, &db_to_cypher);
+                                                        }
+                                                        // #620: rewrite endpoint id-property access
+                                                        // (a.user_id) to the VLP CTE's authoritative id
+                                                        // column (t.start_id/t.end_id) BEFORE the generic
+                                                        // prefix rewrite, which would otherwise blindly
+                                                        // build `start_user_id` (a column the CTE never
+                                                        // projects → Code 47).
+                                                        let mut id_columns: HashMap<String, String> = HashMap::new();
+                                                        for col_meta in col_metadata {
+                                                            if col_meta.is_id_column {
+                                                                id_columns.insert(
+                                                                    col_meta.cypher_alias.clone(),
+                                                                    col_meta.cypher_property.clone(),
+                                                                );
+                                                            }
+                                                        }
+                                                        if !id_columns.is_empty() {
+                                                            crate::render_plan::vlp_rewrite::rewrite_vlp_id_property_columns(
+                                                                &mut expr, &mappings, &id_columns, from_alias,
+                                                            );
+                                                        }
+                                                        log::debug!("🔧 VLP WITH item rewrite: mappings={:?}, from_alias={}", mappings, from_alias);
+                                                        rewrite_render_expr_for_vlp_with_from_alias(&mut expr, &mappings, from_alias);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        SelectItem {
+                                            expression: expr,
+                                            col_alias: item.col_alias.as_ref().map(|a| crate::render_plan::render_expr::ColumnAlias(a.0.clone())),
+                                        }
+                                    }).into_iter().collect()
+                                }
+                            }
+                        })
+                        .collect();
+
+            log::debug!(
+                "🔧 build_chained_with_match_cte_plan: Total select_items after expansion: {}",
+                select_items.len()
+            );
+
+            if !select_items.is_empty() {
+                // Check if the logical plan has a denormalized Union.
+                // Denormalized Unions already have per-branch SELECT items with
+                // correct column resolution (origin_code vs dest_code). We must NOT
+                // overwrite them with a flat projection from one branch only.
+                // Instead, rename aliases in each branch: "code" → "a_code".
+                let is_denorm_union =
+                    plan_has_denormalized_union(plan_to_render) && rendered.union.0.is_some();
+
+                if is_denorm_union {
+                    // Denormalized Union: the RenderPlan stores first branch in
+                    // (select, from, filters) and remaining branches in union.input[].
+                    // For CTE content, we need ALL branches in a flat UNION DISTINCT.
+                    // Move first branch into union.input and clear plan-level fields.
+                    log::info!(
+                        "🔧 build_chained_with_match_cte_plan: Denormalized Union detected, restructuring for WITH '{}'",
+                        with_alias
+                    );
+
+                    // Use the first exported alias (the node alias) for column renaming,
+                    // not the combined with_alias. This ensures columns like "code" become
+                    // "a_code" (not "a_allNeighboursCount_code") for unambiguous parsing.
+                    let rename_alias = with_plans
+                        .first()
+                        .and_then(|p| match p {
+                            LogicalPlan::WithClause(wc) => wc.exported_aliases.first().cloned(),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| with_alias.to_string());
+
+                    // Build first branch RenderPlan from the parent plan's fields
+                    let mut first_branch = RenderPlan {
+                        ctes: CteItems(vec![]),
+                        select: rendered.select.clone(),
+                        from: rendered.from.clone(),
+                        joins: rendered.joins.clone(),
+                        array_join: ArrayJoinItem(Vec::new()),
+                        filters: rendered.filters.clone(),
+                        group_by: GroupByExpressions(vec![]),
+                        having_clause: None,
+                        order_by: OrderByItems(vec![]),
+                        skip: SkipItem(None),
+                        limit: LimitItem(None),
+                        union: UnionItems(None),
+                        fixed_path_info: None,
+                        is_multi_label_scan: false,
+                        variable_registry: None,
+                    };
+                    rename_branch_aliases(&mut first_branch.select, &rename_alias);
+
+                    // Rename aliases in remaining branches
+                    if let UnionItems(Some(ref mut union)) = rendered.union {
+                        for branch in &mut union.input {
+                            rename_branch_aliases(&mut branch.select, &rename_alias);
+                        }
+                        // Insert first branch at the beginning
+                        union.input.insert(0, first_branch);
+                    }
+
+                    // Clear plan-level fields so CTE renders union directly
+                    rendered.select = SelectItems {
+                        items: vec![],
+                        distinct: false,
+                    };
+                    rendered.from = FromTableItem(None);
+                    rendered.filters = FilterItems(None);
+                    rendered.joins = JoinItems(vec![]);
+                } else {
+                    // Non-denormalized UNION: propagate plan-level filters
+                    // to each UNION branch. Filters (inline property filters,
+                    // WHERE predicates, NOT EXISTS) live in rendered.filters
+                    // but UNION branches render independently during SQL generation,
+                    // so each branch needs its own copy.
+                    // NOTE: rendered.filters is kept (not cleared) because the SQL
+                    // generator uses it for the first UNION branch's WHERE clause.
+                    if rendered.filters.0.is_some() {
+                        if let Some(ref mut union) = rendered.union.0 {
+                            let filter_expr = rendered.filters.0.clone().unwrap();
+                            for branch in union.input.iter_mut() {
+                                branch.filters = match branch.filters.0.take() {
+                                    Some(existing) => FilterItems(Some(
+                                        RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                            operator: Operator::And,
+                                            operands: vec![existing, filter_expr.clone()],
+                                        }),
+                                    )),
+                                    None => FilterItems(Some(filter_expr.clone())),
+                                };
+                            }
+                        }
+                    }
+
+                    // Apply projection to SELECT
+                    rendered.select = SelectItems {
+                        items: select_items,
+                        distinct: with_distinct,
+                    };
+
+                    // #529 shape 1 (loud guard — NOT a fix; see
+                    // `table_has_role_dependent_denorm_identity`'s doc
+                    // comment for the full mechanism): the WITH
+                    // projection we just attached to `rendered.select`
+                    // is about to be shared, byte-for-byte, across
+                    // EVERY branch of this multi-branch UNION
+                    // (`to_sql_query.rs`'s aggregate-UNION renderer
+                    // reuses one shared `plan.select` per branch,
+                    // never each branch's own). If this table backs a
+                    // node whose identity genuinely depends on which
+                    // role (from/to) it plays — a coupled/embedded
+                    // schema, e.g. Zeek's `IP` node on `conn_log` —
+                    // every branch will silently project the SAME
+                    // column instead of alternating roles, dropping
+                    // rows that only appear in the unselected role
+                    // and inflating counts for rows appearing in
+                    // both. Fail loudly here instead.
+                    //
+                    // Scoping history (R5, post-adversarial-review):
+                    // v1 fired only when NO branch had ANY join —
+                    // reasoning that a multi-hop pattern's per-branch
+                    // JOIN CONDITION (not its SELECT list) encodes
+                    // role. Live-verified WRONG: a 2-hop UNDIRECTED
+                    // CHAIN grouping by the first hop's own anchor
+                    // (`(a)-[r:ACCESSED]-(x)-[r2:ACCESSED]-(c) WITH a,
+                    // count(r) AS n ...`) has joins too (for the
+                    // second hop), so v1 let it through — silently
+                    // dropped 2 of 5 groups and corrupted every
+                    // remaining count on both `zeek_merged_test.yaml`
+                    // and `flights_denormalized.yaml`.
+                    //
+                    // v2 tightened to "does the WITH projection
+                    // reference the FROM ANCHOR's own alias" —
+                    // reasoning that a JOINED alias (reached through a
+                    // JOIN condition that varies per branch) is safe,
+                    // only the bare anchor (no join to disambiguate
+                    // it) is not. This fixed the v1 gap, but a DEEPER
+                    // re-verification (prompted by re-checking the
+                    // "safe" `denorm_with_aggregate_group_by_middle_
+                    // node_no_null_collapse_465_blocking` case that
+                    // motivated v1's exemption) found v2's premise
+                    // itself false: `MATCH (a:Airport)-[:FLIGHT]-
+                    // (b:Airport)-[:FLIGHT]-(c:Airport) WITH b,
+                    // count(*) AS n ...` groups by `b` — reached
+                    // through JOIN `t2`, never the anchor `t1` — yet
+                    // live execution returns `San Francisco=2` for an
+                    // airport (`SFO`) that appears in exactly ONE
+                    // flight row (graph degree 1), which makes ZERO
+                    // valid 2-hop chains through it — an impossible
+                    // result, proving corruption. Root cause: the
+                    // JOIN condition varies per branch (`t2.origin_code
+                    // = t1.dest_code` vs. `t2.dest_code = t1.dest_code`
+                    // etc.), but the SELECTed column for `b` is
+                    // ALWAYS `t2.origin_code`, even in branches whose
+                    // join tied `t2.dest_code` — the exact same
+                    // "SELECT never alternates with the join role"
+                    // bug, just one join-hop removed from the anchor.
+                    // So `denorm_with_aggregate_group_by_middle_node_
+                    // no_null_collapse_465_blocking`'s prior "verified
+                    // correct" claim was itself wrong (or verified
+                    // against different fixture data) — it is NOT a
+                    // safe exemption and is now guarded too (moved to
+                    // `..._known_broken_529` in this round).
+                    //
+                    // v3 (current): fire whenever the WITH projection
+                    // references a SPECIFIC property that is itself
+                    // role-dependent (per `NodeSchema::
+                    // role_dependent_property_names` — the Cypher
+                    // property names whose physical column genuinely
+                    // differs between from/to role, e.g. Zeek IP's
+                    // `ip`) on ANY alias in scope — FROM anchor OR any
+                    // JOINed alias — not just the anchor. Checking the
+                    // PROPERTY, not just "alias's table is
+                    // role-dependent", matters: shape 2's already-
+                    // fixed `MATCH (a:IP) OPTIONAL MATCH (a)-[r:
+                    // ACCESSED]-(b:IP) WITH a, count(r) AS c ...`
+                    // resolves `count(r)` to `r.uid` — `r` (the
+                    // relationship alias) happens to share its
+                    // physical table with the role-dependent `IP`
+                    // node, but `uid` itself is the edge's own,
+                    // role-INDEPENDENT identity (not a key in
+                    // `from_properties`/`to_properties` at all) — a
+                    // naive "any reference to a role-dependent
+                    // TABLE" check (an earlier draft of this v3) was
+                    // a false positive here, caught by this exact
+                    // regression test. No known-safe exemption
+                    // remains within this codebase today; if one is
+                    // found later it needs its own live, degree-based
+                    // ground-truth verification (not just "the
+                    // numbers look plausible") before being carved
+                    // out again.
+                    if let Some(ref union) = rendered.union.0 {
+                        if !union.input.is_empty() {
+                            let mut alias_to_table: std::collections::HashMap<&str, &str> =
+                                std::collections::HashMap::new();
+                            if let Some(ref from_ref) = rendered.from.0 {
+                                if let Some(ref alias) = from_ref.alias {
+                                    alias_to_table.insert(alias.as_str(), from_ref.name.as_str());
+                                }
+                            }
+                            for join in &rendered.joins.0 {
+                                alias_to_table
+                                    .insert(join.table_alias.as_str(), join.table_name.as_str());
+                            }
+
+                            let mut accesses: Vec<(&str, &str)> = Vec::new();
+                            for item in &rendered.select.items {
+                                collect_property_accesses(&item.expression, &mut accesses);
+                            }
+
+                            let corrupt_alias_referenced =
+                                accesses.iter().any(|(alias, property)| {
+                                    alias_to_table.get(alias).is_some_and(|table| {
+                                        table_role_dependent_property_names(schema, table)
+                                            .contains(*property)
+                                    })
+                                });
+                            if corrupt_alias_referenced {
+                                return Err(RenderBuildError::UnsupportedFeature(
+                                    "Undirected self-referencing relationship over a \
+                                     denormalized/embedded node table is not yet \
+                                     supported for WITH-aggregate queries (#529 shape \
+                                     1): the per-role UNION branches would project the \
+                                     identical embedded identity column instead of \
+                                     alternating from/to roles, silently dropping and \
+                                     double-counting rows. Rewrite the query with an \
+                                     explicit direction (e.g. `-[r]->` instead of \
+                                     `-[r]-`) to work around this, or track \
+                                     https://github.com/genezhang/clickgraph/issues/529."
+                                        .to_string(),
+                                ));
+                            }
+                        }
+                    }
+                } // end is_denorm_union else
+
+                // FIX: When the input plan was Empty (no MATCH before WITH),
+                // the rendered plan has FROM=None and filters=WHERE false.
+                // After overwriting SELECT with WITH items (pure constants like map literals),
+                // the WHERE false is spurious — clear it so the CTE returns one row.
+                if rendered.from.0.is_none()
+                    && rendered.joins.0.is_empty()
+                    && matches!(
+                        &rendered.filters.0,
+                        Some(RenderExpr::Literal(super::render_expr::Literal::Boolean(
+                            false
+                        )))
+                    )
+                {
+                    rendered.filters = FilterItems(None);
+                }
+
+                // If there's aggregation, add GROUP BY for non-aggregate expressions
+                // PERFORMANCE: Only GROUP BY the ID column(s) for TableAlias items
+                // (non-ID columns are wrapped with ANY() above, so they don't need to be grouped)
+                //
+                // This is efficient because:
+                // 1. node_id is the primary key (unique identifier)
+                // 2. ANY() picks the single value in each group (safe for PK)
+                // 3. GROUP BY 1 column is much faster than GROUP BY 7 columns
+                if has_aggregation {
+                    let group_by_exprs: Vec<RenderExpr> = items.iter()
+                                .filter(|item| {
+                                    // Exclude: direct aggregates, literals, and expressions containing aggregates
+                                    // (#591: use expr_contains_aggregate, which recurses into
+                                    // Case/List/legacy-Operator — a narrower helper here silently
+                                    // pushed CASE/List-wrapped aggregates into GROUP BY → Code 184).
+                                    !matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_))
+                                    && !is_literal_expr(&item.expression)
+                                    && !expr_contains_aggregate(&item.expression)
+                                })
+                                .flat_map(|item| {
+                                    // For TableAlias, only GROUP BY the ID column
+                                    // (other columns are wrapped with ANY() in SELECT)
+                                    match &item.expression {
+                                        crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
+                                            // Use ID-only helper for efficient GROUP BY
+                                            // Pass VLP CTE metadata for deterministic lookups
+                                            expand_table_alias_to_group_by_id_only(
+                                                &alias.0,
+                                                plan_to_render,
+                                                schema,
+                                                cte_schemas,
+                                                cte_references_for_rendering,
+                                                Some(vlp_cte_metadata),
+                                            )
+                                        }
+                                        crate::query_planner::logical_expr::LogicalExpr::ArraySubscript { array, .. } => {
+                                            // For array subscripts (e.g., labels(x)[1]), only GROUP BY the array part
+                                            // ClickHouse can't GROUP BY an array element, only the array itself
+                                            let expr_vec: Vec<RenderExpr> = (**array).clone().try_into().ok().into_iter().collect();
+                                            expr_vec
+                                        }
+                                        _ => {
+                                            // Apply property mapping rewriting before converting to RenderExpr.
+                                            // This ensures CTE-scoped columns resolve correctly (e.g., message.length → p7_message_length).
+                                            use crate::query_planner::logical_expr::expression_rewriter::{
+                                                ExpressionRewriteContext, rewrite_expression_with_property_mapping,
+                                            };
+                                            let rewrite_ctx = if let Some(s) = body_scope_ref {
+                                                ExpressionRewriteContext::with_scope(plan_to_render, s)
+                                            } else {
+                                                ExpressionRewriteContext::new(plan_to_render)
+                                            };
+                                            let rewritten = rewrite_expression_with_property_mapping(&item.expression, &rewrite_ctx);
+                                            let expr_vec: Vec<RenderExpr> = rewritten.try_into().ok().map(|mut expr: RenderExpr| {
+                                                resolve_denormalized_property_in_expr_impl(&mut expr, plan_to_render, cte_from_alias.as_deref());
+                                                expr
+                                            }).into_iter().collect();
+                                            expr_vec
+                                        }
+                                    }
+                                })
+                                .collect();
+                    rendered.group_by = GroupByExpressions(group_by_exprs);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Re-attach UNWIND array joins to a nested-WITH-rendered CTE body (a STEP of the
 /// main loop's inner render-loop in `build_chained_with_match_cte_plan`, Phase-4
 /// §7.1 extraction).
@@ -7594,666 +8267,27 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 let (pc_result_aliases, pc_correlated_aliases) =
                     compute_pc_skip_aliases(&with_plans);
 
-                // Apply WITH items projection if present
-                // This handles cases like `WITH friend.firstName AS name` or `WITH count(friend) AS cnt`
-                // CRITICAL: Also apply for TableAlias items (WITH a) to standardize CTE column names
-                if let Some(ref items) = with_items {
-                    log::debug!("🐛 DEBUG: with_items is Some, has {} items", items.len());
-                    for (i, item) in items.iter().enumerate() {
-                        log::debug!("🐛 DEBUG: with_item[{}]: {:?}", i, item);
-                    }
-
-                    // Filter out pattern comprehension items — their results come from CTE LEFT JOINs
-                    let items: &Vec<_> = items;
-                    let items_filtered: Vec<_> = if pc_result_aliases.is_empty() {
-                        items.clone()
-                    } else {
-                        items
-                            .iter()
-                            .filter(|item| {
-                                let alias_str = item
-                                    .col_alias
-                                    .as_ref()
-                                    .map(|a| a.0.clone())
-                                    .unwrap_or_default();
-                                if pc_result_aliases.contains(&alias_str) {
-                                    log::info!(
-                                        "🔧 Filtering out pattern comp WITH item '{}'",
-                                        alias_str
-                                    );
-                                    false
-                                } else {
-                                    true
-                                }
-                            })
-                            .cloned()
-                            .collect()
-                    };
-                    let _items = &items_filtered;
-                    let items = &items_filtered;
-
-                    let needs_projection = items.iter().any(|item| {
-                        !matches!(
-                            &item.expression,
-                            crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
-                        )
-                    });
-
-                    let has_aggregation = items.iter().any(|item| {
-                        // Skip items that are pattern comprehension correlated subquery
-                        // placeholders (count(*)) — they will be replaced with scalar
-                        // subqueries and should not trigger aggregate mode.
-                        if let Some(ref alias) = item.col_alias {
-                            if pc_correlated_aliases.contains(&alias.0) {
-                                return false;
-                            }
-                        }
-                        expr_contains_aggregate(&item.expression)
-                    });
-
-                    let has_table_alias = items.iter().any(|item| {
-                        matches!(
-                            &item.expression,
-                            crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
-                        )
-                    });
-
-                    log::debug!(
-                        "🐛 DEBUG: needs_projection={}, has_aggregation={}, has_table_alias={}",
-                        needs_projection,
-                        has_aggregation,
-                        has_table_alias
-                    );
-
-                    // Apply projection if we have non-TableAlias items, aggregations, OR TableAlias items
-                    // TableAlias items need projection to generate CTE columns with simple names
-                    if needs_projection || has_aggregation || has_table_alias {
-                        log::debug!("🔧 build_chained_with_match_cte_plan: Applying WITH items projection (needs_projection={}, has_aggregation={}, has_table_alias={})",
-                                           needs_projection, has_aggregation, has_table_alias);
-
-                        // Convert LogicalExpr items to RenderExpr SelectItems
-                        // CRITICAL: Expand TableAlias to ALL columns (not just ID)
-                        // When WITH friend appears, it means "all properties of friend"
-                        //
-                        // Performance optimization: Wrap non-ID columns with ANY() when aggregating
-                        // This allows GROUP BY to only include ID column (more efficient)
-
-                        // Resolve denormalized property access in RenderExpr.
-                        // For denormalized schemas (e.g., Airport properties in flights table):
-                        // 1. Rewrites table alias: a → r (node alias → edge alias)
-                        // 2. Rewrites property name: uses get_properties_with_table_alias()
-                        //    to map Cypher property → correct DB column (from_node vs to_node aware)
-                        //
-                        // This centralizes what was previously split across:
-                        // - rewrite_expression_with_property_mapping (property names via schema)
-                        // - separate alias rewriting (table aliases)
-                        // Both aspects are now handled here using the plan's
-                        // get_properties_with_table_alias(), which knows the from/to position.
-
-                        // Extract ALL UNWIND aliases from plan — UNWIND aliases are simple
-                        // ARRAY JOIN column references, not table aliases to expand.
-                        // Must recurse through wrapping nodes (Filter, Projection, etc.)
-                        // AND through nested UNWINDs: `UNWIND .. AS x UNWIND .. AS y` binds
-                        // both x and y, and each must be emitted as a column (not expanded
-                        // as a graph alias, which would drop it from the CTE projection). (#404)
-                        //
-                        // NOTE: this deliberately STOPS at a WithClause barrier (no
-                        // `WithClause` arm) — `plan_to_render` is already `wc.input`, so any
-                        // deeper WithClause is a prior segment whose UNWIND vars are now CTE
-                        // columns and must NOT be re-emitted as bare columns. The similar
-                        // `find_unwind_aliases` helper below DOES cross the barrier on purpose
-                        // (for ID-column detection), so the two are not interchangeable.
-                        let mut unwind_aliases = std::collections::HashSet::new();
-                        collect_unwind_aliases(plan_to_render, &mut unwind_aliases);
-
-                        let select_items: Vec<SelectItem> = items.iter()
-                                    .flat_map(|item| {
-                                        // Check if this is a TableAlias that needs expansion to ALL columns
-                                        match &item.expression {
-                                            crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
-                                                // UNWIND aliases are ARRAY JOIN columns — emit a simple column reference
-                                                if unwind_aliases.contains(alias.0.as_str()) {
-                                                    log::debug!("🔧 build_chained_with_match_cte_plan: UNWIND alias '{}' — simple column reference", alias.0);
-                                                    return vec![SelectItem {
-                                                        expression: super::render_expr::RenderExpr::ColumnAlias(
-                                                            super::render_expr::ColumnAlias(alias.0.clone()),
-                                                        ),
-                                                        col_alias: Some(ColumnAlias(alias.0.clone())),
-                                                    }];
-                                                }
-
-                                                // Use unified expansion helper (Dec 2025)
-                                                // CRITICAL: Use cte_references_for_rendering (includes ALL previous CTEs),
-                                                // NOT with_cte_refs (only includes CTEs visible in this WITH's immediate input)
-                                                // This allows "WITH a, b, c" to find "a" and "b" from previous CTEs
-                                                //
-                                                // The unified helper automatically handles anyLast() wrapping when has_aggregation=true
-                                                let expanded = expand_table_alias_to_select_items(
-                                                    &alias.0,
-                                                    plan_to_render,
-                                                    &cte_schemas,
-                                                    &cte_references_for_rendering,
-                                                    has_aggregation,  // Enables anyLast() wrapping in unified function
-                                                    plan_ctx,  // Pass Option<&PlanCtx> for property pruning
-                                                    Some(&vlp_cte_metadata)  // Pass VLP CTE metadata for FROM alias lookup
-                                                );
-                                                log::debug!("🔧 build_chained_with_match_cte_plan: Expanded alias '{}' to {} items (aggregation={})",
-                                                           alias.0, expanded.len(), has_aggregation);
-
-                                                expanded
-                                            }
-                                            _ => {
-                                                // Not a TableAlias, convert normally
-                                                // First, check if we need to rewrite path functions
-                                                // For variable-length paths, convert length(path) → hop_count, etc.
-                                                let logical_expr = if let Some(path_var_name) = get_path_variable(plan_to_render) {
-                                                    // Rewrite path functions in the logical expression BEFORE converting to RenderExpr
-                                                    rewrite_logical_path_functions(&item.expression, path_var_name.as_str())
-                                                } else {
-                                                    item.expression.clone()
-                                                };
-
-                                                // 🔧 CRITICAL FIX: Apply property mapping for WITH expressions
-                                                // Maps Cypher property names (e.g., u.name) to DB columns (e.g., full_name)
-                                                // This is the same rewriting that RETURN clause does
-                                                // SCOPE: Use body_scope_ref to resolve CTE-scoped variables
-                                                // (e.g., post.creationDate → CTE column after a prior WITH)
-                                                use crate::query_planner::logical_expr::expression_rewriter::{
-                                                    ExpressionRewriteContext, rewrite_expression_with_property_mapping,
-                                                };
-                                                let rewrite_ctx = if let Some(s) = body_scope_ref {
-                                                    ExpressionRewriteContext::with_scope(plan_to_render, s)
-                                                } else {
-                                                    ExpressionRewriteContext::new(plan_to_render)
-                                                };
-                                                let rewritten_expr = rewrite_expression_with_property_mapping(&logical_expr, &rewrite_ctx);
-                                                log::info!(
-                                                    "🔧 build_chained_with_match_cte_plan: Rewrote WITH expression with property mapping"
-                                                );
-
-                                                // CRITICAL: Expand collect(node) to groupArray(tuple(...)) BEFORE converting to RenderExpr
-                                                // This must happen in WITH context too, not just in extract_select_items()
-                                                let expanded_expr = if let crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(ref agg) = rewritten_expr {
-                                                    if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
-                                                        if let crate::query_planner::logical_expr::LogicalExpr::TableAlias(ref alias) = agg.args[0] {
-                                                            log::debug!("🔧 WITH context: Expanding collect({}) to groupArray(tuple(...))", alias.0);
-
-                                                            // Extract property requirements for pruning
-                                                            let property_requirements = plan_ctx.and_then(|ctx| ctx.get_property_requirements());
-
-                                                            // Get all properties for this alias
-                                                            match plan_to_render.get_properties_with_table_alias(&alias.0) {
-                                                                Ok((props, _actual_alias)) if !props.is_empty() => {
-                                                                    log::debug!("🔧 Found {} properties for alias '{}', expanding", props.len(), alias.0);
-
-                                                                    // For collect(node), only collect the ID property to produce groupArray(id).
-                                                                    // Semantically, collect(node) gathers node identities, and groupArray(id)
-                                                                    // is compatible with downstream IN/has() checks (Array(T) vs scalar T).
-                                                                    // groupArray(tuple(...)) would produce Array(Tuple) which fails has() type checks.
-                                                                    let id_only_props: Vec<_> = props.iter()
-                                                                        .filter(|(prop_name, _)| prop_name == "id")
-                                                                        .cloned()
-                                                                        .collect();
-                                                                    let collect_props = if id_only_props.is_empty() {
-                                                                        log::debug!("🔧 collect({}): no 'id' property found, using all {} properties", alias.0, props.len());
-                                                                        props
-                                                                    } else {
-                                                                        log::debug!("🔧 collect({}): using ID-only for groupArray (compatible with IN/has())", alias.0);
-                                                                        id_only_props
-                                                                    };
-
-                                                                    // Use centralized expansion utility with property requirements
-                                                                    use crate::render_plan::property_expansion::expand_collect_to_group_array;
-                                                                    expand_collect_to_group_array(&alias.0, collect_props, property_requirements)
-                                                                }
-                                                                _ => {
-                                                                    log::warn!("⚠️  Could not expand collect({}) in WITH - no properties found, keeping as-is", alias.0);
-                                                                    rewritten_expr
-                                                                }
-                                                            }
-                                                        } else {
-                                                            rewritten_expr
-                                                        }
-                                                    } else {
-                                                        rewritten_expr
-                                                    }
-                                                } else {
-                                                    rewritten_expr
-                                                };
-
-                                                // 🔧 FIX: Flatten head(collect(MapLiteral)) with node values
-                                                // ClickHouse map() requires homogeneous value types, but nodes
-                                                // have no single value. Expand each map entry to separate CTE columns.
-                                                log::info!("🔧 Checking for head(collect(MapLiteral)) flattening, alias={:?}, expanded_expr={:?}",
-                                                    item.col_alias.as_ref().map(|a| &a.0),
-                                                    std::mem::discriminant(&expanded_expr));
-                                                if let Some((flattened_items, compound_keys)) = try_flatten_head_collect_map_literal(
-                                                    &expanded_expr,
-                                                    item.col_alias.as_ref().map(|a| a.0.as_str()),
-                                                    plan_to_render,
-                                                    plan_ctx,
-                                                    body_scope_ref,
-                                                ) {
-                                                    log::info!("🔧 Flattened head(collect(MapLiteral)) into {} columns with {} compound keys",
-                                                        flattened_items.len(), compound_keys.len());
-                                                    flattened_compound_keys.borrow_mut().extend(compound_keys);
-                                                    return flattened_items;
-                                                }
-
-                                                let expr_result: Result<RenderExpr, _> = expanded_expr.try_into();
-                                                expr_result.ok().map(|mut expr| {
-                                                    // Rewrite denormalized node aliases (e.g., a → r)
-                                                    resolve_denormalized_property_in_expr_impl(&mut expr, plan_to_render, cte_from_alias.as_deref());
-
-                                                    // 🔧 FIX: VLP CTE column rewriting for non-TableAlias WITH items
-                                                    // When FROM is a VLP/multi-type CTE, PropertyAccess references
-                                                    // (e.g., message.content) must be rewritten to CTE columns
-                                                    // (e.g., t.start_content)
-                                                    if let Some(from_ref) = &rendered.from.0 {
-                                                        if from_ref.name.starts_with("vlp_") {
-                                                            let from_alias = from_ref.alias.as_deref().unwrap_or("t");
-                                                            // Build mappings: cypher_alias → "start_node" or "end_node"
-                                                            if let Some((_from_alias_meta, col_metadata)) = vlp_cte_metadata.get(&from_ref.name) {
-                                                                let mut mappings: HashMap<String, String> = HashMap::new();
-                                                                for col_meta in col_metadata {
-                                                                    if !mappings.contains_key(&col_meta.cypher_alias) {
-                                                                        if let Some(pos) = &col_meta.vlp_position {
-                                                                            let internal_alias = match pos {
-                                                                                super::cte_manager::VlpColumnPosition::Start => "start_node".to_string(),
-                                                                                super::cte_manager::VlpColumnPosition::End => "end_node".to_string(),
-                                                                            };
-                                                                            mappings.insert(col_meta.cypher_alias.clone(), internal_alias);
-                                                                        }
-                                                                    }
-                                                                }
-                                                                if !mappings.is_empty() {
-                                                                    // Build DB→Cypher property name mapping for VLP column name translation.
-                                                                    // VLP CTE columns use Cypher names (start_name) but PropertyAccessExp
-                                                                    // may have DB column names (full_name) after schema resolution.
-                                                                    let mut db_to_cypher: HashMap<(String, String), String> = HashMap::new();
-                                                                    for col_meta in col_metadata {
-                                                                        if col_meta.db_column != col_meta.cypher_property {
-                                                                            db_to_cypher.insert(
-                                                                                (col_meta.cypher_alias.clone(), col_meta.db_column.clone()),
-                                                                                col_meta.cypher_property.clone(),
-                                                                            );
-                                                                        }
-                                                                    }
-                                                                    if !db_to_cypher.is_empty() {
-                                                                        translate_db_columns_to_cypher_properties(&mut expr, &db_to_cypher);
-                                                                    }
-                                                                    // #620: rewrite endpoint id-property access
-                                                                    // (a.user_id) to the VLP CTE's authoritative id
-                                                                    // column (t.start_id/t.end_id) BEFORE the generic
-                                                                    // prefix rewrite, which would otherwise blindly
-                                                                    // build `start_user_id` (a column the CTE never
-                                                                    // projects → Code 47).
-                                                                    let mut id_columns: HashMap<String, String> = HashMap::new();
-                                                                    for col_meta in col_metadata {
-                                                                        if col_meta.is_id_column {
-                                                                            id_columns.insert(
-                                                                                col_meta.cypher_alias.clone(),
-                                                                                col_meta.cypher_property.clone(),
-                                                                            );
-                                                                        }
-                                                                    }
-                                                                    if !id_columns.is_empty() {
-                                                                        crate::render_plan::vlp_rewrite::rewrite_vlp_id_property_columns(
-                                                                            &mut expr, &mappings, &id_columns, from_alias,
-                                                                        );
-                                                                    }
-                                                                    log::debug!("🔧 VLP WITH item rewrite: mappings={:?}, from_alias={}", mappings, from_alias);
-                                                                    rewrite_render_expr_for_vlp_with_from_alias(&mut expr, &mappings, from_alias);
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                    SelectItem {
-                                                        expression: expr,
-                                                        col_alias: item.col_alias.as_ref().map(|a| crate::render_plan::render_expr::ColumnAlias(a.0.clone())),
-                                                    }
-                                                }).into_iter().collect()
-                                            }
-                                        }
-                                    })
-                                    .collect();
-
-                        log::debug!("🔧 build_chained_with_match_cte_plan: Total select_items after expansion: {}", select_items.len());
-
-                        if !select_items.is_empty() {
-                            // Check if the logical plan has a denormalized Union.
-                            // Denormalized Unions already have per-branch SELECT items with
-                            // correct column resolution (origin_code vs dest_code). We must NOT
-                            // overwrite them with a flat projection from one branch only.
-                            // Instead, rename aliases in each branch: "code" → "a_code".
-                            let is_denorm_union = plan_has_denormalized_union(plan_to_render)
-                                && rendered.union.0.is_some();
-
-                            if is_denorm_union {
-                                // Denormalized Union: the RenderPlan stores first branch in
-                                // (select, from, filters) and remaining branches in union.input[].
-                                // For CTE content, we need ALL branches in a flat UNION DISTINCT.
-                                // Move first branch into union.input and clear plan-level fields.
-                                log::info!(
-                                    "🔧 build_chained_with_match_cte_plan: Denormalized Union detected, restructuring for WITH '{}'",
-                                    with_alias
-                                );
-
-                                // Use the first exported alias (the node alias) for column renaming,
-                                // not the combined with_alias. This ensures columns like "code" become
-                                // "a_code" (not "a_allNeighboursCount_code") for unambiguous parsing.
-                                let rename_alias = with_plans
-                                    .first()
-                                    .and_then(|p| match p {
-                                        LogicalPlan::WithClause(wc) => {
-                                            wc.exported_aliases.first().cloned()
-                                        }
-                                        _ => None,
-                                    })
-                                    .unwrap_or_else(|| with_alias.clone());
-
-                                // Build first branch RenderPlan from the parent plan's fields
-                                let mut first_branch = RenderPlan {
-                                    ctes: CteItems(vec![]),
-                                    select: rendered.select.clone(),
-                                    from: rendered.from.clone(),
-                                    joins: rendered.joins.clone(),
-                                    array_join: ArrayJoinItem(Vec::new()),
-                                    filters: rendered.filters.clone(),
-                                    group_by: GroupByExpressions(vec![]),
-                                    having_clause: None,
-                                    order_by: OrderByItems(vec![]),
-                                    skip: SkipItem(None),
-                                    limit: LimitItem(None),
-                                    union: UnionItems(None),
-                                    fixed_path_info: None,
-                                    is_multi_label_scan: false,
-                                    variable_registry: None,
-                                };
-                                rename_branch_aliases(&mut first_branch.select, &rename_alias);
-
-                                // Rename aliases in remaining branches
-                                if let UnionItems(Some(ref mut union)) = rendered.union {
-                                    for branch in &mut union.input {
-                                        rename_branch_aliases(&mut branch.select, &rename_alias);
-                                    }
-                                    // Insert first branch at the beginning
-                                    union.input.insert(0, first_branch);
-                                }
-
-                                // Clear plan-level fields so CTE renders union directly
-                                rendered.select = SelectItems {
-                                    items: vec![],
-                                    distinct: false,
-                                };
-                                rendered.from = FromTableItem(None);
-                                rendered.filters = FilterItems(None);
-                                rendered.joins = JoinItems(vec![]);
-                            } else {
-                                // Non-denormalized UNION: propagate plan-level filters
-                                // to each UNION branch. Filters (inline property filters,
-                                // WHERE predicates, NOT EXISTS) live in rendered.filters
-                                // but UNION branches render independently during SQL generation,
-                                // so each branch needs its own copy.
-                                // NOTE: rendered.filters is kept (not cleared) because the SQL
-                                // generator uses it for the first UNION branch's WHERE clause.
-                                if rendered.filters.0.is_some() {
-                                    if let Some(ref mut union) = rendered.union.0 {
-                                        let filter_expr = rendered.filters.0.clone().unwrap();
-                                        for branch in union.input.iter_mut() {
-                                            branch.filters = match branch.filters.0.take() {
-                                                Some(existing) => FilterItems(Some(
-                                                    RenderExpr::OperatorApplicationExp(
-                                                        OperatorApplication {
-                                                            operator: Operator::And,
-                                                            operands: vec![
-                                                                existing,
-                                                                filter_expr.clone(),
-                                                            ],
-                                                        },
-                                                    ),
-                                                )),
-                                                None => FilterItems(Some(filter_expr.clone())),
-                                            };
-                                        }
-                                    }
-                                }
-
-                                // Apply projection to SELECT
-                                rendered.select = SelectItems {
-                                    items: select_items,
-                                    distinct: with_distinct,
-                                };
-
-                                // #529 shape 1 (loud guard — NOT a fix; see
-                                // `table_has_role_dependent_denorm_identity`'s doc
-                                // comment for the full mechanism): the WITH
-                                // projection we just attached to `rendered.select`
-                                // is about to be shared, byte-for-byte, across
-                                // EVERY branch of this multi-branch UNION
-                                // (`to_sql_query.rs`'s aggregate-UNION renderer
-                                // reuses one shared `plan.select` per branch,
-                                // never each branch's own). If this table backs a
-                                // node whose identity genuinely depends on which
-                                // role (from/to) it plays — a coupled/embedded
-                                // schema, e.g. Zeek's `IP` node on `conn_log` —
-                                // every branch will silently project the SAME
-                                // column instead of alternating roles, dropping
-                                // rows that only appear in the unselected role
-                                // and inflating counts for rows appearing in
-                                // both. Fail loudly here instead.
-                                //
-                                // Scoping history (R5, post-adversarial-review):
-                                // v1 fired only when NO branch had ANY join —
-                                // reasoning that a multi-hop pattern's per-branch
-                                // JOIN CONDITION (not its SELECT list) encodes
-                                // role. Live-verified WRONG: a 2-hop UNDIRECTED
-                                // CHAIN grouping by the first hop's own anchor
-                                // (`(a)-[r:ACCESSED]-(x)-[r2:ACCESSED]-(c) WITH a,
-                                // count(r) AS n ...`) has joins too (for the
-                                // second hop), so v1 let it through — silently
-                                // dropped 2 of 5 groups and corrupted every
-                                // remaining count on both `zeek_merged_test.yaml`
-                                // and `flights_denormalized.yaml`.
-                                //
-                                // v2 tightened to "does the WITH projection
-                                // reference the FROM ANCHOR's own alias" —
-                                // reasoning that a JOINED alias (reached through a
-                                // JOIN condition that varies per branch) is safe,
-                                // only the bare anchor (no join to disambiguate
-                                // it) is not. This fixed the v1 gap, but a DEEPER
-                                // re-verification (prompted by re-checking the
-                                // "safe" `denorm_with_aggregate_group_by_middle_
-                                // node_no_null_collapse_465_blocking` case that
-                                // motivated v1's exemption) found v2's premise
-                                // itself false: `MATCH (a:Airport)-[:FLIGHT]-
-                                // (b:Airport)-[:FLIGHT]-(c:Airport) WITH b,
-                                // count(*) AS n ...` groups by `b` — reached
-                                // through JOIN `t2`, never the anchor `t1` — yet
-                                // live execution returns `San Francisco=2` for an
-                                // airport (`SFO`) that appears in exactly ONE
-                                // flight row (graph degree 1), which makes ZERO
-                                // valid 2-hop chains through it — an impossible
-                                // result, proving corruption. Root cause: the
-                                // JOIN condition varies per branch (`t2.origin_code
-                                // = t1.dest_code` vs. `t2.dest_code = t1.dest_code`
-                                // etc.), but the SELECTed column for `b` is
-                                // ALWAYS `t2.origin_code`, even in branches whose
-                                // join tied `t2.dest_code` — the exact same
-                                // "SELECT never alternates with the join role"
-                                // bug, just one join-hop removed from the anchor.
-                                // So `denorm_with_aggregate_group_by_middle_node_
-                                // no_null_collapse_465_blocking`'s prior "verified
-                                // correct" claim was itself wrong (or verified
-                                // against different fixture data) — it is NOT a
-                                // safe exemption and is now guarded too (moved to
-                                // `..._known_broken_529` in this round).
-                                //
-                                // v3 (current): fire whenever the WITH projection
-                                // references a SPECIFIC property that is itself
-                                // role-dependent (per `NodeSchema::
-                                // role_dependent_property_names` — the Cypher
-                                // property names whose physical column genuinely
-                                // differs between from/to role, e.g. Zeek IP's
-                                // `ip`) on ANY alias in scope — FROM anchor OR any
-                                // JOINed alias — not just the anchor. Checking the
-                                // PROPERTY, not just "alias's table is
-                                // role-dependent", matters: shape 2's already-
-                                // fixed `MATCH (a:IP) OPTIONAL MATCH (a)-[r:
-                                // ACCESSED]-(b:IP) WITH a, count(r) AS c ...`
-                                // resolves `count(r)` to `r.uid` — `r` (the
-                                // relationship alias) happens to share its
-                                // physical table with the role-dependent `IP`
-                                // node, but `uid` itself is the edge's own,
-                                // role-INDEPENDENT identity (not a key in
-                                // `from_properties`/`to_properties` at all) — a
-                                // naive "any reference to a role-dependent
-                                // TABLE" check (an earlier draft of this v3) was
-                                // a false positive here, caught by this exact
-                                // regression test. No known-safe exemption
-                                // remains within this codebase today; if one is
-                                // found later it needs its own live, degree-based
-                                // ground-truth verification (not just "the
-                                // numbers look plausible") before being carved
-                                // out again.
-                                if let Some(ref union) = rendered.union.0 {
-                                    if !union.input.is_empty() {
-                                        let mut alias_to_table: std::collections::HashMap<
-                                            &str,
-                                            &str,
-                                        > = std::collections::HashMap::new();
-                                        if let Some(ref from_ref) = rendered.from.0 {
-                                            if let Some(ref alias) = from_ref.alias {
-                                                alias_to_table
-                                                    .insert(alias.as_str(), from_ref.name.as_str());
-                                            }
-                                        }
-                                        for join in &rendered.joins.0 {
-                                            alias_to_table.insert(
-                                                join.table_alias.as_str(),
-                                                join.table_name.as_str(),
-                                            );
-                                        }
-
-                                        let mut accesses: Vec<(&str, &str)> = Vec::new();
-                                        for item in &rendered.select.items {
-                                            collect_property_accesses(
-                                                &item.expression,
-                                                &mut accesses,
-                                            );
-                                        }
-
-                                        let corrupt_alias_referenced =
-                                            accesses.iter().any(|(alias, property)| {
-                                                alias_to_table.get(alias).is_some_and(|table| {
-                                                    table_role_dependent_property_names(
-                                                        schema, table,
-                                                    )
-                                                    .contains(*property)
-                                                })
-                                            });
-                                        if corrupt_alias_referenced {
-                                            return Err(RenderBuildError::UnsupportedFeature(
-                                                "Undirected self-referencing relationship over a \
-                                                 denormalized/embedded node table is not yet \
-                                                 supported for WITH-aggregate queries (#529 shape \
-                                                 1): the per-role UNION branches would project the \
-                                                 identical embedded identity column instead of \
-                                                 alternating from/to roles, silently dropping and \
-                                                 double-counting rows. Rewrite the query with an \
-                                                 explicit direction (e.g. `-[r]->` instead of \
-                                                 `-[r]-`) to work around this, or track \
-                                                 https://github.com/genezhang/clickgraph/issues/529."
-                                                    .to_string(),
-                                            ));
-                                        }
-                                    }
-                                }
-                            } // end is_denorm_union else
-
-                            // FIX: When the input plan was Empty (no MATCH before WITH),
-                            // the rendered plan has FROM=None and filters=WHERE false.
-                            // After overwriting SELECT with WITH items (pure constants like map literals),
-                            // the WHERE false is spurious — clear it so the CTE returns one row.
-                            if rendered.from.0.is_none()
-                                && rendered.joins.0.is_empty()
-                                && matches!(
-                                    &rendered.filters.0,
-                                    Some(RenderExpr::Literal(
-                                        super::render_expr::Literal::Boolean(false)
-                                    ))
-                                )
-                            {
-                                rendered.filters = FilterItems(None);
-                            }
-
-                            // If there's aggregation, add GROUP BY for non-aggregate expressions
-                            // PERFORMANCE: Only GROUP BY the ID column(s) for TableAlias items
-                            // (non-ID columns are wrapped with ANY() above, so they don't need to be grouped)
-                            //
-                            // This is efficient because:
-                            // 1. node_id is the primary key (unique identifier)
-                            // 2. ANY() picks the single value in each group (safe for PK)
-                            // 3. GROUP BY 1 column is much faster than GROUP BY 7 columns
-                            if has_aggregation {
-                                let group_by_exprs: Vec<RenderExpr> = items.iter()
-                                            .filter(|item| {
-                                                // Exclude: direct aggregates, literals, and expressions containing aggregates
-                                                // (#591: use expr_contains_aggregate, which recurses into
-                                                // Case/List/legacy-Operator — a narrower helper here silently
-                                                // pushed CASE/List-wrapped aggregates into GROUP BY → Code 184).
-                                                !matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_))
-                                                && !is_literal_expr(&item.expression)
-                                                && !expr_contains_aggregate(&item.expression)
-                                            })
-                                            .flat_map(|item| {
-                                                // For TableAlias, only GROUP BY the ID column
-                                                // (other columns are wrapped with ANY() in SELECT)
-                                                match &item.expression {
-                                                    crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
-                                                        // Use ID-only helper for efficient GROUP BY
-                                                        // Pass VLP CTE metadata for deterministic lookups
-                                                        expand_table_alias_to_group_by_id_only(
-                                                            &alias.0,
-                                                            plan_to_render,
-                                                            schema,
-                                                            &cte_schemas,
-                                                            &cte_references_for_rendering,
-                                                            Some(&vlp_cte_metadata),
-                                                        )
-                                                    }
-                                                    crate::query_planner::logical_expr::LogicalExpr::ArraySubscript { array, .. } => {
-                                                        // For array subscripts (e.g., labels(x)[1]), only GROUP BY the array part
-                                                        // ClickHouse can't GROUP BY an array element, only the array itself
-                                                        let expr_vec: Vec<RenderExpr> = (**array).clone().try_into().ok().into_iter().collect();
-                                                        expr_vec
-                                                    }
-                                                    _ => {
-                                                        // Apply property mapping rewriting before converting to RenderExpr.
-                                                        // This ensures CTE-scoped columns resolve correctly (e.g., message.length → p7_message_length).
-                                                        use crate::query_planner::logical_expr::expression_rewriter::{
-                                                            ExpressionRewriteContext, rewrite_expression_with_property_mapping,
-                                                        };
-                                                        let rewrite_ctx = if let Some(s) = body_scope_ref {
-                                                            ExpressionRewriteContext::with_scope(plan_to_render, s)
-                                                        } else {
-                                                            ExpressionRewriteContext::new(plan_to_render)
-                                                        };
-                                                        let rewritten = rewrite_expression_with_property_mapping(&item.expression, &rewrite_ctx);
-                                                        let expr_vec: Vec<RenderExpr> = rewritten.try_into().ok().map(|mut expr: RenderExpr| {
-                                                            resolve_denormalized_property_in_expr_impl(&mut expr, plan_to_render, cte_from_alias.as_deref());
-                                                            expr
-                                                        }).into_iter().collect();
-                                                        expr_vec
-                                                    }
-                                                }
-                                            })
-                                            .collect();
-                                rendered.group_by = GroupByExpressions(group_by_exprs);
-                            }
-                        }
-                    }
-                }
+                // Apply WITH items projection if present (handles `WITH x.p AS n`,
+                // `WITH count(x) AS c`, bare `WITH a`, and the denormalized-UNION
+                // restructuring path). See `apply_with_items_projection`.
+                apply_with_items_projection(
+                    &mut rendered,
+                    plan_to_render,
+                    &with_items,
+                    with_distinct,
+                    &pc_result_aliases,
+                    &pc_correlated_aliases,
+                    &with_plans,
+                    &with_alias,
+                    &cte_from_alias,
+                    schema,
+                    plan_ctx,
+                    body_scope_ref,
+                    &cte_schemas,
+                    &cte_references_for_rendering,
+                    &vlp_cte_metadata,
+                    &flattened_compound_keys,
+                )?;
 
                 // Build scope-aware rewrite context for ORDER BY and WHERE/HAVING
                 // from WithClause. This maps Cypher property names to CTE column names.
