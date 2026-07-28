@@ -422,6 +422,364 @@ pub(crate) fn collect_property_accesses<'a>(
 /// The gating predicates it calls (`plan_contains_with_clause`,
 /// `needs_processing`) ARE now backed by `children()`, so this function still
 /// benefits from the unified traversal at its decision points.
+// ── Helpers hoisted from `replace_with_clause_with_cte_reference_v2` (Phase-4
+// §7.1): CTE-reference construction + PropertyAccess remapping. These were
+// nested `fn`s (no captures) inside replace_v2; moved to module level verbatim.
+// Helper to remap PropertyAccess expressions to use CTE column names
+// CRITICAL: After creating a CTE reference, PropertyAccess expressions in downstream nodes
+// (like Projection) still have the OLD column names from FilterTagging (which used the
+// original ViewScan's property_mapping). FilterTagging may have resolved Cypher properties
+// to DB columns already, so we need to REVERSE that using db_to_cypher mapping.
+fn remap_property_access_for_cte(
+    expr: crate::query_planner::logical_expr::LogicalExpr,
+    cte_alias: &str,
+    property_mapping: &HashMap<String, crate::graph_catalog::expression_parser::PropertyValue>,
+    db_to_cypher: &HashMap<String, String>,
+) -> crate::query_planner::logical_expr::LogicalExpr {
+    use crate::query_planner::logical_expr::LogicalExpr;
+
+    match expr {
+        LogicalExpr::PropertyAccessExp(mut prop) => {
+            // Check if this PropertyAccess references the CTE alias
+            if prop.table_alias.0 == cte_alias {
+                let current_col = prop.column.raw();
+
+                // CRITICAL: FilterTagging ALWAYS resolves Cypher properties to DB columns
+                // So current_col is almost certainly a DB column name, not a Cypher property
+                //
+                // Strategy:
+                // 1. PRIMARY: Try reverse mapping (DB column → Cypher property → CTE column)
+                // 2. FALLBACK: Direct lookup (handles identity mappings where Cypher name = DB name)
+
+                if let Some(cypher_prop) = db_to_cypher.get(current_col) {
+                    // Found! current_col is a DB column - reverse it to Cypher property
+                    if let Some(cte_col) = property_mapping.get(cypher_prop) {
+                        log::debug!(
+                            "🔧 remap_property_access: Remapped {}.{} → {} (DB '{}' → Cypher '{}' → CTE)",
+                            cte_alias, current_col, cte_col.raw(), current_col, cypher_prop
+                        );
+                        prop.column = cte_col.clone();
+                    } else {
+                        log::debug!(
+                            "🔧 remap_property_access: Reverse mapped DB '{}' to Cypher '{}' but no CTE column found!",
+                            current_col, cypher_prop
+                        );
+                    }
+                } else if let Some(cte_col) = property_mapping.get(current_col) {
+                    // Fallback: Identity mapping where Cypher property = DB column
+                    // Example: user_id: user_id → both "user_id" (Cypher) and "user_id" (DB)
+                    log::debug!(
+                        "🔧 remap_property_access: Remapped {}.{} → {} (direct/identity mapping)",
+                        cte_alias,
+                        current_col,
+                        cte_col.raw()
+                    );
+                    prop.column = cte_col.clone();
+                } else {
+                    log::debug!(
+                        "🔧 remap_property_access: Could not remap {}.{} - not in db_to_cypher or property_mapping",
+                        cte_alias, current_col
+                    );
+                }
+            }
+            LogicalExpr::PropertyAccessExp(prop)
+        }
+        LogicalExpr::OperatorApplicationExp(mut op) => {
+            op.operands = op
+                .operands
+                .into_iter()
+                .map(|operand| {
+                    remap_property_access_for_cte(
+                        operand,
+                        cte_alias,
+                        property_mapping,
+                        db_to_cypher,
+                    )
+                })
+                .collect();
+            LogicalExpr::OperatorApplicationExp(op)
+        }
+        LogicalExpr::AggregateFnCall(mut agg) => {
+            agg.args = agg
+                .args
+                .into_iter()
+                .map(|arg| {
+                    remap_property_access_for_cte(arg, cte_alias, property_mapping, db_to_cypher)
+                })
+                .collect();
+            LogicalExpr::AggregateFnCall(agg)
+        }
+        LogicalExpr::ScalarFnCall(mut func) => {
+            func.args = func
+                .args
+                .into_iter()
+                .map(|arg| {
+                    remap_property_access_for_cte(arg, cte_alias, property_mapping, db_to_cypher)
+                })
+                .collect();
+            LogicalExpr::ScalarFnCall(func)
+        }
+        LogicalExpr::List(list) => LogicalExpr::List(
+            list.into_iter()
+                .map(|item| {
+                    remap_property_access_for_cte(item, cte_alias, property_mapping, db_to_cypher)
+                })
+                .collect(),
+        ),
+        LogicalExpr::Case(mut case_expr) => {
+            if let Some(expr) = case_expr.expr {
+                case_expr.expr = Some(Box::new(remap_property_access_for_cte(
+                    *expr,
+                    cte_alias,
+                    property_mapping,
+                    db_to_cypher,
+                )));
+            }
+            case_expr.when_then = case_expr
+                .when_then
+                .into_iter()
+                .map(|(when, then)| {
+                    (
+                        remap_property_access_for_cte(
+                            when,
+                            cte_alias,
+                            property_mapping,
+                            db_to_cypher,
+                        ),
+                        remap_property_access_for_cte(
+                            then,
+                            cte_alias,
+                            property_mapping,
+                            db_to_cypher,
+                        ),
+                    )
+                })
+                .collect();
+            if let Some(else_expr) = case_expr.else_expr {
+                case_expr.else_expr = Some(Box::new(remap_property_access_for_cte(
+                    *else_expr,
+                    cte_alias,
+                    property_mapping,
+                    db_to_cypher,
+                )));
+            }
+            LogicalExpr::Case(case_expr)
+        }
+        // Other expressions don't contain PropertyAccess
+        other => other,
+    }
+}
+
+// Helper to remap PropertyAccess in a ProjectionItem
+fn remap_projection_item(
+    item: crate::query_planner::logical_plan::ProjectionItem,
+    cte_alias: &str,
+    property_mapping: &HashMap<String, crate::graph_catalog::expression_parser::PropertyValue>,
+    db_to_cypher: &HashMap<String, String>,
+) -> crate::query_planner::logical_plan::ProjectionItem {
+    crate::query_planner::logical_plan::ProjectionItem {
+        expression: remap_property_access_for_cte(
+            item.expression,
+            cte_alias,
+            property_mapping,
+            db_to_cypher,
+        ),
+        col_alias: item.col_alias,
+    }
+}
+
+// Helper to create a CTE reference node with proper property_mapping
+fn create_cte_reference(
+    cte_name: &str,
+    with_alias: &str,
+    cte_schemas: &crate::render_plan::CteSchemas,
+) -> LogicalPlan {
+    use crate::graph_catalog::expression_parser::PropertyValue;
+    // These were in scope via `replace_v2`'s top-of-body `use logical_plan::*` /
+    // `use Arc` when this fn was nested inside it (Phase-4 §7.1 hoist).
+    use crate::query_planner::logical_plan::{GraphNode, ViewScan};
+    use std::sync::Arc;
+
+    // CRITICAL: Use the original WITH alias (e.g., "a") as the GraphNode alias
+    // This ensures property references like "a.user_id" work correctly
+    // The FROM clause will render as: FROM with_a_cte1 AS a
+    let table_alias = with_alias.to_string();
+
+    // Build property_mapping using CYPHER PROPERTY NAMES ONLY
+    // Store the ViewScan's DB mapping separately so we can reverse-resolve DB columns
+    let (property_mapping, _db_to_cypher_mapping) = if let Some(meta) = cte_schemas.get(cte_name) {
+        let mut mapping = HashMap::new();
+        let mut db_to_cypher = HashMap::new(); // Reverse: DB column → Cypher property
+
+        // Parse the composite with_alias into individual aliases
+        // e.g., "fids_p" → ["fids", "p"] (from exported_aliases tracked earlier)
+        // We need individual aliases to match CTE column names like "p1_p_id"
+
+        // Build mappings from SelectItems
+        for item in &meta.select_items {
+            if let Some(cte_col_alias) = &item.col_alias {
+                let cte_col_name = &cte_col_alias.0;
+
+                // Use the proper p{N} CTE column naming parser for unambiguous decoding
+                if let Some((col_alias, cypher_prop)) =
+                    crate::utils::cte_column_naming::parse_cte_column(cte_col_name)
+                {
+                    // Primary: Cypher property → CTE column
+                    // Key format: "alias.property" so downstream property access works
+                    mapping.insert(
+                        cypher_prop.to_string(),
+                        PropertyValue::Column(cte_col_name.clone()),
+                    );
+
+                    // Reverse: DB column → Cypher property (for resolving FilterTagging's DB columns)
+                    if let RenderExpr::PropertyAccessExp(prop_access) = &item.expression {
+                        let db_col = prop_access.column.raw();
+
+                        // Detect conflicts: multiple Cypher properties using same DB column
+                        if let Some(existing_cypher) = db_to_cypher.get(db_col) {
+                            if existing_cypher != &cypher_prop {
+                                log::debug!(
+                                    "🔧 create_cte_reference: CONFLICT - DB column '{}' used by both Cypher '{}' and '{}'. \
+                                     Using '{}' (last wins). Queries using '{}.{}' may get wrong column!",
+                                    db_col, existing_cypher, cypher_prop, cypher_prop, col_alias, existing_cypher
+                                );
+                            }
+                        }
+
+                        db_to_cypher.insert(db_col.to_string(), cypher_prop.to_string());
+
+                        if db_col != cypher_prop {
+                            log::debug!(
+                                "🔧 create_cte_reference: Reverse mapping for '{}': DB '{}' ← Cypher '{}' → CTE '{}'",
+                                col_alias, db_col, cypher_prop, cte_col_name
+                            );
+                        }
+                    }
+                } else if let Some(cypher_prop) =
+                    cte_col_name.strip_prefix(&format!("{}_", with_alias))
+                {
+                    // Legacy fallback: try stripping composite alias prefix
+                    mapping.insert(
+                        cypher_prop.to_string(),
+                        PropertyValue::Column(cte_col_name.clone()),
+                    );
+                } else {
+                    // Fallback: identity mapping (for non-property columns like "fids")
+                    mapping.insert(
+                        cte_col_name.clone(),
+                        PropertyValue::Column(cte_col_name.clone()),
+                    );
+                }
+            }
+        }
+
+        // CRITICAL FIX: Add DB column mappings from stored_property_mapping
+        // The stored_property_mapping has entries like ((u, full_name), u_name)
+        // which tells us: DB column "full_name" should map to CTE column "u_name"
+        // We need to add these to the ViewScan property_mapping as:
+        // ("full_name", Column("u_name"))
+        for ((alias, db_prop), cte_column) in meta.property_mapping.iter() {
+            if alias == with_alias {
+                // This is a mapping for our alias (e.g., "u")
+                // Add it to the mapping if not already present
+                if !mapping.contains_key(db_prop) {
+                    mapping.insert(db_prop.clone(), PropertyValue::Column(cte_column.clone()));
+                    log::debug!(
+                        "🔧 create_cte_reference: Added DB column mapping from stored: ({}, {}) → {}",
+                        alias,
+                        db_prop,
+                        cte_column
+                    );
+                }
+            }
+        }
+
+        log::info!(
+            "🔧 create_cte_reference: Built mappings for '{}': {} Cypher→CTE + {} DB→Cypher",
+            cte_name,
+            mapping.len(),
+            db_to_cypher.len()
+        );
+        (mapping, db_to_cypher)
+    } else {
+        log::debug!(
+            "🔧 create_cte_reference (v2): No schema found for CTE '{}', using empty property_mapping",
+            cte_name
+        );
+        (HashMap::new(), HashMap::new())
+    };
+
+    // Look up the actual ID column from cte_schemas (alias → ID column mapping)
+    // The alias_to_id stores prefixed names like "a_code", but ViewScan.id_column
+    // should be unprefixed (e.g., "code") because resolve_cte_reference adds the prefix.
+    let cte_id_column = cte_schemas
+        .get(cte_name)
+        .and_then(|meta| {
+            // Try direct lookup first
+            meta.alias_to_id
+                .get(with_alias)
+                .or_else(|| {
+                    // Combined alias (e.g., "a_allNeighboursCount") won't match
+                    // individual aliases (e.g., "a"). Try first matching key.
+                    meta.alias_to_id
+                        .keys()
+                        .next()
+                        .and_then(|k| meta.alias_to_id.get(k))
+                })
+                .map(|prefixed| {
+                    // Strip any alias prefix: "a_code" → "code"
+                    // Try with_alias first, then each key in alias_to_id
+                    let stripped = prefixed
+                        .strip_prefix(&format!("{}_", with_alias))
+                        .or_else(|| {
+                            meta.alias_to_id
+                                .keys()
+                                .find_map(|k| prefixed.strip_prefix(&format!("{}_", k)))
+                        })
+                        .unwrap_or(prefixed);
+                    stripped.to_string()
+                })
+        })
+        .unwrap_or_else(|| "id".to_string());
+    log::info!(
+        "🔧 create_cte_reference: CTE '{}' alias '{}' → id_column '{}'",
+        cte_name,
+        with_alias,
+        cte_id_column
+    );
+
+    LogicalPlan::GraphNode(GraphNode {
+        input: Arc::new(LogicalPlan::ViewScan(Arc::new(ViewScan {
+            source_table: cte_name.to_string(),
+            view_filter: None,
+            property_mapping,
+            id_column: cte_id_column.clone(),
+            output_schema: vec!["id".to_string()],
+            projections: vec![],
+            from_id: None,
+            to_id: None,
+            input: None,
+            view_parameter_names: None,
+            view_parameter_values: None,
+            use_final: false,
+            is_denormalized: false,
+            from_node_properties: None,
+            to_node_properties: None,
+            type_column: None,
+            type_values: None,
+            from_label_column: None,
+            to_label_column: None,
+            schema_filter: None,
+            node_label: None,
+        }))),
+        alias: table_alias,
+        label: None,
+        is_denormalized: false,
+        projected_columns: None,
+        node_types: None,
+    })
+}
+
 pub(crate) fn replace_with_clause_with_cte_reference_v2(
     plan: &LogicalPlan,
     with_alias: &str,
@@ -448,373 +806,6 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
             LogicalPlan::WithClause(wc) => extract_node_label_from_plan(&wc.input),
             _ => None,
         }
-    }
-
-    // Helper to generate a key for a WithClause (matches the key generation in find_all_with_clauses_grouped)
-    // Helper to remap PropertyAccess expressions to use CTE column names
-    // CRITICAL: After creating a CTE reference, PropertyAccess expressions in downstream nodes
-    // (like Projection) still have the OLD column names from FilterTagging (which used the
-    // original ViewScan's property_mapping). FilterTagging may have resolved Cypher properties
-    // to DB columns already, so we need to REVERSE that using db_to_cypher mapping.
-    fn remap_property_access_for_cte(
-        expr: crate::query_planner::logical_expr::LogicalExpr,
-        cte_alias: &str,
-        property_mapping: &HashMap<String, crate::graph_catalog::expression_parser::PropertyValue>,
-        db_to_cypher: &HashMap<String, String>,
-    ) -> crate::query_planner::logical_expr::LogicalExpr {
-        use crate::query_planner::logical_expr::LogicalExpr;
-
-        match expr {
-            LogicalExpr::PropertyAccessExp(mut prop) => {
-                // Check if this PropertyAccess references the CTE alias
-                if prop.table_alias.0 == cte_alias {
-                    let current_col = prop.column.raw();
-
-                    // CRITICAL: FilterTagging ALWAYS resolves Cypher properties to DB columns
-                    // So current_col is almost certainly a DB column name, not a Cypher property
-                    //
-                    // Strategy:
-                    // 1. PRIMARY: Try reverse mapping (DB column → Cypher property → CTE column)
-                    // 2. FALLBACK: Direct lookup (handles identity mappings where Cypher name = DB name)
-
-                    if let Some(cypher_prop) = db_to_cypher.get(current_col) {
-                        // Found! current_col is a DB column - reverse it to Cypher property
-                        if let Some(cte_col) = property_mapping.get(cypher_prop) {
-                            log::debug!(
-                                "🔧 remap_property_access: Remapped {}.{} → {} (DB '{}' → Cypher '{}' → CTE)",
-                                cte_alias, current_col, cte_col.raw(), current_col, cypher_prop
-                            );
-                            prop.column = cte_col.clone();
-                        } else {
-                            log::debug!(
-                                "🔧 remap_property_access: Reverse mapped DB '{}' to Cypher '{}' but no CTE column found!",
-                                current_col, cypher_prop
-                            );
-                        }
-                    } else if let Some(cte_col) = property_mapping.get(current_col) {
-                        // Fallback: Identity mapping where Cypher property = DB column
-                        // Example: user_id: user_id → both "user_id" (Cypher) and "user_id" (DB)
-                        log::debug!(
-                            "🔧 remap_property_access: Remapped {}.{} → {} (direct/identity mapping)",
-                            cte_alias, current_col, cte_col.raw()
-                        );
-                        prop.column = cte_col.clone();
-                    } else {
-                        log::debug!(
-                            "🔧 remap_property_access: Could not remap {}.{} - not in db_to_cypher or property_mapping",
-                            cte_alias, current_col
-                        );
-                    }
-                }
-                LogicalExpr::PropertyAccessExp(prop)
-            }
-            LogicalExpr::OperatorApplicationExp(mut op) => {
-                op.operands = op
-                    .operands
-                    .into_iter()
-                    .map(|operand| {
-                        remap_property_access_for_cte(
-                            operand,
-                            cte_alias,
-                            property_mapping,
-                            db_to_cypher,
-                        )
-                    })
-                    .collect();
-                LogicalExpr::OperatorApplicationExp(op)
-            }
-            LogicalExpr::AggregateFnCall(mut agg) => {
-                agg.args = agg
-                    .args
-                    .into_iter()
-                    .map(|arg| {
-                        remap_property_access_for_cte(
-                            arg,
-                            cte_alias,
-                            property_mapping,
-                            db_to_cypher,
-                        )
-                    })
-                    .collect();
-                LogicalExpr::AggregateFnCall(agg)
-            }
-            LogicalExpr::ScalarFnCall(mut func) => {
-                func.args = func
-                    .args
-                    .into_iter()
-                    .map(|arg| {
-                        remap_property_access_for_cte(
-                            arg,
-                            cte_alias,
-                            property_mapping,
-                            db_to_cypher,
-                        )
-                    })
-                    .collect();
-                LogicalExpr::ScalarFnCall(func)
-            }
-            LogicalExpr::List(list) => LogicalExpr::List(
-                list.into_iter()
-                    .map(|item| {
-                        remap_property_access_for_cte(
-                            item,
-                            cte_alias,
-                            property_mapping,
-                            db_to_cypher,
-                        )
-                    })
-                    .collect(),
-            ),
-            LogicalExpr::Case(mut case_expr) => {
-                if let Some(expr) = case_expr.expr {
-                    case_expr.expr = Some(Box::new(remap_property_access_for_cte(
-                        *expr,
-                        cte_alias,
-                        property_mapping,
-                        db_to_cypher,
-                    )));
-                }
-                case_expr.when_then = case_expr
-                    .when_then
-                    .into_iter()
-                    .map(|(when, then)| {
-                        (
-                            remap_property_access_for_cte(
-                                when,
-                                cte_alias,
-                                property_mapping,
-                                db_to_cypher,
-                            ),
-                            remap_property_access_for_cte(
-                                then,
-                                cte_alias,
-                                property_mapping,
-                                db_to_cypher,
-                            ),
-                        )
-                    })
-                    .collect();
-                if let Some(else_expr) = case_expr.else_expr {
-                    case_expr.else_expr = Some(Box::new(remap_property_access_for_cte(
-                        *else_expr,
-                        cte_alias,
-                        property_mapping,
-                        db_to_cypher,
-                    )));
-                }
-                LogicalExpr::Case(case_expr)
-            }
-            // Other expressions don't contain PropertyAccess
-            other => other,
-        }
-    }
-
-    // Helper to remap PropertyAccess in a ProjectionItem
-    fn remap_projection_item(
-        item: crate::query_planner::logical_plan::ProjectionItem,
-        cte_alias: &str,
-        property_mapping: &HashMap<String, crate::graph_catalog::expression_parser::PropertyValue>,
-        db_to_cypher: &HashMap<String, String>,
-    ) -> crate::query_planner::logical_plan::ProjectionItem {
-        crate::query_planner::logical_plan::ProjectionItem {
-            expression: remap_property_access_for_cte(
-                item.expression,
-                cte_alias,
-                property_mapping,
-                db_to_cypher,
-            ),
-            col_alias: item.col_alias,
-        }
-    }
-
-    // Helper to create a CTE reference node with proper property_mapping
-    fn create_cte_reference(
-        cte_name: &str,
-        with_alias: &str,
-        cte_schemas: &crate::render_plan::CteSchemas,
-    ) -> LogicalPlan {
-        use crate::graph_catalog::expression_parser::PropertyValue;
-
-        // CRITICAL: Use the original WITH alias (e.g., "a") as the GraphNode alias
-        // This ensures property references like "a.user_id" work correctly
-        // The FROM clause will render as: FROM with_a_cte1 AS a
-        let table_alias = with_alias.to_string();
-
-        // Build property_mapping using CYPHER PROPERTY NAMES ONLY
-        // Store the ViewScan's DB mapping separately so we can reverse-resolve DB columns
-        let (property_mapping, _db_to_cypher_mapping) = if let Some(meta) =
-            cte_schemas.get(cte_name)
-        {
-            let mut mapping = HashMap::new();
-            let mut db_to_cypher = HashMap::new(); // Reverse: DB column → Cypher property
-
-            // Parse the composite with_alias into individual aliases
-            // e.g., "fids_p" → ["fids", "p"] (from exported_aliases tracked earlier)
-            // We need individual aliases to match CTE column names like "p1_p_id"
-
-            // Build mappings from SelectItems
-            for item in &meta.select_items {
-                if let Some(cte_col_alias) = &item.col_alias {
-                    let cte_col_name = &cte_col_alias.0;
-
-                    // Use the proper p{N} CTE column naming parser for unambiguous decoding
-                    if let Some((col_alias, cypher_prop)) =
-                        crate::utils::cte_column_naming::parse_cte_column(cte_col_name)
-                    {
-                        // Primary: Cypher property → CTE column
-                        // Key format: "alias.property" so downstream property access works
-                        mapping.insert(
-                            cypher_prop.to_string(),
-                            PropertyValue::Column(cte_col_name.clone()),
-                        );
-
-                        // Reverse: DB column → Cypher property (for resolving FilterTagging's DB columns)
-                        if let RenderExpr::PropertyAccessExp(prop_access) = &item.expression {
-                            let db_col = prop_access.column.raw();
-
-                            // Detect conflicts: multiple Cypher properties using same DB column
-                            if let Some(existing_cypher) = db_to_cypher.get(db_col) {
-                                if existing_cypher != &cypher_prop {
-                                    log::debug!(
-                                        "🔧 create_cte_reference: CONFLICT - DB column '{}' used by both Cypher '{}' and '{}'. \
-                                         Using '{}' (last wins). Queries using '{}.{}' may get wrong column!",
-                                        db_col, existing_cypher, cypher_prop, cypher_prop, col_alias, existing_cypher
-                                    );
-                                }
-                            }
-
-                            db_to_cypher.insert(db_col.to_string(), cypher_prop.to_string());
-
-                            if db_col != cypher_prop {
-                                log::debug!(
-                                    "🔧 create_cte_reference: Reverse mapping for '{}': DB '{}' ← Cypher '{}' → CTE '{}'",
-                                    col_alias, db_col, cypher_prop, cte_col_name
-                                );
-                            }
-                        }
-                    } else if let Some(cypher_prop) =
-                        cte_col_name.strip_prefix(&format!("{}_", with_alias))
-                    {
-                        // Legacy fallback: try stripping composite alias prefix
-                        mapping.insert(
-                            cypher_prop.to_string(),
-                            PropertyValue::Column(cte_col_name.clone()),
-                        );
-                    } else {
-                        // Fallback: identity mapping (for non-property columns like "fids")
-                        mapping.insert(
-                            cte_col_name.clone(),
-                            PropertyValue::Column(cte_col_name.clone()),
-                        );
-                    }
-                }
-            }
-
-            // CRITICAL FIX: Add DB column mappings from stored_property_mapping
-            // The stored_property_mapping has entries like ((u, full_name), u_name)
-            // which tells us: DB column "full_name" should map to CTE column "u_name"
-            // We need to add these to the ViewScan property_mapping as:
-            // ("full_name", Column("u_name"))
-            for ((alias, db_prop), cte_column) in meta.property_mapping.iter() {
-                if alias == with_alias {
-                    // This is a mapping for our alias (e.g., "u")
-                    // Add it to the mapping if not already present
-                    if !mapping.contains_key(db_prop) {
-                        mapping.insert(db_prop.clone(), PropertyValue::Column(cte_column.clone()));
-                        log::debug!(
-                            "🔧 create_cte_reference: Added DB column mapping from stored: ({}, {}) → {}",
-                            alias,
-                            db_prop,
-                            cte_column
-                        );
-                    }
-                }
-            }
-
-            log::info!(
-                "🔧 create_cte_reference: Built mappings for '{}': {} Cypher→CTE + {} DB→Cypher",
-                cte_name,
-                mapping.len(),
-                db_to_cypher.len()
-            );
-            (mapping, db_to_cypher)
-        } else {
-            log::debug!(
-                "🔧 create_cte_reference (v2): No schema found for CTE '{}', using empty property_mapping",
-                cte_name
-            );
-            (HashMap::new(), HashMap::new())
-        };
-
-        // Look up the actual ID column from cte_schemas (alias → ID column mapping)
-        // The alias_to_id stores prefixed names like "a_code", but ViewScan.id_column
-        // should be unprefixed (e.g., "code") because resolve_cte_reference adds the prefix.
-        let cte_id_column = cte_schemas
-            .get(cte_name)
-            .and_then(|meta| {
-                // Try direct lookup first
-                meta.alias_to_id
-                    .get(with_alias)
-                    .or_else(|| {
-                        // Combined alias (e.g., "a_allNeighboursCount") won't match
-                        // individual aliases (e.g., "a"). Try first matching key.
-                        meta.alias_to_id
-                            .keys()
-                            .next()
-                            .and_then(|k| meta.alias_to_id.get(k))
-                    })
-                    .map(|prefixed| {
-                        // Strip any alias prefix: "a_code" → "code"
-                        // Try with_alias first, then each key in alias_to_id
-                        let stripped = prefixed
-                            .strip_prefix(&format!("{}_", with_alias))
-                            .or_else(|| {
-                                meta.alias_to_id
-                                    .keys()
-                                    .find_map(|k| prefixed.strip_prefix(&format!("{}_", k)))
-                            })
-                            .unwrap_or(prefixed);
-                        stripped.to_string()
-                    })
-            })
-            .unwrap_or_else(|| "id".to_string());
-        log::info!(
-            "🔧 create_cte_reference: CTE '{}' alias '{}' → id_column '{}'",
-            cte_name,
-            with_alias,
-            cte_id_column
-        );
-
-        LogicalPlan::GraphNode(GraphNode {
-            input: Arc::new(LogicalPlan::ViewScan(Arc::new(ViewScan {
-                source_table: cte_name.to_string(),
-                view_filter: None,
-                property_mapping,
-                id_column: cte_id_column.clone(),
-                output_schema: vec!["id".to_string()],
-                projections: vec![],
-                from_id: None,
-                to_id: None,
-                input: None,
-                view_parameter_names: None,
-                view_parameter_values: None,
-                use_final: false,
-                is_denormalized: false,
-                from_node_properties: None,
-                to_node_properties: None,
-                type_column: None,
-                type_values: None,
-                from_label_column: None,
-                to_label_column: None,
-                schema_filter: None,
-                node_label: None,
-            }))),
-            alias: table_alias,
-            label: None,
-            is_denormalized: false,
-            projected_columns: None,
-            node_types: None,
-        })
     }
 
     match plan {
