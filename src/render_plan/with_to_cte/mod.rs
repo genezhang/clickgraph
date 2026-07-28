@@ -6680,6 +6680,226 @@ fn fix_composite_alias_refs_and_augment_scope(
     }
 }
 
+/// Register schemas for VLP CTEs used by this render segment (a STEP of the main
+/// loop's inner render-loop in `build_chained_with_match_cte_plan`, Phase-4 §7.1
+/// extraction).
+///
+/// VLP CTEs are `RawSql`, so their schema cannot be read off the CTE body. Two
+/// registration paths cover them: (1) when the segment ends in a UNION over VLP
+/// results, extract column/ID/property mappings from the UNION's first SELECT and
+/// register them under the pseudo-CTE `__union_vlp`; (2) when the segment's FROM
+/// is a `vlp_`-prefixed CTE, register each correlation alias → VLP CTE mapping
+/// and populate `cte_schemas` from `vlp_cte_metadata` so GROUP-BY property
+/// mapping resolves the VLP columns. Reads `rendered`; mutates `cte_schemas` and
+/// `cte_references_for_rendering`.
+fn register_vlp_cte_schemas(
+    rendered: &RenderPlan,
+    cte_schemas: &mut crate::render_plan::CteSchemas,
+    cte_references_for_rendering: &mut HashMap<String, String>,
+    vlp_cte_metadata: &HashMap<String, (String, Vec<super::CteColumnMetadata>)>,
+) {
+    // CRITICAL: Extract schema from UNION (for VLP CTEs)
+    // VLP CTEs are RawSql so we can't extract schema from them directly
+    // But the UNION that uses them has SELECT items with aliases like "friend.id", "p.firstName"
+    if let UnionItems(Some(union)) = &rendered.union {
+        if !union.input.is_empty() {
+            let union_select_items = &union.input[0].select.items;
+            let union_property_names: Vec<String> = union_select_items
+                .iter()
+                .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
+                .collect();
+
+            // Extract ID column mappings from UNION columns
+            // Store FULL column name (e.g., "friend.id"), not just "id"
+            let mut union_alias_to_id: HashMap<String, String> = HashMap::new();
+            for item in union_select_items {
+                if let Some(col_alias) = &item.col_alias {
+                    let alias_str = col_alias.0.as_str();
+                    if let Some(dot_pos) = alias_str.rfind('.') {
+                        let (prefix, suffix) = alias_str.split_at(dot_pos);
+                        if suffix == ".id" {
+                            // Store FULL column name
+                            union_alias_to_id.insert(prefix.to_string(), alias_str.to_string());
+                            log::debug!(
+                                "📊 UNION: Found ID column for alias '{}' -> '{}'",
+                                prefix,
+                                alias_str
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Build explicit property mapping for UNION (VLP results)
+            let union_property_mapping = build_property_mapping_from_columns(union_select_items);
+
+            // Register the UNION schema as a pseudo-CTE for alias lookups
+            // This allows WITH clauses to reference VLP results
+            let union_cte_name = "__union_vlp";
+            log::info!(
+                        "🔧 Extracted UNION schema (VLP results): {} columns, {} aliases with ID: {:?}, {} property mappings",
+                        union_property_names.len(), union_alias_to_id.len(), union_alias_to_id.keys(), union_property_mapping.len()
+                    );
+            cte_schemas.insert(
+                union_cte_name.to_string(),
+                crate::render_plan::CteSchemaMetadata {
+                    select_items: union_select_items.clone(),
+                    column_names: union_property_names,
+                    alias_to_id: union_alias_to_id.clone(),
+                    property_mapping: union_property_mapping,
+                },
+            );
+
+            // Also register for each alias that appears in the UNION
+            // This allows direct alias lookups
+            for alias in union_alias_to_id.keys() {
+                cte_references_for_rendering.insert(alias.clone(), union_cte_name.to_string());
+                log::info!(
+                    "🔧 Registered alias '{}' -> CTE '{}'",
+                    alias,
+                    union_cte_name
+                );
+            }
+        }
+    }
+
+    // 🔧 FIX (Feb 9, 2026): Pattern comprehension GROUP BY property bug
+    // When FROM clause is a VLP CTE (e.g., FROM vlp_multi_type_a_t31 AS t),
+    // and WITH items reference correlation variables (e.g., WITH a),
+    // register the correlation variable → VLP CTE mapping so that
+    // expand_table_alias_to_select_items generates t.start_* columns
+    // instead of trying to reference the non-existent alias 'a'
+    log::debug!(
+        "DEBUG 0: About to check FROM clause, has from_ref: {}",
+        rendered.from.0.is_some()
+    );
+    log::debug!("DEBUG: Checking FROM clause for VLP CTE");
+    if let Some(from_ref) = &rendered.from.0 {
+        let from_name = &from_ref.name;
+        log::debug!("DEBUG: FROM name = '{}'", from_name);
+        // Check if FROM is a VLP CTE (starts with "vlp_")
+        if from_name.starts_with("vlp_") {
+            log::debug!("DEBUG: FROM is VLP CTE!");
+            log::info!(
+                "🔧 FROM is VLP CTE '{}', checking for correlation variables in WITH items",
+                from_name
+            );
+
+            // Extract correlation variables from VLP CTE name
+            // Actual format: vlp_multi_type_a_b (multiple aliases, no _t suffix)
+            // or: vlp_a (single alias)
+            log::debug!(
+                "STEP 0.1: Extracting correlation variables from '{}'",
+                from_name
+            );
+            let aliases = if from_name.starts_with("vlp_multi_type_") {
+                // Multi-type VLP: vlp_multi_type_a_b -> ["a", "b"]
+                from_name
+                    .strip_prefix("vlp_multi_type_")
+                    .map(|s| s.split('_').map(|a| a.to_string()).collect::<Vec<_>>())
+                    .unwrap_or_default()
+            } else {
+                // Single-type VLP: vlp_a -> ["a"]
+                from_name
+                    .strip_prefix("vlp_")
+                    .map(|s| vec![s.to_string()])
+                    .unwrap_or_default()
+            };
+            log::debug!("STEP 0.2: Extracted aliases: {:?}", aliases);
+
+            // Register each alias → VLP CTE mapping
+            for corr_var in &aliases {
+                log::info!("🔧 VLP CTE correlation variable: '{}'", corr_var);
+                // Register: correlation_var → VLP CTE name
+                // This tells expand_table_alias_to_select_items to use VLP CTE columns
+                cte_references_for_rendering.insert(corr_var.to_string(), from_name.clone());
+                log::info!(
+                    "🔧 Registered VLP correlation: '{}' → '{}'",
+                    corr_var,
+                    from_name
+                );
+            }
+
+            // Populate cte_schemas from VLP CTE metadata (CRITICAL for GROUP BY property mapping)
+            // This ensures expand_table_alias_to_select_items finds the CTE schema
+            if !aliases.is_empty() {
+                if let Some((_cypher_alias, col_metadata)) = vlp_cte_metadata.get(from_name) {
+                    log::debug!(
+                        "STEP 1: VLP CTE '{}' found, {} columns",
+                        from_name,
+                        col_metadata.len()
+                    );
+
+                    // Convert CteColumnMetadata to SelectItem format
+                    let mut select_items = Vec::new();
+                    let mut property_names = Vec::new();
+                    let mut alias_to_id_column: HashMap<String, String> = HashMap::new();
+
+                    log::debug!("STEP 2: Starting column iteration");
+                    for (idx, col_meta) in col_metadata.iter().enumerate() {
+                        log::debug!(
+                            "STEP 2.{}: Processing column '{}'",
+                            idx,
+                            col_meta.cte_column_name
+                        );
+
+                        // The CTE already exists with these columns - we just need to track them
+                        // The expression here is not used for rendering, only for metadata
+                        let col_expr = crate::render_plan::render_expr::RenderExpr::Raw(
+                            col_meta.cte_column_name.clone(),
+                        );
+                        log::debug!("STEP 2.{}.1: Created RenderExpr", idx);
+
+                        let select_item = SelectItem {
+                            expression: col_expr,
+                            col_alias: Some(crate::render_plan::render_expr::ColumnAlias(
+                                col_meta.cte_column_name.clone(),
+                            )),
+                        };
+                        log::debug!("STEP 2.{}.2: Created SelectItem", idx);
+
+                        select_items.push(select_item);
+                        property_names.push(col_meta.cte_column_name.clone());
+                        log::debug!("STEP 2.{}.3: Pushed to vectors", idx);
+
+                        // Track ID columns for GROUP BY
+                        if col_meta.is_id_column {
+                            alias_to_id_column.insert(
+                                col_meta.cypher_alias.clone(),
+                                col_meta.cte_column_name.clone(),
+                            );
+                            log::debug!("STEP 2.{}.4: Tracked ID column", idx);
+                        }
+                    }
+
+                    log::debug!("STEP 3: Column iteration complete, building property mapping");
+                    // Build property mapping using existing function
+                    let property_mapping = build_property_mapping_from_columns(&select_items);
+                    log::debug!(
+                        "STEP 4: Property mapping built with {} entries",
+                        property_mapping.len()
+                    );
+
+                    log::debug!("STEP 5: Inserting into cte_schemas");
+                    // Insert into cte_schemas so expand_table_alias_to_select_items can find it
+                    cte_schemas.insert(
+                        from_name.clone(),
+                        crate::render_plan::CteSchemaMetadata {
+                            select_items,
+                            column_names: property_names,
+                            alias_to_id: alias_to_id_column,
+                            property_mapping,
+                        },
+                    );
+                    log::debug!("STEP 6: SUCCESS - Schema populated for '{}'", from_name);
+                } else {
+                    log::debug!("⚠️ VLP CTE '{}' not found in vlp_cte_metadata", from_name);
+                }
+            }
+        }
+    }
+}
+
 /// Extract the schemas of CTEs produced by a nested WITH render and register
 /// them (a STEP of the main loop's inner render-loop in
 /// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
@@ -7296,221 +7516,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 let cte_from_alias: Option<String> =
                     rendered.from.0.as_ref().and_then(|ft| ft.alias.clone());
 
-                // CRITICAL: Extract schema from UNION (for VLP CTEs)
-                // VLP CTEs are RawSql so we can't extract schema from them directly
-                // But the UNION that uses them has SELECT items with aliases like "friend.id", "p.firstName"
-                if let UnionItems(Some(union)) = &rendered.union {
-                    if !union.input.is_empty() {
-                        let union_select_items = &union.input[0].select.items;
-                        let union_property_names: Vec<String> = union_select_items
-                            .iter()
-                            .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
-                            .collect();
-
-                        // Extract ID column mappings from UNION columns
-                        // Store FULL column name (e.g., "friend.id"), not just "id"
-                        let mut union_alias_to_id: HashMap<String, String> = HashMap::new();
-                        for item in union_select_items {
-                            if let Some(col_alias) = &item.col_alias {
-                                let alias_str = col_alias.0.as_str();
-                                if let Some(dot_pos) = alias_str.rfind('.') {
-                                    let (prefix, suffix) = alias_str.split_at(dot_pos);
-                                    if suffix == ".id" {
-                                        // Store FULL column name
-                                        union_alias_to_id
-                                            .insert(prefix.to_string(), alias_str.to_string());
-                                        log::debug!(
-                                            "📊 UNION: Found ID column for alias '{}' -> '{}'",
-                                            prefix,
-                                            alias_str
-                                        );
-                                    }
-                                }
-                            }
-                        }
-
-                        // Build explicit property mapping for UNION (VLP results)
-                        let union_property_mapping =
-                            build_property_mapping_from_columns(union_select_items);
-
-                        // Register the UNION schema as a pseudo-CTE for alias lookups
-                        // This allows WITH clauses to reference VLP results
-                        let union_cte_name = "__union_vlp";
-                        log::info!(
-                                    "🔧 Extracted UNION schema (VLP results): {} columns, {} aliases with ID: {:?}, {} property mappings",
-                                    union_property_names.len(), union_alias_to_id.len(), union_alias_to_id.keys(), union_property_mapping.len()
-                                );
-                        cte_schemas.insert(
-                            union_cte_name.to_string(),
-                            crate::render_plan::CteSchemaMetadata {
-                                select_items: union_select_items.clone(),
-                                column_names: union_property_names,
-                                alias_to_id: union_alias_to_id.clone(),
-                                property_mapping: union_property_mapping,
-                            },
-                        );
-
-                        // Also register for each alias that appears in the UNION
-                        // This allows direct alias lookups
-                        for alias in union_alias_to_id.keys() {
-                            cte_references_for_rendering
-                                .insert(alias.clone(), union_cte_name.to_string());
-                            log::info!(
-                                "🔧 Registered alias '{}' -> CTE '{}'",
-                                alias,
-                                union_cte_name
-                            );
-                        }
-                    }
-                }
-
-                // 🔧 FIX (Feb 9, 2026): Pattern comprehension GROUP BY property bug
-                // When FROM clause is a VLP CTE (e.g., FROM vlp_multi_type_a_t31 AS t),
-                // and WITH items reference correlation variables (e.g., WITH a),
-                // register the correlation variable → VLP CTE mapping so that
-                // expand_table_alias_to_select_items generates t.start_* columns
-                // instead of trying to reference the non-existent alias 'a'
-                log::debug!(
-                    "DEBUG 0: About to check FROM clause, has from_ref: {}",
-                    rendered.from.0.is_some()
+                // Register VLP CTE schemas (UNION-derived + FROM-vlp correlation).
+                register_vlp_cte_schemas(
+                    &rendered,
+                    &mut cte_schemas,
+                    &mut cte_references_for_rendering,
+                    &vlp_cte_metadata,
                 );
-                log::debug!("DEBUG: Checking FROM clause for VLP CTE");
-                if let Some(from_ref) = &rendered.from.0 {
-                    let from_name = &from_ref.name;
-                    log::debug!("DEBUG: FROM name = '{}'", from_name);
-                    // Check if FROM is a VLP CTE (starts with "vlp_")
-                    if from_name.starts_with("vlp_") {
-                        log::debug!("DEBUG: FROM is VLP CTE!");
-                        log::info!("🔧 FROM is VLP CTE '{}', checking for correlation variables in WITH items", from_name);
-
-                        // Extract correlation variables from VLP CTE name
-                        // Actual format: vlp_multi_type_a_b (multiple aliases, no _t suffix)
-                        // or: vlp_a (single alias)
-                        log::debug!(
-                            "STEP 0.1: Extracting correlation variables from '{}'",
-                            from_name
-                        );
-                        let aliases = if from_name.starts_with("vlp_multi_type_") {
-                            // Multi-type VLP: vlp_multi_type_a_b -> ["a", "b"]
-                            from_name
-                                .strip_prefix("vlp_multi_type_")
-                                .map(|s| s.split('_').map(|a| a.to_string()).collect::<Vec<_>>())
-                                .unwrap_or_default()
-                        } else {
-                            // Single-type VLP: vlp_a -> ["a"]
-                            from_name
-                                .strip_prefix("vlp_")
-                                .map(|s| vec![s.to_string()])
-                                .unwrap_or_default()
-                        };
-                        log::debug!("STEP 0.2: Extracted aliases: {:?}", aliases);
-
-                        // Register each alias → VLP CTE mapping
-                        for corr_var in &aliases {
-                            log::info!("🔧 VLP CTE correlation variable: '{}'", corr_var);
-                            // Register: correlation_var → VLP CTE name
-                            // This tells expand_table_alias_to_select_items to use VLP CTE columns
-                            cte_references_for_rendering
-                                .insert(corr_var.to_string(), from_name.clone());
-                            log::info!(
-                                "🔧 Registered VLP correlation: '{}' → '{}'",
-                                corr_var,
-                                from_name
-                            );
-                        }
-
-                        // Populate cte_schemas from VLP CTE metadata (CRITICAL for GROUP BY property mapping)
-                        // This ensures expand_table_alias_to_select_items finds the CTE schema
-                        if !aliases.is_empty() {
-                            if let Some((_cypher_alias, col_metadata)) =
-                                vlp_cte_metadata.get(from_name)
-                            {
-                                log::debug!(
-                                    "STEP 1: VLP CTE '{}' found, {} columns",
-                                    from_name,
-                                    col_metadata.len()
-                                );
-
-                                // Convert CteColumnMetadata to SelectItem format
-                                let mut select_items = Vec::new();
-                                let mut property_names = Vec::new();
-                                let mut alias_to_id_column: HashMap<String, String> =
-                                    HashMap::new();
-
-                                log::debug!("STEP 2: Starting column iteration");
-                                for (idx, col_meta) in col_metadata.iter().enumerate() {
-                                    log::debug!(
-                                        "STEP 2.{}: Processing column '{}'",
-                                        idx,
-                                        col_meta.cte_column_name
-                                    );
-
-                                    // The CTE already exists with these columns - we just need to track them
-                                    // The expression here is not used for rendering, only for metadata
-                                    let col_expr = crate::render_plan::render_expr::RenderExpr::Raw(
-                                        col_meta.cte_column_name.clone(),
-                                    );
-                                    log::debug!("STEP 2.{}.1: Created RenderExpr", idx);
-
-                                    let select_item = SelectItem {
-                                        expression: col_expr,
-                                        col_alias: Some(
-                                            crate::render_plan::render_expr::ColumnAlias(
-                                                col_meta.cte_column_name.clone(),
-                                            ),
-                                        ),
-                                    };
-                                    log::debug!("STEP 2.{}.2: Created SelectItem", idx);
-
-                                    select_items.push(select_item);
-                                    property_names.push(col_meta.cte_column_name.clone());
-                                    log::debug!("STEP 2.{}.3: Pushed to vectors", idx);
-
-                                    // Track ID columns for GROUP BY
-                                    if col_meta.is_id_column {
-                                        alias_to_id_column.insert(
-                                            col_meta.cypher_alias.clone(),
-                                            col_meta.cte_column_name.clone(),
-                                        );
-                                        log::debug!("STEP 2.{}.4: Tracked ID column", idx);
-                                    }
-                                }
-
-                                log::debug!(
-                                    "STEP 3: Column iteration complete, building property mapping"
-                                );
-                                // Build property mapping using existing function
-                                let property_mapping =
-                                    build_property_mapping_from_columns(&select_items);
-                                log::debug!(
-                                    "STEP 4: Property mapping built with {} entries",
-                                    property_mapping.len()
-                                );
-
-                                log::debug!("STEP 5: Inserting into cte_schemas");
-                                // Insert into cte_schemas so expand_table_alias_to_select_items can find it
-                                cte_schemas.insert(
-                                    from_name.clone(),
-                                    crate::render_plan::CteSchemaMetadata {
-                                        select_items,
-                                        column_names: property_names,
-                                        alias_to_id: alias_to_id_column,
-                                        property_mapping,
-                                    },
-                                );
-                                log::debug!(
-                                    "STEP 6: SUCCESS - Schema populated for '{}'",
-                                    from_name
-                                );
-                            } else {
-                                log::debug!(
-                                    "⚠️ VLP CTE '{}' not found in vlp_cte_metadata",
-                                    from_name
-                                );
-                            }
-                        }
-                    }
-                }
 
                 // Extract pattern comprehension aliases to skip in WITH item projection
                 // (their results come from CTE LEFT JOINs, not from regular WITH item processing)
