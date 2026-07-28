@@ -14911,5 +14911,24 @@ async fn multi_type_vlp_endpoint_non_id_property_scoping_716() {
             "#716: multi-type far endpoint non-id property must stay on the JSON path \
              for {dialect:?}, got:\n{far_sql}"
         );
+
+        // ID-SHAPED NON-NODE-ID GUARD: a property whose db column ends in `_id`
+        // (e.g. Post's `author_id`, which is NOT the node id `post_id`) is
+        // rewritten by the GROUP BY builder to the CTE's `{position}_id` sentinel
+        // (`rewrite_expr_for_vlp`'s id detection: `ends_with("_id")`). The
+        // projection must therefore NOT route it to a divergent
+        // `t.end_author_id` — that would re-create the Code 215 mismatch this
+        // fix removes. It must stay on the JSON path (matching pre-fix behavior
+        // for this id-shaped shape; native routing is only for non-id-shaped
+        // props).
+        let id_shaped = "MATCH (u:User)-[:AUTHORED|LIKED*1..2]->(p:Post) WHERE u.user_id = 1 \
+                         RETURN p.author_id, count(*)";
+        let id_shaped_sql = render(&schema, id_shaped, dialect).await;
+        assert!(
+            !id_shaped_sql.contains("t.end_author_id"),
+            "#716: an id-shaped non-node-id property (author_id) must NOT route to a \
+             divergent native t.end_author_id (GROUP BY uses t.end_id) for {dialect:?}, \
+             got:\n{id_shaped_sql}"
+        );
     }
 }

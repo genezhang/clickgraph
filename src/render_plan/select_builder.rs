@@ -2062,9 +2062,10 @@ fn single_vlp_endpoint_label(
 ///
 /// Returns `None` (caller keeps the JSONExtract path) when:
 ///   - the endpoint is genuinely multi-type / polymorphic (no native columns), or
-///   - the property is the node's `id` (served by the #580 id path, and skipped
-///     by the CTE because `{position}_id` would collide with the reserved
-///     `start_id`/`end_id` columns), or
+///   - the property is id-shaped (`is_vlp_id_shaped_column`): the genuine
+///     single-column node id is served by the #580 id branch, and any OTHER
+///     id-shaped property maps to the GROUP BY's `{position}_id` sentinel, so it
+///     must stay on the JSON path to avoid a divergent projection (Code 215), or
 ///   - the property has no single-`Column` schema mapping (the CTE emits no
 ///     native column for computed / multi-column properties).
 ///
@@ -2081,19 +2082,27 @@ fn native_vlp_endpoint_column(
     let position = if endpoint_is_start { "start" } else { "end" };
     let label = single_vlp_endpoint_label(gr, endpoint_is_start)?;
 
+    // GROUP BY's `rewrite_expr_for_vlp` treats an id-shaped column as the CTE's
+    // native `{position}_id` sentinel (`col == "id" || starts_with("id.") ||
+    // ends_with("_id") || contains(".orig_"|".resp_")`, to_sql_query.rs). We must
+    // decline EXACTLY those here so the SELECT never routes an id-shaped property
+    // to `{position}_{col}` while the GROUP BY key is `{position}_id` — that
+    // divergence re-creates the very Code 215 this fix removes (e.g. a Post's
+    // non-node-id `author_id` property: GROUP BY → `t.end_id`, so the projection
+    // must NOT become `t.end_author_id`). The genuine single-column node id is
+    // served by the #580 id branch just above; any OTHER id-shaped property (not
+    // the node id) stays on the JSON path unchanged — a pre-existing limitation,
+    // not one this fix introduces.
+    if is_vlp_id_shaped_column(col_name) {
+        return None;
+    }
+
     // Match the GROUP BY builder's suffix derivation exactly (rewrite_expr_for_vlp
     // → derive_cypher_property_name), so SELECT and GROUP BY reference one column.
     let suffix =
         crate::sql_generator::emitters::clickhouse::to_sql_query::derive_cypher_property_name(
             col_name,
         );
-
-    // The id property maps to `{position}_id`, which the CTE deliberately skips
-    // (reserved-column collision with `start_id`/`end_id`) and the #580 id path
-    // already serves. Leave it alone.
-    if suffix == "id" {
-        return None;
-    }
 
     // Only route when the CTE actually emitted a native column for this property:
     // it must be a single-`Column` schema mapping on the single candidate label.
@@ -2103,6 +2112,21 @@ fn native_vlp_endpoint_column(
         Some(PropertyValue::Column(_)) => Some(format!("{}_{}", position, suffix)),
         _ => None,
     }
+}
+
+/// Mirror of `rewrite_expr_for_vlp`'s id-column detection
+/// (`to_sql_query.rs`): a VLP endpoint property whose raw column matches any of
+/// these is rewritten to the CTE's native `{position}_id` sentinel by the
+/// GROUP BY / ORDER BY / WHERE builders. `native_vlp_endpoint_column` consults
+/// this to avoid emitting a divergent `{position}_{col}` projection for the same
+/// property (which would re-introduce Code 215). Kept textually identical to the
+/// predicate at the rewrite site — if that list changes, this must change too.
+fn is_vlp_id_shaped_column(col_raw: &str) -> bool {
+    col_raw == "id"
+        || col_raw.starts_with("id.")
+        || col_raw.ends_with("_id")
+        || col_raw.contains(".orig_")
+        || col_raw.contains(".resp_")
 }
 
 /// #509: build the id-column `PropertyAccess` (or multi-label `coalesce(...)`
