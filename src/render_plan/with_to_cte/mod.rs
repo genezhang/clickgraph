@@ -3112,6 +3112,95 @@ fn apply_weighted_shortest_path_restructure(render_plan: &mut RenderPlan) {
     }
 }
 
+/// Post-render FROM resolution against the accumulated CTEs (finalization tail
+/// of `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
+///
+/// After a WITH barrier the final `render_plan.from` may still name a Cypher
+/// alias (e.g. `a`) that was exported through a CTE. Resolve it:
+/// - **FROM alias is in `cte_references`** → repoint `render_plan.from` at that
+///   CTE while KEEPING the original alias (SELECT/WHERE/JOINs reference `a.xxx`
+///   and the CTE columns are prefixed with that alias), and rewrite any stale
+///   `combined_alias` (`with_{aliases}_cte{N}` → `{aliases}`) references in the
+///   plan back to the preserved alias.
+/// - **FROM is `None`** with CTEs present and no union → delegate to
+///   [`apply_from_fallback_to_last_cte`].
+///
+/// #593: never repoint the base arm of a Cypher-level UNION — that FROM is the
+/// first arm's own independent scan which merely happens to reuse a Cypher alias
+/// name a DIFFERENT arm exported through a WITH-CTE; each arm's FROM was already
+/// resolved per-arm during branch rendering. The caller passes
+/// `is_cypher_union_plan` to gate the repoint off there.
+fn resolve_final_from_against_cte(
+    render_plan: &mut RenderPlan,
+    cte_references: &HashMap<String, String>,
+    all_ctes: &[Cte],
+    is_cypher_union_plan: bool,
+) {
+    if let FromTableItem(Some(from_ref)) = &render_plan.from {
+        // Check if the FROM alias is in cte_references
+        if let Some(alias) = &from_ref.alias {
+            if let Some(cte_name) = cte_references.get(alias).filter(|_| !is_cypher_union_plan) {
+                log::debug!(
+                    "🔧 build_chained_with_match_cte_plan: FROM alias '{}' is in CTE '{}', replacing FROM",
+                    alias,
+                    cte_name
+                );
+
+                // Keep the original alias (e.g., "a") as the FROM alias.
+                // The rest of the rendered plan (SELECT, WHERE, JOINs) references "a.xxx",
+                // so the FROM alias must match. The CTE columns are prefixed with the
+                // original alias (e.g., "a_customer_id"), which works with FROM alias "a".
+                let preserved_alias = alias.clone();
+
+                // Compute what the combined alias WOULD have been (e.g., "a_allNeighboursCount")
+                // so we can rewrite any stale references in SELECT/WHERE/ORDER BY
+                let combined_alias = if let Some(stripped) = cte_name.strip_prefix("with_") {
+                    if let Some(cte_pos) = stripped.rfind("_cte") {
+                        stripped[..cte_pos].to_string()
+                    } else {
+                        stripped.to_string()
+                    }
+                } else {
+                    String::new()
+                };
+
+                render_plan.from = FromTableItem(Some(ViewTableRef {
+                    source: std::sync::Arc::new(LogicalPlan::Empty),
+                    name: cte_name.clone(),
+                    alias: Some(preserved_alias.clone()),
+                    use_final: false,
+                }));
+
+                // Rewrite stale references: combined alias → preserved alias
+                // e.g., "a_allNeighboursCount.xxx" → "a.xxx" in SELECT, WHERE, JOINs
+                if combined_alias != preserved_alias && !combined_alias.is_empty() {
+                    log::debug!(
+                        "🔧 Rewriting stale alias '{}' → '{}' in render plan",
+                        combined_alias,
+                        preserved_alias
+                    );
+                    rewrite_table_alias_in_render_plan(
+                        render_plan,
+                        &combined_alias,
+                        &preserved_alias,
+                    );
+                }
+
+                log::info!(
+                    "🔧 build_chained_with_match_cte_plan: Replaced FROM with: {} AS '{}'",
+                    cte_name,
+                    preserved_alias
+                );
+            }
+        }
+    } else if matches!(render_plan.from, FromTableItem(None))
+        && !all_ctes.is_empty()
+        && render_plan.union.0.is_none()
+    {
+        apply_from_fallback_to_last_cte(render_plan, all_ctes);
+    }
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -7484,85 +7573,21 @@ pub(crate) fn build_chained_with_match_cte_plan(
     // Scan render plan for any with_*_cte_N references that don't match actual CTEs.
     reconcile_stale_cte_name_references(&mut render_plan, &all_ctes);
 
-    // CRITICAL FIX: If FROM references an alias that's now in a CTE, replace it with the CTE
-    // This happens when WITH exports an alias that was originally from a table
-    //
-    // #593: NEVER do this for the base arm of a Cypher-level UNION. There the
-    // top-level `render_plan.from` is the FIRST arm's own independent scan
-    // (e.g. `MATCH (a:User) RETURN a.name`), which merely happens to reuse the
-    // Cypher alias name that a DIFFERENT arm exported through a WITH-CTE. The
-    // accumulated `cte_references` belongs to that other arm, so rewriting this
-    // arm's FROM to it silently hijacks the first arm onto the wrong table.
-    // Each arm's FROM was already resolved correctly, per-arm, during arm
-    // rendering (see `cte_names_referenced_in_branch` / per-arm scoping).
+    // Resolve the final FROM against the accumulated CTEs (repoint a WITH-exported
+    // alias onto its CTE, or fall back to the last CTE when FROM is None). Gated
+    // off for a Cypher-UNION base arm (#593) — see the fn doc. `is_cypher_union_plan`
+    // is also consumed by later passes, so it is bound here.
     let is_cypher_union_plan = render_plan
         .union
         .0
         .as_ref()
         .is_some_and(|u| u.is_cypher_union);
-    if let FromTableItem(Some(from_ref)) = &render_plan.from {
-        // Check if the FROM alias is in cte_references
-        if let Some(alias) = &from_ref.alias {
-            if let Some(cte_name) = cte_references.get(alias).filter(|_| !is_cypher_union_plan) {
-                log::debug!(
-                    "🔧 build_chained_with_match_cte_plan: FROM alias '{}' is in CTE '{}', replacing FROM",
-                    alias,
-                    cte_name
-                );
-
-                // Keep the original alias (e.g., "a") as the FROM alias.
-                // The rest of the rendered plan (SELECT, WHERE, JOINs) references "a.xxx",
-                // so the FROM alias must match. The CTE columns are prefixed with the
-                // original alias (e.g., "a_customer_id"), which works with FROM alias "a".
-                let preserved_alias = alias.clone();
-
-                // Compute what the combined alias WOULD have been (e.g., "a_allNeighboursCount")
-                // so we can rewrite any stale references in SELECT/WHERE/ORDER BY
-                let combined_alias = if let Some(stripped) = cte_name.strip_prefix("with_") {
-                    if let Some(cte_pos) = stripped.rfind("_cte") {
-                        stripped[..cte_pos].to_string()
-                    } else {
-                        stripped.to_string()
-                    }
-                } else {
-                    String::new()
-                };
-
-                render_plan.from = FromTableItem(Some(ViewTableRef {
-                    source: std::sync::Arc::new(LogicalPlan::Empty),
-                    name: cte_name.clone(),
-                    alias: Some(preserved_alias.clone()),
-                    use_final: false,
-                }));
-
-                // Rewrite stale references: combined alias → preserved alias
-                // e.g., "a_allNeighboursCount.xxx" → "a.xxx" in SELECT, WHERE, JOINs
-                if combined_alias != preserved_alias && !combined_alias.is_empty() {
-                    log::debug!(
-                        "🔧 Rewriting stale alias '{}' → '{}' in render plan",
-                        combined_alias,
-                        preserved_alias
-                    );
-                    rewrite_table_alias_in_render_plan(
-                        &mut render_plan,
-                        &combined_alias,
-                        &preserved_alias,
-                    );
-                }
-
-                log::info!(
-                    "🔧 build_chained_with_match_cte_plan: Replaced FROM with: {} AS '{}'",
-                    cte_name,
-                    preserved_alias
-                );
-            }
-        }
-    } else if matches!(render_plan.from, FromTableItem(None))
-        && !all_ctes.is_empty()
-        && render_plan.union.0.is_none()
-    {
-        apply_from_fallback_to_last_cte(&mut render_plan, &all_ctes);
-    }
+    resolve_final_from_against_cte(
+        &mut render_plan,
+        &cte_references,
+        &all_ctes,
+        is_cypher_union_plan,
+    );
 
     // ==========================================================================
     // CRITICAL FIX: Cross-table WITH pattern - add CTE JOINs
