@@ -1734,8 +1734,12 @@ fn render_logical_expr_to_sql(
                     node_joins_added,
                 );
                 return match op.operator {
-                    Op::StartsWith => format!("startsWith({}, {})", left, right),
-                    Op::EndsWith => format!("endsWith({}, {})", left, right),
+                    Op::StartsWith => {
+                        crate::clickhouse_query_generator::starts_with_predicate(&left, &right)
+                    }
+                    Op::EndsWith => {
+                        crate::clickhouse_query_generator::ends_with_predicate(&left, &right)
+                    }
                     Op::Contains => {
                         // Dialect-aware: Spark's position(substr, str) reverses CH's arg order.
                         crate::clickhouse_query_generator::contains_predicate(&left, &right)

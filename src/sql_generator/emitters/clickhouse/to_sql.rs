@@ -317,17 +317,17 @@ impl ToSql for LogicalExpr {
                         }
                     }
                     Operator::StartsWith => {
-                        // ClickHouse: startsWith(haystack, prefix)
-                        Ok(format!(
-                            "startsWith({}, {})",
-                            operands_sql[0], operands_sql[1]
+                        // Dialect-aware: CH startsWith vs Spark startswith.
+                        Ok(super::common::starts_with_predicate(
+                            &operands_sql[0],
+                            &operands_sql[1],
                         ))
                     }
                     Operator::EndsWith => {
-                        // ClickHouse: endsWith(haystack, suffix)
-                        Ok(format!(
-                            "endsWith({}, {})",
-                            operands_sql[0], operands_sql[1]
+                        // Dialect-aware: CH endsWith vs Spark endswith.
+                        Ok(super::common::ends_with_predicate(
+                            &operands_sql[0],
+                            &operands_sql[1],
                         ))
                     }
                     Operator::Contains => {
