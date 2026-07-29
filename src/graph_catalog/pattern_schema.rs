@@ -8,9 +8,6 @@
 //!
 //! Previously, schema detection was scattered across 4800+ lines in `graph_join_inference.rs`:
 //! - `is_node_denormalized_on_edge()` - called multiple times
-//!
-//! Note: Some methods and fields are reserved for future pattern optimization features.
-#![allow(dead_code)]
 //! - `edge_has_node_properties()` - called at various points
 //! - `classify_edge_table_pattern()` - computed repeatedly
 //! - `are_edges_coupled()` - checked in nested conditions
@@ -840,8 +837,8 @@ impl PatternSchemaContext {
         // Virtual nodes were previously created based on rel_schema.from_node == "$any",
         // but this ignores the fact that the query specifies concrete types like User, Group.
         //
-        // The fix: Always use node_strategy_for_position() which builds OwnTable/Embedded
-        // strategies based on the actual node schema, not the edge's polymorphic endpoint.
+        // The fix: classify by `edge_pattern` and build OwnTable/EmbeddedInEdge
+        // strategies from the actual node schema, not the edge's polymorphic endpoint.
         //
         // Note: _left_is_polymorphic and _right_is_polymorphic are kept for API compatibility
         // and may be used for edge filtering (type_column filters), but not for node strategies.
@@ -924,48 +921,6 @@ impl PatternSchemaContext {
             }
         };
         Ok(node_strategies)
-    }
-
-    /// Helper to build node strategy for a specific position
-    fn node_strategy_for_position(
-        node_schema: &NodeSchema,
-        rel_schema: &RelationshipSchema,
-        rel_alias: &str,
-        is_from_node: bool,
-        edge_pattern: &EdgeTablePattern,
-    ) -> Result<NodeAccessStrategy, String> {
-        let is_denormalized = match edge_pattern {
-            EdgeTablePattern::FullyDenormalized => true,
-            EdgeTablePattern::Mixed {
-                from_denormalized,
-                to_denormalized,
-            } => {
-                if is_from_node {
-                    *from_denormalized
-                } else {
-                    *to_denormalized
-                }
-            }
-            EdgeTablePattern::Traditional => false,
-        };
-
-        if is_denormalized {
-            Ok(NodeAccessStrategy::EmbeddedInEdge {
-                edge_alias: rel_alias.to_string(),
-                properties: Self::extract_denorm_props(rel_schema, is_from_node),
-                is_from_node,
-            })
-        } else {
-            Ok(NodeAccessStrategy::OwnTable {
-                table: node_schema.full_table_name(),
-                id_column: node_schema.node_id.id.clone(),
-                properties: node_schema
-                    .property_mappings
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.raw_column_name()))
-                    .collect(),
-            })
-        }
     }
 
     /// Extract denormalized properties from relationship schema
@@ -1368,150 +1323,6 @@ pub fn node_denormalized_flag(graph_node: &crate::query_planner::logical_plan::G
 mod tests {
     use super::*;
     use crate::graph_catalog::config::Identifier;
-    use crate::graph_catalog::expression_parser::PropertyValue;
-    use crate::graph_catalog::graph_schema::NodeIdSchema;
-    use crate::graph_catalog::schema_types::SchemaType;
-
-    fn make_test_node(_label: &str, table: &str, id_col: &str) -> NodeSchema {
-        NodeSchema {
-            database: "test_db".to_string(),
-            table_name: table.to_string(),
-            column_names: vec![id_col.to_string(), "name".to_string()],
-            primary_keys: id_col.to_string(),
-            node_id: NodeIdSchema::single(
-                id_col.to_string(),
-                crate::graph_catalog::schema_types::SchemaType::Integer,
-            ),
-            property_mappings: HashMap::from([
-                ("id".to_string(), PropertyValue::Column(id_col.to_string())),
-                (
-                    "name".to_string(),
-                    PropertyValue::Column("name".to_string()),
-                ),
-            ]),
-            view_parameters: None,
-            engine: None,
-            use_final: None,
-            filter: None,
-            is_denormalized: false,
-            from_properties: None,
-            to_properties: None,
-            denormalized_source_table: None,
-            label_column: None,
-            label_value: None,
-            node_id_types: None,
-            source: None,
-            property_types: HashMap::new(),
-            id_generation: None,
-        }
-    }
-
-    fn make_denormalized_node(_label: &str, table: &str, id_col: &str) -> NodeSchema {
-        NodeSchema {
-            database: "test_db".to_string(),
-            table_name: table.to_string(),
-            column_names: vec![id_col.to_string()],
-            primary_keys: id_col.to_string(),
-            node_id: NodeIdSchema::single(
-                id_col.to_string(),
-                crate::graph_catalog::schema_types::SchemaType::String,
-            ),
-            property_mappings: HashMap::new(),
-            view_parameters: None,
-            engine: None,
-            use_final: None,
-            filter: None,
-            is_denormalized: true,
-            denormalized_source_table: Some(format!("test_db.{}", table)),
-            label_column: None,
-            label_value: None,
-            from_properties: Some(HashMap::from([("code".to_string(), "Origin".to_string())])),
-            to_properties: Some(HashMap::from([("code".to_string(), "Dest".to_string())])),
-            node_id_types: None,
-            source: None,
-            property_types: HashMap::new(),
-            id_generation: None,
-        }
-    }
-
-    fn make_test_edge(_type_name: &str, table: &str) -> RelationshipSchema {
-        RelationshipSchema {
-            database: "test_db".to_string(),
-            table_name: table.to_string(),
-            column_names: vec!["from_id".to_string(), "to_id".to_string()],
-            from_node: "User".to_string(),
-            to_node: "User".to_string(),
-            from_node_table: "users".to_string(),
-            to_node_table: "users".to_string(),
-            from_id: Identifier::from("from_id"),
-            to_id: Identifier::from("to_id"),
-            from_node_id_dtype: SchemaType::Integer,
-            to_node_id_dtype: SchemaType::Integer,
-            property_mappings: HashMap::new(),
-            view_parameters: None,
-            engine: None,
-            use_final: None,
-            filter: None,
-            edge_id: None,
-            type_column: None,
-            from_label_column: None,
-            to_label_column: None,
-            from_label_values: None,
-            to_label_values: None,
-            from_node_properties: None,
-            to_node_properties: None,
-            is_fk_edge: false,
-            constraints: None,
-            edge_id_types: None,
-            source: None,
-            property_types: HashMap::new(),
-        }
-    }
-
-    fn make_denormalized_edge(_type_name: &str, table: &str) -> RelationshipSchema {
-        RelationshipSchema {
-            database: "test_db".to_string(),
-            table_name: table.to_string(),
-            column_names: vec![
-                "Origin".to_string(),
-                "Dest".to_string(),
-                "OriginCity".to_string(),
-                "DestCity".to_string(),
-            ],
-            from_node: "Airport".to_string(),
-            to_node: "Airport".to_string(),
-            from_node_table: "airports".to_string(),
-            to_node_table: "airports".to_string(),
-            from_id: Identifier::from("Origin"),
-            to_id: Identifier::from("Dest"),
-            from_node_id_dtype: SchemaType::String,
-            to_node_id_dtype: SchemaType::String,
-            property_mappings: HashMap::new(),
-            view_parameters: None,
-            engine: None,
-            use_final: None,
-            filter: None,
-            edge_id: None,
-            type_column: None,
-            from_label_column: None,
-            to_label_column: None,
-            from_label_values: None,
-            to_label_values: None,
-            from_node_properties: Some(HashMap::from([
-                ("code".to_string(), "Origin".to_string()),
-                ("city".to_string(), "OriginCity".to_string()),
-            ])),
-            to_node_properties: Some(HashMap::from([
-                ("code".to_string(), "Dest".to_string()),
-                ("city".to_string(), "DestCity".to_string()),
-            ])),
-            is_fk_edge: false,
-            constraints: None,
-            edge_id_types: None,
-            source: None,
-            property_types: HashMap::new(),
-        }
-    }
 
     #[test]
     fn test_node_access_strategy_requires_join() {
