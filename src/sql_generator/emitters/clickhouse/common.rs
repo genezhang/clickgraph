@@ -72,6 +72,36 @@ pub fn contains_predicate(haystack: &str, needle: &str) -> String {
     }
 }
 
+/// Emit a prefix-match predicate for Cypher `haystack STARTS WITH needle`,
+/// dialect-aware.
+///
+/// ClickHouse spells it `startsWith(haystack, needle)` (camelCase);
+/// Spark/Databricks has the builtin `startswith(str, prefix)` (lowercase, same
+/// argument order). Pure name-case swap — both return a boolean. Emitted from
+/// every `StartsWith` render site so the two dialects stay in sync.
+pub fn starts_with_predicate(haystack: &str, needle: &str) -> String {
+    use crate::sql_generator::SqlDialect;
+    match crate::server::query_context::get_current_dialect() {
+        SqlDialect::Databricks => format!("startswith({}, {})", haystack, needle),
+        _ => format!("startsWith({}, {})", haystack, needle),
+    }
+}
+
+/// Emit a suffix-match predicate for Cypher `haystack ENDS WITH needle`,
+/// dialect-aware.
+///
+/// ClickHouse spells it `endsWith(haystack, needle)` (camelCase);
+/// Spark/Databricks has the builtin `endswith(str, suffix)` (lowercase, same
+/// argument order). Pure name-case swap — both return a boolean. Emitted from
+/// every `EndsWith` render site so the two dialects stay in sync.
+pub fn ends_with_predicate(haystack: &str, needle: &str) -> String {
+    use crate::sql_generator::SqlDialect;
+    match crate::server::query_context::get_current_dialect() {
+        SqlDialect::Databricks => format!("endswith({}, {})", haystack, needle),
+        _ => format!("endsWith({}, {})", haystack, needle),
+    }
+}
+
 /// Render a Cypher `=~` regex match (`RegexMatch` operator) for the active dialect.
 ///
 /// ClickHouse spells it `match(haystack, pattern)`; Spark/Databricks has no
@@ -326,5 +356,44 @@ mod simple_case_sql_tests {
             sql,
             "CASE n.name WHEN 'Alice' THEN 'Admin' WHEN 'Bob' THEN 'User' ELSE 'Guest' END"
         );
+    }
+}
+
+#[cfg(test)]
+mod string_predicate_tests {
+    use super::{ends_with_predicate, starts_with_predicate};
+    use crate::server::query_context::{with_query_context, QueryContext};
+    use crate::sql_generator::SqlDialect;
+
+    #[test]
+    fn clickhouse_default_uses_camelcase_functions() {
+        // Default (no scope) = ClickHouse: the historical camelCase spelling,
+        // byte-identical to what the pipeline emitted before these helpers.
+        assert_eq!(
+            starts_with_predicate("n.name", "'Al'"),
+            "startsWith(n.name, 'Al')"
+        );
+        assert_eq!(
+            ends_with_predicate("n.name", "'ce'"),
+            "endsWith(n.name, 'ce')"
+        );
+    }
+
+    #[tokio::test]
+    async fn databricks_uses_lowercase_builtins() {
+        let ctx = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        let (starts, ends) = with_query_context(ctx, async {
+            (
+                starts_with_predicate("n.name", "'Al'"),
+                ends_with_predicate("n.name", "'ce'"),
+            )
+        })
+        .await;
+        // Spark builtins are lowercase, same arg order.
+        assert_eq!(starts, "startswith(n.name, 'Al')");
+        assert_eq!(ends, "endswith(n.name, 'ce')");
     }
 }

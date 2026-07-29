@@ -7249,10 +7249,10 @@ impl RenderExpr {
 
                 // Special handling for string predicates - ClickHouse uses functions
                 if op.operator == Operator::StartsWith && rendered.len() == 2 {
-                    return format!("startsWith({}, {})", &rendered[0], &rendered[1]);
+                    return super::common::starts_with_predicate(&rendered[0], &rendered[1]);
                 }
                 if op.operator == Operator::EndsWith && rendered.len() == 2 {
-                    return format!("endsWith({}, {})", &rendered[0], &rendered[1]);
+                    return super::common::ends_with_predicate(&rendered[0], &rendered[1]);
                 }
                 if op.operator == Operator::Contains && rendered.len() == 2 {
                     return super::common::contains_predicate(&rendered[0], &rendered[1]);
@@ -7707,10 +7707,10 @@ impl RenderExpr {
 
                 // Special handling for string predicates - ClickHouse uses functions
                 if op.operator == Operator::StartsWith && rendered.len() == 2 {
-                    return format!("startsWith({}, {})", &rendered[0], &rendered[1]);
+                    return super::common::starts_with_predicate(&rendered[0], &rendered[1]);
                 }
                 if op.operator == Operator::EndsWith && rendered.len() == 2 {
-                    return format!("endsWith({}, {})", &rendered[0], &rendered[1]);
+                    return super::common::ends_with_predicate(&rendered[0], &rendered[1]);
                 }
                 if op.operator == Operator::Contains && rendered.len() == 2 {
                     return super::common::contains_predicate(&rendered[0], &rendered[1]);
@@ -8043,10 +8043,10 @@ impl ToSql for OperatorApplication {
 
         // Special handling for string predicates - ClickHouse uses functions
         if self.operator == Operator::StartsWith && rendered.len() == 2 {
-            return format!("startsWith({}, {})", &rendered[0], &rendered[1]);
+            return super::common::starts_with_predicate(&rendered[0], &rendered[1]);
         }
         if self.operator == Operator::EndsWith && rendered.len() == 2 {
-            return format!("endsWith({}, {})", &rendered[0], &rendered[1]);
+            return super::common::ends_with_predicate(&rendered[0], &rendered[1]);
         }
         if self.operator == Operator::Contains && rendered.len() == 2 {
             return super::common::contains_predicate(&rendered[0], &rendered[1]);

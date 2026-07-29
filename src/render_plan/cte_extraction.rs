@@ -1769,8 +1769,14 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                         format!("{} NOT IN {}", operands[0], operands[1])
                     }
                 }
-                Operator::StartsWith => format!("startsWith({}, {})", operands[0], operands[1]),
-                Operator::EndsWith => format!("endsWith({}, {})", operands[0], operands[1]),
+                Operator::StartsWith => crate::clickhouse_query_generator::starts_with_predicate(
+                    &operands[0],
+                    &operands[1],
+                ),
+                Operator::EndsWith => crate::clickhouse_query_generator::ends_with_predicate(
+                    &operands[0],
+                    &operands[1],
+                ),
                 Operator::Contains => {
                     // Dialect-aware: Spark's position(substr, str) reverses CH's arg order.
                     crate::clickhouse_query_generator::contains_predicate(
