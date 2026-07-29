@@ -1744,7 +1744,9 @@ fn render_logical_expr_to_sql(
                         // Dialect-aware: Spark's position(substr, str) reverses CH's arg order.
                         crate::clickhouse_query_generator::contains_predicate(&left, &right)
                     }
-                    Op::RegexMatch => format!("match({}, {})", left, right),
+                    Op::RegexMatch => {
+                        crate::clickhouse_query_generator::regex_match_predicate(&left, &right)
+                    }
                     _ => unreachable!(),
                 };
             }
