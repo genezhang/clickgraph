@@ -679,14 +679,31 @@ migrated. Per item:
   pin the denorm-endpoint output on this path, so any future slice-4 change that
   altered it flips a golden. Verdict stands (keep the inline predicate) but is
   now **positively covered**, not merely argued.
-- **Slice 2 (`is_fk_edge` proxy, `multi_type_vlp_joins.rs:~764/~1471`) — NOT a
-  clean slice.** (a) The ratchet is a substring counter and the canonical answer
-  is a field literally named `is_fk_edge`, so migration cannot register as
-  progress and risks a spurious bump. (b) The proxy `rel_table == end_table`
-  is a genuinely different predicate than canonical `is_fk_edge`
-  (`from/to_props.is_none() && (from|to_table == edge_table)`). Same
-  investigate-then-decide shape as slice 4; deferred as a divergence check, not a
-  byte-identical migration.
+- **Slice 2 (`is_fk_edge` proxy, `multi_type_vlp_joins.rs:~764/~1471`) —
+  RESOLVED: proxy is CORRECT-and-different, renamed + ratcheted, NOT migrated
+  (#796, 2026-07-28).** A transition-assert over the corpus (site instrumented
+  at both `~764` and `~1471`, `integration corpus_sweep`) hit **13,632×** and —
+  unlike slice 4 — found **14 REAL divergences** vs canonical
+  `RelationshipSchema.is_fk_edge`, in **both** directions:
+  (a) `proxy=true, canon=false` — zeek denormalized coupled self-loops
+  (`ACCESSED`/`CONNECTED_TO` IP→IP, `REQUESTED`/`DNS_REQUESTED` IP→Domain):
+  rel table == node table, but denorm (not FK) → canonical says no, proxy
+  correctly fuses; and
+  (b) `proxy=false, canon=true` — a reversed FK hop (`AUTHORED` Post→User in
+  `FOLLOWS|AUTHORED*1..2`): canonical classifies the edge FK, but on the reversed
+  hop the target `users` is a SEPARATE table, so the proxy correctly emits the
+  two-join (golden `…_test_follows_or_authored_one_to_two_hops` shows
+  `INNER JOIN posts_test … INNER JOIN users_test`). The proxy answers a LOCAL,
+  per-hop, direction-aware question ("does the rel table equal the TARGET node
+  table, so I fuse the joins?"); canonical answers a schema-level classification.
+  Migrating to canonical would emit WRONG SQL (a spurious self-join, or a dropped
+  node join) on real corpus schemas. **Disposition: keep the proxy, but (1) rename
+  the misleadingly-named local `is_fk_edge` → `rel_table_is_end_node` at both
+  sites and document the divergence inline (byte-identical — corpus/golden
+  unchanged), and (2) ratchet the `is_fk_edge` count for this file 4 → 1** (one
+  intentional pointer-to-canonical reference kept in a comment). The existing
+  corpus goldens (the zeek and `AUTHORED`-VLP entries) already byte-lock every
+  divergent case, so a future migration attempt flips a golden.
 - **Slices 1 & 5 (denorm re-derivation cluster) — largely already migrated.**
   The cited sites now read `pattern_ctx.{left,right}_node.is_embedded()`
   (`cte_extraction.rs:~4345`); residual `is_denormalized` tokens are struct field
@@ -1329,13 +1346,17 @@ predicate intentionally divergent from canonical `is_node_denormalized_on_edge`
 POSITIVELY COVERED by a purpose-built denorm self-loop multi-type fixture
 (`denorm_selfloop_multitype`, lib test + 8 corpus goldens) proving inline ==
 canonical on every admissible schema (the only divergent input is
-validator-rejected); slice 2 (`is_fk_edge`
-proxy) is a divergence-check not a clean slice + ratchet-neutral; slices 1/5 are
+validator-rejected); ☑ slice 2 (`is_fk_edge` proxy) RESOLVED — transition-assert
+found 14 REAL divergences (both directions) proving the local proxy is
+correct-and-different from canonical (migrating would emit wrong SQL); kept the
+proxy, renamed `is_fk_edge` → `rel_table_is_end_node` at both sites +
+ratcheted the file's `is_fk_edge` count 4→1 (byte-identical); slices 1/5 are
 legit field-reads/plan-state, not re-derivations · ☑ §6.3 legacy scalar-flag
 path already gone (region recreates `PatternSchemaContext` unconditionally) ·
-**Phase 3 substantially complete** — mechanical migrations done; what's left is
-divergence investigation (slice 2, same shape as slice 4) + the
-`pattern_schema.rs` dead_code audit. See §6.2/§6.3.
+**Phase 3 substantially complete** — mechanical migrations done; slices 3/4/2 all
+resolved (3 migrated, 4/2 investigated-and-decided with the fixture/transition-
+assert method). Only the low-priority `pattern_schema.rs` dead_code audit remains.
+See §6.2/§6.3.
 
 Phase 4: ◐ early hoists landed OUT OF ORDER 2026-07-14 (low-risk, accepted):
 3 diagnostic helpers (fe968442), 10 self-contained nested fns (b9ce1d94),
