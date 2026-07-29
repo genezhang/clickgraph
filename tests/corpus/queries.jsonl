@@ -1210,3 +1210,10 @@
 {"cypher": "MATCH (a)-[r]-(b) RETURN a.name, b.name", "name": "denorm_selfloop_multitype__undirected_multitype_expand", "schema": "denorm_selfloop_multitype"}
 {"cypher": "MATCH p=(a)-[]->(b) RETURN p LIMIT 5", "name": "denorm_selfloop_multitype__path_multitype_expand", "schema": "denorm_selfloop_multitype"}
 {"cypher": "MATCH (a)-[r]->(b) RETURN count(*) AS cnt", "name": "denorm_selfloop_multitype__count_multitype_expand", "schema": "denorm_selfloop_multitype"}
+{"cypher": "MATCH (a:Object)-[:PARENT]->(b:Object) RETURN a.name, b.name LIMIT 5", "name": "test_713_composite_self_ref_fk_single_hop", "schema": "composite_self_ref_fk"}
+{"cypher": "MATCH (a:Object)-[:PARENT*2..2]->(b:Object) RETURN a.name, b.name", "name": "test_713_composite_self_ref_fk_exact_two_hop", "schema": "composite_self_ref_fk"}
+{"cypher": "MATCH (a:Object)-[:PARENT*1..2]->(b:Object) RETURN a.name, b.name", "name": "test_713_composite_self_ref_fk_vlp_one_to_two", "schema": "composite_self_ref_fk"}
+{"cypher": "MATCH (a:Object)-[:PARENT*1..3]->(b:Object) RETURN a.name, b.name", "name": "test_713_composite_self_ref_fk_vlp_one_to_three", "schema": "composite_self_ref_fk"}
+{"cypher": "MATCH (a:Object)<-[:PARENT]-(b:Object) RETURN a.name, b.name LIMIT 5", "name": "test_713_composite_self_ref_fk_reverse_single_hop", "schema": "composite_self_ref_fk"}
+{"cypher": "MATCH (c:Comment)-[:IN_FORUM]->(f:Forum) RETURN c.comment_id, f.forum_id LIMIT 5", "name": "test_672_composite_non_self_ref_fk_single_hop", "schema": "composite_fk_edge_nonselfref"}
+{"cypher": "MATCH (c:Comment)<-[:IN_FORUM]-(f:Forum) RETURN c.comment_id, f.forum_id LIMIT 5", "name": "test_672_composite_non_self_ref_fk_reverse_single_hop", "schema": "composite_fk_edge_nonselfref"}

@@ -1,7 +1,15 @@
 {
+  "composite_fk_edge_nonselfref": {
+    "subschema": null,
+    "yaml": "schemas/test/composite_fk_edge_nonselfref.yaml"
+  },
   "composite_id": {
     "subschema": null,
     "yaml": "schemas/examples/composite_node_id_test.yaml"
+  },
+  "composite_self_ref_fk": {
+    "subschema": null,
+    "yaml": "schemas/test/composite_self_ref_fk.yaml"
   },
   "data_security": {
     "subschema": null,
