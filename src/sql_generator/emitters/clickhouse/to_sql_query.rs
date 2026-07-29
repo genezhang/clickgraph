@@ -6653,9 +6653,7 @@ impl RenderExpr {
                 // surfaced as a clean error here — instead we emit the *original*
                 // prefixed name (e.g. `ch.uniq(x)`) so the query surfaces a
                 // database error on the unknown prefixed function rather than
-                // silently dropping the prefix into a valid-looking call. The
-                // message-bearing error path is `translate_scalar_function` /
-                // the `LogicalExpr` arms.
+                // silently dropping the prefix into a valid-looking call.
                 match crate::sql_generator::passthrough::strip_passthrough(
                     &fn_call.name,
                     crate::server::query_context::get_current_dialect(),
@@ -6751,7 +6749,6 @@ impl RenderExpr {
                         // clean translation error here — emit the *original* prefixed
                         // name so the query surfaces a database error on the unknown
                         // prefixed function rather than silently dropping the prefix.
-                        // The message-bearing error path is the `LogicalExpr` arms.
                         log::error!("aggregate pass-through rejected: {}", e);
                         let args = agg
                             .args
@@ -8109,6 +8106,47 @@ impl ToSql for OrderByOrder {
 mod tests {
     use super::*;
     use crate::render_plan::render_expr::{Literal, RenderExpr};
+
+    /// FINAL is a ClickHouse-only keyword (ReplacingMergeTree dedup): it must be
+    /// emitted under ClickHouse and omitted under Databricks/Spark (where it is
+    /// invalid SQL) even when the schema requests it via `use_final = true`.
+    /// This exercises the LIVE render path — `FromTableItem::to_sql` (the
+    /// `render_plan::ToSql` impl, `to_sql_query.rs`) — which gates on
+    /// `dialect.supports_final_keyword()`. Ported from the retired dead-code
+    /// `to_sql.rs` `ViewScan::to_sql` test (SQL-IR Phase 2 step 3, Path D removal).
+    #[tokio::test]
+    async fn final_emitted_only_on_clickhouse() {
+        use crate::render_plan::{FromTableItem, ViewTableRef};
+        use crate::server::query_context::{with_query_context, QueryContext};
+        use crate::sql_generator::SqlDialect;
+
+        fn from_with_final() -> FromTableItem {
+            FromTableItem(Some(ViewTableRef {
+                source: std::sync::Arc::new(crate::query_planner::logical_plan::LogicalPlan::Empty),
+                name: "users".to_string(),
+                alias: Some("u".to_string()),
+                use_final: true,
+            }))
+        }
+
+        // Default scope -> ClickHouse -> FINAL present.
+        let ch_sql = from_with_final().to_sql();
+        assert!(
+            ch_sql.contains(" FINAL"),
+            "ClickHouse should emit FINAL; got: {ch_sql}"
+        );
+
+        // Databricks dialect -> no FINAL (invalid Spark SQL).
+        let ctx = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        let dbx_sql = with_query_context(ctx, async { from_with_final().to_sql() }).await;
+        assert!(
+            !dbx_sql.contains("FINAL"),
+            "Databricks must not emit FINAL; got: {dbx_sql}"
+        );
+    }
 
     /// #547: `add_order_by_columns_to_select` must recurse into a nested
     /// sibling UNION (an undirected/bidirectional relationship's direction-B

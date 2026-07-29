@@ -10,15 +10,12 @@ pub mod id_gen;
 pub mod json_builder; // Type-preserving JSON construction utilities
 pub mod multi_type_vlp_joins; // Multi-type VLP JOIN expansion (Part 1D)
 pub mod pagerank;
-pub mod to_sql; // Made public for EXISTS subquery support
 pub mod to_sql_query; // Made public for EXISTS subquery generation with WITH clauses
 pub mod variable_length_cte;
 pub mod write_to_sql;
 
 pub use id_gen::{auto_id_decision, IdInsertDecision, IdStrategy};
 pub use write_to_sql::write_render_to_sql;
-mod view_query;
-mod view_scan;
 #[cfg(test)]
 mod where_clause_tests;
 
@@ -28,8 +25,8 @@ pub use common::{
 };
 pub use errors::ClickhouseQueryGeneratorError;
 pub use function_translator::{
-    get_supported_functions, is_ch_aggregate_function, is_function_supported,
-    translate_scalar_function, CH_AGG_PREFIX, CH_PASSTHROUGH_PREFIX,
+    get_supported_functions, is_ch_aggregate_function, is_function_supported, CH_AGG_PREFIX,
+    CH_PASSTHROUGH_PREFIX,
 };
 pub use json_builder::{
     generate_json_properties_from_schema, generate_json_properties_sql,
