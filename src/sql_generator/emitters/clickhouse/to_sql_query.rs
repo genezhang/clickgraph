@@ -7337,15 +7337,17 @@ impl RenderExpr {
                     }
                 };
 
-                // For ClickHouse, use caseWithExpression for simple CASE expressions
+                // Simple CASE (`CASE expr WHEN v THEN r ...`): dialect-aware.
+                // CH spells it caseWithExpression(...); Spark uses standard
+                // CASE-expr syntax. See common::simple_case_sql.
                 if let Some(case_expr) = &case.expr {
-                    // caseWithExpression(expr, val1, res1, val2, res2, ..., default)
-                    let mut args = vec![case_expr.to_sql()];
-
-                    for (when_expr, then_expr) in &case.when_then {
-                        args.push(when_expr.to_sql());
-                        args.push(render_result(then_expr));
-                    }
+                    let when_then: Vec<(String, String)> = case
+                        .when_then
+                        .iter()
+                        .map(|(when_expr, then_expr)| {
+                            (when_expr.to_sql(), render_result(then_expr))
+                        })
+                        .collect();
 
                     let else_expr = case
                         .else_expr
@@ -7359,9 +7361,8 @@ impl RenderExpr {
                                 "NULL".to_string()
                             }
                         });
-                    args.push(else_expr);
 
-                    format!("caseWithExpression({})", args.join(", "))
+                    super::common::simple_case_sql(&case_expr.to_sql(), &when_then, &else_expr)
                 } else {
                     // Searched CASE - use standard CASE syntax
                     let mut sql = String::from("CASE");
