@@ -301,10 +301,13 @@ fixed stats fixture.
   and a 218-case dual-dialect `sql_ir/` golden net + 1,119-case corpus are
   locked. Method: grep the `.databricks.sql` goldens for leaked CH spellings to
   find the empirically-reached bugs, fix the most-reached leaf first via a
-  `common.rs` dialect helper. Done: simple-CASE (#811). **Next leaves** (by
-  golden-leak count): `startsWith`/`endsWith` (5 sites, Paths A+C+pattern_comp),
-  then `JSON_VALUE`/`splitByChar`/single-`startsWith` leaks. SKIP the
-  operator-symbol table (`=`/`<>`/`AND` are dialect-neutral — pure churn).
+  `common.rs` dialect helper. **Done:** simple-CASE (#811), STARTS/ENDS WITH
+  (#813, 6 sites). **Next leaves:**
+  RegexMatch `match(...)`→`rlike` in `cte_extraction.rs`/`pattern_comprehension_sql.rs`
+  (helper already exists, mechanical 2-site routing), then `JSON_VALUE`
+  (multi-type VLP, `json_extract_string` mapper method exists but unused there),
+  `splitByChar`, `map(` constructor. SKIP the operator-symbol table
+  (`=`/`<>`/`AND` dialect-neutral — pure churn).
   Phase 2 (path collapse) / 3 (structural idioms) / 4 (Raw shrink) stay deferred
   behind Phase 1; Phase-2 A/C unification deferred per its own investigation.
 - Phase 3 §6.2/§6.3: **COMPLETE** (slices 3/4/2 resolved 2026-07-28,
@@ -325,6 +328,27 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-29: **SQL-IR Phase 1 — STARTS WITH / ENDS WITH routed through dialect
+  helpers** (#813, `904924e5`). Cypher `STARTS WITH` / `ENDS WITH` were hardcoded
+  to CH `startsWith(...)` / `endsWith(...)` camelCase at **6 emission sites across
+  all four render paths** (3× `to_sql_query.rs`, `cte_extraction.rs`, `to_sql.rs`
+  LogicalExpr arm, `pattern_comprehension_sql.rs`); Spark spells them lowercase
+  (`startswith`/`endswith`, DBR 11.3 LTS+, same arg order). Added
+  `common::starts_with_predicate`/`ends_with_predicate`, siblings of the existing
+  `contains_predicate`/`regex_match_predicate` that already sit beside these sites.
+  CH byte-identical (0 `.clickhouse.sql` churn); 1 `.databricks.sql` golden
+  regenerated. **Adversarial review caught a 6th site** (Path D `to_sql.rs`, whose
+  `Contains` sibling was already routed via #364) that the initial pass counted as
+  5 — fixed + confirming re-review APPROVE-0. Spark resolves builtin names
+  case-insensitively so the leak wasn't a hard break, but it closes the
+  consistency gap. Gate: fmt/clippy, 1612 lib + 531 integration, ratchet net-zero.
+  **Next SQL-IR leaf:** RegexMatch `match(...)` still hardcoded in `cte_extraction.rs`
+  (~:1790) + `pattern_comprehension_sql.rs` (~:1747) — a `regex_match_predicate`
+  helper already exists and Paths A/D use it, so it's a mechanical 2-site routing
+  (Spark needs `rlike`); 0 current golden leak (latent, correctness-hardening).
+  `POWER`/`Exponentiation` in `cte_extraction.rs:1750` is a possible bundled
+  sibling.
 
 - 2026-07-29: **SQL-IR Phase 1 — simple-CASE routed through a dialect-aware
   helper** (#811, `b2352d00`; P-6 SQL-IR track resumed). `RenderExpr::Case` with
