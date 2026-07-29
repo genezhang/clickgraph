@@ -8195,6 +8195,19 @@ pub fn generate_cycle_prevention_filters_composite(
         // Emitting `r{i}` aliases here would be a LOUD SQL error. Until a
         // path-specific rule is written we PRESERVE the previous behaviour
         // (start != end guard over the aliases those paths actually expose).
+        //
+        // #802: `start_id_cols`/`end_id_cols` are now full per-column vectors,
+        // so this guard is composite-correct — a composite-keyed Fk-edge emits
+        // `NOT (a.k1 = b.k1 AND a.k2 = b.k2 ...)` instead of the old truncated
+        // `a.k1 <> b.k1` (which silently dropped valid grandparent paths whose
+        // endpoints happened to share the first key column). KNOWN RESIDUAL:
+        // this `start != end` guard is stricter than Cypher trail semantics on
+        // CYCLIC self-ref data — a valid cycle-closing trail (e.g. `n1→n2→n3→n1`
+        // over three distinct edges) is dropped because it returns to its start.
+        // Acyclic hierarchies (the designed FK-edge self-ref domain: filesystems,
+        // org charts, category trees) are unaffected — a path there can never
+        // revisit a node. Pre-existing and shared by single- and composite-key
+        // FkEdge; tracked with the #598-followup rel-uniqueness rewrite above.
         filters.push(generate_composite_not_equal(
             start_alias,
             start_id_cols,

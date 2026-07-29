@@ -300,9 +300,9 @@ fixed stats fixture.
   #793/#795/#796; `pattern_schema.rs` dead_code audit done #799). No Phase-3
   items remain.
 - Composite-id emission: #604/#713 **DONE** (2026-07-28, #800–#804). Remaining
-  composite-id follow-ups are bug-driven / design-cycle: #802 (FK-edge
-  exact-bound dup-alias Code 179), #627 (composed/adjacent VLP CTE per-column
-  exposure), #672 part-1 (wrong-order silent zip).
+  composite-id follow-ups are bug-driven / design-cycle: ~~#802 (FK-edge
+  exact-bound dup-alias Code 179)~~ **DONE 2026-07-29 (#810)**, #627 (composed/
+  adjacent VLP CTE per-column exposure), #672 part-1 (wrong-order silent zip).
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
@@ -315,6 +315,28 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-29: **#802 — FK-edge exact-bound VLP duplicate endpoint alias (Code
+  179)** (composite-id follow-up). `(a)-[:PARENT*2..2]->(b)` on a self-ref
+  FK-edge table emitted `FROM t AS b JOIN t AS b` (endpoint alias twice) + start
+  alias `a` undefined → Code 179. **Root:** `extract_joins` roots the expander
+  chain at the START node, but `select_anchor`'s alphabetical tie-break picks the
+  END node as `anchor_table` for a self-ref table (both endpoints = same table),
+  and `extract_from` used it — FROM disagreed with the joins. **Fix**
+  (`from_builder.rs`): a flat exact VLP (N≥2) derives FROM from the same
+  `expand_fixed_length_joins_with_context` that builds its joins, so they agree
+  by construction. Normal/Polymorphic already root at start → byte-identical
+  (zero corpus churn). **Un-masked** a composite-key defect in the FK-edge/
+  multi-type legacy `start != end` guard (`filter_builder.rs`): `start_id`/
+  `end_id` came from the single-`String` `ViewScan.id_column`, truncating
+  composite keys to `a.region <> b.region` — live-verified to drop a valid
+  grandparent path (0 rows vs 1). Made composite-aware via `node_id.columns()`;
+  single-col yields one-element vectors → byte-identical. **Known residual**
+  (documented): the legacy start!=end guard is stricter than Cypher trail
+  semantics on CYCLIC self-ref data — pre-existing, shared single/composite,
+  tracked with the #598-followup rel-uniqueness rewrite. Live-verified on
+  ClickHouse (single + composite fixtures); adversarial review before merge.
+  Goldens: regenerated `composite_self_ref_fk` exact-two-hop (was locking the
+  buggy form); added single-col `fk_edge_self_ref` exact two/three-hop.
 - 2026-07-28: **#606 VLP relationship-uniqueness — remaining live arms** (USER:
   "finish bug-driven refactoring if more exist"). After #598/#709/#712, three
   Explore passes mapped the residual arms. **Only one was a live bug:**
