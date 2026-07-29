@@ -315,6 +315,23 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-28: **#606 VLP relationship-uniqueness — remaining live arms** (USER:
+  "finish bug-driven refactoring if more exist"). After #598/#709/#712, three
+  Explore passes mapped the residual arms. **Only one was a live bug:**
+  - **#807** — multi-type VLP (`multi_type_vlp_joins.rs`) was OVER-counting (flat
+    JOIN+UNION with no uniqueness predicate → permitted edge reuse). Fixed with a
+    same-rel-type pairwise edge-inequality guard; shortestPath excluded
+    (node-unique suffices). Live-verified against a cyclic oracle (9→8, 15→10);
+    review APPROVE-0. Follow-up **#806** (flat-path edge identity uses `(from,to)`
+    only → parallel-edge collapse; pre-existing, matches single-type flat).
+  - **#808 (filed, not fixed)** — the `mixed` / `heterogeneous-polymorphic` /
+    emitter-`denormalized` recursive generators are node-unique but **corpus-
+    unreachable**: instrumented each with `eprintln!` and ran the full test suite
+    + corpus_sweep → **0 hits**. Real hetero patterns route through the standard
+    edge-unique arm (`to_label_values` filtering), never the intermediate-recursion
+    path. Fixing = zero behavior change and unverifiable → deferred (prove-dead-
+    and-delete OR add-coverage-first). shortestPath/weighted/zero-hop(#628)
+    legitimately node-unique.
 - 2026-07-28: **Composite-id emission threading — abstracted 4 "bug-driven"
   issues into one bounded refactor** (USER: "abstract the bug-driven refactors,
   or SQL-IR"). Root: a composite `Identifier` was stringified (`Display`/
