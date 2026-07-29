@@ -24,7 +24,7 @@ INNER JOIN test_integration.user_follows_test r1 ON u_1.user_id = r1.follower_id
 INNER JOIN test_integration.users_test u2 ON r1.followed_id = u2.user_id
 INNER JOIN test_integration.user_follows_test r2 ON u2.user_id = r2.follower_id
 INNER JOIN test_integration.users_test u3 ON r2.followed_id = u3.user_id
-WHERE (u_1.user_id = 1)
+WHERE NOT ((r1.follower_id = r2.follower_id) AND (r1.followed_id = r2.followed_id)) AND (u_1.user_id = 1)
 )
 SELECT `x.properties` AS `x.properties`, `x.id` AS `x.id`, `x.__label__` AS `x.__label__` FROM (
 SELECT 

@@ -4211,6 +4211,7 @@ pub fn extract_ctes_with_context(
                             view_parameter_values,
                             plan_ctx.map(|ctx| std::sync::Arc::new(ctx.clone())),
                             is_undirected,
+                            graph_rel.shortest_path_mode.is_some(),
                         );
 
                         // TODO: Add property projections based on what's needed in RETURN clause

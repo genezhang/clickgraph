@@ -23,6 +23,7 @@ INNER JOIN social.user_follows_bench r1 ON a_1.user_id = r1.follower_id
 INNER JOIN social.users_bench u2 ON r1.followed_id = u2.user_id
 INNER JOIN social.user_follows_bench r2 ON u2.user_id = r2.follower_id
 INNER JOIN social.users_bench u3 ON r2.followed_id = u3.user_id
+WHERE NOT ((r1.follower_id = r2.follower_id) AND (r1.followed_id = r2.followed_id))
 )
 SELECT 
       t.end_properties AS `b.properties`, 

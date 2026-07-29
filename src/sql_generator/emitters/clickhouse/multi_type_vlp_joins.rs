@@ -101,6 +101,12 @@ pub struct MultiTypeVlpJoinGenerator<'a> {
     // Whether the pattern is undirected (includes both incoming and outgoing edges)
     undirected: bool,
 
+    // #606: whether this is a shortestPath pattern. shortestPath keeps
+    // NODE-uniqueness (revisiting a node can never shorten a path), matching the
+    // recursive-CTE gate `uses_edge_uniqueness()`, so the pairwise
+    // relationship-uniqueness guard is NOT emitted for it.
+    is_shortest_path: bool,
+
     // Filter conditions
     start_filters: Option<String>, // WHERE clause for start node
     end_filters: Option<String>,   // WHERE clause for end node
@@ -149,6 +155,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         view_parameter_values: HashMap<String, String>,
         plan_ctx: Option<Arc<PlanCtx>>,
         undirected: bool,
+        is_shortest_path: bool,
     ) -> Self {
         let min_hops = spec.min_hops.unwrap_or(1) as usize;
         let max_hops = spec.max_hops.unwrap_or(10) as usize;
@@ -166,6 +173,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             start_alias,
             end_alias,
             undirected,
+            is_shortest_path,
             start_filters,
             end_filters,
             rel_filters,
@@ -731,6 +739,18 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         // initiated the expand.
         let mut hop_rel_fk_info: Vec<(String, String, String)> = Vec::new();
 
+        // #606: per-hop edge identity for relationship-uniqueness (trail semantics).
+        // Each entry = (rel_type, edge_alias, schema_from_col, schema_to_col). Two
+        // hops traverse the SAME physical edge iff they have the same rel_type
+        // (hence same table) AND the same (from, to) values. We use the
+        // schema-natural from/to columns (NOT the reversed join columns) so a
+        // forward and reverse traversal of one physical edge compare equal.
+        // After the hop loop, we emit `NOT (a.from = b.from AND a.to = b.to)` for
+        // every same-rel-type hop pair — the multi-type flat enumeration otherwise
+        // permits reusing an edge within a path (over-counting vs Cypher trail
+        // semantics, which forbid edge reuse but allow node revisiting).
+        let mut hop_edge_identity: Vec<(String, String, String, String)> = Vec::new();
+
         for (hop_idx, hop) in hops.iter().enumerate() {
             let hop_num = hop_idx + 1;
 
@@ -819,6 +839,17 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                         ));
                     }
                 }
+
+                // #606: record this hop's edge identity (fused arm — the edge row
+                // IS the end-node row, so its alias is `end_node_alias`). Uses the
+                // schema-natural from/to columns so forward/reverse of one physical
+                // edge compare equal.
+                hop_edge_identity.push((
+                    hop.rel_type.clone(),
+                    end_node_alias.clone(),
+                    from_col.columns().join(", "),
+                    to_col.columns().join(", "),
+                ));
             } else {
                 // Standard pattern: separate relationship table and target node table
                 let rel_alias = format!("r{}", hop_num);
@@ -893,11 +924,55 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                         hop_rel_fk_info.push((rel_alias.clone(), f.to_string(), t.to_string()));
                     }
                 }
+
+                // #606: record this hop's edge identity (standard arm — the edge
+                // lives in its own `rel_alias` relationship table).
+                hop_edge_identity.push((
+                    hop.rel_type.clone(),
+                    rel_alias.clone(),
+                    from_col.columns().join(", "),
+                    to_col.columns().join(", "),
+                ));
             }
 
             // Update current_alias for next hop
             current_alias = end_node_alias.clone();
             path_node_aliases.push((end_node_alias.clone(), hop.to_node_type.clone()));
+        }
+
+        // #606: relationship-uniqueness (Cypher trail semantics). The flat
+        // multi-type enumeration above places no constraint against reusing the
+        // same physical edge within a path, so a self-loop or a back-and-forth
+        // over one edge is counted repeatedly (over-count). For every pair of hops
+        // i<j that traverse the SAME relationship type (hence the same table),
+        // forbid both hops being the SAME physical edge:
+        //   NOT (edge_i.from = edge_j.from AND edge_i.to = edge_j.to)
+        // Different rel types live in different tables and can never be the same
+        // physical edge, so only same-type pairs are compared. A node may still be
+        // revisited (we only compare edge identity, never node identity).
+        // shortestPath keeps node-uniqueness (a shortest path never revisits a
+        // node, so it never reuses an edge either) — matching the recursive-CTE
+        // gate `uses_edge_uniqueness()`; skip the guard there.
+        if !self.is_shortest_path {
+            for i in 0..hop_edge_identity.len() {
+                for j in (i + 1)..hop_edge_identity.len() {
+                    let (ref ti, ref ai, ref fi, ref toi) = hop_edge_identity[i];
+                    let (ref tj, ref aj, ref fj, ref toj) = hop_edge_identity[j];
+                    if ti != tj {
+                        continue;
+                    }
+                    let fi_id = crate::graph_catalog::config::Identifier::from_comma_separated(fi);
+                    let toi_id =
+                        crate::graph_catalog::config::Identifier::from_comma_separated(toi);
+                    let fj_id = crate::graph_catalog::config::Identifier::from_comma_separated(fj);
+                    let toj_id =
+                        crate::graph_catalog::config::Identifier::from_comma_separated(toj);
+                    // edge_i.from = edge_j.from AND edge_i.to = edge_j.to
+                    let from_eq = fi_id.to_sql_equality(ai, &fj_id, aj);
+                    let to_eq = toi_id.to_sql_equality(ai, &toj_id, aj);
+                    where_clauses.push(format!("NOT (({from_eq}) AND ({to_eq}))"));
+                }
+            }
         }
 
         // Add start filters — apply after hop loop so end_node alias is available
