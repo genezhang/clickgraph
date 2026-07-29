@@ -7267,11 +7267,11 @@ pub fn build_vlp_context(
 
     // Extract start node info
     let (start_alias, start_table, start_id_col) =
-        extract_node_info(&graph_rel.left, schema_type, &graph_rel.center)?;
+        extract_node_info(&graph_rel.left, schema_type, &graph_rel.center, schema)?;
 
     // Extract end node info
     let (end_alias, end_table, end_id_col) =
-        extract_node_info(&graph_rel.right, schema_type, &graph_rel.center)?;
+        extract_node_info(&graph_rel.right, schema_type, &graph_rel.center, schema)?;
 
     // Extract relationship info
     let rel_alias = graph_rel.alias.clone();
@@ -7409,14 +7409,37 @@ pub fn build_vlp_context(
 }
 
 /// Extract node info (alias, table, id_col) handling different schema types
+///
+/// #604: `id_col` may be a comma-separated COMPOSITE key (e.g.
+/// `"bank_id, account_number"`). For Normal/Polymorphic nodes we prefer the
+/// node schema's full composite `node_id` over `ViewScan.id_column` (a lossy
+/// single `String` that silently drops every column past the first for a
+/// composite key). Downstream JOIN generation
+/// (`vlp_join_eq_conditions`) parses the comma-separated form back into an
+/// `Identifier` and zips per-column, so a composite endpoint joins on every
+/// column; single-column ids are unaffected (comma-free string round-trips).
 fn extract_node_info(
     node_plan: &LogicalPlan,
     schema_type: VlpSchemaType,
     rel_center: &LogicalPlan,
+    schema: &GraphSchema,
 ) -> Option<(String, String, String)> {
     match node_plan {
         LogicalPlan::GraphNode(node) => {
             let alias = node.alias.clone();
+
+            // #604: a node's declared composite key, comma-joined, if the label
+            // resolves to a schema with a composite `node_id`. `None` for
+            // single-column keys (or unresolved labels) → callers fall back to
+            // the pre-existing lossy-but-correct single-column source.
+            let composite_node_id = node.label.as_ref().and_then(|label| {
+                let node_schema = schema.node_schema_opt(label)?;
+                if node_schema.node_id.is_composite() {
+                    Some(node_schema.node_id.columns().join(", "))
+                } else {
+                    None
+                }
+            });
 
             match schema_type {
                 VlpSchemaType::Denormalized => {
@@ -7432,12 +7455,15 @@ fn extract_node_info(
                     // Normal/Polymorphic: get from node's ViewScan
                     if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
                         let table = scan.source_table.clone();
-                        let id_col = scan.id_column.clone();
+                        // #604: prefer the composite schema key; else the ViewScan's
+                        // single id_column (byte-identical for single-key nodes).
+                        let id_col = composite_node_id.unwrap_or_else(|| scan.id_column.clone());
                         Some((alias, table, id_col))
                     } else if let Some(label) = &node.label {
                         // Fallback: derive from label
                         let table = label_to_table_name(label);
-                        let id_col = table_to_id_column(&table);
+                        let id_col =
+                            composite_node_id.unwrap_or_else(|| table_to_id_column(&table));
                         Some((alias, table, id_col))
                     } else {
                         None
@@ -7453,7 +7479,7 @@ fn extract_node_info(
             // For patterns like: (person)<-[:HAS_CREATOR]-(message)-[:REPLY_OF*0..]->(post)
             //   Inner GraphRel: left=person, right=message → we want message (right side)
             // The shared/boundary node is always at the right end of the inner chain
-            extract_node_info(&rel.right, schema_type, rel_center)
+            extract_node_info(&rel.right, schema_type, rel_center, schema)
         }
         _ => None,
     }
@@ -7711,6 +7737,60 @@ pub fn get_node_schema_by_table<'a>(
     None
 }
 
+/// #604: build per-column equality conditions between two (alias, id-column)
+/// endpoints, composite-aware. The id strings may be comma-separated composite
+/// keys (e.g. `"from_bank_id, from_account_number"`); each physical column pair
+/// becomes its own `Equal` `OperatorApplication`, so a composite JOIN renders as
+/// `a.c1 = b.c1 AND a.c2 = b.c2` instead of the pre-#604 stringified single
+/// bogus column `a."c1, c2"`. Single-column ids yield exactly one condition —
+/// byte-identical to the previous hand-built single `OperatorApplication`.
+fn vlp_join_eq_conditions(
+    left_alias: &str,
+    left_id: &str,
+    right_alias: &str,
+    right_id: &str,
+) -> Vec<super::render_expr::OperatorApplication> {
+    use super::render_expr::{
+        Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+    };
+    use crate::graph_catalog::config::Identifier;
+
+    let left_cols = Identifier::from_comma_separated(left_id);
+    let right_cols = Identifier::from_comma_separated(right_id);
+    let left_cols = left_cols.columns();
+    let right_cols = right_cols.columns();
+    // Arity should always match for schema-valid input: an edge's from_id/to_id
+    // column count equals the arity of the node_id it references. A mismatch can
+    // only arise from a malformed schema; we warn and zip the shorter (a partial
+    // join) rather than panic. Not reachable via a schema-valid self-composable
+    // edge (both endpoints are the same node type, so same node_id arity).
+    if left_cols.len() != right_cols.len() {
+        log::warn!(
+            "VLP JOIN id column count mismatch: {left_alias}.{left_cols:?} ({}) vs \
+             {right_alias}.{right_cols:?} ({}); pairing available columns",
+            left_cols.len(),
+            right_cols.len()
+        );
+    }
+    left_cols
+        .iter()
+        .zip(right_cols.iter())
+        .map(|(l, r)| OperatorApplication {
+            operator: Operator::Equal,
+            operands: vec![
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(left_alias.to_string()),
+                    column: PropertyValue::Column((*l).to_string()),
+                }),
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(right_alias.to_string()),
+                    column: PropertyValue::Column((*r).to_string()),
+                }),
+            ],
+        })
+        .collect()
+}
+
 /// Schema-aware fixed-length VLP JOIN generation using VlpContext
 ///
 /// This is the consolidated version that handles all schema types correctly:
@@ -7721,10 +7801,6 @@ pub fn get_node_schema_by_table<'a>(
 /// # Returns
 /// (from_table, from_alias, joins) - The FROM table info and JOIN clauses
 pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, String, Vec<Join>) {
-    use super::render_expr::{
-        Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
-    };
-
     let exact_hops = ctx.exact_hops.unwrap_or(1);
     let mut joins = Vec::new();
 
@@ -7785,19 +7861,12 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                 joins.push(Join {
                     table_name: rel_table_ref.clone(),
                     table_alias: rel_alias.clone(),
-                    joining_on: vec![OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(prev_alias),
-                                column: PropertyValue::Column(ctx.rel_to_col.clone()),
-                            }),
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(rel_alias),
-                                column: PropertyValue::Column(ctx.rel_from_col.clone()),
-                            }),
-                        ],
-                    }],
+                    joining_on: vlp_join_eq_conditions(
+                        &prev_alias,
+                        &ctx.rel_to_col,
+                        &rel_alias,
+                        &ctx.rel_from_col,
+                    ),
                     join_type: JoinType::Inner,
                     pre_filter: None,
                     from_id_column: None,
@@ -7838,19 +7907,12 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                 joins.push(Join {
                     table_name: rel_table_ref.clone(),
                     table_alias: rel_alias.clone(),
-                    joining_on: vec![OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(prev_alias),
-                                column: PropertyValue::Column(prev_id_col),
-                            }),
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(rel_alias),
-                                column: PropertyValue::Column(ctx.rel_from_col.clone()),
-                            }),
-                        ],
-                    }],
+                    joining_on: vlp_join_eq_conditions(
+                        &prev_alias,
+                        &prev_id_col,
+                        &rel_alias,
+                        &ctx.rel_from_col,
+                    ),
                     join_type: JoinType::Inner,
                     pre_filter: None,
                     from_id_column: None,
@@ -7865,19 +7927,12 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
             joins.push(Join {
                 table_name: end_table_ref.clone(),
                 table_alias: ctx.end_alias.clone(),
-                joining_on: vec![OperatorApplication {
-                    operator: Operator::Equal,
-                    operands: vec![
-                        RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias(last_rel),
-                            column: PropertyValue::Column(ctx.rel_to_col.clone()),
-                        }),
-                        RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias(ctx.end_alias.clone()),
-                            column: PropertyValue::Column(ctx.end_id_col.clone()),
-                        }),
-                    ],
-                }],
+                joining_on: vlp_join_eq_conditions(
+                    &last_rel,
+                    &ctx.rel_to_col,
+                    &ctx.end_alias,
+                    &ctx.end_id_col,
+                ),
                 join_type: JoinType::Inner,
                 pre_filter: None,
                 from_id_column: None,
@@ -7934,19 +7989,12 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                 joins.push(Join {
                     table_name: start_table_ref.clone(), // Same table as start (self-referencing)
                     table_alias: current_alias.clone(),
-                    joining_on: vec![OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(prev_alias),
-                                column: PropertyValue::Column(ctx.rel_from_col.clone()), // FK column (parent_id)
-                            }),
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(current_alias),
-                                column: PropertyValue::Column(ctx.rel_to_col.clone()), // ID column (object_id)
-                            }),
-                        ],
-                    }],
+                    joining_on: vlp_join_eq_conditions(
+                        &prev_alias,
+                        &ctx.rel_from_col, // FK column (parent_id)
+                        &current_alias,
+                        &ctx.rel_to_col, // ID column (object_id)
+                    ),
                     join_type: JoinType::Inner,
                     pre_filter: None,
                     from_id_column: None,
