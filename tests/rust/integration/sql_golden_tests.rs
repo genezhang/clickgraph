@@ -1632,7 +1632,13 @@ pub(crate) fn normalize(sql: &str) -> String {
             .into_owned()
     }
     let s = remap(sql, r"\bt\d+\b", "t");
-    remap(&s, r"\bcte\d+\b", "cte")
+    let s = remap(&s, r"\bcte\d+\b", "cte");
+    // The generic `\bt\d+\b` remap above cannot reach the `t<n>` render counter
+    // inside a `pattern_union_t<n>` CTE name: the `t` is preceded by `_` (a word
+    // char), so there is no word boundary before it. Left un-anonymized, that
+    // global counter leaks into the golden and makes the render order-dependent
+    // (byte-stable alone, but not across a full sweep). Anonymize it explicitly.
+    remap(&s, r"pattern_union_t\d+", "pattern_union_t")
 }
 
 fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
