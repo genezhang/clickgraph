@@ -299,6 +299,10 @@ fixed stats fixture.
 - Phase 3 §6.2/§6.3: **COMPLETE** (slices 3/4/2 resolved 2026-07-28,
   #793/#795/#796; `pattern_schema.rs` dead_code audit done #799). No Phase-3
   items remain.
+- Composite-id emission: #604/#713 **DONE** (2026-07-28, #800–#804). Remaining
+  composite-id follow-ups are bug-driven / design-cycle: #802 (FK-edge
+  exact-bound dup-alias Code 179), #627 (composed/adjacent VLP CTE per-column
+  exposure), #672 part-1 (wrong-order silent zip).
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
@@ -311,6 +315,32 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-28: **Composite-id emission threading — abstracted 4 "bug-driven"
+  issues into one bounded refactor** (USER: "abstract the bug-driven refactors,
+  or SQL-IR"). Root: a composite `Identifier` was stringified (`Display`/
+  `to_string` → one bogus `"c1, c2"` column) or truncated (`first_column`) at
+  SQL emission instead of threaded as a column vector through the canonical
+  helpers (`to_sql_equality`/`emit_id_expr`/`from_comma_separated`, already used
+  by #646/#672). Five PRs, each byte-guarded + adversarially reviewed:
+  - **#800** (Slice 0) — characterization: composite FK-edge schemas into the
+    corpus (they had zero goldens); locks malformed output so each fix's diff is
+    the malformed→correct transition.
+  - **#801** (Slice 1, closes #713) — FK-edge VLP generators composite-aware
+    (`variable_length_cte.rs`); live-verified Code 62 → correct ancestor pairs.
+  - **#803** (Slice 2) — flat exact-bound VLP JOIN-ON composite-aware
+    (`cte_extraction.rs`: `vlp_join_eq_conditions` + `extract_node_info` sources
+    composite `node_id` instead of lossy `ViewScan.id_column`, avoiding a
+    loud→silent-wrong regression).
+  - **#804** (Slice 3, closes #604) — relationship-uniqueness WHERE guard
+    composite-aware (`filter_builder.rs`); live-verified `*2..2` returns exactly
+    the correct 2-hop chain.
+  - Byte-safety linchpin: `quote_identifier` is a no-op on plain names, so
+    single-column ids degrade byte-identically — zero single-col golden churn
+    across all slices. Surfaced + filed **#802** (FK-edge exact-bound duplicate
+    endpoint alias, Code 179, pre-existing on single-col too). Out of scope
+    (separate design cycles): #627 (composed/adjacent composite VLP — CTE must
+    expose per-column ids), #672 part-1 (wrong-order silent zip — needs
+    undeclared FK↔PK semantics).
 - 2026-07-28: **Phase-3 §6.3 — `pattern_schema.rs` `#![allow(dead_code)]`
   audit** (P-3 lane; PR #799). Lifted the blanket module allow; it surfaced
   exactly 5 genuinely-dead private/test items (the superseded
