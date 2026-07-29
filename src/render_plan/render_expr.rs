@@ -1702,33 +1702,13 @@ impl Column {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
-pub enum Operator {
-    Addition,
-    Subtraction,
-    Multiplication,
-    Division,
-    ModuloDivision,
-    Exponentiation,
-    Equal,
-    NotEqual,
-    LessThan,
-    GreaterThan,
-    LessThanEqual,
-    GreaterThanEqual,
-    RegexMatch, // =~ (regex match)
-    And,
-    Or,
-    In,
-    NotIn,
-    StartsWith, // STARTS WITH
-    EndsWith,   // ENDS WITH
-    Contains,   // CONTAINS
-    Not,
-    Distinct,
-    IsNull,
-    IsNotNull,
-}
+// `Operator` is unified with the planner's operator enum: the two were
+// byte-identical 24-variant copies, and maintaining both forced a spurious
+// `TryFrom<LogicalOperator> for Operator` identity conversion plus duplicated
+// operator-render logic. `RenderExpr` (the leaf layer) re-exports the
+// planner's `Operator` so there is a single source of truth. Anything that
+// referred to `render_expr::Operator` still resolves through this re-export.
+pub use crate::query_planner::logical_expr::Operator;
 
 impl Operator {
     /// Returns a numeric precedence level for arithmetic operators.
@@ -2107,7 +2087,9 @@ impl TryFrom<LogicalOperatorApplication> for OperatorApplication {
 
     fn try_from(op: LogicalOperatorApplication) -> Result<Self, Self::Error> {
         let op_app = OperatorApplication {
-            operator: op.operator.try_into()?,
+            // `operator` is now the unified `Operator` (re-exported from the
+            // planner), so no conversion is needed — a plain move.
+            operator: op.operator,
             operands: op
                 .operands
                 .into_iter()
@@ -2115,40 +2097,6 @@ impl TryFrom<LogicalOperatorApplication> for OperatorApplication {
                 .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?,
         };
         Ok(op_app)
-    }
-}
-
-impl TryFrom<LogicalOperator> for Operator {
-    type Error = RenderBuildError;
-
-    fn try_from(value: LogicalOperator) -> Result<Self, Self::Error> {
-        let operator = match value {
-            LogicalOperator::Addition => Operator::Addition,
-            LogicalOperator::Subtraction => Operator::Subtraction,
-            LogicalOperator::Multiplication => Operator::Multiplication,
-            LogicalOperator::Division => Operator::Division,
-            LogicalOperator::ModuloDivision => Operator::ModuloDivision,
-            LogicalOperator::Exponentiation => Operator::Exponentiation,
-            LogicalOperator::Equal => Operator::Equal,
-            LogicalOperator::NotEqual => Operator::NotEqual,
-            LogicalOperator::LessThan => Operator::LessThan,
-            LogicalOperator::GreaterThan => Operator::GreaterThan,
-            LogicalOperator::LessThanEqual => Operator::LessThanEqual,
-            LogicalOperator::GreaterThanEqual => Operator::GreaterThanEqual,
-            LogicalOperator::RegexMatch => Operator::RegexMatch,
-            LogicalOperator::And => Operator::And,
-            LogicalOperator::Or => Operator::Or,
-            LogicalOperator::In => Operator::In,
-            LogicalOperator::NotIn => Operator::NotIn,
-            LogicalOperator::StartsWith => Operator::StartsWith,
-            LogicalOperator::EndsWith => Operator::EndsWith,
-            LogicalOperator::Contains => Operator::Contains,
-            LogicalOperator::Not => Operator::Not,
-            LogicalOperator::Distinct => Operator::Distinct,
-            LogicalOperator::IsNull => Operator::IsNull,
-            LogicalOperator::IsNotNull => Operator::IsNotNull,
-        };
-        Ok(operator)
     }
 }
 
