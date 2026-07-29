@@ -302,12 +302,29 @@ fixed stats fixture.
   locked. Method: grep the `.databricks.sql` goldens for leaked CH spellings to
   find the empirically-reached bugs, fix the most-reached leaf first via a
   `common.rs` dialect helper. **Done:** simple-CASE (#811), STARTS/ENDS WITH
-  (#813, 6 sites). **Next leaves:**
-  RegexMatch `match(...)`→`rlike` in `cte_extraction.rs`/`pattern_comprehension_sql.rs`
-  (helper already exists, mechanical 2-site routing), then `JSON_VALUE`
-  (multi-type VLP, `json_extract_string` mapper method exists but unused there),
-  `splitByChar`, `map(` constructor. SKIP the operator-symbol table
-  (`=`/`<>`/`AND` dialect-neutral — pure churn).
+  (#813, 6 sites), RegexMatch `match(...)`→`rlike` (#815, 2 sites — helper
+  pre-existed; 0 golden leak, latent hardening). **Clean mechanical operator/
+  function-name leaves are now EXHAUSTED.** What remains behind Databricks
+  golden leaks is NOT mechanical:
+  - **Exponentiation (`^`)** — `to_sql_query.rs` (×3) emits infix `^`, which is a
+    hard `SYNTAX_ERROR` in ClickHouse itself (CH has no `^` operator; Spark `^`
+    is bitwise-XOR not power). BUT `Operator::Exponentiation` is **parser-
+    unreachable**: `^`→Exponentiation lives only in `parse_operator_symbols`,
+    which is called *only from unit tests* — the live precedence chain
+    (`parse_multiplicative_expression`) handles `* / %` only. Latent behind a dead
+    parser; a tiny consistency fix (route all 4 sites to `power()`) but zero urgency.
+  - **`JSONExtractString` / `toFloat64` / `splitByChar` leaks** (3 corpus
+    `.databricks.sql`) are **schema-config, not operator/function arms**: raw CH
+    SQL fragments authored directly in schema YAML `property_mappings`
+    (`score_float: "toFloat64(score_str)"`, `schemas/test/property_expressions.yaml`)
+    and passed to SELECT verbatim, never touching `FunctionMapper`. Translating
+    them means parsing arbitrary SQL out of user config — a design question
+    (arguably not the engine's job; the schema author targeted a backend), NOT a
+    leaf slice. `FunctionMapper` mappings for these already exist and are correctly
+    dialect-routed for Cypher-level calls (`name_for` accessor); only the
+    config-embedded form leaks.
+  Net: Phase-1 leaf work is at its boundary. Further SQL-IR progress needs a
+  design decision (schema-expression translation) or Phase 2 (path collapse).
   Phase 2 (path collapse) / 3 (structural idioms) / 4 (Raw shrink) stay deferred
   behind Phase 1; Phase-2 A/C unification deferred per its own investigation.
 - Phase 3 §6.2/§6.3: **COMPLETE** (slices 3/4/2 resolved 2026-07-28,
@@ -328,6 +345,23 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-29: **SQL-IR Phase 1 — RegexMatch routed through dialect helper**
+  (#815, `1a57e817`). The last two hardcoded `match({}, {})` RegexMatch emission
+  sites (`cte_extraction.rs` Path C, `pattern_comprehension_sql.rs`) now route
+  through the pre-existing `common::regex_match_predicate` (CH `match(...)`,
+  Databricks `rlike(...)`), matching the already-routed Path A/D sites and their
+  own `StartsWith`/`EndsWith`/`Contains` siblings. Added `regex_match_predicate`
+  to the `clickhouse` module re-export so `render_plan/` reaches it via the
+  `clickhouse_query_generator` alias. CH byte-identical (helper default arm is
+  the same `match(...)`), **0 golden churn** (no committed Databricks golden
+  reached these sites — latent hardening, not a locked-bad leak). Full gate green
+  (1612 lib + corpus_sweep + sql_golden + ratchet net-zero); adversarial review
+  APPROVE-0. **This closes the clean mechanical operator/function-name leaf pool
+  for Phase 1** — see the P-6 SQL-IR bullet (§2) for why the remaining Databricks
+  golden leaks (Exponentiation = parser-unreachable dead code; JSONExtractString/
+  toFloat64/splitByChar = schema-config raw-SQL, a design question) are NOT leaf
+  slices.
 
 - 2026-07-29: **SQL-IR Phase 1 — STARTS WITH / ENDS WITH routed through dialect
   helpers** (#813, `904924e5`). Cypher `STARTS WITH` / `ENDS WITH` were hardcoded
