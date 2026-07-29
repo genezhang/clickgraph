@@ -20,6 +20,7 @@ INNER JOIN test_integration.user_follows_test r1 ON a_1.user_id = r1.follower_id
 INNER JOIN test_integration.users_test u2 ON r1.followed_id = u2.user_id
 INNER JOIN test_integration.user_follows_test r2 ON u2.user_id = r2.follower_id
 INNER JOIN test_integration.users_test u3 ON r2.followed_id = u3.user_id
+WHERE NOT ((r1.follower_id = r2.follower_id) AND (r1.followed_id = r2.followed_id))
 UNION ALL
 SELECT 'Post' AS end_type, p3.post_id AS end_id, a_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', p3.author_id AS author_id, p3.post_content AS content, p3.post_date AS created_at, p3.post_id AS post_id, p3.post_title AS title) AS end_properties, 2 AS hop_count, ['FOLLOWS', 'LIKED'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.follow_date), formatRowNoNewline('JSONEachRow', r2.like_date)] AS rel_properties, [toString(a_1.user_id), toString(u2.user_id), toString(p3.post_id)] AS path_nodes
 FROM test_integration.users_test a_1
