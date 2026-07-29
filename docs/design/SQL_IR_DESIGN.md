@@ -178,6 +178,110 @@ by the existing ~1,600 tests + a golden-SQL snapshot set we add in Phase 0).
 Phases 0–1 are mostly mechanical and low-risk; 2 is the architectural payoff; 3–4
 are cleanup. We can stop after any phase with a coherent, better-off codebase.
 
+## 3.5 Phase-2 path-collapse investigation (grounded 2026-07-29)
+
+Phase-1's clean mechanical leaf pool is exhausted (see §6 + PRIORITIES P-6), so
+this is the next lane. Before committing to the collapse, three parallel
+read-only mapping passes established the *real* terrain of the "four drifting
+paths." The headline: **they are NOT four co-equal renderers.** Path A is
+canonical and complete; B and D are near-dead partial renderers; C is the one
+genuinely-live second path, and its separateness is a *fundamental two-stage
+architecture constraint*, not drift.
+
+### The four paths, ground-truthed
+
+| Path | Fn / file | Input type | Live callers | Coverage | Verdict |
+|---|---|---|---|---|---|
+| **A** | `RenderExpr::to_sql()` — `to_sql_query.rs:6461` | `RenderExpr` | the whole final-SELECT emitter | **all 20 live variants** (superset) | canonical, keep |
+| **B** | `render_expr_to_sql_string` — `plan_builder_helpers.rs:1578` | `RenderExpr` | **1** (`write_to_sql.rs:178`, `&[]` fallback in the write emitter) | 11/20 variants; `"TRUE"` catch-all; `{:?}` debug for 10 operators | near-dead partial |
+| **C** | `render_expr_to_sql_string` — `cte_extraction.rs:1662` | `RenderExpr` | **~8** (all CTE/filter construction) | all 20 (exhaustive) | live second path, stage-bound |
+| **D** | `LogicalExpr::to_sql()` — `to_sql.rs:118` | `LogicalExpr` | transitive via `function_translator` scalar-arg rendering; `view_query.rs` (dead/reserved) | subset; `todo!()` catch-all | legacy, transitively live |
+
+Note the naming trap: B and C are **both** `render_expr_to_sql_string(&RenderExpr,
+&[(String,String)])`. Of the ~39 call sites, exactly **1** binds B (from
+`plan_builder_helpers`); the other ~38 bind C (from `cte_extraction`). Only
+`write_to_sql.rs` imports B.
+
+### Why C is genuinely separate (the load-bearing constraint)
+
+C runs at **CTE-build time**; A runs at **final-SELECT time**. C's `alias_mapping`
+param does a Cypher-alias→CTE-alias table-qualifier rewrite (`p1.name` →
+`start_node.name`) using a small mapping the *caller supplies locally*
+(`cte_extraction.rs:1678-1686`). A performs the equivalent rewrite **implicitly
+from `query_context` task-locals** (registry, schema, VLP-alias set,
+relationship-column metadata) — and **those task-locals are not yet populated at
+CTE-build time.** So pointing C's callsites at A today would resolve `p1` to
+itself (or mis-resolve) instead of `start_node`. This is the one fundamental
+blocker, and `alias_mapping` is its concrete manifestation. The per-expression
+mapping *selection* at `cte_extraction.rs:3183-3204` (standard `alias_mapping` vs
+denormalized `rel_alias_mapping`) is logic with **no equivalent inside A at all**.
+
+### What is drift vs what is fundamental
+
+- **Fundamental (C only):** stage/timing + the `alias_mapping` rewrite. Collapsing
+  C requires either giving `to_sql` an alias-mapping arg, or pre-installing a
+  registry into `query_context` at CTE-build time — a real design change, not a
+  redirect.
+- **Historical drift (reconcilable, but each is a byte-level golden change):**
+  - **Identifier quoting divergence.** C uses `quote_identifier` → **backticks**
+    (`` t.`id.orig_h` ``); A uses `FunctionMapper::quote_alias` → CH
+    **double-quotes** (`t."id.orig_h"`). The premise "C is the only path that
+    quotes" was wrong — *both* quote, with different characters. Reconciling
+    changes special-char-column goldens.
+  - **Hardcoded CH arms in C** (Path A routes all of these): `POWER` (A→dialect),
+    `arrayFold` for ReduceExpr (A→`reduce_fold_sql`→Spark `aggregate`), map-literal
+    `{…}` (A→`map(...)`), simple `CASE` (A→`simple_case_sql`), raw aggregate names,
+    `concat`. **Empirically UNREACHED** — grep of committed `.databricks.sql`
+    goldens for `arrayFold`/`POWER(`/`{'`/`caseWithExpression` = **0 hits each**,
+    while Path A's `aggregate(` appears once. So reduce/map/case/exponent
+    expressions reach the renderer via **A, not C**, in every corpus case. C's
+    hardcoded arms are latent-but-unreached — real drift, zero triggered bugs
+    (the same class as Exponentiation in §6).
+  - **`InSubquery` placeholder** in C (emits `/* subquery */`, arm 10) vs A's real
+    subplan render — a semantic gap, but likely never hit at CTE-build (confirm
+    before any collapse).
+
+### Recommended Phase-2 sequencing (lowest-risk first)
+
+1. **Retire Path B (near-dead).** Its sole caller is a `&[]` fallback in the
+   *write* emitter (`write_render_to_sql`, used by embedded write+RETURN — a
+   narrow, self-contained surface that `render_plan/AGENTS.md:71` documents as
+   "intentionally separate" from the read path). B is a defensive catch-all: for
+   the 9 variants and 10 operators it doesn't handle it emits `"TRUE"` or a
+   `{:?}` debug string — i.e. strictly weaker than A. Verify what the write
+   fallback actually receives, then delete B and point its one caller at A (with
+   heuristic column-qualification suppressed) or inline the handful of literal/
+   param/list cases it truly needs. Small, contained, removes one of the "four
+   paths" outright.
+2. **Unify the dual `Operator` enums** (`logical_expr::Operator` vs
+   `render_expr::Operator`). Both B/C/D and A carry near-duplicate ~100-line
+   operator-symbol match blocks; both `to_sql.rs:200` and `to_sql_query.rs:7017`
+   name this in their own TODOs (est. 4–6h). This is the single highest-leverage
+   dedup and it unblocks D. **This is the best first *code* slice** — it's a
+   structural dedup with no stage-constraint entanglement.
+3. **Collapse Path D → A via the existing `TryFrom<LogicalExpr> for RenderExpr`**
+   (`render_expr.rs:1825`, already comprehensive). D does not render at a
+   pre-RenderExpr stage A can't reach. Two live consumers to re-plumb:
+   `function_translator` (operates on un-baked `LogicalExpr` scalar args — bake
+   them first) and the dead/reserved `view_query.rs` ViewScan renderer (retire
+   rather than port). The Result→String contract shift moves D's fallible arms
+   into the `TryFrom` bake (which already returns `Result`).
+4. **Path C is the hard one — defer or do last.** Its stage-bound `alias_mapping`
+   rewrite is fundamental. Two options, both design changes: (a) thread an
+   optional alias-mapping arg into a shared printer, or (b) pre-install a registry
+   into `query_context` at CTE-build so A's implicit resolution works. Neither is
+   a Phase-2 "collapse the partial copy" mechanical step; both warrant their own
+   design cycle. The drift items (quoting, hardcoded arms) can be reconciled
+   independently as small golden-updating slices *without* full collapse, and
+   those would also fix C's latent Databricks arms — but they are correctness-
+   hardening, not structural collapse.
+
+**Net:** Phase-2 is real and has a clear lowest-risk entry (retire B → unify
+Operator enums → collapse D), but the "collapse all four into one printer" framing
+oversells it: **C cannot fully collapse without resolving the two-stage
+context-timing constraint**, which is a design cycle of its own. Steps 1–3 are
+the shippable Phase-2; step 4 (C) is a separate, larger design item.
+
 ## 4. Risks & mitigations
 - **Silent CH regressions** → golden snapshots (Phase 0) + the existing suite;
   every phase asserts byte-identical CH.
