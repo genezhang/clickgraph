@@ -1787,7 +1787,10 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                 Operator::IsNull => format!("{} IS NULL", operands[0]),
                 Operator::IsNotNull => format!("{} IS NOT NULL", operands[0]),
                 Operator::Distinct => format!("{} IS DISTINCT FROM {}", operands[0], operands[1]),
-                Operator::RegexMatch => format!("match({}, {})", operands[0], operands[1]),
+                Operator::RegexMatch => crate::clickhouse_query_generator::regex_match_predicate(
+                    &operands[0],
+                    &operands[1],
+                ),
             }
         }
         RenderExpr::ScalarFnCall(func) => {
