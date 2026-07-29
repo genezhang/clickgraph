@@ -1,10 +1,7 @@
-use super::errors::ClickhouseQueryGeneratorError;
 use super::function_registry::get_function_mapping;
-use super::to_sql::ToSql;
 /// Neo4j Function Translator
 ///
 /// Translates Neo4j function calls to ClickHouse SQL equivalents
-use crate::query_planner::logical_expr::{LogicalExpr, ScalarFnCall};
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
@@ -251,142 +248,6 @@ static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|
 pub fn is_ch_aggregate_function(fn_name: &str) -> bool {
     CH_AGGREGATE_FUNCTIONS.contains(fn_name.to_lowercase().as_str())
 }
-
-/// Translate a Neo4j scalar function call to ClickHouse SQL
-pub fn translate_scalar_function(
-    fn_call: &ScalarFnCall,
-) -> Result<String, ClickhouseQueryGeneratorError> {
-    let fn_name = &fn_call.name;
-
-    // Native-function pass-through, keyed by the active dialect (`ch.`/`chagg.`
-    // for ClickHouse, `dbx.` for Databricks). A prefix belonging to a *different*
-    // backend is rejected here rather than leaking into the generated SQL.
-    if let Some(bare) = crate::sql_generator::passthrough::strip_passthrough(
-        fn_name,
-        crate::server::query_context::get_current_dialect(),
-    )
-    .map_err(|e| ClickhouseQueryGeneratorError::SchemaError(e.to_string()))?
-    {
-        let args_sql: Vec<String> = fn_call
-            .args
-            .iter()
-            .map(|e| e.to_sql())
-            .collect::<Result<_, _>>()
-            .map_err(|e| {
-                ClickhouseQueryGeneratorError::schema_error_with_context(
-                    format!("Failed to convert arguments to SQL: {}", e),
-                    format!(
-                        "in {} pass-through function with {} arguments",
-                        fn_call.name,
-                        fn_call.args.len()
-                    ),
-                )
-            })?;
-        log::debug!(
-            "native pass-through: {}(..) -> {}({})",
-            fn_call.name,
-            bare,
-            args_sql.join(", ")
-        );
-        return Ok(format!("{}({})", bare, args_sql.join(", ")));
-    }
-
-    let fn_name_lower = fn_name.to_lowercase();
-
-    // Special handling for datetime({epochMillis: x}) -> identity pass-through
-    // The epochMillis value is already an Int64 epoch timestamp, so just return it directly.
-    // Temporal accessors like .month/.day will wrap it via fromUnixTimestamp64Milli().
-    if fn_name_lower == "datetime" && fn_call.args.len() == 1 {
-        if let LogicalExpr::MapLiteral(entries) = &fn_call.args[0] {
-            if entries.len() == 1 && entries[0].0.to_lowercase() == "epochmillis" {
-                return entries[0].1.to_sql();
-            }
-        }
-        // Fall through to normal function_registry handling
-    }
-
-    // Special handling for duration() with map argument
-    // Neo4j: duration({days: 5, hours: 2}) -> ClickHouse: (toIntervalDay(5) + toIntervalHour(2))
-    if fn_name_lower == "duration" {
-        return translate_duration_function(fn_call);
-    }
-
-    // percentileCont/Disc are parametric quantiles — render through the dialect
-    // FunctionMapper, honoring the percentile arg (#639). They are classified as
-    // aggregates so they normally reach the aggregate arms, but intercept here
-    // too in case an unclassified path (e.g. a raw ScalarFnCall) reaches the
-    // translator, so we never fall through to the old median mapping.
-    if matches!(fn_name_lower.as_str(), "percentilecont" | "percentiledisc") {
-        let args_sql: Result<Vec<String>, _> = fn_call.args.iter().map(|e| e.to_sql()).collect();
-        let args_sql = args_sql.map_err(|e| {
-            ClickhouseQueryGeneratorError::SchemaError(format!(
-                "Failed to convert function arguments to SQL: {}",
-                e
-            ))
-        })?;
-        if let Some(sql) = super::common::try_render_percentile(&fn_name_lower, &args_sql) {
-            return Ok(sql);
-        }
-        // Wrong arity — surface a loud error rather than a dropped-arg call.
-        return Err(ClickhouseQueryGeneratorError::SchemaError(format!(
-            "{}() expects exactly 2 arguments (value, percentile), got {}",
-            fn_call.name,
-            fn_call.args.len()
-        )));
-    }
-
-    // Look up function mapping
-    match get_function_mapping(&fn_name_lower) {
-        Some(mapping) => {
-            // Convert arguments to SQL
-            let args_sql: Result<Vec<String>, _> =
-                fn_call.args.iter().map(|e| e.to_sql()).collect();
-
-            let args_sql = args_sql.map_err(|e| {
-                ClickhouseQueryGeneratorError::SchemaError(format!(
-                    "Failed to convert function arguments to SQL: {}",
-                    e
-                ))
-            })?;
-
-            // Apply argument transformation if provided
-            let transformed_args = if let Some(transform_fn) = mapping.arg_transform {
-                transform_fn(&args_sql)
-            } else {
-                args_sql
-            };
-
-            // Generate function call using the dialect-appropriate name
-            Ok(format!(
-                "{}({})",
-                mapping.name_for(crate::server::query_context::get_current_dialect()),
-                transformed_args.join(", ")
-            ))
-        }
-        None => {
-            // Function not mapped - try direct passthrough with warning
-            log::warn!(
-                "Neo4j function '{}' is not mapped to ClickHouse. Attempting direct passthrough. \
-                 This may fail if ClickHouse doesn't support this function name.",
-                fn_call.name
-            );
-
-            // Convert arguments and attempt passthrough
-            let args_sql: Result<Vec<String>, _> =
-                fn_call.args.iter().map(|e| e.to_sql()).collect();
-
-            let args_sql = args_sql.map_err(|e| {
-                ClickhouseQueryGeneratorError::SchemaError(format!(
-                    "Failed to convert function arguments to SQL: {}",
-                    e
-                ))
-            })?;
-
-            Ok(format!("{}({})", fn_call.name, args_sql.join(", ")))
-        }
-    }
-}
-
 /// Map a single Neo4j duration unit + already-rendered value expression to the
 /// active dialect's interval constructor. Returns `None` for an unrecognized
 /// unit so each caller keeps its own unknown-unit policy (error vs skip).
@@ -453,82 +314,6 @@ pub(crate) fn interval_expr_for_unit(
     })
 }
 
-/// Translate a Neo4j `duration({...})` map into the active dialect's combined
-/// interval expression, delegating the per-unit spelling to
-/// [`interval_expr_for_unit`].
-///
-/// Neo4j duration supports (plural and singular): years, months, weeks, days,
-/// hours, minutes, seconds, milliseconds, microseconds, nanoseconds.
-///
-/// Examples (ClickHouse):
-///   duration({days: 5}) -> toIntervalDay(5)
-///   duration({days: 5, hours: 2}) -> (toIntervalDay(5) + toIntervalHour(2))
-///   duration({months: 1, days: 15}) -> (toIntervalMonth(1) + toIntervalDay(15))
-fn translate_duration_function(
-    fn_call: &ScalarFnCall,
-) -> Result<String, ClickhouseQueryGeneratorError> {
-    // duration() expects exactly one argument which should be a map literal
-    if fn_call.args.len() != 1 {
-        return Err(ClickhouseQueryGeneratorError::SchemaError(
-            "duration() requires exactly one map argument, e.g., duration({days: 5})".to_string(),
-        ));
-    }
-
-    // Extract the map argument
-    match &fn_call.args[0] {
-        LogicalExpr::MapLiteral(entries) => {
-            if entries.is_empty() {
-                return Err(ClickhouseQueryGeneratorError::SchemaError(
-                    "duration() requires at least one time unit, e.g., duration({days: 5})"
-                        .to_string(),
-                ));
-            }
-
-            // Map Neo4j duration units to the active dialect's interval
-            // constructors (ClickHouse `toInterval*`, Databricks `make_*_interval`).
-            let dialect = crate::server::query_context::get_current_dialect();
-            let interval_parts: Result<Vec<String>, _> = entries
-                .iter()
-                .map(|(key, value)| {
-                    let value_sql = value.to_sql()?;
-                    let key_lower = key.to_lowercase();
-                    interval_expr_for_unit(&key_lower, &value_sql, dialect).ok_or_else(|| {
-                        ClickhouseQueryGeneratorError::SchemaError(format!(
-                            "Unknown duration unit '{}'. Supported: years, months, weeks, days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds",
-                            key
-                        ))
-                    })
-                })
-                .collect();
-
-            let parts = interval_parts?;
-
-            // Combine multiple intervals with + operator
-            if parts.len() == 1 {
-                Ok(parts[0].clone())
-            } else {
-                Ok(format!("({})", parts.join(" + ")))
-            }
-        }
-        _ => {
-            // If not a map literal, try to use it as a duration string (e.g., "P1D")
-            // This is an ISO 8601 duration format that Neo4j also supports
-            let arg_sql = fn_call.args[0].to_sql()?;
-            log::warn!(
-                "duration() called with non-map argument: {}. This may not work correctly in ClickHouse.",
-                arg_sql
-            );
-            // Attempt to parse as ISO 8601 duration - ClickHouse doesn't natively support this,
-            // but we could potentially support it via string parsing
-            Err(ClickhouseQueryGeneratorError::SchemaError(format!(
-                "duration() requires a map argument like duration({{days: 5}}), got: {}. \
-                 ISO 8601 duration strings are not yet supported.",
-                arg_sql
-            )))
-        }
-    }
-}
-
 /// Check if a function is supported (has a mapping)
 pub fn is_function_supported(fn_name: &str) -> bool {
     get_function_mapping(fn_name).is_some()
@@ -580,7 +365,6 @@ pub fn get_supported_functions() -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query_planner::logical_expr::{Literal, LogicalExpr};
 
     #[test]
     fn interval_expr_for_unit_clickhouse_spellings() {
@@ -633,57 +417,6 @@ mod tests {
     }
 
     #[test]
-    fn test_translate_simple_function() {
-        // toUpper('hello') -> upper('hello')
-        let fn_call = ScalarFnCall {
-            name: "toUpper".to_string(),
-            args: vec![LogicalExpr::Literal(Literal::String("hello".to_string()))],
-        };
-
-        let result = translate_scalar_function(&fn_call).unwrap();
-        assert_eq!(result, "upper('hello')");
-    }
-
-    #[test]
-    fn test_translate_math_function() {
-        // abs(-5) -> abs(-5)
-        let fn_call = ScalarFnCall {
-            name: "abs".to_string(),
-            args: vec![LogicalExpr::Literal(Literal::Integer(-5))],
-        };
-
-        let result = translate_scalar_function(&fn_call).unwrap();
-        assert_eq!(result, "abs(-5)");
-    }
-
-    #[test]
-    fn test_translate_function_with_transformation() {
-        // left('hello', 3) -> substring('hello', 1, 3)
-        let fn_call = ScalarFnCall {
-            name: "left".to_string(),
-            args: vec![
-                LogicalExpr::Literal(Literal::String("hello".to_string())),
-                LogicalExpr::Literal(Literal::Integer(3)),
-            ],
-        };
-
-        let result = translate_scalar_function(&fn_call).unwrap();
-        assert_eq!(result, "substring('hello', 1, 3)");
-    }
-
-    #[test]
-    fn test_unsupported_function_passthrough() {
-        // unknownFunc(arg) -> unknownFunc(arg) with warning
-        let fn_call = ScalarFnCall {
-            name: "unknownFunc".to_string(),
-            args: vec![LogicalExpr::Literal(Literal::Integer(42))],
-        };
-
-        let result = translate_scalar_function(&fn_call).unwrap();
-        assert_eq!(result, "unknownFunc(42)");
-    }
-
-    #[test]
     fn test_is_function_supported() {
         assert!(is_function_supported("toUpper"));
         assert!(is_function_supported("TOUPPER")); // Case insensitive
@@ -698,79 +431,6 @@ mod tests {
         assert!(supported.contains(&"abs"));
         assert!(supported.contains(&"datetime"));
         assert!(supported.len() >= 20); // Should have 20+ functions
-    }
-
-    // ===== ClickHouse Pass-through Tests =====
-
-    #[test]
-    fn test_ch_passthrough_simple() {
-        // ch.cityHash64('test') -> cityHash64('test')
-        let fn_call = ScalarFnCall {
-            name: "ch.cityHash64".to_string(),
-            args: vec![LogicalExpr::Literal(Literal::String("test".to_string()))],
-        };
-
-        let result = translate_scalar_function(&fn_call).unwrap();
-        assert_eq!(result, "cityHash64('test')");
-    }
-
-    #[test]
-    fn test_ch_passthrough_multiple_args() {
-        // ch.substring('hello', 2, 3) -> substring('hello', 2, 3)
-        let fn_call = ScalarFnCall {
-            name: "ch.substring".to_string(),
-            args: vec![
-                LogicalExpr::Literal(Literal::String("hello".to_string())),
-                LogicalExpr::Literal(Literal::Integer(2)),
-                LogicalExpr::Literal(Literal::Integer(3)),
-            ],
-        };
-
-        let result = translate_scalar_function(&fn_call).unwrap();
-        assert_eq!(result, "substring('hello', 2, 3)");
-    }
-
-    #[test]
-    fn test_ch_passthrough_json_function() {
-        // ch.JSONExtractString(data, 'field') -> JSONExtractString(data, 'field')
-        let fn_call = ScalarFnCall {
-            name: "ch.JSONExtractString".to_string(),
-            args: vec![
-                LogicalExpr::Literal(Literal::String(r#"{"name":"Alice"}"#.to_string())),
-                LogicalExpr::Literal(Literal::String("name".to_string())),
-            ],
-        };
-
-        let result = translate_scalar_function(&fn_call).unwrap();
-        assert_eq!(result, r#"JSONExtractString('{"name":"Alice"}', 'name')"#);
-    }
-
-    #[test]
-    fn test_ch_passthrough_no_args() {
-        // ch.now() -> now()
-        let fn_call = ScalarFnCall {
-            name: "ch.now".to_string(),
-            args: vec![],
-        };
-
-        let result = translate_scalar_function(&fn_call).unwrap();
-        assert_eq!(result, "now()");
-    }
-
-    #[test]
-    fn test_ch_passthrough_empty_name_error() {
-        // ch. (empty) -> error
-        let fn_call = ScalarFnCall {
-            name: "ch.".to_string(),
-            args: vec![],
-        };
-
-        let result = translate_scalar_function(&fn_call);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("requires a function name"));
     }
 
     // ===== ClickHouse Aggregate Function Tests =====
@@ -793,18 +453,6 @@ mod tests {
         assert!(!is_ch_aggregate_function("cityHash64"));
         assert!(!is_ch_aggregate_function("JSONExtract"));
         assert!(!is_ch_aggregate_function("upper"));
-    }
-
-    #[test]
-    fn test_chagg_translate_function() {
-        // chagg.customAggregate(x) -> customAggregate(x)
-        let fn_call = ScalarFnCall {
-            name: "chagg.myCustomAgg".to_string(),
-            args: vec![LogicalExpr::Literal(Literal::String("test".to_string()))],
-        };
-
-        let result = translate_scalar_function(&fn_call).unwrap();
-        assert_eq!(result, "myCustomAgg('test')");
     }
 
     #[test]
@@ -839,145 +487,5 @@ mod tests {
         // Map aggregates
         assert!(is_ch_aggregate_function("sumMap"));
         assert!(is_ch_aggregate_function("avgMap"));
-    }
-
-    // ===== Duration Function Tests =====
-
-    #[test]
-    fn test_translate_datetime_epoch_millis_passthrough() {
-        // datetime({epochMillis: friend.birthday}) -> friend.birthday (identity)
-        let fn_call = ScalarFnCall {
-            name: "datetime".to_string(),
-            args: vec![LogicalExpr::MapLiteral(vec![(
-                "epochMillis".to_string(),
-                LogicalExpr::PropertyAccessExp(
-                    crate::query_planner::logical_expr::PropertyAccess {
-                        table_alias: crate::query_planner::logical_expr::TableAlias(
-                            "friend".to_string(),
-                        ),
-                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(
-                            "birthday".to_string(),
-                        ),
-                    },
-                ),
-            )])],
-        };
-
-        let result = translate_scalar_function(&fn_call).unwrap();
-        assert_eq!(result, "friend.birthday");
-    }
-
-    #[test]
-    fn test_translate_datetime_epoch_millis_literal() {
-        use crate::query_planner::logical_expr::Literal;
-
-        // datetime({epochMillis: 1234567890}) -> 1234567890
-        let fn_call = ScalarFnCall {
-            name: "datetime".to_string(),
-            args: vec![LogicalExpr::MapLiteral(vec![(
-                "epochMillis".to_string(),
-                LogicalExpr::Literal(Literal::Integer(1234567890)),
-            )])],
-        };
-
-        let result = translate_scalar_function(&fn_call).unwrap();
-        assert_eq!(result, "1234567890");
-    }
-
-    #[test]
-    fn test_translate_duration_single_days() {
-        use crate::query_planner::logical_expr::Literal;
-
-        // duration({days: 5}) -> toIntervalDay(5)
-        let fn_call = ScalarFnCall {
-            name: "duration".to_string(),
-            args: vec![LogicalExpr::MapLiteral(vec![(
-                "days".to_string(),
-                LogicalExpr::Literal(Literal::Integer(5)),
-            )])],
-        };
-
-        let result = translate_scalar_function(&fn_call).unwrap();
-        assert_eq!(result, "toIntervalDay(5)");
-    }
-
-    #[test]
-    fn test_translate_duration_multiple_units() {
-        use crate::query_planner::logical_expr::Literal;
-
-        // duration({days: 5, hours: 2}) -> (toIntervalDay(5) + toIntervalHour(2))
-        let fn_call = ScalarFnCall {
-            name: "duration".to_string(),
-            args: vec![LogicalExpr::MapLiteral(vec![
-                (
-                    "days".to_string(),
-                    LogicalExpr::Literal(Literal::Integer(5)),
-                ),
-                (
-                    "hours".to_string(),
-                    LogicalExpr::Literal(Literal::Integer(2)),
-                ),
-            ])],
-        };
-
-        let result = translate_scalar_function(&fn_call).unwrap();
-        assert_eq!(result, "(toIntervalDay(5) + toIntervalHour(2))");
-    }
-
-    #[test]
-    fn test_translate_duration_all_units() {
-        use crate::query_planner::logical_expr::Literal;
-
-        // Test various time units
-        let test_cases = vec![
-            (vec![("years", 1)], "toIntervalYear(1)"),
-            (vec![("months", 2)], "toIntervalMonth(2)"),
-            (vec![("weeks", 3)], "toIntervalWeek(3)"),
-            (vec![("days", 4)], "toIntervalDay(4)"),
-            (vec![("hours", 5)], "toIntervalHour(5)"),
-            (vec![("minutes", 6)], "toIntervalMinute(6)"),
-            (vec![("seconds", 7)], "toIntervalSecond(7)"),
-        ];
-
-        for (entries, expected) in test_cases {
-            let fn_call = ScalarFnCall {
-                name: "duration".to_string(),
-                args: vec![LogicalExpr::MapLiteral(
-                    entries
-                        .iter()
-                        .map(|(k, v)| (k.to_string(), LogicalExpr::Literal(Literal::Integer(*v))))
-                        .collect(),
-                )],
-            };
-
-            let result = translate_scalar_function(&fn_call).unwrap();
-            assert_eq!(result, expected, "Failed for unit: {:?}", entries);
-        }
-    }
-
-    #[test]
-    fn test_translate_duration_invalid_args() {
-        use crate::query_planner::logical_expr::Literal;
-
-        // No arguments -> error
-        let fn_call = ScalarFnCall {
-            name: "duration".to_string(),
-            args: vec![],
-        };
-        assert!(translate_scalar_function(&fn_call).is_err());
-
-        // Non-map argument -> error
-        let fn_call = ScalarFnCall {
-            name: "duration".to_string(),
-            args: vec![LogicalExpr::Literal(Literal::Integer(5))],
-        };
-        assert!(translate_scalar_function(&fn_call).is_err());
-
-        // Empty map -> error
-        let fn_call = ScalarFnCall {
-            name: "duration".to_string(),
-            args: vec![LogicalExpr::MapLiteral(vec![])],
-        };
-        assert!(translate_scalar_function(&fn_call).is_err());
     }
 }

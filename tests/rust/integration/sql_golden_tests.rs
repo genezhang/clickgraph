@@ -313,6 +313,14 @@ const CORPUS: &[(&str, &str)] = &[
         "fn_date",
         "MATCH (u:User) RETURN date('2020-01-15') AS d",
     ),
+    // datetime({epochMillis: x}) -> identity pass-through (x renders as-is; the
+    // column already holds epoch-millis, so no conversion). Same on both dialects.
+    // Locks the live Path-A rendering (to_sql_query.rs) after the Path-D
+    // `translate_scalar_function` (which was the only prior coverage) was retired.
+    (
+        "fn_datetime_epoch_millis",
+        "MATCH (u:User) RETURN datetime({epochMillis: u.registration_date}) AS d",
+    ),
     // Dialect string-fn mappings: ltrim/rtrim -> CH trimLeft/trimRight but Spark
     // has no trimLeft/trimRight (uses ltrim/rtrim). Previously emitted the CH name
     // on Databricks (UNRESOLVED_ROUTINE `trimLeft`).
