@@ -112,6 +112,45 @@ pub fn reduce_fold_sql(
     }
 }
 
+/// Render a Cypher *simple* CASE (`CASE expr WHEN v1 THEN r1 ... ELSE d END`)
+/// for the active dialect, from its already-rendered component strings.
+///
+/// ClickHouse spells the simple form as a function,
+/// `caseWithExpression(expr, v1, r1, v2, r2, ..., default)`; Spark/Databricks
+/// has no such function and uses the standard `CASE expr WHEN v THEN r ... ELSE
+/// d END` syntax (which ClickHouse also accepts, but the function form is what
+/// this pipeline has historically emitted for CH, so it is preserved
+/// byte-identically here). Emitted from the `RenderExpr::Case` render site so
+/// the two dialects stay in sync.
+///
+/// `case_expr` is the rendered subject expression, `when_then` the rendered
+/// `(value, result)` branch pairs, and `default` the rendered ELSE result
+/// (callers pass the fallback — `NULL` or an empty array — when the Cypher CASE
+/// omits ELSE).
+pub fn simple_case_sql(case_expr: &str, when_then: &[(String, String)], default: &str) -> String {
+    use crate::sql_generator::SqlDialect;
+    match crate::server::query_context::get_current_dialect() {
+        SqlDialect::Databricks => {
+            let mut sql = format!("CASE {}", case_expr);
+            for (value, result) in when_then {
+                sql.push_str(&format!(" WHEN {} THEN {}", value, result));
+            }
+            sql.push_str(&format!(" ELSE {} END", default));
+            sql
+        }
+        // ClickHouse: caseWithExpression(expr, v1, r1, ..., default).
+        _ => {
+            let mut args = vec![case_expr.to_string()];
+            for (value, result) in when_then {
+                args.push(value.clone());
+                args.push(result.clone());
+            }
+            args.push(default.to_string());
+            format!("caseWithExpression({})", args.join(", "))
+        }
+    }
+}
+
 /// Resolve a SQL function name to its active-dialect spelling via the function
 /// registry, falling back to `name` unchanged when it has no registry entry.
 ///
@@ -245,6 +284,47 @@ mod try_render_percentile_tests {
                 &["t.x".into(), "0.9".into(), "extra".into()]
             ),
             None
+        );
+    }
+}
+
+#[cfg(test)]
+mod simple_case_sql_tests {
+    use super::simple_case_sql;
+    use crate::server::query_context::{with_query_context, QueryContext};
+    use crate::sql_generator::SqlDialect;
+
+    fn branches() -> Vec<(String, String)> {
+        vec![
+            ("'Alice'".into(), "'Admin'".into()),
+            ("'Bob'".into(), "'User'".into()),
+        ]
+    }
+
+    #[test]
+    fn clickhouse_default_uses_case_with_expression() {
+        // Default (no scope) = ClickHouse: the historical function form,
+        // byte-identical to what the pipeline emitted before this helper.
+        assert_eq!(
+            simple_case_sql("n.name", &branches(), "'Guest'"),
+            "caseWithExpression(n.name, 'Alice', 'Admin', 'Bob', 'User', 'Guest')"
+        );
+    }
+
+    #[tokio::test]
+    async fn databricks_uses_standard_case_syntax() {
+        let ctx = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        let sql = with_query_context(ctx, async {
+            simple_case_sql("n.name", &branches(), "'Guest'")
+        })
+        .await;
+        // Spark has no caseWithExpression; standard CASE-expr syntax instead.
+        assert_eq!(
+            sql,
+            "CASE n.name WHEN 'Alice' THEN 'Admin' WHEN 'Bob' THEN 'User' ELSE 'Guest' END"
         );
     }
 }
