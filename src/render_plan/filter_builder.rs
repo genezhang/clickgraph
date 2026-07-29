@@ -498,15 +498,6 @@ impl FilterBuilder for LogicalPlan {
                                         )
                                     })
                                     .unwrap_or(false);
-                            let (rel_from_id_str, rel_to_id_str) = if undirected_doubled {
-                                use crate::sql_generator::emitters::clickhouse::variable_length_cte as vlc;
-                                (
-                                    vlc::DOUBLED_EDGES_ORIG_FROM.to_string(),
-                                    vlc::DOUBLED_EDGES_ORIG_TO.to_string(),
-                                )
-                            } else {
-                                (rel_cols.from_id.to_string(), rel_cols.to_id.to_string())
-                            };
                             // The pairwise relationship-uniqueness guard references
                             // the r1..rN edge-table aliases of the single-type flat
                             // self-join. Two paths reach here WITHOUT those aliases
@@ -531,13 +522,52 @@ impl FilterBuilder for LogicalPlan {
                             let use_legacy_start_end_guard = vlp_schema_type
                                 == crate::render_plan::cte_extraction::VlpSchemaType::FkEdge
                                 || is_multi_type;
+                            // #604 Site A: the relationship-uniqueness edge
+                            // columns (from_id/to_id) may be COMPOSITE. Pass the
+                            // full per-column vectors to the composite-aware
+                            // generator instead of stringifying the Identifier
+                            // (which collapsed a composite to one bogus quoted
+                            // column `r1."from_bank_id, from_account_number"`).
+                            // Single-column ids yield one-element vectors — the
+                            // exact input the old single-column wrapper produced,
+                            // so single-key schemas are byte-identical.
+                            let (from_cols, to_cols): (Vec<String>, Vec<String>) =
+                                if undirected_doubled {
+                                    use crate::sql_generator::emitters::clickhouse::variable_length_cte as vlc;
+                                    (
+                                        vec![vlc::DOUBLED_EDGES_ORIG_FROM.to_string()],
+                                        vec![vlc::DOUBLED_EDGES_ORIG_TO.to_string()],
+                                    )
+                                } else {
+                                    (
+                                        rel_cols
+                                            .from_id
+                                            .columns()
+                                            .iter()
+                                            .map(|c| c.to_string())
+                                            .collect(),
+                                        rel_cols
+                                            .to_id
+                                            .columns()
+                                            .iter()
+                                            .map(|c| c.to_string())
+                                            .collect(),
+                                    )
+                                };
+                            // `start_id_col`/`end_id_col` feed only the legacy
+                            // start != end guard (FkEdge / multi-type), which is
+                            // addressed separately; keep them single here.
+                            let from_col_refs: Vec<&str> =
+                                from_cols.iter().map(String::as_str).collect();
+                            let to_col_refs: Vec<&str> =
+                                to_cols.iter().map(String::as_str).collect();
                             // Generate relationship-uniqueness filters
-                            if let Some(cycle_filter) = crate::render_plan::cte_extraction::generate_cycle_prevention_filters(
+                            if let Some(cycle_filter) = crate::render_plan::cte_extraction::generate_cycle_prevention_filters_composite(
                                 exact_hops,
-                                &start_id_col,
-                                &rel_to_id_str,
-                                &rel_from_id_str,
-                                &end_id_col,
+                                &[start_id_col.as_str()],
+                                &to_col_refs,
+                                &from_col_refs,
+                                &[end_id_col.as_str()],
                                 &graph_rel.left_connection,
                                 &graph_rel.right_connection,
                                 use_legacy_start_end_guard,
