@@ -334,15 +334,19 @@ fixed stats fixture.
   (`cte_extraction`, ~8 CTE/filter callers) is the one live second path and its
   separateness is FUNDAMENTAL (runs at CTE-build stage before A's `query_context`
   task-locals exist; its `alias_mapping` p1→start_node rewrite has no equivalent
-  in A). Recommended shippable Phase-2 order: (1) retire B, **(2) unify the dual
-  `Operator` enums — DONE #818 (`188e4507`): were byte-identical 24-variant copies,
-  render now re-exports the planner enum; deleted the identity `TryFrom` + its one
-  caller; 0 golden churn, review APPROVE-0; unblocks step 3**, (3) collapse D→A via
-  the existing `TryFrom<LogicalExpr>` (`render_expr.rs:1825`) — NEXT. (4) C
-  full-collapse is a separate DESIGN CYCLE (stage/timing constraint), NOT a
-  mechanical step — its drift items (backtick-vs-doublequote quoting,
-  latent-unreached hardcoded `POWER`/`arrayFold`/map/CASE arms — verified 0
-  Databricks golden leak) can be reconciled as small
+  in A). Recommended shippable Phase-2 order: (1) retire B — NEXT (smaller
+  warm-up), **(2) unify the dual `Operator` enums — DONE #818 (`188e4507`)**,
+  **(3) collapse D→A — DONE #820 (`refactor/retire-path-d`) but as a DELETION,
+  not a collapse: a reachability audit (2-agent corroborated) found Path D is
+  ENTIRELY DEAD in production (two separate `ToSql` traits — prod uses Path A's
+  `render_plan::ToSql`→String; Path D's `to_sql.rs::ToSql`→Result is a closed
+  test-only cluster). Deleted `to_sql.rs`+`view_query.rs`+`view_scan.rs`+
+  `translate_scalar_function`/`translate_duration_function`+16 tests, −1170 lines;
+  ported the FINAL-gating test to the live path + added `fn_datetime_epoch_millis`
+  golden to preserve/close coverage; 0 churn.** (4) C full-collapse is a separate
+  DESIGN CYCLE (stage/timing constraint), NOT a mechanical step — its drift items
+  (backtick-vs-doublequote quoting, latent-unreached hardcoded `POWER`/`arrayFold`/
+  map/CASE arms — verified 0 Databricks golden leak) can be reconciled as small
   independent correctness slices without full collapse.
   Phase 3 (structural idioms) / 4 (Raw shrink) stay deferred behind Phase 2.
 - Phase 3 §6.2/§6.3: **COMPLETE** (slices 3/4/2 resolved 2026-07-28,
@@ -363,6 +367,30 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-29: **SQL-IR Phase 2 step 3 — retire dead Path D (`LogicalExpr::to_sql`)**
+  (#820, `45651b9d`). The design doc framed this as "collapse D→A via
+  `TryFrom<LogicalExpr>`", but a reachability audit (2-agent corroborated) found
+  Path D is **entirely dead in production** — there are two different `ToSql`
+  traits, and prod uses Path A's (`render_plan::ToSql`→`String`); Path D's
+  (`to_sql.rs::ToSql`→`Result`, `#[allow(dead_code)]`) is a closed self-referential
+  cluster (`to_sql.rs` ↔ `translate_scalar_function` ↔ `view_query.rs`) reachable
+  only from tests. So step 3 became a **deletion**, not a collapse: removed
+  `to_sql.rs` + `view_query.rs` + `view_scan.rs` + `translate_scalar_function`/
+  `translate_duration_function` + 16 unit tests + the re-export, **−1170 lines**.
+  Kept the live `interval_expr_for_unit` (Path A duration handling) + `ch.`/`chagg.`
+  machinery. Coverage preserved: **ported** the FINAL dialect-gating test to the
+  live `FromTableItem::to_sql` path; the deleted passthrough tests are redundant
+  (12 dedicated `passthrough/` tests) and duration is covered by `interval_*`
+  goldens; **closed the one genuine gap** with a new `fn_datetime_epoch_millis`
+  golden (`datetime({epochMillis:x})`→identity, the removed test's only prior
+  coverage). Refreshed 2 stale comments. Review APPROVE-0 (deleted code verified
+  dead workspace-wide; no lost coverage; clippy no `dead_code`). CH+DBX
+  byte-identical, 0 churn beyond the 2 intended new goldens. Isolated
+  `CARGO_TARGET_DIR` (shared target lock-contended). **Net of steps 2+3: the
+  operator-render duplication AND the entire dead LogicalExpr-render path are
+  gone — the drift source the SQL-IR track targets.** Remaining Phase-2: step 1
+  (retire near-dead Path B, smaller) + step 4 (Path C, separate design cycle).
 
 - 2026-07-29: **SQL-IR Phase 2 step 2 — unify the dual `Operator` enums** (#818,
   `188e4507`). `render_expr::Operator` and `query_planner::logical_expr::Operator`
