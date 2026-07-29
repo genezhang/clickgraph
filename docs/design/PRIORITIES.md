@@ -325,8 +325,24 @@ fixed stats fixture.
     config-embedded form leaks.
   Net: Phase-1 leaf work is at its boundary. Further SQL-IR progress needs a
   design decision (schema-expression translation) or Phase 2 (path collapse).
-  Phase 2 (path collapse) / 3 (structural idioms) / 4 (Raw shrink) stay deferred
-  behind Phase 1; Phase-2 A/C unification deferred per its own investigation.
+  **Phase-2 path-collapse INVESTIGATION DONE (2026-07-29, `SQL_IR_DESIGN.md` §3.5,
+  3-agent parallel terrain map).** Ground truth: the "four drifting paths" are NOT
+  co-equal. A=`RenderExpr::to_sql` is canonical + covers all 20 variants; B
+  (`plan_builder_helpers`, 1 write-fallback caller, 11/20 variants, `"TRUE"`
+  catch-all) is near-dead; D=`LogicalExpr::to_sql` is legacy, reachable only
+  transitively via function-arg translation + a dead ViewScan path; C
+  (`cte_extraction`, ~8 CTE/filter callers) is the one live second path and its
+  separateness is FUNDAMENTAL (runs at CTE-build stage before A's `query_context`
+  task-locals exist; its `alias_mapping` p1→start_node rewrite has no equivalent
+  in A). Recommended shippable Phase-2 order: (1) retire B, (2) unify the dual
+  `Operator` enums (`logical_expr` vs `render_expr`, ~100 dup lines, both files'
+  own TODOs, best first CODE slice), (3) collapse D→A via the existing
+  `TryFrom<LogicalExpr>` (`render_expr.rs:1825`). (4) C full-collapse is a separate
+  DESIGN CYCLE (stage/timing constraint), NOT a mechanical step — its drift items
+  (backtick-vs-doublequote quoting, latent-unreached hardcoded `POWER`/`arrayFold`/
+  map/CASE arms — verified 0 Databricks golden leak) can be reconciled as small
+  independent correctness slices without full collapse.
+  Phase 3 (structural idioms) / 4 (Raw shrink) stay deferred behind Phase 2.
 - Phase 3 §6.2/§6.3: **COMPLETE** (slices 3/4/2 resolved 2026-07-28,
   #793/#795/#796; `pattern_schema.rs` dead_code audit done #799). No Phase-3
   items remain.
