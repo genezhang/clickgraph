@@ -1218,6 +1218,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// relationship-uniqueness the ordered node-id pair uniquely identifies the
     /// physical edge row. `from_id_col`/`to_id_col` are the node id columns for
     /// each side (self-referencing FK-edge → same column name on both sides).
+    ///
+    /// #713: composite-aware. Each id column string may be comma-separated
+    /// (`"region, object_id"`); we parse it to an `Identifier` and splice every
+    /// physical column into the tuple, so the edge identity is the full ordered
+    /// column list `(from.c1, from.c2, …, to.c1, to.c2, …)`. Single-column ids
+    /// degrade byte-identically to `tuple(from.col, to.col)`.
     fn build_fk_edge_tuple(
         &self,
         from_alias: &str,
@@ -1227,10 +1233,24 @@ impl<'a> VariableLengthCteGenerator<'a> {
     ) -> String {
         let tuple_ctor =
             crate::sql_generator::function_mapper::current_function_mapper().tuple_constructor();
-        format!(
-            "{}({}.{}, {}.{})",
-            tuple_ctor, from_alias, from_id_col, to_alias, to_id_col
-        )
+        let from_id = Identifier::from_comma_separated(from_id_col);
+        let to_id = Identifier::from_comma_separated(to_id_col);
+        let mut parts: Vec<String> = Vec::new();
+        for c in from_id.columns() {
+            parts.push(format!(
+                "{}.{}",
+                from_alias,
+                crate::clickhouse_query_generator::quote_identifier(c)
+            ));
+        }
+        for c in to_id.columns() {
+            parts.push(format!(
+                "{}.{}",
+                to_alias,
+                crate::clickhouse_query_generator::quote_identifier(c)
+            ));
+        }
+        format!("{}({})", tuple_ctor, parts.join(", "))
     }
 
     /// Get the ClickHouse array type for path_edges
@@ -3088,15 +3108,20 @@ impl<'a> VariableLengthCteGenerator<'a> {
         }
 
         let empty_str_arr = current_function_mapper().empty_string_array_cast();
+        // #713: parse the (possibly comma-separated composite) id columns once so
+        // start_id/end_id/path_nodes are emitted composite-aware, mirroring the
+        // standard non-FK base case. Single-column ids degrade byte-identically.
+        let start_id_identifier = Identifier::from_comma_separated(&self.start_node_id_column);
+        let end_id_identifier = Identifier::from_comma_separated(&self.end_node_id_column);
         // Build property selections
         let mut select_items = vec![
             format!(
-                "{}.{} as start_id",
-                self.start_node_alias, self.start_node_id_column
+                "{} as start_id",
+                emit_id_expr(&self.start_node_alias, &start_id_identifier)
             ),
             format!(
-                "{}.{} as end_id",
-                self.end_node_alias, self.end_node_id_column
+                "{} as end_id",
+                emit_id_expr(&self.end_node_alias, &end_id_identifier)
             ),
             "1 as hop_count".to_string(),
         ];
@@ -3108,11 +3133,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
         select_items.push(format!(
             "{} as path_nodes",
             arr(&format!(
-                "{}.{}, {}.{}",
-                self.start_node_alias,
-                self.start_node_id_column,
-                self.end_node_alias,
-                self.end_node_id_column
+                "{}, {}",
+                emit_id_expr(&self.start_node_alias, &start_id_identifier),
+                emit_id_expr(&self.end_node_alias, &end_id_identifier),
             ))
         ));
 
@@ -3154,14 +3177,22 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         // FK-edge pattern: direct 2-way join between start and end nodes
         // start_node.fk_col = end_node.id_col (e.g., child.parent_id = parent.object_id)
+        // #713: composite-aware — the FK column set and the end-node id column set
+        // are zipped per-column (`a.c1 = b.c1 AND a.c2 = b.c2`); single-column
+        // degrades byte-identically to `a.col = b.col`.
+        let base_join_on = Identifier::from_comma_separated(&self.relationship_from_column)
+            .to_sql_equality(
+                &self.start_node_alias,
+                &Identifier::from_comma_separated(&self.end_node_id_column),
+                &self.end_node_alias,
+            );
         let mut query = format!(
-            "    SELECT \n        {select}\n    FROM {start_table} {start}\n    JOIN {end_table} {end} ON {start}.{fk_col} = {end}.{end_id_col}",
+            "    SELECT \n        {select}\n    FROM {start_table} {start}\n    JOIN {end_table} {end} ON {join_on}",
             select = select_clause,
             start = self.start_node_alias,
             start_table = self.format_table_name(&self.start_node_table),
             end = self.end_node_alias,
-            fk_col = self.relationship_from_column,  // FK column on start node
-            end_id_col = self.end_node_id_column,     // ID column on end node
+            join_on = base_join_on,
             end_table = self.format_table_name(&self.end_node_table)
         );
 
@@ -3238,11 +3269,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let fmap = current_function_mapper();
         let ac = fmap.array_concat();
         let empty_str_arr = fmap.empty_string_array_cast();
+        // #713: composite-aware end-node id (single-col degrades byte-identically).
+        let end_id_identifier = Identifier::from_comma_separated(&self.end_node_id_column);
         // Build property selections
         // start_id stays the same (notes.txt), end_id becomes new_end
         let mut select_items = vec![
             "vp.start_id".to_string(), // start stays the same
-            format!("{}.{} as end_id", "new_end", self.end_node_id_column), // new parent
+            format!("{} as end_id", emit_id_expr("new_end", &end_id_identifier)), // new parent
             "vp.hop_count + 1 as hop_count".to_string(),
         ];
         if self.needs_path_data() {
@@ -3256,7 +3289,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // APPEND the new node to path_nodes
         select_items.push(format!(
             "{ac}(vp.path_nodes, {}) as path_nodes",
-            arr(&format!("new_end.{}", self.end_node_id_column))
+            arr(&emit_id_expr("new_end", &end_id_identifier))
         ));
         // #606: APPEND this hop's edge tuple. The hop is current_node -> new_end
         // (previous end following its FK to its parent), so the edge identity is
@@ -3300,7 +3333,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     &self.end_node_id_column,
                 ))
             } else {
-                emit_cycle_check(&format!("new_end.{}", self.end_node_id_column))
+                emit_cycle_check(&emit_id_expr("new_end", &end_id_identifier))
             },
         ];
 
@@ -3330,15 +3363,30 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // APPEND expansion: anchor on end_id, find its parent
         // current_node = previous end (e.g., Work)
         // new_end = current_node's parent (e.g., Documents)
+        // #713 composite-aware JOIN conditions:
+        //  - `vp.end_id = current_node.<id>`: vp.end_id is the (possibly pipe-
+        //    concatenated) id materialized by emit_id_expr, so the node side must
+        //    use the same concat form to compare equal.
+        //  - `current_node.<fk> = new_end.<id>`: both are real columns → per-column
+        //    zip. Single-column ids degrade byte-identically to the old form.
+        let anchor_on = format!(
+            "vp.end_id = {}",
+            emit_id_expr("current_node", &end_id_identifier)
+        );
+        let parent_on = Identifier::from_comma_separated(&self.relationship_from_column)
+            .to_sql_equality(
+                "current_node",
+                &Identifier::from_comma_separated(&self.end_node_id_column),
+                "new_end",
+            );
         format!(
-            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {current_table} current_node ON vp.end_id = current_node.{current_id_col}\n    JOIN {end_table} new_end ON current_node.{fk_col} = new_end.{end_id_col}\n    WHERE {where_clause}",
+            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {current_table} current_node ON {anchor_on}\n    JOIN {end_table} new_end ON {parent_on}\n    WHERE {where_clause}",
             select = select_clause,
             cte_name = cte_name,
             current_table = self.format_table_name(&self.end_node_table),
-            current_id_col = self.end_node_id_column,
+            anchor_on = anchor_on,
             end_table = self.format_table_name(&self.end_node_table),
-            fk_col = self.relationship_from_column,
-            end_id_col = self.end_node_id_column,
+            parent_on = parent_on,
             where_clause = where_clause
         )
     }
@@ -3349,10 +3397,15 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let fmap = current_function_mapper();
         let ac = fmap.array_concat();
         let empty_str_arr = fmap.empty_string_array_cast();
+        // #713: composite-aware start-node id (single-col degrades byte-identically).
+        let start_id_identifier = Identifier::from_comma_separated(&self.start_node_id_column);
         // Build property selections
         // The NEW start_id is new_start, end_id stays the same (root)
         let mut select_items = vec![
-            format!("{}.{} as start_id", "new_start", self.start_node_id_column),
+            format!(
+                "{} as start_id",
+                emit_id_expr("new_start", &start_id_identifier)
+            ),
             "vp.end_id".to_string(), // end_id stays the same (root)
             "vp.hop_count + 1 as hop_count".to_string(),
         ];
@@ -3367,7 +3420,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // PREPEND the new node to path_nodes
         select_items.push(format!(
             "{ac}({}, vp.path_nodes) as path_nodes",
-            arr(&format!("new_start.{}", self.start_node_id_column))
+            arr(&emit_id_expr("new_start", &start_id_identifier))
         ));
         // #606: PREPEND this hop's edge tuple (path grows at the front here). The
         // hop is new_start -> current_node (a child pointing via its FK to the
@@ -3412,7 +3465,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     &self.start_node_id_column,
                 ))
             } else {
-                emit_cycle_check(&format!("new_start.{}", self.start_node_id_column))
+                emit_cycle_check(&emit_id_expr("new_start", &start_id_identifier))
             },
         ];
 
@@ -3442,14 +3495,29 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // PREPEND expansion: anchor on start_id, find nodes whose parent_id points to it
         // current_node = previous start (e.g., Documents)
         // new_start = a child of current (e.g., Work where Work.parent_id = Documents.object_id)
+        // #713 composite-aware JOIN conditions (symmetric to APPEND):
+        //  - `vp.start_id = current_node.<id>`: concat-form node side to match the
+        //    materialized vp.start_id.
+        //  - `new_start.<fk> = current_node.<id>`: per-column zip. Single-column
+        //    ids degrade byte-identically to the old form.
+        let anchor_on = format!(
+            "vp.start_id = {}",
+            emit_id_expr("current_node", &start_id_identifier)
+        );
+        let child_on = Identifier::from_comma_separated(&self.relationship_from_column)
+            .to_sql_equality(
+                "new_start",
+                &Identifier::from_comma_separated(&self.start_node_id_column),
+                "current_node",
+            );
         format!(
-            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {current_table} current_node ON vp.start_id = current_node.{current_id_col}\n    JOIN {start_table} new_start ON new_start.{fk_col} = current_node.{current_id_col}\n    WHERE {where_clause}",
+            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {current_table} current_node ON {anchor_on}\n    JOIN {start_table} new_start ON {child_on}\n    WHERE {where_clause}",
             select = select_clause,
             cte_name = cte_name,
             current_table = self.format_table_name(&self.start_node_table),
-            current_id_col = self.start_node_id_column,
+            anchor_on = anchor_on,
             start_table = self.format_table_name(&self.start_node_table),
-            fk_col = self.relationship_from_column,
+            child_on = child_on,
             where_clause = where_clause
         )
     }
