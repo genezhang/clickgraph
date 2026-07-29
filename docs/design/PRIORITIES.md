@@ -296,7 +296,8 @@ fixed stats fixture.
 - SQL-IR Phases 2–4 (path collapse, structural idioms, Raw shrink) —
   `SQL_IR_DESIGN.md`; Phase-2 A/C unification stays deferred per its own
   investigation.
-- Phase 3 remaining §6.2 slices + P3.6 legacy-path deletion.
+- Phase 3 §6.2: mechanical rollout DONE (slices 3/4/2 resolved 2026-07-28,
+  #793/#795/#796); only the low-priority `pattern_schema.rs` dead_code audit remains.
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
@@ -308,6 +309,37 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-28: **Phase-3 §6.2 slice-2 — rename `is_fk_edge` proxy →
+  `rel_table_is_end_node`; ratchet 4→1** (P-3 lane; PR #796). The multi-type VLP
+  JOIN emitter's local `let is_fk_edge = rel_table == end_table`
+  (`multi_type_vlp_joins.rs:~764/~1471`) was misleadingly named — it invited a
+  migration to canonical `RelationshipSchema.is_fk_edge` that would emit WRONG
+  SQL. A transition-assert over the corpus (13,632 hits) found **14 real
+  divergences in BOTH directions**: denorm coupled self-loops (proxy fuses,
+  canon says not-FK) and reversed FK hops (proxy two-joins the separate target,
+  canon says FK). The proxy is a LOCAL per-hop direction-aware shape test, not a
+  schema-level classification — correct-and-different, so NOT migrated. Instead:
+  renamed both sites + documented the divergence inline (byte-identical) and
+  ratcheted the file's `is_fk_edge` count 4→1 (one intentional comment pointer
+  kept). Adversarial review APPROVE-0 (specifically confirmed the divergence is
+  real in both directions). Gate: 1608 lib, corpus_sweep + sql_golden
+  byte-identical, ratchet down 4→1, clippy/fmt clean.
+- 2026-07-28: **Phase-3 §6.2 slice-4 — denorm self-loop multi-type fixture,
+  divergence-coverage** (P-3 lane; PR #795). Closed the coverage gap the earlier
+  slice-4 transition-assert left (148 vacuous `false/false` hits — the corpus
+  never reached the multi-label `pattern_combinations` UNION path with a denorm
+  endpoint). Built `schemas/test/denorm_selfloop_multitype.yaml` (reachable
+  denorm self-loop, both direction maps, two edge types → multi-type expansion);
+  an in-process transition-assert over it shows **inline == canonical on every
+  hit**, because the only divergent input (a partial-map self-loop) is
+  validator-rejected (`config.rs:2058`). Converts slice-4 from *argued* to
+  *positively-covered* non-migration: new lib test + 4 corpus entries / 8
+  byte-locked goldens (zero churn to existing goldens). Adversarial review
+  APPROVE-0. Test/docs only, no production `src/` change.
+- 2026-07-28: **Phase-3 §6.2 slice-3 — `first_col` → `Identifier::first_column`**
+  (P-3 lane; PR #793). Deleted a duplicated column-resolution helper, routed 14
+  sites through the canonical API. Byte-identical.
 
 - 2026-07-28: **Phase-4 §7.2 F6-partial — delete dead `set_property_mapping` +
   correct stale forward-resolution docs** (P-4 lane; PR #791). Byte-identical
