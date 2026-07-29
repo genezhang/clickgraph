@@ -293,9 +293,20 @@ stats-less; the with-stats golden set locks the flag-on plan against a
 fixed stats fixture.
 
 ### P-6 — Backlog (do not start without re-prioritizing here)
-- SQL-IR Phases 2–4 (path collapse, structural idioms, Raw shrink) —
-  `SQL_IR_DESIGN.md`; Phase-2 A/C unification stays deferred per its own
-  investigation.
+- **SQL-IR track — ACTIVE (resumed 2026-07-29).** Phase 1 (migrate Path A's
+  remaining hardcoded CH leaves through the dialect layer, one leaf per PR, CH
+  byte-identical) is the live lane. Reality vs the stale `SQL_IR_DESIGN.md`
+  header ("no code yet"): `FunctionMapper` is already a de-facto `Dialect` trait
+  (26 methods), dialect is read at emission time, Databricks output is reachable,
+  and a 218-case dual-dialect `sql_ir/` golden net + 1,119-case corpus are
+  locked. Method: grep the `.databricks.sql` goldens for leaked CH spellings to
+  find the empirically-reached bugs, fix the most-reached leaf first via a
+  `common.rs` dialect helper. Done: simple-CASE (#811). **Next leaves** (by
+  golden-leak count): `startsWith`/`endsWith` (5 sites, Paths A+C+pattern_comp),
+  then `JSON_VALUE`/`splitByChar`/single-`startsWith` leaks. SKIP the
+  operator-symbol table (`=`/`<>`/`AND` are dialect-neutral — pure churn).
+  Phase 2 (path collapse) / 3 (structural idioms) / 4 (Raw shrink) stay deferred
+  behind Phase 1; Phase-2 A/C unification deferred per its own investigation.
 - Phase 3 §6.2/§6.3: **COMPLETE** (slices 3/4/2 resolved 2026-07-28,
   #793/#795/#796; `pattern_schema.rs` dead_code audit done #799). No Phase-3
   items remain.
@@ -314,6 +325,31 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-29: **SQL-IR Phase 1 — simple-CASE routed through a dialect-aware
+  helper** (#811, `b2352d00`; P-6 SQL-IR track resumed). `RenderExpr::Case` with
+  a subject expr (Cypher *simple* CASE) was hardcoded to ClickHouse's
+  `caseWithExpression(expr, v1, r1, …, default)` at its sole emission site
+  (`to_sql_query.rs`) — a function that does not exist in Spark, so it leaked
+  into **7 committed `.databricks.sql` goldens** (a latent Spark bug of the same
+  class as the 2026-06-28 sweep: a CH-only function inlined instead of routed
+  through the dialect layer). Added `common::simple_case_sql()`, mirroring the
+  existing `reduce_fold_sql`/`contains_predicate`/`regex_match_predicate`
+  dialect helpers: CH keeps `caseWithExpression(...)` (byte-identical, 0
+  `.clickhouse.sql` churn); Databricks emits standard `CASE expr WHEN v THEN r …
+  ELSE d END`. Nested-CASE + empty-ELSE (`ELSE NULL`) + List-fallback preserved.
+  New unit tests lock both spellings. Gate: fmt/clippy, 1610 lib + 531
+  integration, ratchet net-zero; adversarial review APPROVE-0 (1 non-blocking
+  NIT: no golden exercises a Spark simple-CASE returning an array — behavior
+  carried over from main, no regression). **State of the track** (verified live,
+  not doc-claimed): `FunctionMapper` has already grown into a de-facto `Dialect`
+  trait (26 methods), dialect is plumbed via task-local `get_current_dialect()`
+  and read at emission time, Databricks output is reachable, 218-case dual-dialect
+  `sql_ir/` golden net + 1,119-case corpus both locked. **Next SQL-IR leaf:**
+  `startsWith`/`endsWith` (CH camelCase → Spark `startswith`/`endswith`; 5
+  emission sites across Paths A + C + pattern_comprehension), then
+  `JSON_VALUE`/`splitByChar` single-golden leaks, then the operator-symbol table
+  is deliberately SKIPPED (`=`/`<>`/`AND` are dialect-neutral — pure churn).
 
 - 2026-07-29: **#802 — FK-edge exact-bound VLP duplicate endpoint alias (Code
   179)** (composite-id follow-up). `(a)-[:PARENT*2..2]->(b)` on a self-ref
