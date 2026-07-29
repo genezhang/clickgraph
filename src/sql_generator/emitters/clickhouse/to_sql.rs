@@ -197,16 +197,16 @@ impl ToSql for LogicalExpr {
                 Ok(prop.column.to_sql(&prop.table_alias.0))
             }
             LogicalExpr::OperatorApplicationExp(op) => {
-                // ⚠️ TODO: Operator rendering consolidation (Phase 3)
-                // This code is duplicated in to_sql_query.rs with very similar operator handling.
-                // Root cause: Two different Operator types (logical_expr::Operator vs render_expr::Operator)
-                // prevent simple consolidation. Phase 3 strategy:
-                // 1. Create OperatorRenderer trait with operator_symbol() and render_special_cases()
-                // 2. Implement trait for LogicalExpr operators (in this module)
-                // 3. Implement trait for RenderExpr operators (in to_sql_query.rs)
-                // 4. Create unified render_operator() function in common.rs
-                // See notes/OPERATOR_RENDERING_ANALYSIS.md for detailed analysis.
-                // Estimated effort: 4-6 hours for full consolidation
+                // ⚠️ TODO: Operator rendering consolidation (SQL-IR Phase 2 step 3).
+                // This block duplicates the operator handling in to_sql_query.rs.
+                // The former blocker — two distinct `Operator` types — is GONE: the
+                // enums were unified (render_expr::Operator now re-exports
+                // logical_expr::Operator, PR #818). What remains: this block walks
+                // `LogicalExpr` operands and returns `Result`, while the render-side
+                // block walks `RenderExpr` operands and returns `String`. Collapsing
+                // is now the Path D -> A retirement (SQL_IR_DESIGN.md §3.5 step 3):
+                // bake LogicalExpr -> RenderExpr at this block's callers (the existing
+                // `TryFrom<LogicalExpr>`), then render via the one RenderExpr path.
                 let operands_sql: Vec<String> = op
                     .operands
                     .iter()

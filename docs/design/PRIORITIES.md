@@ -334,13 +334,15 @@ fixed stats fixture.
   (`cte_extraction`, ~8 CTE/filter callers) is the one live second path and its
   separateness is FUNDAMENTAL (runs at CTE-build stage before A's `query_context`
   task-locals exist; its `alias_mapping` p1→start_node rewrite has no equivalent
-  in A). Recommended shippable Phase-2 order: (1) retire B, (2) unify the dual
-  `Operator` enums (`logical_expr` vs `render_expr`, ~100 dup lines, both files'
-  own TODOs, best first CODE slice), (3) collapse D→A via the existing
-  `TryFrom<LogicalExpr>` (`render_expr.rs:1825`). (4) C full-collapse is a separate
-  DESIGN CYCLE (stage/timing constraint), NOT a mechanical step — its drift items
-  (backtick-vs-doublequote quoting, latent-unreached hardcoded `POWER`/`arrayFold`/
-  map/CASE arms — verified 0 Databricks golden leak) can be reconciled as small
+  in A). Recommended shippable Phase-2 order: (1) retire B, **(2) unify the dual
+  `Operator` enums — DONE #818 (`188e4507`): were byte-identical 24-variant copies,
+  render now re-exports the planner enum; deleted the identity `TryFrom` + its one
+  caller; 0 golden churn, review APPROVE-0; unblocks step 3**, (3) collapse D→A via
+  the existing `TryFrom<LogicalExpr>` (`render_expr.rs:1825`) — NEXT. (4) C
+  full-collapse is a separate DESIGN CYCLE (stage/timing constraint), NOT a
+  mechanical step — its drift items (backtick-vs-doublequote quoting,
+  latent-unreached hardcoded `POWER`/`arrayFold`/map/CASE arms — verified 0
+  Databricks golden leak) can be reconciled as small
   independent correctness slices without full collapse.
   Phase 3 (structural idioms) / 4 (Raw shrink) stay deferred behind Phase 2.
 - Phase 3 §6.2/§6.3: **COMPLETE** (slices 3/4/2 resolved 2026-07-28,
@@ -361,6 +363,24 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-29: **SQL-IR Phase 2 step 2 — unify the dual `Operator` enums** (#818,
+  `188e4507`). `render_expr::Operator` and `query_planner::logical_expr::Operator`
+  were byte-identical 24-variant copies (same variants/order/comments/derives).
+  Made render's a `pub use` re-export of the planner enum (correct layering —
+  render is the leaf that already depends on logical_expr), deleted the duplicate
+  definition + the now-reflexive `TryFrom<LogicalOperator> for Operator` + its one
+  caller (a plain move). Pure type unification, no output-path change: CH **and**
+  Databricks byte-identical, **0 golden churn**; net −52 lines. Review APPROVE-0
+  (derive-list identity, `Copy`/serde/name-resolution all verified). Refreshed the
+  two now-stale `to_sql.rs`/`to_sql_query.rs` operator-consolidation TODOs (they
+  cited the just-removed "two Operator types" blocker) to point at the real
+  remaining step-3 work (bake LogicalExpr→RenderExpr, retire Path D). Ran in an
+  isolated `CARGO_TARGET_DIR` (shared `/data/cargo-target-shared` was lock-contended
+  by another project's build fleet). **Next SQL-IR: Phase-2 step 3** — collapse
+  Path D→A via the existing `TryFrom<LogicalExpr>` (`render_expr.rs:1825`);
+  re-plumb `function_translator` to bake scalar-fn args first, retire the dead
+  ViewScan renderer. Or step 1 (retire near-dead Path B) as a smaller warm-up.
 
 - 2026-07-29: **SQL-IR Phase 1 — RegexMatch routed through dialect helper**
   (#815, `1a57e817`). The last two hardcoded `match({}, {})` RegexMatch emission

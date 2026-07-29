@@ -7014,17 +7014,17 @@ impl RenderExpr {
                 column.to_sql(&table_alias.0)
             }
             RenderExpr::OperatorApplicationExp(op) => {
-                // ⚠️ TODO: Operator rendering consolidation (Phase 3)
-                // This code is duplicated in to_sql.rs (~70 lines of similar operator handling).
-                // Both implementations handle Operator enums with identical variants but different types:
-                // - to_sql.rs: crate::query_planner::logical_expr::Operator
-                // - to_sql_query.rs: crate::render_plan::render_expr::Operator
-                // Phase 3 consolidation strategy: Create OperatorRenderer trait (see notes/OPERATOR_RENDERING_ANALYSIS.md)
-                // Benefits:
-                // - Eliminate duplication without type system complexity
-                // - Preserve context-specific behavior (error handling, special cases)
-                // - Enable future operator extensions
-                // Estimated effort: 4-6 hours, should be 100% backward compatible
+                // ⚠️ TODO: Operator rendering consolidation (SQL-IR Phase 2 step 3).
+                // This block duplicates the operator handling in to_sql.rs (~70 lines).
+                // The former blocker — two distinct `Operator` types — is GONE: the
+                // enums were unified (render_expr::Operator now re-exports
+                // logical_expr::Operator, PR #818), so both blocks match on the SAME
+                // enum. What remains: to_sql.rs walks `LogicalExpr` operands and
+                // returns `Result`; this block walks `RenderExpr` operands and returns
+                // `String`. Collapsing is now the Path D -> A retirement
+                // (SQL_IR_DESIGN.md §3.5 step 3): bake LogicalExpr -> RenderExpr via
+                // the existing `TryFrom<LogicalExpr>` at to_sql.rs's callers, then
+                // render everything through this RenderExpr path.
                 log::debug!(
                     "RenderExpr::to_sql() OperatorApplicationExp: operator={:?}, operands.len()={}",
                     op.operator,
