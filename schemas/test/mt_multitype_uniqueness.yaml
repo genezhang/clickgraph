@@ -1,0 +1,40 @@
+# Multi-type VLP relationship-uniqueness fixture (#606)
+#
+# Two SEPARATE edge tables (MENTORS, HELPS), both Member->Member and
+# self-composable, so `MATCH (a)-[:MENTORS|HELPS*1..N]->(b)` routes through the
+# MULTI-TYPE VLP emitter (src/sql_generator/emitters/clickhouse/multi_type_vlp_joins.rs)
+# — a flat JOIN + UNION ALL enumeration, distinct from the recursive-CTE path.
+#
+# That emitter enforced NO relationship-uniqueness: it permitted reusing the same
+# physical edge within a path (e.g. a self-loop traversed twice), so it
+# OVER-counted vs Cypher trail semantics (a node MAY be revisited, but an edge
+# may NOT repeat). This fixture is the minimal cyclic case that exposes the
+# over-count. Live oracle (db `mt606`, edges MENTORS{1->2,2->3} HELPS{2->1,3->3}):
+#   *1..2  current 9  vs trail 8   (self-loop 3->3->3 reuses HELPS(3,3))
+#   *1..3  current 15 vs trail 10
+name: mt_multitype_uniqueness
+
+graph_schema:
+  nodes:
+    - label: Member
+      database: mt606
+      table: members
+      node_id: id
+      property_mappings:
+        id: id
+        name: name
+  edges:
+    - type: MENTORS
+      database: mt606
+      table: mentors
+      from_id: from_id
+      to_id: to_id
+      from_node: Member
+      to_node: Member
+    - type: HELPS
+      database: mt606
+      table: helps
+      from_id: from_id
+      to_id: to_id
+      from_node: Member
+      to_node: Member

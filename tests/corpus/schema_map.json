@@ -39,6 +39,10 @@
     "subschema": "ldbc_snb",
     "yaml": "schemas/test/unified_test_multi_schema.yaml"
   },
+  "mt_multitype_uniqueness": {
+    "subschema": null,
+    "yaml": "schemas/test/mt_multitype_uniqueness.yaml"
+  },
   "ontime_flights": {
     "subschema": null,
     "yaml": "schemas/examples/ontime_denormalized.yaml"
