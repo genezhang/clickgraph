@@ -296,8 +296,9 @@ fixed stats fixture.
 - SQL-IR Phases 2–4 (path collapse, structural idioms, Raw shrink) —
   `SQL_IR_DESIGN.md`; Phase-2 A/C unification stays deferred per its own
   investigation.
-- Phase 3 §6.2: mechanical rollout DONE (slices 3/4/2 resolved 2026-07-28,
-  #793/#795/#796); only the low-priority `pattern_schema.rs` dead_code audit remains.
+- Phase 3 §6.2/§6.3: **COMPLETE** (slices 3/4/2 resolved 2026-07-28,
+  #793/#795/#796; `pattern_schema.rs` dead_code audit done #799). No Phase-3
+  items remain.
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
@@ -310,6 +311,26 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-07-28: **Phase-3 §6.3 — `pattern_schema.rs` `#![allow(dead_code)]`
+  audit** (P-3 lane; PR #799). Lifted the blanket module allow; it surfaced
+  exactly 5 genuinely-dead private/test items (the superseded
+  `node_strategy_for_position` helper — `build_node_strategies` uses an inline
+  `match edge_pattern` instead — plus 4 unused `make_*` test-fixture builders).
+  The module's public API is `pub`-reachable and lint-exempt, so the allow
+  masked nothing there. Deleted the 5 items + 3 now-unused test imports, fixed
+  the stale comment that named the deleted helper, removed the blanket allow;
+  module now builds warning-free. Net −191 lines, no production behavior change,
+  ratchet net-zero (`src/graph_catalog/` is excluded from axis counting).
+  **This closes Phase 3** — no §6.2/§6.3 items remain.
+- 2026-07-28: **corpus_sweep golden normalize() — anonymize
+  `pattern_union_t<n>` counter** (PR #798). The golden normalizer's `\bt\d+\b`
+  remap could not reach the render counter inside a `pattern_union_t<n>` CTE
+  name (the `t` sits after `_`, no word boundary), so that global counter leaked
+  into 2 goldens and made them render-order-dependent — a flaky `corpus_sweep`
+  failure (`denorm_selfloop_multitype/path_multitype_expand`, added #795) that
+  passed alone but failed mid-suite and on main. Added an explicit
+  `pattern_union_t\d+` remap and regenerated the 2 goldens; keeps byte-lock
+  coverage instead of excluding the entry.
 - 2026-07-28: **Phase-3 §6.2 slice-2 — rename `is_fk_edge` proxy →
   `rel_table_is_end_node`; ratchet 4→1** (P-3 lane; PR #796). The multi-type VLP
   JOIN emitter's local `let is_fk_edge = rel_table == end_table`

@@ -720,12 +720,17 @@ in, delete the legacy branch (its own PR; goldens are the guard). Then remove
 `#![allow(dead_code)]` from `pattern_schema.rs` and delete whatever is still
 genuinely unused.
 
-**§6.3 status (2026-07-28, scouted):** the legacy scalar-flag branch that ran
-alongside `pattern_ctx` at `cte_extraction.rs:~3591` is **already gone** — that
-region now recreates `PatternSchemaContext` unconditionally and returns an error
-if it can't (`cte_extraction.rs:~4317`); there is no parallel legacy path left to
-delete. Remaining §6.3 work is only the `pattern_schema.rs` `#![allow(dead_code)]`
-audit (separate from the branch deletion, low priority).
+**§6.3 status (2026-07-28, scouted then COMPLETED):** the legacy scalar-flag
+branch that ran alongside `pattern_ctx` at `cte_extraction.rs:~3591` is **already
+gone** — that region now recreates `PatternSchemaContext` unconditionally and
+returns an error if it can't (`cte_extraction.rs:~4317`); there is no parallel
+legacy path left to delete. The `pattern_schema.rs` `#![allow(dead_code)]` audit
+is now **DONE (#799)**: lifting the blanket allow surfaced exactly 5 genuinely-dead
+private/test items (the superseded `node_strategy_for_position` helper + 4 unused
+test-fixture builders; its public API is `pub`-reachable and lint-exempt, so the
+allow masked nothing there). Deleted them + 3 now-unused test imports, fixed the
+stale comment that named the deleted helper, and removed the blanket allow — the
+module now builds warning-free with no suppression. §6.3 is complete.
 
 **Explicit non-goal**: forcing single-hop rendering through `CteStrategy`.
 That's a bigger architectural bet; this phase only consolidates *predicates
@@ -1353,9 +1358,12 @@ proxy, renamed `is_fk_edge` → `rel_table_is_end_node` at both sites +
 ratcheted the file's `is_fk_edge` count 4→1 (byte-identical); slices 1/5 are
 legit field-reads/plan-state, not re-derivations · ☑ §6.3 legacy scalar-flag
 path already gone (region recreates `PatternSchemaContext` unconditionally) ·
-**Phase 3 substantially complete** — mechanical migrations done; slices 3/4/2 all
-resolved (3 migrated, 4/2 investigated-and-decided with the fixture/transition-
-assert method). Only the low-priority `pattern_schema.rs` dead_code audit remains.
+☑ `pattern_schema.rs` `#![allow(dead_code)]` audit DONE (#799, 2026-07-28):
+blanket allow removed, 5 dead private/test items + 3 unused test imports deleted,
+module builds warning-free · **Phase 3 COMPLETE** — mechanical migrations done;
+slices 3/4/2 all resolved (3 migrated, 4/2 investigated-and-decided with the
+fixture/transition-assert method); §6.3 legacy path gone and dead_code audit
+closed. No Phase-3 items remain.
 See §6.2/§6.3.
 
 Phase 4: ◐ early hoists landed OUT OF ORDER 2026-07-14 (low-risk, accepted):
