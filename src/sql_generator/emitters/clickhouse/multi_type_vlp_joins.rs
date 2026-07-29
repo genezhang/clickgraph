@@ -759,12 +759,23 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             let end_table = self.get_node_table_with_db(&hop.to_node_type)?;
             let end_id_col = self.get_node_id_column(&hop.to_node_type)?;
 
-            // Check if this is an FK-edge pattern (rel table == target node table)
-            // In this case, the relationship table IS the target node, so we only need one JOIN
-            let is_fk_edge = rel_table == end_table;
+            // Does the relationship table equal the TARGET (end) node table for
+            // THIS hop? If so, the rel row IS the target node row and we fuse the
+            // rel+node joins into one. This is a LOCAL, per-hop, direction-aware
+            // shape test — deliberately NOT the schema-level canonical FK-edge
+            // classification (`RelationshipSchema.is_fk_edge`, `config.rs:1528` =
+            // `no denorm props && edge_table == from_or_to_table`). The two answer
+            // different questions and genuinely diverge on the corpus in BOTH
+            // directions: a denormalized coupled self-loop (zeek `ACCESSED` IP→IP)
+            // has rel==end yet is not FK-edge, and a reversed FK hop (`AUTHORED`
+            // Post→User, whose target `users` is a separate table) has rel!=end
+            // yet IS FK-edge. Migrating this local decision to the canonical field
+            // would emit wrong SQL (a spurious self-join, or a dropped node join),
+            // so it stays a local shape test — just no longer misleadingly named.
+            let rel_table_is_end_node = rel_table == end_table;
 
-            if is_fk_edge {
-                // FK-edge pattern: relationship table IS the target node table
+            if rel_table_is_end_node {
+                // Fused pattern: the relationship table IS the target node table
                 end_node_alias = format!(
                     "{}{}",
                     if hop.to_node_type == "User" {
@@ -1468,11 +1479,17 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                             Err(_) => return "'{}'".to_string(), // Empty JSON
                         };
 
-                        let is_fk_edge = rel_table == end_table;
+                        // Same LOCAL per-hop shape test as in the JOIN builder
+                        // above (does the rel table equal the target node table,
+                        // so the rel row IS the target node?) — NOT the canonical
+                        // schema-level FK-edge classification. This MUST match the
+                        // alias choice in the FROM builder so rel_properties
+                        // reference the right alias.
+                        let rel_table_is_end_node = rel_table == end_table;
 
                         // Reconstruct the relationship alias used in FROM clause
-                        let rel_alias = if is_fk_edge {
-                            // FK-edge: alias is the end node alias
+                        let rel_alias = if rel_table_is_end_node {
+                            // Fused: alias is the end node alias
                             // Must match the logic in generate_path_branch_sql (lines 585-595)
                             format!(
                                 "{}{}",

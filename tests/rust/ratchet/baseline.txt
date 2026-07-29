@@ -114,7 +114,7 @@ schema	is_fk_edge	src/render_plan/cte_manager/mod.rs	4
 schema	is_fk_edge	src/render_plan/select_builder.rs	3
 schema	is_fk_edge	src/render_plan/write_plan_builder.rs	1
 schema	is_fk_edge	src/server/bolt_protocol/result_transformer.rs	3
-schema	is_fk_edge	src/sql_generator/emitters/clickhouse/multi_type_vlp_joins.rs	4
+schema	is_fk_edge	src/sql_generator/emitters/clickhouse/multi_type_vlp_joins.rs	1
 schema	is_fk_edge	src/sql_generator/emitters/clickhouse/variable_length_cte.rs	7
 schema	to_label_column	src/procedures/apoc_meta_schema.rs	1
 schema	to_label_column	src/query_planner/analyzer/bidirectional_union.rs	1
