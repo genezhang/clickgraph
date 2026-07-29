@@ -462,27 +462,86 @@ impl FilterBuilder for LogicalPlan {
                             // For denormalized, use relationship columns directly (nodes
                             // have no separate table — extract_table_name would fail).
                             // For normal schemas, use node ID columns from node tables.
-                            let (start_id_col, end_id_col) = if is_denormalized {
-                                (rel_cols.from_id.to_string(), rel_cols.to_id.to_string())
-                            } else {
-                                let start_table =
-                                    extract_table_name(&graph_rel.left).ok_or_else(|| {
-                                        RenderBuildError::MissingTableInfo(
-                                            "start node in cycle prevention".to_string(),
-                                        )
-                                    })?;
-                                let end_table =
-                                    extract_table_name(&graph_rel.right).ok_or_else(|| {
-                                        RenderBuildError::MissingTableInfo(
-                                            "end node in cycle prevention".to_string(),
-                                        )
-                                    })?;
-                                let start = extract_id_column(&graph_rel.left)
-                                    .unwrap_or_else(|| table_to_id_column(&start_table));
-                                let end = extract_id_column(&graph_rel.right)
-                                    .unwrap_or_else(|| table_to_id_column(&end_table));
-                                (start, end)
+                            //
+                            // #802: `start_id_cols`/`end_id_cols` are per-column
+                            // vectors so the legacy FkEdge / multi-type `start !=
+                            // end` node guard stays correct for COMPOSITE node
+                            // keys. Previously these were single strings sourced
+                            // from `ViewScan.id_column`, which silently drops
+                            // every column past the first for a composite key —
+                            // emitting `a.region <> b.region` for a
+                            // `[region, object_id]` key (an under-constrained
+                            // guard that admits distinct nodes sharing a region).
+                            // That defect was masked while the FK-edge exact VLP
+                            // errored Code 179 (dup FROM/JOIN alias, #802 FROM
+                            // fix); un-masking it here keeps the guard honest.
+                            // Single-column keys yield one-element vectors →
+                            // byte-identical to the old single-string path.
+                            let schema_for_ids =
+                                crate::server::query_context::get_current_schema_with_fallback();
+                            let composite_node_id_cols = |node_plan: &LogicalPlan| -> Option<Vec<String>> {
+                                let schema = schema_for_ids.as_ref()?;
+                                let label =
+                                    crate::render_plan::cte_extraction::extract_node_label_from_viewscan_with_schema(
+                                        node_plan, schema,
+                                    )?;
+                                let node_schema = schema.node_schema_opt(&label)?;
+                                if node_schema.node_id.is_composite() {
+                                    Some(
+                                        node_schema
+                                            .node_id
+                                            .columns()
+                                            .iter()
+                                            .map(|c| c.to_string())
+                                            .collect(),
+                                    )
+                                } else {
+                                    None
+                                }
                             };
+                            let (start_id_cols, end_id_cols): (Vec<String>, Vec<String>) =
+                                if is_denormalized {
+                                    (
+                                        rel_cols
+                                            .from_id
+                                            .columns()
+                                            .iter()
+                                            .map(|c| c.to_string())
+                                            .collect(),
+                                        rel_cols
+                                            .to_id
+                                            .columns()
+                                            .iter()
+                                            .map(|c| c.to_string())
+                                            .collect(),
+                                    )
+                                } else {
+                                    let start_table =
+                                        extract_table_name(&graph_rel.left).ok_or_else(|| {
+                                            RenderBuildError::MissingTableInfo(
+                                                "start node in cycle prevention".to_string(),
+                                            )
+                                        })?;
+                                    let end_table =
+                                        extract_table_name(&graph_rel.right).ok_or_else(|| {
+                                            RenderBuildError::MissingTableInfo(
+                                                "end node in cycle prevention".to_string(),
+                                            )
+                                        })?;
+                                    // Prefer the node schema's full composite key;
+                                    // else the lossy-but-correct single column.
+                                    let start = composite_node_id_cols(&graph_rel.left)
+                                        .unwrap_or_else(|| {
+                                            vec![extract_id_column(&graph_rel.left)
+                                                .unwrap_or_else(|| table_to_id_column(&start_table))]
+                                        });
+                                    let end = composite_node_id_cols(&graph_rel.right)
+                                        .unwrap_or_else(|| {
+                                            vec![extract_id_column(&graph_rel.right)
+                                                .unwrap_or_else(|| table_to_id_column(&end_table))]
+                                        });
+                                    (start, end)
+                                };
 
                             // #617: single-walk undirected exact-bound chains hop
                             // over the doubled-edge CTE; the pairwise uniqueness
@@ -554,20 +613,24 @@ impl FilterBuilder for LogicalPlan {
                                             .collect(),
                                     )
                                 };
-                            // `start_id_col`/`end_id_col` feed only the legacy
-                            // start != end guard (FkEdge / multi-type), which is
-                            // addressed separately; keep them single here.
+                            // `start_id_cols`/`end_id_cols` feed only the legacy
+                            // start != end node guard (FkEdge / multi-type),
+                            // which is now composite-aware (#802).
                             let from_col_refs: Vec<&str> =
                                 from_cols.iter().map(String::as_str).collect();
                             let to_col_refs: Vec<&str> =
                                 to_cols.iter().map(String::as_str).collect();
+                            let start_id_refs: Vec<&str> =
+                                start_id_cols.iter().map(String::as_str).collect();
+                            let end_id_refs: Vec<&str> =
+                                end_id_cols.iter().map(String::as_str).collect();
                             // Generate relationship-uniqueness filters
                             if let Some(cycle_filter) = crate::render_plan::cte_extraction::generate_cycle_prevention_filters_composite(
                                 exact_hops,
-                                &[start_id_col.as_str()],
+                                &start_id_refs,
                                 &to_col_refs,
                                 &from_col_refs,
-                                &[end_id_col.as_str()],
+                                &end_id_refs,
                                 &graph_rel.left_connection,
                                 &graph_rel.right_connection,
                                 use_legacy_start_end_guard,

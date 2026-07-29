@@ -993,6 +993,65 @@ impl LogicalPlan {
 
         log::info!("🔍 No VLP found, proceeding with FROM marker...");
 
+        // #802: A flat exact-bound VLP (`*N..N`, N≥2) expands into a chained
+        // self-join rooted at the START node — `extract_joins` returns the
+        // `expand_fixed_length_joins_with_context` output whose `from_alias` is
+        // `start_alias`. The analyzer, however, may pick the END node as
+        // `anchor_table`: for a self-referencing FK-edge table both endpoints
+        // resolve to the SAME table name, so `select_anchor`'s alphabetical
+        // tie-break ranks the endpoint alias first. That makes the FROM clause
+        // (endpoint `b`) disagree with the expander's join chain (rooted at
+        // start `a`): the endpoint alias then appears BOTH as FROM and as the
+        // final hop's JOIN target (Code 179 MULTIPLE_EXPRESSIONS_FOR_ALIAS)
+        // while the start alias is referenced but never defined. Derive FROM
+        // from the SAME expander that produced the joins so the two agree by
+        // construction. Normal/Polymorphic already root at the start node, so
+        // this is byte-identical for them; it only corrects the FK-edge
+        // endpoint-anchor case. (A later endpoint-selective-predicate reorder,
+        // `reorder_from_for_selective_predicate`, still re-roots to the endpoint
+        // when a WHERE filter warrants it — it rewrites the join conditions to
+        // stay consistent, which is exactly what this arm was missing.)
+        if let Some(graph_rel) = find_vlp_graph_rel(&graph_joins.input) {
+            if is_fixed_length_vlp(graph_rel) {
+                let exact = graph_rel
+                    .variable_length
+                    .as_ref()
+                    .and_then(|s| s.exact_hop_count())
+                    .unwrap_or(0);
+                if exact > 1 {
+                    if let Some(schema) = crate::server::query_context::get_current_schema() {
+                        if let Some(vlp_ctx) = crate::render_plan::cte_extraction::build_vlp_context(
+                            graph_rel, &schema,
+                        ) {
+                            let (from_table, from_alias, _joins) =
+                                crate::render_plan::cte_extraction::expand_fixed_length_joins_with_context(
+                                    &vlp_ctx,
+                                );
+                            // Honor parameterized-view table refs when present
+                            // (matches the sibling anchor/FROM-marker branches);
+                            // the expander already prefers the parameterized
+                            // start table, so `from_table` is the fallback.
+                            let table_name = parameterized_tables
+                                .get(&from_alias)
+                                .cloned()
+                                .unwrap_or(from_table);
+                            log::info!(
+                                "✅ #802: flat exact VLP FROM from expander: table='{}' alias='{}'",
+                                table_name,
+                                from_alias
+                            );
+                            return Ok(Some(ViewTableRef {
+                                source: Arc::new(LogicalPlan::Empty),
+                                name: table_name,
+                                alias: Some(from_alias),
+                                use_final: false,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+
         // If an anchor_table is set, prefer it as FROM (ensures OPTIONAL MATCH
         // with incoming direction uses the required-MATCH anchor, not the optional node)
         if let Some(ref anchor) = graph_joins.anchor_table {
