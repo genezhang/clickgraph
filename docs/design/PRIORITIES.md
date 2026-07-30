@@ -96,12 +96,20 @@ Exit met: one fully green nightly run + xpass count 0.
   NOT from `infer_pattern_types` (`type_inference.rs:~2163`, banked-but-inert) —
   the live site is `generate_union_for_untyped_nodes` (~1469/~1492). Scoped to the
   one schema declaring endpoint `label_values`; open-polymorphic edges unchanged.
-  Adversarial review APPROVE-0. **#827 STILL OPEN** for: (b) single-arm hardcodes
-  `object_type='File'` via table→label reverse-lookup (`get_node_schema_by_table`
-  alphabetically-first) — the un-xfail blocker for `test_external_users_with_access`;
-  and (newly surfaced) both-endpoints-untyped 16-arm over-fan via the *separate*
-  unpatched `infer_pattern_types` site (`~2179`), the natural next
-  `expand_node_type_constrained` application.
+  Adversarial review APPROVE-0. Companion **both-endpoints-untyped over-fan DONE
+  2026-07-30 (#833, `30fbc51b`)** — `MATCH (a)-[:HAS_ACCESS]->(b)` (both unlabeled)
+  emitted the full 4×4=16 label cartesian, only 4 legal; the real generator was the
+  `expand_node_type` cartesian in `traversal.rs::traverse_connected_pattern_with_mode`
+  (both-untyped branch) — NOT the `infer_pattern_types` site `~2179` the #831 note
+  guessed (inert; found by patch-and-rebuild). Routed through the same helper; now 4
+  legal arms; locked by a revert-checked assertion test (fails on full OR either-side
+  revert). Review APPROVE-0/1-minor. **#827 STILL OPEN** for **defect (b) only**:
+  single collapsed arm hardcodes `object_type='File'` via table→label reverse-lookup
+  (`get_node_schema_by_table` alphabetically-first for shared `ds_fs_objects`) →
+  Folder-access silently dropped + from-side `MEMBER_OF` User arm keeps
+  `member_type='Group'`/`group_id` (broken for `ds_users`). This is the un-xfail
+  blocker for `test_external_users_with_access` and the harder half (render-side
+  per-arm label provenance — reverse-mapping class, §1.6).
 
 ### P-1 — Keep a small silent-wrong bug lane open  (standing, ≤1 agent)
 **Lane state (2026-07-28): pool near-exhausted; #716 was the last clean pick.** Since
