@@ -135,9 +135,10 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// Spark parses `"name"` as a string literal, so backticks are
     /// mandatory. Each impl is responsible for escaping its own
     /// delimiter inside `name` (CH doubles `"`, Spark doubles `` ` ``).
-    /// The bare `quote_identifier` helper in `common.rs` is a separate
-    /// concern — it already uses backticks for both dialects since
-    /// both accept them for plain column refs.
+    /// The bare `quote_identifier` helper in `common.rs` routes here for
+    /// special-char identifiers, so both stay dialect-consistent (CH `"x"`,
+    /// Spark `` `x` ``); it only skips this for plain identifiers, returning
+    /// them bare.
     fn quote_alias(&self, name: &str) -> String;
 
     /// Build a CAST expression. The two dialects diverge on both syntax and the

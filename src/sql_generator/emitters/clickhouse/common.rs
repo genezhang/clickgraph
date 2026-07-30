@@ -13,20 +13,33 @@
 // Future Improvement: Create a unified Literal trait that both types implement,
 // enabling a single render_literal() function in this module.
 
-/// Quote a ClickHouse identifier (column name, table name) if it contains special characters.
+/// Quote an identifier (column name, table name) if it contains special
+/// characters, using the **active dialect's** identifier delimiter.
 ///
-/// ClickHouse requires backtick quoting for identifiers that contain:
+/// An identifier needs quoting when it contains any of:
 /// - Dots (.)
 /// - Spaces
 /// - Hyphens (-)
-/// - Other special characters
+/// - Parentheses
+///
+/// When quoting is needed the delimiter is dialect-specific — ClickHouse
+/// double-quotes (`"id.orig_h"`), Spark/Databricks backticks
+/// (`` `id.orig_h` ``) — routed through [`FunctionMapper::quote_alias`], which
+/// also escapes any embedded delimiter. This keeps a CTE-build-stage reference
+/// (Path C, `cte_extraction.rs`) byte-identical with the final-SELECT renderer
+/// (Path A, `to_sql_query.rs`), which qualifies special-char columns via the
+/// same dialect helper. Previously this hard-coded backticks for both dialects,
+/// which was valid CH but drifted from Path A's `"…"` — a query could emit both
+/// `` t2.`id.orig_h` `` (CTE body) and `t1."id.orig_h"` (SELECT). Plain
+/// identifiers (no special char) are returned bare, unchanged.
 ///
 /// # Examples
 /// ```
 /// use clickgraph::clickhouse_query_generator::quote_identifier;
+/// // Default dialect (outside a query context) is ClickHouse → double-quotes.
 /// assert_eq!(quote_identifier("user_id"), "user_id");
-/// assert_eq!(quote_identifier("id.orig_h"), "`id.orig_h`");
-/// assert_eq!(quote_identifier("user-name"), "`user-name`");
+/// assert_eq!(quote_identifier("id.orig_h"), "\"id.orig_h\"");
+/// assert_eq!(quote_identifier("user-name"), "\"user-name\"");
 /// ```
 pub fn quote_identifier(name: &str) -> String {
     if name.contains('.')
@@ -35,7 +48,7 @@ pub fn quote_identifier(name: &str) -> String {
         || name.contains('(')
         || name.contains(')')
     {
-        format!("`{}`", name)
+        crate::sql_generator::function_mapper::current_function_mapper().quote_alias(name)
     } else {
         name.to_string()
     }
@@ -43,13 +56,15 @@ pub fn quote_identifier(name: &str) -> String {
 
 /// Format a qualified column reference: table_alias.column_name
 ///
-/// This function properly quotes the column name if it contains special characters.
+/// Quotes the column name (via [`quote_identifier`]) with the active dialect's
+/// delimiter when it contains special characters.
 ///
 /// # Examples
 /// ```
 /// use clickgraph::clickhouse_query_generator::qualified_column;
+/// // Default dialect (outside a query context) is ClickHouse → double-quotes.
 /// assert_eq!(qualified_column("t1", "user_id"), "t1.user_id");
-/// assert_eq!(qualified_column("t1", "id.orig_h"), "t1.`id.orig_h`");
+/// assert_eq!(qualified_column("t1", "id.orig_h"), "t1.\"id.orig_h\"");
 /// ```
 pub fn qualified_column(table_alias: &str, column_name: &str) -> String {
     format!("{}.{}", table_alias, quote_identifier(column_name))

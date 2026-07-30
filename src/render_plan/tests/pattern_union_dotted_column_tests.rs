@@ -5,8 +5,9 @@
 //! interpolates raw physical column names into `{table}.{column}` references. When a
 //! physical column name contains a dot (e.g. Zeek's `id.orig_h`), the unquoted form
 //! `zeek.dns_log.id.orig_h` is parsed by ClickHouse as nested struct access and the
-//! identifier fails to resolve. Such columns must be backtick-quoted
-//! (`zeek.dns_log.`id.orig_h``), exactly as the labeled renderer already does.
+//! identifier fails to resolve. Such columns must be delimiter-quoted with the active
+//! dialect's identifier delimiter (CH `"id.orig_h"`, Spark `` `id.orig_h` ``) via the
+//! shared `quote_identifier` helper, exactly as the labeled renderer (Path A) does.
 
 use crate::{
     clickhouse_query_generator, graph_catalog::config::GraphSchemaConfig,
@@ -85,15 +86,16 @@ fn cypher_to_sql(cypher: &str) -> String {
 fn pattern_union_quotes_dotted_physical_columns() {
     let sql = cypher_to_sql("MATCH p=()-[]->() RETURN p LIMIT 25");
 
-    // Dotted physical columns must be backtick-quoted so ClickHouse does not
-    // interpret them as nested struct access.
+    // Dotted physical columns must be delimiter-quoted so ClickHouse does not
+    // interpret them as nested struct access. The default (no query context)
+    // dialect is ClickHouse, so the delimiter is a double-quote.
     assert!(
-        sql.contains("`id.orig_h`"),
-        "dotted column id.orig_h must be backtick-quoted; SQL:\n{sql}"
+        sql.contains("\"id.orig_h\""),
+        "dotted column id.orig_h must be double-quoted; SQL:\n{sql}"
     );
     assert!(
-        sql.contains("`id.resp_h`"),
-        "dotted column id.resp_h must be backtick-quoted; SQL:\n{sql}"
+        sql.contains("\"id.resp_h\""),
+        "dotted column id.resp_h must be double-quoted; SQL:\n{sql}"
     );
 
     // The unquoted form (parsed as nested access) must NOT appear.

@@ -161,8 +161,8 @@ impl FunctionMapper for DatabricksFunctionMapper {
         // only valid identifier quote. Spark escapes `` ` `` inside a
         // backtick-quoted identifier by doubling it. Aliases inferred
         // from raw return text can contain backticks, so escape before
-        // wrapping. `quote_identifier` uses backticks for both dialects
-        // so this stays consistent with that.
+        // wrapping. `quote_identifier` routes special-char identifiers
+        // here too, so backticks stay consistent across both.
         format!("`{}`", name.replace('`', "``"))
     }
 

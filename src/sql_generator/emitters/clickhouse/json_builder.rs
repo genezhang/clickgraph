@@ -28,14 +28,15 @@ use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::NodeSchema;
 use std::collections::HashMap;
 
-/// Quote a column name if it contains special characters (dots, spaces, etc.)
-/// ClickHouse requires backtick quoting for identifiers with special characters.
+/// Quote a column *reference* if it contains special characters, using the
+/// active dialect's delimiter (CH `"x"`, Spark `` `x` ``). Delegates to the
+/// shared [`quote_identifier`] so a JSON-args column ref stays byte-identical
+/// with the same column rendered elsewhere in the query (Path A / Path C),
+/// instead of the previous hard-coded backticks. NOTE this is distinct from
+/// [`quote_json_key`], whose backticks are load-bearing (a JSON *key*, verified
+/// live on Databricks) and must stay backticked in both dialects.
 fn quote_column_name(name: &str) -> String {
-    if name.contains('.') || name.contains(' ') || name.contains('-') {
-        format!("`{}`", name)
-    } else {
-        name.to_string()
-    }
+    super::common::quote_identifier(name)
 }
 
 /// Quote a JSON key name for use inside the JSON-object wrapper.
