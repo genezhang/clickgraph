@@ -517,10 +517,19 @@ fn traverse_connected_pattern_with_mode<'a>(
                                     rel_schemas
                                         .into_iter()
                                         .flat_map(|schema| {
-                                            let froms =
-                                                graph_schema.expand_node_type(&schema.from_node);
-                                            let tos =
-                                                graph_schema.expand_node_type(&schema.to_node);
+                                            // Constrain `$any` endpoints by the edge's
+                                            // declared label allow-lists so a polymorphic
+                                            // edge that targets only some labels does not
+                                            // generate a full cartesian of (from, to) label
+                                            // pairs when BOTH endpoints are untyped (#827).
+                                            let froms = graph_schema.expand_node_type_constrained(
+                                                &schema.from_node,
+                                                schema.from_label_values.as_ref(),
+                                            );
+                                            let tos = graph_schema.expand_node_type_constrained(
+                                                &schema.to_node,
+                                                schema.to_label_values.as_ref(),
+                                            );
                                             let bt = base_type.clone();
                                             froms.into_iter().flat_map(move |f| {
                                                 let bt2 = bt.clone();
