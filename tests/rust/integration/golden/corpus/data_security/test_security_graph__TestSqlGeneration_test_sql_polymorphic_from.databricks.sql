@@ -20,6 +20,6 @@ SELECT
       string(member.name) AS `member.name`, 
       string(member.user_id) AS `member.user_id`
 FROM data_security.ds_groups AS g
-INNER JOIN data_security.ds_memberships AS t0 ON g.group_id = t0.group_id AND t0.member_type = 'Group'
-INNER JOIN data_security.ds_users AS member ON t0.member_id = member.group_id
+INNER JOIN data_security.ds_memberships AS t0 ON g.group_id = t0.group_id AND t0.member_type = 'User'
+INNER JOIN data_security.ds_users AS member ON t0.member_id = member.user_id
 WHERE g.name = 'Engineering'

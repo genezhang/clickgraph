@@ -30,6 +30,26 @@ fn strip_database_prefix(table_name: &str) -> String {
         .unwrap_or_else(|| table_name.to_string())
 }
 
+/// Extract the concrete node label stamped directly on a pattern endpoint,
+/// unwrapping the `GraphNode`/`Projection`/`Filter` wrappers a branch may carry.
+///
+/// This is the per-arm label TypeInference sets on each UNION branch's
+/// `GraphNode` (e.g. `User` on one arm, `Group` on another). It is more
+/// specific than `TableCtx::get_label_str()`, which reads the shared `PlanCtx`
+/// where a polymorphic endpoint still carries ALL candidate labels and
+/// `first()` would pick the same one for every arm (#827 defect b).
+pub(crate) fn endpoint_label_from_plan(plan: &LogicalPlan) -> Option<String> {
+    let label = match plan {
+        LogicalPlan::GraphNode(gn) => gn.label.clone(),
+        LogicalPlan::Projection(p) => endpoint_label_from_plan(&p.input),
+        LogicalPlan::Filter(f) => endpoint_label_from_plan(&f.input),
+        _ => None,
+    };
+    // Never surface the polymorphic `$any` sentinel as a concrete label — let
+    // the caller fall through to ctx / relationship-schema resolution.
+    label.filter(|l| l != "$any")
+}
+
 #[derive(Debug, Clone)]
 pub struct GraphContext<'a> {
     pub left: GraphNodeContext<'a>,
@@ -188,16 +208,23 @@ pub fn get_graph_context<'a>(
     // FK-edges, where the anonymous endpoint stayed unlabeled and got resolved
     // to the wrong node table (Code 47: reading `from_id`/`to_id` off the node
     // table instead of the FK-edge table).
-    let left_label = match left_ctx.get_label_str() {
-        Ok(label) => label,
-        Err(_) => rel_schema_for_inference.from_node.clone(),
-    };
+    // Prefer the per-arm label stamped on the endpoint's own `GraphNode`
+    // (`graph_rel.left`/`right`) over the shared `PlanCtx`. For a polymorphic
+    // endpoint that fans into per-label UNION arms, TypeInference stamps each
+    // arm's `GraphNode` with its OWN label but leaves the shared `PlanCtx`
+    // carrying ALL candidate labels — so `get_label_str().first()` returns the
+    // same (first) candidate for every arm, giving every arm the first label's
+    // discriminator and join column (#827 defect b: the `ds_users` MEMBER_OF
+    // arm inherited `member_type='Group'` + `m.group_id`). The per-arm
+    // `GraphNode.label` is the authoritative choice when present; fall back to
+    // the shared ctx, then to relationship-schema inference for anonymous nodes.
+    let left_label = endpoint_label_from_plan(&graph_rel.left)
+        .or_else(|| left_ctx.get_label_str().ok())
+        .unwrap_or_else(|| rel_schema_for_inference.from_node.clone());
 
-    // Try to get right label, or infer from relationship if anonymous
-    let right_label = match right_ctx.get_label_str() {
-        Ok(label) => label,
-        Err(_) => rel_schema_for_inference.to_node.clone(),
-    };
+    let right_label = endpoint_label_from_plan(&graph_rel.right)
+        .or_else(|| right_ctx.get_label_str().ok())
+        .unwrap_or_else(|| rel_schema_for_inference.to_node.clone());
 
     // NOTE: For polymorphic $any nodes, this function should not be called.
     // The graph_traversal_planning pass should skip $any nodes and let the normal JOIN path handle them.
