@@ -8861,9 +8861,17 @@ mod walker_drift_family_484_490_495_476_483 {
     /// which preserve `id()` for the render-side guard to see).
     #[tokio::test]
     async fn group_by_order_by_directed_multilabel_raw_union_not_hard_fail_484() {
-        let schema = load_schema("examples/data_security/data_security.yaml");
+        // Vehicle: a genuinely multi-TABLE polymorphic endpoint. `LIKES` on the
+        // social_polymorphic schema fans an untyped `item` across DISTINCT tables
+        // (posts_bench / users_bench) with no `to_label_values` to collapse it, so
+        // `generate_union_for_untyped_nodes` clones the whole GraphRel per label
+        // into a raw `UNION ALL` — the exact shape this guard protects. (Formerly
+        // exercised via data_security `(folder:Folder)-[:CONTAINS]->(item)`; that
+        // edge now honors `to_label_values: [Folder, File]` (#827) and collapses to
+        // a single ds_fs_objects scan, so it no longer reaches the raw-union path.)
+        let schema = load_schema(SchemaId::Polymorphic.yaml_path());
 
-        let group_by_cypher = "MATCH (folder:Folder)-[:CONTAINS]->(item) RETURN id(item), count(*)";
+        let group_by_cypher = "MATCH (u:User)-[:LIKES]->(item) RETURN id(item), count(*)";
         let group_by_sql = render(&schema, group_by_cypher, SqlDialect::ClickHouse).await;
         assert!(
             !group_by_sql.contains("GROUP BY item."),
@@ -8879,7 +8887,7 @@ mod walker_drift_family_484_490_495_476_483 {
         );
 
         let order_by_cypher =
-            "MATCH (folder:Folder)-[:CONTAINS]->(item) RETURN id(item), count(*) ORDER BY id(item)";
+            "MATCH (u:User)-[:LIKES]->(item) RETURN id(item), count(*) ORDER BY id(item)";
         let order_by_sql = render(&schema, order_by_cypher, SqlDialect::ClickHouse).await;
         assert!(
             !order_by_sql.contains("GROUP BY item.") && !order_by_sql.contains("ORDER BY item."),
@@ -12399,12 +12407,32 @@ mod label_id_resolution_family_536_537_539_540_541_526_527 {
     /// 200 (matches an independently-computed `count(DISTINCT id)` over the
     /// 3 unioned child tables — same ground truth as the #539 junction-table
     /// case above, since both count the same underlying CONTAINS children).
+    ///
+    /// #827 update (2026-07-30): the original vehicle above — data_security
+    /// `(folder:Folder)-[:CONTAINS]-(item)` — no longer reaches the raw
+    /// multi-table UNION. `CONTAINS`/`HAS_ACCESS` now honor `to_label_values`
+    /// (`$any` endpoint constrained to the declared labels), so those edges
+    /// collapse to a single `ds_fs_objects` union and can't exercise this Code-47
+    /// hazard. The test was repointed to `social_polymorphic`'s `LIKES` edge
+    /// (`item` genuinely fans across the distinct posts_bench / users_bench
+    /// tables, no `to_label_values` to collapse it) — same hazard, live vehicle.
+    /// The old "3 child tables / 200" figures reflect the pre-#827 data_security
+    /// shape and are kept only as the historical origin of this guard.
     #[tokio::test]
     async fn graph_rel_connection_role_replaced_by_vlp_endpoint_role_in_count_distinct_alias_541() {
-        let schema = load_schema("examples/data_security/data_security.yaml");
+        // Vehicle: a genuine multi-TABLE polymorphic endpoint (see #484 above).
+        // `(u:User)-[:LIKES]-(item)` on social_polymorphic renders an undirected
+        // raw per-label UNION over DISTINCT tables (posts_bench / users_bench),
+        // `variable_length=None` on every clone — so `item` is only addressable
+        // inside each branch and `count(DISTINCT item)` must fall through to the
+        // per-branch id-column tuple, not a multi_type_vlp_joins CTE's end_id/type.
+        // (Formerly exercised via data_security `(folder:Folder)-[:CONTAINS]-(item)`;
+        // that edge now honors `to_label_values` (#827) and collapses to a single
+        // ds_fs_objects union, no longer reaching the multi-table raw-union path.)
+        let schema = load_schema(SchemaId::Polymorphic.yaml_path());
         let sql = render(
             &schema,
-            "MATCH (folder:Folder)-[:CONTAINS]-(item) RETURN count(DISTINCT item)",
+            "MATCH (u:User)-[:LIKES]-(item) RETURN count(DISTINCT item)",
             SqlDialect::ClickHouse,
         )
         .await;
@@ -12415,11 +12443,11 @@ mod label_id_resolution_family_536_537_539_540_541_526_527 {
             "#541: count(DISTINCT item) over a junction-table undirected \
              endpoint must not reference the multi_type_vlp_joins CTE's \
              end_id/type columns — this junction-table schema has no such \
-             CTE, only a raw per-label UNION with real fs_id/group_id/user_id \
-             columns per branch (Code 47 UNKNOWN_IDENTIFIER otherwise):\n{sql}"
+             CTE, only a raw per-label UNION with real per-branch id columns \
+             (Code 47 UNKNOWN_IDENTIFIER otherwise):\n{sql}"
         );
         assert!(
-            sql.contains("tuple(`item.fs_id`, `item.group_id`, `item.user_id`)"),
+            sql.contains("tuple(`item.post_id`, `item.user_id`)"),
             "#541: must fall through to the per-label id-column tuple \
              (#467-style), using the REAL per-branch columns:\n{sql}"
         );

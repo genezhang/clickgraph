@@ -241,7 +241,7 @@ class TestVariableLengthPaths:
 class TestSecurityQueries:
     """Complex security analysis queries."""
     
-    @pytest.mark.xfail(reason="#689 bug 1 (recursive CTE 2nd arm joined ds_users on rel.group_id → 500) is FIXED; this query also exercises bug 2 (fixed hop to polymorphic `target` fans out into triplicated identical UNION arms), tracked separately — leave xfail until bug 2 lands")
+    @pytest.mark.xfail(reason="#827 defect (a) FIXED (#689 bug 1 also fixed): the polymorphic `target` no longer fans into triplicated identical UNION arms — `$any` now honors HAS_ACCESS.to_label_values [Folder, File], collapsing to a single arm. But defect (b) remains: that arm hardcodes object_type='File' (table→label reverse-lookup picks alphabetically-first label), so Folder-access rows are silently dropped. Leave xfail until #827 defect (b) lands.")
     def test_external_users_with_access(self):
         """Find external users with any access permissions."""
         response = execute_cypher(

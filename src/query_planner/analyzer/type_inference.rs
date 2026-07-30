@@ -1466,7 +1466,15 @@ impl TypeInference {
                                 // node type so an unlabeled endpoint keeps all candidates
                                 // instead of being narrowed to the literal "$any" (which
                                 // matches nothing and would collapse the plan to Empty).
-                                .flat_map(|rs| graph_schema.expand_node_type(&rs.from_node))
+                                // When the edge declares `from_label_values`, `$any` means
+                                // "any of *those* labels" — constrain to them so the
+                                // endpoint does not fan out to every node in the schema (#827).
+                                .flat_map(|rs| {
+                                    graph_schema.expand_node_type_constrained(
+                                        &rs.from_node,
+                                        rs.from_label_values.as_ref(),
+                                    )
+                                })
                         })
                         .collect();
                     if !valid_types.is_empty() {
@@ -1488,8 +1496,16 @@ impl TypeInference {
                                 .get_all_rel_schemas_for_type(rel_type)
                                 .into_iter()
                                 // Expand polymorphic `$any` to_node to all concrete node
-                                // types (see the from_node branch above).
-                                .flat_map(|rs| graph_schema.expand_node_type(&rs.to_node))
+                                // types (see the from_node branch above). When the edge
+                                // declares `to_label_values`, `$any` means "any of *those*
+                                // labels" — constrain to them so the endpoint does not fan
+                                // out to every node in the schema (#827).
+                                .flat_map(|rs| {
+                                    graph_schema.expand_node_type_constrained(
+                                        &rs.to_node,
+                                        rs.to_label_values.as_ref(),
+                                    )
+                                })
                         })
                         .collect();
                     if !valid_types.is_empty() {
