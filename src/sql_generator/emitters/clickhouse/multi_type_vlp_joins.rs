@@ -1194,11 +1194,15 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         // does not apply.
         if hop_count == 1 && self.min_hops == 1 && self.max_hops == 1 {
             if let Some((rel_alias, from_fk, to_fk)) = hop_rel_fk_info.first() {
-                items.push(format!(
-                    "{}({}.{}) AS r_from_id",
-                    to_str, rel_alias, from_fk
-                ));
-                items.push(format!("{}({}.{}) AS r_to_id", to_str, rel_alias, to_fk));
+                // Quote the FK columns: physical names may contain dots (Zeek
+                // `id.orig_h`), which ClickHouse otherwise parses as nested
+                // struct access (`n2.id`.`orig_h`) and fails to resolve. Routes
+                // through the dialect-aware `quote_identifier` like the sibling
+                // property projections below (#825).
+                let from_q = crate::clickhouse_query_generator::quote_identifier(from_fk);
+                let to_q = crate::clickhouse_query_generator::quote_identifier(to_fk);
+                items.push(format!("{}({}.{}) AS r_from_id", to_str, rel_alias, from_q));
+                items.push(format!("{}({}.{}) AS r_to_id", to_str, rel_alias, to_q));
             } else {
                 // `hop_rel_fk_info` is empty for composite-FK relationships
                 // (populated only for single-column FKs). In a *multi-type*
