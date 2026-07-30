@@ -223,11 +223,16 @@ denormalized `rel_alias_mapping`) is logic with **no equivalent inside A at all*
   registry into `query_context` at CTE-build time — a real design change, not a
   redirect.
 - **Historical drift (reconcilable, but each is a byte-level golden change):**
-  - **Identifier quoting divergence.** C uses `quote_identifier` → **backticks**
-    (`` t.`id.orig_h` ``); A uses `FunctionMapper::quote_alias` → CH
-    **double-quotes** (`t."id.orig_h"`). The premise "C is the only path that
-    quotes" was wrong — *both* quote, with different characters. Reconciling
-    changes special-char-column goldens.
+  - **Identifier quoting divergence — RESOLVED 2026-07-30.** C used
+    `quote_identifier` → **backticks** (`` t.`id.orig_h` ``); A uses
+    `FunctionMapper::quote_alias` → CH **double-quotes** (`t."id.orig_h"`). The
+    premise "C is the only path that quotes" was wrong — *both* quoted, with
+    different characters, so on CH a single query emitted both spellings for the
+    same column. Fixed by making `quote_identifier` dialect-aware (route
+    special-char names through `quote_alias`; plain names stay bare);
+    `json_builder.rs::quote_column_name` (a parallel column-ref quoter) delegates
+    to it. `quote_json_key` stays backticked (load-bearing JSON key). Churn: 2 CH
+    goldens, 0 Databricks. This was the one *empirically-reachable* C drift item.
   - **Hardcoded CH arms in C** (Path A routes all of these): `POWER` (A→dialect),
     `arrayFold` for ReduceExpr (A→`reduce_fold_sql`→Spark `aggregate`), map-literal
     `{…}` (A→`map(...)`), simple `CASE` (A→`simple_case_sql`), raw aggregate names,
