@@ -12453,6 +12453,77 @@ mod label_id_resolution_family_536_537_539_540_541_526_527 {
         );
     }
 
+    /// #827 both-endpoints-untyped over-fan: when BOTH endpoints of a
+    /// polymorphic edge are unlabeled (`MATCH (a)-[:HAS_ACCESS]->(b)`), the
+    /// deferred-UNION traversal path expands each `$any` endpoint to every node
+    /// label and takes the full cartesian product — 16 (from×to) arms on
+    /// data_security, only 4 of them legal. HAS_ACCESS declares
+    /// `from_label_values: [User, Group]` and `to_label_values: [Folder, File]`,
+    /// so the legal set is exactly those 4 combinations; the other 12 (e.g.
+    /// `File→User`, `Group→Group`) are illegal. The fix routes the
+    /// both-untyped arm generator (`match_clause/traversal.rs`'s
+    /// `expand_node_type` cartesian) through `expand_node_type_constrained`,
+    /// the same helper that fixed the single-untyped shape (#831). The
+    /// `type_inference.rs` combination generator (`~2179`) also expands `$any`
+    /// unconstrained, but was verified inert for this shape (patching it
+    /// changed no output — traversal.rs is the sole arm source here) and left
+    /// as-is. This is the companion site the #831 review surfaced;
+    /// open-polymorphic edges (no `label_values`, e.g. LIKES) are unaffected
+    /// and still fan to every label.
+    #[tokio::test]
+    async fn both_untyped_polymorphic_endpoints_honor_label_values_827() {
+        let schema = load_schema("examples/data_security/data_security.yaml");
+        let sql = render(
+            &schema,
+            "MATCH (a)-[:HAS_ACCESS]->(b) RETURN a.name, b.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        // Exactly the 4 legal (from,to) combinations, each with the correct
+        // discriminator pair — no illegal arm.
+        for (from, to) in [
+            ("User", "Folder"),
+            ("User", "File"),
+            ("Group", "Folder"),
+            ("Group", "File"),
+        ] {
+            let disc = format!(
+                "subject_type = '{from}' AND data_security.ds_permissions.object_type = '{to}'"
+            );
+            assert!(
+                sql.contains(&disc),
+                "#827: expected the legal {from}->{to} arm (discriminator \
+                 `{disc}`):\n{sql}"
+            );
+        }
+
+        // None of the illegal combinations may appear. Spot-check the ones that
+        // are structurally nonsensical for HAS_ACCESS (subject can't be a
+        // Folder/File; object can't be a User/Group).
+        for illegal in [
+            "subject_type = 'Folder'",
+            "subject_type = 'File'",
+            "object_type = 'User'",
+            "object_type = 'Group'",
+        ] {
+            assert!(
+                !sql.contains(illegal),
+                "#827: illegal arm leaked (`{illegal}`) — `$any` endpoint \
+                 ignored its label_values allow-list:\n{sql}"
+            );
+        }
+
+        // 4 arms = exactly 3 UNION ALL separators (the full 4x4 cartesian would
+        // be 16 arms / 15 separators).
+        assert_eq!(
+            sql.matches("UNION ALL").count(),
+            3,
+            "#827: expected 4 legal arms (3 UNION ALL), not the 16-arm \
+             cartesian:\n{sql}"
+        );
+    }
+
     /// #537: `id(a2)`/GROUP BY over a composite-id VLP endpoint (Account
     /// keyed by `(bank_id, account_number)`) used to resolve to only the
     /// FIRST composite-id column (`find_id_column_for_alias`'s GraphNode
