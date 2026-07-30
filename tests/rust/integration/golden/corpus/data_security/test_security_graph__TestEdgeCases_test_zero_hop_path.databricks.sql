@@ -20,10 +20,10 @@ WITH RECURSIVE vlp_u_target AS (
         end_node.name as end_name
     FROM vlp_u_target vp
     JOIN data_security.ds_memberships AS rel ON vp.end_id = rel.member_id
-    JOIN data_security.ds_users AS end_node ON rel.group_id = end_node.group_id
+    JOIN data_security.ds_groups AS end_node ON rel.group_id = end_node.group_id
     WHERE vp.hop_count < 1
       AND NOT array_contains(vp.path_nodes, end_node.group_id)
-      AND rel.member_type = 'User'
+      AND rel.member_type = 'Group'
 )
 SELECT 
       t.end_description AS `target.description`, 

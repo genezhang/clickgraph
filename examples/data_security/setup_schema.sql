@@ -89,11 +89,22 @@ FROM numbers(1, 200);
 
 -- Additional memberships (some users in multiple groups)
 INSERT INTO data_security.ds_memberships
-SELECT 
+SELECT
     number AS member_id,
     ((number - 1) % 25) + 26 AS group_id,  -- Second group for half the users
     'User' AS member_type
 FROM numbers(1, 100);
+
+-- Nested-group memberships (Group -> Group), member_type = 'Group'.
+-- MEMBER_OF is from-side polymorphic: a Group can be a member of another Group,
+-- so MEMBER_OF*1..N must transitively traverse these Group->Group hops.
+-- Deterministic chain for the transitive-membership oracle (#689):
+--   group 5  -MEMBER_OF-> group 10
+--   group 10 -MEMBER_OF-> group 15
+-- => any User in group 5 transitively reaches groups 10 and 15.
+INSERT INTO data_security.ds_memberships (member_id, group_id, member_type) VALUES
+    (5, 10, 'Group'),
+    (10, 15, 'Group');
 
 -- Insert Root Folders (10 root folders, parent_id = 0, is_root = 1)
 -- Insert Root Folders (10 root folders, parent_id = 0)
