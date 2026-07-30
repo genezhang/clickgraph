@@ -15,7 +15,6 @@
 //! No `SETTINGS mutations_sync = …` is emitted — Decision 0.7 explicitly
 //! ruled out the mutation path.
 
-use crate::render_plan::plan_builder_helpers::render_expr_to_sql_string;
 use crate::render_plan::write_render::{DeleteOp, InsertOp, RowSource, UpdateOp, WriteRenderPlan};
 use crate::render_plan::RenderPlan;
 
@@ -171,11 +170,19 @@ fn render_expr_inline(expr: &crate::render_plan::render_expr::RenderExpr) -> Str
         RenderExpr::Column(c) => c.raw().to_string(),
         RenderExpr::TableAlias(a) => a.0.clone(),
         RenderExpr::ColumnAlias(a) => a.0.clone(),
-        // Fall back to the shared read-side renderer for anything we don't
-        // handle explicitly. Conservative: write payloads should be simple
-        // expressions (the cases above), but if we encounter something
-        // unexpected, produce sensible SQL rather than a placeholder.
-        _ => render_expr_to_sql_string(expr, &[]),
+        // Fall back to the canonical renderer (Path A, `RenderExpr::to_sql`)
+        // for anything we don't handle explicitly — arithmetic / property-ref
+        // SET RHS (`SET a.age = a.age + 1`, `SET a.x = a.y`), nested exprs, etc.
+        // Path A is the superset renderer and runs under the executor's
+        // task-local schema context (connection.rs installs it around
+        // `write_render_to_sql`), so it correctly resolves the generic `.id`
+        // pseudo-property to the schema's node_id column even when that column
+        // is renamed (e.g. `user_id`) — the previous fallback (the now-deleted
+        // `render_expr_to_sql_string`) emitted a literal `a.id` that referenced
+        // a non-existent column (part of #411). For all other reachable write
+        // payloads Path A is byte-identical to the old fallback (proven across
+        // arithmetic / property-ref / scalar-fn / nested shapes).
+        _ => expr.to_sql(),
     }
 }
 
