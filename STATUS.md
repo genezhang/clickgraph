@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: July 20, 2026*
+*Updated: July 30, 2026*
 
 ## Current Version: v0.6.7-dev
 
@@ -22,21 +22,31 @@ Supports server mode, embedded (in-process chdb), remote ClickHouse, and SQL-onl
 
 ### Active workstreams (see `docs/design/PRIORITIES.md` — canonical dispatch queue)
 
-- **Refactoring-safety plan** (`docs/design/REFACTORING_SAFETY_PLAN.md`): Phase 0
-  regression net **complete** (per-variation goldens + corpus sweep + ratchet +
-  CI smoke/nightly). Phase 1 in progress — P1.2 five-WITH-function unification on
-  an exhaustive `LogicalPlan::walk()` **merged** (#650); `transform_up` + several
-  passes migrated. Phase 2 module split of `plan_builder_utils.rs` (still ~17.7K
-  lines) is the **next refactor slice** (P-3). Phase 4 forward-resolution rewrite
-  (§7.2) is unblocked.
+- **Refactoring-safety plan** (`docs/design/REFACTORING_SAFETY_PLAN.md`):
+  **mission complete (2026-07-28)**. Phase 0 regression net (per-variation goldens
+  + corpus sweep + ratchet + CI smoke/nightly), Phases 1–2, and §7.1 (`build_chained`
+  5478→850, the accepted irreducible frame) plus every shippable §7.2 forward-
+  resolution slice are done. The §7.2 remainder (F2b-fold / F2c / F5) is
+  design-cycle/blocked and bug-driven only — not a standing lane.
+- **SQL-IR dialect-neutral rendering** (`docs/design/SQL_IR_DESIGN.md`):
+  shippable/mechanical work **complete (2026-07-30)**. Phase 1 leaf migrations
+  (simple-CASE #811, STARTS/ENDS WITH #813, RegexMatch→rlike #815) exhausted;
+  Phase 2 path-collapse retired Path B (#822), unified the dual `Operator` enums
+  (#818), deleted dead Path D (#820), and reconciled the one reachable Path C
+  quoting drift (#824, dotted-FK follow-up #826). Remaining: full Path C→A collapse
+  is a **design cycle** (CTE-build-stage timing), and Phases 3–4 stay deferred
+  behind it — its residual drift items are verified zero-corpus-leak, so nothing
+  is bleeding.
 - **Stats-informed SQL generation** (`docs/design/STATS_PLANNING.md`): Stage 1
   **merged** (#651) — flag-gated (`CLICKGRAPH_STATS_ENABLED`, default off) table
   row-count cache feeding `select_anchor()` tie-breaks; ordering-only, never
   semantics. S2 (column selectivity) / S3 (feedback loop) open.
 - **Correctness bug lane**: silent-wrong / loud-error VLP + OPTIONAL-MATCH +
-  FK-edge shapes fixed continuously (recent: #647 end-anchored OPTIONAL VLP,
-  verified vs live Neo4j). Open follow-ups tracked as GitHub issues (#648/#649
-  and the #6xx VLP/composite residue).
+  FK-edge + polymorphic shapes fixed continuously (recent: #689 bug 1
+  from-side-polymorphic VLP recursive arm, #828). The clean-pick pool is
+  near-exhausted; remaining open issues are design-cycle-sized (#827 polymorphic-
+  target UNION fan-out, #604/#627/#643/#673 composite/chained residue) or in the
+  systemic reverse-mapping class (documented + loud-gated, not per-shape patched).
 - **DeltaGraph (Databricks/Spark dialect)**: beta; SQL-IR dialect routing via
   `FunctionMapper`. Live-workspace validation pending (`docs/deltagraph/GA_READINESS.md`).
 
