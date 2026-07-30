@@ -406,6 +406,32 @@ fn string_literals_with_quotes_are_escaped() {
     assert!(stmt.contains("'O''Brien'"), "got: {}", stmt);
 }
 
+/// A string literal with an embedded single quote NESTED inside an operator
+/// (concat) in a SET RHS reaches the canonical renderer (Path A) via operand
+/// recursion — `render_expr_inline` only handles TOP-LEVEL literals directly.
+/// Path A's `Literal::String` arm must escape the quote (`''`), else it emits
+/// broken/injectable SQL. Regression for the review finding on PR #822 (the
+/// escaping was a pre-existing latent bug in Path A, surfaced by routing write
+/// payloads through it).
+#[test]
+fn nested_string_literal_in_set_rhs_concat_is_escaped() {
+    let sql = cypher_to_write_sql(
+        "MATCH (a:Person) WHERE a.id = 'u1' SET a.name = a.name + \" O'Brien\"",
+    );
+    assert_eq!(sql.len(), 1);
+    let stmt = &sql[0];
+    assert!(
+        stmt.contains("'' O''Brien'") || stmt.contains("' O''Brien'"),
+        "embedded quote must be escaped in nested concat, got: {}",
+        stmt
+    );
+    assert!(
+        !stmt.contains("' O'Brien'"),
+        "must not emit an unescaped embedded quote, got: {}",
+        stmt
+    );
+}
+
 // ---------- Review-driven regression coverage (PR #278) ----------
 
 /// Repeat assignments to the same column collapse to last-wins per Cypher

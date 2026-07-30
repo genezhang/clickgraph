@@ -6470,7 +6470,7 @@ impl RenderExpr {
                         "false".into()
                     }
                 }
-                Literal::String(s) => format!("'{}'", s),
+                Literal::String(s) => format!("'{}'", s.replace('\'', "''")),
                 Literal::Null => "NULL".into(),
             },
             RenderExpr::Parameter(name) => format!("${}", name),
