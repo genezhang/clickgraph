@@ -22,10 +22,10 @@ WITH RECURSIVE vlp_u_g AS (
         end_node.name as end_name
     FROM vlp_u_g vp
     JOIN data_security.ds_memberships AS rel ON vp.end_id = rel.member_id
-    JOIN data_security.ds_users AS end_node ON rel.group_id = end_node.group_id
+    JOIN data_security.ds_groups AS end_node ON rel.group_id = end_node.group_id
     WHERE vp.hop_count < 3
       AND NOT has(vp.path_edges, tuple(rel.member_id, rel.group_id))
-      AND rel.member_type = 'User'
+      AND rel.member_type = 'Group'
 )
 SELECT 
       t.end_name AS "g.name"

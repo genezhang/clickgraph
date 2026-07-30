@@ -175,25 +175,34 @@ class TestSimpleRelationships:
 class TestVariableLengthPaths:
     """Variable-length path queries."""
     
-    @pytest.mark.xfail(
-        reason="VLP with polymorphic edges: recursive CTE uses base case filter (member_type='User') "
-               "for all hops, but Group->Group traversal needs member_type='Group'"
-    )
     def test_user_transitive_group_membership(self):
-        """Find all groups a user belongs to (direct + transitive)."""
+        """Find all groups a user belongs to (direct + transitive).
+
+        #689: MEMBER_OF is from-side polymorphic (member_type ∈ {User, Group}),
+        so a Group can be a member of another Group and MEMBER_OF*1..N must
+        traverse Group→Group hops. Fixture (setup_schema.sql) wires:
+          User_5 ∈ group 5,  group 5 → group 10,  group 10 → group 15.
+        So User_5 transitively reaches groups 5, 10, 15 (plus its second direct
+        group 30 from the modulo-25 rule). The pre-#689 recursive CTE joined
+        ds_users on rel.group_id (500) and filtered member_type='User' on every
+        hop (would miss the Group→Group hops even without the 500).
+        """
         response = execute_cypher(
             """
             MATCH (u:User)-[:MEMBER_OF*1..5]->(g:Group)
-            WHERE u.name = 'Alice'
+            WHERE u.name = 'User_5'
             RETURN DISTINCT g.name AS group_name
             ORDER BY g.name
             """
         )
         assert response.status_code == 200
         data = response.json()
-        # Alice -> Backend-Team (direct)
-        # VLP may not traverse polymorphic Group->Group hops correctly
-        assert len(data["results"]) >= 1
+        group_names = {row["group_name"] for row in data["results"]}
+        # Direct: group 5 (and group 30 via the second-membership rule).
+        # Transitive Group→Group: group 5 → 10 → 15.
+        assert "Group_5" in group_names, group_names
+        assert "Group_10" in group_names, group_names  # 1 hop of Group→Group
+        assert "Group_15" in group_names, group_names  # 2 hops of Group→Group
     
     def test_folder_recursive_contents(self):
         """Find all files/folders under a folder recursively."""
@@ -232,7 +241,7 @@ class TestVariableLengthPaths:
 class TestSecurityQueries:
     """Complex security analysis queries."""
     
-    @pytest.mark.xfail(reason="#689: #659 fixed the end_group_id dangle, but this VLP-then-fixed-hop-to-polymorphic-target shape still generates a malformed recursive CTE (2nd arm joins ds_users on rel.group_id) + triplicated UNION arms — 500 live")
+    @pytest.mark.xfail(reason="#689 bug 1 (recursive CTE 2nd arm joined ds_users on rel.group_id → 500) is FIXED; this query also exercises bug 2 (fixed hop to polymorphic `target` fans out into triplicated identical UNION arms), tracked separately — leave xfail until bug 2 lands")
     def test_external_users_with_access(self):
         """Find external users with any access permissions."""
         response = execute_cypher(

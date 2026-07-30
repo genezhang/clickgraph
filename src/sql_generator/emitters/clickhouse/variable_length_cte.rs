@@ -602,6 +602,39 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// For multiple relationship types (e.g., [:FOLLOWS|LIKES]):
     /// - `rel.interaction_type IN ('FOLLOWS', 'LIKES')`
     fn generate_polymorphic_edge_filter(&self) -> Option<String> {
+        // Base arm: the from-side label discriminator uses the START label
+        // (`from_node_label`), because the first hop leaves the query's start node.
+        self.generate_polymorphic_edge_filter_with_from_label(None)
+    }
+
+    /// #689: polymorphic edge filter for the RECURSIVE arm of a
+    /// from-side-polymorphic cross-type VLP (see
+    /// `is_from_side_polymorphic_cross_type`). Identical to the base filter
+    /// EXCEPT the from-side label discriminator uses the END label
+    /// (`to_node_label`, e.g. `'Group'`) instead of the base arm's START label
+    /// (`from_node_label`, `'User'`): the recursive hops are Group→Group, so the
+    /// edge's *source* is now a Group. The base arm keeps the start label.
+    ///
+    /// Falls back to the base filter (identical output) when `to_node_label` is
+    /// absent/empty, so it is never worse than the pre-#689 behavior.
+    fn generate_polymorphic_edge_filter_from_recursive(&self) -> Option<String> {
+        match self.to_node_label {
+            Some(ref l) if !l.is_empty() && self.is_from_side_polymorphic_cross_type() => {
+                self.generate_polymorphic_edge_filter_with_from_label(Some(l.as_str()))
+            }
+            _ => self.generate_polymorphic_edge_filter(),
+        }
+    }
+
+    /// Shared implementation of the VLP polymorphic edge filter. `from_label_override`
+    /// replaces the from-side discriminator value (`from_node_label`) — `None` keeps
+    /// the start label (base arm), `Some("Group")` is the recursing/end label used by
+    /// the from-side-polymorphic recursive arm (#689). All schema-axis reads live in
+    /// this single helper so both arms branch identically.
+    fn generate_polymorphic_edge_filter_with_from_label(
+        &self,
+        from_label_override: Option<&str>,
+    ) -> Option<String> {
         let mut filter_parts = Vec::new();
 
         // Add type filter if type_column is defined
@@ -628,9 +661,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
             }
         }
 
-        // Add from_label filter if from_label_column is defined
+        // Add from-side label filter if that discriminator column is defined.
+        // The value is the override (recursing/end label) when provided, else
+        // the base start label.
         if let Some(ref from_label_col) = self.from_label_column {
-            if let Some(ref from_label) = self.from_node_label {
+            let from_label = from_label_override.or(self.from_node_label.as_deref());
+            if let Some(from_label) = from_label {
                 filter_parts.push(format!(
                     "{}.{} = '{}'",
                     self.relationship_alias, from_label_col, from_label
@@ -860,6 +896,30 @@ impl<'a> VariableLengthCteGenerator<'a> {
         self.to_label_column.is_some()
             && self.start_node_table != self.end_node_table
             && self.intermediate_node_table.is_some()
+    }
+
+    /// #689: is this a directed cross-type VLP over a *from-side-polymorphic*
+    /// edge — i.e. the edge discriminates its SOURCE node via a from-side label
+    /// column (e.g. `ds_memberships.member_type ∈ {User, Group}`) and has no
+    /// target-side label column (the target node label is fixed, e.g.
+    /// `MEMBER_OF → Group`)?
+    ///
+    /// For such an edge a `(:User)-[:MEMBER_OF*1..N]->(:Group)` traversal
+    /// legitimately recurses **Group→Group** (a group can be a member of a
+    /// group). The recursive arm must therefore (a) re-join the END-node table
+    /// (`ds_groups`), exactly like the base arm, NOT the START table — see the
+    /// `recursive_end_table` heuristic below; and (b) discriminate the edge's
+    /// *from* side with the END label (`member_type = 'Group'`), not the base
+    /// arm's start label (`'User'`). Both recursive-arm fixes gate on this
+    /// predicate so they agree by construction.
+    ///
+    /// Deliberately narrow (from-side label present, target-side absent,
+    /// cross-table) so it cannot touch a plain cross-type recursive VLP or the
+    /// multi-type / heterogeneous generators.
+    fn is_from_side_polymorphic_cross_type(&self) -> bool {
+        self.start_node_table != self.end_node_table
+            && self.from_label_column.is_some()
+            && self.to_label_column.is_none()
     }
 
     /// Generate polymorphic edge filter for INTERMEDIATE hops (Group→Group)
@@ -2852,8 +2912,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_pred];
 
-        // Add polymorphic edge filter if this is a polymorphic edge table
-        if let Some(poly_filter) = self.generate_polymorphic_edge_filter() {
+        // Add polymorphic edge filter if this is a polymorphic edge table.
+        // #689: the recursive arm uses the *from-recursive* variant, which flips
+        // the from-label discriminator to the END label for from-side-polymorphic
+        // cross-type edges (Group→Group hops); it is byte-identical to the base
+        // filter for every other shape.
+        if let Some(poly_filter) = self.generate_polymorphic_edge_filter_from_recursive() {
             where_conditions.push(poly_filter);
         }
 
@@ -2947,7 +3011,17 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Cross-type VLP (e.g., Message→Post via REPLY_OF): the recursive step must
         // traverse through the START type (Message) to allow intermediate hops through
         // Comments. The Post constraint is enforced by the outer query's JOIN.
-        let recursive_end_table = if self.start_node_table != self.end_node_table {
+        //
+        // #689 EXCEPTION: a from-side-polymorphic cross-type edge (e.g. MEMBER_OF,
+        // `member_type ∈ {User, Group}`, target fixed = Group) recurses through the
+        // END type (Group→Group), NOT the start type. The `start_node_table` swap
+        // would join `ds_users` (which lacks the `group_id` column that `join_on_end`
+        // equates) → ClickHouse 500. For that shape use the END table, matching the
+        // base arm. Gate is narrow (see `is_from_side_polymorphic_cross_type`) so the
+        // #142 REPLY_OF branch is untouched.
+        let recursive_end_table = if self.start_node_table != self.end_node_table
+            && !self.is_from_side_polymorphic_cross_type()
+        {
             log::info!(
                 "VLP cross-type recursion: using {} instead of {} for intermediate hops",
                 self.start_node_table,
@@ -4444,6 +4518,85 @@ mod tests {
         assert!(
             sql.contains("interaction_type IN ('FOLLOWS', 'LIKES')"),
             "Expected polymorphic IN filter in base case. SQL: {}",
+            sql
+        );
+    }
+
+    /// #689: a directed cross-type VLP over a from-side-polymorphic edge
+    /// (`member_type ∈ {User, Group}`, target fixed = Group) must recurse
+    /// Group→Group: the recursive arm joins the END table (`ds_groups`) with the
+    /// END discriminator (`member_type = 'Group'`), NOT the START table
+    /// (`ds_users`) with the base discriminator (`member_type = 'User'`). The old
+    /// `recursive_end_table` heuristic joined `ds_users AS end_node` on
+    /// `rel.group_id = end_node.group_id` (a column ds_users lacks → CH 500), and
+    /// reused the base `member_type = 'User'` filter (silent undercount).
+    #[test]
+    fn test_from_side_polymorphic_vlp_recursive_arm_689() {
+        let schema = create_test_schema();
+        let spec = VariableLengthSpec::range(1, 5);
+        let generator = VariableLengthCteGenerator::new_with_polymorphic(
+            &schema,
+            spec,
+            "ds_users",                          // start table
+            "user_id",                           // start id column
+            "ds_memberships",                    // relationship table (from-side polymorphic)
+            "member_id",                         // from column
+            "group_id",                          // to column
+            "ds_groups",                         // end table (DIFFERENT from start)
+            "group_id",                          // end id column
+            "u",                                 // start alias
+            "g",                                 // end alias
+            "r",                                 // relationship_cypher_alias
+            vec![],                              // no properties
+            None,                                // no shortest path mode
+            None,                                // no start node filters
+            None,                                // no end node filters
+            None,                                // no relationship filters
+            None,                                // no path variable
+            Some(vec!["MEMBER_OF".to_string()]), // relationship type
+            None,                                // no edge_id
+            None,                                // no rel-type discriminator col
+            Some("member_type".to_string()),     // from-side label col (polymorphic source)
+            None,                                // NO to-side label col (target fixed = Group)
+            Some("User".to_string()),            // from_node_label (query start)
+            Some("Group".to_string()),           // to_node_label (recursing/target type)
+        );
+
+        let sql = generator.generate_recursive_sql();
+        println!("From-side-polymorphic VLP SQL:\n{}", sql);
+
+        // Split base arm from recursive arm at the UNION ALL barrier so we can
+        // assert per-arm.
+        let (base_arm, recursive_arm) = sql
+            .split_once("UNION ALL")
+            .expect("recursive VLP must have a UNION ALL");
+
+        // Defect 1: recursive arm joins the END table (ds_groups), never ds_users.
+        assert!(
+            recursive_arm.contains("ds_groups AS end_node"),
+            "recursive arm must join ds_groups (end table). SQL:\n{}",
+            sql
+        );
+        assert!(
+            !recursive_arm.contains("ds_users AS end_node"),
+            "recursive arm must NOT join ds_users as end_node (the #689 500). SQL:\n{}",
+            sql
+        );
+
+        // Defect 2: recursive arm discriminates on the END label; base on START.
+        assert!(
+            base_arm.contains("member_type = 'User'"),
+            "base arm must keep member_type = 'User' (first hop User→Group). SQL:\n{}",
+            sql
+        );
+        assert!(
+            recursive_arm.contains("member_type = 'Group'"),
+            "recursive arm must use member_type = 'Group' (Group→Group hops). SQL:\n{}",
+            sql
+        );
+        assert!(
+            !recursive_arm.contains("member_type = 'User'"),
+            "recursive arm must NOT keep the base member_type = 'User' filter. SQL:\n{}",
             sql
         );
     }
