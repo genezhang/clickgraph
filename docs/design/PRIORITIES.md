@@ -354,7 +354,19 @@ fixed stats fixture.
   DESIGN CYCLE (stage/timing constraint), NOT a mechanical step — its drift items
   (backtick-vs-doublequote quoting, latent-unreached hardcoded `POWER`/`arrayFold`/
   map/CASE arms — verified 0 Databricks golden leak) can be reconciled as small
-  independent correctness slices without full collapse.
+  independent correctness slices without full collapse. **First such slice DONE
+  (2026-07-30): `quote_identifier` routed through the dialect layer** — Path C's
+  `common.rs::quote_identifier` hard-coded backticks for BOTH dialects, so on CH a
+  single query emitted both `` t2.`id.orig_h` `` (CTE body, Path C) and
+  `t1."id.orig_h"` (SELECT, Path A) for the same physical column. Now special-char
+  identifiers route through `FunctionMapper::quote_alias` (CH `"x"` / Spark
+  `` `x` ``); `json_builder.rs::quote_column_name` delegates too (`quote_json_key`
+  untouched — its backticks are a load-bearing JSON key). The one empirically-
+  reachable Path C drift item (23 backtick special-cols in committed CH goldens);
+  churn 2 CH goldens, 0 DBX. The hardcoded-arm + InSubquery-placeholder items stay
+  latent (verified 0 corpus leak / join-planner-consumed before C renders).
+  **Follow-up filed as a note:** `multi_type_vlp_joins.rs` emits
+  `toString(n2.id.orig_h)` — an UNquoted dotted column (CH parse error), pre-existing.
   Phase 3 (structural idioms) / 4 (Raw shrink) stay deferred behind Phase 2.
 - Phase 3 §6.2/§6.3: **COMPLETE** (slices 3/4/2 resolved 2026-07-28,
   #793/#795/#796; `pattern_schema.rs` dead_code audit done #799). No Phase-3
@@ -374,6 +386,33 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-30: **SQL-IR Phase 2 step-4 slice — `quote_identifier` routed through
+  the dialect layer** (branch `refactor/sql-ir-path-c-quote-identifier-dialect`).
+  First of the independent Path-C drift slices the §3.5 investigation flagged as
+  shippable without the full (design-cycle) C→A collapse. Path C
+  (`cte_extraction.rs`, CTE-build stage) quoted special-char identifiers via
+  `common.rs::quote_identifier`, which hard-coded backticks for BOTH dialects;
+  Path A (final SELECT) uses `FunctionMapper::quote_alias` (CH `"x"`, Spark
+  `` `x` ``). On ClickHouse a single query therefore emitted BOTH `` t2.`id.orig_h` ``
+  (CTE body) and `t1."id.orig_h"` (SELECT) for the same column — valid CH, no
+  runtime bug, but exactly the dialect-routing drift the SQL-IR track targets (and
+  wrong SQL for a future Postgres/DuckDB dialect). Made `quote_identifier`
+  dialect-aware (route special-char names through `quote_alias`, plain names stay
+  bare); `json_builder.rs::quote_column_name` (parallel column-*ref* quoter)
+  delegates to it. `quote_json_key` untouched — its backticks are a load-bearing
+  JSON key (verified live on Databricks). The one empirically-reachable C drift
+  item (23 backtick special-cols in committed CH goldens); the hardcoded-arm
+  (`POWER`/`arrayFold`/CASE) + InSubquery-placeholder items stay latent (0 corpus
+  leak / join-planner-consumed before C renders). Churn: 2 CH goldens
+  (col-ref backtick→double-quote), 0 Databricks. Updated the
+  `pattern_union_quotes_dotted_physical_columns` regression guard +
+  `quote_identifier`/`qualified_column` doctests to the CH-default double-quote
+  spelling (invariant — dotted cols quoted, plain cols bare — unchanged). Gate:
+  fmt · clippy clean · 1601 lib · 531 integration (0 unexpected churn) · ratchet
+  net-zero · doctests. **Pre-existing follow-up surfaced:** `multi_type_vlp_joins.rs`
+  emits `toString(n2.id.orig_h)` — an UNquoted dotted column (CH parse error),
+  present on main, untouched here.
 
 - 2026-07-29: **SQL-IR Phase 2 step 1 — retire Path B; route write payloads
   through canonical Path A** (#822, `683fb10c`). Completes the shippable Phase-2
