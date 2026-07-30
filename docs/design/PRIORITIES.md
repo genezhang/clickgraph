@@ -75,8 +75,17 @@ The nightly was red from ~2026-07-13. Successive triage narrowed it to zero:
   pytest all pass. The scheduled weekday run now validates continuously.
 Exit met: one fully green nightly run + xpass count 0.
 - Follow-ups still open (net hygiene, not blocking): prune stale
-  `worktree-agent-*` branches; refresh STATUS.md (last updated 2026-05-06); **#689**
-  (live VLP-then-fixed-hop-polymorphic 500).
+  `worktree-agent-*` branches; refresh STATUS.md (last updated 2026-05-06).
+  ~~**#689** (live VLP-then-fixed-hop-polymorphic 500)~~ **bug 1 DONE 2026-07-30
+  (#828, `c013c07a`)** — from-side-polymorphic VLP recursive arm joined the START
+  table (`ds_users`) + base discriminator (`member_type='User'`); now joins the
+  END table (`ds_groups`) + END label (`'Group'`), gated on the narrow
+  `is_from_side_polymorphic_cross_type` (from-side label present, to-side absent,
+  cross-table) so #142/complex-12/multi-type are untouched; 14 data_security
+  goldens (2-line delta each) + live oracle (Group→Group fixture). Bug 2 (fixed
+  hop to polymorphic target → triplicated identical UNION arms) split to **#827**
+  (design-cycle: type-inference candidate over-fan-out + render table→label
+  reverse-lookup collapse).
 
 ### P-1 — Keep a small silent-wrong bug lane open  (standing, ≤1 agent)
 **Lane state (2026-07-28): pool near-exhausted; #716 was the last clean pick.** Since
@@ -386,6 +395,31 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-30: **#689 bug 1 — heterogeneous from-side-polymorphic VLP recursive
+  CTE joins the right end table** (#828, `c013c07a`). A directed VLP over a
+  from-side-polymorphic edge (MEMBER_OF: `member_type ∈ {User, Group}`, target
+  fixed = Group) emitted a malformed `WITH RECURSIVE`: the recursive arm joined
+  the START table (`ds_users`, no `group_id` → CH 500) via the #142
+  `recursive_end_table` heuristic, and reused the base `member_type='User'`
+  filter (Group→Group hops never traversed). Fix gates both on a new narrow
+  `is_from_side_polymorphic_cross_type` (cross-table + from-side label present +
+  to-side label absent) → recursive arm uses `end_node_table` (ds_groups) + END
+  label (`member_type='Group'`); base arm unchanged. Reviewer confirmed the gate
+  is STRUCTURALLY safe (fixed target ⇒ end-type intermediates ⇒ END→END
+  recursion, so no such shape ever needs start-table recursion) — #142 REPLY_OF
+  (no from_label_column), complex-12 (multi_type_vlp_joins.rs), and the
+  heterogeneous generator (`to_label_column.is_some()`) are all excluded by
+  construction. Consolidated base+recursive filters onto one
+  `generate_polymorphic_edge_filter_with_from_label(override)` (net −1
+  `from_label_column` read). Golden churn: 14 data_security files, each a 2-line
+  delta (`ds_users`→`ds_groups`; recursive `member_type` `'User'`→`'Group'`), 0
+  outside `corpus/data_security/`. Unit test fails-when-reverted (both edits);
+  live oracle via Group→Group fixture chain (User_5 → Group_5/10/15). Ratchet +1
+  `to_label_column` (justified narrow gate). Review APPROVE-0. **Bug 2 (fixed hop
+  to polymorphic target → triplicated identical UNION arms) split to #827** —
+  design-cycle (type-inference `$any` candidate over-fan-out ignoring
+  `to_label_values` + render table→label reverse-lookup picks alphabetically-first).
 
 - 2026-07-30: **SQL-IR Phase 2 step-4 slice — `quote_identifier` routed through
   the dialect layer** (branch `refactor/sql-ir-path-c-quote-identifier-dialect`).
