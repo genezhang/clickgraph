@@ -12524,6 +12524,61 @@ mod label_id_resolution_family_536_537_539_540_541_526_527 {
         );
     }
 
+    /// #827 defect (b) symptom 2: from-side per-arm discriminator + join key.
+    /// When an untyped endpoint fans into per-label UNION arms over a
+    /// from-side-polymorphic edge (`MATCH (m)-[:MEMBER_OF]->(g:Group)`, m ∈
+    /// {User, Group}), each arm's node join column and edge discriminator must
+    /// be derived from the arm's OWN label, not the first shared-`PlanCtx`
+    /// candidate. Pre-fix both arms inherited `member_type='Group'` +
+    /// `m.group_id` (the `ds_users` arm a latent Code-47: ds_users has no
+    /// group_id). The fix routes label resolution in `get_graph_context` and
+    /// `compute_pattern_context` through the per-arm `GraphNode.label`.
+    #[tokio::test]
+    async fn from_side_polymorphic_per_arm_discriminator_and_join_key_827() {
+        let schema = load_schema("examples/data_security/data_security.yaml");
+        let raw = render(
+            &schema,
+            "MATCH (m)-[:MEMBER_OF]->(g:Group) RETURN m.name, g.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        // Normalize the process-global `t{n}` rel-alias counter to a stable
+        // token so the assertions are order-independent in the full suite
+        // (see `normalize`; #798 — a raw `t1.` substring flakes with the
+        // counter). After normalize the rel alias is `t0`.
+        let sql = normalize(&raw);
+
+        // The ds_users arm must use the User node id + the 'User' discriminator.
+        assert!(
+            sql.contains("FROM data_security.ds_users AS m")
+                && sql.contains("t0.member_id = m.user_id AND t0.member_type = 'User'"),
+            "#827(b): the ds_users arm must join on m.user_id with \
+             member_type='User' (per-arm label), not the shared first \
+             candidate:\n{sql}"
+        );
+        // The ds_groups arm keeps the Group node id + 'Group' discriminator.
+        assert!(
+            sql.contains("FROM data_security.ds_groups AS m")
+                && sql.contains("t0.member_id = m.group_id AND t0.member_type = 'Group'"),
+            "#827(b): the ds_groups arm must join on m.group_id with \
+             member_type='Group':\n{sql}"
+        );
+        // The pre-fix bug emitted `member_type = 'Group'` on BOTH arms; with
+        // the per-arm fix exactly one arm carries each discriminator value.
+        assert_eq!(
+            sql.matches("member_type = 'Group'").count(),
+            1,
+            "#827(b): exactly one arm may carry the 'Group' discriminator \
+             (pre-fix both arms did):\n{sql}"
+        );
+        assert_eq!(
+            sql.matches("member_type = 'User'").count(),
+            1,
+            "#827(b): the ds_users arm's 'User' discriminator is missing \
+             (per-arm label lost):\n{sql}"
+        );
+    }
+
     /// #537: `id(a2)`/GROUP BY over a composite-id VLP endpoint (Account
     /// keyed by `(bank_id, account_number)`) used to resolve to only the
     /// FIRST composite-id column (`find_id_column_for_alias`'s GraphNode

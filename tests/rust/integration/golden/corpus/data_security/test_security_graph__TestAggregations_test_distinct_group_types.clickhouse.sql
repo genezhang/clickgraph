@@ -10,7 +10,7 @@ SELECT DISTINCT
       g.name AS "g.name", 
       g.name AS "__order_col_0"
 FROM data_security.ds_users AS m
-INNER JOIN data_security.ds_memberships AS t0 ON t0.member_id = m.group_id AND t0.member_type = 'Group'
+INNER JOIN data_security.ds_memberships AS t0 ON t0.member_id = m.user_id AND t0.member_type = 'User'
 INNER JOIN data_security.ds_groups AS g ON g.group_id = t0.group_id
 ) AS __union
 ORDER BY __union.`__order_col_0` ASC

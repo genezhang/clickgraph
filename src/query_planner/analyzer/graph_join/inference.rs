@@ -2452,9 +2452,17 @@ impl GraphJoinInference {
             .get_table_ctx_from_alias_opt(&Some(right_alias.clone()))
             .ok()?;
 
-        // Try to get labels from plan_ctx, but allow empty for anonymous nodes
-        let left_label_opt = left_ctx.get_label_str().ok();
-        let right_label_opt = right_ctx.get_label_str().ok();
+        // Prefer the per-arm label stamped on the endpoint's own `GraphNode`
+        // over the shared `PlanCtx` — a polymorphic endpoint keeps ALL candidate
+        // labels in `PlanCtx`, so `get_label_str().first()` returns the same
+        // label for every UNION arm, giving each arm the first candidate's node
+        // schema (hence join column) and discriminator (#827 defect b). The
+        // per-arm `GraphNode.label` is authoritative when present.
+        let left_label_opt = super::super::graph_context::endpoint_label_from_plan(&graph_rel.left)
+            .or_else(|| left_ctx.get_label_str().ok());
+        let right_label_opt =
+            super::super::graph_context::endpoint_label_from_plan(&graph_rel.right)
+                .or_else(|| right_ctx.get_label_str().ok());
 
         // 2. Get relationship type(s) from labels
         let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
