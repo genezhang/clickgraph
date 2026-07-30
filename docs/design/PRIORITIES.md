@@ -334,8 +334,15 @@ fixed stats fixture.
   (`cte_extraction`, ~8 CTE/filter callers) is the one live second path and its
   separateness is FUNDAMENTAL (runs at CTE-build stage before A's `query_context`
   task-locals exist; its `alias_mapping` p1→start_node rewrite has no equivalent
-  in A). Recommended shippable Phase-2 order: (1) retire B — NEXT (smaller
-  warm-up), **(2) unify the dual `Operator` enums — DONE #818 (`188e4507`)**,
+  in A). Recommended shippable Phase-2 order: (1) retire B — **DONE #822
+  (`683fb10c`)**, but NOT the "small warm-up" the plan assumed: B's sole caller
+  (write-payload rendering) is GENUINELY LIVE, and B-vs-A diverge on exactly one
+  arm — `SET x = a.id` on a RENAMED-node_id schema, where B emitted a broken
+  literal `a.id` and A resolves the real column under the executor's schema
+  context. So B→A was a latent-bug **fix** (#411 family). Review caught a real
+  pre-existing escaping bug in A's `Literal::String` arm (embedded quote nested
+  in a concat → unescaped SQL, affects read side too) — fixed at root in the
+  same PR, 0 golden churn. **(2) unify the dual `Operator` enums — DONE #818 (`188e4507`)**,
   **(3) collapse D→A — DONE #820 (`refactor/retire-path-d`) but as a DELETION,
   not a collapse: a reachability audit (2-agent corroborated) found Path D is
   ENTIRELY DEAD in production (two separate `ToSql` traits — prod uses Path A's
@@ -367,6 +374,36 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-07-29: **SQL-IR Phase 2 step 1 — retire Path B; route write payloads
+  through canonical Path A** (#822, `683fb10c`). Completes the shippable Phase-2
+  path-collapse (steps 1+2+3 done; only step-4 Path C, a separate design cycle,
+  remains). NOT the "small warm-up" the plan assumed — investigation (traced +
+  probed through the real write harness) overturned the static survey: Path B's
+  sole caller (`render_expr_inline`'s `_ =>` fallback for write payloads) is
+  GENUINELY LIVE (`SET a.age = a.age+1` → OperatorApplicationExp, `SET a.x = a.y`
+  → PropertyAccessExp, both fall through it), and B-vs-A are byte-identical for
+  every reachable write shape EXCEPT one: `SET x = a.id` on a RENAMED-node_id
+  schema (`user_id`, no literal `id` property) leaks an unresolved `id` column —
+  B emitted a broken literal `a.id` (non-existent column → runtime error); A,
+  under the executor's task-local schema context (connection.rs:1301), resolves
+  it to the real `user_id`. So B→A is strictly a latent-bug **fix** (open #411
+  family). Deleted Path B (−95 lines) + unused import; shared
+  `has_string_operand`/`flatten_addition_operands` kept (Path C uses them).
+  **Adversarial review caught 1 real defect** the "byte-identical" claim missed:
+  a single quote embedded in a string literal NESTED inside a concat reaches A's
+  `Literal::String` arm (`to_sql_query.rs:6473`) via operand recursion, which did
+  NO escaping → broken/injectable SQL. Root-caused DEEPER than the review scoped:
+  a PRE-EXISTING latent bug in the canonical renderer (verified via `cg sql` that
+  read-side `WHERE u.name = "O'Brien"` already emitted broken `'O'Brien'` on main).
+  Fixed at root (`s.replace('\'', "''")`), fixing both the write regression AND
+  the read-side injection bug; 0 golden churn (all `''` in corpus are empty
+  strings, not escaped quotes); re-review APPROVE-0 (empirically refuted
+  double-escape: `"a''b"` → `'a''''b'`, CREATE/params bypass the arm). Gate:
+  fmt/clippy · 1601 lib · 238 golden (0 churn) · ratchet net-zero · corpus.
+  **Phase-2 architectural payoff fully banked — all three drift sources (dual
+  Operator enum, dead Path D, near-dead Path B) gone.** Remaining: step 4
+  (Path C full-collapse, separate design cycle — CTE-build-stage timing).
 
 - 2026-07-29: **SQL-IR Phase 2 step 3 — retire dead Path D (`LogicalExpr::to_sql`)**
   (#820, `45651b9d`). The design doc framed this as "collapse D→A via
