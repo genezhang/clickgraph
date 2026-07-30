@@ -1767,6 +1767,32 @@ impl GraphSchema {
         }
     }
 
+    /// Like [`expand_node_type`](Self::expand_node_type), but constrains a `$any`
+    /// endpoint by an explicit allow-list when the relationship declares one.
+    ///
+    /// A polymorphic edge may omit `from_node`/`to_node` (defaulting to `$any`)
+    /// yet still carry `from_label_values`/`to_label_values` naming the concrete
+    /// endpoint labels it actually targets (e.g. `to_label_values: [Folder, File]`).
+    /// In that case `$any` means "any of *these* labels", not "any node label",
+    /// so expanding it to every node in the schema over-fans the candidate set
+    /// (see #827). When the allow-list is present and non-empty it wins; otherwise
+    /// this falls back to the unconstrained expansion (concrete type unchanged;
+    /// bare `$any` with no allow-list still expands to all labels).
+    pub fn expand_node_type_constrained(
+        &self,
+        node_type: &str,
+        label_values: Option<&Vec<String>>,
+    ) -> Vec<String> {
+        if node_type == "$any" {
+            if let Some(values) = label_values {
+                if !values.is_empty() {
+                    return values.clone();
+                }
+            }
+        }
+        self.expand_node_type(node_type)
+    }
+
     pub fn node_schema_opt(&self, node_label: &str) -> Option<&NodeSchema> {
         self.nodes.get(node_label)
     }
@@ -3452,5 +3478,56 @@ mod tests {
         let mut result = schema.expand_generic_relationship_type("IS_LOCATED_IN", None, None);
         result.sort();
         assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_expand_node_type_constrained_honors_label_values_827() {
+        // Schema with four node labels; a polymorphic edge whose `$any` endpoint
+        // legally targets only two of them (via `to_label_values`).
+        let mut nodes = HashMap::new();
+        for label in ["User", "Group", "Folder", "File"] {
+            nodes.insert(
+                label.to_string(),
+                NodeSchema::new_traditional(
+                    "db".to_string(),
+                    label.to_string(),
+                    vec![],
+                    "id".to_string(),
+                    NodeIdSchema {
+                        id: Identifier::from("id"),
+                        dtype: SchemaType::Integer,
+                    },
+                    HashMap::new(),
+                    None,
+                    None,
+                    None,
+                ),
+            );
+        }
+        let schema = GraphSchema::build(1, "db".to_string(), nodes, HashMap::new());
+
+        // Bare `$any` with no allow-list → every node label (unchanged legacy).
+        let mut all = schema.expand_node_type_constrained("$any", None);
+        all.sort();
+        assert_eq!(all, vec!["File", "Folder", "Group", "User"]);
+
+        // `$any` constrained by `to_label_values` → only the declared labels (#827).
+        let allow = vec!["Folder".to_string(), "File".to_string()];
+        let mut constrained = schema.expand_node_type_constrained("$any", Some(&allow));
+        constrained.sort();
+        assert_eq!(constrained, vec!["File", "Folder"]);
+
+        // An empty allow-list is ignored → falls back to full expansion (never
+        // collapses the candidate set to nothing).
+        let empty: Vec<String> = vec![];
+        let mut none_listed = schema.expand_node_type_constrained("$any", Some(&empty));
+        none_listed.sort();
+        assert_eq!(none_listed, vec!["File", "Folder", "Group", "User"]);
+
+        // A concrete (non-`$any`) type is returned as-is, allow-list irrelevant.
+        assert_eq!(
+            schema.expand_node_type_constrained("User", Some(&allow)),
+            vec!["User"]
+        );
     }
 }
