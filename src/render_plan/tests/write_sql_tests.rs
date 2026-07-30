@@ -256,6 +256,121 @@ fn set_multiple_properties_on_same_alias_collapse_into_one_update() {
     assert!(stmt.contains("`name` = 'Bob'"), "got: {}", stmt);
 }
 
+/// SET with a non-trivial RHS (arithmetic / property-ref / scalar-fn) exercises
+/// `render_expr_inline`'s canonical-renderer fallback (Path A). These shapes
+/// are the reachable write payloads that used to route through the deleted
+/// `render_expr_to_sql_string` (Path B); Path A is byte-identical for them.
+#[test]
+fn set_arithmetic_rhs_renders_expression() {
+    let sql = cypher_to_write_sql("MATCH (a:Person) WHERE a.id = 'u1' SET a.age = a.age + 1");
+    assert_eq!(sql.len(), 1);
+    let stmt = &sql[0];
+    assert!(stmt.contains("SET `age` = a.age + 1"), "got: {}", stmt);
+}
+
+#[test]
+fn set_property_ref_rhs_renders_column() {
+    let sql = cypher_to_write_sql("MATCH (a:Person) WHERE a.id = 'u1' SET a.name = a.age");
+    assert_eq!(sql.len(), 1);
+    let stmt = &sql[0];
+    assert!(stmt.contains("SET `name` = a.age"), "got: {}", stmt);
+}
+
+#[test]
+fn set_scalar_fn_rhs_renders_call() {
+    let sql =
+        cypher_to_write_sql("MATCH (a:Person) WHERE a.id = 'u1' SET a.name = toString(a.age)");
+    assert_eq!(sql.len(), 1);
+    let stmt = &sql[0];
+    assert!(
+        stmt.contains("SET `name` = toString(a.age)"),
+        "got: {}",
+        stmt
+    );
+}
+
+/// #411 fix: a generic `.id` reference in a SET RHS on a schema whose node_id
+/// column is RENAMED (here `user_id`, no property literally named `id`) leaks an
+/// unresolved `id` column into the write payload. The canonical renderer (Path A),
+/// under the executor's task-local schema context, resolves it to the real
+/// `user_id` column. The deleted Path B fallback emitted a literal `a.id`
+/// (a non-existent column → runtime error). Must run under an installed schema
+/// context — the executor (connection.rs) wraps `write_render_to_sql` in one.
+#[test]
+fn set_generic_id_rhs_resolves_to_renamed_node_id_under_context() {
+    use crate::render_plan::write_render::{UpdateOp, WriteRenderPlan};
+    use crate::server::query_context::{set_current_schema, with_query_context, QueryContext};
+    use std::sync::Arc;
+
+    // Person whose node_id is `user_id`, with NO "id" property mapping.
+    let mut ns = person_node();
+    ns.node_id = NodeIdSchema::single("user_id".to_string(), SchemaType::String);
+    ns.property_mappings.remove("id");
+    ns.column_names = vec!["user_id".into(), "name".into(), "age".into()];
+    let mut nodes = HashMap::new();
+    nodes.insert("Person".to_string(), ns);
+    let schema = Arc::new(GraphSchema::build(
+        1,
+        "test".to_string(),
+        nodes,
+        HashMap::new(),
+    ));
+
+    let ast = open_cypher_parser::parse_query(
+        "MATCH (a:Person) WHERE a.user_id = 'u1' SET a.name = a.id",
+    )
+    .expect("parse");
+    let (lp, mut ctx) = build_logical_plan(&ast, &schema, None, None, None).expect("plan");
+    let lp = analyzer::initial_analyzing(lp, &mut ctx, &schema).unwrap();
+    let lp = optimizer::initial_optimization(lp, &mut ctx).unwrap();
+    let lp = analyzer::intermediate_analyzing(lp, &mut ctx, &schema).unwrap();
+    let lp = optimizer::final_optimization(lp, &mut ctx).unwrap();
+    let lp = analyzer::final_analyzing(lp, &mut ctx, &schema).unwrap();
+    let plan = std::sync::Arc::try_unwrap(lp).unwrap_or_else(|arc| (*arc).clone());
+    let write_plan = build_write_plan(&plan, &schema)
+        .expect("build")
+        .expect("present");
+
+    // Sanity: the payload really is an unresolved `id` PropertyAccess (the
+    // precondition for Path A's fix to matter). If planning ever starts
+    // resolving this upstream, this assert flags that the test is now vacuous.
+    if let WriteRenderPlan::Update(UpdateOp {
+        ref assignments, ..
+    }) = write_plan
+    {
+        let dbg = format!("{:?}", assignments[0].1);
+        assert!(
+            dbg.contains("Column(\"id\")"),
+            "expected an unresolved `id` payload, got: {}",
+            dbg
+        );
+    } else {
+        panic!("expected Update, got {:?}", write_plan);
+    }
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let sql = rt.block_on(async {
+        with_query_context(QueryContext::new(None), async {
+            set_current_schema(Arc::clone(&schema));
+            crate::clickhouse_query_generator::write_to_sql::write_render_to_sql(&write_plan)
+        })
+        .await
+    });
+
+    assert_eq!(sql.len(), 1);
+    let stmt = &sql[0];
+    assert!(
+        stmt.contains("SET `name` = a.user_id"),
+        "generic .id must resolve to the renamed node_id column, got: {}",
+        stmt
+    );
+    assert!(
+        !stmt.contains("= a.id"),
+        "must not emit the unresolved `a.id`, got: {}",
+        stmt
+    );
+}
+
 // ---------- REMOVE ----------
 
 #[test]
@@ -289,6 +404,32 @@ fn string_literals_with_quotes_are_escaped() {
     let stmt = &sql[0];
     // Single quote doubled per ClickHouse / SQL convention.
     assert!(stmt.contains("'O''Brien'"), "got: {}", stmt);
+}
+
+/// A string literal with an embedded single quote NESTED inside an operator
+/// (concat) in a SET RHS reaches the canonical renderer (Path A) via operand
+/// recursion — `render_expr_inline` only handles TOP-LEVEL literals directly.
+/// Path A's `Literal::String` arm must escape the quote (`''`), else it emits
+/// broken/injectable SQL. Regression for the review finding on PR #822 (the
+/// escaping was a pre-existing latent bug in Path A, surfaced by routing write
+/// payloads through it).
+#[test]
+fn nested_string_literal_in_set_rhs_concat_is_escaped() {
+    let sql = cypher_to_write_sql(
+        "MATCH (a:Person) WHERE a.id = 'u1' SET a.name = a.name + \" O'Brien\"",
+    );
+    assert_eq!(sql.len(), 1);
+    let stmt = &sql[0];
+    assert!(
+        stmt.contains("'' O''Brien'") || stmt.contains("' O''Brien'"),
+        "embedded quote must be escaped in nested concat, got: {}",
+        stmt
+    );
+    assert!(
+        !stmt.contains("' O'Brien'"),
+        "must not emit an unescaped embedded quote, got: {}",
+        stmt
+    );
 }
 
 // ---------- Review-driven regression coverage (PR #278) ----------

@@ -18,7 +18,6 @@ use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
 use crate::render_plan::cte_extraction::{
     get_node_label_for_alias, get_relationship_type_for_alias,
 };
-use crate::render_plan::expression_utils::{flatten_addition_operands, has_string_operand};
 // Note: Direction import commented out until Issue #1 (Undirected Multi-Hop SQL) is fixed
 // use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::logical_plan::LogicalPlan;
@@ -1571,100 +1570,6 @@ pub(super) fn find_table_name_for_alias(plan: &LogicalPlan, target_alias: &str) 
         LogicalPlan::SetProperties(sp) => find_table_name_for_alias(&sp.input, target_alias),
         LogicalPlan::Delete(d) => find_table_name_for_alias(&d.input, target_alias),
         LogicalPlan::Remove(r) => find_table_name_for_alias(&r.input, target_alias),
-    }
-}
-
-/// Convert a RenderExpr to a SQL string for use in CTE WHERE clauses
-pub(crate) fn render_expr_to_sql_string(
-    expr: &RenderExpr,
-    alias_mapping: &[(String, String)],
-) -> String {
-    match expr {
-        RenderExpr::Column(col) => col.raw().to_string(),
-        RenderExpr::TableAlias(alias) => alias.0.clone(),
-        RenderExpr::ColumnAlias(alias) => alias.0.clone(),
-        RenderExpr::Literal(lit) => match lit {
-            Literal::String(s) => format!("'{}'", s.replace("'", "''")),
-            Literal::Integer(i) => i.to_string(),
-            Literal::Float(f) => f.to_string(),
-            Literal::Boolean(b) => b.to_string(),
-            Literal::Null => "NULL".to_string(),
-        },
-        RenderExpr::Raw(raw) => raw.clone(),
-        RenderExpr::PropertyAccessExp(prop) => {
-            // Convert property access to table.column format
-            // Apply alias mapping to convert Cypher aliases to CTE aliases
-            let table_alias = alias_mapping
-                .iter()
-                .find(|(cypher, _)| *cypher == prop.table_alias.0)
-                .map(|(_, cte)| cte.clone())
-                .unwrap_or_else(|| prop.table_alias.0.clone());
-            format!("{}.{}", table_alias, prop.column.raw())
-        }
-        RenderExpr::OperatorApplicationExp(op) => {
-            let operands: Vec<String> = op
-                .operands
-                .iter()
-                .map(|operand| render_expr_to_sql_string(operand, alias_mapping))
-                .collect();
-            match op.operator {
-                Operator::Equal => format!("{} = {}", operands[0], operands[1]),
-                Operator::NotEqual => format!("{} != {}", operands[0], operands[1]),
-                Operator::LessThan => format!("{} < {}", operands[0], operands[1]),
-                Operator::GreaterThan => format!("{} > {}", operands[0], operands[1]),
-                Operator::LessThanEqual => format!("{} <= {}", operands[0], operands[1]),
-                Operator::GreaterThanEqual => format!("{} >= {}", operands[0], operands[1]),
-                Operator::And => format!("({})", operands.join(" AND ")),
-                Operator::Or => format!("({})", operands.join(" OR ")),
-                Operator::Not => format!("NOT ({})", operands[0]),
-                Operator::Addition => {
-                    // Use concat() for string concatenation
-                    // Flatten nested + operations for cases like: a + ' - ' + b
-                    if has_string_operand(&op.operands) {
-                        let flattened: Vec<String> = op
-                            .operands
-                            .iter()
-                            .flat_map(|o| flatten_addition_operands(o, alias_mapping))
-                            .collect();
-                        format!("concat({})", flattened.join(", "))
-                    } else {
-                        format!("{} + {}", operands[0], operands[1])
-                    }
-                }
-                Operator::Subtraction => format!("{} - {}", operands[0], operands[1]),
-                Operator::Multiplication => format!("{} * {}", operands[0], operands[1]),
-                Operator::Division => format!("{} / {}", operands[0], operands[1]),
-                Operator::ModuloDivision => format!("{} % {}", operands[0], operands[1]),
-                _ => format!("{} {:?} {}", operands[0], op.operator, operands[1]), // fallback
-            }
-        }
-        RenderExpr::Parameter(param) => format!("${}", param),
-        RenderExpr::ScalarFnCall(func) => {
-            let args: Vec<String> = func
-                .args
-                .iter()
-                .map(|arg| render_expr_to_sql_string(arg, alias_mapping))
-                .collect();
-            // Map dialect-divergent names (e.g. tuple -> Spark struct) via the registry.
-            let name = crate::clickhouse_query_generator::dialect_function_name(&func.name);
-            format!("{}({})", name, args.join(", "))
-        }
-        RenderExpr::AggregateFnCall(agg) => {
-            let args: Vec<String> = agg
-                .args
-                .iter()
-                .map(|arg| render_expr_to_sql_string(arg, alias_mapping))
-                .collect();
-            format!("{}({})", agg.name, args.join(", "))
-        }
-        RenderExpr::List(list) => {
-            let items: Vec<String> = list
-                .iter()
-                .map(|item| render_expr_to_sql_string(item, alias_mapping))
-                .collect();
-            format!("({})", items.join(", "))
-        }
-        _ => "TRUE".to_string(), // fallback for unsupported expressions
     }
 }
 
