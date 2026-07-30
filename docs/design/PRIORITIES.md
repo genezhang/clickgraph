@@ -74,8 +74,11 @@ The nightly was red from ~2026-07-13. Successive triage narrowed it to zero:
   `conclusion: success` — fmt/clippy `-D warnings`/build/full `cargo test`/full live
   pytest all pass. The scheduled weekday run now validates continuously.
 Exit met: one fully green nightly run + xpass count 0.
-- Follow-ups still open (net hygiene, not blocking): prune stale
-  `worktree-agent-*` branches; refresh STATUS.md (last updated 2026-05-06).
+- Follow-ups still open (net hygiene, not blocking): ~~prune stale
+  `worktree-agent-*` branches~~ **DONE 2026-07-30** (none remained; pruned 4 stale
+  remote-tracking refs); ~~refresh STATUS.md (last updated 2026-05-06)~~ **DONE
+  2026-07-30 (#830)** — the "Active workstreams" block was stale (refactor mission
+  complete 2026-07-28; SQL-IR added as its own workstream).
   ~~**#689** (live VLP-then-fixed-hop-polymorphic 500)~~ **bug 1 DONE 2026-07-30
   (#828, `c013c07a`)** — from-side-polymorphic VLP recursive arm joined the START
   table (`ds_users`) + base discriminator (`member_type='User'`); now joins the
@@ -83,9 +86,22 @@ Exit met: one fully green nightly run + xpass count 0.
   `is_from_side_polymorphic_cross_type` (from-side label present, to-side absent,
   cross-table) so #142/complex-12/multi-type are untouched; 14 data_security
   goldens (2-line delta each) + live oracle (Group→Group fixture). Bug 2 (fixed
-  hop to polymorphic target → triplicated identical UNION arms) split to **#827**
-  (design-cycle: type-inference candidate over-fan-out + render table→label
-  reverse-lookup collapse).
+  hop to polymorphic target → triplicated identical UNION arms) split to **#827**.
+- **#827 defect (a) DONE 2026-07-30 (#831, `494fbfdc`)** — polymorphic `$any`
+  endpoint now honors `from_label_values`/`to_label_values` (new
+  `GraphSchema::expand_node_type_constrained`, routed into the two
+  `generate_union_for_untyped_nodes` sites). Untyped endpoint fans only to the
+  declared labels, not every node label. 12 data_security goldens shed illegal
+  arms (net −413; several encoded the bug). Root-cause correction: the arms were
+  NOT from `infer_pattern_types` (`type_inference.rs:~2163`, banked-but-inert) —
+  the live site is `generate_union_for_untyped_nodes` (~1469/~1492). Scoped to the
+  one schema declaring endpoint `label_values`; open-polymorphic edges unchanged.
+  Adversarial review APPROVE-0. **#827 STILL OPEN** for: (b) single-arm hardcodes
+  `object_type='File'` via table→label reverse-lookup (`get_node_schema_by_table`
+  alphabetically-first) — the un-xfail blocker for `test_external_users_with_access`;
+  and (newly surfaced) both-endpoints-untyped 16-arm over-fan via the *separate*
+  unpatched `infer_pattern_types` site (`~2179`), the natural next
+  `expand_node_type_constrained` application.
 
 ### P-1 — Keep a small silent-wrong bug lane open  (standing, ≤1 agent)
 **Lane state (2026-07-28): pool near-exhausted; #716 was the last clean pick.** Since
