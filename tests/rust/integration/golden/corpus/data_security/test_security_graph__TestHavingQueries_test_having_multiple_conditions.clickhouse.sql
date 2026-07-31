@@ -1,9 +1,21 @@
-WITH with_folder_name_item_count_cte_0 AS (SELECT 
-      folder.name AS "folder_name", 
-      count(t0.fs_id) AS "item_count"
+WITH with_folder_name_item_count_cte_0 AS (SELECT `folder_name` AS "folder_name", count(`item.fs_id`) AS "item_count" FROM (
+SELECT 
+      folder.name AS "folder_name",
+      folder.name AS "folder.name",
+      item.fs_id AS "item.fs_id"
 FROM data_security.ds_fs_objects AS folder
 INNER JOIN data_security.ds_fs_objects AS t0 ON t0.parent_id = folder.fs_id AND t0.fs_type = 'File'
-GROUP BY folder.name
+INNER JOIN data_security.ds_fs_objects AS item ON item.fs_id = t0.fs_id
+UNION ALL 
+SELECT 
+      folder.name AS "folder_name",
+      folder.name AS "folder.name",
+      item.fs_id AS "item.fs_id"
+FROM data_security.ds_fs_objects AS folder
+INNER JOIN data_security.ds_fs_objects AS t0 ON t0.parent_id = folder.fs_id AND t0.fs_type = 'Folder'
+INNER JOIN data_security.ds_fs_objects AS item ON item.fs_id = t0.fs_id
+) AS __union
+GROUP BY `folder_name`
 HAVING (item_count >= 1 AND item_count <= 10)
 )
 SELECT 
