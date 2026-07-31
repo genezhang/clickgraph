@@ -4576,7 +4576,20 @@ fn rewrite_cte_body_vlp_refs(plan: &mut RenderPlan, vlp_info: &VlpAliasInfo) {
                 if !branch.joins.0.is_empty() {
                     rewrite_joins_for_vlp(&mut branch.joins.0, &reverse_aliases);
                 }
+            } else if !branch.joins.0.is_empty() {
+                // The branch already carries its OWN downstream JOINs (e.g. a
+                // polymorphic-target fixed hop AFTER the VLP: each per-label arm
+                // legitimately joins a DIFFERENT target table — `users_bench` vs
+                // `posts_bench`, or a different discriminator). Cloning the base
+                // arm's JOINs over them (as the empty-branch path below does)
+                // froze every arm to the FIRST label's table/discriminator and
+                // silently dropped all other labels' rows (#836). Keep the
+                // branch's own JOINs; only re-apply the VLP alias rewrite.
+                rewrite_joins_for_vlp(&mut branch.joins.0, &reverse_aliases);
             } else if !original_joins.is_empty() {
+                // Genuine undirected-VLP reverse arm: it has NO downstream JOINs
+                // of its own and depends on the base arm's chained JOINs (e.g.
+                // the anti-self CTE join in LDBC complex-3). Clone them.
                 branch.joins = JoinItems(original_joins.clone());
                 rewrite_joins_for_vlp(&mut branch.joins.0, &reverse_aliases);
             }
