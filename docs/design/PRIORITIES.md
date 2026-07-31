@@ -103,13 +103,25 @@ Exit met: one fully green nightly run + xpass count 0.
   (both-untyped branch) — NOT the `infer_pattern_types` site `~2179` the #831 note
   guessed (inert; found by patch-and-rebuild). Routed through the same helper; now 4
   legal arms; locked by a revert-checked assertion test (fails on full OR either-side
-  revert). Review APPROVE-0/1-minor. **#827 STILL OPEN** for **defect (b) only**:
-  single collapsed arm hardcodes `object_type='File'` via table→label reverse-lookup
-  (`get_node_schema_by_table` alphabetically-first for shared `ds_fs_objects`) →
-  Folder-access silently dropped + from-side `MEMBER_OF` User arm keeps
-  `member_type='Group'`/`group_id` (broken for `ds_users`). This is the un-xfail
-  blocker for `test_external_users_with_access` and the harder half (render-side
-  per-arm label provenance — reverse-mapping class, §1.6).
+  revert). Review APPROVE-0/1-minor. **#827 defect (b) — BOTH symptoms DONE
+  2026-07-30.** Root-cause was NOT the banked render-side reverse-lookup
+  (`get_node_schema_by_table` is a fallback never reached here) — both were
+  analyzer-pass label-resolution bugs where the correct per-arm label was already
+  present and unused. **Symptom 2 (#835, from-side per-arm discriminator/join-key):**
+  `get_graph_context`/`compute_pattern_context` resolved the endpoint label from the
+  shared PlanCtx (`get_label_str().first()` → same label every arm) instead of the
+  arm's own `GraphNode.label`; the `ds_users` MEMBER_OF arm got `m.group_id`/`'Group'`
+  (latent Code 47). Fixed via shared `endpoint_label_from_plan` helper. **Symptom 1
+  (#837, to-side sibling collapse):** the property-superset "polymorphic parent"
+  collapse dropped label-discriminated siblings (Folder/File, same table, distinct
+  `label_value`) — File's props ⊃ Folder's silently dropped the Folder arm. Gated to
+  skip same-table distinct-`label_value` pairs; genuine parent-collapse (LDBC Message,
+  distinct tables) provably preserved. Both reviews APPROVE-0. **Remaining before
+  un-xfailing `test_external_users_with_access` → split to #836:** the VLP-continuation
+  duplicate-arm bug (a fixed polymorphic hop AFTER a VLP clobbers the 2nd arm's
+  discriminator during outer-union render assembly). PROVEN pre-existing (reproduces on
+  main + on distinct-table `social_polymorphic`, independent of the b-fixes) — the
+  union-arm render-state contamination class (#593/#619, §1.6 systemic, not per-shape).
 
 ### P-1 — Keep a small silent-wrong bug lane open  (standing, ≤1 agent)
 **Lane state (2026-07-28): pool near-exhausted; #716 was the last clean pick.** Since
