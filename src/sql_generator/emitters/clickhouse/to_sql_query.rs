@@ -4572,11 +4572,63 @@ fn rewrite_cte_body_vlp_refs(plan: &mut RenderPlan, vlp_info: &VlpAliasInfo) {
             }
 
             // JOINs (same reverse-arm vs. mixed-anchor reasoning)
+            //
+            // Two DIFFERENT shapes both reach this `else` (non-mixed-anchor) path
+            // with a non-empty `branch.joins`, and they need OPPOSITE handling:
+            //
+            //  1. Polymorphic-target continuation (#836): a fixed polymorphic hop
+            //     AFTER the VLP fans into one arm per candidate label. Each arm
+            //     reads the same VLP CTE but joins a DIFFERENT target table
+            //     (`item:users_bench` vs `item:posts_bench`) under the SAME join
+            //     aliases as the base arm. The branch's own joins are a COMPLETE,
+            //     per-label-correct replacement — cloning the base arm's joins over
+            //     them froze every arm to the first label and dropped all other
+            //     labels' rows.
+            //  2. Undirected-VLP reverse arm (e.g. LDBC complex-1): the branch's
+            //     own joins are AUXILIARY (a direction-swapped edge self-join under
+            //     a NEW alias like `t1`) and it STILL depends on the base arm's
+            //     chained join (`friend_p:with_friend_p_cte_0`) under a DISJOINT
+            //     alias. Here the base arm's joins must replace the branch's, as
+            //     before, or `friend_p` is referenced but never defined.
+            //
+            // Discriminate by JOIN-ALIAS COVERAGE (not table names — data_security's
+            // Folder/File arms share one physical table `ds_fs_objects`): keep the
+            // branch's own joins only when they cover EVERY base-join alias slot
+            // (case 1); otherwise the base supplies joins under aliases the branch
+            // lacks, so clone as before (case 2).
+            let branch_covers_base_join_aliases = {
+                let branch_aliases: std::collections::HashSet<&str> = branch
+                    .joins
+                    .0
+                    .iter()
+                    .map(|j| j.table_alias.as_str())
+                    .collect();
+                !original_joins.is_empty()
+                    && original_joins
+                        .iter()
+                        .all(|j| branch_aliases.contains(j.table_alias.as_str()))
+            };
+
             if is_mixed_anchor_branch {
                 if !branch.joins.0.is_empty() {
                     rewrite_joins_for_vlp(&mut branch.joins.0, &reverse_aliases);
                 }
+            } else if branch_covers_base_join_aliases {
+                // Case 1 (#836): the branch's own joins cover every base-join
+                // alias slot — it is a complete per-label replacement (e.g. a
+                // polymorphic-target continuation whose `item` join targets a
+                // different table per label). Keep the branch's own joins; only
+                // re-apply the VLP alias rewrite. Cloning the base arm's joins
+                // here would freeze every arm to the first label's target and
+                // silently drop all other labels' rows.
+                rewrite_joins_for_vlp(&mut branch.joins.0, &reverse_aliases);
             } else if !original_joins.is_empty() {
+                // Case 2: a genuine undirected-VLP reverse arm. Either it has no
+                // downstream joins of its own, or its own joins are auxiliary and
+                // do NOT cover the base arm's join aliases (e.g. LDBC complex-1's
+                // reverse arm carries a direction-swapped edge self-join but still
+                // needs the base's `friend_p` CROSS JOIN). Clone the base arm's
+                // joins, as before.
                 branch.joins = JoinItems(original_joins.clone());
                 rewrite_joins_for_vlp(&mut branch.joins.0, &reverse_aliases);
             }

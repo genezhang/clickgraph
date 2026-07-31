@@ -45,7 +45,7 @@ SELECT DISTINCT
       t.end_name AS `via_group`, 
       t.start_name AS `__order_col_0`
 FROM vlp_u_g AS t
-INNER JOIN data_security.ds_permissions AS t0 ON t0.subject_id = t.end_id AND (t0.subject_type = 'Group' AND t0.object_type = 'File')
+INNER JOIN data_security.ds_permissions AS t0 ON t0.subject_id = t.end_id AND (t0.subject_type = 'Group' AND t0.object_type = 'Folder')
 WHERE t.start_exposure = 'external'
 ) AS __union
 ORDER BY __union.`__order_col_0` ASC

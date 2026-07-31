@@ -116,12 +116,18 @@ Exit met: one fully green nightly run + xpass count 0.
   collapse dropped label-discriminated siblings (Folder/File, same table, distinct
   `label_value`) — File's props ⊃ Folder's silently dropped the Folder arm. Gated to
   skip same-table distinct-`label_value` pairs; genuine parent-collapse (LDBC Message,
-  distinct tables) provably preserved. Both reviews APPROVE-0. **Remaining before
-  un-xfailing `test_external_users_with_access` → split to #836:** the VLP-continuation
-  duplicate-arm bug (a fixed polymorphic hop AFTER a VLP clobbers the 2nd arm's
-  discriminator during outer-union render assembly). PROVEN pre-existing (reproduces on
-  main + on distinct-table `social_polymorphic`, independent of the b-fixes) — the
-  union-arm render-state contamination class (#593/#619, §1.6 systemic, not per-shape).
+  distinct tables) provably preserved. Both reviews APPROVE-0. **#836 DONE 2026-07-30
+  (#839):** the VLP-continuation duplicate-arm bug (a fixed polymorphic hop AFTER a VLP
+  emitted BOTH outer arms with the FIRST label's join+discriminator). The banked "#593/#619
+  systemic render-state contamination cycle" label was WRONG — re-tracing showed the SELECT
+  projections were already per-arm-correct; only the FROM/JOIN was shared. It's a BOUNDED
+  emitter bug: `rewrite_cte_body_vlp_refs` (`to_sql_query.rs`) cloned the base arm's JOINs
+  over every VLP-CTE-reading branch, discarding the branch's own correct joins (written for
+  a genuine undirected reverse arm that has none). Fix = keep the branch's own joins when
+  non-empty; clone base only when empty. Corpus-proven safe (instrument + full sweep: every
+  trigger had own joins empty or == base). One RenderPlan-level edit fixes both dialects.
+  `test_external_users_with_access` stays xfail — its status==200-only assertion can't detect
+  the row-drop; a real un-xfail needs a live server + Group→Group fixture + content asserts.
 
 ### P-1 — Keep a small silent-wrong bug lane open  (standing, ≤1 agent)
 **Lane state (2026-07-28): pool near-exhausted; #716 was the last clean pick.** Since

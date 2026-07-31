@@ -12620,6 +12620,59 @@ mod label_id_resolution_family_536_537_539_540_541_526_527 {
         );
     }
 
+    /// #836: a fixed polymorphic hop FOLLOWING a VLP CTE. Each per-label outer
+    /// UNION arm reads the SAME upstream VLP CTE (`vlp_u_x`) but legitimately
+    /// joins a DIFFERENT downstream target table (User → `users_bench` vs
+    /// Post → `posts_bench`) with a DIFFERENT edge discriminator (`to_type`).
+    /// The ClickHouse emitter's undirected-VLP reverse-arm helper
+    /// (`rewrite_cte_body_vlp_refs`, `to_sql_query.rs`) used to CLONE the
+    /// base/first arm's JOINs onto every non-`vlp_multi_type_*` branch that
+    /// reads a VLP CTE, discarding the branch's OWN correct JOINs — freezing
+    /// every arm to the first label's table + discriminator and silently
+    /// dropping all other labels' rows (outer DISTINCT masked the duplication
+    /// but not the missing labels). Fix: keep the branch's own JOINs when it
+    /// has them; only clone the base arm's JOINs for a genuine reverse arm that
+    /// has NONE of its own. Uses the DISTINCT-table `social_polymorphic` schema
+    /// so the bug is visible as two different physical target tables, not just
+    /// a same-table discriminator flip.
+    #[tokio::test]
+    async fn vlp_continuation_polymorphic_hop_keeps_per_arm_joins_836() {
+        let schema = load_schema("schemas/test/social_polymorphic.yaml");
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (u:User)-[:FOLLOWS*1..3]->(x:User)-[:LIKES]->(item) \
+                 RETURN u.name, item",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        // Post arm: to_type='Post' joined to posts_bench on post_id.
+        assert!(
+            sql.contains("brahmand.posts_bench AS item ON item.post_id = t0.to_id"),
+            "#836: the Post arm must join posts_bench on post_id:\n{sql}"
+        );
+        // User arm: to_type='User' joined to users_bench on user_id — this is
+        // the arm that was clobbered to the Post arm's join pre-fix.
+        assert!(
+            sql.contains("brahmand.users_bench AS item ON item.user_id = t0.to_id"),
+            "#836: the User arm must keep its OWN join (users_bench on \
+             user_id), not be clobbered to the Post arm's posts_bench join:\n{sql}"
+        );
+        // Each discriminator appears exactly once across the two outer arms
+        // (pre-fix: to_type = 'Post' appeared twice, to_type = 'User' zero).
+        assert_eq!(
+            sql.matches("t0.to_type = 'Post'").count(),
+            1,
+            "#836: expected exactly one Post-discriminated outer arm:\n{sql}"
+        );
+        assert_eq!(
+            sql.matches("t0.to_type = 'User'").count(),
+            1,
+            "#836: the User-discriminated outer arm was dropped/clobbered:\n{sql}"
+        );
+    }
+
     /// #537: `id(a2)`/GROUP BY over a composite-id VLP endpoint (Account
     /// keyed by `(bank_id, account_number)`) used to resolve to only the
     /// FIRST composite-id column (`find_id_column_for_alias`'s GraphNode

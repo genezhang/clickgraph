@@ -241,7 +241,7 @@ class TestVariableLengthPaths:
 class TestSecurityQueries:
     """Complex security analysis queries."""
     
-    @pytest.mark.xfail(reason="#827 defect (a) FIXED (#689 bug 1 also fixed): the polymorphic `target` no longer fans into triplicated identical UNION arms — `$any` now honors HAS_ACCESS.to_label_values [Folder, File], collapsing to a single arm. But defect (b) remains: that arm hardcodes object_type='File' (table→label reverse-lookup picks alphabetically-first label), so Folder-access rows are silently dropped. Leave xfail until #827 defect (b) lands.")
+    @pytest.mark.xfail(reason="#827 defect (a)+(b) and #836 all FIXED: the polymorphic `target` fixed hop after the MEMBER_OF VLP now emits BOTH per-label arms (object_type='File' AND object_type='Folder') with correct per-arm discriminators — no more first-label clobber (verified by the corpus golden). Remaining blocker is TEST INFRASTRUCTURE, not translation: this case needs a live server + a data_security fixture WITH a Group→Group membership row and CONTENT assertions (the current status==200-only check can't detect the historical row-drop). Un-xfail once that live oracle exists.")
     def test_external_users_with_access(self):
         """Find external users with any access permissions."""
         response = execute_cypher(
