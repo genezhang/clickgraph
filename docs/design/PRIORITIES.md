@@ -122,12 +122,20 @@ Exit met: one fully green nightly run + xpass count 0.
   systemic render-state contamination cycle" label was WRONG — re-tracing showed the SELECT
   projections were already per-arm-correct; only the FROM/JOIN was shared. It's a BOUNDED
   emitter bug: `rewrite_cte_body_vlp_refs` (`to_sql_query.rs`) cloned the base arm's JOINs
-  over every VLP-CTE-reading branch, discarding the branch's own correct joins (written for
-  a genuine undirected reverse arm that has none). Fix = keep the branch's own joins when
-  non-empty; clone base only when empty. Corpus-proven safe (instrument + full sweep: every
-  trigger had own joins empty or == base). One RenderPlan-level edit fixes both dialects.
-  `test_external_users_with_access` stays xfail — its status==200-only assertion can't detect
-  the row-drop; a real un-xfail needs a live server + Group→Group fixture + content asserts.
+  over every VLP-CTE-reading branch, discarding the branch's own correct joins. Fix =
+  discriminate by JOIN-ALIAS COVERAGE — keep the branch's own joins when they cover every
+  base-join alias slot (polymorphic per-label arm: same `{t2, item}` aliases, different
+  target table per label); else clone base (genuine undirected reverse arm whose auxiliary
+  joins use a disjoint alias and still depend on the base's chained join, e.g. LDBC
+  complex-1's `friend_p`). NOTE: the naive first cut (keep-own when `!is_empty()`) REGRESSED
+  complex-1 (dropped its `friend_p` CROSS JOIN → undefined identifier) — caught by review
+  instrumenting the FULL `--test integration` suite (corpus_sweep alone hid it). One
+  RenderPlan-level edit fixes both dialects. Full-corpus differential (1229 queries, main vs
+  branch) → exactly 1 query changes. Review APPROVE-0. `test_external_users_with_access`
+  stays xfail — its status==200-only assertion can't detect the row-drop; a real un-xfail
+  needs a live server + Group→Group fixture + content asserts. **Out-of-scope sibling filed
+  → #840** (undirected VLP + shortestPath reverse arm drops downstream chained joins;
+  pre-existing on main, byte-identical, untouched by #839).
 
 ### P-1 — Keep a small silent-wrong bug lane open  (standing, ≤1 agent)
 **Lane state (2026-07-28): pool near-exhausted; #716 was the last clean pick.** Since
