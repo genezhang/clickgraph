@@ -191,6 +191,25 @@ async fn ldbc_complex_1() {
     .await;
     assert!(!sql.is_empty());
     assert!(sql.contains("SELECT"));
+    // Regression guard (#836 fix must not break this): complex-1 is an
+    // UNDIRECTED `KNOWS*1..3` VLP whose outer query has TWO union arms, each
+    // referencing the `friend_p` WITH-CTE. Both arms must DEFINE `friend_p`
+    // via its CROSS JOIN — a reverse arm that references `friend_p` in its
+    // SELECT/ON but drops the `CROSS JOIN with_friend_p_cte_0 AS friend_p`
+    // yields `Unknown identifier friend_p` at execution. (The #836 join-clone
+    // fix originally regressed exactly this by keeping the reverse arm's own
+    // auxiliary edge self-join and discarding the base's `friend_p` join.)
+    let friend_p_refs = sql.matches("friend_p.").count();
+    if friend_p_refs > 0 {
+        let cross_join_defs = sql.matches("with_friend_p_cte_0 AS friend_p").count();
+        assert!(
+            cross_join_defs >= 2,
+            "#836 regression: complex-1's two union arms must EACH define \
+             `friend_p` (expected >=2 `with_friend_p_cte_0 AS friend_p` \
+             joins, found {cross_join_defs}); a reverse arm is referencing \
+             `friend_p` without defining it:\n{sql}"
+        );
+    }
 }
 
 #[tokio::test]
