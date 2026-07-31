@@ -1584,7 +1584,29 @@ impl TypeInference {
             // strict superset of type B's, keep only A. This handles cases like
             // Message (view over Post+Comment) where Message has all properties
             // of Post, making the Post candidate redundant.
+            //
+            // EXCEPTION (#827 defect b, symptom 1): two labels that share a
+            // physical table but are distinguished by a `label_column`
+            // discriminator with DIFFERENT `label_value`s (e.g. Folder/File both
+            // on `ds_fs_objects`, `fs_type='Folder'`/`'File'`) are *siblings*,
+            // not a parent/child view. The property-superset test misfires when
+            // one sibling happens to declare extra properties (File adds
+            // `sensitive_data`), collapsing a genuinely distinct label away and
+            // silently dropping its rows. Such pairs must each survive as their
+            // own UNION arm.
             if candidates.len() > 1 {
+                // True when i and j are label-discriminated siblings on one table.
+                let are_discriminated_siblings = |i: &str, j: &str| -> bool {
+                    let (Ok(si), Ok(sj)) =
+                        (graph_schema.node_schema(i), graph_schema.node_schema(j))
+                    else {
+                        return false;
+                    };
+                    si.table_name == sj.table_name
+                        && si.label_column.is_some()
+                        && sj.label_column.is_some()
+                        && si.label_value != sj.label_value
+                };
                 let mut to_remove = HashSet::new();
                 for i in 0..candidates.len() {
                     if to_remove.contains(&i) {
@@ -1597,6 +1619,9 @@ impl TypeInference {
                         .unwrap_or_default();
                     for j in 0..candidates.len() {
                         if i == j || to_remove.contains(&j) {
+                            continue;
+                        }
+                        if are_discriminated_siblings(&candidates[i], &candidates[j]) {
                             continue;
                         }
                         let props_j: HashSet<String> = graph_schema

@@ -12579,6 +12579,47 @@ mod label_id_resolution_family_536_537_539_540_541_526_527 {
         );
     }
 
+    /// #827 defect (b) symptom 1: the property-superset collapse must NOT drop a
+    /// label-discriminated SIBLING. `Folder` and `File` share `ds_fs_objects`
+    /// (distinguished by `label_column: fs_type`, distinct `label_value`), and
+    /// `File`'s property set is a strict superset of `Folder`'s (`sensitive_data`),
+    /// so the "polymorphic parent" collapse wrongly treated `File` as a parent of
+    /// `Folder` and dropped the Folder arm — silently losing Folder-access rows.
+    /// The gate keeps both, so `(u:User)-[:HAS_ACCESS]->(target)` renders a
+    /// per-label arm each with its own `object_type` discriminator.
+    ///
+    /// NOTE: the VLP-continuation shape
+    /// (`...-[:MEMBER_OF*..]->(g)-[:HAS_ACCESS]->(target)`) still emits a
+    /// duplicate arm — a SEPARATE, pre-existing union-arm render-state
+    /// contamination bug (reproduces on main and on distinct-table polymorphic
+    /// schemas, independent of this collapse gate; #593/#619 family), tracked
+    /// as its own issue.
+    #[tokio::test]
+    async fn superset_collapse_keeps_discriminated_siblings_827() {
+        let schema = load_schema("examples/data_security/data_security.yaml");
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (u:User)-[:HAS_ACCESS]->(target) RETURN u.name, target.name",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        // Both legal target labels survive as their own arm with the correct
+        // per-arm edge discriminator (pre-fix: only the File arm, Folder dropped).
+        assert_eq!(
+            sql.matches("object_type = 'File'").count(),
+            1,
+            "#827(b) sym1: expected exactly one File arm:\n{sql}"
+        );
+        assert_eq!(
+            sql.matches("object_type = 'Folder'").count(),
+            1,
+            "#827(b) sym1: the Folder arm was dropped by the property-superset \
+             collapse (Folder/File are discriminated siblings, not parent/child):\n{sql}"
+        );
+    }
+
     /// #537: `id(a2)`/GROUP BY over a composite-id VLP endpoint (Account
     /// keyed by `(bank_id, account_number)`) used to resolve to only the
     /// FIRST composite-id column (`find_id_column_for_alias`'s GraphNode
