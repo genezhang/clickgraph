@@ -138,9 +138,15 @@ Exit met: one fully green nightly run + xpass count 0.
   pre-existing on main, byte-identical, untouched by #839).
 
 ### P-1 — Keep a small silent-wrong bug lane open  (standing, ≤1 agent)
-**Lane state (2026-07-28): pool near-exhausted; #716 was the last clean pick.** Since
-the 07-19 reconcile this lane shipped ~21 fixes (all live- or SQL-gen-verified,
-newest first): **#716 (multi-type VLP non-id endpoint property → native CTE column,
+**Lane state (2026-08-01): #788 shipped — was mis-triaged as design-cycle but is
+the same small #503-family `__order_col_N` asymmetry.** Since
+the 07-19 reconcile this lane shipped ~22 fixes (all live- or SQL-gen-verified,
+newest first): **#788 (multi-type VLP aggregate ORDER-BY-on-endpoint →
+`__order_col_0` Code 47: `build_outer_aggregate_select`'s expr→alias rewrite map
+now excludes `__order_col_*` items exactly as `build_aliased_group_by` already
+does — the injected ORDER BY helper column could otherwise hijack an aggregate
+argument's rewrite to a column the inner UNION drops)**,
+**#716 (multi-type VLP non-id endpoint property → native CTE column,
 #787)**, #580 (multi-type VLP endpoint id, #715), #606 denorm + fk-edge
 VLP relationship-uniqueness variants (#709/#712), #705 (shared EXISTS predicate
 rewriter, #707), #640 shapes 1 & 3 (#694/#704), #642 (VLP multi-sub-CTE union
@@ -148,8 +154,7 @@ collision, #698), #672 part 2 (#696), #678 (#692), #636 (#674), #683 r1 (#685),
 #659 (#682), #641 (#680), #620 (#677, closed via #700), #635 (#675, not-a-bug),
 #646 (#671), #648 (#670), #649 (#669), #595 (closed via #702), #647 (#652).
 Every remaining open issue is either **design-cycle-sized** (#604/#627/#643/
-#673/#628, #640 shapes 2/4/5, #683 residual-2, #788 multi-type-VLP aggregate
-ORDER-BY-on-endpoint) or in the **reverse-mapping / systemic class** owned by P-4
+#673/#628, #640 shapes 2/4/5, #683 residual-2) or in the **reverse-mapping / systemic class** owned by P-4
 (#592/#583/#613/#615). **#504 (coupled OPTIONAL collapse) triaged as design-cycle,
 NOT a P-1 pick**: root cause is an array-valued `node_id` never ARRAY-JOIN-flattened
 (not CoupledSameRow — scalar coupled OPTIONAL renders a correct LEFT JOIN), which

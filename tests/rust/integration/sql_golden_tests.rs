@@ -9270,6 +9270,58 @@ mod walker_drift_family_484_490_495_476_483 {
         );
     }
 
+    /// #788: a MULTI-TYPE VLP aggregate that ORDER-BYs a grouped endpoint
+    /// property mis-aliased the outer projection to `anyLast(`__order_col_0`)`.
+    /// The ORDER-BY-column-injection pass adds a synthetic non-aggregate SELECT
+    /// item (`t.start_city AS __order_col_0`) to feed the outer ORDER BY, but
+    /// `build_union_inner_select` deliberately DROPS all `__order_col_*` items
+    /// from the inner UNION branches. `build_outer_aggregate_select`'s
+    /// expression→alias rewrite map still contained that dropped item, so its
+    /// agg-argument rewrite turned `anyLast(t.start_city)` into
+    /// `anyLast(`__order_col_0`)` — a reference to a column that never exists in
+    /// the `__union` derived table (ClickHouse UNKNOWN_IDENTIFIER Code 47, the
+    /// #503 family). The fix mirrors the exclusion `build_aliased_group_by`
+    /// already applies: `__order_col_*` items must not seed the rewrite map, so
+    /// the aggregate keeps referencing the REAL projected column.
+    ///
+    /// The single-type VLP path (a plain recursive CTE, no internal UNION)
+    /// never routes through these helpers and was already correct.
+    #[tokio::test]
+    async fn multi_type_vlp_aggregate_order_by_endpoint_no_dangling_order_col_788() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+
+        let sql = render(
+            &schema,
+            "MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x) WHERE u.user_id=1 \
+             RETURN u.city, count(*) ORDER BY u.city",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        // The outer aggregate must reference the REAL inner-union column, not
+        // the dropped ORDER BY helper alias.
+        assert!(
+            sql.contains("anyLast(`t.start_city`)"),
+            "#788: outer aggregate must wrap the real projected column \
+             t.start_city, which the inner UNION actually exports:\n{sql}"
+        );
+        assert!(
+            !sql.contains("__order_col"),
+            "#788: no `__order_col_*` may survive into the outer projection — \
+             those items are dropped from the inner UNION, so any reference to \
+             one dangles (Code 47):\n{sql}"
+        );
+        // GROUP BY and ORDER BY both resolve to the real column too.
+        assert!(
+            sql.contains("GROUP BY `t.start_city`"),
+            "#788: GROUP BY must reference the real grouped column:\n{sql}"
+        );
+        assert!(
+            sql.contains("ORDER BY t.start_city ASC"),
+            "#788: ORDER BY must reference the real grouped column:\n{sql}"
+        );
+    }
+
     /// alias `t` in the outer SELECT even when the relationship actually
     /// routes through a `pattern_union_r AS r` CTE (both endpoints
     /// unlabeled) — unbound `t.path_relationships`, ClickHouse Code 47. The

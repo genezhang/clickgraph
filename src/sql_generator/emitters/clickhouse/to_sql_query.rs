@@ -3842,10 +3842,28 @@ fn build_outer_aggregate_select(
     // This maps raw expression SQL (e.g., "n.answers") to the output alias
     // (e.g., "n.resolved_ip") so aggregate expressions can reference the correct
     // UNION output column when the raw DB column name differs from the alias.
+    //
+    // #788: exclude `__order_col_N` synthetic items — exactly as
+    // `build_aliased_group_by` does below. These ORDER BY helper items carry
+    // the SAME expression as a grouped property (e.g. `ORDER BY u.city` →
+    // `__order_col_0` whose expression is `t.start_city`), and
+    // `build_union_inner_select` deliberately drops ALL `__order_col_*` items
+    // from the inner UNION branches. If left in this map, the agg-argument
+    // rewrite below would turn `anyLast(t.start_city)` into
+    // `anyLast(\`__order_col_0\`)` — a reference to a column that never exists
+    // in the `__union` derived table (ClickHouse UNKNOWN_IDENTIFIER Code 47,
+    // #503 family). Excluding them lets the aggregate keep referencing the
+    // real projected column via the `agg_arg_cols` rewrite instead.
     let expr_to_alias: std::collections::BTreeMap<String, String> = select
         .items
         .iter()
         .filter(|item| !render_expr_contains_aggregate(&item.expression))
+        .filter(|item| {
+            !item
+                .col_alias
+                .as_ref()
+                .is_some_and(|a| a.0.starts_with("__order_col"))
+        })
         .filter_map(|item| {
             item.col_alias
                 .as_ref()
