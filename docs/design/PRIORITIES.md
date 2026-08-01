@@ -457,6 +457,27 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-01: **P-1 — `round()` matches Neo4j semantics (was ClickHouse banker's
+  rounding)** (PR #848, branch `fix/round-neo4j-half-up-fidelity`). Silent-wrong
+  openCypher fidelity bug from the same live hunt: `round`→CH `round` = HALF_EVEN
+  (`round(2.5)=2`, `round(0.5)=0`). Verified against Neo4j 5.25
+  `CypherFunctions.java`: Neo4j `round()` is TWO branches — 1-arg + 2-arg-`0` use
+  `Math.round`=`floor(x+0.5)` (ties toward +∞), 2-arg d≠0 uses
+  `BigDecimal.setScale(d, HALF_UP)` (away-from-zero on the shortest decimal
+  string). New dialect helper `round_half_up_sql` (common.rs), routed Path A + C
+  per Rule #7: CH 1-arg/prec-0 = `floor(x+0.5)`; CH 2-arg = decimal-domain HALF_UP
+  via `toDecimal128(toString(x),18)` with a decimal `+0.5` (a Float64 0.5 promotes
+  the product back to float → ties collapse down) and a `1e15` lazy-`if` guard
+  against Decimal(38,18) overflow (exact — Float64 has no fractional bits past
+  2^52 so round(x,d)==x there, as Neo4j returns); 3-arg explicit-mode falls
+  through to CH native → LOUD Code 42 (not silent). Databricks byte-identical
+  (Spark round already matches Neo4j). TWO rounds of adversarial review vs the
+  Neo4j reference corrected the initial away-from-zero formula (wrong on negative
+  ties) then a float-0.5 promotion bug (wrong at magnitude/precision). Live sweep
+  (negatives/ties/prec-0/decimal/overflow/NULL/columns/WHERE-CTE) all match Neo4j;
+  5 unit + 1 golden test assert correct values. Gate: fmt · clippy · 1611 lib · 244
+  golden · corpus byte-identical (0 churn) · ratchet net-zero.
+
 - 2026-08-01: **P-1 — OPTIONAL MATCH over FK-edge-to-node table drops unmatched
   anchor rows** (PR #845, branch `fix/optional-fk-edge-anchor-inversion`). Silent
   DATA LOSS found via a live silent-wrong bug hunt: `MATCH (u:User) OPTIONAL MATCH
@@ -478,12 +499,11 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   mandatory users table (real data loss) — now preserved. 8 goldens, +1 regression
   test. Adversarial review APPROVE-0 (both guards stress-tested live incl. an
   over-fire probe). **Two secondary silent-wrong findings from the same hunt
-  DEFERRED** (different class — Cypher function-semantics fidelity, needs a small
-  Neo4j-compat policy call, not one-off patching): (1) `round()` uses CH banker's
-  rounding (`round(2.5)`→2) vs Neo4j half-away-from-zero (→3), root
-  `function_registry.rs` round→round 1:1; (2) integer division `7/2`→3.5 (Cypher
-  int/int should be 3 via intDiv), root `Operator::Division` renders `/`
-  unconditionally without operand-type awareness.
+  (Cypher function-semantics fidelity):** (1) `round()` HALF_EVEN-vs-Neo4j —
+  **FIXED #848** (see entry above); (2) integer division `7/2`→3.5 (Cypher int/int
+  should be 3 via intDiv) — **FILED #847** (design-cycle: needs operand type
+  inference in `Operator::Division`, column operands untypeable without schema
+  column types).
 
 - 2026-08-01: **SQL-IR Phase 2 — route Path C `ReduceExpr` through `reduce_fold_sql`**
   (PR #842, branch `refactor/sql-ir-path-c-reduce-fold-dialect`). Another of the
