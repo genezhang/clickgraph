@@ -17,7 +17,7 @@ INNER JOIN test_integration.posts_test p2 ON r1.post_id = p2.post_id
 WHERE (u_1.user_id = 1)
 )
 SELECT 
-      t.path_relationships[1] AS "type(r)", 
+      arrayElementOrNull(t.path_relationships, 1) AS "type(r)", 
       t.end_properties AS "target.properties", 
       t.end_id AS "target.id", 
       t.end_type AS "target.__label__"

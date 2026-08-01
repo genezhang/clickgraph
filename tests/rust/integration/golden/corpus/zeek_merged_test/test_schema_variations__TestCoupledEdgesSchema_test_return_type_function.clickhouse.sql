@@ -10,7 +10,7 @@ INNER JOIN zeek.dns_log n2 ON ip_1."id.orig_h" = n2."id.orig_h"
 WHERE (ip_1."id.orig_h" = '192.168.1.10')
 )
 SELECT 
-      t.path_relationships[1] AS "type(r)", 
+      arrayElementOrNull(t.path_relationships, 1) AS "type(r)", 
       t.end_properties AS "target.properties", 
       t.end_id AS "target.id", 
       t.end_type AS "target.__label__"

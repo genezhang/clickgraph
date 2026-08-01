@@ -5,7 +5,7 @@ INNER JOIN test_integration.user_follows_test r1 ON a_1.user_id = r1.follower_id
 INNER JOIN test_integration.users_test u2 ON r1.followed_id = u2.user_id
 )
 SELECT 
-      t.path_relationships[1] AS "type(r)", 
+      arrayElementOrNull(t.path_relationships, 1) AS "type(r)", 
       count(*) AS "cnt"
 FROM vlp_multi_type_a_b AS t
-GROUP BY t.path_relationships[1]
+GROUP BY arrayElementOrNull(t.path_relationships, 1)

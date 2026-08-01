@@ -60,7 +60,7 @@ INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
 WHERE r1.interaction_type = 'SHARED' AND r1.from_type = 'User' AND r1.to_type = 'User' AND (u_1.user_id = 1)
 )
 SELECT 
-      t.path_relationships[1] AS "type(r)", 
+      arrayElementOrNull(t.path_relationships, 1) AS "type(r)", 
       t.end_properties AS "target.properties", 
       t.end_id AS "target.id", 
       t.end_type AS "target.__label__"

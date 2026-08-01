@@ -235,9 +235,11 @@ const CORPUS: &[(&str, &str)] = &[
     ),
     // type(r) on a multi-type edge reads the CTE's `path_relationships` array.
     // Regression guard for the array-index fix: the FIRST relationship is index 0
-    // (Cypher 0-based) -> renders 1-based as CH `path_relationships[1]` and
-    // Databricks `element_at(path_relationships, 1)`. The previous `[2]` was out of
-    // bounds on a 1-element array (CH silently returned ""; Databricks errored).
+    // (Cypher 0-based) -> renders 1-based as CH
+    // `arrayElementOrNull(path_relationships, 1)` and Databricks
+    // `element_at(path_relationships, 1)`. The previous `[2]` was out of bounds on
+    // a 1-element array (CH silently returned ""; Databricks errored — now both
+    // return NULL out of bounds via the null-safe accessor).
     (
         "multi_type_rel_type_fn",
         "MATCH (a:User)-[r:FOLLOWS|AUTHORED]->(b) RETURN type(r) AS t",
@@ -273,10 +275,21 @@ const CORPUS: &[(&str, &str)] = &[
     // offset by +1). The old +1 shifted -1 -> 0, and CH `arr[0]` silently returned
     // the type default (0) instead of the last element. Guards CH `[-1]` /
     // Databricks `element_at(..., -1)`; a non-negative index (index0 -> [1]) is the
-    // control.
+    // control. Both indices go through `arrayElementOrNull` (CH) / `element_at`
+    // (Spark) so an out-of-range sibling index would surface as NULL.
     (
         "list_index_negative",
         "MATCH (u:User) RETURN [10, 20, 30][-1] AS last, [10, 20, 30][0] AS first",
+    ),
+    // Out-of-bounds list index: openCypher `list[i]` returns NULL when i is past
+    // either end (Neo4j semantics), NOT the element type's default. CH `arr[i]`/
+    // `arrayElement` silently returns 0/'' for an out-of-range index, so CH must
+    // route through `arrayElementOrNull`; Spark `element_at` already returns NULL
+    // on out-of-bounds. `[10]` (past the end) and `[-10]` (before the start) both
+    // must yield NULL; `[0]` (first) is the in-bounds control.
+    (
+        "list_index_out_of_bounds",
+        "MATCH (u:User) RETURN [10, 20, 30][10] AS oob_hi, [10, 20, 30][-10] AS oob_lo, [10, 20, 30][0] AS first",
     ),
     // Dialect function-name mappings (regression for the Databricks overrides):
     // replace -> CH replaceAll / Spark replace; head/last -> CH arrayElement /
@@ -12352,7 +12365,7 @@ mod label_id_resolution_family_536_537_539_540_541_526_527 {
         .await;
         assert!(
             distinct_sql.contains(
-                "tuple(r.start_type, r.start_id, r.end_type, r.end_id, r.path_relationships[1])"
+                "tuple(r.start_type, r.start_id, r.end_type, r.end_id, arrayElementOrNull(r.path_relationships, 1))"
             ),
             "#526: count(DISTINCT r) must build a full row-identity tuple \
              over the CTE's label-agnostic columns (type-paired with id, \

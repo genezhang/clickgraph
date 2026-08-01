@@ -11,9 +11,9 @@ INNER JOIN social.user_follows_bench r1 ON a_1.user_id = r1.follower_id
 INNER JOIN social.users_bench u2 ON r1.followed_id = u2.user_id
 )
 SELECT 
-      t.path_relationships[1] AS "t"
+      arrayElementOrNull(t.path_relationships, 1) AS "t"
 FROM vlp_multi_type_a_b AS t
 UNION ALL 
 SELECT 
-      t.path_relationships[1] AS "t"
+      arrayElementOrNull(t.path_relationships, 1) AS "t"
 FROM vlp_multi_type_a_b_2 AS t

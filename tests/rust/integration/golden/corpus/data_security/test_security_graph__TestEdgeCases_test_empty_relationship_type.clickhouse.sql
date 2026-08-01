@@ -13,7 +13,7 @@ WHERE r1.member_type = 'User'
 )
 SELECT 
       JSONExtractString(t.start_properties, 'name') AS "u.name", 
-      t.path_relationships[1] AS "type(r)", 
+      arrayElementOrNull(t.path_relationships, 1) AS "type(r)", 
       JSONExtractString(t.end_properties, 'name') AS "g.name"
 FROM vlp_multi_type_u_g AS t
 LIMIT 5

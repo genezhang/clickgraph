@@ -36,6 +36,17 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// 1-based array indexing. CH: `arrayElement`. Spark: `element_at`.
     fn array_element(&self) -> &'static str;
 
+    /// 1-based array indexing that yields NULL when the index is out of
+    /// bounds (either end) — the openCypher contract for `list[i]`
+    /// (Neo4j returns `null`, not a type default). CH `arrayElement`/`arr[i]`
+    /// silently returns the element type's default (`0`, `''`) for an
+    /// out-of-range index, so CH must use `arrayElementOrNull(arr, i)`.
+    /// Spark's `element_at(arr, i)` already returns NULL on out-of-bounds
+    /// (non-ANSI default), so Databricks keeps `element_at` — byte-identical
+    /// to the plain `array_element` accessor. `arr` and `idx` are
+    /// pre-rendered SQL fragments (the caller applies the 1-based offset).
+    fn array_element_or_null(&self, arr: &str, idx: &str) -> String;
+
     /// Conditional count. CH: `countIf`. Spark: `count_if` (DBR 13.1+).
     fn count_if(&self) -> &'static str;
 

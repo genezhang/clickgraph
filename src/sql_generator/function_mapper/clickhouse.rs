@@ -14,6 +14,14 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         "arrayElement"
     }
 
+    fn array_element_or_null(&self, arr: &str, idx: &str) -> String {
+        // CH `arr[i]`/`arrayElement` return the element type's default (0, '')
+        // for an out-of-range index; `arrayElementOrNull` returns NULL instead,
+        // matching openCypher `list[i]` out-of-bounds semantics. In-bounds and
+        // negative (from-the-end) indices behave identically to `arrayElement`.
+        format!("arrayElementOrNull({}, {})", arr, idx)
+    }
+
     fn count_if(&self) -> &'static str {
         "countIf"
     }
@@ -184,6 +192,22 @@ mod tests {
         let m = ClickhouseFunctionMapper;
         assert_eq!(m.array_slice("a", "2", Some("3")), "arraySlice(a, 2, 3)");
         assert_eq!(m.array_slice("a", "2", None), "arraySlice(a, 2)");
+    }
+
+    #[test]
+    fn array_element_or_null_uses_clickhouse_null_returning_accessor() {
+        // CH `arr[i]`/`arrayElement` return the type default (0/'') on
+        // out-of-bounds; `arrayElementOrNull` returns NULL, matching the
+        // openCypher `list[i]` contract.
+        let m = ClickhouseFunctionMapper;
+        assert_eq!(
+            m.array_element_or_null("[10, 20, 30]", "11"),
+            "arrayElementOrNull([10, 20, 30], 11)"
+        );
+        assert_eq!(
+            m.array_element_or_null("names", "if((0 - 1) >= 0, (0 - 1)+1, (0 - 1))"),
+            "arrayElementOrNull(names, if((0 - 1) >= 0, (0 - 1)+1, (0 - 1)))"
+        );
     }
 
     #[test]
