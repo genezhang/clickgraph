@@ -21,10 +21,10 @@ Status: **design cycle, not scheduled**. Author: SQL-IR track. Companion to
 Today two functions turn a `RenderExpr` into a SQL string:
 
 - **Path A** — `RenderExpr::to_sql()`
-  (`src/sql_generator/emitters/clickhouse/to_sql_query.rs:6461`). Canonical
-  final-SELECT renderer; covers all 20 live `RenderExpr` variants; dialect-aware
-  via `FunctionMapper`/registry. Resolves table qualifiers **implicitly** from
-  `query_context` task-locals.
+  (`src/sql_generator/emitters/clickhouse/to_sql_query.rs:6513`, impl block at
+  `:6511`). Canonical final-SELECT renderer; covers all 20 live `RenderExpr`
+  variants; dialect-aware via `FunctionMapper`/registry. Resolves table qualifiers
+  **implicitly** from `query_context` task-locals.
 - **Path C** — `render_expr_to_sql_string(expr, alias_mapping)`
   (`src/render_plan/cte_extraction.rs:1662`). Runs at **CTE-build time**; covers
   all 20 variants (exhaustive); resolves table qualifiers **explicitly** from a
@@ -51,16 +51,31 @@ for, and it runs at a stage where A's inputs do not yet exist.
 ### 2.1 Two-stage timing
 
 C runs during CTE construction (`extract_ctes_with_context`,
-`plan_builder.rs:237`). A runs during final-SELECT emission. The alias-resolution
-task-locals A relies on — the `cte_alias_to_cte_name` registry
-(`query_context.rs:1033`), the variable registry (`:685`), the VLP-alias set —
-are **populated for the final SELECT, not yet at CTE-build time.** Point C's
-call sites at A *as-is today* and a Cypher alias `a` resolves to itself (or
-mis-resolves) instead of the CTE-local `start_node`.
+`plan_builder.rs:237`; concrete body `cte_extraction.rs:2594`). A runs during
+final-SELECT emission. The alias-resolution task-locals A relies on are all
+populated late, inside `render_plan_to_sql()` via `set_all_render_contexts(...)`
+(`to_sql_query.rs:4863` — the variable registry at `:4876`, `cte_alias_to_cte_name`
+at `:4863-4869`); the `cte_alias_to_cte_name` field's own doc-comment
+(`query_context.rs:180`) says "Set once during `render_plan_to_sql()`". Path C
+runs *before* that. So these registries are **populated for the final SELECT, not
+yet at CTE-build time.** Point C's call sites at A *as-is today* and a Cypher
+alias `a` resolves to itself (via the `column.to_sql(&table_alias.0)` fallback)
+instead of the CTE-local `start_node`.
+
+The seam that matters for property-qualifier resolution is the **variable
+registry** (`get_current_variable_registry`, `query_context.rs:685`): A's
+`PropertyAccessExp` arm resolves through `resolve_with_current_registry`
+(`to_sql_query.rs:6859+`) and only falls back to the literal alias when the
+registry misses. (`cte_alias_to_cte_name` / `get_cte_name_for_alias` is a
+*separate* registry, read at exactly one site — the IN/NOT-IN subquery-rewrite
+helper `try_rewrite_in_cte_subquery`, `to_sql_query.rs:314-327` — **not** the
+property-render arm; see §4 Option B.) Both registries populate at the same late
+stage, so the timing blocker holds regardless of which one a given expression
+would consult.
 
 Note the constraint is specific: C **does** already read *some* task-locals
 (`get_current_schema`, `get_current_dialect`, `register_relationship_cte_name`,
-…). It is the **alias-qualifier registry** in particular that is absent at C's
+…). It is the **alias-qualifier registries** in particular that are absent at C's
 stage — not the whole context.
 
 ### 2.2 The `alias_mapping` rewrite is content-dependent
@@ -124,8 +139,9 @@ impl RenderExpr {
 ```
 
 When `Some`, the `PropertyAccessExp` arm consults the override slice **before**
-falling back to the implicit `get_cte_name_for_alias` registry; when `None`, it
-is byte-identical to today.
+falling back to its implicit resolution (the variable registry via
+`resolve_with_current_registry`, then the literal-alias
+`column.to_sql(&table_alias.0)`); when `None`, it is byte-identical to today.
 
 - **Pro:** smallest blast radius. Final-SELECT path passes `None` → provably
   unchanged (the byte-identity argument is a one-liner). No change to *when*
@@ -141,42 +157,57 @@ is byte-identical to today.
 
 ### Option B — pre-install the alias registry into `query_context` at CTE-build
 
-Populate the `cte_alias_to_cte_name` registry earlier so A's *implicit*
-resolution already works during CTE build. **This seam already exists and is
-already load-bearing:** `set_cte_alias_scope(mapping)` (`query_context.rs:1042`)
-installs a scoped mapping and **returns the previous one for restore**, and Path
-A's `PropertyAccessExp` arm **already reads it** via `get_cte_name_for_alias`
-(`to_sql_query.rs:327`). So Option B is not inventing a mechanism — it is calling
-an existing one at C's call sites:
+Populate A's alias-resolution registry earlier so A's *implicit* resolution
+already works during CTE build, then delete the `alias_mapping` param entirely.
+
+**Which registry is the seam — get this right (a first draft of this doc got it
+wrong).** A's `PropertyAccessExp` render arm resolves through the **variable
+registry** (`resolve_with_current_registry` → `get_current_variable_registry`,
+`query_context.rs:685`), *not* through `cte_alias_to_cte_name`. The
+`set_cte_alias_scope`/`get_cte_name_for_alias` pair (`query_context.rs:1042`/
+`:1033`) is real and does the scoped save-replace-restore its contract advertises
+— **but it is read at exactly one site**, the IN/NOT-IN subquery-rewrite helper
+`try_rewrite_in_cte_subquery` (`to_sql_query.rs:314-327`), reached only from the
+`OperatorApplication` arms for `In`/`NotIn`. Installing an `a → start_node` map
+via `set_cte_alias_scope` would therefore change **IN-subquery FROM generation
+only** and would *not* make A render `a.name` as `start_node.name`. So Option B's
+real seam is the **variable registry**, and the mechanism is *not* free: it means
+either (a) constructing and installing a `VariableRegistry` (or a lightweight
+alias→qualifier overlay it consults) into `query_context` at each CTE-build filter
+site, with save/restore, or (b) extending A's `PropertyAccessExp` arm to consult a
+second, CTE-build-populated overlay. Both are more than "call an existing setter."
 
 ```rust
-// At each CTE-build filter site, instead of passing alias_mapping to C:
-let prev = set_cte_alias_scope(mapping.into_iter().collect());
-let sql = expr.to_sql();                 // A resolves through the scope we just set
-set_cte_alias_scope(prev);               // restore (save/replace/restore, already the API's contract)
+// At each CTE-build filter site, in spirit:
+let prev = install_alias_overlay(mapping);   // NEW plumbing over the variable-registry seam
+let sql = expr.to_sql();                      // A resolves through the overlay we just set
+restore_alias_overlay(prev);                  // save/replace/restore
 ```
 
-- **Pro:** true single printer — `alias_mapping` param deleted entirely, C gone.
-  Uses the exact registry A already consults, so resolution semantics converge by
-  construction.
-- **Con / risk:** highest. Two real hazards:
-  1. **The content-dependent *selection*** (§2.2) must still happen *before* the
-     scope is set — you install `rel_alias_mapping` vs `alias_mapping` based on
+- **Pro:** if the overlay is wired correctly, a true single printer —
+  `alias_mapping` param deleted entirely, C gone.
+- **Con / risk:** highest, and higher than the first draft implied because the
+  seam needs new plumbing (not just `set_cte_alias_scope`). Three real hazards:
+  1. **Seam construction.** There is no existing one-call setter that makes A's
+     property arm resolve a CTE-build alias map; it must be built over the
+     variable-registry path. That is design work, not a redirect.
+  2. **The content-dependent *selection*** (§2.2) must still happen *before* the
+     overlay is installed — you choose `rel_alias_mapping` vs `alias_mapping` by
      the same `expr_uses_alias` test. So the selection logic survives at the call
      site here too; Option B removes the *renderer* duplication but not the
      *mapping-choice* duplication (same as Option A).
-  2. **Scope hygiene under recursion / nested CTEs.** `set_cte_alias_scope` is a
-     whole-map replace, not a merge. If a filter expression triggers nested
-     rendering that itself sets a scope, the save/restore must nest correctly.
-     This is where a silent cross-CTE mis-qualification would hide, and it is why
-     Option B needs the full-corpus byte-identity spike before any real
-     migration.
+  3. **Scope hygiene under recursion / nested CTEs.** Any scoped install is a
+     save/replace/restore; if a filter expression triggers nested rendering that
+     itself installs a scope, the nesting must be correct. This is where a silent
+     cross-CTE mis-qualification would hide, and it is why Option B needs the
+     full-corpus byte-identity spike before any real migration.
 
 **Recommendation: start with Option A.** It captures most of the payoff
-(duplicate renderer deleted) at a fraction of the risk, and it does not foreclose
-Option B later — once the printer takes an optional mapping, migrating call sites
-to set a scope instead is an incremental follow-up if the residual shim proves
-worth removing.
+(duplicate renderer deleted) at a fraction of the risk — the override arm lives
+in A's own `PropertyAccessExp` handling, no task-local plumbing — and it does not
+foreclose Option B later. Option B's appeal (fully deleting the param) is real but
+its cost was understated in the first draft: the variable-registry seam it needs
+does not exist as a ready setter.
 
 ## 5. The byte-identity spike (must precede any migration)
 

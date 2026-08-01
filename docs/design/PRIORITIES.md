@@ -413,8 +413,10 @@ fixed stats fixture.
   DESIGN CYCLE (stage/timing constraint), NOT a mechanical step — **written up in
   `docs/design/PATH_C_COLLAPSE.md`** (two viable options — thread an optional
   alias-mapping arg into the shared printer [lower-risk, recommended] vs
-  pre-install the alias registry into `query_context` at CTE-build via the
-  existing `set_cte_alias_scope` seam; the byte-identity spike gate; the
+  install an alias overlay over A's variable-registry seam at CTE-build [fully
+  deletes the param but needs new plumbing, not the one-call `set_cte_alias_scope`
+  — that setter only drives IN-subquery FROM generation, not property qualifiers];
+  the byte-identity spike gate; the
   34-call-site batching plan; trigger conditions = a Path-C Databricks bug or a
   third dialect). Its drift items (backtick-vs-doublequote quoting,
   latent-unreached hardcoded `POWER`/`arrayFold`/map/CASE arms — verified 0
