@@ -330,7 +330,15 @@ lazy_static::lazy_static! {
             arg_transform: None,
         });
 
-        // round() -> round() [1:1 mapping]
+        // round() — registry entry keeps round() recognized as a supported
+        // function (is_function_supported / passthrough), but the 1-arg/2-arg
+        // ScalarFnCall render sites intercept it BEFORE this name-map and route
+        // through common::round_half_up_sql: Neo4j round() is Math.round
+        // (floor(x+0.5)) for 1-arg and precision-0, and BigDecimal HALF_UP
+        // (away-from-zero) for 2-arg with d != 0 — neither matches CH's native
+        // HALF_EVEN round, so a plain name-map would be a silent fidelity bug on
+        // ClickHouse. Databricks round() already matches Neo4j and stays a plain
+        // call.
         m.insert("round", FunctionMapping {
             neo4j_name: "round",
             clickhouse_name: "round",

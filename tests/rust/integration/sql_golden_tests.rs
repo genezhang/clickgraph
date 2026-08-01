@@ -15239,3 +15239,91 @@ async fn multi_type_vlp_endpoint_non_id_property_scoping_716() {
         );
     }
 }
+
+/// Neo4j 5.25 `round()` (`CypherFunctions.java`) has two branches, and neither
+/// matches ClickHouse's native HALF_EVEN `round`, so a plain name-map is a
+/// silent fidelity bug. ClickGraph emits Neo4j-faithful SQL on CH:
+///   - 1-arg `round(x)` and 2-arg `round(x, 0)` = Java `Math.round` =
+///     `floor(x + 0.5)` (ties toward +∞: `round(2.5)`=3, `round(-2.5)`=-2).
+///   - 2-arg `round(x, d)`, d ≠ 0 = `BigDecimal.setScale(d, HALF_UP)` =
+///     away-from-zero on the shortest decimal string, via
+///     `toDecimal128(toString(x))` (`round(0.125,2)`=0.13, `round(0.575,2)`=0.58).
+/// Spark/Databricks `round()` already matches Neo4j and stays a plain call
+/// (byte-identical). Locks the CH spellings + the 3-arg loud fall-through.
+#[tokio::test]
+async fn round_neo4j_faithful_dialect_spellings() {
+    let schema = load_schema("schemas/dev/social_standard.yaml");
+
+    // ClickHouse 1-arg: Math.round = floor(x + 0.5), NOT native round().
+    let ch_1 = render(&schema, "RETURN round(2.5) AS r", SqlDialect::ClickHouse).await;
+    assert!(
+        ch_1.contains("floor(2.5 + 0.5)"),
+        "CH 1-arg round() must emit Math.round floor(x + 0.5), got:\n{ch_1}"
+    );
+    assert!(
+        !ch_1.contains("round(2.5)"),
+        "CH round() must NOT emit the HALF_EVEN native round(), got:\n{ch_1}"
+    );
+
+    // ClickHouse 2-arg with precision literally 0 ALSO uses Math.round.
+    let ch_0 = render(
+        &schema,
+        "RETURN round(-2.5, 0) AS r",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        ch_0.contains("floor(0 - 2.5 + 0.5)"),
+        "CH round(x, 0) must use the Math.round branch floor(x + 0.5) \
+         (so round(-2.5, 0) = -2), got:\n{ch_0}"
+    );
+
+    // ClickHouse 2-arg (d != 0): decimal HALF_UP away-from-zero.
+    let ch_2 = render(
+        &schema,
+        "RETURN round(0.125, 2) AS r",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        ch_2.contains(
+            "if(abs(0.125) >= 1e15, 0.125, \
+             sign(0.125) * floor(abs(toDecimal128(toString(0.125), 18)) \
+             * toDecimal128(pow(10, 2), 0) + toDecimal128('0.5', 18)) / pow(10, 2))"
+        ),
+        "CH 2-arg round() must emit the decimal HALF_UP formula \
+         (decimal 0.5 + overflow guard), got:\n{ch_2}"
+    );
+
+    // 3-arg explicit-mode form falls through to native round(), which takes at
+    // most 2 args on CH and therefore fails LOUD (Code 42) — unsupported, not
+    // silently mis-rounded.
+    let ch_3 = render(
+        &schema,
+        "RETURN round(2.5, 1, 'HALF_EVEN') AS r",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        ch_3.contains("round(2.5, 1, 'HALF_EVEN')"),
+        "CH 3-arg explicit-mode round() must fall through to native round() \
+         (fails loud at the DB), got:\n{ch_3}"
+    );
+
+    // Spark/Databricks round() already matches Neo4j — stays a plain call.
+    let dbx_1 = render(&schema, "RETURN round(2.5) AS r", SqlDialect::Databricks).await;
+    assert!(
+        dbx_1.contains("round(2.5)") && !dbx_1.contains("floor("),
+        "Spark round() must stay a plain (already-faithful) call, got:\n{dbx_1}"
+    );
+    let dbx_2 = render(
+        &schema,
+        "RETURN round(0.125, 2) AS r",
+        SqlDialect::Databricks,
+    )
+    .await;
+    assert!(
+        dbx_2.contains("round(0.125, 2)") && !dbx_2.contains("floor("),
+        "Spark 2-arg round() must stay a plain call, got:\n{dbx_2}"
+    );
+}
