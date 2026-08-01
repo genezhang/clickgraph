@@ -457,6 +457,45 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-01: **#637 — implicit GROUP BY drops grouping keys buried inside
+  aggregate-containing items (RETURN + WITH barriers)** (`fix/637-buried-grouping-keys`).
+  A grouping key buried inside a RETURN/WITH item that ALSO contains an aggregate
+  (`RETURN a.user_id + count(b)`, `RETURN a.city + ':' + toString(count(b))`,
+  `WITH a.user_id + count(b) AS x`) was dropped → no GROUP BY emitted → ClickHouse
+  Code 215 NOT_AN_AGGREGATE (silent wrong buckets on lenient backends). Root cause
+  was **independent aggregate/non-aggregate split sites across phases**, each
+  keying GROUP BY on whole aggregate-FREE items only: analyzer
+  `group_by_building.rs` (RETURN barrier) and render `with_to_cte/mod.rs:~7852`
+  (WITH barrier). Fix: one shared exhaustive `collect_grouping_keys` in
+  `logical_expr/visitors.rs` (built on `HasAggregateCheck`/`walk_expression`)
+  returning the **maximal aggregate-free sub-expression(s)** that reference a
+  column/alias; routed through both barriers; the RETURN-barrier's incomplete
+  local `contains_aggregate` (missed the legacy `Operator` variant + array/map
+  containers) retired in favor of `HasAggregateCheck`. Maximal-subtree (not
+  leaf-fragment) semantics keeps the existing `CASE…END`/`u1.name` corpus grouping
+  keys byte-identical AND renders valid CH (`GROUP BY concat(a.city, ':')` matches
+  the SELECT's non-aggregate operand). Behavior-preserving split: aggregate-free
+  whole items pushed as before (incl. constant keys, `RETURN 'all_users', count(n)`
+  → `GROUP BY 'all_users'`), buried keys added; deduped structurally. **0 corpus
+  churn** (1,229 queries × 2 dialects — verified independently + by Explore agent;
+  no corpus query mixed a column ref with an aggregate in one item). Gate: fmt ·
+  clippy clean · full lib+integration+doctests · corpus_sweep + sql_golden (+3 new
+  #637 goldens, fail-when-reverted) 0 churn · ratchet net-zero. No live CH in env —
+  correctness bar is SQL shape + byte goldens + full gate (the required
+  `GROUP BY a.id` with `a.id + count(...)` in SELECT is standard SQL).
+  **THIRD SITE DEFERRED:** the UNION-return builder `return_clause.rs`
+  `build_union_with_aggregation` (~741) has the same buried-key gap, but a correct
+  fix there needs additional inner-UNION projection plumbing (the collected
+  grouping expr must reference a column the inner `__union` actually projects) — an
+  isolated `collect_grouping_keys` swap is **inert** (byte-identical to main;
+  verified via branch-vs-main diff on the `#503` denorm shape). Filed as
+  **follow-up #844**; NOT fixed here to keep the change honest and byte-locked.
+  Adversarial review (general-purpose subagent): SUBSTANTIVE COUNT 1 (the missing
+  site-3 lock), which on follow-through revealed the site-3 change was inert — hence
+  the deferral. **Closes #637 (RETURN+WITH); also closes #600** (sub-defects 2
+  `name`→`full_name` inline-map WHERE + 3 stDev-post-WITH were already fixed on main
+  via #638/#551; sub-defect 1 == #637, now fixed for RETURN+WITH).
+
 - 2026-08-01: **P-1 — `round()` matches Neo4j semantics (was ClickHouse banker's
   rounding)** (PR #848, branch `fix/round-neo4j-half-up-fidelity`). Silent-wrong
   openCypher fidelity bug from the same live hunt: `round`→CH `round` = HALF_EVEN
@@ -477,6 +516,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   (negatives/ties/prec-0/decimal/overflow/NULL/columns/WHERE-CTE) all match Neo4j;
   5 unit + 1 golden test assert correct values. Gate: fmt · clippy · 1611 lib · 244
   golden · corpus byte-identical (0 churn) · ratchet net-zero.
+
 
 - 2026-08-01: **P-1 — OPTIONAL MATCH over FK-edge-to-node table drops unmatched
   anchor rows** (PR #845, branch `fix/optional-fk-edge-anchor-inversion`). Silent
@@ -505,6 +545,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   inference in `Operator::Division`, column operands untypeable without schema
   column types).
 
+
 - 2026-08-01: **SQL-IR Phase 2 — route Path C `ReduceExpr` through `reduce_fold_sql`**
   (PR #842, branch `refactor/sql-ir-path-c-reduce-fold-dialect`). Another of the
   independent Path-C drift slices the §3.5 investigation flagged as shippable
@@ -528,6 +569,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   init_cast, re-export reachability, churn honesty all independently verified).
   **Remaining Path-C hardcoded arm:** `POWER` (Exponentiation) at
   `cte_extraction.rs:1750` — parser-unreachable dead code (§6/P-6), zero urgency.
+
 
 - 2026-07-30: **#689 bug 1 — heterogeneous from-side-polymorphic VLP recursive
   CTE joins the right end table** (#828, `c013c07a`). A directed VLP over a

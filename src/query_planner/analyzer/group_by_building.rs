@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use crate::query_planner::{
     analyzer::analyzer_pass::{AnalyzerPass, AnalyzerResult},
+    logical_expr::visitors::{self, HasAggregateCheck},
     logical_expr::LogicalExpr,
-    logical_plan::{GroupBy, LogicalPlan, Projection, ProjectionItem},
+    logical_plan::{GroupBy, LogicalPlan, Projection},
     plan_ctx::PlanCtx,
     transformed::Transformed,
 };
@@ -43,42 +44,6 @@ impl GroupByBuilding {
                     .any(|item| Self::references_projection_alias(item, plan_ctx))
             }
             // Other expression types don't contain aliases
-            _ => false,
-        }
-    }
-
-    /// Check if an expression contains any aggregate function calls (recursively).
-    /// This is needed to detect computed aggregates like COUNT(b) * 10.
-    fn contains_aggregate(expr: &LogicalExpr) -> bool {
-        match expr {
-            LogicalExpr::AggregateFnCall(_) => true,
-            LogicalExpr::OperatorApplicationExp(op) => {
-                op.operands.iter().any(Self::contains_aggregate)
-            }
-            LogicalExpr::ScalarFnCall(func) => func.args.iter().any(Self::contains_aggregate),
-            LogicalExpr::List(list) => list.iter().any(Self::contains_aggregate),
-            LogicalExpr::Case(case_expr) => {
-                // Check if CASE expression contains aggregates in:
-                // 1. The optional simple CASE expression
-                // 2. Any WHEN condition or THEN value
-                // 3. The optional ELSE expression
-                if let Some(expr) = &case_expr.expr {
-                    if Self::contains_aggregate(expr) {
-                        return true;
-                    }
-                }
-                for (when_cond, then_val) in &case_expr.when_then {
-                    if Self::contains_aggregate(when_cond) || Self::contains_aggregate(then_val) {
-                        return true;
-                    }
-                }
-                if let Some(else_expr) = &case_expr.else_expr {
-                    if Self::contains_aggregate(else_expr) {
-                        return true;
-                    }
-                }
-                false
-            }
             _ => false,
         }
     }
@@ -124,24 +89,47 @@ impl GroupByBuilding {
     ) -> Transformed<Arc<LogicalPlan>> {
         match node.as_ref() {
             LogicalPlan::Projection(projection) => {
-                // Use contains_aggregate to properly detect aggregates including computed expressions
-                let non_agg_projections: Vec<ProjectionItem> = projection
+                // Split items into aggregate-containing and aggregate-free, and
+                // build the implicit GROUP BY keys.
+                //
+                // #637: a grouping key can be BURIED inside an item that also
+                // contains an aggregate (e.g. `a.city` in
+                // `a.city + toString(count(b))`). The old code keyed GROUP BY on
+                // whole aggregate-free items only, so such buried keys were
+                // dropped and no GROUP BY was emitted → ClickHouse Code 215.
+                //
+                // Behavior-preserving split:
+                //  - aggregate-FREE item  → push the WHOLE item as a key,
+                //    byte-identically to the old path (incl. constant keys like
+                //    `RETURN 'all_users', count(n)` → `GROUP BY 'all_users'`).
+                //  - aggregate-CONTAINING item → extract its buried
+                //    non-aggregate keys via the shared `collect_grouping_keys`
+                //    (the #637 fix; empty for an aggregates-only item).
+                let has_aggregate = projection
                     .items
                     .iter()
-                    .filter(|item| !Self::contains_aggregate(&item.expression))
-                    .cloned()
-                    .collect();
+                    .any(|item| HasAggregateCheck::check(&item.expression));
 
-                let agg_count = projection.items.len() - non_agg_projections.len();
+                let mut grouping_keys: Vec<LogicalExpr> = Vec::new();
+                for item in &projection.items {
+                    if HasAggregateCheck::check(&item.expression) {
+                        for key in visitors::collect_grouping_keys(&item.expression) {
+                            if !grouping_keys.contains(&key) {
+                                grouping_keys.push(key);
+                            }
+                        }
+                    } else if !grouping_keys.contains(&item.expression) {
+                        grouping_keys.push(item.expression.clone());
+                    }
+                }
+
                 log::trace!(
-                    "GroupByBuilding: Found {} aggregations, {} non-aggregations",
-                    agg_count,
-                    non_agg_projections.len()
+                    "GroupByBuilding: has_aggregate={}, {} grouping keys",
+                    has_aggregate,
+                    grouping_keys.len()
                 );
 
-                if non_agg_projections.len() < projection.items.len()
-                    && !non_agg_projections.is_empty()
-                {
+                if has_aggregate && !grouping_keys.is_empty() {
                     // Projection mixes aggregates and plain expressions — wrap
                     // it in a GroupBy keyed on the non-aggregate items. (The
                     // old walker had separate "two-level" and "single-level"
@@ -167,7 +155,7 @@ impl GroupByBuilding {
                     } else {
                         log::trace!(
                             "GroupByBuilding: Creating GroupBy node with {} grouping expressions",
-                            non_agg_projections.len()
+                            grouping_keys.len()
                         );
                     }
                     let wrapped: Arc<LogicalPlan> =
@@ -183,10 +171,7 @@ impl GroupByBuilding {
                         };
                     Transformed::Yes(Arc::new(LogicalPlan::GroupBy(GroupBy {
                         input: wrapped,
-                        expressions: non_agg_projections
-                            .into_iter()
-                            .map(|item| item.expression)
-                            .collect(),
+                        expressions: grouping_keys,
                         having_clause: None,
                         is_materialization_boundary: false,
                         exposed_alias: None,
@@ -302,7 +287,7 @@ mod tests {
     use super::*;
     #[allow(unused_imports)]
     use crate::query_planner::logical_expr::{AggregateFnCall, Column, PropertyAccess, TableAlias};
-    use crate::query_planner::logical_plan::{LogicalPlan, Projection};
+    use crate::query_planner::logical_plan::{LogicalPlan, Projection, ProjectionItem};
 
     fn create_property_access(table: &str, column: &str) -> LogicalExpr {
         LogicalExpr::PropertyAccessExp(PropertyAccess {
@@ -523,6 +508,113 @@ mod tests {
                 assert_eq!(plan, projection);
             }
             _ => panic!("Expected no transformation for empty projection"),
+        }
+    }
+
+    fn operator(
+        op: crate::query_planner::logical_expr::Operator,
+        operands: Vec<LogicalExpr>,
+    ) -> LogicalExpr {
+        LogicalExpr::OperatorApplicationExp(
+            crate::query_planner::logical_expr::OperatorApplication {
+                operator: op,
+                operands,
+            },
+        )
+    }
+
+    /// #637: a SINGLE projection item that BURIES a grouping key inside an
+    /// aggregate-containing expression (`user.name + count(order.id)`) must
+    /// still build a GroupBy keyed on the buried `user.name` — the old split
+    /// produced no GroupBy at all (ClickHouse Code 215).
+    #[test]
+    fn test_projection_buried_key_in_aggregate_item() {
+        let analyzer = GroupByBuilding::new();
+        let mut plan_ctx = PlanCtx::new_empty();
+
+        // RETURN user.name + count(order.id) AS mixed
+        let item = operator(
+            crate::query_planner::logical_expr::Operator::Addition,
+            vec![
+                create_property_access("user", "name"),
+                create_aggregate_function("count", "order", "id"),
+            ],
+        );
+        let projection = Arc::new(LogicalPlan::Projection(Projection {
+            input: create_scan(Some("user".to_string()), Some("users".to_string())),
+            items: vec![ProjectionItem {
+                expression: item,
+                col_alias: None,
+            }],
+            distinct: false,
+            pattern_comprehensions: vec![],
+        }));
+
+        let result = analyzer.analyze(projection.clone(), &mut plan_ctx).unwrap();
+
+        match result {
+            Transformed::Yes(new_plan) => match new_plan.as_ref() {
+                LogicalPlan::GroupBy(group_by) => {
+                    assert_eq!(
+                        group_by.expressions.len(),
+                        1,
+                        "buried user.name must be the sole key"
+                    );
+                    match &group_by.expressions[0] {
+                        LogicalExpr::PropertyAccessExp(prop_acc) => {
+                            assert_eq!(prop_acc.table_alias.0, "user");
+                            assert_eq!(prop_acc.column.raw(), "name");
+                        }
+                        other => panic!("Expected user.name grouping key, got {other:?}"),
+                    }
+                }
+                other => panic!("Expected GroupBy plan, got {other:?}"),
+            },
+            _ => panic!("Expected transformation (GroupBy) for buried-key item"),
+        }
+    }
+
+    /// #637: a buried key alongside a SEPARATE bare key must not duplicate the
+    /// bare key, and both must appear.
+    #[test]
+    fn test_projection_buried_key_dedups_with_bare_key() {
+        let analyzer = GroupByBuilding::new();
+        let mut plan_ctx = PlanCtx::new_empty();
+
+        // RETURN user.name, user.name + count(order.id) AS mixed
+        let projection = Arc::new(LogicalPlan::Projection(Projection {
+            input: create_scan(Some("user".to_string()), Some("users".to_string())),
+            items: vec![
+                ProjectionItem {
+                    expression: create_property_access("user", "name"),
+                    col_alias: None,
+                },
+                ProjectionItem {
+                    expression: operator(
+                        crate::query_planner::logical_expr::Operator::Addition,
+                        vec![
+                            create_property_access("user", "name"),
+                            create_aggregate_function("count", "order", "id"),
+                        ],
+                    ),
+                    col_alias: None,
+                },
+            ],
+            distinct: false,
+            pattern_comprehensions: vec![],
+        }));
+
+        let result = analyzer.analyze(projection.clone(), &mut plan_ctx).unwrap();
+
+        match result {
+            Transformed::Yes(new_plan) => match new_plan.as_ref() {
+                LogicalPlan::GroupBy(group_by) => {
+                    // user.name appears once (deduped), not twice.
+                    assert_eq!(group_by.expressions.len(), 1);
+                }
+                other => panic!("Expected GroupBy plan, got {other:?}"),
+            },
+            _ => panic!("Expected transformation"),
         }
     }
 }
