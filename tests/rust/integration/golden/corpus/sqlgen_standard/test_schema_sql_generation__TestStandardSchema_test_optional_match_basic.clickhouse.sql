@@ -1,6 +1,6 @@
 SELECT 
       u.full_name AS "u.name", 
       count(p.post_id) AS "posts"
-FROM db_standard.posts AS p
-LEFT JOIN db_standard.users AS u ON u.user_id = p.user_id
+FROM db_standard.users AS u
+LEFT JOIN db_standard.posts AS p ON p.user_id = u.user_id
 GROUP BY u.full_name

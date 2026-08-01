@@ -4147,12 +4147,57 @@ async fn denorm_count_node_resolves_embedded_id_column_493() {
     }
 }
 
+/// FK-edge-to-to-node OPTIONAL MATCH FROM-anchoring regression: an OPTIONAL
+/// MATCH over an FK-edge relationship whose edge table IS the *to-node*'s
+/// table (`AUTHORED` mapped onto `posts`, `from_node = User`, `to_node =
+/// Post`, edge lives on `posts`) must root the FROM clause at the REQUIRED
+/// outer-MATCH node (`users`), NOT the optional/collapsed `posts` node.
+///
+/// The `FkEdgeJoin { join_side: Left }` strategy naturally roots FROM at the
+/// RIGHT node (`posts`) — correct for a plain MATCH (INNER JOIN is symmetric),
+/// but catastrophic under OPTIONAL: `posts` became the preserved FROM side and
+/// `users` the LEFT-JOINed nullable side, so every user who authored no post
+/// was silently dropped (5 rows instead of 6, missing the NULL-extended row).
+/// The fix (`JoinStrategy::natural_from_node_position` +
+/// `handle_graph_pattern_v2` signal-2) re-roots FROM at the required `users`
+/// and folds the collapsed `posts` as a single LEFT JOIN, with no phantom
+/// duplicate `posts` edge join. Locks both invariants.
+#[tokio::test]
+async fn fk_edge_to_node_optional_from_anchors_required_node() {
+    let schema = load_schema("schemas/dev/social_standard.yaml");
+    let cypher = "MATCH (u:User) OPTIONAL MATCH (u)-[:AUTHORED]->(p:Post) RETURN u.name, p.post_id";
+    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+
+    // FROM must be the required node `users` (preserved side), not the
+    // optional/collapsed `posts`.
+    let from_line = sql
+        .lines()
+        .find(|l| l.trim_start().starts_with("FROM "))
+        .unwrap_or("");
+    assert!(
+        from_line.contains("users") && !from_line.contains("posts"),
+        "OPTIONAL FK-edge (edge IS to-node): FROM must root at the required \
+         `users`, not the optional `posts`. Got FROM line: `{from_line}`\n\nFull SQL:\n{sql}"
+    );
+
+    // `posts` must appear exactly once as a LEFT JOIN (the collapsed FK-edge
+    // node) — never a phantom duplicate edge scan (`LEFT JOIN posts AS t1`).
+    let posts_join_count = sql
+        .lines()
+        .filter(|l| l.contains("JOIN") && l.contains("posts"))
+        .count();
+    assert_eq!(
+        posts_join_count, 1,
+        "OPTIONAL FK-edge: `posts` must be a single LEFT JOIN, no phantom \
+         duplicate edge scan. Got {posts_join_count} posts JOINs.\n\nFull SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains("LEFT JOIN"),
+        "OPTIONAL MATCH must render a LEFT JOIN (preserves anchor rows):\n{sql}"
+    );
+}
+
 /// #502 regression: `count(r)` on an OPTIONAL MATCH relationship must render
-/// as a NULL-sensitive count over one of the edge's own (edge_id) columns,
-/// not `count(*)`. `count(*)` counts the anchor row itself, which a LEFT
-/// JOIN always preserves (NULL-extended) even when the relationship never
-/// matched — so a zero-edge anchor silently reported `count(r) == 1`. This
-/// is the relationship-count sibling of #493's node-count fix (`count(b)` ->
 /// `count(t0.dest_code)`).
 #[tokio::test]
 async fn denorm_count_relationship_resolves_edge_id_column_502() {

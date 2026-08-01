@@ -1591,6 +1591,75 @@ impl JoinBuilder for LogicalPlan {
                     Vec<OperatorApplication>,
                 > = std::collections::HashMap::new();
 
+                // #—: An FK-edge relationship collapses onto its owning node
+                // table: the analyzer emits it ONCE in `graph_joins.joins`, under
+                // the collapsed NODE's connection alias (e.g. `p` for `(p:Post)`),
+                // carrying the relationship's own from/to id columns. The generic
+                // extract_joins recursion over the same GraphRel independently
+                // emits the relationship AGAIN under its auto-generated REL alias
+                // (e.g. `t1`), producing a phantom duplicate scan of the same table
+                // with the same join columns.
+                //
+                // The pre-existing `anchor_table_name` check below drops that
+                // phantom only when the collapsed node is the FROM anchor. When the
+                // anchor is the OTHER endpoint — e.g. OPTIONAL `MATCH (u) OPTIONAL
+                // MATCH (u)-[:AUTHORED]->(p)` with FROM rooted at the required `u`,
+                // leaving the collapsed `p` as a non-anchor JOIN — the phantom `t1`
+                // no longer matches the anchor table and would leak through as a
+                // spurious extra `LEFT JOIN posts AS t1`.
+                //
+                // Drop it precisely: skip an input relationship join whose
+                // (table, from_id, to_id) already appears in `graph_joins.joins`
+                // under a DIFFERENT alias that is a NODE connection alias (the
+                // collapse target). Gating on the existing alias being a node —
+                // NOT a relationship alias — is what distinguishes the FK-edge
+                // collapse from a legitimate two-hop self-chain on a normal edge
+                // table (e.g. `(p)-[:FOLLOWS]->()-[:FOLLOWS]->(c)`, where `t0` and
+                // `t1` share (table, from_id, to_id) but are BOTH needed and BOTH
+                // live under rel aliases, so neither is a node connection).
+                let node_connection_aliases: std::collections::HashSet<String> = {
+                    fn collect(plan: &LogicalPlan, acc: &mut std::collections::HashSet<String>) {
+                        match plan {
+                            LogicalPlan::GraphRel(gr) => {
+                                acc.insert(gr.left_connection.clone());
+                                acc.insert(gr.right_connection.clone());
+                                collect(&gr.left, acc);
+                                collect(&gr.right, acc);
+                            }
+                            LogicalPlan::Projection(p) => collect(&p.input, acc),
+                            LogicalPlan::Filter(f) => collect(&f.input, acc),
+                            LogicalPlan::GroupBy(g) => collect(&g.input, acc),
+                            LogicalPlan::GraphNode(gn) => collect(&gn.input, acc),
+                            LogicalPlan::GraphJoins(gj) => collect(&gj.input, acc),
+                            _ => {}
+                        }
+                    }
+                    let mut acc = std::collections::HashSet::new();
+                    collect(&graph_joins.input, &mut acc);
+                    acc
+                };
+                let input_join_is_dup_fk_edge = |input_join: &Join| -> bool {
+                    if input_join.from_id_column.is_none() || input_join.to_id_column.is_none() {
+                        return false;
+                    }
+                    // A phantom duplicate carries no additional constraint of its
+                    // own: it is the bare re-emission of the same collapsed edge.
+                    // A join with a `pre_filter` (e.g. a NAMED relationship with a
+                    // WHERE clause, `[r:PLACED_BY]->(c) WHERE r.order_date > …`)
+                    // is a legitimately-separate reference that must survive —
+                    // dropping it would silently lose the filter. Keep those.
+                    if input_join.pre_filter.is_some() {
+                        return false;
+                    }
+                    graph_joins.joins.iter().any(|j| {
+                        j.table_alias != input_join.table_alias
+                            && node_connection_aliases.contains(&j.table_alias)
+                            && j.table_name == input_join.table_name
+                            && j.from_id_column == input_join.from_id_column
+                            && j.to_id_column == input_join.to_id_column
+                    })
+                };
+
                 for input_join in input_joins {
                     // Skip if alias already exists
                     if existing_aliases.contains(&input_join.table_alias) {
@@ -1616,27 +1685,33 @@ impl JoinBuilder for LogicalPlan {
                     //   - relationship alias "r" also points to posts_bench
                     //   - We should NOT add: JOIN posts_bench AS r
                     //   - Instead, "r" properties should be accessed via "po" alias
-                    if let Some(ref anchor_name) = anchor_table_name {
-                        if &input_join.table_name == anchor_name {
-                            log::info!(
-                                "🔑 Skipping duplicate JOIN for FK-edge: {} AS {} (same table as anchor '{}')",
-                                input_join.table_name,
-                                input_join.table_alias,
-                                graph_joins.anchor_table.as_ref().unwrap()
-                            );
-                            // Also capture conditions from this skipped join
-                            for cond in &input_join.joining_on {
-                                for cte_alias in graph_joins.cte_references.keys() {
-                                    if condition_references_alias(cond, cte_alias) {
-                                        skipped_cte_conditions
-                                            .entry(cte_alias.clone())
-                                            .or_default()
-                                            .push(cond.clone());
-                                    }
+                    //
+                    // The collapsed node need not be the anchor: also skip an
+                    // input relationship join that duplicates an FK-edge already
+                    // materialized under a different alias (see the
+                    // `input_join_is_dup_fk_edge` note above).
+                    let matches_anchor = anchor_table_name
+                        .as_ref()
+                        .is_some_and(|anchor_name| &input_join.table_name == anchor_name);
+                    if matches_anchor || input_join_is_dup_fk_edge(&input_join) {
+                        log::info!(
+                            "🔑 Skipping duplicate JOIN for FK-edge: {} AS {} (collapses onto already-covered node table; anchor='{:?}')",
+                            input_join.table_name,
+                            input_join.table_alias,
+                            graph_joins.anchor_table
+                        );
+                        // Also capture conditions from this skipped join
+                        for cond in &input_join.joining_on {
+                            for cte_alias in graph_joins.cte_references.keys() {
+                                if condition_references_alias(cond, cte_alias) {
+                                    skipped_cte_conditions
+                                        .entry(cte_alias.clone())
+                                        .or_default()
+                                        .push(cond.clone());
                                 }
                             }
-                            continue;
                         }
+                        continue;
                     }
 
                     log::info!(
