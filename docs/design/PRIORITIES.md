@@ -410,10 +410,21 @@ fixed stats fixture.
   `translate_scalar_function`/`translate_duration_function`+16 tests, −1170 lines;
   ported the FINAL-gating test to the live path + added `fn_datetime_epoch_millis`
   golden to preserve/close coverage; 0 churn.** (4) C full-collapse is a separate
-  DESIGN CYCLE (stage/timing constraint), NOT a mechanical step — its drift items
-  (backtick-vs-doublequote quoting, latent-unreached hardcoded `POWER`/`arrayFold`/
-  map/CASE arms — verified 0 Databricks golden leak) can be reconciled as small
-  independent correctness slices without full collapse. **First such slice DONE
+  DESIGN CYCLE (stage/timing constraint), NOT a mechanical step — **written up in
+  `docs/design/PATH_C_COLLAPSE.md`** (two viable options — thread an optional
+  alias-mapping arg into the shared printer [lower-risk, recommended] vs
+  install an alias overlay over A's variable-registry seam at CTE-build [fully
+  deletes the param but needs new plumbing, not the one-call `set_cte_alias_scope`
+  — that setter only drives IN-subquery FROM generation, not property qualifiers];
+  the byte-identity spike gate; the
+  34-call-site batching plan; trigger conditions = a Path-C Databricks bug or a
+  third dialect). Its drift items (backtick-vs-doublequote quoting,
+  latent-unreached hardcoded `POWER`/`arrayFold`/map/CASE arms — verified 0
+  Databricks golden leak) can be reconciled as small independent correctness
+  slices without full collapse. **`arrayFold`/ReduceExpr routed DONE 2026-08-01
+  (#842)** — Path C's ReduceExpr now goes through `common::reduce_fold_sql` (Spark
+  `aggregate`), byte-identical CH, 0 golden churn (corpus-unreached via CTE-build).
+  **First quoting slice DONE
   (2026-07-30): `quote_identifier` routed through the dialect layer** — Path C's
   `common.rs::quote_identifier` hard-coded backticks for BOTH dialects, so on CH a
   single query emitted both `` t2.`id.orig_h` `` (CTE body, Path C) and

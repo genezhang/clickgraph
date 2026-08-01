@@ -288,7 +288,10 @@ denormalized `rel_alias_mapping`) is logic with **no equivalent inside A at all*
 Operator enums → collapse D), but the "collapse all four into one printer" framing
 oversells it: **C cannot fully collapse without resolving the two-stage
 context-timing constraint**, which is a design cycle of its own. Steps 1–3 are
-the shippable Phase-2; step 4 (C) is a separate, larger design item.
+the shippable Phase-2; step 4 (C) is a separate, larger design item — **written up
+in `docs/design/PATH_C_COLLAPSE.md`** (the two viable options, the byte-identity
+spike gate, the 34-call-site batching plan, and the trigger conditions for
+picking it up).
 
 ## 4. Risks & mitigations
 - **Silent CH regressions** → golden snapshots (Phase 0) + the existing suite;
