@@ -1856,8 +1856,11 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
             format!("EXISTS ({})", exists.sql)
         }
         RenderExpr::ReduceExpr(reduce) => {
-            // Convert to ClickHouse arrayFold((acc, x) -> expr, list, init)
-            // Cast numeric init to Int64 to prevent type mismatch issues
+            // Route reduce() through the dialect helper so the fold spelling
+            // follows the active dialect (CH `arrayFold(...)` / Spark `aggregate(...)`)
+            // instead of hardcoding ClickHouse here. Cast numeric init to Int64 to
+            // prevent type mismatch issues (mirrors Path A's `RenderExpr::to_sql`
+            // ReduceExpr arm exactly).
             let init_sql = render_expr_to_sql_string(&reduce.initial_value, alias_mapping);
             let list_sql = render_expr_to_sql_string(&reduce.list, alias_mapping);
             let expr_sql = render_expr_to_sql_string(&reduce.expression, alias_mapping);
@@ -1873,9 +1876,12 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                 init_sql
             };
 
-            format!(
-                "arrayFold({}, {} -> {}, {}, {})",
-                reduce.variable, reduce.accumulator, expr_sql, list_sql, init_cast
+            crate::clickhouse_query_generator::reduce_fold_sql(
+                &reduce.variable,
+                &reduce.accumulator,
+                &expr_sql,
+                &list_sql,
+                &init_cast,
             )
         }
         RenderExpr::PatternCount(pc) => {

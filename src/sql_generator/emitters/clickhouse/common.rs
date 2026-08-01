@@ -375,6 +375,37 @@ mod simple_case_sql_tests {
 }
 
 #[cfg(test)]
+mod reduce_fold_sql_tests {
+    use super::reduce_fold_sql;
+    use crate::server::query_context::{with_query_context, QueryContext};
+    use crate::sql_generator::SqlDialect;
+
+    #[test]
+    fn clickhouse_default_uses_array_fold() {
+        // Default (no scope) = ClickHouse: the historical `arrayFold` spelling,
+        // byte-identical to what both render paths emitted before this helper.
+        assert_eq!(
+            reduce_fold_sql("x", "acc", "acc + x", "[1, 2, 3]", "0"),
+            "arrayFold(x, acc -> acc + x, [1, 2, 3], 0)"
+        );
+    }
+
+    #[tokio::test]
+    async fn databricks_uses_aggregate() {
+        let ctx = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        let sql = with_query_context(ctx, async {
+            reduce_fold_sql("x", "acc", "acc + x", "[1, 2, 3]", "0")
+        })
+        .await;
+        // Spark has no arrayFold; the fold is `aggregate(list, init, (acc, x) -> expr)`.
+        assert_eq!(sql, "aggregate([1, 2, 3], 0, (acc, x) -> acc + x)");
+    }
+}
+
+#[cfg(test)]
 mod string_predicate_tests {
     use super::{ends_with_predicate, starts_with_predicate};
     use crate::server::query_context::{with_query_context, QueryContext};
