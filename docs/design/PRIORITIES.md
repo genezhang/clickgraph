@@ -457,6 +457,34 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-01: **P-1 — OPTIONAL MATCH over FK-edge-to-node table drops unmatched
+  anchor rows** (PR #845, branch `fix/optional-fk-edge-anchor-inversion`). Silent
+  DATA LOSS found via a live silent-wrong bug hunt: `MATCH (u:User) OPTIONAL MATCH
+  (u)-[:AUTHORED]->(p:Post)` returned 5 rows not 6 — post-less users vanished. The
+  FROM anchor inverted to `FROM posts LEFT JOIN users` (mandatory `u` on the
+  nullable side). Trigger: `AUTHORED` is an FK-edge whose edge table IS the to-node
+  table (`table: posts`, `to_node: Post`) → `FkEdgeJoin{join_side:Left}`, whose
+  natural FROM node is the RIGHT (optional) node, so `select_anchor` rooted FROM at
+  the optional side; latent under non-optional (INNER symmetric), data loss under
+  OPTIONAL/LEFT JOIN. Fix (3 files, schema-catalog dispatch per Rule #7, ratchet
+  net-zero): new `JoinStrategy::natural_from_node_position()` (pattern_schema.rs);
+  "signal 2" in inference.rs re-roots FROM at the required node when
+  `natural_from == Some(Right)` && right-optional && left-required (only
+  `FkEdgeJoin{join_side:Left}`); generalized the join_builder.rs FK-edge
+  phantom-join dedup (skip an input rel join duplicating an edge already under a
+  NODE-connection alias, guarded to keep two-hop self-chains + `pre_filter` named
+  rels). Live-verified (6 rows w/ Eve NULL; LIKED/non-optional/reverse/self-ref/
+  polymorphic all correct); `test_nested_optional_matches` golden had DROPPED the
+  mandatory users table (real data loss) — now preserved. 8 goldens, +1 regression
+  test. Adversarial review APPROVE-0 (both guards stress-tested live incl. an
+  over-fire probe). **Two secondary silent-wrong findings from the same hunt
+  DEFERRED** (different class — Cypher function-semantics fidelity, needs a small
+  Neo4j-compat policy call, not one-off patching): (1) `round()` uses CH banker's
+  rounding (`round(2.5)`→2) vs Neo4j half-away-from-zero (→3), root
+  `function_registry.rs` round→round 1:1; (2) integer division `7/2`→3.5 (Cypher
+  int/int should be 3 via intDiv), root `Operator::Division` renders `/`
+  unconditionally without operand-type awareness.
+
 - 2026-08-01: **SQL-IR Phase 2 — route Path C `ReduceExpr` through `reduce_fold_sql`**
   (PR #842, branch `refactor/sql-ir-path-c-reduce-fold-dialect`). Another of the
   independent Path-C drift slices the §3.5 investigation flagged as shippable
