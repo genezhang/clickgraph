@@ -503,6 +503,41 @@ impl JoinStrategy {
         )
     }
 
+    /// Which node position this strategy roots the FROM clause at when neither
+    /// endpoint is already bound (the "first pattern" / `(false, false)` case in
+    /// `generate_pattern_joins`).
+    ///
+    /// This is the node that becomes the `from_marker` — the preserved/anchor
+    /// side of the pattern. It is NOT always the left node: an `FkEdgeJoin`
+    /// where the edge table IS the *right* node table (e.g. `AUTHORED` mapped to
+    /// `posts` with `to_node = Post`) roots FROM at the *right* node and JOINs
+    /// the left node onto it.
+    ///
+    /// Returns `None` for edge-rooted strategies (denormalized / mixed / coupled
+    /// / edge-to-edge), where the FROM marker is the relationship table itself
+    /// rather than a node — those use a separate OPTIONAL-MATCH anchor mechanism
+    /// (standalone denorm-scan CTEs), so callers should fall back to their
+    /// default (left-node) assumption.
+    pub fn natural_from_node_position(&self) -> Option<NodePosition> {
+        match self {
+            // (false, false) emits `from_marker(left)`, then JOIN edge + right.
+            JoinStrategy::Traditional { .. } => Some(NodePosition::Left),
+            // Fk-edge: `join_side` names the node that needs a JOIN, so the
+            // OTHER node is the edge table and roots FROM.
+            //   join_side = Left  → right node IS the edge table → FROM = right
+            //   join_side = Right → left node IS the edge table  → FROM = left
+            JoinStrategy::FkEdgeJoin { join_side, .. } => Some(match join_side {
+                NodePosition::Left => NodePosition::Right,
+                NodePosition::Right => NodePosition::Left,
+            }),
+            // Edge-rooted strategies: FROM is the relationship table, not a node.
+            JoinStrategy::SingleTableScan { .. }
+            | JoinStrategy::MixedAccess { .. }
+            | JoinStrategy::EdgeToEdge { .. }
+            | JoinStrategy::CoupledSameRow { .. } => None,
+        }
+    }
+
     /// Returns a human-readable description
     pub fn description(&self) -> &'static str {
         match self {

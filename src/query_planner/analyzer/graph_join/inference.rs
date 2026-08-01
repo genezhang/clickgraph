@@ -2778,21 +2778,75 @@ impl GraphJoinInference {
 
         // Step 1: Generate anchor-aware joins based on strategy
         // Pass join_ctx aliases so the generator knows which nodes are already available.
-        // For OPTIONAL MATCH with incoming direction, the anchor_connection (from the
-        // required MATCH) must be treated as "already available" so that the join
-        // generator places it as FROM (not as a new JOIN target). Without this,
-        // incoming OPTIONAL MATCH puts the optional node as FROM instead of the anchor.
-        // Only activate when anchor != left_alias — for outgoing patterns where
-        // anchor IS the left alias, the default (false,false) path already works.
+        // For OPTIONAL MATCH, the required node (from the outer MATCH) must become the
+        // FROM/preserved side so anchor rows with zero optional matches survive the
+        // LEFT JOIN. The join generator places a node as FROM by treating it as
+        // "already available"; we inject the required node here when the strategy would
+        // otherwise root FROM at the OPTIONAL node.
+        //
+        // Two distinct signals feed this:
+        //  1. `anchor_connection` (set by the analyzer for the INCOMING override shape
+        //     `MATCH (a) OPTIONAL MATCH (b)-[:R]->(a)`, where the anchor `a` is the
+        //     right connection). This is the historical case.
+        //  2. An OPTIONAL pattern whose strategy roots FROM at a node that is itself
+        //     the optional side. `determine_optional_anchor` deliberately leaves
+        //     `anchor_connection = None` for the common outgoing left-anchor shape
+        //     `MATCH (u) OPTIONAL MATCH (u)-[:R]->(p)` (setting it would wrongly filter
+        //     out WHERE predicates on the optional alias). For a Traditional strategy
+        //     that's fine — FROM roots at the required left node `u` anyway. But an
+        //     FK-edge whose edge table IS the RIGHT node table (e.g. `AUTHORED`
+        //     collapsed onto `posts`, `to_node = Post`) roots FROM at the right node
+        //     `p` — the OPTIONAL side — so `p` becomes the preserved side and every
+        //     post-less user is silently dropped. Detect this via the schema-catalog
+        //     `JoinStrategy::natural_from_node_position` (which equals the left node for
+        //     every strategy EXCEPT `FkEdgeJoin { join_side: Left }`) and re-root FROM
+        //     at the required (non-optional) node. Byte-identical for all previously
+        //     correct shapes; only the collapsed FK-edge-to-right-node OPTIONAL case
+        //     changes.
         let mut already_available = join_ctx.to_hashset();
-        let anchor_needs_from = if let Some(ref anchor) = _graph_rel.anchor_connection {
-            // Only inject anchor as "already available" when it's NOT the left alias.
-            // For outgoing OPTIONAL MATCH (u)-[:R]->(f) with anchor=u (left), the
-            // standard (false,false) branch in generate_pattern_joins handles it correctly.
-            // For incoming OPTIONAL MATCH (b)-[:R]->(a) with anchor=a (right), we need
-            // to force the generator to treat anchor as available so it doesn't create
-            // a FROM marker for the optional node instead.
-            if anchor.as_str() != left_alias && !already_available.contains(anchor) {
+        let natural_from_position = ctx.join_strategy.natural_from_node_position();
+        let natural_from_alias: &str = match natural_from_position {
+            Some(crate::graph_catalog::pattern_schema::NodePosition::Right) => right_alias,
+            // Left node, or edge-rooted strategies (None) whose FROM is the
+            // relationship table — for those the left-node default is retained,
+            // exactly as before this dispatch existed.
+            _ => left_alias,
+        };
+        // Derive the alias that must anchor FROM. Prefer the analyzer's explicit
+        // anchor_connection (signal 1); otherwise, for an OPTIONAL FK-edge whose
+        // edge table IS the RIGHT node (`natural_from_position == Right`) and that
+        // right node is the optional side, re-root at the required node (signal 2).
+        //
+        // Signal 2 is scoped to `natural_from_position == Some(Right)` — the ONLY
+        // strategy that roots FROM at a non-left node (`FkEdgeJoin { join_side:
+        // Left }`). Every other strategy roots FROM at the left node (or, for
+        // edge-rooted strategies, the relationship table), and their OPTIONAL
+        // anchoring is already handled by `anchor_connection` (incoming override)
+        // and the BidirectionalUnion combined-anchor mechanism — leaving those
+        // paths untouched keeps this change byte-identical for them.
+        let is_optional_pattern = _graph_rel.is_optional.unwrap_or(false);
+        let effective_anchor: Option<String> = _graph_rel.anchor_connection.clone().or_else(|| {
+            if is_optional_pattern
+                && matches!(
+                    natural_from_position,
+                    Some(crate::graph_catalog::pattern_schema::NodePosition::Right)
+                )
+                && right_is_optional
+                && !left_is_optional
+            {
+                // FK-edge collapsed onto the OPTIONAL right node → anchor the
+                // required left node so its zero-match rows survive.
+                Some(left_alias.to_string())
+            } else {
+                None
+            }
+        });
+        let anchor_needs_from = if let Some(ref anchor) = effective_anchor {
+            // Inject the anchor as "already available" only when it is NOT the
+            // strategy's natural FROM node. When the anchor already IS the FROM
+            // node (standard outgoing patterns), the default (false, false) branch
+            // in generate_pattern_joins already places it as FROM.
+            if anchor.as_str() != natural_from_alias && !already_available.contains(anchor) {
                 already_available.insert(anchor.clone());
                 true
             } else {
@@ -2812,10 +2866,10 @@ impl GraphJoinInference {
 
         // Step 1b: If the anchor was injected as "already available" but doesn't have
         // a FROM marker in collected_graph_joins, prepend one. This happens for
-        // OPTIONAL MATCH with incoming edges where the anchor node comes from the
-        // required MATCH but hasn't been added as a JOIN yet.
+        // OPTIONAL MATCH where the anchor node comes from the required MATCH but the
+        // strategy would not otherwise emit a FROM marker for it.
         if anchor_needs_from {
-            if let Some(ref anchor) = _graph_rel.anchor_connection {
+            if let Some(ref anchor) = effective_anchor {
                 let anchor_already_joined = collected_graph_joins
                     .iter()
                     .any(|j| j.table_alias.as_str() == anchor.as_str());
