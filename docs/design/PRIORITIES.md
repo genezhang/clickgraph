@@ -462,6 +462,36 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **P-1 — out-of-bounds list index returns `null` (was ClickHouse
+  type default)** (PR #850, branch `fix/oob-list-index-null`). Silent-wrong
+  openCypher fidelity bug from the same function/operator-fidelity vein as
+  #848/#847: Cypher `list[i]` with an out-of-range index returned CH's element
+  type DEFAULT (`0`/`''`) instead of `null` — and `[0,1,2][10]`→`0` is
+  indistinguishable from a real `0` element. Fix (Rule #7 dispatch): new
+  `FunctionMapper::array_element_or_null(arr, idx)` — CH `arrayElementOrNull`
+  (NULL on OOB), Databricks `element_at` (already NULL on OOB, byte-identical to
+  the prior accessor). The `RenderExpr::ArraySubscript` numeric-index arm
+  (`to_sql_query.rs`) routes through it; the hardcoded `get_current_dialect()`
+  branch collapses into the mapper (ratchet NET-NEGATIVE — one axis token
+  removed). Untouched: in-bounds/negative indices, string-literal map-key access
+  (`arr['key']`), and the internal `arrayElement(groupArray(...), 1)`
+  head-extraction (always non-empty). Reachability audit (self + adversarial
+  review, live-verified): the only reachable user-facing subscript is Path A;
+  Path C (`cte_extraction.rs:1904` raw `{}[{}]`) is a LOUD Code-43 crash on
+  array columns (list-literal-as-tuple + off-by-one), a DIFFERENT pre-existing
+  bug — not the silent-type-default family, correctly left. Golden churn is
+  behavior-identical: `type(r)` over a VLP path lowers to `path_relationships[1]`
+  (always in-bounds index-1), so 13 corpus + 4 sql_ir CH goldens shift
+  `arr[1]`→`arrayElementOrNull(arr,1)`; **0 Databricks churn**. New
+  `list_index_out_of_bounds` golden + mapper unit tests. Adversarial review
+  APPROVE (every claim live-verified: OOB both ends/empty→NULL, in-bounds +
+  negatives identical, nullable cascade safe through arithmetic/cmp/IN/GROUP
+  BY/ORDER BY/DISTINCT-tuple/nested-subscript, scope-leak clean). Gate: fmt ·
+  clippy · 1612 lib · 244 golden · corpus + ratchet net-zero. **Two sibling
+  fidelity bugs noted for a follow-up (same class, not filed yet):** `head([])`/
+  `last([])` on an empty list → `0`/`''` (should be `null`); the
+  `cte_extraction.rs:1904` multi-type-branch subscript (loud Code 43 today).
+
 - 2026-08-01: **#637 — implicit GROUP BY drops grouping keys buried inside
   aggregate-containing items (RETURN + WITH barriers)** (`fix/637-buried-grouping-keys`).
   A grouping key buried inside a RETURN/WITH item that ALSO contains an aggregate
