@@ -475,6 +475,155 @@ impl ExpressionVisitor for HasAggregateCheck {
     }
 }
 
+/// Does this expression (transitively) reference a column, property, or table
+/// alias — i.e. is it a *grouping candidate* rather than a pure constant?
+///
+/// A projection item like `':'` (a literal) or `$p` (a parameter) contributes
+/// nothing to an implicit GROUP BY, whereas `a.city`, a bare alias `a`, or a
+/// `CASE`/arithmetic expression built over them does. Recurses via the
+/// exhaustive [`walk_expression`] child set, so a new container variant can
+/// never silently hide a column reference.
+fn references_column_or_alias(expr: &LogicalExpr) -> bool {
+    struct RefCheck {
+        found: bool,
+    }
+    impl ExpressionVisitor for RefCheck {
+        type Output = ();
+        fn visit_property_access(&mut self, _prop: &PropertyAccess) {
+            self.found = true;
+        }
+        fn visit_table_alias(&mut self, _alias: &str) {
+            self.found = true;
+        }
+        fn visit_leaf(&mut self, expr: &LogicalExpr) {
+            // `walk_expression` routes Column / ColumnAlias / CteEntityRef
+            // through `visit_leaf`; all three name a value that varies per row
+            // and therefore belongs in GROUP BY.
+            if matches!(
+                expr,
+                LogicalExpr::Column(_) | LogicalExpr::ColumnAlias(_) | LogicalExpr::CteEntityRef(_)
+            ) {
+                self.found = true;
+            }
+        }
+    }
+    let mut c = RefCheck { found: false };
+    walk_expression(expr, &mut c);
+    c.found
+}
+
+/// Collect the **grouping keys** for a projection/RETURN/WITH item that may mix
+/// non-aggregate sub-expressions with aggregate function calls.
+///
+/// A grouping key is a *maximal aggregate-free sub-expression that references a
+/// column/alias*. The walk is top-down: as soon as a node contains no aggregate
+/// (per the exhaustive [`HasAggregateCheck`]) and references a column/alias, the
+/// whole node is emitted as one key and its children are NOT descended — so
+/// `a.city + ':'` stays a single key rather than fragmenting into `a.city`. When
+/// a node DOES contain an aggregate, we recurse into its children to find the
+/// non-aggregate keys buried inside it (e.g. `a.city` inside
+/// `a.city + ':' + toString(count(b))`, or the scrutinee/branches of a CASE that
+/// also holds an aggregate). Pure constants (literals, parameters) yield nothing.
+///
+/// This is the single source of truth for implicit-GROUP-BY key extraction,
+/// shared by the analyzer RETURN barrier (`group_by_building.rs`), the render
+/// WITH barrier (`with_to_cte`), and the UNION-return builder (`return_clause.rs`)
+/// — previously each hand-rolled its own aggregate/non-aggregate split, and each
+/// dropped keys buried inside an aggregate-containing item (issue #637).
+///
+/// Callers dedup and adapt (rewrite to CTE columns / ColumnAlias / ID-only) as
+/// needed; this function only decides *which sub-expressions are keys*.
+pub fn collect_grouping_keys(expr: &LogicalExpr) -> Vec<LogicalExpr> {
+    let mut keys = Vec::new();
+    collect_grouping_keys_into(expr, &mut keys);
+    keys
+}
+
+fn collect_grouping_keys_into(expr: &LogicalExpr, keys: &mut Vec<LogicalExpr>) {
+    // A bare aggregate call itself is never a key, and neither are its
+    // arguments (they are aggregated, not grouped) — stop here.
+    if matches!(expr, LogicalExpr::AggregateFnCall(_)) {
+        return;
+    }
+
+    if !HasAggregateCheck::check(expr) {
+        // Maximal aggregate-free subtree. Only a column/alias-referencing one is
+        // a grouping key; a pure constant contributes nothing.
+        if references_column_or_alias(expr) {
+            keys.push(expr.clone());
+        }
+        return;
+    }
+
+    // Contains an aggregate somewhere below — descend to find the non-aggregate
+    // keys buried inside, mirroring `walk_expression`'s exhaustive child set.
+    match expr {
+        LogicalExpr::ScalarFnCall(f) => {
+            for a in &f.args {
+                collect_grouping_keys_into(a, keys);
+            }
+        }
+        LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
+            for o in &op.operands {
+                collect_grouping_keys_into(o, keys);
+            }
+        }
+        LogicalExpr::Case(case) => {
+            if let Some(scrutinee) = &case.expr {
+                collect_grouping_keys_into(scrutinee, keys);
+            }
+            for (when, then) in &case.when_then {
+                collect_grouping_keys_into(when, keys);
+                collect_grouping_keys_into(then, keys);
+            }
+            if let Some(else_expr) = &case.else_expr {
+                collect_grouping_keys_into(else_expr, keys);
+            }
+        }
+        LogicalExpr::List(items) => {
+            for i in items {
+                collect_grouping_keys_into(i, keys);
+            }
+        }
+        LogicalExpr::MapLiteral(entries) => {
+            for (_, v) in entries {
+                collect_grouping_keys_into(v, keys);
+            }
+        }
+        LogicalExpr::ArraySubscript { array, index } => {
+            collect_grouping_keys_into(array, keys);
+            collect_grouping_keys_into(index, keys);
+        }
+        LogicalExpr::ArraySlicing { array, from, to } => {
+            collect_grouping_keys_into(array, keys);
+            if let Some(f) = from {
+                collect_grouping_keys_into(f, keys);
+            }
+            if let Some(t) = to {
+                collect_grouping_keys_into(t, keys);
+            }
+        }
+        LogicalExpr::ReduceExpr(reduce) => {
+            collect_grouping_keys_into(&reduce.initial_value, keys);
+            collect_grouping_keys_into(&reduce.list, keys);
+            collect_grouping_keys_into(&reduce.expression, keys);
+        }
+        LogicalExpr::Lambda(lambda) => {
+            collect_grouping_keys_into(&lambda.body, keys);
+        }
+        LogicalExpr::InSubquery(subq) => {
+            collect_grouping_keys_into(&subq.expr, keys);
+        }
+        // No other variant can reach here: it would have to contain an
+        // aggregate (so `HasAggregateCheck` returned true above) yet not be one
+        // of the container variants `walk_expression` descends. `AggregateFnCall`
+        // is handled at the top; every remaining variant is a leaf that cannot
+        // hold an aggregate, so this arm is unreachable in practice — clone
+        // nothing rather than risk a spurious key.
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -679,5 +828,169 @@ mod tests {
         });
         let out = map_expression(&expr, &mut |_| ExprRewrite::Recurse);
         assert_eq!(out, expr);
+    }
+
+    // -------------------------------------------------------------------------
+    // collect_grouping_keys (#637)
+    // -------------------------------------------------------------------------
+
+    use crate::query_planner::logical_expr::{LambdaExpr, LogicalCase, ScalarFnCall};
+
+    fn agg(name: &str, arg: LogicalExpr) -> LogicalExpr {
+        LogicalExpr::AggregateFnCall(AggregateFnCall {
+            name: name.to_string(),
+            args: vec![arg],
+        })
+    }
+    fn count_b() -> LogicalExpr {
+        LogicalExpr::AggregateFnCall(AggregateFnCall {
+            name: "count".to_string(),
+            args: vec![LogicalExpr::TableAlias(TableAlias("b".to_string()))],
+        })
+    }
+    fn scalar(name: &str, args: Vec<LogicalExpr>) -> LogicalExpr {
+        LogicalExpr::ScalarFnCall(ScalarFnCall {
+            name: name.to_string(),
+            args,
+        })
+    }
+    fn op(operator: Operator, operands: Vec<LogicalExpr>) -> LogicalExpr {
+        LogicalExpr::OperatorApplicationExp(OperatorApplication { operator, operands })
+    }
+    fn plus(l: LogicalExpr, r: LogicalExpr) -> LogicalExpr {
+        op(Operator::Addition, vec![l, r])
+    }
+
+    /// `a.user_id + count(b)` → the single buried key `a.user_id`.
+    #[test]
+    fn grouping_keys_buried_in_operator() {
+        let expr = op(Operator::Addition, vec![prop("user_id"), count_b()]);
+        assert_eq!(collect_grouping_keys(&expr), vec![prop("user_id")]);
+    }
+
+    /// `a.city + ':' + toString(count(b))` → the maximal aggregate-free operand
+    /// `a.city + ':'` is the key (Cypher groups by the whole non-aggregate
+    /// operand, NOT the fragmented leaf); the aggregate-bearing
+    /// `toString(count(b))` contributes nothing.
+    #[test]
+    fn grouping_keys_buried_with_literal_and_scalar_wrapped_aggregate() {
+        // Parses as ((a.city + ':') + toString(count(b)))
+        let city_colon = plus(
+            prop("city"),
+            LogicalExpr::Literal(Literal::String(":".to_string())),
+        );
+        let expr = plus(city_colon.clone(), scalar("toString", vec![count_b()]));
+        assert_eq!(collect_grouping_keys(&expr), vec![city_colon]);
+    }
+
+    /// A fully aggregate-free compound item is emitted WHOLE (maximal subtree),
+    /// not fragmented — this is what preserves byte-identical output for the
+    /// existing `CASE ... END`/`u1.name` corpus grouping keys.
+    #[test]
+    fn grouping_keys_aggregate_free_compound_stays_whole() {
+        let expr = op(
+            Operator::Addition,
+            vec![
+                prop("city"),
+                LogicalExpr::Literal(Literal::String("!".to_string())),
+            ],
+        );
+        // One key, equal to the whole expression (not just `a.city`).
+        assert_eq!(collect_grouping_keys(&expr), vec![expr.clone()]);
+    }
+
+    /// An aggregates-only item (`count(b) + sum(b)`) yields NO grouping key.
+    #[test]
+    fn grouping_keys_aggregates_only_none() {
+        let expr = op(
+            Operator::Addition,
+            vec![
+                count_b(),
+                agg("sum", LogicalExpr::TableAlias(TableAlias("b".to_string()))),
+            ],
+        );
+        assert!(collect_grouping_keys(&expr).is_empty());
+    }
+
+    /// A bare aggregate and a pure literal both yield nothing.
+    #[test]
+    fn grouping_keys_bare_aggregate_and_constant_none() {
+        assert!(collect_grouping_keys(&count_b()).is_empty());
+        assert!(collect_grouping_keys(&LogicalExpr::Literal(Literal::Integer(0))).is_empty());
+        assert!(collect_grouping_keys(&LogicalExpr::Parameter("p".to_string())).is_empty());
+    }
+
+    /// `count(b) + 0` (the existing corpus near-match) yields nothing — the
+    /// literal operand is not a key, guaranteeing 0 golden churn there.
+    #[test]
+    fn grouping_keys_aggregate_plus_literal_none() {
+        let expr = op(
+            Operator::Addition,
+            vec![count_b(), LogicalExpr::Literal(Literal::Integer(0))],
+        );
+        assert!(collect_grouping_keys(&expr).is_empty());
+    }
+
+    /// Legacy `Operator` variant is descended too (the gap the old local
+    /// `contains_aggregate` copies missed).
+    #[test]
+    fn grouping_keys_legacy_operator_variant() {
+        let expr = LogicalExpr::Operator(OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![prop("user_id"), count_b()],
+        });
+        assert_eq!(collect_grouping_keys(&expr), vec![prop("user_id")]);
+    }
+
+    /// CASE holding an aggregate in one branch: the aggregate-free scrutinee /
+    /// other branches surface their keys.
+    #[test]
+    fn grouping_keys_buried_in_case() {
+        // CASE a.city WHEN 'x' THEN count(b) ELSE a.country END
+        let expr = LogicalExpr::Case(LogicalCase {
+            expr: Some(Box::new(prop("city"))),
+            when_then: vec![(
+                LogicalExpr::Literal(Literal::String("x".to_string())),
+                count_b(),
+            )],
+            else_expr: Some(Box::new(prop("country"))),
+        });
+        let keys = collect_grouping_keys(&expr);
+        assert!(keys.contains(&prop("city")));
+        assert!(keys.contains(&prop("country")));
+        assert_eq!(keys.len(), 2);
+    }
+
+    /// Buried key inside an ArraySubscript that also holds an aggregate.
+    #[test]
+    fn grouping_keys_buried_in_array_subscript() {
+        // labels(a)[count(b)]  → key: labels(a) (aggregate-free, references a)
+        let expr = LogicalExpr::ArraySubscript {
+            array: Box::new(scalar(
+                "labels",
+                vec![LogicalExpr::TableAlias(TableAlias("a".to_string()))],
+            )),
+            index: Box::new(count_b()),
+        };
+        let keys = collect_grouping_keys(&expr);
+        assert_eq!(
+            keys,
+            vec![scalar(
+                "labels",
+                vec![LogicalExpr::TableAlias(TableAlias("a".to_string()))]
+            )]
+        );
+    }
+
+    /// Buried key inside a Lambda body that also holds an aggregate is reached
+    /// (variant the old local copies never descended).
+    #[test]
+    fn grouping_keys_buried_in_lambda() {
+        // x -> a.city + count(b)   → key: a.city
+        let expr = LogicalExpr::Lambda(LambdaExpr {
+            params: vec!["x".to_string()],
+            body: Box::new(op(Operator::Addition, vec![prop("city"), count_b()])),
+        });
+        assert_eq!(collect_grouping_keys(&expr), vec![prop("city")]);
     }
 }

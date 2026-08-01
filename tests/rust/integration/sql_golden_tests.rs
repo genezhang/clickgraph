@@ -2258,6 +2258,76 @@ async fn with_case_wrapped_aggregate_not_pushed_into_group_by_591() {
     }
 }
 
+/// Regression for #637: a grouping key BURIED inside a RETURN item that also
+/// contains an aggregate (`a.user_id + count(b)`) must still be extracted into
+/// GROUP BY. Previously no GROUP BY was emitted at all → ClickHouse Code 215
+/// NOT_AN_AGGREGATE.
+#[tokio::test]
+async fn buried_grouping_key_in_return_aggregate_item_637() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (a:User)-[:FOLLOWS]->(b) RETURN a.user_id + count(b) AS mixed";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(&schema, cypher, dialect).await;
+        let group_by_lines: Vec<&str> = sql
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("GROUP BY"))
+            .collect();
+        assert_eq!(
+            group_by_lines,
+            vec!["GROUP BY a.user_id"],
+            "#637: the buried key a.user_id must be the sole GROUP BY key for {dialect:?}, got:\n{sql}"
+        );
+    }
+}
+
+/// Regression for #637 (maximal-subtree semantics): the grouping key is the
+/// whole aggregate-free operand `a.city + ':'` (rendered `concat(a.city, ':')`),
+/// NOT the fragmented leaf `a.city` — this is what makes the SELECT expression
+/// `concat(a.city, ':', toString(count(..)))` valid ClickHouse.
+#[tokio::test]
+async fn buried_grouping_key_maximal_subtree_637() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (a:User)-[:FOLLOWS]->(b) RETURN a.city + ':' + toString(count(b)) AS m";
+
+    // ClickHouse spelling; Databricks concat spelling can differ, so only pin CH.
+    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+    let group_by_lines: Vec<&str> = sql
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("GROUP BY"))
+        .collect();
+    assert_eq!(
+        group_by_lines,
+        vec!["GROUP BY concat(a.city, ':')"],
+        "#637: GROUP BY must be the maximal aggregate-free subtree, got:\n{sql}"
+    );
+}
+
+/// Regression for #637 (WITH barrier, render path): the same buried-key bug
+/// existed independently in `with_to_cte`. `WITH a.user_id + count(b) AS x`
+/// previously emitted a CTE with NO GROUP BY → Code 215.
+#[tokio::test]
+async fn buried_grouping_key_in_with_aggregate_item_637() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (a:User)-[:FOLLOWS]->(b) WITH a.user_id + count(b) AS x RETURN x";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(&schema, cypher, dialect).await;
+        let group_by_lines: Vec<&str> = sql
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("GROUP BY"))
+            .collect();
+        assert_eq!(
+            group_by_lines,
+            vec!["GROUP BY a.user_id"],
+            "#637: the WITH-CTE must GROUP BY the buried key a.user_id for {dialect:?}, got:\n{sql}"
+        );
+    }
+}
+
 /// Regression for #452: on the FK-edge schema the PLACED_BY edge IS the
 /// `orders_fk` node table, so `MATCH (c:Customer) OPTIONAL MATCH
 /// (c)<-[:PLACED_BY]-(o:Order)` must reach the optional Order with a SINGLE

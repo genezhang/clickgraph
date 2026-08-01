@@ -7850,20 +7850,47 @@ fn apply_with_items_projection(
                 // 2. ANY() picks the single value in each group (safe for PK)
                 // 3. GROUP BY 1 column is much faster than GROUP BY 7 columns
                 if has_aggregation {
-                    let group_by_exprs: Vec<RenderExpr> = items.iter()
-                                .filter(|item| {
-                                    // Exclude: direct aggregates, literals, and expressions containing aggregates
-                                    // (#591: use expr_contains_aggregate, which recurses into
-                                    // Case/List/legacy-Operator — a narrower helper here silently
-                                    // pushed CASE/List-wrapped aggregates into GROUP BY → Code 184).
-                                    !matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_))
-                                    && !is_literal_expr(&item.expression)
-                                    && !expr_contains_aggregate(&item.expression)
-                                })
-                                .flat_map(|item| {
+                    // #637: a grouping key can be BURIED inside a WITH item that
+                    // also contains an aggregate (e.g. `a.city` in
+                    // `WITH a.city + count(b) AS x`). Build the key set as:
+                    //  - each aggregate-FREE, non-literal item, WHOLE (preserves
+                    //    the prior per-item GROUP BY behavior byte-for-byte,
+                    //    including the ID-only / ArraySubscript / property-mapping
+                    //    handling below);
+                    //  - the buried non-aggregate sub-expressions of each
+                    //    aggregate-CONTAINING item, via the shared
+                    //    `collect_grouping_keys` (empty for aggregates-only items).
+                    // Without the buried extraction the CTE emitted an aggregate
+                    // with NO GROUP BY → ClickHouse Code 215.
+                    use crate::query_planner::logical_expr::LogicalExpr;
+                    let mut key_exprs: Vec<LogicalExpr> = Vec::new();
+                    let push_key = |k: LogicalExpr, keys: &mut Vec<LogicalExpr>| {
+                        if !keys.contains(&k) {
+                            keys.push(k);
+                        }
+                    };
+                    for item in items.iter() {
+                        if matches!(&item.expression, LogicalExpr::AggregateFnCall(_)) {
+                            continue;
+                        }
+                        if expr_contains_aggregate(&item.expression) {
+                            for key in
+                                crate::query_planner::logical_expr::visitors::collect_grouping_keys(
+                                    &item.expression,
+                                )
+                            {
+                                push_key(key, &mut key_exprs);
+                            }
+                        } else if !is_literal_expr(&item.expression) {
+                            push_key(item.expression.clone(), &mut key_exprs);
+                        }
+                    }
+
+                    let group_by_exprs: Vec<RenderExpr> = key_exprs.iter()
+                                .flat_map(|key_expr| {
                                     // For TableAlias, only GROUP BY the ID column
                                     // (other columns are wrapped with ANY() in SELECT)
-                                    match &item.expression {
+                                    match key_expr {
                                         crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
                                             // Use ID-only helper for efficient GROUP BY
                                             // Pass VLP CTE metadata for deterministic lookups
@@ -7893,7 +7920,7 @@ fn apply_with_items_projection(
                                             } else {
                                                 ExpressionRewriteContext::new(plan_to_render)
                                             };
-                                            let rewritten = rewrite_expression_with_property_mapping(&item.expression, &rewrite_ctx);
+                                            let rewritten = rewrite_expression_with_property_mapping(key_expr, &rewrite_ctx);
                                             let expr_vec: Vec<RenderExpr> = rewritten.try_into().ok().map(|mut expr: RenderExpr| {
                                                 resolve_denormalized_property_in_expr_impl(&mut expr, plan_to_render, cte_from_alias.as_deref());
                                                 expr
