@@ -234,14 +234,17 @@ denormalized `rel_alias_mapping`) is logic with **no equivalent inside A at all*
     to it. `quote_json_key` stays backticked (load-bearing JSON key). Churn: 2 CH
     goldens, 0 Databricks. This was the one *empirically-reachable* C drift item.
   - **Hardcoded CH arms in C** (Path A routes all of these): `POWER` (A→dialect),
-    `arrayFold` for ReduceExpr (A→`reduce_fold_sql`→Spark `aggregate`), map-literal
-    `{…}` (A→`map(...)`), simple `CASE` (A→`simple_case_sql`), raw aggregate names,
-    `concat`. **Empirically UNREACHED** — grep of committed `.databricks.sql`
-    goldens for `arrayFold`/`POWER(`/`{'`/`caseWithExpression` = **0 hits each**,
-    while Path A's `aggregate(` appears once. So reduce/map/case/exponent
+    map-literal `{…}` (A→`map(...)`), simple `CASE` (A→`simple_case_sql`), raw
+    aggregate names, `concat`. **`arrayFold` for ReduceExpr — RESOLVED 2026-08-01**
+    (PR #842): C now routes through `common::reduce_fold_sql` (→ Spark `aggregate`),
+    the same helper Path A uses; CH byte-identical, 0 golden churn (ReduceExpr is
+    corpus-unreached via the CTE-build path — the only corpus `reduce()` renders via
+    A). The remaining arms are **empirically UNREACHED** — grep of committed
+    `.databricks.sql` goldens for `POWER(`/`{'`/`caseWithExpression` = **0 hits
+    each**, while Path A's `aggregate(` appears once. So map/case/exponent
     expressions reach the renderer via **A, not C**, in every corpus case. C's
-    hardcoded arms are latent-but-unreached — real drift, zero triggered bugs
-    (the same class as Exponentiation in §6).
+    remaining hardcoded arms are latent-but-unreached — real drift, zero triggered
+    bugs (the same class as Exponentiation in §6).
   - **`InSubquery` placeholder** in C (emits `/* subquery */`, arm 10) vs A's real
     subplan render — a semantic gap, but likely never hit at CTE-build (confirm
     before any collapse).

@@ -446,6 +446,30 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-01: **SQL-IR Phase 2 — route Path C `ReduceExpr` through `reduce_fold_sql`**
+  (PR #842, branch `refactor/sql-ir-path-c-reduce-fold-dialect`). Another of the
+  independent Path-C drift slices the §3.5 investigation flagged as shippable
+  without the full (design-cycle) C→A collapse — and the one genuine renderer leaf
+  an empirical re-scan of all 1,119 Databricks goldens turned up after the "clean
+  leaf pool exhausted" call (the multiIf/toFloat64/splitByChar/JSONExtract golden
+  hits are all schema-config raw SQL, already dispositioned; `arrayFold` is real
+  renderer output). Path C (`cte_extraction.rs::render_expr_to_sql_string`,
+  CTE-build stage) hardcoded CH `arrayFold((acc, x) -> expr, list, init)` for
+  `RenderExpr::ReduceExpr`, while Path A (`RenderExpr::to_sql`) already routes the
+  identical strings through `common::reduce_fold_sql` (→ Spark `aggregate(list,
+  init, (acc, x) -> expr)` on Databricks). Fix: added the one missing sibling
+  re-export (`reduce_fold_sql` to `emitters/clickhouse/mod.rs`) + routed Path C's
+  arm through it; `init_cast` Int64-wrapping preserved ahead of the call. CH
+  byte-identical (helper default arm = same spelling, arg order 1:1); **0 golden
+  churn** — no corpus query reaches ReduceExpr via the CTE-build path (the only
+  corpus `reduce()` goes through Path A), so latent correctness hardening, same
+  profile as #815. New `reduce_fold_sql_tests` module locks both dialect spellings.
+  Gate: fmt · clippy · 1606 lib (+2) · corpus_sweep + sql_golden byte-identical ·
+  ratchet net-zero. Adversarial review APPROVE-0 (byte-identity, arg order,
+  init_cast, re-export reachability, churn honesty all independently verified).
+  **Remaining Path-C hardcoded arm:** `POWER` (Exponentiation) at
+  `cte_extraction.rs:1750` — parser-unreachable dead code (§6/P-6), zero urgency.
+
 - 2026-07-30: **#689 bug 1 — heterogeneous from-side-polymorphic VLP recursive
   CTE joins the right end table** (#828, `c013c07a`). A directed VLP over a
   from-side-polymorphic edge (MEMBER_OF: `member_type ∈ {User, Group}`, target
