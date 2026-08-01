@@ -49,6 +49,14 @@ impl FunctionMapper for DatabricksFunctionMapper {
         "element_at"
     }
 
+    fn array_element_or_null(&self, arr: &str, idx: &str) -> String {
+        // Spark `element_at(arr, i)` returns NULL for an out-of-bounds index
+        // (non-ANSI default), already matching openCypher `list[i]` semantics —
+        // so this is byte-identical to the plain `element_at` accessor the
+        // ArraySubscript arm emitted before, no CH-style OrNull variant needed.
+        format!("element_at({}, {})", arr, idx)
+    }
+
     fn count_if(&self) -> &'static str {
         // Databricks Runtime 13.1+ ships count_if. Older runtimes need
         // SUM(CASE WHEN ... THEN 1 ELSE 0 END) — flagged here so a future
@@ -256,6 +264,12 @@ mod tests {
         let m = for_dialect(SqlDialect::Databricks);
         assert_eq!(m.collect_list(), "collect_list");
         assert_eq!(m.array_element(), "element_at");
+        // element_at already returns NULL on out-of-bounds (non-ANSI default),
+        // so array_element_or_null is byte-identical to the plain accessor.
+        assert_eq!(
+            m.array_element_or_null("array(10, 20, 30)", "11"),
+            "element_at(array(10, 20, 30), 11)"
+        );
         assert_eq!(m.count_if(), "count_if");
         assert_eq!(
             m.min_if("int(hop)", "node_id = 14"),

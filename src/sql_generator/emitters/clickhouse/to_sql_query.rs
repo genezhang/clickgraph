@@ -7547,17 +7547,19 @@ impl RenderExpr {
                         format!("{}[{}]", array_sql, index.to_sql())
                     }
                     _ => {
-                        // 1-based index (Cypher 0-based + 1). CH `arr[i]` is 1-based;
-                        // Spark `arr[i]` is 0-based, so Databricks must use the 1-based
-                        // `element_at(arr, i)` instead. CH form is left byte-identical.
+                        // 1-based index (Cypher 0-based + 1). The mapper's
+                        // `array_element_or_null` picks the right 1-based accessor
+                        // per dialect: CH `arrayElementOrNull(arr, i)`, Spark
+                        // `element_at(arr, i)`. Both return NULL for an
+                        // out-of-bounds index, matching openCypher `list[i]`
+                        // semantics (Neo4j returns null, not a type default).
                         //
-                        // Negative indices (Cypher `-1` = last) map UNCHANGED: both CH
-                        // arrayElement(arr,-1) and Spark element_at(arr,-1) already mean
-                        // "last", so a blind +1 wrongly shifts `-1`->`0` (CH then returns
-                        // the type default, silently wrong). Cypher `-1` reaches here as
-                        // the expression `0 - 1` (the parser lowers unary minus that way),
-                        // so a literal-only guard misses it — the runtime `if` below
-                        // handles both literal and computed negative indices.
+                        // Negative indices (Cypher `-1` = last) map UNCHANGED: both
+                        // CH and Spark already treat -1 as "last", so a blind +1
+                        // wrongly shifts `-1`->`0`. Cypher `-1` reaches here as the
+                        // expression `0 - 1` (the parser lowers unary minus that
+                        // way), so a literal-only guard misses it — the runtime
+                        // `if` below handles both literal and computed negatives.
                         let idx_1based = match index.as_ref() {
                             // Non-negative integer literal: clean compile-time +1.
                             RenderExpr::Literal(Literal::Integer(n)) if *n >= 0 => {
@@ -7570,12 +7572,8 @@ impl RenderExpr {
                                 format!("if(({i}) >= 0, ({i})+1, ({i}))")
                             }
                         };
-                        match crate::server::query_context::get_current_dialect() {
-                            crate::sql_generator::SqlDialect::Databricks => {
-                                format!("element_at({}, {})", array_sql, idx_1based)
-                            }
-                            _ => format!("{}[{}]", array_sql, idx_1based),
-                        }
+                        crate::sql_generator::function_mapper::current_function_mapper()
+                            .array_element_or_null(&array_sql, &idx_1based)
                     }
                 }
             }

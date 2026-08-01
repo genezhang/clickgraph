@@ -23,7 +23,7 @@ INNER JOIN test_integration.posts_test p2 ON r1.post_id = p2.post_id
 WHERE (n_1.user_id = 1)
 )
 SELECT 
-      t.path_relationships[1] AS "rel_type", 
+      arrayElementOrNull(t.path_relationships, 1) AS "rel_type", 
       t.end_type AS "target_label"
 FROM vlp_multi_type_n_m AS t
 WHERE t.start_id = 1
