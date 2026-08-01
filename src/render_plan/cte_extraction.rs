@@ -1799,6 +1799,16 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                 .iter()
                 .map(|arg| render_expr_to_sql_string(arg, alias_mapping))
                 .collect();
+            // Cypher round() follows Neo4j's two-branch semantics, neither of
+            // which matches CH's native HALF_EVEN round. Route the 1-arg/2-arg
+            // forms through the dialect helper so a round() reachable via the
+            // CTE-build path (Path C) matches the final-SELECT renderer (Path A).
+            // The helper keeps Spark's already-faithful round() a plain call.
+            if func.name.eq_ignore_ascii_case("round") {
+                if let Some(sql) = crate::clickhouse_query_generator::round_half_up_sql(&args) {
+                    return sql;
+                }
+            }
             // Map dialect-divergent names (e.g. tuple -> Spark struct) via the registry.
             let name = crate::clickhouse_query_generator::dialect_function_name(&func.name);
             format!("{}({})", name, args.join(", "))

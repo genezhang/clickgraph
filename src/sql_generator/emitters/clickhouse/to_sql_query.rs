@@ -6732,6 +6732,20 @@ impl RenderExpr {
                     }
                 }
 
+                // Cypher round() follows Neo4j's two-branch semantics (1-arg /
+                // precision-0 = Math.round floor(x+0.5); 2-arg d!=0 = BigDecimal
+                // HALF_UP away-from-zero), neither of which matches CH's native
+                // HALF_EVEN round. Route through the dialect helper (CH gets the
+                // Neo4j-faithful formula; Databricks stays a plain round()). The
+                // 3-arg explicit-mode form falls through (helper returns None) to
+                // native round, which fails loud (Code 42) — unsupported on CH.
+                if fn_name_lower == "round" {
+                    let args_sql: Vec<String> = fn_call.args.iter().map(|e| e.to_sql()).collect();
+                    if let Some(sql) = super::common::round_half_up_sql(&args_sql) {
+                        return sql;
+                    }
+                }
+
                 // Check if we have a Neo4j -> ClickHouse mapping
                 match get_function_mapping(&fn_name_lower) {
                     Some(mapping) => {

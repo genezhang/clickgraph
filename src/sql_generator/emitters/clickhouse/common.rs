@@ -196,6 +196,112 @@ pub fn simple_case_sql(case_expr: &str, when_then: &[(String, String)], default:
     }
 }
 
+/// Render Cypher `round()` for the active dialect, matching the Neo4j 5.25
+/// reference semantics (`CypherFunctions.java`) from its already-rendered
+/// argument strings.
+///
+/// Neo4j's `round()` is NOT a single rounding mode — it has two branches:
+///
+/// - **1-arg `round(x)`** and **2-arg `round(x, 0)`** (precision literally 0,
+///   no explicit mode) fall to Java `Math.round(x)` = `floor(x + 0.5)`, which
+///   breaks ties toward **+∞** (`round(0.5)=1`, `round(2.5)=3`,
+///   `round(-0.5)=0`, `round(-2.5)=-2`, `round(-1.5)=-1`). This is *not*
+///   away-from-zero — negative `.5` ties round up toward zero/+∞.
+/// - **2-arg `round(x, d)` with d ≠ 0** uses
+///   `BigDecimal.valueOf(x).setScale(d, HALF_UP)` — HALF_UP is
+///   round-half-**away-from-zero**, applied to the *shortest decimal string*
+///   of the double (`round(0.575,2)=0.58`, `round(1.005,2)=1.01`,
+///   `round(0.145,2)=0.15`, `round(-0.575,2)=-0.58`, `round(0.125,2)=0.13`).
+///
+/// ClickHouse's native `round` is HALF_EVEN (banker's rounding), so a plain
+/// `round → round` name-map is a silent fidelity bug. This emits:
+///
+/// - 1-arg / 2-arg-with-`0`:  `floor(x + 0.5)`  (Math.round; x evaluated once)
+/// - 2-arg (d ≠ 0):
+///   `if(abs(x) >= 1e15, x, sign(x) * floor(abs(toDecimal128(toString(x), 18)) * toDecimal128(pow(10, d), 0) + toDecimal128('0.5', 18)) / pow(10, d))`
+///
+///   `toString(x)` recovers the shortest decimal representation (matching
+///   `BigDecimal.valueOf`, which parses the double's canonical string), and
+///   `toDecimal128(..., 18)` / `toDecimal128(pow(10, d), 0)` keep the scaling in
+///   the decimal domain so no binary-float error is reintroduced. The `+ 0.5`
+///   MUST be a decimal literal `toDecimal128('0.5', 18)`, not a Float64 `0.5`:
+///   a float `0.5` promotes the exact `Decimal(38,18)` product back to Float64
+///   (`toFloat64(Decimal 1234.5) = 1234.4999999999998`), collapsing ties
+///   downward — silent-wrong at magnitude ≥ 10 / precision ≥ 3
+///   (`round(12.345,2)` would give 12.34 instead of 12.35). The
+///   `sign(x) * floor(abs(...) ...)` shape gives HALF_UP away-from-zero
+///   symmetrically for negatives.
+///
+///   `toDecimal128(…, 18)` (Decimal(38,18)) overflows (CH Code 69) once the
+///   integer part exceeds ~20 digits, i.e. `|x| ≳ 10^20`. The `if(abs(x) >=
+///   1e15, x, …)` guard short-circuits BEFORE the decimal branch is evaluated
+///   (ClickHouse `if` is lazy), returning `x` unchanged for large magnitudes.
+///   This is exact, not a fallback compromise: a Float64 has no fractional bits
+///   left at `|x| ≥ 2^52 ≈ 4.5×10^15`, so `round(x, d) == x` there anyway, which
+///   is what Neo4j returns too. The 1e15 threshold sits safely inside both the
+///   "no fractional precision" regime and the decimal range. Scale 18 (not a
+///   smaller scale) is kept so the common small-|x| cases retain full 18-digit
+///   fractional fidelity. Live-validated on ClickHouse 26.7 across a
+///   magnitude × precision sweep, negatives, and the 1e30 overflow case.
+///
+/// Spark/Databricks `round` is ALREADY HALF_UP away-from-zero for the 2-arg
+/// form and matches Neo4j's Math.round default at precision 0, so it is emitted
+/// unchanged as a plain `round(args)` call — keeping Databricks output
+/// byte-identical.
+///
+/// `args_sql` are the already-rendered argument fragments in Cypher order.
+/// Returns `Some(sql)` for the 1-arg and 2-arg forms; `None` for any other
+/// arity. In particular the **3-arg explicit-mode form** `round(x, d, 'MODE')`
+/// returns `None` and falls through to CH's native `round`, which takes at most
+/// 2 arguments and therefore raises a **loud** `NUMBER_OF_ARGUMENTS_DOESNT_MATCH`
+/// (Code 42) error — the explicit-mode form is not yet supported on ClickHouse,
+/// and this fails loud rather than silently mis-rounding.
+///
+/// Residual: the 2-arg (d ≠ 0) form textually references `x` twice (`sign(x)`
+/// and `toString(x)`), so a non-deterministic argument such as `round(rand(),
+/// 2)` draws `rand()` more than once. The common 1-arg / precision-0 forms
+/// evaluate `x` exactly once.
+pub fn round_half_up_sql(args_sql: &[String]) -> Option<String> {
+    use crate::sql_generator::SqlDialect;
+    // Spark/Databricks round() already matches Neo4j (HALF_UP away-from-zero for
+    // the 2-arg form, Math.round default at precision 0) — emit the native call
+    // unchanged so its output stays byte-identical.
+    if matches!(
+        crate::server::query_context::get_current_dialect(),
+        SqlDialect::Databricks
+    ) {
+        return match args_sql.len() {
+            1 | 2 => Some(format!("round({})", args_sql.join(", "))),
+            _ => None,
+        };
+    }
+    // ClickHouse: emit the Neo4j-faithful formula (native round is HALF_EVEN).
+    match args_sql {
+        // 1-arg: Math.round = floor(x + 0.5), ties toward +∞.
+        [x] => Some(format!("floor({x} + 0.5)")),
+        // 2-arg with precision literally 0 hits the SAME Math.round branch in
+        // Neo4j (`precision == 0 && !explicitMode`), NOT the HALF_UP setScale
+        // path — so `round(-2.5, 0) = -2`, not -3.
+        [x, d] if d.trim() == "0" => Some(format!("floor({x} + 0.5)")),
+        // 2-arg (d != 0): BigDecimal.setScale(d, HALF_UP) on the shortest
+        // decimal string — HALF_UP away-from-zero, scaled in the decimal domain.
+        // The `+ toDecimal128('0.5', 18)` MUST be decimal, not a float 0.5, or
+        // the exact product promotes to Float64 and ties collapse downward. The
+        // `if(abs(x) >= 1e15, x, …)` guard short-circuits before the decimal
+        // branch to avoid Code 69 overflow for large |x| (where round(x,d)==x
+        // anyway — a double has no fractional bits past ~4.5e15).
+        [x, d] => Some(format!(
+            "if(abs({x}) >= 1e15, {x}, \
+             sign({x}) * floor(abs(toDecimal128(toString({x}), 18)) \
+             * toDecimal128(pow(10, {d}), 0) + toDecimal128('0.5', 18)) / pow(10, {d}))"
+        )),
+        // 3-arg round(x, d, 'MODE') and any other arity: fall through. CH's
+        // native round takes at most 2 args, so the 3-arg explicit-mode form
+        // fails LOUD (Code 42) — unsupported rather than silently mis-rounded.
+        _ => None,
+    }
+}
+
 /// Resolve a SQL function name to its active-dialect spelling via the function
 /// registry, falling back to `name` unchanged when it has no registry entry.
 ///
@@ -402,6 +508,92 @@ mod reduce_fold_sql_tests {
         .await;
         // Spark has no arrayFold; the fold is `aggregate(list, init, (acc, x) -> expr)`.
         assert_eq!(sql, "aggregate([1, 2, 3], 0, (acc, x) -> acc + x)");
+    }
+}
+
+#[cfg(test)]
+mod round_half_up_sql_tests {
+    use super::round_half_up_sql;
+    use crate::server::query_context::{with_query_context, QueryContext};
+    use crate::sql_generator::SqlDialect;
+
+    #[test]
+    fn clickhouse_one_arg_uses_math_round() {
+        // Default (no scope) = ClickHouse. Neo4j 1-arg round() = Math.round =
+        // floor(x + 0.5) (ties toward +∞). x is evaluated exactly once.
+        assert_eq!(
+            round_half_up_sql(&["u.x".to_string()]),
+            Some("floor(u.x + 0.5)".to_string())
+        );
+    }
+
+    #[test]
+    fn clickhouse_two_arg_precision_zero_uses_math_round() {
+        // Neo4j: round(x, 0) with precision literally 0 hits the SAME Math.round
+        // branch (precision == 0 && !explicitMode), NOT the HALF_UP setScale
+        // path — so it must emit floor(x + 0.5), not the away-from-zero decimal
+        // formula. This is why round(-2.5, 0) = -2, not -3.
+        assert_eq!(
+            round_half_up_sql(&["u.x".to_string(), "0".to_string()]),
+            Some("floor(u.x + 0.5)".to_string())
+        );
+    }
+
+    #[test]
+    fn clickhouse_two_arg_uses_decimal_half_up_formula() {
+        // Neo4j 2-arg (d != 0) = BigDecimal.setScale(d, HALF_UP) on the shortest
+        // decimal string: HALF_UP away-from-zero, scaled in the decimal domain
+        // via toDecimal128(toString(x)). The `+ toDecimal128('0.5', 18)` must be
+        // a DECIMAL literal (a float 0.5 would promote the product back to
+        // Float64 and collapse ties downward), and the `if(abs(x) >= 1e15, …)`
+        // guard avoids Code 69 overflow for large |x|.
+        assert_eq!(
+            round_half_up_sql(&["u.x".to_string(), "2".to_string()]),
+            Some(
+                "if(abs(u.x) >= 1e15, u.x, \
+                 sign(u.x) * floor(abs(toDecimal128(toString(u.x), 18)) \
+                 * toDecimal128(pow(10, 2), 0) + toDecimal128('0.5', 18)) / pow(10, 2))"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn clickhouse_three_arg_falls_through() {
+        // 3-arg explicit-mode form: fall through (None). CH native round takes
+        // at most 2 args, so this fails LOUD (Code 42) — unsupported rather than
+        // silently mis-rounded.
+        assert_eq!(
+            round_half_up_sql(&[
+                "u.x".to_string(),
+                "1".to_string(),
+                "'HALF_EVEN'".to_string()
+            ]),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn databricks_stays_plain_round() {
+        let ctx = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        let (one, two, zero, three) = with_query_context(ctx, async {
+            (
+                round_half_up_sql(&["u.x".to_string()]),
+                round_half_up_sql(&["u.x".to_string(), "2".to_string()]),
+                round_half_up_sql(&["u.x".to_string(), "0".to_string()]),
+                round_half_up_sql(&["u.x".to_string(), "1".to_string(), "'HALF_UP'".to_string()]),
+            )
+        })
+        .await;
+        // Spark/Databricks round() already matches Neo4j — plain call, byte-identical.
+        assert_eq!(one, Some("round(u.x)".to_string()));
+        assert_eq!(two, Some("round(u.x, 2)".to_string()));
+        assert_eq!(zero, Some("round(u.x, 0)".to_string()));
+        // 3-arg still falls through so it isn't silently reshaped.
+        assert_eq!(three, None);
     }
 }
 
