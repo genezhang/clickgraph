@@ -4974,6 +4974,8 @@ fn apply_pattern_comprehensions(
                     schema,
                     pc_meta.target_label.as_deref(),
                     pc_meta.target_property.as_deref(),
+                    pc_meta.target_var.as_deref(),
+                    pc_meta.where_clause.as_ref(),
                 ) {
                     log::info!(
                         "🔧 Pattern comp CTE '{}': SQL = {}",

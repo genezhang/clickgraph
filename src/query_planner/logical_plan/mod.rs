@@ -448,6 +448,10 @@ pub struct PatternComprehensionMeta {
     pub target_label: Option<String>,
     /// Property name from the projection (e.g., "name" in `| b.name`)
     pub target_property: Option<String>,
+    /// Variable name of the target node (e.g., "b" in `[(a)-[:FOLLOWS]->(b:User) | b.name]`).
+    /// Used to map an inner WHERE predicate referencing the target (e.g. `WHERE b.age > 3`)
+    /// onto the `__tgt` join alias when rendering the projection subquery.
+    pub target_var: Option<String>,
     /// ALL outer variables correlated from pattern (multi-correlation support)
     pub correlation_vars: Vec<CorrelationVarInfo>,
     /// Full multi-hop pattern chain (serializable form of ConnectedPattern)

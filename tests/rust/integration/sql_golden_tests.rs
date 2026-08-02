@@ -508,6 +508,23 @@ const CORPUS: &[(&str, &str)] = &[
         "group_two_keys",
         "MATCH (u:User) RETURN u.country, u.city, count(u) AS n",
     ),
+    // #878: a PROJECTION pattern comprehension with an inner WHERE must render
+    // that predicate against the target (`__tgt`) — previously it was silently
+    // dropped, returning the unfiltered set (ground-rule-1 wrong answer). The
+    // golden locks `WHERE __tgt.age > 3` inside the groupArray subquery. The
+    // `v.name`→`__tgt.full_name` projection and `v.age`→`__tgt.age` predicate
+    // both flow through the target node schema's property mappings.
+    (
+        "pattern_comp_projection_inner_where_878",
+        "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) WHERE v.age > 3 | v.name] AS names",
+    ),
+    // #878 byte-lock guard: the base (no-WHERE) projection form must stay
+    // byte-identical — the fix is purely additive (a WHERE appears only when an
+    // inner predicate exists). If this churns, the fix leaked into the base path.
+    (
+        "pattern_comp_projection_no_where_878",
+        "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) | v.name] AS names",
+    ),
     // NOTE: Path D coverage (EXISTS / pattern-predicate, e.g.
     // `WHERE (u)-[:AUTHORED]->(:Post)`) is intentionally absent — that path
     // currently hits `unimplemented!` in render_expr for anonymous pattern

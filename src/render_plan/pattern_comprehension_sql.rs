@@ -1564,6 +1564,99 @@ fn find_cte_column_for_list_alias(
 /// Render a WHERE clause from a LogicalExpr for use inside a correlated subquery.
 /// Resolves property accesses to schema-mapped column names on edge table aliases.
 /// May add additional JOINs for intermediate node tables referenced in the WHERE clause.
+/// Render a pattern comprehension's inner WHERE for the property-projection
+/// path (`build_pattern_comprehension_sql`). Unlike `render_pc_where_clause`
+/// (used by the count/correlated path), this path has no `pattern_hops` —
+/// the single target node is already joined as `__tgt`. We therefore map the
+/// target variable to the `__tgt` alias (marked already-joined so no extra
+/// JOIN is emitted) and resolve its properties through the target node schema.
+///
+/// Returns `None` if the predicate references anything other than the target
+/// variable (e.g. an intermediate node), since such a reference cannot be
+/// resolved in this single-hop subquery — dropping to `None` preserves the
+/// pre-fix behavior for those shapes rather than emitting a wrong filter.
+fn render_target_where_predicate(
+    expr: &crate::query_planner::logical_expr::LogicalExpr,
+    target_var: &str,
+    target_label: &str,
+    schema: &GraphSchema,
+) -> Option<String> {
+    // Only the target variable is resolvable here → map it to `__tgt`.
+    let mut node_alias_map: HashMap<String, (String, String)> = HashMap::new();
+    node_alias_map.insert(
+        target_var.to_string(),
+        (target_label.to_string(), "__tgt".to_string()),
+    );
+    // Mark `__tgt` as already joined so the renderer never emits a JOIN for it
+    // (it is joined by the enclosing branch).
+    let mut node_joins_added: HashSet<String> = HashSet::new();
+    node_joins_added.insert(target_var.to_string());
+
+    // Bail out if the predicate references an alias other than the target var:
+    // such a reference would render as a bare `alias.col` against a table that
+    // isn't in this subquery's FROM (Code 47). Preserve prior behavior (filter
+    // dropped) rather than emit invalid SQL.
+    let mut referenced = HashSet::new();
+    collect_where_aliases(expr, &mut referenced);
+    if referenced.iter().any(|a| a != target_var) {
+        log::warn!(
+            "⚠️ Pattern comprehension inner WHERE references non-target alias(es) {:?}; \
+             cannot resolve in projection subquery — filter not applied (#878)",
+            referenced
+        );
+        return None;
+    }
+
+    // Empty hops/edges → no additional joins are generated.
+    let mut join_clauses: Vec<String> = Vec::new();
+    let sql = render_logical_expr_to_sql(
+        expr,
+        &node_alias_map,
+        &[],
+        &[],
+        schema,
+        &mut join_clauses,
+        &mut node_joins_added,
+    );
+
+    if sql.is_empty() {
+        None
+    } else {
+        Some(sql)
+    }
+}
+
+/// Collect all table-alias names referenced by property accesses in a WHERE
+/// predicate. Used to reject predicates that reference nodes not present in the
+/// projection subquery.
+fn collect_where_aliases(
+    expr: &crate::query_planner::logical_expr::LogicalExpr,
+    out: &mut HashSet<String>,
+) {
+    use crate::query_planner::logical_expr::LogicalExpr;
+    match expr {
+        LogicalExpr::PropertyAccessExp(pa) => {
+            out.insert(pa.table_alias.0.clone());
+        }
+        LogicalExpr::OperatorApplicationExp(op) => {
+            for operand in &op.operands {
+                collect_where_aliases(operand, out);
+            }
+        }
+        LogicalExpr::ScalarFnCall(f) => {
+            for arg in &f.args {
+                collect_where_aliases(arg, out);
+            }
+        }
+        LogicalExpr::AggregateFnCall(f) => {
+            for arg in &f.args {
+                collect_where_aliases(arg, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn render_pc_where_clause(
     expr: &crate::query_planner::logical_expr::LogicalExpr,
     pattern_hops: &[crate::query_planner::logical_plan::ConnectedPatternInfo],
@@ -1998,6 +2091,7 @@ fn replace_count_star_in_expr(expr: &mut RenderExpr, pc_subqueries: &[String], p
 ///   UNION ALL ...
 /// ) GROUP BY node_id
 /// ```
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_pattern_comprehension_sql(
     correlation_label: &str,
     direction: &crate::open_cypher_parser::ast::Direction,
@@ -2006,9 +2100,24 @@ pub(crate) fn build_pattern_comprehension_sql(
     schema: &GraphSchema,
     target_label: Option<&str>,
     target_property: Option<&str>,
+    target_var: Option<&str>,
+    where_clause: Option<&crate::query_planner::logical_expr::LogicalExpr>,
 ) -> Option<String> {
     use crate::open_cypher_parser::ast::Direction;
     use crate::query_planner::logical_plan::AggregationType;
+
+    // Render the pattern comprehension's inner WHERE predicate (if any) once, up
+    // front. It references the target-node variable (e.g. `v` in
+    // `[(u)-[:R]->(v) WHERE v.age > 3 | v.name]`), which is joined as `__tgt` in
+    // each property-projection branch — so we map that variable to `__tgt` and
+    // resolve its properties through the target node schema. Without this the
+    // filter is silently dropped (#878).
+    let inner_where_sql = match (where_clause, target_var, target_label) {
+        (Some(expr), Some(tvar), Some(tlabel)) => {
+            render_target_where_predicate(expr, tvar, tlabel, schema)
+        }
+        _ => None,
+    };
 
     // Resolve target node table/column for property-based aggregation (e.g., collect(f.name))
     let target_join_info = target_label.and_then(|tl| {
@@ -2086,6 +2195,17 @@ pub(crate) fn build_pattern_comprehension_sql(
                         .collect::<Vec<_>>()
                         .join(" AND ")
                 };
+                // The inner WHERE references `__tgt`, which exists only in this
+                // JOIN arm — append it here (not in the no-JOIN arm below).
+                let mut join_where = branch_where.clone();
+                if let Some(ref iw) = inner_where_sql {
+                    join_where.push(iw.clone());
+                }
+                let join_where_str = if join_where.is_empty() {
+                    String::new()
+                } else {
+                    format!(" WHERE {}", join_where.join(" AND "))
+                };
                 branches.push(format!(
                     "SELECT {} AS node_id, __tgt.{} AS target_prop FROM {} INNER JOIN {} AS __tgt ON {}{}",
                     rel_schema.from_id.to_pipe_joined_sql(""),
@@ -2093,7 +2213,7 @@ pub(crate) fn build_pattern_comprehension_sql(
                     db_table,
                     tgt_table,
                     join_cond,
-                    where_str
+                    join_where_str
                 ));
             } else {
                 branches.push(format!(
@@ -2136,6 +2256,17 @@ pub(crate) fn build_pattern_comprehension_sql(
                         .collect::<Vec<_>>()
                         .join(" AND ")
                 };
+                // The inner WHERE references `__tgt`, which exists only in this
+                // JOIN arm — append it here (not in the no-JOIN arm below).
+                let mut join_where = branch_where.clone();
+                if let Some(ref iw) = inner_where_sql {
+                    join_where.push(iw.clone());
+                }
+                let join_where_str = if join_where.is_empty() {
+                    String::new()
+                } else {
+                    format!(" WHERE {}", join_where.join(" AND "))
+                };
                 branches.push(format!(
                     "SELECT {} AS node_id, __tgt.{} AS target_prop FROM {} INNER JOIN {} AS __tgt ON {}{}",
                     rel_schema.to_id.to_pipe_joined_sql(""),
@@ -2143,7 +2274,7 @@ pub(crate) fn build_pattern_comprehension_sql(
                     db_table,
                     tgt_table,
                     join_cond,
-                    where_str
+                    join_where_str
                 ));
             } else {
                 branches.push(format!(
