@@ -475,6 +475,21 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **P-6 hygiene — #808 deleted the structurally-dead VLP recursive
+  generators (mixed arms kept)** (branch `fix/808-dead-vlp-recursive-generators`).
+  Follow-up to #606/#807. Adversarial review split the node-unique generators:
+  the fully-`denormalized` arms (intercepted upstream by `DenormalizedCteStrategy`,
+  `cte_manager/mod.rs:3261`) and the `heterogeneous-polymorphic` recursive arm
+  (superseded by the retained `generate_heterogeneous_polymorphic_sql` early-return)
+  are structurally unreachable → DELETED, along with the 2 helpers they orphaned
+  (`generate_polymorphic_edge_filter_intermediate`, `map_denormalized_property`).
+  The `mixed` arms are reachable by construction (`new_mixed`, `mod.rs:3288`) and
+  only corpus-empty → KEPT, deferred to option-(b) coverage-first per #808 (deleting
+  them would silently reroute a mixed VLP onto the standard arm, unverifiable without
+  live CH). Empirically re-confirmed (dispatcher fired 410× in corpus_sweep, the
+  deleted arms 0×). Zero behavior change: corpus_sweep + sql_golden 0-churn; ratchet
+  baseline improved (−2 in-file axis-flag counts). #808 stays open for the mixed
+  slice.
 - 2026-08-02: **P-1 — preserve parens on a lower-precedence LEFT operand** (PR
   #859, branch `fix/858-left-parens`, closes #858). Silent-wrong arithmetic on
   main: `(1+2)*3` rendered `1+2*3` = 7 (Neo4j 9), `(5-3)/2` → `5-3/2`, etc. —
@@ -931,14 +946,32 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
     (node-unique suffices). Live-verified against a cyclic oracle (9→8, 15→10);
     review APPROVE-0. Follow-up **#806** (flat-path edge identity uses `(from,to)`
     only → parallel-edge collapse; pre-existing, matches single-type flat).
-  - **#808 (filed, not fixed)** — the `mixed` / `heterogeneous-polymorphic` /
-    emitter-`denormalized` recursive generators are node-unique but **corpus-
-    unreachable**: instrumented each with `eprintln!` and ran the full test suite
-    + corpus_sweep → **0 hits**. Real hetero patterns route through the standard
-    edge-unique arm (`to_label_values` filtering), never the intermediate-recursion
-    path. Fixing = zero behavior change and unverifiable → deferred (prove-dead-
-    and-delete OR add-coverage-first). shortestPath/weighted/zero-hop(#628)
-    legitimately node-unique.
+  - **#808 (PARTIALLY SHIPPED — deleted the structurally-dead arms; mixed
+    deferred)** — the node-unique VLP recursive generators split into two classes
+    under adversarial review:
+    - **Structurally dead → DELETED:** `generate_denormalized_{base,recursive}_case`
+      and `generate_heterogeneous_polymorphic_recursive_case`, plus the 2 helpers
+      they orphaned (`generate_polymorphic_edge_filter_intermediate`,
+      `map_denormalized_property`). Fully-denormalized VLP is intercepted by
+      `cte_manager`'s `DenormalizedCteStrategy` (`mod.rs:3261`) BEFORE the generator
+      is even constructed, so its arm can never fire; heterogeneous-polymorphic
+      paths return early via `generate_heterogeneous_polymorphic_sql()` (a separate
+      two-CTE builder, RETAINED) before the recursive dispatcher runs. Re-verified
+      empirically: instrumented dispatcher fired 410× in corpus_sweep, these arms
+      0×, no dispatch ever had `is_denormalized`/`is_heterogeneous_polymorphic_path()`
+      true. Zero behavior change (corpus_sweep + sql_golden 0-churn).
+    - **Reachable-but-corpus-empty → KEPT:** the `mixed` arms
+      (`generate_mixed_{base,recursive}_case`). Correcting the earlier claim that
+      "mixed VLP never routes through this struct" — it DOES: when
+      `start_is_denormalized != end_is_denormalized`, `cte_manager` builds the
+      generator via `new_mixed` (`mod.rs:3288-3313`) and calls `generate_cte()`.
+      The arms are dead only because no corpus/test schema exercises a mixed-access
+      VLP, NOT structurally. Per #808's own disposition, a reachable shape is
+      option-(b) "add coverage first, verify the under-count live, then apply the
+      edge-uniqueness recipe" — NOT option-(a) delete. Deleting them would silently
+      swap a mixed query onto the standard 3-way-join arm (unverifiable without live
+      CH). Deferred until a mixed-VLP fixture exists.
+    shortestPath/weighted/zero-hop(#628) legitimately node-unique.
 - 2026-07-28: **Composite-id emission threading — abstracted 4 "bug-driven"
   issues into one bounded refactor** (USER: "abstract the bug-driven refactors,
   or SQL-IR"). Root: a composite `Identifier` was stringified (`Display`/

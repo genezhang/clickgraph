@@ -137,7 +137,7 @@ schema	to_label_column	src/render_plan/plan_builder_helpers.rs	9
 schema	to_label_column	src/render_plan/with_to_cte/mod.rs	1
 schema	to_label_column	src/server/bolt_protocol/result_transformer.rs	3
 schema	to_label_column	src/sql_generator/emitters/clickhouse/multi_type_vlp_joins.rs	2
-schema	to_label_column	src/sql_generator/emitters/clickhouse/variable_length_cte.rs	18
+schema	to_label_column	src/sql_generator/emitters/clickhouse/variable_length_cte.rs	17
 schema	to_node_properties	src/procedures/apoc_meta_schema.rs	1
 schema	to_node_properties	src/query_planner/analyzer/bidirectional_union.rs	2
 schema	to_node_properties	src/query_planner/analyzer/filter_tagging.rs	7
@@ -190,7 +190,7 @@ schema	type_column	src/render_plan/plan_builder_helpers.rs	12
 schema	type_column	src/render_plan/with_to_cte/mod.rs	1
 schema	type_column	src/server/bolt_protocol/result_transformer.rs	3
 schema	type_column	src/sql_generator/emitters/clickhouse/multi_type_vlp_joins.rs	2
-schema	type_column	src/sql_generator/emitters/clickhouse/variable_length_cte.rs	13
+schema	type_column	src/sql_generator/emitters/clickhouse/variable_length_cte.rs	11
 dialect	Dialect::	src/graph_catalog/config.rs	2
 dialect	Dialect::	src/graph_catalog/expression_parser.rs	3
 dialect	Dialect::	src/graph_catalog/schema_types.rs	40

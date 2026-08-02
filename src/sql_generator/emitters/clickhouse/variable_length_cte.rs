@@ -922,55 +922,6 @@ impl<'a> VariableLengthCteGenerator<'a> {
             && self.to_label_column.is_none()
     }
 
-    /// Generate polymorphic edge filter for INTERMEDIATE hops (Group→Group)
-    /// Uses the intermediate_node_label instead of to_node_label
-    fn generate_polymorphic_edge_filter_intermediate(&self) -> Option<String> {
-        let mut filter_parts = Vec::new();
-
-        // Add type filter if type_column is defined
-        if let Some(ref type_col) = self.type_column {
-            if let Some(ref rel_types) = self.relationship_types {
-                if rel_types.len() == 1 {
-                    filter_parts.push(format!(
-                        "{}.{} = '{}'",
-                        self.relationship_alias, type_col, rel_types[0]
-                    ));
-                } else if rel_types.len() > 1 {
-                    let types_list = rel_types
-                        .iter()
-                        .map(|t| format!("'{}'", t))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    filter_parts.push(format!(
-                        "{}.{} IN ({})",
-                        self.relationship_alias, type_col, types_list
-                    ));
-                }
-            }
-        }
-
-        // For intermediate hops: use intermediate_node_label for to_label filter
-        if let Some(ref to_label_col) = self.to_label_column {
-            if let Some(ref intermediate_label) = self.intermediate_node_label {
-                filter_parts.push(format!(
-                    "{}.{} = '{}'",
-                    self.relationship_alias, to_label_col, intermediate_label
-                ));
-            }
-        }
-
-        if filter_parts.is_empty() {
-            None
-        } else {
-            let filter = filter_parts.join(" AND ");
-            crate::debug_print!(
-                "    🔹 VLP polymorphic edge filter (intermediate): {}",
-                filter
-            );
-            Some(filter)
-        }
-    }
-
     /// Set intermediate node info for heterogeneous polymorphic paths
     pub fn set_intermediate_node(&mut self, table: &str, id_column: &str, label: &str) {
         self.intermediate_node_table = Some(table.to_string());
@@ -1022,13 +973,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// - shortestPath (revisiting a node can never shorten a path);
     /// - zero-hop base cases (`*0..N`, `effective_min_hops() == 0`), whose base row
     ///   has no edges and so cannot seed the 1-hop `path_edges` literal;
-    /// - heterogeneous-polymorphic paths: `generate_base_case` reaches the standard
-    ///   base arm for these (it has no heterogeneous early-return) but
-    ///   `generate_recursive_case_with_cte_name` dispatches them to
-    ///   `generate_heterogeneous_polymorphic_recursive_case`, which does NOT project
-    ///   `path_edges`. Seeding `path_edges` only in the base would produce a
-    ///   base/recursive column mismatch (unbound-identifier, cf. #469), so this
-    ///   arm MUST agree with that recursive dispatch and stay node-unique here.
+    /// - heterogeneous-polymorphic paths: these never reach the standard
+    ///   base/recursive arms at all — `generate_recursive_sql` returns early via
+    ///   `generate_heterogeneous_polymorphic_sql()` (a separate two-CTE builder)
+    ///   whenever `is_heterogeneous_polymorphic_path()` is true. That builder does
+    ///   NOT project `path_edges`, so this predicate stays `false` for them to keep
+    ///   the standard arms (used by other patterns) node-unique and avoid seeding a
+    ///   `path_edges` column the hetero path would never carry (cf. #469).
     ///
     /// When `true`, `path_edges` is threaded consistently through the base and
     /// recursive arms (and carried by `SELECT *` in the min-hops `_inner` wrapper),
@@ -1334,54 +1285,6 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 "Array(Tuple(Int64, Int64))".to_string()
             }
         }
-    }
-
-    /// Map a logical property name to physical column name for denormalized nodes.
-    /// Uses from_properties or to_properties mappings from schema.
-    fn map_denormalized_property(
-        &self,
-        logical_prop: &str,
-        is_from_node: bool,
-    ) -> Result<String, String> {
-        // For denormalized nodes, find the node schema that points to our relationship table
-        let node_schemas = self.schema.all_node_schemas();
-
-        // Strip database prefix for comparison (handles both "flights" and "db.flights")
-        let rel_table_name = self
-            .relationship_table
-            .rsplit('.')
-            .next()
-            .unwrap_or(&self.relationship_table);
-
-        let node_schema = node_schemas
-            .values()
-            .find(|n| {
-                let schema_table = n.table_name.rsplit('.').next().unwrap_or(&n.table_name);
-                schema_table == rel_table_name
-            })
-            .ok_or_else(|| format!("No node schema found for table '{}'", rel_table_name))?;
-
-        let property_map = if is_from_node {
-            node_schema.from_properties.as_ref()
-        } else {
-            node_schema.to_properties.as_ref()
-        };
-
-        property_map
-            .and_then(|map| map.get(logical_prop))
-            .map(|col| col.to_string())
-            .ok_or_else(|| {
-                format!(
-                    "Property '{}' not found in {} for denormalized node in table '{}'",
-                    logical_prop,
-                    if is_from_node {
-                        "from_properties"
-                    } else {
-                        "to_properties"
-                    },
-                    self.relationship_table
-                )
-            })
     }
 
     /// Generate the recursive CTE for variable-length traversal
@@ -2462,15 +2365,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
         }
 
         // Determine which pattern to use based on denormalization flags
-        // Full denormalized: both nodes virtual → use denormalized generator
+        // (Fully-denormalized VLP never reaches this struct — cte_manager
+        // intercepts it via DenormalizedCteStrategy before constructing the
+        // generator; see cte_manager/mod.rs:3261. So there is no `is_denormalized`
+        // arm here — only the mixed / FK-edge / standard cases remain.)
         // Mixed: one node virtual, one standard → use mixed generator
         // FK-edge: edge table = node table with FK column → 2-way join (no separate rel)
         // Full standard: both nodes standard → use standard generator
-
-        if self.is_denormalized {
-            // Both nodes denormalized (fully virtual)
-            return self.generate_denormalized_base_case(hop_count);
-        }
 
         // Check for mixed patterns (one side denormalized)
         if self.start_is_denormalized || self.end_is_denormalized {
@@ -2775,10 +2676,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
             return self.generate_weighted_recursive_case(wc, max_hops, cte_name);
         }
 
-        // For fully denormalized edges, use simplified generation
-        if self.is_denormalized {
-            return self.generate_denormalized_recursive_case(max_hops, cte_name);
-        }
+        // (Fully-denormalized VLP never reaches this struct — intercepted by
+        // cte_manager's DenormalizedCteStrategy, see mod.rs:3261 — so there is no
+        // `is_denormalized` arm here.)
 
         // Check for mixed patterns (one side denormalized)
         if self.start_is_denormalized || self.end_is_denormalized {
@@ -2790,11 +2690,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
             return self.generate_fk_edge_recursive_case(max_hops, cte_name);
         }
 
-        // Heterogeneous polymorphic path: recurse through intermediate type
-        // e.g., Group→*→User should recurse through Group→Group, not User→User
-        if self.is_heterogeneous_polymorphic_path() {
-            return self.generate_heterogeneous_polymorphic_recursive_case(max_hops, cte_name);
-        }
+        // (Heterogeneous-polymorphic paths return earlier via
+        // `generate_heterogeneous_polymorphic_sql()` in `generate_recursive_sql`,
+        // before this dispatcher runs — so there is no heterogeneous arm here.)
 
         // Standard case: both nodes have their own tables
         // Parse comma-separated column string to Identifier
@@ -3041,123 +2939,6 @@ impl<'a> VariableLengthCteGenerator<'a> {
             end_table = recursive_end_table,
             join_on_rel = join_on_rel,
             join_on_end = join_on_end,
-            where_clause = where_clause
-        )
-    }
-
-    // ======================================================================
-    // HETEROGENEOUS POLYMORPHIC PATH GENERATION
-    // ======================================================================
-    // For paths like Group→*→User where intermediate hops traverse through
-    // one type (Group→Group) and only the final hop goes to a different type (Group→User).
-    // The recursive case uses the intermediate table (groups), not the end table (users).
-
-    /// Generate recursive case for heterogeneous polymorphic paths
-    /// Recurses through intermediate_node_table (e.g., groups) with intermediate_node_label filter
-    fn generate_heterogeneous_polymorphic_recursive_case(
-        &self,
-        max_hops: u32,
-        cte_name: &str,
-    ) -> String {
-        // Get intermediate table info (must be set for heterogeneous polymorphic paths)
-        let intermediate_table = self
-            .intermediate_node_table
-            .as_ref()
-            .expect("intermediate_node_table must be set for heterogeneous polymorphic paths");
-        let intermediate_id_col = self
-            .intermediate_node_id_column
-            .as_ref()
-            .expect("intermediate_node_id_column must be set for heterogeneous polymorphic paths");
-
-        crate::debug_print!("    🔸 Generating heterogeneous polymorphic recursive case:");
-        crate::debug_print!(
-            "      - start_table: {}, end_table: {}, intermediate_table: {}",
-            self.start_node_table,
-            self.end_node_table,
-            intermediate_table
-        );
-
-        let fmap = current_function_mapper();
-        let ac = fmap.array_concat();
-        let empty_str_arr = fmap.empty_string_array_cast();
-
-        // Build property selections for recursive case
-        // Note: For heterogeneous polymorphic paths, we track intermediate nodes in path
-        // End properties are not available until the final join (in the outer SELECT)
-        let mut select_items = vec![
-            "vp.start_id".to_string(),
-            // end_id comes from the intermediate node (Group), not the end table (User)
-            format!("intermediate_node.{} as end_id", intermediate_id_col),
-            "vp.hop_count + 1 as hop_count".to_string(),
-        ];
-        if self.needs_path_data() {
-            select_items.push(format!(
-                "{ac}(vp.path_relationships, {}) as path_relationships",
-                self.get_relationship_type_array()
-            ));
-        } else {
-            select_items.push(format!("{empty_str_arr} as path_relationships"));
-        }
-        // Track intermediate node IDs in path_nodes
-        select_items.push(format!(
-            "{ac}(vp.path_nodes, {}) as path_nodes",
-            arr(&format!("intermediate_node.{}", intermediate_id_col))
-        ));
-
-        // Add properties: start properties pass through, end properties NOT available yet
-        // (end properties will be populated in the final outer SELECT that joins to end_node_table)
-        for prop in &self.properties {
-            if prop.cypher_alias == self.start_cypher_alias {
-                select_items.push(format!("vp.start_{} as start_{}", prop.alias, prop.alias));
-            }
-            // Note: We don't have end properties in the recursive traversal
-            // They'll be added in the outer SELECT when we join to the actual end table
-        }
-
-        let select_clause = select_items.join(",\n        ");
-
-        // Node-uniqueness cycle prevention
-        let mut where_conditions = vec![
-            format!("vp.hop_count < {}", max_hops),
-            emit_cycle_check(&format!("intermediate_node.{}", intermediate_id_col)),
-        ];
-
-        // Add polymorphic edge filter for INTERMEDIATE hops (e.g., member_type = 'Group')
-        if let Some(poly_filter) = self.generate_polymorphic_edge_filter_intermediate() {
-            where_conditions.push(poly_filter);
-        }
-
-        // Add edge constraints if defined in schema
-        // Uses current_node as from_alias since recursive case references current row
-        if let Some(constraint_filter) =
-            self.generate_edge_constraint_filter(Some("current_node"), None)
-        {
-            where_conditions.push(constraint_filter);
-        }
-
-        // ✅ HOLISTIC FIX: Add relationship filters in heterogeneous polymorphic recursive case
-        if let Some(ref filters) = self.relationship_filters {
-            log::debug!(
-                "Adding relationship filters to heterogeneous polymorphic recursive case: {}",
-                filters
-            );
-            where_conditions.push(filters.clone());
-        }
-
-        let where_clause = where_conditions.join("\n      AND ");
-
-        // Recursive case joins through INTERMEDIATE table, not end table
-        // Pattern: vp → current_node (intermediate) → rel → intermediate_node (intermediate)
-        format!(
-            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {intermediate_table} current_node ON vp.end_id = current_node.{intermediate_id_col}\n    JOIN {rel_table} {rel} ON current_node.{intermediate_id_col} = {rel}.{from_col}\n    JOIN {intermediate_table} intermediate_node ON {rel}.{to_col} = intermediate_node.{intermediate_id_col}\n    WHERE {where_clause}",
-            select = select_clause,
-            intermediate_id_col = intermediate_id_col,
-            cte_name = cte_name,
-            intermediate_table = self.format_table_name(intermediate_table),
-            rel_table = self.format_table_name(&self.relationship_table),
-            from_col = self.relationship_from_column,
-            to_col = self.relationship_to_column,
-            rel = self.relationship_alias,
             where_clause = where_clause
         )
     }
@@ -3592,454 +3373,6 @@ impl<'a> VariableLengthCteGenerator<'a> {
             anchor_on = anchor_on,
             start_table = self.format_table_name(&self.start_node_table),
             child_on = child_on,
-            where_clause = where_clause
-        )
-    }
-
-    // ======================================================================
-    // DENORMALIZED EDGE GENERATION
-    // ======================================================================
-    // For denormalized edges, node properties are embedded in the edge table.
-    // No separate node tables exist - all data comes from the relationship table.
-
-    /// Generate base case for denormalized edges (first hop)
-    /// For denormalized: FROM rel_table only (no node tables)
-    fn generate_denormalized_base_case(&self, hop_count: u32) -> String {
-        log::debug!(
-            "generate_denormalized_base_case: start_alias='{}', end_alias='{}', rel_table='{}'",
-            self.start_cypher_alias,
-            self.end_cypher_alias,
-            self.relationship_table
-        );
-
-        if hop_count != 1 {
-            // Multi-hop base case not yet supported for denormalized
-            let empty_arr = arr("");
-            return format!(
-                "    -- Multi-hop base case for {hop_count} hops (denormalized - not yet supported)\n    SELECT NULL as start_id, NULL as end_id, {hop_count} as hop_count, {empty_arr} as path_relationships, {empty_arr} as path_nodes\n    WHERE false"
-            );
-        }
-
-        let empty_str_arr = current_function_mapper().empty_string_array_cast();
-        // Build SELECT clause with denormalized properties
-        let mut select_items = vec![
-            format!(
-                "{}.{} as start_id",
-                self.relationship_alias, self.relationship_from_column
-            ),
-            format!(
-                "{}.{} as end_id",
-                self.relationship_alias, self.relationship_to_column
-            ),
-            "1 as hop_count".to_string(),
-        ];
-        if self.needs_path_data() {
-            select_items.push(self.generate_relationship_type_for_hop(1));
-        } else {
-            select_items.push(format!("{empty_str_arr} as path_relationships"));
-        }
-        select_items.push(format!(
-            "{} as path_nodes",
-            arr(&format!(
-                "{}.{}, {}.{}",
-                self.relationship_alias,
-                self.relationship_from_column,
-                self.relationship_alias,
-                self.relationship_to_column
-            ))
-        ));
-
-        // Generate JSON property blobs for start and end nodes (denormalized)
-        // Instead of flat columns, generate formatRowNoNewline JSON to match
-        // the multi-type VLP tuple format expected by transform_vlp_path()
-        {
-            use crate::clickhouse_query_generator::json_builder::generate_json_from_denormalized_properties;
-
-            // Find the denormalized node schema using relationship type and from/to labels
-            // for deterministic lookup, falling back to table name matching.
-            let node_schema = {
-                let mut found = None;
-
-                // Prefer lookup via relationship type → from_node label → node schema
-                if let Some(ref rel_types) = self.relationship_types {
-                    if let Some(rel_type) = rel_types.first() {
-                        let rel_schemas = self.schema.get_relationships_schemas();
-                        if let Some(rel_schema) = rel_schemas.get(rel_type) {
-                            let from_label = &rel_schema.from_node;
-                            found = self
-                                .schema
-                                .all_node_schemas()
-                                .iter()
-                                .find(|(key, _)| {
-                                    *key == from_label
-                                        || key.ends_with(&format!("::{}", from_label))
-                                })
-                                .map(|(_, v)| v);
-                        }
-                    }
-                }
-
-                // Fallback: match by table name (legacy behavior)
-                if found.is_none() {
-                    let rel_table_name = self
-                        .relationship_table
-                        .rsplit('.')
-                        .next()
-                        .unwrap_or(&self.relationship_table);
-                    found = self.schema.all_node_schemas().values().find(|n| {
-                        let t = n.table_name.rsplit('.').next().unwrap_or(&n.table_name);
-                        t == rel_table_name
-                    });
-                }
-
-                found
-            };
-
-            if let Some(ns) = node_schema {
-                // Start node properties (from_properties for normal direction)
-                if let Some(ref from_props) = ns.from_properties {
-                    let json_sql = generate_json_from_denormalized_properties(
-                        from_props,
-                        &self.relationship_alias,
-                        "_s_",
-                    );
-                    select_items.push(format!("{} AS start_properties", json_sql));
-                } else {
-                    select_items.push("'{}' AS start_properties".to_string());
-                }
-
-                // End node properties (to_properties for normal direction)
-                if let Some(ref to_props) = ns.to_properties {
-                    let json_sql = generate_json_from_denormalized_properties(
-                        to_props,
-                        &self.relationship_alias,
-                        "_e_",
-                    );
-                    select_items.push(format!("{} AS end_properties", json_sql));
-                } else {
-                    select_items.push("'{}' AS end_properties".to_string());
-                }
-            } else {
-                select_items.push("'{}' AS start_properties".to_string());
-                select_items.push("'{}' AS end_properties".to_string());
-            }
-        }
-
-        // Add relationship properties JSON
-        {
-            let rel_schemas = self.schema.get_relationships_schemas();
-            // Prefer lookup by relationship type name for deterministic selection
-            // when multiple relationship types share the same table.
-            let rel_schema = self
-                .relationship_types
-                .as_ref()
-                .and_then(|types| types.first())
-                .and_then(|rel_type| rel_schemas.get(rel_type))
-                .or_else(|| {
-                    // Fallback: match by table name (legacy behavior)
-                    let rel_table_name = self
-                        .relationship_table
-                        .rsplit('.')
-                        .next()
-                        .unwrap_or(&self.relationship_table);
-                    rel_schemas.values().find(|r| {
-                        let t = r.table_name.rsplit('.').next().unwrap_or(&r.table_name);
-                        t == rel_table_name
-                    })
-                });
-            let rel_props_json = rel_schema
-                .map(|r| {
-                    if r.property_mappings.is_empty() {
-                        "'{}'".to_string()
-                    } else {
-                        use crate::clickhouse_query_generator::json_builder::generate_json_properties_sql;
-                        generate_json_properties_sql(
-                            &r.property_mappings,
-                            &self.relationship_alias,
-                        )
-                    }
-                })
-                .unwrap_or_else(|| "'{}'".to_string());
-            select_items.push(format!(
-                "{} AS rel_properties",
-                crate::sql_generator::function_mapper::current_function_mapper()
-                    .array_literal(&rel_props_json)
-            ));
-        }
-
-        // Add start_type and end_type discriminators for transform_vlp_path()
-        if let Some(ref start_label) = self.from_node_label {
-            select_items.push(format!("'{}' AS start_type", start_label));
-        } else {
-            select_items.push("'Unknown' AS start_type".to_string());
-        }
-        if let Some(ref end_label) = self.to_node_label {
-            select_items.push(format!("'{}' AS end_type", end_label));
-        } else {
-            select_items.push("'Unknown' AS end_type".to_string());
-        }
-
-        let select_clause = select_items.join(",\n        ");
-
-        // Simple FROM - just the relationship table, no node tables
-        let mut query = format!(
-            "    SELECT \n        {select}\n    FROM {rel_table} AS {rel}",
-            select = select_clause,
-            rel_table = self.format_table_name(&self.relationship_table),
-            rel = self.relationship_alias
-        );
-
-        // Add WHERE clause for start node filters (rewritten for rel table)
-        let mut where_conditions = Vec::new();
-
-        // Add edge constraints if defined in schema (FK-edge base case uses default aliases)
-        if let Some(constraint_filter) = self.generate_edge_constraint_filter(None, None) {
-            where_conditions.push(constraint_filter);
-        }
-
-        if let Some(ref filters) = self.start_node_filters {
-            // Rewrite start_node references to rel references
-            let rewritten =
-                filters.replace("start_node.", &format!("{}.", self.relationship_alias));
-            where_conditions.push(rewritten);
-        }
-
-        // ⚠️ CRITICAL FIX (Jan 10, 2026): Don't add end_node_filters to denormalized VLP base case
-        //
-        // Problem: For multi-hop VLP (e.g., LAX→ORD→ATL), adding end_node filters to base case
-        // prevents intermediate paths from being generated.
-        //
-        // Example:
-        //   Query: MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport) WHERE a.code='LAX' AND b.code='ATL'
-        //   Base case SQL: SELECT ... FROM flights WHERE Origin='LAX' AND Dest='ATL'
-        //   Result: 0 rows (no direct LAX→ATL flight exists!)
-        //   Issue: LAX→ORD edge excluded because Dest='ORD' != 'ATL', recursion never starts
-        //
-        // Solution: Apply end_node_filters in OUTER query after VLP recursion completes:
-        //   Base case: SELECT ... FROM flights WHERE Origin='LAX'  (generates LAX→SFO, LAX→ORD)
-        //   Recursive: Extends to LAX→ORD→ATL
-        //   Outer query: SELECT * FROM vlp WHERE end_id='ATL'  (filters final result)
-        //
-        // This matches shortest_path_mode behavior where only start filters are in base case.
-        //
-        // if self.shortest_path_mode.is_none() {
-        //     if let Some(ref filters) = self.end_node_filters {
-        //         let rewritten =
-        //             filters.replace("end_node.", &format!("{}.", self.relationship_alias));
-        //         where_conditions.push(rewritten);
-        //     }
-        // }
-
-        // ✅ HOLISTIC FIX: Add relationship filters in denormalized base case
-        // In denormalized patterns, relationship properties are on the same edge table
-        if let Some(ref filters) = self.relationship_filters {
-            log::debug!(
-                "Adding relationship filters to denormalized base case: {}",
-                filters
-            );
-            where_conditions.push(filters.clone());
-        }
-
-        if !where_conditions.is_empty() {
-            query.push_str(&format!("\n    WHERE {}", where_conditions.join(" AND ")));
-        }
-
-        query
-    }
-
-    /// Generate recursive case for denormalized edges
-    /// For denormalized: JOIN rel_table only (no node tables in between)
-    fn generate_denormalized_recursive_case(&self, max_hops: u32, cte_name: &str) -> String {
-        let fmap = current_function_mapper();
-        let ac = fmap.array_concat();
-        let empty_str_arr = fmap.empty_string_array_cast();
-        // Build SELECT clause with denormalized properties
-        let mut select_items = vec![
-            "vp.start_id".to_string(),
-            format!(
-                "{}.{} as end_id",
-                self.relationship_alias, self.relationship_to_column
-            ),
-            "vp.hop_count + 1 as hop_count".to_string(),
-        ];
-        if self.needs_path_data() {
-            select_items.push(format!(
-                "{ac}(vp.path_relationships, {}) as path_relationships",
-                self.get_relationship_type_array()
-            ));
-        } else {
-            select_items.push(format!("{empty_str_arr} as path_relationships"));
-        }
-        select_items.push(format!(
-            "{ac}(vp.path_nodes, {}) as path_nodes",
-            arr(&format!(
-                "{}.{}",
-                self.relationship_alias, self.relationship_to_column
-            ))
-        ));
-
-        // Add denormalized properties as JSON blobs matching base case columns.
-        // Carry forward start_properties from CTE, generate new end_properties from joined edge.
-        {
-            use crate::clickhouse_query_generator::json_builder::generate_json_from_denormalized_properties;
-
-            // start_properties: carry forward from CTE (unchanged through recursion)
-            select_items.push("vp.start_properties as start_properties".to_string());
-
-            // end_properties: generate from new edge's to_node columns
-            let node_schema = {
-                let mut found = None;
-                if let Some(ref rel_types) = self.relationship_types {
-                    if let Some(rel_type) = rel_types.first() {
-                        let rel_schemas = self.schema.get_relationships_schemas();
-                        if let Some(rel_schema) = rel_schemas.get(rel_type) {
-                            let from_label = &rel_schema.from_node;
-                            found = self
-                                .schema
-                                .all_node_schemas()
-                                .iter()
-                                .find(|(key, _)| {
-                                    *key == from_label
-                                        || key.ends_with(&format!("::{}", from_label))
-                                })
-                                .map(|(_, v)| v);
-                        }
-                    }
-                }
-                found
-            };
-
-            if let Some(ns) = node_schema {
-                if let Some(ref to_props) = ns.to_properties {
-                    let json_sql = generate_json_from_denormalized_properties(
-                        to_props,
-                        &self.relationship_alias,
-                        "_e_",
-                    );
-                    select_items.push(format!("{} AS end_properties", json_sql));
-                } else {
-                    select_items.push("'{}' AS end_properties".to_string());
-                }
-            } else {
-                select_items.push("'{}' AS end_properties".to_string());
-            }
-
-            // rel_properties: generate from new edge's relationship columns
-            let rel_schemas = self.schema.get_relationships_schemas();
-            let rel_schema = self
-                .relationship_types
-                .as_ref()
-                .and_then(|types| types.first())
-                .and_then(|rel_type| rel_schemas.get(rel_type));
-            let rel_props_json = rel_schema
-                .map(|r| {
-                    if r.property_mappings.is_empty() {
-                        "'{}'".to_string()
-                    } else {
-                        use crate::clickhouse_query_generator::json_builder::generate_json_properties_sql;
-                        generate_json_properties_sql(
-                            &r.property_mappings,
-                            &self.relationship_alias,
-                        )
-                    }
-                })
-                .unwrap_or_else(|| "'{}'".to_string());
-            select_items.push(format!(
-                "{ac}(vp.rel_properties, {}) as rel_properties",
-                arr(&rel_props_json)
-            ));
-
-            // start_type / end_type: carry forward from CTE
-            select_items.push("vp.start_type as start_type".to_string());
-            select_items.push("vp.end_type as end_type".to_string());
-        }
-
-        // Also carry forward flat start_/end_ columns for backward compatibility
-        // with property selection in outer queries
-        for prop in &self.properties {
-            if prop.cypher_alias == self.start_cypher_alias {
-                if let Ok(physical_col) = self.map_denormalized_property(&prop.alias, true) {
-                    select_items.push(format!(
-                        "vp.start_{} as start_{}",
-                        physical_col, physical_col
-                    ));
-                }
-            }
-            if prop.cypher_alias == self.end_cypher_alias {
-                if let Ok(physical_col) = self.map_denormalized_property(&prop.alias, false) {
-                    select_items.push(format!(
-                        "{}.{} as end_{}",
-                        self.relationship_alias, physical_col, physical_col
-                    ));
-                } else {
-                    log::warn!(
-                        "Could not map end property {} in recursive case",
-                        prop.alias
-                    );
-                }
-            }
-        }
-
-        let select_clause = select_items.join(",\n        ");
-
-        let cycle_check = emit_cycle_check(&format!(
-            "{}.{}",
-            self.relationship_alias, self.relationship_to_column
-        ));
-
-        let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_check];
-
-        // Add edge constraints if defined in schema
-        // Denormalized recursive: no separate node tables, constraints not applicable
-        if let Some(constraint_filter) = self.generate_edge_constraint_filter(None, None) {
-            where_conditions.push(constraint_filter);
-        }
-
-        // ⚠️ CRITICAL FIX (Jan 10, 2026): Don't add end_node_filters to recursive case either!
-        //
-        // Removing end_node_filters from base case alone isn't enough. The recursive case
-        // also filters new edges, preventing intermediate path extensions.
-        //
-        // Example: LAX→ORD (hop 1) trying to extend to ATL
-        //   Recursive JOIN: ... JOIN flights AS rel ON vp.end_id = rel.Origin WHERE rel.Dest='ATL'
-        //   This correctly finds ORD→ATL, giving us LAX→ORD→ATL ✓
-        //
-        // But if we filter in recursive, we miss other extensions:
-        //   LAX→SFO trying to extend: JOIN flights WHERE rel.Dest='ATL'
-        //   Finds SFO→? edges, but only if they end at ATL - limits exploration
-        //
-        // Solution: Let recursion explore ALL paths, filter end nodes in OUTER query.
-        //   Recursive: Extends all paths freely (generates full graph traversal)
-        //   Outer: SELECT * FROM vlp WHERE end_id='ATL' (filters final destinations)
-        //
-        // if self.shortest_path_mode.is_none() {
-        //     if let Some(ref filters) = self.end_node_filters {
-        //         let rewritten =
-        //             filters.replace("end_node.", &format!("{}.", self.relationship_alias));
-        //         where_conditions.push(rewritten);
-        //     }
-        // }
-
-        // ✅ HOLISTIC FIX: Add relationship filters in denormalized recursive case
-        if let Some(ref filters) = self.relationship_filters {
-            log::debug!(
-                "Adding relationship filters to denormalized recursive case: {}",
-                filters
-            );
-            where_conditions.push(filters.clone());
-        }
-
-        let where_clause = where_conditions.join("\n      AND ");
-
-        // For denormalized: join directly from CTE end_id to new rel's from_col
-        // No intermediate node table needed
-        format!(
-            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {rel_table} AS {rel} ON vp.end_id = {rel}.{from_col}\n    WHERE {where_clause}",
-            select = select_clause,
-            cte_name = cte_name,
-            rel_table = self.format_table_name(&self.relationship_table),
-            rel = self.relationship_alias,
-            from_col = self.relationship_from_column,
             where_clause = where_clause
         )
     }
