@@ -462,6 +462,35 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **P-1 / SQL-IR — Path C (CTE-body) list literal + subscript
+  rendering** (PR #853, branch `fix/path-c-list-subscript`). Loud bug (CH Code
+  43) in `render_expr_to_sql_string` (`cte_extraction.rs`), the CTE-build-stage
+  renderer for per-arm WHERE predicates in multi-type / undirected UNION CTEs —
+  the last of the #850-audit siblings. Two defects vs canonical Path A: (1) the
+  `List` arm emitted a TUPLE `(a, b, c)` — CH `arrayElement`/`length`/`has`
+  reject tuples (Code 43), so `[1,2,3][i]`/`size([1,2,3])` in a multi-type CTE
+  WHERE crashed; (2) the `ArraySubscript` arm emitted raw `arr[index]` with no +1
+  offset (off-by-one) and no null-safety. Fix mirrors Path A: `List`→array
+  literal via `array_literal`; `ArraySubscript`→1-based offset +
+  `array_element_or_null` (#850). **New `FunctionMapper::in_list_predicate`
+  (Rule #7, ratchet net-zero, shared trait default)** renders the IN operator's
+  list RHS as a paren VALUE-LIST `x IN (a, b)` on BOTH dialects — NOT an array:
+  a heterogeneous CH array literal (id column `toString`-wrapped) fails
+  NO_COMMON_TYPE (Code 386), while SQL `IN (...)` coerces per-element; Spark
+  needs a value-list too. **Adversarial review caught a real regression in the
+  first cut** (routing IN through the array form → Code 386, working→broken,
+  live-proven); the redesign to always-value-list both fixes it AND matches main
+  byte-for-byte → **ZERO corpus churn vs main**. Reviewer also confirmed the
+  value-list beats an OR-expansion (which ALSO fails Code 386 on
+  `UInt64col = toString(col)` — only IN's per-element coercion tolerates the
+  heterogeneous mix). Live-verified: subscript in-bounds/OOB→NULL/negative, IN,
+  NOT IN, empty IN (→FALSE), size(list) all execute + agree with Path A.
+  2 new sql_ir goldens (`multi_type_where_list_subscript`/`_in_list`, both
+  dialects) + 2 mapper unit tests. Re-review APPROVE-0. Gate: fmt · clippy · 1626
+  lib · 250 golden · corpus + ratchet net-zero. **The `cte_extraction.rs:1904`
+  sibling from the #850 audit is now CLOSED** — the empty-list-default + Path C
+  loud-crash families are both fully resolved.
+
 - 2026-08-02: **P-1 — `head([])`/`last([])` on empty list return `null` (was
   ClickHouse type default)** (PR #851, branch `fix/head-last-empty-null`).
   Direct sibling of #850, same openCypher fidelity class. `head`/`last` on an
