@@ -74,34 +74,6 @@ impl CteGenerationContext {
         Self::default()
     }
 
-    /// Construct a context seeded with a schema. Test-only-live: exercised
-    /// solely by the `cte_manager` unit tests (production code builds contexts
-    /// via `new()` + `with_schema_owned()`).
-    #[cfg(test)]
-    pub(crate) fn with_schema(schema: GraphSchema) -> Self {
-        Self {
-            filter_expr: None,
-            schema: Some(schema),
-            fixed_length_joins: HashMap::new(),
-            spec: VariableLengthSpec::default(),
-            path_variable: None,
-            shortest_path_mode: None,
-            relationship_types: None,
-            edge_id: None,
-            relationship_cypher_alias: None,
-            start_node_label: None,
-            end_node_label: None,
-            is_optional: false,
-            pattern_combinations: None,
-            weight_cte: None,
-            needs_path_relationships: true,
-            use_bfs_mode: false,
-            is_undirected: false,
-            undirected_single_walk: false,
-            root_plan: None,
-        }
-    }
-
     pub(crate) fn with_spec(mut self, spec: VariableLengthSpec) -> Self {
         self.spec = spec;
         self

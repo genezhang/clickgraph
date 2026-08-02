@@ -12349,7 +12349,7 @@ mod vlp_cte_binding_family_524_528_538_525 {
     /// (`cte_manager/mod.rs`) by preserving `vp.start_id`, mirroring the
     /// already-correct pattern used one function away
     /// (`add_recursive_property_selections`'s `vp.start_{property}`) and the
-    /// non-denormalized `TraditionalCteStrategy`/`FkEdgeCteStrategy`, which
+    /// non-denormalized recursive arms in `VariableLengthCteGenerator`, which
     /// already did this correctly.
     ///
     /// Live-verified: with the fix, `SELECT DISTINCT a,b,c FROM
