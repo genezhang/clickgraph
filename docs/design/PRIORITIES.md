@@ -475,6 +475,26 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **P-1 — preserve parens on a lower-precedence LEFT operand** (PR
+  #859, branch `fix/858-left-parens`, closes #858). Silent-wrong arithmetic on
+  main: `(1+2)*3` rendered `1+2*3` = 7 (Neo4j 9), `(5-3)/2` → `5-3/2`, etc. —
+  `render_expr.rs` had `needs_right_parens` but no left equivalent, so a
+  parenthesized lower-precedence left operand lost its grouping. Fix: new
+  `needs_left_parens` (parens iff left-operand arithmetic precedence STRICTLY <
+  outer; equal precedence stays bare by left-associativity). Applied at the 3
+  Path A binary-render sites + Path C (`cte_extraction.rs`), whose arithmetic
+  arms had NO parenthesization at all (both sides missing) — now routed through
+  `needs_left_parens`/`needs_right_parens`. Live-verified all sign/precedence
+  combos incl. modulo (`%` is same-prec as `*`/`/` and left-assoc on CH, so
+  equal-prec-no-parens is safe — checked independently + by review), mul/div
+  chains, intDiv interaction (`(7/2)*4`→`intDiv(7,2)*4`=12), deep nesting, column
+  arithmetic. 0 corpus/golden churn (latent hardening). New `arith_left_parens`
+  golden (both dialects) + 5 `needs_left_parens` unit tests. Adversarial review
+  APPROVE-0 (every associativity claim live-verified). Gate: fmt · clippy · 1632
+  lib · 250 golden · corpus + ratchet net-zero. **Follow-up filed #861**
+  (exponentiation `^` renders infix on Path A → CH Code 62; Path C already emits
+  `POWER`; pre-existing, + right-assoc-left-parens caveat if fixed).
+
 - 2026-08-02: **P-1 — integer-constant division truncates toward zero** (PR
   #857, branch `fix/847-intdiv-literal`, closes the bounded half of #847).
   Cypher `int / int` truncates toward zero (`7/2 = 3`, `-7/2 = -3`); CH/Spark
