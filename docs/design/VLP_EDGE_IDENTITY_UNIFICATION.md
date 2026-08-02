@@ -58,7 +58,7 @@ the **schema shape**, and this is the axis that is currently duplicated:
 |---|---|---|
 | Standard / polymorphic | schema `edge_id` if declared, else `(from,to)` | a real edge table row |
 | FK-edge (edge = FK column on node) | ordered node-id pair `(from_id, to_id)` | no edge table; the node pair *is* the edge |
-| Denormalized (both nodes virtual) | `(from,to)` tuple | no edge-id column (residual #710: parallel edges) |
+| Denormalized (both nodes virtual) | schema `edge_id` if declared, else `(from,to)` | #710 fixed: parallel edges use the declared `edge_id` |
 | Undirected doubled-edge (#617) | original-orientation `(__cg_orig_from,__cg_orig_to)` | so reverse rows share identity |
 | shortestPath / weighted / hetero-poly / zero-hop | none (node-unique) | node-uniqueness by design |
 
@@ -339,9 +339,26 @@ exposes a pre-existing OPTIONAL-MATCH projection bug (`vt0.<prop>` — anchor
 property wrongly bound to the VLP CTE alias). Reproduces on `*1..` on the old
 binary, so it is independent of #628.
 
-### Phase 5 (optional) — #710 parallel-edge denorm
-Only if a real parallel-edge denorm schema is in scope. Needs a synthetic
-per-row edge key threaded into `path_edges`. Low priority; documented residual.
+### Phase 5 — #710 parallel-edge denorm → **DONE (PR #TBD)** — behavior change, goldens regenerated
+`DenormalizedCteStrategy::edge_tuple` (CM) now consults the relationship's
+schema `edge_id` (resolved once at construction via `resolve_edge_id`), spelled
+identically to the standard emitter's `build_edge_tuple_recursive`:
+`Composite → tuple(alias.c1, …)`, `Single → alias.col`, `None →` the historical
+`(from, to)` pair (byte-identical fallback). Parallel edges that share one
+`(from, to)` node pair (e.g. two flights on the same route keyed by
+`flight_id`) are no longer collapsed → no more silent trail under-count. The
+denorm VLP is a single directional recursive self-join (no #617 doubled-edge
+CTE), so no orientation swap is needed.
+
+Live-verified against a parallel-edge fixture (LAX⇉ATL two edges + ATL→LAX
+return): a length-3 trail LAX→ATL→LAX→ATL returned **0** under the buggy
+`(origin,dest)` key (both valid trails dropped when hop 3 "reused" the node
+pair) versus **2** under the `flight_id` key (oracle = 2), end-to-end through
+`cg`. 78 goldens regenerated (72 corpus + 6 SQL-IR snapshot), every changed line
+an edge-identity line; `path_nodes`/joins/projections byte-identical. Denorm
+schemas without `edge_id` are unchanged (fallback). Ratchet-clean (`edge_id` is
+not a tracked axis token; the fix reads it via the canonical
+`schema.get_rel_schema(label).edge_id` route).
 
 **#808's mixed/hetero-poly "fix" is deliberately NOT a phase**: they are
 corpus-unreachable (Phase 0 either deletes them or, if a reachable shape later
@@ -373,8 +390,9 @@ Ratchet baseline today, the 3 VLP files (`tests/rust/ratchet/baseline.txt`):
 `EdgeUniquenessPolicy` (constructed once from `PatternSchemaContext`), and the
 baseline **decreases** — the ratchet auto-ratchets down in the same PRs.
 
-Issue metric: #606, #628, #710, #806, #808 all close or convert to a single
-documented residual (#710). No *new* uniqueness residual can be filed against an
+Issue metric: #606, #628, #710, #806, #808 all close or convert to a documented
+non-bug. #710 is now **fixed** (denorm `edge_tuple` consults the schema
+`edge_id`), not a residual. No *new* uniqueness residual can be filed against an
 arm the policy owns, because there is one arm.
 
 ---

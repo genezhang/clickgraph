@@ -9009,15 +9009,16 @@ async fn relationship_uniqueness_guard_skips_unrelated_types_and_optional_518() 
 /// walk, silently dropping every valid path that legitimately revisits a node.
 /// Cypher's default is RELATIONSHIP-uniqueness: a physical edge may not repeat,
 /// but a node MAY be revisited. This mirrors the standard emitter's #598 part-2
-/// fix into the denormalized strategy: `path_edges` now seeds and extends the
-/// `(from, to)` edge-identity tuple, and the cycle check tests that tuple.
+/// fix into the denormalized strategy: `path_edges` now seeds and extends an
+/// edge-identity tuple, and the cycle check tests that tuple.
 ///
-/// A denormalized edge carries no dedicated edge-id column, so the ordered
-/// endpoint pair IS the edge identity. Live-verified against a cyclic fixture
-/// (edges A→B, B→A, B→C, C→A): the edge-unique walk returns 14 trails over
-/// `*1..3` (including node-revisiting trails like A→B→A and C→A→B→A) versus the
-/// old node-unique walk's 7 — exactly the 7 valid paths that were being
-/// silently dropped, with no edge ever reused.
+/// #710: the edge identity is the schema-declared `edge_id` when present — for
+/// `flights_denormalized.yaml` that is the composite `(flight_id,
+/// flight_number)`, which distinguishes parallel edges sharing one
+/// `(origin, dest)` node pair (two flights on the same route). Before #710 the
+/// tuple was the `(origin_code, dest_code)` node pair, which collapsed such
+/// parallel edges and under-counted trails. The `None`-`edge_id` denormalized
+/// schema still falls back to the `(from, to)` pair.
 #[tokio::test]
 async fn denormalized_vlp_range_uses_edge_uniqueness_606() {
     let schema = load_schema(SchemaId::Denormalized.yaml_path());
@@ -9029,27 +9030,35 @@ async fn denormalized_vlp_range_uses_edge_uniqueness_606() {
         "MATCH (a:Airport)-[:FLIGHT*2..3]->(b:Airport) RETURN a.code, b.code",
     ] {
         let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
-        // Base seed + recursive extend carry the (origin, dest) edge tuple.
+        // #710: base seed + recursive extend carry the schema `edge_id`
+        // composite tuple (flight_id, flight_number), NOT the collapsing
+        // (origin, dest) node pair.
         assert!(
             sql.contains("[tuple(t")
-                && sql.contains("origin_code")
-                && sql.contains("dest_code")
+                && sql.contains("flight_id")
+                && sql.contains("flight_number")
                 && sql.contains(
-                    "arrayConcat(vp.path_edges, [tuple(next.origin_code, next.dest_code)])"
+                    "arrayConcat(vp.path_edges, [tuple(next.flight_id, next.flight_number)])"
                 ),
-            "[{cypher}] #606: denorm range VLP must seed/extend path_edges with \
-             the (from,to) edge tuple; got:\n{sql}"
+            "[{cypher}] #710: denorm range VLP must seed/extend path_edges with \
+             the schema edge_id (flight_id, flight_number) tuple; got:\n{sql}"
         );
-        // Cycle check is edge-unique on the tuple, NOT node-unique on the endpoint.
+        // Cycle check is edge-unique on the edge_id tuple, NOT node-unique on
+        // the endpoint, and NOT keyed on the collapsing node pair.
         assert!(
-            sql.contains("NOT has(vp.path_edges, tuple(next.origin_code, next.dest_code))"),
-            "[{cypher}] #606: denorm range VLP cycle check must test edge-tuple \
-             membership in path_edges; got:\n{sql}"
+            sql.contains("NOT has(vp.path_edges, tuple(next.flight_id, next.flight_number))"),
+            "[{cypher}] #710: denorm range VLP cycle check must test the edge_id \
+             tuple membership in path_edges; got:\n{sql}"
         );
         assert!(
             !sql.contains("NOT has(vp.path_nodes, next.dest_code)"),
             "[{cypher}] #606: denorm range VLP must no longer enforce \
              node-uniqueness; got:\n{sql}"
+        );
+        assert!(
+            !sql.contains("tuple(next.origin_code, next.dest_code)"),
+            "[{cypher}] #710: the collapsing (origin, dest) node pair must not \
+             key path_edges once the schema declares an edge_id; got:\n{sql}"
         );
     }
 
