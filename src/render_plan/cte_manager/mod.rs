@@ -1857,6 +1857,9 @@ mod tests {
 
         // Single-column edge_id — bare scalar element (matches the emitter's
         // Single arm; `arr(...)` wraps it into a scalar `path_edges` array).
+        // Live-reachable via single-column denorm `edge_id` schemas such as
+        // `schemas/test/denorm_selfloop_multitype.yaml` (`edge_id: evt_id`),
+        // though no golden-corpus VLP currently exercises it.
         let single = denorm_strategy_with_edge_id(Some(Identifier::Single("evt_id".to_string())));
         assert_eq!(
             single.edge_tuple("next"),
