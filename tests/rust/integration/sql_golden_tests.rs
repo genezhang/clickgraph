@@ -1291,6 +1291,23 @@ const DENORM_CORPUS: &[(&str, &str)] = &[
         "undirected_buried_agg_key_844",
         "MATCH (a:Airport)-[r:FLIGHT]-(b:Airport) RETURN a.code + toString(count(r)) AS m",
     ),
+    // #876 (#844 residual): the buried grouping key wrapped in a scalar function
+    // (`toUpper(a.code)`, `coalesce(a.code,'x')`) must STILL flip per arm — the
+    // flip-able denorm column (`r.origin_code`) sits as a sub-expression of the
+    // group key, so the per-arm override must target the component column, not the
+    // key as a whole. Regression: the override gated on the key being a bare
+    // `PropertyAccessExp`/`Column`, so a wrapped key skipped the flip and both arms
+    // baked the origin column (silent under-count, identical to the #844 bug).
+    // Both arms must read `r.origin_code AS "r.origin_code"` / `r.dest_code AS
+    // "r.origin_code"` exactly like the bare-key sibling.
+    (
+        "undirected_wrapped_buried_agg_key_upper_876",
+        "MATCH (a:Airport)-[r:FLIGHT]-(b:Airport) RETURN toUpper(a.code) + toString(count(r)) AS m",
+    ),
+    (
+        "undirected_wrapped_buried_agg_key_coalesce_876",
+        "MATCH (a:Airport)-[r:FLIGHT]-(b:Airport) RETURN coalesce(a.code, 'x') + toString(count(r)) AS m",
+    ),
     // #844 byte-lock guard: the bare-key form (grouping key as its own SELECT
     // item) was ALWAYS correct and must stay byte-identical — the fix is scoped
     // to the buried-key shape only.
