@@ -579,19 +579,27 @@ const CORPUS: &[(&str, &str)] = &[
         "count_distinct_scalar_property_through_with_903",
         "MATCH (u:User) WITH u.age AS a RETURN count(DISTINCT a) AS c",
     ),
-    // #903 scope guard: sum() of the same scalar-property alias is NOT touched by
-    // this fix (it never enters the count-arg block in projection_tagging.rs), so
-    // it stays byte-identical to main — which PINS a KNOWN-BROKEN render: the CTE
-    // degenerates to `SELECT *` and the outer `sum(a.a)` references a column the
-    // CTE never exports (ClickHouse Code 47). sum/avg/min/max/collect through a
-    // scalar-property WITH share the exact root cause the count fix addresses but
-    // via a different property-requirement path, and are still broken → filed as a
-    // follow-up (#910). This golden is intentionally locked to document that the
-    // count fix is SCOPED to count() and did not incidentally change (or fix) the
-    // sibling aggregates — NOT to assert the SQL is valid.
+    // #910: sum()/avg()/min()/max()/collect() of a scalar-property alias through a
+    // WITH barrier now keeps the CTE column (was `SELECT *` + `sum(a.a)` = Code 47,
+    // the sibling of the #903 count() bug via the same property-requirement path).
+    // Fix hoisted the scalar-alias arg rewrite (`TableAlias(a)` → `ColumnAlias(a)`)
+    // out of the count-only block in projection_tagging.rs to ALL aggregates, so
+    // the arg references the CTE column, registers the requirement, and the column
+    // survives pruning. Must render CTE `SELECT u.age AS "a"` + outer `sum(a.a)`.
     (
         "sum_scalar_property_through_with_903",
         "MATCH (u:User) WITH u.age AS a RETURN sum(a) AS s",
+    ),
+    // #910: the rest of the aggregate family — avg and collect — through the same
+    // scalar-property WITH barrier. avg → `avg(a.a)`, collect → `groupArray(a.a)`,
+    // both over CTE `SELECT u.age AS "a"`.
+    (
+        "avg_scalar_property_through_with_910",
+        "MATCH (u:User) WITH u.age AS a RETURN avg(a) AS s",
+    ),
+    (
+        "collect_scalar_property_through_with_910",
+        "MATCH (u:User) WITH u.age AS a RETURN collect(a) AS s",
     ),
     (
         "optional_match",
