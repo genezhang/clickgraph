@@ -1228,3 +1228,6 @@
 {"cypher": "MATCH (a:Member)-[:MENTORS|HELPS*1..3]->(b:Member) RETURN a.id, b.id", "name": "test_606_multitype_vlp_uniqueness_one_to_three", "schema": "mt_multitype_uniqueness"}
 {"cypher": "MATCH (a:Member)-[:MENTORS|HELPS]->(b:Member) RETURN a.id, b.id", "name": "test_606_multitype_vlp_uniqueness_single_hop", "schema": "mt_multitype_uniqueness"}
 {"cypher": "UNWIND [1, 2, 3] AS x\n            WITH x AS y\n            RETURN count(y) AS c", "name": "test_864__with_rename_of_unwind_scalar_count", "schema": "social_integration"}
+{"cypher": "UNWIND [1, 2, 3] AS x\n            WITH x AS y\n            WITH y AS z\n            RETURN count(z) AS c", "name": "test_886__chained_with_rename_of_unwind_scalar_count", "schema": "social_integration"}
+{"cypher": "WITH 1 AS one\n            WITH one AS two\n            RETURN count(two) AS c", "name": "test_886__chained_with_rename_of_literal_scalar_count", "schema": "social_integration"}
+{"cypher": "UNWIND [1, 2, 3] AS x\n            WITH x AS y\n            WITH y AS z\n            WHERE z > 0\n            RETURN count(z) AS c", "name": "test_886__chained_with_rename_then_where_count", "schema": "social_integration"}
