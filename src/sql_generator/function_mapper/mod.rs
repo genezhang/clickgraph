@@ -47,6 +47,27 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// pre-rendered SQL fragments (the caller applies the 1-based offset).
     fn array_element_or_null(&self, arr: &str, idx: &str) -> String;
 
+    /// Render an `x IN <list-literal>` / `x NOT IN <list-literal>` predicate.
+    /// The list items are pre-rendered in `item_sqls`; `negate` selects `NOT IN`.
+    ///
+    /// Always emits a paren VALUE-LIST `x IN (a, b)` — never `x IN [array]` /
+    /// `x IN array(a, b)`. Both of those are wrong: on ClickHouse a heterogeneous
+    /// array literal (e.g. an id column `toString`-wrapped alongside another type)
+    /// fails `NO_COMMON_TYPE` (Code 386), whereas SQL `IN (...)` coerces
+    /// per-element; on Spark `x IN array(...)` compares a scalar to one array
+    /// value. The value-list is valid and correct on both dialects for constant
+    /// and non-constant (column-bearing) items alike. An empty list becomes the
+    /// constant predicate (`FALSE` for IN, `TRUE` for NOT IN) — always correct
+    /// (openCypher `x IN []` is false) and required on Spark, whose `IN ()` is a
+    /// syntax error. Keeping this in the dialect layer satisfies Rule #7.
+    fn in_list_predicate(&self, lhs_sql: &str, item_sqls: &[String], negate: bool) -> String {
+        if item_sqls.is_empty() {
+            return if negate { "TRUE" } else { "FALSE" }.to_string();
+        }
+        let kw = if negate { "NOT IN" } else { "IN" };
+        format!("{} {} ({})", lhs_sql, kw, item_sqls.join(", "))
+    }
+
     /// Conditional count. CH: `countIf`. Spark: `count_if` (DBR 13.1+).
     fn count_if(&self) -> &'static str;
 

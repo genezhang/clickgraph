@@ -211,6 +211,28 @@ mod tests {
     }
 
     #[test]
+    fn in_list_predicate_renders_paren_value_list() {
+        // Value-list `x IN (a, b)` — never `x IN [array]` (a heterogeneous CH
+        // array literal fails NO_COMMON_TYPE; SQL IN coerces per-element). Empty
+        // list collapses to the constant predicate.
+        let m = ClickhouseFunctionMapper;
+        assert_eq!(
+            m.in_list_predicate("x", &["1".into(), "2".into()], false),
+            "x IN (1, 2)"
+        );
+        assert_eq!(
+            m.in_list_predicate("x", &["1".into(), "2".into()], true),
+            "x NOT IN (1, 2)"
+        );
+        assert_eq!(
+            m.in_list_predicate("u.country", &["u.city".into(), "'USA'".into()], false),
+            "u.country IN (u.city, 'USA')"
+        );
+        assert_eq!(m.in_list_predicate("x", &[], false), "FALSE");
+        assert_eq!(m.in_list_predicate("x", &[], true), "TRUE");
+    }
+
+    #[test]
     fn epoch_millis_timestamp_roundtrip_uses_clickhouse_functions() {
         let m = ClickhouseFunctionMapper;
         assert_eq!(

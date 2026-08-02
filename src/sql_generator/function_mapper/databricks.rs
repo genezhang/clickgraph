@@ -326,6 +326,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn in_list_predicate_renders_paren_value_list() {
+        // Same value-list form as ClickHouse (shared trait default): `x IN (a,b)`,
+        // never `x IN array(...)` (which compares a scalar to one array value).
+        // Column-bearing items are fine in a Spark value-list; empty -> constant.
+        let m = for_dialect(SqlDialect::Databricks);
+        assert_eq!(
+            m.in_list_predicate("x", &["1".into(), "2".into()], false),
+            "x IN (1, 2)"
+        );
+        assert_eq!(
+            m.in_list_predicate("x", &["1".into(), "2".into()], true),
+            "x NOT IN (1, 2)"
+        );
+        assert_eq!(
+            m.in_list_predicate("x", &["a.c".into(), "b.d".into()], false),
+            "x IN (a.c, b.d)"
+        );
+        assert_eq!(m.in_list_predicate("x", &[], false), "FALSE");
+        assert_eq!(m.in_list_predicate("x", &[], true), "TRUE");
+    }
+
     /// Documented structural gap: `array_count` has no clean Spark mapping.
     /// The panic is intentional — the two call sites in
     /// `plan_builder_utils.rs` branch on dialect and build
