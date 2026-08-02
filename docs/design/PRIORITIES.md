@@ -475,6 +475,30 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **P-1 — `count(<scalar>)` crash fixed** (PR #865, branch
+  `fix/count-scalar-missing-label`). `count(x)` where `x` is a scalar variable
+  (UNWIND element, WITH-scalar passthrough, or parameter) crashed loudly in
+  ProjectionTagging with `Missing label for node \`x\`` — the count-arg tagging
+  path unconditionally rewrites `count(n)` → `count(n.<id_column>)` (correct
+  OPTIONAL-MATCH NULL semantics) and called `get_label_str()` on the scalar,
+  which has no label. `sum`/`collect`/`min`/`count(*)` were all fine — only the
+  count-node-id rewrite has this assumption. Fix: in the count-tagging branch,
+  detect a scalar arg via `plan_ctx.lookup_variable(x).is_scalar()` and rewrite
+  the arg `TableAlias(x)` → `ColumnAlias(x)` (preserving DISTINCT) — renders to
+  the identical bare `x` but dodges the render-phase `AggregateFnCall::try_from`
+  fail-fast that (correctly) rejects a bare `count(TableAlias)` node var. Review
+  found a BONUS: on main the mixed case silently emitted a WRONG `count(*)` for
+  the scalar (not just the loud crash) — so this also closes a silent-wrong.
+  Live-verified: `count(x)`=3 (null-skipping), `count(DISTINCT)` dedup=2, mixed
+  `count(one),count(u)`=5,5 (scalar→`count(one)`, node→`count(u.user_id)` in one
+  query — guard fires only for scalars), OPTIONAL `count(p)`=0 for unmatched
+  (node counts unregressed), `count(id(u))` #539 path intact. Adversarial review
+  APPROVE-0 (is_scalar precise enum match — no node/rel misfire; column-name
+  collision tested clean). +1 golden (both dialects), 0 existing-golden churn.
+  Out-of-scope sibling filed → **#864** (scalar RENAMED across a WITH barrier →
+  spurious `count(y.y)`, post-WITH resolution family). Also filed during the hunt:
+  **#863** (pattern-comprehension COMPUTED projection collapses to `groupArray(1)`,
+  dropping the expr + target JOIN — pre-existing, silent-wrong).
 - 2026-08-02: **P-1 — exponentiation operator `^` supported end-to-end** (PR
   #862, branch `fix/861-exponentiation-power`, closes #861). Corrects the
   original #861 filing: `^` did not render wrong on Path A — it **never parsed
