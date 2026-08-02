@@ -22,18 +22,6 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         format!("arrayElementOrNull({}, {})", arr, idx)
     }
 
-    fn in_list_predicate(
-        &self,
-        _lhs_sql: &str,
-        _item_sqls: &[String],
-        _all_constant: bool,
-        _negate: bool,
-    ) -> Option<String> {
-        // ClickHouse `x IN [a, b]` (array literal) is valid — use the default
-        // `{lhs} IN {array}` rendering, kept byte-stable.
-        None
-    }
-
     fn count_if(&self) -> &'static str {
         "countIf"
     }
@@ -223,16 +211,25 @@ mod tests {
     }
 
     #[test]
-    fn in_list_predicate_returns_none_on_clickhouse() {
-        // CH `x IN [array]` is valid — the default array-literal rendering is
-        // kept, so the mapper signals "use default" with None for every case.
+    fn in_list_predicate_renders_paren_value_list() {
+        // Value-list `x IN (a, b)` — never `x IN [array]` (a heterogeneous CH
+        // array literal fails NO_COMMON_TYPE; SQL IN coerces per-element). Empty
+        // list collapses to the constant predicate.
         let m = ClickhouseFunctionMapper;
         assert_eq!(
-            m.in_list_predicate("x", &["1".into(), "2".into()], true, false),
-            None
+            m.in_list_predicate("x", &["1".into(), "2".into()], false),
+            "x IN (1, 2)"
         );
-        assert_eq!(m.in_list_predicate("x", &[], true, false), None);
-        assert_eq!(m.in_list_predicate("x", &["a.c".into()], false, true), None);
+        assert_eq!(
+            m.in_list_predicate("x", &["1".into(), "2".into()], true),
+            "x NOT IN (1, 2)"
+        );
+        assert_eq!(
+            m.in_list_predicate("u.country", &["u.city".into(), "'USA'".into()], false),
+            "u.country IN (u.city, 'USA')"
+        );
+        assert_eq!(m.in_list_predicate("x", &[], false), "FALSE");
+        assert_eq!(m.in_list_predicate("x", &[], true), "TRUE");
     }
 
     #[test]

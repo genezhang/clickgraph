@@ -3,7 +3,7 @@ SELECT 'User' AS end_type, u2.user_id AS end_id, a_1.user_id AS start_id, 'User'
 FROM social.users_bench a_1
 INNER JOIN social.user_follows_bench r1 ON a_1.user_id = r1.follower_id
 INNER JOIN social.users_bench u2 ON r1.followed_id = u2.user_id
-WHERE (u2.user_id IN [1, 2, 3])
+WHERE (u2.user_id IN (1, 2, 3))
 )
 SELECT 
       t.start_name AS "a.name"

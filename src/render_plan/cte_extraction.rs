@@ -1659,16 +1659,17 @@ fn substitute_pattern_branch_refs(
 }
 
 /// Render the RHS of an `x IN <list>` / `x NOT IN <list>` predicate for the CTE
-/// body, matching the canonical Path A (`render_constant_in_list` +
-/// `has_non_constant` expansion in `to_sql_query.rs`). Returns `None` to fall
-/// through to the caller's default `{lhs} IN {rhs}` (used on ClickHouse, whose
-/// `x IN [array]` form is valid and kept byte-stable).
+/// body. Returns `None` when the RHS is not a list literal (e.g. an array-valued
+/// property or subquery), so the caller falls through to its own handling.
 ///
-/// The `List` arm now renders as an ARRAY literal (`[...]` / `array(...)`), which
-/// is correct everywhere EXCEPT a Spark `IN` value-list. The per-dialect decision
-/// lives in `FunctionMapper::in_list_predicate` (the canonical dialect layer, per
-/// Rule #7); this helper only does the RenderExpr-specific work of rendering the
-/// items and detecting whether they are all constants.
+/// The `List` arm renders a list literal as an ARRAY (`[...]` / `array(...)`),
+/// which is correct for scalar/subscript/length contexts but WRONG inside an
+/// `IN`: on ClickHouse a heterogeneous array literal (an id column `toString`-
+/// wrapped next to another type) fails `NO_COMMON_TYPE` (Code 386), and on Spark
+/// `x IN array(...)` compares a scalar to one array value. So an `IN` list must
+/// render as a paren value-list `x IN (a, b)`. That decision lives in
+/// `FunctionMapper::in_list_predicate` (the canonical dialect layer, Rule #7);
+/// this helper only renders the items from the RenderExpr.
 fn render_in_list_rhs(
     rhs: &RenderExpr,
     lhs_sql: &str,
@@ -1682,14 +1683,9 @@ fn render_in_list_rhs(
         .iter()
         .map(|item| render_expr_to_sql_string(item, alias_mapping))
         .collect();
-    let all_constant = items
-        .iter()
-        .all(|i| matches!(i, RenderExpr::Literal(_) | RenderExpr::Parameter(_)));
-    crate::sql_generator::function_mapper::current_function_mapper().in_list_predicate(
-        lhs_sql,
-        &item_sqls,
-        all_constant,
-        negate,
+    Some(
+        crate::sql_generator::function_mapper::current_function_mapper()
+            .in_list_predicate(lhs_sql, &item_sqls, negate),
     )
 }
 
