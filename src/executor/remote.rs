@@ -284,6 +284,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn unescaped_question_mark_is_rejected_by_the_builder_but_escaped_is_accepted() {
+        // Necessity check: `fetch_bytes` calls the crate's `SqlBuilder::finish()`
+        // (which errors on any unbound `?` placeholder) BEFORE any network I/O —
+        // `do_execute` only *builds* the request future, it does not await it — so
+        // this proves the failure mode, and that the escape fixes it, without a
+        // live server. A `?` run of any parity must round-trip.
+        //
+        // The client needs a syntactically valid URL so the only pre-network
+        // failure is the unbound `?` itself (a default client has an empty URL
+        // that would fail `Url::parse` regardless).
+        let client = clickhouse::Client::default().with_url("http://localhost:8123");
+        let is_unbound = |sql: &str| {
+            client
+                .clone()
+                .query(sql)
+                .fetch_bytes("TSV")
+                .err()
+                .map(|e| e.to_string().contains("unbound query argument"))
+                .unwrap_or(false)
+        };
+        for sql in [
+            "SELECT 'why?' AS s",
+            "SELECT 'a???b' AS s",
+            "SELECT '?fields' AS s",
+        ] {
+            // Raw literal `?` -> the crate reads a placeholder and refuses to build.
+            assert!(
+                is_unbound(sql),
+                "expected an unbound-argument error for raw {sql:?}"
+            );
+            // Escaped -> no unbound placeholder remains, so the builder succeeds.
+            assert!(
+                !is_unbound(&escape_question_marks(sql)),
+                "escaped {sql:?} should build without an unbound argument"
+            );
+        }
+        // A `?`-free query never trips the placeholder path.
+        assert!(!is_unbound("SELECT 1 AS s"));
+    }
+
     #[tokio::test]
     async fn summary_header_parsed_and_recorded() {
         let stats = with_ch_stats_scope(async {
