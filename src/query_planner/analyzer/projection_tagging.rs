@@ -1375,12 +1375,43 @@ impl ProjectionTagging {
                                             underlying_alias.clone()
                                         }
                                         _ => {
-                                            // If it's not a simple alias (e.g., it's an aggregate),
-                                            // just use count(*) since we can't resolve to a table
+                                            // #903: the underlying expr is a SCALAR
+                                            // projection (a property `u.age AS a`, an
+                                            // arithmetic/function expression, a literal,
+                                            // or an aggregate result `count(x) AS a`) —
+                                            // NOT a graph entity. It has no table to
+                                            // resolve to, but it IS exported as a scalar
+                                            // CTE column named `t_alias`. Collapsing to
+                                            // `count(*)` here both (i) drops the reference
+                                            // to `t_alias`, so PropertyRequirements never
+                                            // marks the underlying column required and the
+                                            // CTE pruner strips it → `SELECT *`, and
+                                            // (ii) is semantically WRONG for a nullable
+                                            // scalar: `count(a)` must exclude NULLs whereas
+                                            // `count(*)` counts them. Rewrite the arg to
+                                            // `ColumnAlias(t_alias)` — identical to the
+                                            // scalar-variable branch above — so it renders
+                                            // to the CTE column (`count(a.a)`), keeps the
+                                            // column required, and honors NULL semantics.
+                                            let col = LogicalExpr::ColumnAlias(
+                                                crate::query_planner::logical_expr::ColumnAlias(
+                                                    t_alias.to_string(),
+                                                ),
+                                            );
+                                            let new_arg = if is_distinct {
+                                                LogicalExpr::OperatorApplicationExp(
+                                                    OperatorApplication {
+                                                        operator: Operator::Distinct,
+                                                        operands: vec![col],
+                                                    },
+                                                )
+                                            } else {
+                                                col
+                                            };
                                             item.expression =
                                                 LogicalExpr::AggregateFnCall(AggregateFnCall {
                                                     name: aggregate_fn_call.name.clone(),
-                                                    args: vec![LogicalExpr::Star],
+                                                    args: vec![new_arg],
                                                 });
                                             return Ok(());
                                         }

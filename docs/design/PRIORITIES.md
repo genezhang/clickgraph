@@ -524,6 +524,43 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **Fix — count() of a scalar property through a WITH barrier no
+  longer collapses to count(\*)** (branch `fix/903-count-scalar-property-with`,
+  closes #903). `MATCH (u:User) WITH u.age AS a RETURN count(a)` rendered the CTE
+  body as `SELECT *` and the outer aggregate as `count(*)` — a **silent-wrong**
+  result (`count(a)` must exclude NULL ages; `count(*)` counts them). **Root cause:**
+  in `projection_tagging.rs`, the count-arg handler's projection-alias branch had a
+  `_ =>` arm that rewrote `count(<alias>)` → `count(*)` whenever the alias's
+  underlying expression was not a bare `TableAlias` — a scalar property projection
+  (`u.age AS a`) is a `PropertyAccess`, so it hit that arm. That rewrite runs in
+  the analyzer BEFORE property-requirement collection, so the reference to `a`
+  (hence `u.age`) was gone → the requirement was never registered → the CTE-column
+  pruner stripped `age` → empty select → `SELECT *`. **Fix:** rewrite the arg to
+  `ColumnAlias(alias)` (honoring DISTINCT) instead of `Star` — identical to the
+  existing scalar-variable branch just above (#865). The alias renders to its CTE
+  column (`count(a.a)`), keeps the column required, and honors NULL semantics.
+  `sum(a)` and non-agg `RETURN a` were already correct (never entered the count
+  block) → the CTE forward-resolution architecture is intact, so this is a bounded
+  requirement/rewrite bug, NOT the reverse-mapping P-4 class. Verified narrow: the
+  aggregate-underlying alias case (`WITH count(f) AS c RETURN count(c)`) already
+  rendered `count(c.c)` on main (its alias types as scalar) → byte-identical; only
+  the property-projection shape changes. 6 dual-dialect goldens (count, count
+  DISTINCT, sum-control × CH/Databricks), count ones fail-when-reverted, sum
+  byte-identical. corpus_sweep 0-churn (no corpus query hit the buggy shape — it
+  was pure silent-wrong); ratchet net-zero; #865 `count_scalar_and_node` goldens
+  byte-unchanged; full gate green. Shared analyzer path — no Path-C duplicate
+  (dialect-independent, both emitters corrected at once). SQL-shape-verified both
+  dialects (no live CH). **Follow-up filed — #910:** the sibling aggregates
+  (`sum`/`avg`/`min`/`max`/`collect`) of a scalar property through a WITH barrier
+  share the same root-cause family but a DIFFERENT path — they render `SELECT *` +
+  `<agg>(a.a)` = invalid SQL (Code 47), byte-identical on main (pre-existing, not
+  touched by this count-only fix); a `sum_scalar_property_through_with_903` golden
+  intentionally locks that broken output (with an honest comment) to prove the
+  count fix is scoped. Out-of-scope note: the deeper Node-vs-Scalar
+  misclassification of a property WITH-projection (`plan_builder.rs` treats
+  `u.age AS a` as a node rename inheriting u's label) is left as the root fix
+  (higher blast radius across group-by/filter/denorm typing, would likely fix the
+  #910 family at once); the local count-arm fix is sufficient and lower-risk.
 - 2026-08-02: **Fix — expression-WRAPPED buried grouping key now flips per arm
   on a denorm undirected union** (branch `fix/876-wrapped-buried-groupby-key`,
   closes #876; #844 residual). #844 restored the per-arm origin/dest flip for a
