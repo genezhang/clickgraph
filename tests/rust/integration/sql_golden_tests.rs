@@ -404,6 +404,16 @@ const CORPUS: &[(&str, &str)] = &[
         "arith_left_parens",
         "MATCH (u:User) RETURN (1 + 2) * 3 AS a, (5 - 3) / 2 AS b, 1 - 2 - 3 AS c, 2 * 3 + 1 AS d, 10 - (2 + 3) AS e",
     ),
+    // Exponentiation `^` has NO infix form on ClickHouse (Code 62) or Spark;
+    // it renders as the ANSI `POWER(base, exp)` call. Precedence (grammar's
+    // `<arithmetic factor>`): `^` binds tighter than `*`/`/`/`%` and `+`/`-`
+    // (`1 + 2 ^ 3` = `1 + POWER(2,3)`), looser than unary sign (`-2 ^ 2` =
+    // `POWER(0 - 2, 2)`), and is left-associative (`2 ^ 3 ^ 2` =
+    // `POWER(POWER(2,3), 2)`).
+    (
+        "arith_exponentiation",
+        "MATCH (u:User) RETURN 2 ^ 3 AS a, 1 + 2 ^ 3 AS b, 2 ^ 3 * 4 AS c, 2 ^ 3 ^ 2 AS d, -2 ^ 2 AS e",
+    ),
     // range is INCLUSIVE in Cypher. CH range() is exclusive -> end bumped +1
     // (was silently wrong: range(1,5) gave [1,2,3,4]); Spark has no range() ->
     // sequence() (already inclusive).

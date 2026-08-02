@@ -291,6 +291,9 @@ mod tests {
         assert_eq!(m.array_concat(), "concat");
         assert_eq!(m.array_contains(), "array_contains");
         assert_eq!(m.integer_division(), "div");
+        // Exponentiation uses the shared ANSI `POWER(base, exp)` default —
+        // Spark/Databricks has no infix `^` either.
+        assert_eq!(m.power("2", "3"), "POWER(2, 3)");
         assert_eq!(m.epoch_millis_to_timestamp("x"), "timestamp_millis(x)");
         assert_eq!(m.timestamp_to_epoch_millis("x"), "unix_millis(x)");
         assert_eq!(
