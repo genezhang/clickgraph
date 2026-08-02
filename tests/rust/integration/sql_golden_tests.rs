@@ -16055,3 +16055,45 @@ async fn rename_then_passthrough_still_collapses_886() {
         "rename-then-passthrough must stay a single collapsed CTE, got:\n{sql}"
     );
 }
+
+/// #914: a chained WITH rename of a node PROPERTY consumed by a NON-count
+/// aggregate. Follow-up to #910 (single-hop) and #886 (chained rename for
+/// `count`). On the second hop (`WITH a AS b`), `b`'s underlying projection
+/// expr is a bare `TableAlias(a)`, so the #910 shape-(ii) guard (which required
+/// the underlying to be NON-TableAlias) was FALSE and the scalar-arg rewrite
+/// missed → `sum(b)` kept a bare `TableAlias(b)`, the CTE column was pruned →
+/// `SELECT *` + a dangling outer `sum(b.b)` (ClickHouse Code 47). The fix
+/// follows the rename chain back to the scalar origin (`u.age`).
+#[tokio::test]
+async fn chained_with_rename_of_property_non_count_aggregate_914() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    for func in ["sum", "avg", "min", "max", "collect"] {
+        let sql = render(
+            &schema,
+            &format!("MATCH (u:User) WITH u.age AS a WITH a AS b RETURN {func}(b) AS r"),
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        // First hop materializes the real property column; second hop renames it.
+        assert!(
+            sql.contains(r#"u.age AS "a""#) && sql.contains(r#"a.a AS "b""#),
+            "{func}: both rename hops must export a real column (u.age AS a, a.a AS b), got:\n{sql}"
+        );
+        // No CTE collapses to SELECT * (the rename-drop symptom).
+        assert!(
+            !sql.contains("SELECT *"),
+            "{func}: no CTE should collapse to SELECT *, got:\n{sql}"
+        );
+        // The outer aggregate resolves against the renamed CTE column `b.b`,
+        // NOT the node-id form (`b.p{N}_b_user_id`) — this is a scalar, not a node.
+        let rendered_fn = if func == "collect" {
+            "groupArray"
+        } else {
+            func
+        };
+        assert!(
+            sql.contains(&format!("{rendered_fn}(b.b)")),
+            "{func}: outer aggregate must resolve to the scalar CTE column b.b, got:\n{sql}"
+        );
+    }
+}

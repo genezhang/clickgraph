@@ -331,6 +331,13 @@ impl PlanCtx {
         self.projection_aliases.contains_key(alias)
     }
 
+    /// Number of registered projection aliases. Used to bound a walk over the
+    /// rename chain (#914) so a pathological self-referential registration
+    /// cannot loop forever.
+    pub fn projection_alias_count(&self) -> usize {
+        self.projection_aliases.len()
+    }
+
     /// Remove a projection alias, returning its expression if it was present.
     /// Used to scope lambda-bound parameter names to the lambda body during
     /// projection tagging (#866): the param is registered before tagging the
