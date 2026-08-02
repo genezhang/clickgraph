@@ -70,6 +70,11 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         "has"
     }
 
+    fn integer_division(&self) -> &'static str {
+        // Truncates toward zero: intDiv(-7, 2) = -3, matching Neo4j.
+        "intDiv"
+    }
+
     fn empty_string_array_cast(&self) -> &'static str {
         "CAST([] AS Array(String))"
     }
