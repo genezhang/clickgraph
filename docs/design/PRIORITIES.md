@@ -475,6 +475,31 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **P-1 — projection pattern-comprehension inner WHERE now applies
+  function / IN-list / CASE predicates** (branch `fix/882-inner-where-comprehensive-renderer`,
+  closes #882). Follow-up to #878, unblocked by #863's infrastructure. #878 fixed
+  the projection-path inner WHERE but used the LIMITED `render_logical_expr_to_sql`
+  (no `ScalarFnCall` / `List` / `Case` arm), so `WHERE toLower(v.name)='bob'`,
+  `WHERE v.age IN [1,2,3]`, `WHERE CASE …`, and any renderable predicate AND-ed
+  with such a term were silently DROPPED (unfiltered set returned — ground-rule-1).
+  Fix: `render_target_where_predicate` now delegates to the shared
+  `render_target_expr` (generalized from #863's `render_target_projection`), which
+  converts LogicalExpr → RenderExpr, remaps the target var → `__tgt`, resolves
+  properties via the target node schema, and renders through the EXHAUSTIVE
+  dialect-aware `render_expr_to_sql_string` (Path-C renderer, with full IN /
+  string-op / CASE / function coverage) — the same renderer #863 proved out for
+  projections. WHERE and computed-projection paths are now UNIFIED on one helper +
+  one allowlist gate (`is_target_safe_projection`); the limited
+  `render_logical_expr_to_sql` (and `is_renderable_target_predicate`) are retained
+  ONLY for the count/size correlated path (`render_pc_where_clause`, which has
+  multi-hop join semantics). Verified the emitted predicate SQL matches the
+  main-query-path renderer (`lower(__tgt.full_name)='bob'`, `__tgt.age IN (1,2,3)`,
+  `abs(__tgt.age)>3`). Non-target-alias / bare-variable predicates still safely
+  drop (no-filter, never invalid SQL). corpus_sweep 0-churn; the 3 `_dropped_878`
+  safe-drop goldens were renamed to `_applied_882` and regenerated to lock the now-
+  applied predicates; ratchet net-zero; fail-when-reverted confirmed. SQL-shape-
+  verified (no live CH). Removed the now-dead `inner_where_gate_tests` (its gate is
+  superseded by the shared `is_target_safe_projection` + `target_projection_gate_tests`).
 - 2026-08-02: **P-1 — computed pattern-comprehension projection collapsed to
   `groupArray(1)`** (branch `fix/863-pattern-comp-computed-projection`, closes
   #863). A projection pattern comprehension whose projection was NOT a bare

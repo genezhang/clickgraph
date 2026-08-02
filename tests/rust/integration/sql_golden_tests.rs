@@ -525,26 +525,24 @@ const CORPUS: &[(&str, &str)] = &[
         "pattern_comp_projection_no_where_878",
         "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) | v.name] AS names",
     ),
-    // #878 safe-drop guard: an inner WHERE the projection-path renderer cannot
-    // emit faithfully (a scalar function call — `render_logical_expr_to_sql`
-    // has no arm for `ScalarFnCall`) must be DROPPED WHOLE, yielding the same
-    // byte-identical no-WHERE subquery as the base form — never a dangling
-    // `WHERE  = 'bob'`. Locks the renderability gate (`is_renderable_target_predicate`).
+    // #882: an inner WHERE with a scalar function call — dropped under #878's
+    // limited renderer — now APPLIES via the comprehensive `render_expr_to_sql_string`.
+    // Locks `WHERE lower(__tgt.full_name) = 'bob'` (function + property mapping).
     (
-        "pattern_comp_projection_where_fn_dropped_878",
+        "pattern_comp_projection_where_fn_applied_882",
         "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) WHERE toLower(v.name) = 'bob' | v.name] AS names",
     ),
-    // #878 safe-drop guard: an `IN [list]` predicate must drop whole (the `List`
-    // RHS is unrenderable → would emit a dangling `IN `). Byte-identical to base.
+    // #882: an `IN [list]` predicate now renders (`__tgt.age IN (1, 2, 3)`) via the
+    // comprehensive renderer's `render_in_list_rhs` — previously dropped whole.
     (
-        "pattern_comp_projection_where_inlist_dropped_878",
+        "pattern_comp_projection_where_inlist_applied_882",
         "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) WHERE v.age IN [1,2,3] | v.name] AS names",
     ),
-    // #878 safe-drop guard: a renderable target predicate AND-ed with an
-    // unrenderable function call must drop WHOLE (not partially render the
-    // renderable conjunct into a dangling `AND`). Byte-identical to base.
+    // #882: a renderable target predicate AND-ed with a function call now renders
+    // BOTH conjuncts (`(__tgt.age > 3 AND lower(__tgt.full_name) = 'x')`) —
+    // previously the whole predicate was dropped.
     (
-        "pattern_comp_projection_where_partial_fn_dropped_878",
+        "pattern_comp_projection_where_partial_fn_applied_882",
         "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) WHERE v.age > 3 AND toLower(v.name) = 'x' | v.name] AS names",
     ),
     // #863: a COMPUTED (non-bare-property) pattern comprehension projection must
