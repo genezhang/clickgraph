@@ -201,6 +201,11 @@ impl FunctionMapper for DatabricksFunctionMapper {
         }
     }
 
+    fn array_length(&self, arr: &str) -> String {
+        // Spark reserves `length` for strings/binary; arrays need `size`.
+        format!("size({})", arr)
+    }
+
     fn epoch_millis_to_timestamp(&self, expr: &str) -> String {
         // Spark TIMESTAMP from epoch milliseconds. Verified on Databricks SQL:
         // unix_millis(timestamp_millis(x)) round-trips exactly under UTC.
@@ -322,6 +327,9 @@ mod tests {
             m.array_slice("arr", "2", None),
             "slice(arr, 2, greatest(size(arr) - (2) + 1, 0))"
         );
+        // Spark arrays need `size` (its `length` is string/binary-only), unlike
+        // ClickHouse's overloaded `length`; used to normalize negative slice bounds.
+        assert_eq!(m.array_length("arr"), "size(arr)");
         // #639: Spark percentileCont = `percentile(expr, p)` (interpolated).
         // percentileDisc has no matching comma-arg builtin (Spark's
         // `percentile_disc` uses WITHIN GROUP + a different index), so it's the

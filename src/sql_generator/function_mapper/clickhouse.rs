@@ -115,6 +115,11 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         }
     }
 
+    fn array_length(&self, arr: &str) -> String {
+        // CH `length` is overloaded for arrays and strings alike.
+        format!("length({})", arr)
+    }
+
     fn epoch_millis_to_timestamp(&self, expr: &str) -> String {
         format!("fromUnixTimestamp64Milli({})", expr)
     }
@@ -197,6 +202,14 @@ mod tests {
         let m = ClickhouseFunctionMapper;
         assert_eq!(m.array_slice("a", "2", Some("3")), "arraySlice(a, 2, 3)");
         assert_eq!(m.array_slice("a", "2", None), "arraySlice(a, 2)");
+    }
+
+    #[test]
+    fn array_length_uses_clickhouse_overloaded_length() {
+        // CH `length` works on arrays and strings alike; used to normalize
+        // negative list-slice bounds.
+        let m = ClickhouseFunctionMapper;
+        assert_eq!(m.array_length("arr"), "length(arr)");
     }
 
     #[test]

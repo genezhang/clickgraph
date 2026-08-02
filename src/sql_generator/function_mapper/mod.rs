@@ -202,6 +202,15 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// `offset`/`length` are pre-rendered SQL fragments.
     fn array_slice(&self, arr: &str, offset: &str, length: Option<&str>) -> String;
 
+    /// Element count of an array expression, used to normalize Cypher's
+    /// negative list-range bounds (`list[-2..]`) into the non-negative
+    /// offset/length that `array_slice` needs. The two dialects diverge:
+    /// ClickHouse `length(arr)` is overloaded for arrays AND strings, whereas
+    /// Spark reserves `length` for strings/binary and requires `size(arr)` for
+    /// arrays — so the spelling must live in the dialect layer (Rule #7).
+    /// `arr` is a pre-rendered SQL fragment.
+    fn array_length(&self, arr: &str) -> String;
+
     /// Convert an epoch-millis `BIGINT` expression to a timestamp value, so
     /// interval arithmetic can run on it. CH: `fromUnixTimestamp64Milli(expr)`
     /// (-> DateTime64). Spark: `timestamp_millis(expr)` (-> TIMESTAMP). The

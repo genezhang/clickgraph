@@ -2031,27 +2031,50 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
             // complex alias references that need mapping.
             let array_sql = render_expr_to_sql_string(array, alias_mapping);
             let mapper = crate::sql_generator::function_mapper::current_function_mapper();
+            use crate::sql_generator::emitters::clickhouse::to_sql_query::{
+                is_nonneg_int_literal, normalize_slice_bound,
+            };
             // Cypher list ranges are 0-based and HALF-OPEN: `list[from..to]` yields
             // indices [from, to), i.e. `to - from` elements. offset = from + 1.
+            // Negative bounds count from the end and are normalized first (the
+            // same rewrite Path A applies); non-negative integer literals stay
+            // verbatim so positive slices render identically.
             match (from, to) {
                 (Some(from_expr), Some(to_expr)) => {
-                    let from_sql = render_expr_to_sql_string(from_expr, alias_mapping);
-                    let to_sql = render_expr_to_sql_string(to_expr, alias_mapping);
-                    // Floor at 0 so from > to yields an empty slice (a negative length
-                    // is silently wrong on CH arraySlice and errors on Databricks slice).
+                    let nf = normalize_slice_bound(
+                        &render_expr_to_sql_string(from_expr, alias_mapping),
+                        &array_sql,
+                        is_nonneg_int_literal(from_expr),
+                    );
+                    let nt = normalize_slice_bound(
+                        &render_expr_to_sql_string(to_expr, alias_mapping),
+                        &array_sql,
+                        is_nonneg_int_literal(to_expr),
+                    );
+                    // Floor the length at 0 so from >= to yields an empty slice (a
+                    // negative length is silently wrong on CH arraySlice and errors
+                    // on Databricks slice).
                     mapper.array_slice(
                         &array_sql,
-                        &format!("{} + 1", from_sql),
-                        Some(&format!("greatest({} - {}, 0)", to_sql, from_sql)),
+                        &format!("{} + 1", nf),
+                        Some(&format!("greatest({} - {}, 0)", nt, nf)),
                     )
                 }
                 (Some(from_expr), None) => {
-                    let from_sql = render_expr_to_sql_string(from_expr, alias_mapping);
-                    mapper.array_slice(&array_sql, &format!("{} + 1", from_sql), None)
+                    let nf = normalize_slice_bound(
+                        &render_expr_to_sql_string(from_expr, alias_mapping),
+                        &array_sql,
+                        is_nonneg_int_literal(from_expr),
+                    );
+                    mapper.array_slice(&array_sql, &format!("{} + 1", nf), None)
                 }
                 (None, Some(to_expr)) => {
-                    let to_sql = render_expr_to_sql_string(to_expr, alias_mapping);
-                    mapper.array_slice(&array_sql, "1", Some(&to_sql))
+                    let nt = normalize_slice_bound(
+                        &render_expr_to_sql_string(to_expr, alias_mapping),
+                        &array_sql,
+                        is_nonneg_int_literal(to_expr),
+                    );
+                    mapper.array_slice(&array_sql, "1", Some(&nt))
                 }
                 (None, None) => array_sql,
             }
