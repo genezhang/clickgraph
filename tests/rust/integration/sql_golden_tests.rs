@@ -192,6 +192,15 @@ const CORPUS: &[(&str, &str)] = &[
         "vlp_recursive",
         "MATCH (a:User)-[:FOLLOWS*1..3]->(b:User) RETURN b.user_id",
     ),
+    // #871 (VLP-filter path): a bound-node WHERE predicate with BOTH `+` operands
+    // string-returning function calls (no string literal) must render `concat(...)`
+    // inside the recursive VLP CTE. This path renders through
+    // `cte_extraction::render_expr_to_sql_string` (a separate concat gate from the
+    // main projection path) — the review-caught gap in the first #871 cut.
+    (
+        "vlp_where_string_concat_both_fn_calls_871",
+        "MATCH (a:User)-[:FOLLOWS*1..3]->(b:User) WHERE toString(a.user_id) + toString(a.user_id) = 'x' RETURN b.user_id",
+    ),
     ("whole_entity", "MATCH (u:User) RETURN u"),
     // List slicing -> arraySlice (CH) / slice (Spark). Both the 3-arg bounded
     // form and the 2-arg open-ended form (Spark needs a computed length).

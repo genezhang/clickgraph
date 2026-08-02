@@ -376,18 +376,31 @@ pub fn rewrite_aliases(
     }
 }
 
-/// Check if a render expression contains a string literal
+/// Check if a render expression is a string-valued operand of a Cypher `+` (so
+/// the `+` should render as `concat(...)`). Detects a bare string literal (fast
+/// path, recursing through nested `+`) AND any operand the render-site classifier
+/// proves is String-typed — a string-returning function call, or a
+/// schema-declared string column (#871). Mirrors `is_string_operand` in the
+/// clickhouse emitter (`to_sql_query.rs`); both must stay in lockstep so string
+/// `+` renders as concat on every path (this copy backs the VLP bound-node /
+/// relationship WHERE-filter path via `cte_extraction::render_expr_to_sql_string`).
+/// Conservative: unknown → not-string, so numeric `+` is never misrouted.
 pub fn contains_string_literal(expr: &RenderExpr) -> bool {
     match expr {
         RenderExpr::Literal(Literal::String(_)) => true,
         RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
             op.operands.iter().any(contains_string_literal)
         }
-        _ => false,
+        _ => {
+            crate::sql_generator::emitters::clickhouse::type_inference::infer_render_type(expr)
+                == Some(
+                    crate::sql_generator::emitters::clickhouse::type_inference::RenderType::String,
+                )
+        }
     }
 }
 
-/// Check if any operand is a string literal (for string concatenation detection)
+/// Check if any operand is string-valued (for string concatenation detection).
 pub fn has_string_operand(operands: &[RenderExpr]) -> bool {
     operands.iter().any(contains_string_literal)
 }
