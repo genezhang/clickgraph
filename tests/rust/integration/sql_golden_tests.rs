@@ -5270,6 +5270,61 @@ async fn coupled_multihop_middle_node_binds_shared_endpoint_481() {
     );
 }
 
+/// #523 regression: the standard-schema partial-ref undirected 2-hop
+/// `MATCH (a:User)-[:FOLLOWS]-(b)-[:FOLLOWS]-(c:User) RETURN a.name, c.name`
+/// was reported (2026-07-10) as a process/seed-dependent flake — its
+/// `partial_ref_undirected_2hop` corpus golden passed in the full suite but
+/// was suspected to flap when run in isolation, same family as the #458/#480/
+/// #481 HashMap-iteration nondeterminism.
+///
+/// The underlying flap was eliminated by the #480/#481 fixes (sorted-by-
+/// cypher-property emission + owning-edge-first role resolution) landing AFTER
+/// the report, plus `normalize()`'s counter anonymization. This test LOCKS
+/// that resolution: the query is an undirected 2-hop with the middle node `b`
+/// unreferenced, so it splits into a 4-branch `UNION ALL` (each direction of
+/// each hop) whose branch order and per-branch JOIN order must be byte-stable
+/// across many fresh in-process renders — different HashMap seeds per map flip
+/// a nondeterministic site within a single process, so a repeated-render loop
+/// catches a regression the full-suite ordering would mask.
+///
+/// Verified additionally across 40 fresh-process `cg` renders (normalized):
+/// all byte-identical, structure fully deterministic.
+#[tokio::test]
+async fn partial_ref_undirected_2hop_render_is_deterministic_523() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let repro = "MATCH (a:User)-[:FOLLOWS]-(b)-[:FOLLOWS]-(c:User) RETURN a.name, c.name";
+
+    let first = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+    // Structural sanity: the undirected 2-hop with unreferenced middle splits
+    // into a 4-branch UNION ALL (3 UNION ALL joiners).
+    assert_eq!(
+        first.matches("UNION ALL").count(),
+        3,
+        "#523: partial-ref undirected 2-hop must render 4 branches:\n{first}"
+    );
+
+    for _ in 0..30 {
+        let again = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#523: partial-ref undirected 2-hop render is nondeterministic \
+             (branch/JOIN order flapping on HashMap seed):\nFIRST:\n{first}\n\
+             AGAIN:\n{again}"
+        );
+    }
+
+    // Both dialects must be deterministic.
+    let first_dbx = normalize(&render(&schema, repro, SqlDialect::Databricks).await);
+    for _ in 0..10 {
+        let again = normalize(&render(&schema, repro, SqlDialect::Databricks).await);
+        assert_eq!(
+            first_dbx, again,
+            "#523: Databricks render is nondeterministic:\nFIRST:\n{first_dbx}\n\
+             AGAIN:\n{again}"
+        );
+    }
+}
+
 /// #491 regression: `MATCH (a:Airport)-[:FLIGHT]->(b) OPTIONAL MATCH
 /// (b)-[:FLIGHT]->(c)` on the denormalized flights schema bound the REQUIRED
 /// node `b` to the OPTIONAL hop's LEFT-JOINed table alias (the
