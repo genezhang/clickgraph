@@ -429,6 +429,7 @@ fn rewrite_with_pattern_comprehensions<'a>(
                     target_label: None,
                     target_property: None,
                     target_var: None,
+                    target_projection: None,
                     correlation_vars: correlation_vars_info,
                     pattern_hops: pattern_hops_info,
                     where_clause: pc_where_clause,

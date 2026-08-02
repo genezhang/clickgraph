@@ -1500,6 +1500,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 pc_meta.target_property.as_deref(),
                                 pc_meta.target_var.as_deref(),
                                 pc_meta.where_clause.as_ref(),
+                                pc_meta.target_projection.as_ref(),
                             )
                         {
                             let pc_cte = super::Cte::new(
@@ -2514,6 +2515,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 pc_meta.target_property.as_deref(),
                                 pc_meta.target_var.as_deref(),
                                 pc_meta.where_clause.as_ref(),
+                                pc_meta.target_projection.as_ref(),
                             )
                         {
                             // Add the pattern comp CTE
@@ -5707,6 +5709,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                     pc_meta.target_property.as_deref(),
                                     pc_meta.target_var.as_deref(),
                                     pc_meta.where_clause.as_ref(),
+                                    pc_meta.target_projection.as_ref(),
                                 )
                             {
                                 let pc_cte = super::Cte::new(

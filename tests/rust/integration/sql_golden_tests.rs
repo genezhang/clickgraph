@@ -547,6 +547,42 @@ const CORPUS: &[(&str, &str)] = &[
         "pattern_comp_projection_where_partial_fn_dropped_878",
         "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) WHERE v.age > 3 AND toLower(v.name) = 'x' | v.name] AS names",
     ),
+    // #863: a COMPUTED (non-bare-property) pattern comprehension projection must
+    // render the expression AND keep the target JOIN — previously any non-bare
+    // projection collapsed to `groupArray(1)`, dropping both (silent-wrong).
+    // Arithmetic: locks `__tgt.age * 2 AS target_prop` + the INNER JOIN.
+    (
+        "pattern_comp_projection_computed_arith_863",
+        "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) | v.age * 2] AS x",
+    ),
+    // #863: a scalar FUNCTION projection — the case the #878 limited renderer
+    // could not handle. The comprehensive `render_expr_to_sql_string` renders it:
+    // locks `toString(__tgt.full_name) AS target_prop` (mapped prop) + JOIN.
+    (
+        "pattern_comp_projection_computed_fn_863",
+        "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) | toString(v.name)] AS x",
+    ),
+    // #863: property mapping must resolve inside a computed projection —
+    // `v.name` → `__tgt.full_name` (not the raw `name`).
+    (
+        "pattern_comp_projection_computed_mapped_prop_863",
+        "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) | v.name * 2] AS x",
+    ),
+    // #863 safe-fallback guard: a projection that is NOT resolvable against the
+    // single target node — a whole-entity/bare variable (`| v`), the correlation
+    // var, or a computed expr referencing the correlation var (`| u.age + v.age`)
+    // — must fall back to the `groupArray(1)` cardinality form (byte-identical to
+    // pre-#863), NOT emit an out-of-scope identifier (`v AS target_prop`) or a
+    // broken inline `groupArray(u.x + v.y)`. Locks the allowlist gate
+    // (`is_target_safe_projection`) + the no-bail fallthrough.
+    (
+        "pattern_comp_projection_whole_entity_fallback_863",
+        "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) | v] AS x",
+    ),
+    (
+        "pattern_comp_projection_corrvar_fallback_863",
+        "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) | u.age + v.age] AS x",
+    ),
     // NOTE: Path D coverage (EXISTS / pattern-predicate, e.g.
     // `WHERE (u)-[:AUTHORED]->(:Post)`) is intentionally absent — that path
     // currently hits `unimplemented!` in render_expr for anonymous pattern

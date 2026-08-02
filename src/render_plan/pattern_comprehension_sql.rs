@@ -18,7 +18,7 @@ use crate::graph_catalog::GraphSchema;
 use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::render_expr::{
-    Literal, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias,
+    map_render_expr, Literal, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias,
 };
 use crate::render_plan::{FromTableItem, Join, RenderPlan, SelectItem, UnionItems};
 use crate::sql_generator::function_mapper::current_function_mapper;
@@ -1673,6 +1673,128 @@ fn is_renderable_target_predicate(
     }
 }
 
+/// Render a COMPUTED pattern-comprehension projection (e.g. `m.id * 2`,
+/// `toString(m.id)`) for the property-projection path. The projection references
+/// the target-node variable (`m`), which is joined as `__tgt` in each branch, so
+/// we rewrite that alias to `__tgt` and resolve each property through the target
+/// node schema's `property_mappings` (e.g. `m.name` → `__tgt.full_name`), then
+/// render via the exhaustive, dialect-aware `render_expr_to_sql_string`.
+///
+/// Returns `None` (so the caller bails rather than emitting `groupArray(1)`) if:
+///   - the projection references any alias other than the target var (the
+///     correlation var or an intermediate node — out of scope in this single-hop
+///     subquery, only `__tgt` is joined), or
+///   - the LogicalExpr → RenderExpr conversion fails (an unrenderable subplan).
+///
+/// Unlike the #878 inner-WHERE path (which uses the limited
+/// `render_logical_expr_to_sql`), this uses the comprehensive renderer, so
+/// scalar functions / CASE / coalesce / arithmetic all render faithfully.
+fn render_target_projection(
+    expr: &crate::query_planner::logical_expr::LogicalExpr,
+    target_var: &str,
+    target_label: &str,
+    schema: &GraphSchema,
+) -> Option<String> {
+    use crate::render_plan::render_expr::RenderRewrite;
+
+    // Comprehensive LogicalExpr → RenderExpr conversion (same converter the
+    // normal RETURN projection path uses). Fails on unrenderable subplans.
+    let render_expr = RenderExpr::try_from(expr.clone()).ok()?;
+
+    let ns = schema.node_schema(target_label).ok()?;
+
+    // ALLOWLIST GATE (the #882 lesson): render only if EVERY leaf is target-safe
+    // — a target-var `PropertyAccessExp`, a `Literal`, or a `Parameter` — nested
+    // through operators / functions / CASE / lists. Anything else (a bare
+    // `TableAlias`/`Column`/whole-entity reference like `| m`, a non-target alias
+    // like the correlation var, a subquery/pattern) is NOT resolvable in this
+    // single-hop subquery and must NOT render (it would emit an out-of-scope
+    // identifier). Returning `None` here lets the caller fall through to the
+    // no-JOIN `groupArray(1)` form — byte-identical to pre-#863 behavior, never
+    // invalid SQL. A rejection-based check alone is insufficient: `RenderExpr`
+    // variants that are NOT `PropertyAccessExp` (bare vars → `TableAlias`) would
+    // otherwise slip through and render verbatim.
+    if !is_target_safe_projection(&render_expr, target_var) {
+        return None;
+    }
+
+    // Rewrite every (target-var) PropertyAccess: map the target var to `__tgt`
+    // and resolve the property to its db column. The allowlist above guarantees
+    // no non-target PropertyAccess reaches here.
+    let resolved = map_render_expr(&render_expr, &mut |node| {
+        if let RenderExpr::PropertyAccessExp(pa) = node {
+            let prop = pa.column.raw();
+            let db_column = ns
+                .property_mappings
+                .get(prop)
+                .map(|pv| pv.raw().to_string())
+                .unwrap_or_else(|| prop.to_string());
+            return RenderRewrite::Replace(RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias("__tgt".to_string()),
+                column: crate::graph_catalog::expression_parser::PropertyValue::Column(db_column),
+            }));
+        }
+        RenderRewrite::Recurse
+    });
+
+    let sql = crate::render_plan::cte_extraction::render_expr_to_sql_string(&resolved, &[]);
+    if sql.is_empty() {
+        None
+    } else {
+        Some(sql)
+    }
+}
+
+/// Whether a computed pattern-comprehension projection is fully resolvable
+/// against the single joined target node (`__tgt`). True iff every leaf is a
+/// target-var `PropertyAccessExp`, a `Literal`, or a `Parameter`, composed only
+/// through operators / scalar functions / CASE / list literals / array indexing.
+/// Any bare variable/column reference, non-target alias, aggregate, subquery, or
+/// pattern makes it unsafe (would emit an out-of-scope identifier) → the caller
+/// falls back to the `groupArray(1)` form rather than emit invalid SQL.
+fn is_target_safe_projection(
+    expr: &crate::render_plan::render_expr::RenderExpr,
+    target_var: &str,
+) -> bool {
+    use crate::render_plan::render_expr::RenderExpr;
+    match expr {
+        // A property access is safe iff it references the target var.
+        RenderExpr::PropertyAccessExp(pa) => pa.table_alias.0 == target_var,
+        RenderExpr::Literal(_) | RenderExpr::Parameter(_) => true,
+        RenderExpr::OperatorApplicationExp(op) => op
+            .operands
+            .iter()
+            .all(|o| is_target_safe_projection(o, target_var)),
+        RenderExpr::ScalarFnCall(f) => f
+            .args
+            .iter()
+            .all(|a| is_target_safe_projection(a, target_var)),
+        RenderExpr::List(items) => items
+            .iter()
+            .all(|i| is_target_safe_projection(i, target_var)),
+        RenderExpr::Case(c) => {
+            c.expr
+                .as_ref()
+                .is_none_or(|e| is_target_safe_projection(e, target_var))
+                && c.when_then.iter().all(|(w, t)| {
+                    is_target_safe_projection(w, target_var)
+                        && is_target_safe_projection(t, target_var)
+                })
+                && c.else_expr
+                    .as_ref()
+                    .is_none_or(|e| is_target_safe_projection(e, target_var))
+        }
+        RenderExpr::ArraySubscript { array, index } => {
+            is_target_safe_projection(array, target_var)
+                && is_target_safe_projection(index, target_var)
+        }
+        // Bare TableAlias/Column/ColumnAlias (whole-entity `| m`), aggregates,
+        // subqueries, patterns, reduce, map literals, raw, star, CteEntityRef —
+        // not resolvable against `__tgt` alone.
+        _ => false,
+    }
+}
+
 fn render_pc_where_clause(
     expr: &crate::query_planner::logical_expr::LogicalExpr,
     pattern_hops: &[crate::query_planner::logical_plan::ConnectedPatternInfo],
@@ -2118,6 +2240,7 @@ pub(crate) fn build_pattern_comprehension_sql(
     target_property: Option<&str>,
     target_var: Option<&str>,
     where_clause: Option<&crate::query_planner::logical_expr::LogicalExpr>,
+    target_projection: Option<&crate::query_planner::logical_expr::LogicalExpr>,
 ) -> Option<String> {
     use crate::open_cypher_parser::ast::Direction;
     use crate::query_planner::logical_plan::AggregationType;
@@ -2135,19 +2258,55 @@ pub(crate) fn build_pattern_comprehension_sql(
         _ => None,
     };
 
-    // Resolve target node table/column for property-based aggregation (e.g., collect(f.name))
-    let target_join_info = target_label.and_then(|tl| {
-        target_property.and_then(|tp| {
-            schema.node_schema(tl).ok().map(|ns| {
-                let target_table = format!("{}.{}", ns.database, ns.table_name);
-                let target_id = ns.node_id.id.to_pipe_joined_sql("__tgt");
-                let db_column = ns
-                    .property_mappings
-                    .get(tp)
-                    .map(|pv| pv.raw().to_string())
-                    .unwrap_or_else(|| tp.to_string());
-                (target_table, target_id, db_column, tl.to_string())
-            })
+    // Render a COMPUTED projection (e.g. `m.id * 2`, `toString(m.id)`) once, up
+    // front, against `__tgt` with property→db_column resolution. `None` for the
+    // bare-property fast path (uses `target_property`) and count/size forms.
+    let target_projection_sql = match (target_projection, target_var, target_label) {
+        (Some(expr), Some(tvar), Some(tlabel)) => {
+            render_target_projection(expr, tvar, tlabel, schema)
+        }
+        _ => None,
+    };
+
+    // A computed projection that could NOT be rendered faithfully (references the
+    // correlation var, a whole-entity/bare variable, an unrenderable subplan, …)
+    // is left with `target_projection_sql == None`. Because `target_property` is
+    // also `None` for a computed projection, `target_join_info` below then
+    // resolves to `None`, and the builder emits the no-JOIN `groupArray(1)` form —
+    // BYTE-IDENTICAL to the pre-#863 behavior. This is the correct fallback: it
+    // never emits an out-of-scope identifier (invalid SQL), and it never claims to
+    // render a projection it cannot. Only faithfully-renderable computed
+    // projections (the #863 target) get the expression + JOIN.
+    if target_projection.is_some() && target_projection_sql.is_none() {
+        log::warn!(
+            "⚠️ Pattern comprehension computed projection is not resolvable against \
+             the single target node — falling back to groupArray(1) cardinality \
+             form (pre-#863 behavior, never invalid SQL) (#863)"
+        );
+    }
+
+    // Resolve target node table + the SELECT expression emitted as `target_prop`.
+    // `Some` when EITHER a computed projection rendered OR a bare property was
+    // given. The 3rd tuple element is the full `target_prop` SELECT expression
+    // (`__tgt.<db_col>` for the bare path, or the rendered computed expression).
+    let target_join_info: Option<(String, String, String, String)> = target_label.and_then(|tl| {
+        schema.node_schema(tl).ok().and_then(|ns| {
+            let target_table = format!("{}.{}", ns.database, ns.table_name);
+            let target_id = ns.node_id.id.to_pipe_joined_sql("__tgt");
+            // Computed projection wins if present; else the bare property.
+            let select_expr = if let Some(ref proj_sql) = target_projection_sql {
+                Some(proj_sql.clone())
+            } else {
+                target_property.map(|tp| {
+                    let db_column = ns
+                        .property_mappings
+                        .get(tp)
+                        .map(|pv| pv.raw().to_string())
+                        .unwrap_or_else(|| tp.to_string());
+                    format!("__tgt.{}", db_column)
+                })
+            };
+            select_expr.map(|se| (target_table, target_id, se, tl.to_string()))
         })
     });
 
@@ -2196,7 +2355,7 @@ pub(crate) fn build_pattern_comprehension_sql(
                 format!(" WHERE {}", branch_where.join(" AND "))
             };
             // For property aggregation, JOIN the target node table
-            if let Some((ref tgt_table, ref _tgt_id, ref tgt_col, ref _tgt_label)) =
+            if let Some((ref tgt_table, ref _tgt_id, ref select_expr, ref _tgt_label)) =
                 target_join_info
             {
                 // Build JOIN condition: edge.to_id = target_node.node_id
@@ -2222,10 +2381,12 @@ pub(crate) fn build_pattern_comprehension_sql(
                 } else {
                     format!(" WHERE {}", join_where.join(" AND "))
                 };
+                // `select_expr` is the full `target_prop` expression: `__tgt.<col>`
+                // for a bare property, or a rendered computed projection (#863).
                 branches.push(format!(
-                    "SELECT {} AS node_id, __tgt.{} AS target_prop FROM {} INNER JOIN {} AS __tgt ON {}{}",
+                    "SELECT {} AS node_id, {} AS target_prop FROM {} INNER JOIN {} AS __tgt ON {}{}",
                     rel_schema.from_id.to_pipe_joined_sql(""),
-                    tgt_col,
+                    select_expr,
                     db_table,
                     tgt_table,
                     join_cond,
@@ -2258,7 +2419,7 @@ pub(crate) fn build_pattern_comprehension_sql(
                 format!(" WHERE {}", branch_where.join(" AND "))
             };
             // For property aggregation, JOIN the target (from) node table
-            if let Some((ref tgt_table, ref _tgt_id, ref tgt_col, ref _tgt_label)) =
+            if let Some((ref tgt_table, ref _tgt_id, ref select_expr, ref _tgt_label)) =
                 target_join_info
             {
                 let join_cond = {
@@ -2283,10 +2444,12 @@ pub(crate) fn build_pattern_comprehension_sql(
                 } else {
                     format!(" WHERE {}", join_where.join(" AND "))
                 };
+                // `select_expr` is the full `target_prop` expression: `__tgt.<col>`
+                // for a bare property, or a rendered computed projection (#863).
                 branches.push(format!(
-                    "SELECT {} AS node_id, __tgt.{} AS target_prop FROM {} INNER JOIN {} AS __tgt ON {}{}",
+                    "SELECT {} AS node_id, {} AS target_prop FROM {} INNER JOIN {} AS __tgt ON {}{}",
                     rel_schema.to_id.to_pipe_joined_sql(""),
-                    tgt_col,
+                    select_expr,
                     db_table,
                     tgt_table,
                     join_cond,
@@ -2929,5 +3092,93 @@ mod inner_where_gate_tests {
             args: vec![prop("v", "age")],
         });
         assert!(!is_renderable_target_predicate(&e, "v"));
+    }
+}
+
+#[cfg(test)]
+mod target_projection_gate_tests {
+    //! Unit tests for `is_target_safe_projection`, the #863 allowlist gate that
+    //! decides whether a computed pattern-comprehension projection is resolvable
+    //! against the single joined target node (`__tgt`). These lock the exact
+    //! defect classes an adversarial review found in the first cut: bare
+    //! variable / whole-entity / correlation-var projections that slipped a
+    //! rejection-only gate and rendered out-of-scope identifiers.
+    use super::is_target_safe_projection;
+    use crate::graph_catalog::expression_parser::PropertyValue;
+    use crate::render_plan::render_expr::{
+        Column, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall,
+        TableAlias,
+    };
+
+    fn prop(alias: &str, col: &str) -> RenderExpr {
+        RenderExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: TableAlias(alias.to_string()),
+            column: PropertyValue::Column(col.to_string()),
+        })
+    }
+
+    #[test]
+    fn safe_target_property() {
+        assert!(is_target_safe_projection(&prop("v", "age"), "v"));
+    }
+
+    #[test]
+    fn safe_arithmetic_on_target() {
+        // v.age * 2
+        let e = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Multiplication,
+            operands: vec![prop("v", "age"), RenderExpr::Literal(Literal::Integer(2))],
+        });
+        assert!(is_target_safe_projection(&e, "v"));
+    }
+
+    #[test]
+    fn safe_function_on_target() {
+        // toString(v.age)
+        let e = RenderExpr::ScalarFnCall(ScalarFnCall {
+            name: "toString".to_string(),
+            args: vec![prop("v", "age")],
+        });
+        assert!(is_target_safe_projection(&e, "v"));
+    }
+
+    #[test]
+    fn rejects_bare_target_variable() {
+        // `| v` → TableAlias, NOT a PropertyAccess — must be rejected (whole
+        // entity is not resolvable against __tgt; would render `v` verbatim).
+        let e = RenderExpr::TableAlias(TableAlias("v".to_string()));
+        assert!(!is_target_safe_projection(&e, "v"));
+    }
+
+    #[test]
+    fn rejects_bare_column() {
+        let e = RenderExpr::Column(Column(PropertyValue::Column("age".to_string())));
+        assert!(!is_target_safe_projection(&e, "v"));
+    }
+
+    #[test]
+    fn rejects_correlation_var_property() {
+        // `| u.age` where target is v — out of scope.
+        assert!(!is_target_safe_projection(&prop("u", "age"), "v"));
+    }
+
+    #[test]
+    fn rejects_correlation_var_buried_in_arithmetic() {
+        // u.age + v.age — the non-target `u` operand must sink the whole expr.
+        let e = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![prop("u", "age"), prop("v", "age")],
+        });
+        assert!(!is_target_safe_projection(&e, "v"));
+    }
+
+    #[test]
+    fn rejects_correlation_var_buried_in_function() {
+        // toString(u.age) — non-target buried in a fn arg.
+        let e = RenderExpr::ScalarFnCall(ScalarFnCall {
+            name: "toString".to_string(),
+            args: vec![prop("u", "age")],
+        });
+        assert!(!is_target_safe_projection(&e, "v"));
     }
 }

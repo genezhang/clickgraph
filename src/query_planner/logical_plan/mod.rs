@@ -452,6 +452,14 @@ pub struct PatternComprehensionMeta {
     /// Used to map an inner WHERE predicate referencing the target (e.g. `WHERE b.age > 3`)
     /// onto the `__tgt` join alias when rendering the projection subquery.
     pub target_var: Option<String>,
+    /// Full projection expression for a COMPUTED (non-bare-property) pattern
+    /// comprehension projection — e.g. `m.id * 2`, `toString(m.id)` in
+    /// `[(n)-[:R]->(m) | m.id * 2]`. `None` for a bare property projection
+    /// (which uses `target_property`) or the count/size forms. Carried as a
+    /// `LogicalExpr` so the render path can convert it to a `RenderExpr`, remap
+    /// the target variable onto `__tgt`, and emit the expression + the target
+    /// JOIN (fixing #863, where computed projections collapsed to `groupArray(1)`).
+    pub target_projection: Option<LogicalExpr>,
     /// ALL outer variables correlated from pattern (multi-correlation support)
     pub correlation_vars: Vec<CorrelationVarInfo>,
     /// Full multi-hop pattern chain (serializable form of ConnectedPattern)

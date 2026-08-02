@@ -480,6 +480,19 @@ fn rewrite_pattern_comprehensions<'a>(
                 crate::query_planner::logical_expr::LogicalExpr::try_from(w.as_ref().clone()).ok()
             });
 
+            // A COMPUTED (non-bare-property) projection — e.g. `m.id * 2`,
+            // `toString(m.id)` — is carried as a full LogicalExpr so the render
+            // path can emit the expression + the target JOIN. A bare
+            // `PropertyAccessExp` projection uses the `target_property` fast path
+            // (byte-stable), so it is intentionally NOT carried here. Without
+            // this, computed projections collapsed to `groupArray(1)` (#863).
+            let target_projection = match projection.as_ref() {
+                Expression::PropertyAccessExp(_) => None,
+                other => {
+                    crate::query_planner::logical_expr::LogicalExpr::try_from(other.clone()).ok()
+                }
+            };
+
             // Determine aggregation type from the rewritten expression
             let agg_type = match &rewritten_expr {
                 Expression::FunctionCallExp(fc) if fc.name.eq_ignore_ascii_case("collect") => {
@@ -524,6 +537,7 @@ fn rewrite_pattern_comprehensions<'a>(
                     target_label,
                     target_property,
                     target_var,
+                    target_projection,
                     correlation_vars: vec![],
                     pattern_hops: vec![],
                     where_clause: pc_where_clause,
