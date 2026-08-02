@@ -475,6 +475,37 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **P-1 — computed pattern-comprehension projection collapsed to
+  `groupArray(1)`** (branch `fix/863-pattern-comp-computed-projection`, closes
+  #863). A projection pattern comprehension whose projection was NOT a bare
+  property access — e.g. `[(n)-[:FOLLOWS]->(m:User) | m.id * 2]` or
+  `[... | toString(m.id)]` — silently collapsed to `groupArray(1)`, dropping BOTH
+  the projection expression AND the target-node INNER JOIN (returned an array of
+  1s of the right length — ground-rule-1 wrong answer). Root cause:
+  `extract_target_info` (`return_clause.rs`) set `target_property` only for a bare
+  `PropertyAccessExp`; any computed projection → `target_property = None` →
+  `target_join_info = None` in `build_pattern_comprehension_sql` → the `else` arm
+  emitted no JOIN and the `GroupArray` arm emitted `groupArray(1)`. Fix: carry the
+  full projection as a `LogicalExpr` on a new `PatternComprehensionMeta.target_projection`
+  field; a new `render_target_projection` helper converts it to a `RenderExpr`
+  (comprehensive `RenderExpr::try_from`), remaps the target var → `__tgt` and
+  resolves each property to its db column via the target node schema
+  (`m.name` → `__tgt.full_name`) using `map_render_expr`, then renders via the
+  EXHAUSTIVE dialect-aware `render_expr_to_sql_string` (Path-C renderer) — NOT the
+  limited `render_logical_expr_to_sql` the #878 WHERE path uses (which is why
+  scalar functions / CASE now render faithfully here). `target_join_info`'s 3rd
+  element became the full `target_prop` SELECT expression (`__tgt.<col>` for the
+  bare fast path, or the rendered computed expression), emitted in both JOIN arms.
+  **Critical correctness gate**: a computed projection that cannot be rendered
+  (references the correlation var / an unrenderable subplan) bails to `None` — the
+  caller's fallback handles it — NEVER emitting a bogus `groupArray(1)`. Bare
+  property projections keep the byte-stable fast path (0 golden churn). corpus_sweep
+  + sql_golden 0-churn; ratchet net-zero; 3 fail-when-reverted goldens (arithmetic
+  / scalar-function / mapped-property, each locking JOIN + rendered expr, none
+  `groupArray(1)`). SQL-shape-verified across outgoing / incoming / Either / CASE
+  (no live CH). **Follow-ups**: WITH-position computed PC projections use a
+  different renderer (separate parity issue); #882 (migrate the #878 WHERE path to
+  this comprehensive renderer) is now unblocked by the same infrastructure.
 - 2026-08-02: **P-1 — projection pattern comprehension silently drops its inner
   WHERE** (branch `fix/878-pattern-comp-inner-where`, closes #878). A PROJECTION
   pattern comprehension with an inner filter — e.g.
