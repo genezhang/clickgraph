@@ -128,6 +128,17 @@ impl FunctionMapper for DatabricksFunctionMapper {
         "double"
     }
 
+    fn cast_int64_or_null(&self, expr: &str) -> String {
+        // Spark `bigint(...)` already returns NULL on parse failure (non-ANSI
+        // cast), so the OrNull form is just the plain cast — byte-identical to
+        // `cast_int64`. #880.
+        format!("bigint({})", expr)
+    }
+
+    fn cast_float64_or_null(&self, expr: &str) -> String {
+        format!("double({})", expr)
+    }
+
     fn cast_string(&self) -> &'static str {
         "string"
     }

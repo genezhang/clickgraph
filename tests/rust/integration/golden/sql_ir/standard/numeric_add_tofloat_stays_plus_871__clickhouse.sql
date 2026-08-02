@@ -1,2 +1,2 @@
 SELECT 
-      toFloat64('1') + toFloat64('2') AS "s"
+      toFloat64OrNull('1') + toFloat64OrNull('2') AS "s"

@@ -1,2 +1,2 @@
 SELECT 
-      toInt64('5') + toInt64('10') AS "s"
+      toInt64OrNull('5') + toInt64OrNull('10') AS "s"

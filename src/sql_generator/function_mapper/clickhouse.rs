@@ -58,6 +58,15 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         "toFloat64"
     }
 
+    fn cast_int64_or_null(&self, expr: &str) -> String {
+        // CH `toInt64OrNull` returns NULL on parse failure (String arg only).
+        format!("toInt64OrNull({})", expr)
+    }
+
+    fn cast_float64_or_null(&self, expr: &str) -> String {
+        format!("toFloat64OrNull({})", expr)
+    }
+
     fn cast_string(&self) -> &'static str {
         "toString"
     }

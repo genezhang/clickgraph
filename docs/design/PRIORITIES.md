@@ -490,6 +490,36 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **P-1 — `toInteger`/`toFloat` on an unparseable string threw CH
+  Code 6 instead of returning null** (branch `fix/880-tointeger-tofloat-ornull`,
+  closes #880). PR2 of the operand-typing design cycle (built on PR1's #889
+  classifier). Neo4j `toInteger('abc')`/`toFloat('xyz')` return NULL; ClickGraph
+  mapped them to CH `toInt64`/`toFloat64`, which THROW (Code 6) on a bad string.
+  The OrNull variants (`toInt64OrNull`/`toFloat64OrNull`) fix it but accept ONLY a
+  String argument, so a correct fix must dispatch on the arg's static type. Fix:
+  in the `ScalarFnCall` render arm, special-case `tointeger`/`tofloat` BEFORE the
+  generic registry mapping — when `infer_render_type(arg0) == String` (string
+  literal, `toString(...)`, or a declared string column), emit the dialect's
+  parse-or-null cast via two new `FunctionMapper` methods (Rule #7):
+  `cast_int64_or_null`/`cast_float64_or_null` — CH `toInt64OrNull`/
+  `toFloat64OrNull`; Databricks keeps `bigint`/`double` (Spark's cast is already
+  null-on-failure, so byte-identical to today). Numeric/unknown arg → falls
+  through to the plain cast (unchanged): `toInteger(3.9)`=3 truncation preserved,
+  a numeric or unknown-typed column never mis-parsed (conservative-None). Applied
+  on BOTH renderers: the projection/main path (`to_sql_query.rs`) AND the
+  VLP-filter/pattern-comprehension path (`cte_extraction.rs` "Path C", a
+  review-caught second-renderer gap). Only CH string-arg calls change. corpus_sweep 0-churn; 2 pre-existing #871
+  negative-control goldens updated (`toFloat('1')+toFloat('2')` now
+  `toFloat64OrNull('1') + toFloat64OrNull('2')` — the string-literal args are
+  genuinely string-typed; the #871 assertion that the OPERATOR stays `+` (not
+  concat) still holds); 5 new fail-when-reverted #880 goldens (string-literal →
+  OrNull ×2, toString-arg → OrNull, numeric-literal → plain, unknown-column →
+  plain, + 1 VLP-filter OrNull). ratchet net-zero; full gate green. Adversarial
+  review verdict fix-then-ship (Path-C gap); applied. Known residual (documented
+  in #880, NOT a regression — throw→NULL is strictly better): a DECIMAL string
+  `toInteger('3.9')` yields NULL on CH vs Neo4j's `3` (Neo4j parses as float then
+  truncates); CH `toInt64OrNull` doesn't parse a float string. SQL-shape-verified
+  (no live CH).
 - 2026-08-02: **P-1 — string `+` concat missed when both operands are
   string-returning function calls → CH Code 43** (branch
   `fix/operand-typing-classifier-871`, closes #871). PR1 of a 3-PR operand-typing
