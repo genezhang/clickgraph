@@ -125,6 +125,28 @@ Likewise **#808** already established via `eprintln!` + full corpus sweep that
 `generate_mixed_recursive_case`, `generate_heterogeneous_polymorphic_recursive_case`,
 and `generate_denormalized_recursive_case` (the VLC copies) get **0 hits**.
 
+> **CORRECTION (#808 resolved, PR #TBD)**: "0 corpus hits" is *coverage*, not
+> *reachability*. The `generate_mixed_{base,recursive}_case` arms turned out to
+> be **genuinely reachable** — the earlier "mixed-access and transitive-VLP are
+> mutually exclusive" hypothesis was refuted. A **foreign-embedded self-loop
+> with a one-sided role map** (node on its own table, a *different* edge table,
+> only `from_node_properties` declared, self-referencing relationship) makes the
+> same label denormalized in the from-role and standard in the to-role →
+> `start_is_denormalized XOR end_is_denormalized` → `new_mixed`; the transitivity
+> analyzer keys on label identity (self-loop) so `*2..N` is admitted; and the
+> same-table denorm validator that would reject the asymmetry only fires when
+> `node.table == edge.table`, leaving the foreign-embedded case unguarded. The
+> mixed arm emitted NODE-uniqueness (`emit_cycle_check`/`path_nodes`, no
+> `path_edges`), silently dropping node-revisiting paths — the last #606
+> inconsistency. **Fixed** (schema `schemas/test/foreign_selfloop.yaml` + corpus
+> entries lock it): the mixed arms now seed/extend `path_edges` and cycle-check
+> on it via `emit_edge_cycle_check`, gated by `uses_edge_uniqueness`, exactly
+> like the standard/FK/denorm arms. Live-verified against a 3-cycle fixture:
+> `*2..3` returns 6 relationship-unique trails vs the old node-unique 3. This
+> closes **#808 AND #606** (the mixed arm was the only remaining reachable
+> node-unique-where-edge-unique-required site). The hetero-poly and denorm VLC
+> copies remain genuinely dead (deleted in #860). The arms are NOT deletable.
+
 **Consequence:** a large share of the "cluster" is not a correctness fix at all
 — it is **dead-code deletion** (see Phase 0). Deleting it *first* shrinks the
 surface the real unification has to cover, and makes the ratchet debt fall
@@ -390,10 +412,13 @@ Ratchet baseline today, the 3 VLP files (`tests/rust/ratchet/baseline.txt`):
 `EdgeUniquenessPolicy` (constructed once from `PatternSchemaContext`), and the
 baseline **decreases** — the ratchet auto-ratchets down in the same PRs.
 
-Issue metric: #606, #628, #710, #806, #808 all close or convert to a documented
-non-bug. #710 is now **fixed** (denorm `edge_tuple` consults the schema
-`edge_id`), not a residual. No *new* uniqueness residual can be filed against an
-arm the policy owns, because there is one arm.
+Issue metric: #606, #628, #710, #806, #808 are **all fixed** (behavior). #806
+(flat composite edge_id), #628 (closed `*0..N` cycles), #710 (denorm parallel
+edges), and #808 = #606 (mixed-access arm edge-uniqueness) all landed as
+byte-scoped behavior fixes. No *new* uniqueness residual can be filed against an
+arm the policy owns, because once Phase 1–2 land there is one arm. What remains
+of #887 is the Phase 1–2 `EdgeUniquenessPolicy` consolidation — a pure
+design-cycle refactor, not a bug.
 
 ---
 

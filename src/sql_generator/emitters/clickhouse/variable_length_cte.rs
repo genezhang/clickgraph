@@ -3420,6 +3420,23 @@ impl<'a> VariableLengthCteGenerator<'a> {
             arr(&format!("{}, {}", start_id_expr, end_id_expr))
         ));
 
+        // #808/#606: seed `path_edges` with this hop's edge-identity tuple so the
+        // recursive step can enforce Cypher's default RELATIONSHIP-uniqueness (an
+        // edge may not be reused, but a node MAY be revisited). The mixed arm
+        // previously carried only `path_nodes` and cycle-checked on the endpoint
+        // node id — NODE-uniqueness — which silently dropped every valid path
+        // that legitimately revisits a node, inconsistent with every sibling arm
+        // (standard/FK/denorm all use edge-uniqueness). `rel` is joined in both
+        // mixed FROM branches, so `build_edge_tuple_recursive` reads the edge_id
+        // (or `(from,to)`) tuple off it directly. Gated by `uses_edge_uniqueness`
+        // so shortestPath/zero-hop stay node-unique and byte-unchanged.
+        if self.uses_edge_uniqueness() {
+            select_items.push(format!(
+                "{} as path_edges",
+                arr(&self.build_edge_tuple_recursive(&self.relationship_alias))
+            ));
+        }
+
         // Add properties for non-denormalized nodes
         for prop in &self.properties {
             if prop.cypher_alias == self.start_cypher_alias && !self.start_is_denormalized {
@@ -3550,6 +3567,18 @@ impl<'a> VariableLengthCteGenerator<'a> {
             arr(&end_id_expr)
         ));
 
+        // #808/#606: extend `path_edges` with this hop's edge-identity tuple so
+        // the shape matches the base seed and the edge-uniqueness cycle check
+        // below (Cypher relationship-uniqueness). Gated identically to the base
+        // via `uses_edge_uniqueness` (shortestPath/zero-hop stay node-unique and
+        // never carry a `path_edges` column, so nothing to extend there).
+        if self.uses_edge_uniqueness() {
+            select_items.push(format!(
+                "{ac}(vp.path_edges, {}) as path_edges",
+                arr(&self.build_edge_tuple_recursive(&self.relationship_alias))
+            ));
+        }
+
         // Add properties - start from CTE, end from joined node (if not denorm)
         for prop in &self.properties {
             if prop.cypher_alias == self.start_cypher_alias && !self.start_is_denormalized {
@@ -3600,7 +3629,16 @@ impl<'a> VariableLengthCteGenerator<'a> {
             )
         };
 
-        let cycle_check = emit_cycle_check(&end_id_expr);
+        // #808/#606: enforce EDGE-uniqueness (an edge may not be reused, but a
+        // node MAY be revisited — Cypher's default) by testing the new hop's
+        // edge-identity tuple against `path_edges`, matching every sibling arm.
+        // Node-uniqueness (`NOT has(path_nodes, end_id)`) is retained only for
+        // shortestPath / zero-hop via `uses_edge_uniqueness`, byte-unchanged.
+        let cycle_check = if self.uses_edge_uniqueness() {
+            emit_edge_cycle_check(&self.build_edge_tuple_recursive(&self.relationship_alias))
+        } else {
+            emit_cycle_check(&end_id_expr)
+        };
 
         let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_check];
 
@@ -3817,6 +3855,69 @@ mod tests {
             "open *0..N must use node-uniqueness; got:\n{open_sql}"
         );
     }
+
+    /// #808/#606: the MIXED-access VLP arm (one endpoint denormalized, the other
+    /// standard — reached via a foreign-embedded self-loop with a one-sided role
+    /// map) previously carried only `path_nodes` and cycle-checked on the
+    /// endpoint node id (NODE-uniqueness), silently dropping every valid path
+    /// that legitimately revisits a node. It must now enforce Cypher's default
+    /// RELATIONSHIP-uniqueness on `path_edges`, consistent with the standard /
+    /// FK / denormalized arms. Live-verified against a 3-cycle fixture: `*2..3`
+    /// returns 6 relationship-unique trails (3 length-2 + 3 node-revisiting
+    /// length-3) versus the old node-unique 3.
+    #[test]
+    fn mixed_vlp_uses_edge_uniqueness_808() {
+        let schema = create_test_schema();
+        // Denorm→Standard mixed: start embedded-in-edge, end own-table.
+        let gen = VariableLengthCteGenerator::new_mixed(
+            &schema,
+            VariableLengthSpec::range(2, 3),
+            "people",  // start table (denorm start reads from rel; passed for shape)
+            "pid",     // start id col
+            "reports", // relationship table
+            "mgr_id",  // rel from col
+            "emp_id",  // rel to col
+            "people",  // end table (standard end own-table)
+            "pid",     // end id col
+            "a",
+            "b",
+            "",
+            vec![],
+            None, // shortest_path_mode
+            None, // start_node_filters
+            None, // end_node_filters
+            None, // relationship_filters
+            None, // path_variable
+            Some(vec!["REPORTS_TO".to_string()]),
+            None,  // edge_id (None → (from,to) identity)
+            true,  // start endpoint is the denormalized (embedded-in-edge) side
+            false, // end endpoint is the standard own-table side
+        );
+        assert!(
+            gen.uses_edge_uniqueness(),
+            "mixed range VLP (min_hops>=1, not shortestPath) must use edge-uniqueness"
+        );
+        let sql = gen.generate_recursive_sql();
+        // Base seeds and recursive extends path_edges with the (from,to) tuple.
+        assert!(
+            sql.contains("[tuple(rel.mgr_id, rel.emp_id)] as path_edges"),
+            "mixed base must seed path_edges with the edge tuple; got:\n{sql}"
+        );
+        assert!(
+            sql.contains("arrayConcat(vp.path_edges, [tuple(rel.mgr_id, rel.emp_id)])"),
+            "mixed recursive must extend path_edges with the edge tuple; got:\n{sql}"
+        );
+        // Cycle check is EDGE-unique on path_edges, NOT node-unique on the endpoint.
+        assert!(
+            sql.contains("NOT has(vp.path_edges, tuple(rel.mgr_id, rel.emp_id))"),
+            "mixed cycle check must test edge-tuple membership; got:\n{sql}"
+        );
+        assert!(
+            !sql.contains("NOT has(vp.path_nodes,"),
+            "mixed range VLP must no longer enforce node-uniqueness; got:\n{sql}"
+        );
+    }
+
     #[test]
     fn test_fixed_length_spec() {
         let spec = VariableLengthSpec::fixed(2);

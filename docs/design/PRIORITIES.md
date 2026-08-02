@@ -466,7 +466,7 @@ fixed stats fixture.
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
-- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slice 1 #893, **Phase 3 #806 + Phase 4 #628 + Phase 5 #710 fixed**)
+- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slice 1 #893, **behavior cluster COMPLETE: #806 + #628 + #710 + #808/#606 fixed**; only the Phase 1–2 refactor remains)
   (`docs/design/VLP_EDGE_IDENTITY_UNIFICATION.md`). Bug-driven refactor of the
   VLP relationship-uniqueness axis: one canonical `EdgeUniquenessPolicy`
   (`PatternSchemaContext`-derived, rule-#7 clean) replaces ~14 inline sites / 3
@@ -484,7 +484,7 @@ fixed stats fixture.
   `UnsupportedFeature` — now counts real cycles via edge-uniqueness (zero-hop base
   seeds empty `path_edges`), live-verified against the trail oracle; OPEN `*0..N`
   byte-unchanged.
-  **Phase 5 (#710) SHIPPED (PR #TBD)**: the DENORMALIZED VLP strategy
+  **Phase 5 (#710) SHIPPED (PR #905, `1d6c445b`)**: the DENORMALIZED VLP strategy
   (`DenormalizedCteStrategy::edge_tuple`) now consults the schema `edge_id`
   (resolved once via `resolve_edge_id`, spelled like `build_edge_tuple_recursive`:
   Composite→tuple / Single→scalar / None→byte-identical `(from,to)` fallback), so
@@ -493,16 +493,28 @@ fixed stats fixture.
   SQL-IR snapshot), every changed line an edge-identity line (`path_nodes`/joins
   byte-identical); live-verified length-3 parallel-edge trail = buggy 0 vs fixed 2
   (oracle 2), end-to-end through `cg`. Ratchet-clean (`edge_id` not a tracked
-  token). Remaining:
+  token); adversarial review APPROVE-2.
+  **#808 = #606 FIXED (PR #TBD)**: the mixed-access VLP arm
+  (`generate_mixed_{base,recursive}_case`, `new_mixed`) was proven **reachable**
+  (not dead) via a foreign-embedded self-loop with a one-sided role map — the
+  earlier "mixed ⊥ transitive" assumption was refuted. It emitted NODE-uniqueness
+  (`path_nodes`, no `path_edges`), the last reachable node-unique-where-edge-unique
+  site, silently dropping node-revisiting paths. Fix: seed/extend `path_edges` +
+  switch the cycle check to `emit_edge_cycle_check` gated by `uses_edge_uniqueness`,
+  matching every sibling arm. New schema `schemas/test/foreign_selfloop.yaml` +
+  2 corpus entries lock it (4 new goldens, ZERO existing-golden churn — the arm
+  was corpus-empty). Live-verified: `*2..3` over a 3-cycle = buggy 3 vs fixed 6
+  (oracle 6). Ratchet-clean. **This closes the covered-bug cluster** — #606, #628,
+  #710, #806, #808 all fixed.
+  Remaining #887:
   Phase 1–2 (`EdgeUniquenessPolicy` + transition-assert + switch, byte-identical
   design-cycle refactor). Explicitly NOT this cluster:
   #643/#840/#627/#683 (different subsystems). Adjacent bugs found during Phase 3/4/5
   and filed separately (NOT folded in): flat exact-bound polymorphic VLP drops the
   `interaction_type` discriminator (#897), an OPTIONAL-MATCH closed-VLP projection
   bug (`vt0.<prop>`, #899), FK-edge self-ref VLP degenerate recursive join (#902),
-  and #808 (mixed-access VLP arm is corpus-unreachable — resolve by adding one
-  mixed-schema VLP corpus entry, which will surface its node-uniqueness as
-  #606-inconsistent and convert it to edge-uniqueness).
+  and the mixed-arm denormalized-start-node non-id-property projection gap (#908,
+  surfaced while adding #808 coverage).
 
 ## 3. Capacity split (guideline)
 

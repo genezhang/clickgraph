@@ -35,6 +35,10 @@
     "subschema": null,
     "yaml": "schemas/examples/filesystem_single.yaml"
   },
+  "foreign_selfloop": {
+    "subschema": null,
+    "yaml": "schemas/test/foreign_selfloop.yaml"
+  },
   "ldbc_snb": {
     "subschema": "ldbc_snb",
     "yaml": "schemas/test/unified_test_multi_schema.yaml"

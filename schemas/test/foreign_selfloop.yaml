@@ -1,0 +1,46 @@
+# Foreign-embedded self-loop schema — the shape that reaches the MIXED-access
+# VLP arm (#808/#606).
+#
+# Two independent schema properties combine here:
+#   1. `Person` is denormalized (declares `from_node_properties`) but lives on
+#      its OWN table `people`, DIFFERENT from the edge table `reports`
+#      ("foreign-embedded", graph_schema.rs `foreign_embedded` branch). Because
+#      only the from-role map is declared, `is_node_denormalized_on_edge`
+#      returns true for the from-role and false for the to-role of the SAME
+#      label → `classify_edge_table_pattern` = Mixed → one VLP endpoint is
+#      `EmbeddedInEdge`, the other `OwnTable` → `start_is_denormalized XOR
+#      end_is_denormalized` → the `new_mixed` VLP strategy.
+#   2. `REPORTS_TO` is self-referencing (from_node == to_node == Person), so the
+#      transitivity analyzer (which keys on LABEL identity, not denorm-ness)
+#      admits `*2..N` recursion.
+#
+# The same-table denorm validator (`validate_denormalized_nodes`) that would
+# reject a one-sided role map only fires when node.table == edge.table, so this
+# foreign-embedded case is unguarded — which is exactly why the mixed arm is
+# reachable. Used by the corpus sweep to lock the mixed arm's edge-uniqueness
+# (Cypher relationship-uniqueness) cycle check.
+name: foreign_selfloop_test
+version: "1.0"
+description: "Foreign-embedded self-loop: node table != edge table, one-sided role map -> reaches the mixed-access VLP arm (#808/#606)"
+
+graph_schema:
+  nodes:
+    - label: Person
+      database: testdb
+      table: people
+      node_id: pid
+      is_denormalized: true
+      property_mappings:
+        pid: pid
+        name: name
+      from_node_properties:
+        pid: mgr_id
+  edges:
+    - type: REPORTS_TO
+      database: testdb
+      table: reports
+      from_node: Person
+      to_node: Person
+      from_id: mgr_id
+      to_id: emp_id
+      property_mappings: {}
