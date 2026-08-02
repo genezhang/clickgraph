@@ -395,6 +395,15 @@ const CORPUS: &[(&str, &str)] = &[
         "int_division_literals",
         "MATCH (u:User) RETURN 7 / 2 AS a, -7 / 2 AS b, 7 / 2.0 AS c",
     ),
+    // Parenthesization of a lower-precedence LEFT operand must be preserved:
+    // `(1+2)*3` is 9, not `1+2*3` = 7. `needs_left_parens` wraps the left operand
+    // when its precedence is strictly below the outer op; equal precedence
+    // (`(a-b)-c`) stays bare by left-associativity, and a higher-precedence left
+    // (`a*b + c`) needs none. Right-operand parens (`10-(2+3)`) already worked.
+    (
+        "arith_left_parens",
+        "MATCH (u:User) RETURN (1 + 2) * 3 AS a, (5 - 3) / 2 AS b, 1 - 2 - 3 AS c, 2 * 3 + 1 AS d, 10 - (2 + 3) AS e",
+    ),
     // range is INCLUSIVE in Cypher. CH range() is exclusive -> end bumped +1
     // (was silently wrong: range(1,5) gave [1,2,3,4]); Spark has no range() ->
     // sequence() (already inclusive).

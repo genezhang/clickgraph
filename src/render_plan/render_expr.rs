@@ -1758,6 +1758,35 @@ pub fn needs_right_parens(outer_op: Operator, right_operand: &RenderExpr) -> boo
     }
 }
 
+/// Check whether a LEFT operand needs parenthesization to preserve semantics.
+///
+/// Parens are needed when the left operand is an operator expression whose
+/// precedence is strictly LESS than the outer operator's — otherwise flattening
+/// changes the grouping. Because arithmetic operators are left-associative,
+/// EQUAL precedence on the left needs no parens (`(a - b) - c` == `a - b - c`,
+/// `(a / b) * c` == `a / b * c`), unlike the right side.
+///
+/// Examples:
+/// - `(a + b) * c` must NOT flatten to `a + b * c` (inner `+` prec 1 < `*` prec 2)
+/// - `(a - b) / c` must NOT flatten to `a - b / c`
+/// - `(a - b) - c` MAY flatten to `a - b - c` (equal prec, left-associative)
+/// - `(a * b) + c` MAY flatten to `a * b + c` (inner prec higher)
+pub fn needs_left_parens(outer_op: Operator, left_operand: &RenderExpr) -> bool {
+    let outer_prec = match outer_op.arithmetic_precedence() {
+        Some(p) => p,
+        None => return false,
+    };
+
+    if let RenderExpr::OperatorApplicationExp(inner) = left_operand {
+        match inner.operator.arithmetic_precedence() {
+            Some(inner_prec) => inner_prec < outer_prec,
+            None => false,
+        }
+    } else {
+        false
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct OperatorApplication {
     pub operator: Operator,
@@ -2279,6 +2308,43 @@ mod tests {
     fn test_no_parens_literal() {
         // a - 5 does NOT need parens (right is literal, not operator)
         assert!(!needs_right_parens(Operator::Subtraction, &lit_int(5)));
+    }
+
+    #[test]
+    fn test_needs_left_parens_add_mul() {
+        // (a + b) * c needs parens: inner + (prec 1) < outer * (prec 2)
+        let left = make_binop(Operator::Addition, lit_int(1), lit_int(2));
+        assert!(needs_left_parens(Operator::Multiplication, &left));
+    }
+
+    #[test]
+    fn test_needs_left_parens_sub_div() {
+        // (a - b) / c needs parens: inner - (prec 1) < outer / (prec 2)
+        let left = make_binop(Operator::Subtraction, lit_int(5), lit_int(3));
+        assert!(needs_left_parens(Operator::Division, &left));
+    }
+
+    #[test]
+    fn test_no_left_parens_equal_precedence() {
+        // (a - b) - c does NOT need parens: left-associative, equal precedence.
+        let left = make_binop(Operator::Subtraction, lit_int(1), lit_int(2));
+        assert!(!needs_left_parens(Operator::Subtraction, &left));
+        // (a / b) * c likewise (equal precedence, left-assoc).
+        let left = make_binop(Operator::Division, lit_int(6), lit_int(2));
+        assert!(!needs_left_parens(Operator::Multiplication, &left));
+    }
+
+    #[test]
+    fn test_no_left_parens_higher_precedence() {
+        // (a * b) + c does NOT need parens: inner * (prec 2) > outer + (prec 1).
+        let left = make_binop(Operator::Multiplication, lit_int(2), lit_int(3));
+        assert!(!needs_left_parens(Operator::Addition, &left));
+    }
+
+    #[test]
+    fn test_no_left_parens_literal() {
+        // 5 - a: left literal, not an operator expression.
+        assert!(!needs_left_parens(Operator::Subtraction, &lit_int(5)));
     }
 
     // -------------------------------------------------------------------------
