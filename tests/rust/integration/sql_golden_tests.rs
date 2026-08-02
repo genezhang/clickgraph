@@ -562,6 +562,37 @@ const CORPUS: &[(&str, &str)] = &[
         "count_scalar_and_node",
         "MATCH (u:User) WITH u, 1 AS one RETURN count(one) AS c, count(u) AS uc",
     ),
+    // #903: count() of a scalar PROPERTY projected through a WITH barrier must
+    // count that property's CTE column, NOT collapse to count(*). On main the
+    // projection-alias arm rewrote `count(a)` → `count(*)` whenever the alias's
+    // underlying expr was not a bare TableAlias (a property `u.age AS a` is a
+    // PropertyAccess) — which (i) dropped the reference to `a` so the CTE-column
+    // pruner stripped `age` and the CTE body degenerated to `SELECT *`, and
+    // (ii) is semantically wrong (count(a) excludes NULL ages; count(*) does not).
+    // Must render CTE `SELECT u.age AS "a"` + outer `count(a.a)`.
+    (
+        "count_scalar_property_through_with_903",
+        "MATCH (u:User) WITH u.age AS a RETURN count(a) AS c",
+    ),
+    // #903: DISTINCT must be honored (count(DISTINCT a.a), not count(*)).
+    (
+        "count_distinct_scalar_property_through_with_903",
+        "MATCH (u:User) WITH u.age AS a RETURN count(DISTINCT a) AS c",
+    ),
+    // #903 scope guard: sum() of the same scalar-property alias is NOT touched by
+    // this fix (it never enters the count-arg block in projection_tagging.rs), so
+    // it stays byte-identical to main — which PINS a KNOWN-BROKEN render: the CTE
+    // degenerates to `SELECT *` and the outer `sum(a.a)` references a column the
+    // CTE never exports (ClickHouse Code 47). sum/avg/min/max/collect through a
+    // scalar-property WITH share the exact root cause the count fix addresses but
+    // via a different property-requirement path, and are still broken → filed as a
+    // follow-up (#910). This golden is intentionally locked to document that the
+    // count fix is SCOPED to count() and did not incidentally change (or fix) the
+    // sibling aggregates — NOT to assert the SQL is valid.
+    (
+        "sum_scalar_property_through_with_903",
+        "MATCH (u:User) WITH u.age AS a RETURN sum(a) AS s",
+    ),
     (
         "optional_match",
         "MATCH (u:User) OPTIONAL MATCH (u)-[:AUTHORED]->(p:Post) RETURN u.name, p.title",
