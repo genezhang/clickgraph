@@ -1318,6 +1318,50 @@ impl ProjectionTagging {
 
                     if let Some(t_alias) = table_alias_opt {
                         if aggregate_fn_call.name.to_lowercase() == "count" {
+                            // A scalar variable (UNWIND element, WITH-scalar alias,
+                            // or parameter) is NOT a graph entity: it has no label or
+                            // id column, so the per-label node/rel id-column rewrite
+                            // below would fail resolution ("Missing label for node
+                            // `x`") when it calls `get_label_str()`. Neo4j's
+                            // `count(<scalar>)` counts non-NULL values of the
+                            // expression — exactly what a bare `count(x)` /
+                            // `count(DISTINCT x)` means in SQL.
+                            //
+                            // The arg is a `TableAlias(x)`, but the render-phase
+                            // `AggregateFnCall::try_from` rejects a bare
+                            // `count(TableAlias(_))` (a fail-fast for UNRESOLVED
+                            // NODE vars, which would silently miscount under
+                            // OPTIONAL MATCH). A scalar is legitimately `count(x)`,
+                            // so rewrite the arg to `ColumnAlias(x)` — it renders
+                            // to the identical bare `x` but is not the node-var
+                            // shape the render guard trips on. `count(DISTINCT x)`
+                            // already dodges the guard (its arg is an
+                            // `OperatorApplication(Distinct, ..)`, not a bare
+                            // TableAlias), but rewrite it too for consistency.
+                            if plan_ctx
+                                .lookup_variable(t_alias)
+                                .is_some_and(|v| v.is_scalar())
+                            {
+                                let col = LogicalExpr::ColumnAlias(
+                                    crate::query_planner::logical_expr::ColumnAlias(
+                                        t_alias.to_string(),
+                                    ),
+                                );
+                                let new_arg = if is_distinct {
+                                    LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                                        operator: Operator::Distinct,
+                                        operands: vec![col],
+                                    })
+                                } else {
+                                    col
+                                };
+                                item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                    name: aggregate_fn_call.name.clone(),
+                                    args: vec![new_arg],
+                                });
+                                return Ok(());
+                            }
+
                             // First check if this is a projection alias (from WITH clause)
                             // If so, resolve it to the underlying table alias
                             let resolved_alias: String = if plan_ctx.is_projection_alias(t_alias) {
