@@ -138,11 +138,17 @@ Exit met: one fully green nightly run + xpass count 0.
   pre-existing on main, byte-identical, untouched by #839).
 
 ### P-1 — Keep a small silent-wrong bug lane open  (standing, ≤1 agent)
-**Lane state (2026-08-01): #581 shipped — agg-arg NULL-padding validity now
+**Lane state (2026-08-01): #523 closed as already-fixed (determinism-lock test
+added); #581 shipped — agg-arg NULL-padding validity now
 alias-qualified (was matching by bare physical column name, a latent
 name-coincidence false-positive).** Since
 the 07-19 reconcile this lane shipped ~23 fixes (all live- or SQL-gen-verified,
-newest first): **#581 (agg-arg NULL-padding validity check matched columns by
+newest first): **#523 (partial-ref undirected 2-hop golden flake, reported
+2026-07-10 — root-caused as already-eliminated by the #480/#481 HashMap-order
+fixes + `normalize()` counter anonymization; verified byte-stable across 40
+fresh-process renders and 45 isolated test runs; locked by
+`partial_ref_undirected_2hop_render_is_deterministic_523`)**,
+**#581 (agg-arg NULL-padding validity check matched columns by
 unqualified name — a node column sharing a name with an unrelated branch table's
 column was deemed valid on every branch; `table_valid_columns` now also keys
 columns by render alias and `agg_arg_col_valid_for_branch` checks the
