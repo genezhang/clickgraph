@@ -121,6 +121,29 @@ const CORPUS: &[(&str, &str)] = &[
         "string_fns",
         "MATCH (u:User) RETURN toUpper(u.name) AS up, toLower(u.country) AS lo",
     ),
+    // #871: string `+` with BOTH operands string-returning function calls (no
+    // string literal present) must render as `concat(...)`. Before the render-site
+    // type classifier, the concat gate only fired on a string LITERAL, so this
+    // fell through to numeric `+` → invalid CH `String + String` (Code 43).
+    (
+        "string_concat_both_fn_calls_871",
+        "RETURN toString(1) + toString(2) AS s",
+    ),
+    (
+        "string_concat_toupper_both_871",
+        "RETURN toUpper('a') + toUpper('b') AS s",
+    ),
+    // #871 negative controls: numeric-returning function operands must STAY the
+    // numeric `+` path (never misroute to concat). `toFloat`/`toInteger` classify
+    // as Float/Integer, so the concat gate does not fire.
+    (
+        "numeric_add_tofloat_stays_plus_871",
+        "RETURN toFloat('1') + toFloat('2') AS s",
+    ),
+    (
+        "numeric_add_tointeger_stays_plus_871",
+        "RETURN toInteger('5') + toInteger('10') AS s",
+    ),
     (
         "case_expr",
         "MATCH (u:User) RETURN CASE WHEN u.is_active = true THEN 'active' ELSE 'inactive' END AS status",
@@ -168,6 +191,15 @@ const CORPUS: &[(&str, &str)] = &[
     (
         "vlp_recursive",
         "MATCH (a:User)-[:FOLLOWS*1..3]->(b:User) RETURN b.user_id",
+    ),
+    // #871 (VLP-filter path): a bound-node WHERE predicate with BOTH `+` operands
+    // string-returning function calls (no string literal) must render `concat(...)`
+    // inside the recursive VLP CTE. This path renders through
+    // `cte_extraction::render_expr_to_sql_string` (a separate concat gate from the
+    // main projection path) — the review-caught gap in the first #871 cut.
+    (
+        "vlp_where_string_concat_both_fn_calls_871",
+        "MATCH (a:User)-[:FOLLOWS*1..3]->(b:User) WHERE toString(a.user_id) + toString(a.user_id) = 'x' RETURN b.user_id",
     ),
     ("whole_entity", "MATCH (u:User) RETURN u"),
     // List slicing -> arraySlice (CH) / slice (Spark). Both the 3-arg bounded
@@ -1132,6 +1164,10 @@ const DENORM_CORPUS: &[(&str, &str)] = &[
     // bare-key sibling below — regression: both arms used to bake the origin
     // column, silently under-counting. The two arms must read
     // `r.origin_code AS "r.origin_code"` and `r.dest_code AS "r.origin_code"`.
+    // NOTE (#871): the outer `a.code + toString(count(r))` now renders as
+    // `concat(...)` — `toString(...)` infers to String, so Cypher `+` is string
+    // concatenation, not the previously-invalid `String + String` (CH Code 43).
+    // The per-arm GROUP BY key flip (the #844 assertion) is unaffected.
     (
         "undirected_buried_agg_key_844",
         "MATCH (a:Airport)-[r:FLIGHT]-(b:Airport) RETURN a.code + toString(count(r)) AS m",

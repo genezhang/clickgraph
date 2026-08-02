@@ -490,6 +490,41 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **P-1 — string `+` concat missed when both operands are
+  string-returning function calls → CH Code 43** (branch
+  `fix/operand-typing-classifier-871`, closes #871). PR1 of a 3-PR operand-typing
+  design cycle (#871 → #880 → #854, all blocked on the same missing primitive:
+  no expression-type info at render time). Introduces a conservative render-site
+  type classifier `infer_render_type(&RenderExpr) -> Option<RenderType>`
+  (`src/sql_generator/emitters/clickhouse/type_inference.rs`) plus a
+  Cypher-semantic `FnReturnKind` classifier `function_return_kind()` in
+  `function_registry.rs` (single source of truth for function return types; keyed
+  by lowercased Neo4j name, unlisted → `Unknown` → `None`). `RenderType` is a
+  render-layer superset of `SchemaType` (adds `Number` = int/float-unresolved and
+  `List`), deliberately kept out of `SchemaType` so the schema/DDL/serde surface
+  is untouched. **Conservative-None invariant:** unknown → `None`, and `None` must
+  route to the identical legacy branch — loud errors may only become correct SQL,
+  never silent-wrong. #871 fix: widen BOTH concat gates (`is_string_operand` in
+  `to_sql_query.rs`, `contains_string_literal` in `render_plan/expression_utils.rs`
+  — the latter backs the VLP bound-node WHERE-filter path, a review-caught gap) to
+  treat an operand the classifier proves is `String` (a string-returning fn call,
+  or a declared string column) as a string operand — so `toString(1)+toString(2)`
+  and `toUpper(a)+toUpper(b)` render `concat(...)` instead of the previously-invalid
+  `String + String`, on projection, WITH, WHERE, AND VLP-filter paths. Negative
+  controls hold: `toFloat('1')+toFloat('2')` / `toInteger('5')+toInteger('10')`
+  stay numeric `+` (Float/Integer, not String); `reverse([list])+reverse([list])`
+  stays `+` (polymorphic-arg0 classifier → List, not String). `FnReturnKind`
+  encodes the CYPHER return semantic NOT the CH mapping (contains/startsWith →
+  Bool despite CH `position`/`startsWith`; size/id/timestamp → Int). One existing
+  corpus golden improved (#844's `a.code + toString(count(r))` now correctly
+  `concat`, its per-arm GROUP BY key unchanged); otherwise corpus_sweep +
+  sql_golden 0-churn, ratchet net-zero (schema-agnostic classifier, no axis-flag
+  predicates); 13 new classifier unit tests + 5 fail-when-reverted goldens
+  (2 concat fixes, 2 numeric negative controls, 1 VLP-filter concat). Adversarial
+  review verdict fix-then-ship (widen the 2nd gate); applied. SQL-shape-verified
+  against the CH forms the issue cites as accepted (no live CH). Shared infra
+  consumed by the pending #880 (OrNull dispatch) and #854 (temporal Date
+  epoch-wrap skip) slices.
 - 2026-08-02: **#887 Phase 0 — delete test-only `CteStrategy` dispatch cluster**
   (branch `refactor/vlp-phase0-dead-strategies`, #890 / `1c3bce85`). First slice
   of the VLP edge-identity/uniqueness unification

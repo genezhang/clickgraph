@@ -1,0 +1,410 @@
+//! Render-site type classifier.
+//!
+//! A conservative, best-effort inference of a [`RenderExpr`]'s Cypher-semantic
+//! type at SQL-render time. This is the shared primitive behind three fixes that
+//! all need operand typing the render layer historically lacked:
+//!
+//! - **#871** — string `+` must become `concat(...)` when both operands are
+//!   string-returning function calls (no string literal present).
+//! - **#880** — `toInteger`/`toFloat` on a *string* arg must dispatch to the
+//!   OrNull cast so an unparseable value yields NULL instead of throwing.
+//! - **#854** — temporal component access / duration arithmetic on a native
+//!   `Date`/`DateTime` arg must skip the epoch-millis `fromUnixTimestamp64Milli`
+//!   wrap (which only makes sense for epoch-millis BIGINTs).
+//!
+//! # Conservative-None invariant
+//!
+//! The classifier returns [`Option<RenderType>`]; `None` means "unknown". Every
+//! consumer MUST route `None` to the *identical* legacy behavior — an unknown
+//! type may never produce a worse outcome than before this classifier existed.
+//! Loud errors may only become correct SQL, never silent-wrong. Accordingly the
+//! classifier types only what it can prove: literals, list constructors,
+//! registry-classified function calls, comparison/logical operators, and
+//! schema-declared columns. Everything else is `None`.
+
+use super::function_registry::{function_return_kind, FnReturnKind};
+use crate::graph_catalog::expression_parser::PropertyValue;
+use crate::graph_catalog::schema_types::SchemaType;
+use crate::render_plan::render_expr::{Literal, Operator, RenderExpr};
+
+/// Render-layer type. A superset of [`SchemaType`] with two extra shapes that
+/// exist only during rendering:
+/// - [`RenderType::Number`] — numeric of unresolved int/float subtype (e.g.
+///   `abs(x)`), which no single `SchemaType` can express.
+/// - [`RenderType::List`] — an array/list value, which `SchemaType` (a
+///   schema/DDL concern) deliberately does not model.
+///
+/// Kept local to the emitter so `SchemaType` stays a pure schema/DDL type (its
+/// exhaustive matches, ~40 construction sites, and serde/YAML config surface are
+/// unaffected).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderType {
+    String,
+    Integer,
+    Float,
+    /// Numeric of unresolved int/float subtype.
+    Number,
+    Boolean,
+    Date,
+    DateTime,
+    Uuid,
+    List,
+}
+
+impl From<SchemaType> for RenderType {
+    fn from(t: SchemaType) -> Self {
+        match t {
+            SchemaType::Integer => RenderType::Integer,
+            SchemaType::Float => RenderType::Float,
+            SchemaType::String => RenderType::String,
+            SchemaType::Boolean => RenderType::Boolean,
+            SchemaType::DateTime => RenderType::DateTime,
+            SchemaType::Date => RenderType::Date,
+            SchemaType::Uuid => RenderType::Uuid,
+        }
+    }
+}
+
+impl RenderType {
+    /// True for any numeric render type (used by the arithmetic-operator arm and
+    /// by consumers that only care "is this a number").
+    pub fn is_numeric(self) -> bool {
+        matches!(
+            self,
+            RenderType::Integer | RenderType::Float | RenderType::Number
+        )
+    }
+}
+
+/// Best-effort classify a [`RenderExpr`]'s render type. `None` = unknown; see the
+/// conservative-None invariant in the module docs.
+pub fn infer_render_type(expr: &RenderExpr) -> Option<RenderType> {
+    match expr {
+        // ---- Literals: the only certainties ----
+        RenderExpr::Literal(Literal::String(_)) => Some(RenderType::String),
+        RenderExpr::Literal(Literal::Integer(_)) => Some(RenderType::Integer),
+        RenderExpr::Literal(Literal::Float(_)) => Some(RenderType::Float),
+        RenderExpr::Literal(Literal::Boolean(_)) => Some(RenderType::Boolean),
+        // Cypher null is typeless.
+        RenderExpr::Literal(Literal::Null) => None,
+
+        // ---- List shapes ----
+        RenderExpr::List(_) => Some(RenderType::List),
+        RenderExpr::ArraySlicing { .. } => Some(RenderType::List),
+
+        // ---- Function calls (scalar + aggregate share the registry) ----
+        RenderExpr::ScalarFnCall(f) => infer_fn_call(&f.name, &f.args),
+        RenderExpr::AggregateFnCall(agg) => infer_fn_call(&agg.name, &agg.args),
+
+        // ---- Column property access via schema ----
+        RenderExpr::PropertyAccessExp(pa) => infer_property_type(&pa.table_alias.0, &pa.column),
+
+        // ---- Operators ----
+        RenderExpr::OperatorApplicationExp(op) => infer_operator_type(op.operator, &op.operands),
+
+        // ---- Known scalar-ish shapes ----
+        RenderExpr::InSubquery(_) | RenderExpr::ExistsSubquery(_) => Some(RenderType::Boolean),
+        RenderExpr::PatternCount(_) => Some(RenderType::Integer),
+
+        // ---- Everything else: unknown (conservative) ----
+        // Column (bare, no alias→label), TableAlias, ColumnAlias, Parameter,
+        // Raw, Star, MapLiteral, Case, ReduceExpr, ArraySubscript (element type
+        // unknown), CteEntityRef.
+        _ => None,
+    }
+}
+
+/// Classify a function call by its registry [`FnReturnKind`], recursing for the
+/// polymorphic kinds.
+fn infer_fn_call(name: &str, args: &[RenderExpr]) -> Option<RenderType> {
+    match function_return_kind(&name.to_lowercase()) {
+        FnReturnKind::Str => Some(RenderType::String),
+        FnReturnKind::Int => Some(RenderType::Integer),
+        FnReturnKind::Float => Some(RenderType::Float),
+        FnReturnKind::Num => Some(RenderType::Number),
+        FnReturnKind::Bool => Some(RenderType::Boolean),
+        FnReturnKind::Date => Some(RenderType::Date),
+        FnReturnKind::DateTime => Some(RenderType::DateTime),
+        FnReturnKind::List => Some(RenderType::List),
+        // Return type == arg0's type (reverse/coalesce/nullif/min/max/anyLast).
+        FnReturnKind::SameAsArg0 => args.first().and_then(infer_render_type),
+        // Element type of a list arg (head/last) — unknowable at render time.
+        FnReturnKind::ElementOfArg0 => None,
+        FnReturnKind::Unknown => None,
+    }
+}
+
+/// Resolve a `<alias>.<prop>` property access to its declared schema type, if
+/// any. Returns `None` (safe) for rel-var aliases, unknown labels, undeclared
+/// properties, or when the alias resolves ambiguously to both a node label and a
+/// relationship type.
+fn infer_property_type(alias: &str, column: &PropertyValue) -> Option<RenderType> {
+    use crate::server::query_context::{get_current_schema, get_node_label_for_alias};
+
+    // Only a simple column reference carries a Cypher property name that keys
+    // `property_types`. An Expression is a raw computed string — untyped.
+    let prop = match column {
+        PropertyValue::Column(name) => name.as_str(),
+        PropertyValue::Expression(_) => return None,
+    };
+
+    let schema = get_current_schema()?;
+    let label = get_node_label_for_alias(alias)?;
+
+    // A name could match a node label AND a relationship type. If it matches
+    // both, we can't tell which `property_types` map applies — return None
+    // rather than guess (avoids a wrong String→concat trigger, #871).
+    let node = schema.node_schema_opt(&label);
+    let rel = schema.get_relationships_schema_opt(&label);
+    match (node, rel) {
+        (Some(ns), None) => ns.property_types.get(prop).cloned().map(RenderType::from),
+        (None, Some(rs)) => rs.property_types.get(prop).cloned().map(RenderType::from),
+        // Ambiguous (both) or neither → unknown.
+        _ => None,
+    }
+}
+
+/// Classify an operator application. Comparison/logical operators are always
+/// Boolean; arithmetic is Number only when *every* operand is provably numeric;
+/// everything else is unknown.
+///
+/// NOTE: this arm must NOT consult the string-`+`→`concat` gate — that gate calls
+/// `infer_render_type`, so special-casing `Addition`→String here would create a
+/// mutual recursion. Arithmetic stays Number/None.
+fn infer_operator_type(op: Operator, operands: &[RenderExpr]) -> Option<RenderType> {
+    match op {
+        // Comparison + logical → Boolean.
+        Operator::Equal
+        | Operator::NotEqual
+        | Operator::LessThan
+        | Operator::GreaterThan
+        | Operator::LessThanEqual
+        | Operator::GreaterThanEqual
+        | Operator::RegexMatch
+        | Operator::And
+        | Operator::Or
+        | Operator::Not
+        | Operator::In
+        | Operator::NotIn
+        | Operator::StartsWith
+        | Operator::EndsWith
+        | Operator::Contains
+        | Operator::IsNull
+        | Operator::IsNotNull => Some(RenderType::Boolean),
+
+        // Arithmetic → Number, but only when every operand is provably numeric.
+        // Otherwise unknown (never assume; string `+` is handled by its own gate).
+        Operator::Addition
+        | Operator::Subtraction
+        | Operator::Multiplication
+        | Operator::Division
+        | Operator::ModuloDivision
+        | Operator::Exponentiation => {
+            if !operands.is_empty()
+                && operands
+                    .iter()
+                    .all(|o| infer_render_type(o).is_some_and(|t| t.is_numeric()))
+            {
+                Some(RenderType::Number)
+            } else {
+                None
+            }
+        }
+
+        Operator::Distinct => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render_plan::render_expr::{
+        Literal, OperatorApplication, PropertyAccess, ScalarFnCall, TableAlias,
+    };
+
+    fn sfn(name: &str, args: Vec<RenderExpr>) -> RenderExpr {
+        RenderExpr::ScalarFnCall(ScalarFnCall {
+            name: name.to_string(),
+            args,
+        })
+    }
+
+    fn lit_str(s: &str) -> RenderExpr {
+        RenderExpr::Literal(Literal::String(s.to_string()))
+    }
+    fn lit_int(n: i64) -> RenderExpr {
+        RenderExpr::Literal(Literal::Integer(n))
+    }
+
+    #[test]
+    fn literals_classify() {
+        assert_eq!(infer_render_type(&lit_str("x")), Some(RenderType::String));
+        assert_eq!(infer_render_type(&lit_int(3)), Some(RenderType::Integer));
+        assert_eq!(
+            infer_render_type(&RenderExpr::Literal(Literal::Float(1.5))),
+            Some(RenderType::Float)
+        );
+        assert_eq!(
+            infer_render_type(&RenderExpr::Literal(Literal::Boolean(true))),
+            Some(RenderType::Boolean)
+        );
+        // null is typeless
+        assert_eq!(infer_render_type(&RenderExpr::Literal(Literal::Null)), None);
+    }
+
+    #[test]
+    fn list_shapes_classify() {
+        assert_eq!(
+            infer_render_type(&RenderExpr::List(vec![lit_int(1)])),
+            Some(RenderType::List)
+        );
+    }
+
+    #[test]
+    fn string_functions_classify() {
+        assert_eq!(
+            infer_render_type(&sfn("toString", vec![lit_int(1)])),
+            Some(RenderType::String)
+        );
+        assert_eq!(
+            infer_render_type(&sfn("toUpper", vec![lit_str("a")])),
+            Some(RenderType::String)
+        );
+        assert_eq!(
+            infer_render_type(&sfn("substring", vec![lit_str("hello"), lit_int(1)])),
+            Some(RenderType::String)
+        );
+    }
+
+    #[test]
+    fn numeric_functions_classify() {
+        // toFloat is Float — the #871 negative control depends on this.
+        assert_eq!(
+            infer_render_type(&sfn("toFloat", vec![lit_str("1")])),
+            Some(RenderType::Float)
+        );
+        assert_eq!(
+            infer_render_type(&sfn("toInteger", vec![lit_str("1")])),
+            Some(RenderType::Integer)
+        );
+        assert_eq!(
+            infer_render_type(&sfn("abs", vec![lit_int(-1)])),
+            Some(RenderType::Number)
+        );
+    }
+
+    #[test]
+    fn boolean_functions_use_cypher_semantic_not_ch_mapping() {
+        // contains/startsWith/endsWith map to CH position/startsWith but are Bool.
+        assert_eq!(
+            infer_render_type(&sfn("contains", vec![lit_str("ab"), lit_str("a")])),
+            Some(RenderType::Boolean)
+        );
+        assert_eq!(
+            infer_render_type(&sfn("startsWith", vec![lit_str("ab"), lit_str("a")])),
+            Some(RenderType::Boolean)
+        );
+    }
+
+    #[test]
+    fn temporal_constructors_classify() {
+        assert_eq!(
+            infer_render_type(&sfn("date", vec![lit_str("2024-06-15")])),
+            Some(RenderType::Date)
+        );
+        assert_eq!(
+            infer_render_type(&sfn("datetime", vec![lit_str("2024-06-15")])),
+            Some(RenderType::DateTime)
+        );
+    }
+
+    #[test]
+    fn same_as_arg0_recurses() {
+        // reverse('abc') → String ; reverse([1,2,3]) → List
+        assert_eq!(
+            infer_render_type(&sfn("reverse", vec![lit_str("abc")])),
+            Some(RenderType::String)
+        );
+        assert_eq!(
+            infer_render_type(&sfn("reverse", vec![RenderExpr::List(vec![lit_int(1)])])),
+            Some(RenderType::List)
+        );
+        // coalesce over strings → String
+        assert_eq!(
+            infer_render_type(&sfn("coalesce", vec![lit_str("a"), lit_str("b")])),
+            Some(RenderType::String)
+        );
+        // no args → None (safe)
+        assert_eq!(infer_render_type(&sfn("reverse", vec![])), None);
+    }
+
+    #[test]
+    fn element_of_arg0_is_none() {
+        // head/last return the element type — unknowable at render time.
+        assert_eq!(
+            infer_render_type(&sfn("head", vec![RenderExpr::List(vec![lit_int(1)])])),
+            None
+        );
+        assert_eq!(
+            infer_render_type(&sfn("last", vec![RenderExpr::List(vec![lit_int(1)])])),
+            None
+        );
+    }
+
+    #[test]
+    fn unknown_function_is_none() {
+        assert_eq!(
+            infer_render_type(&sfn("someUnknownFn", vec![lit_int(1)])),
+            None
+        );
+    }
+
+    #[test]
+    fn comparison_operators_are_boolean() {
+        let op = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::GreaterThan,
+            operands: vec![lit_int(3), lit_int(2)],
+        });
+        assert_eq!(infer_render_type(&op), Some(RenderType::Boolean));
+    }
+
+    #[test]
+    fn arithmetic_all_numeric_is_number_else_none() {
+        // int + int → Number
+        let numeric = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![lit_int(1), lit_int(2)],
+        });
+        assert_eq!(infer_render_type(&numeric), Some(RenderType::Number));
+
+        // string + string → NOT numeric → None (the concat gate, not this arm,
+        // handles string +).
+        let strings = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![lit_str("a"), lit_str("b")],
+        });
+        assert_eq!(infer_render_type(&strings), None);
+    }
+
+    #[test]
+    fn bare_expr_shapes_are_none() {
+        // Bare column / alias / parameter / raw carry no resolvable type here.
+        assert_eq!(
+            infer_render_type(&RenderExpr::TableAlias(TableAlias("a".into()))),
+            None
+        );
+        assert_eq!(infer_render_type(&RenderExpr::Parameter("p".into())), None);
+        assert_eq!(infer_render_type(&RenderExpr::Raw("x".into())), None);
+    }
+
+    #[test]
+    fn property_access_without_context_is_none() {
+        // Outside a task-local QueryContext (no schema), a property access can't
+        // be typed — must degrade to None, never panic.
+        let pa = RenderExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: TableAlias("u".into()),
+            column: PropertyValue::Column("name".into()),
+        });
+        assert_eq!(infer_render_type(&pa), None);
+    }
+}

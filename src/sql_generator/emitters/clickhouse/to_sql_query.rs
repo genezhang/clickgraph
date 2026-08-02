@@ -42,20 +42,29 @@ fn is_multi_type_vlp_alias_from_context(alias: &str) -> bool {
     is_multi_type_vlp_alias(alias)
 }
 
-/// Check if an expression contains a string literal (recursively for nested + operations)
-fn contains_string_literal(expr: &RenderExpr) -> bool {
+/// True when `expr` is a string-valued operand of a Cypher `+`, so the `+`
+/// should render as `concat(...)` rather than numeric addition. Detects both a
+/// bare string literal (fast path, recursing through nested `+`) AND any operand
+/// the render-site classifier proves is String-typed — a string-returning
+/// function call such as `toUpper(a)`/`toString(x)`, or a schema-declared string
+/// column (#871). The classifier is conservative: unknown → not-string, so a
+/// numeric `+` (e.g. `toFloat('1') + toFloat('2')`) is never misrouted to concat.
+fn is_string_operand(expr: &RenderExpr) -> bool {
     match expr {
         RenderExpr::Literal(Literal::String(_)) => true,
         RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
-            op.operands.iter().any(contains_string_literal)
+            op.operands.iter().any(is_string_operand)
         }
-        _ => false,
+        _ => {
+            super::type_inference::infer_render_type(expr)
+                == Some(super::type_inference::RenderType::String)
+        }
     }
 }
 
-/// Check if any operand in the expression contains a string
+/// Check if any operand in the expression is string-valued (see [`is_string_operand`]).
 fn has_string_operand(operands: &[RenderExpr]) -> bool {
-    operands.iter().any(contains_string_literal)
+    operands.iter().any(is_string_operand)
 }
 
 /// Ternary result for Cypher literal equality evaluation.
