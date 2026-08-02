@@ -462,6 +462,25 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **P-1 — `head([])`/`last([])` on empty list return `null` (was
+  ClickHouse type default)** (PR #851, branch `fix/head-last-empty-null`).
+  Direct sibling of #850, same openCypher fidelity class. `head`/`last` on an
+  EMPTY list must return `null` (Neo4j) but lowered to CH `arrayElement(list, 1)`
+  / `arrayElement(list, -1)`, which return the element type DEFAULT (`0`/`''`)
+  on an empty array. Fix: the `head`/`last` CH function-registry mappings now use
+  `arrayElementOrNull` (the accessor #850 added) instead of `arrayElement`;
+  Databricks unchanged (`element_at` already NULL-on-OOB, byte-identical).
+  Completeness (self + adversarial review, live-verified): the empty-list
+  wrong-default family is now CLOSED — `head`/`last` (this PR) + subscript `[i]`
+  (#850); `tail([])` correctly returns `[]` not null (arraySlice, left); the two
+  internal `array_element()` uses (`select_builder.rs:3297` path_relationships[1],
+  `plan_builder_utils.rs:4033/4061` groupArray-head flattening) are
+  always-non-empty machinery, correctly left. Live-verified (empty→NULL,
+  non-empty→first/last, literal lists, null propagation + coalesce, nested
+  head(tail([]))→NULL). 1 CH golden churn (`fn_head_last`), 0 Databricks; new
+  `fn_head_last_empty` golden. Adversarial review APPROVE-0. Gate: fmt · clippy ·
+  1624 lib · 248 golden · corpus + ratchet net-zero.
+
 - 2026-08-02: **P-1 — out-of-bounds list index returns `null` (was ClickHouse
   type default)** (PR #850, branch `fix/oob-list-index-null`). Silent-wrong
   openCypher fidelity bug from the same function/operator-fidelity vein as
