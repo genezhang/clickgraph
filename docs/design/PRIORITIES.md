@@ -475,6 +475,33 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **P-1 — WITH-rename of an UNWIND scalar dropped the `AS` alias in
+  the CTE body → `count(y.y)` Code 47** (branch `fix/864-with-rename-unwind-scalar`,
+  closes #864). `UNWIND [1,2,3] AS x WITH x AS y RETURN count(y)` rendered an
+  invalid `count(y.y)` (spurious property access → ClickHouse Code 47). The issue's
+  two stated premises were BOTH wrong (verified by instrumented tracing): the
+  analyzer correctly classifies `y` as scalar (`register_cte_entity_types` →
+  `define_scalar`) AND the `count(<scalar>)` guard correctly fires
+  (`projection_tagging.rs:1341`, rewrites the arg to `ColumnAlias`). The real bug
+  is downstream in `build_with_projection_select_items`
+  (`with_to_cte/mod.rs:7238`): the UNWIND-alias branch hard-coded `alias.0` (the
+  SOURCE name `x`) for BOTH the expression AND the `col_alias`, ignoring
+  `item.col_alias` (the exported rename `y`). So the CTE body emitted `SELECT x AS
+  x` (then a downstream identity-mismatch check fell back to `SELECT *`), while the
+  outer query aliased the CTE `AS y` and referenced `y.y` — which does not exist.
+  The `count(y.y)` shape itself is the renderer's normal scalar-CTE-var
+  requalification (valid IF the column were named `y`). Fix: honor
+  `item.col_alias` for the output column name (`SELECT x AS "y"`), keeping the
+  expression as the physical ARRAY JOIN column `x`. One-line change. Passthrough
+  (`WITH x` — col_alias == alias.0) is unchanged; only UNWIND-scalar RENAMES
+  (all currently broken) are affected → can only fix, not regress. NOT in the
+  #592 reverse-mapping/forward-resolution policy-blocked class (doesn't touch
+  `define_scalar` property_mapping; the column is a bare ARRAY JOIN column) — a
+  plain projection-construction bug, §1.6-rule-6 always-in-scope. corpus_sweep +
+  sql_golden 0-churn; ratchet net-zero; new fail-when-reverted corpus golden
+  (`test_864__with_rename_of_unwind_scalar_count`, both dialects). Root-cause
+  scoping done by an investigation agent (corrected the filed premises);
+  SQL-shape-verified (no live CH).
 - 2026-08-02: **P-1 — projection pattern-comprehension inner WHERE now applies
   function / IN-list / CASE predicates** (branch `fix/882-inner-where-comprehensive-renderer`,
   closes #882). Follow-up to #878, unblocked by #863's infrastructure. #878 fixed

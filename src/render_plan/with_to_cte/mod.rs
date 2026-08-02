@@ -7236,12 +7236,27 @@ fn build_with_projection_select_items(
                             crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
                                 // UNWIND aliases are ARRAY JOIN columns — emit a simple column reference
                                 if unwind_aliases.contains(alias.0.as_str()) {
-                                    log::debug!("🔧 build_chained_with_match_cte_plan: UNWIND alias '{}' — simple column reference", alias.0);
+                                    // Honor the WITH rename (`WITH x AS y`): the CTE
+                                    // body physically has the ARRAY JOIN column
+                                    // `alias.0` (x), but the exported column must be
+                                    // named after `item.col_alias` (y) so downstream
+                                    // references (`count(y)` → `y.y`) resolve. Before
+                                    // #864 this hard-coded `alias.0` for BOTH sides,
+                                    // so a rename produced `SELECT x AS x` while the
+                                    // outer query aliased the CTE `AS y` and looked
+                                    // for `y.y` — Code 47. Passthrough (no rename)
+                                    // has col_alias == alias.0, so it is unchanged.
+                                    let out_name = item
+                                        .col_alias
+                                        .as_ref()
+                                        .map(|a| a.0.clone())
+                                        .unwrap_or_else(|| alias.0.clone());
+                                    log::debug!("🔧 build_chained_with_match_cte_plan: UNWIND alias '{}' — simple column reference AS '{}'", alias.0, out_name);
                                     return vec![SelectItem {
                                         expression: super::render_expr::RenderExpr::ColumnAlias(
                                             super::render_expr::ColumnAlias(alias.0.clone()),
                                         ),
-                                        col_alias: Some(ColumnAlias(alias.0.clone())),
+                                        col_alias: Some(ColumnAlias(out_name)),
                                     }];
                                 }
 
