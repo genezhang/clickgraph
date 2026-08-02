@@ -3469,7 +3469,43 @@ fn collect_nested_aggregate_args(expr: &RenderExpr, agg_arg_cols: &mut Vec<Strin
 /// non-physical (CTE) anchors while still fixing #577's real case, where
 /// the anchor `from` IS a real node table and the relationship is a sibling
 /// JOIN.
-fn table_valid_columns(from: &FromTableItem, joins: &JoinItems) -> Option<HashSet<String>> {
+/// #476/#529/#577/#581: the set of physical columns valid on a UNION branch,
+/// used to decide whether a shared aggregate-argument column should be
+/// projected from THIS branch or NULL-padded.
+///
+/// `flat` is the union of every branch-table column (the historical
+/// representation). `by_alias` additionally keys each table's columns by its
+/// RENDER alias (the Cypher variable, e.g. `a`/`r`), so a validity check can
+/// attribute `col_sql`'s alias part to a specific table.
+///
+/// #581: the flat set alone matches by bare physical name, so a column that
+/// merely SHARES a name with an unrelated branch table's column is deemed
+/// valid on this branch even when its OWN table lacks it (name-coincidence,
+/// same class as #546). `by_alias` closes that hole for aliases we can
+/// confidently attribute, while a miss falls back to `flat` — so the check
+/// can only ever TIGHTEN (never introduce a new false-negative / silent
+/// undercount, ground rule 1), which the byte-locked corpus proves.
+#[derive(Debug, Default)]
+struct BranchColumns {
+    flat: HashSet<String>,
+    by_alias: HashMap<String, HashSet<String>>,
+}
+
+impl BranchColumns {
+    /// Record `cols` under `alias` (if any) and always into the flat union.
+    fn add(&mut self, alias: Option<&str>, cols: impl IntoIterator<Item = String>) {
+        let cols: Vec<String> = cols.into_iter().collect();
+        if let Some(alias) = alias {
+            self.by_alias
+                .entry(alias.to_string())
+                .or_default()
+                .extend(cols.iter().cloned());
+        }
+        self.flat.extend(cols);
+    }
+}
+
+fn table_valid_columns(from: &FromTableItem, joins: &JoinItems) -> Option<BranchColumns> {
     let schema = crate::server::query_context::get_current_schema_with_fallback()?;
     let view_ref = from.0.as_ref()?;
 
@@ -3485,21 +3521,23 @@ fn table_valid_columns(from: &FromTableItem, joins: &JoinItems) -> Option<HashSe
         return None;
     }
 
-    let mut table_names: Vec<&str> = vec![view_ref.name.as_str()];
+    // (physical table name, render alias) for the FROM and every JOIN.
+    let mut tables: Vec<(&str, Option<&str>)> =
+        vec![(view_ref.name.as_str(), view_ref.alias.as_deref())];
     for join in &joins.0 {
-        table_names.push(join.table_name.as_str());
+        tables.push((join.table_name.as_str(), Some(join.table_alias.as_str())));
     }
 
-    let mut cols: HashSet<String> = HashSet::new();
+    let mut cols = BranchColumns::default();
     let mut found = false;
     for node_schema in schema.all_node_schemas().values() {
-        if table_names
-            .iter()
-            .any(|name| *name == node_schema.full_table_name())
-        {
-            found = true;
-            cols.extend(node_schema.node_id.columns().iter().map(|c| c.to_string()));
-            cols.extend(node_schema.all_valid_physical_columns());
+        for (name, alias) in &tables {
+            if *name == node_schema.full_table_name() {
+                found = true;
+                let mut node_cols: HashSet<String> = node_schema.all_valid_physical_columns();
+                node_cols.extend(node_schema.node_id.columns().iter().map(|c| c.to_string()));
+                cols.add(*alias, node_cols);
+            }
         }
     }
     // #529: a bare aggregate argument on the relationship variable itself
@@ -3512,12 +3550,11 @@ fn table_valid_columns(from: &FromTableItem, joins: &JoinItems) -> Option<HashSe
     // row count). Fold in every relationship schema whose table matches too
     // (#577: now checked against the JOIN tables as well as `from`).
     for rel_schema in schema.get_relationships_schemas().values() {
-        if table_names
-            .iter()
-            .any(|name| *name == rel_schema.full_table_name())
-        {
-            found = true;
-            cols.extend(rel_schema.all_valid_physical_columns());
+        for (name, alias) in &tables {
+            if *name == rel_schema.full_table_name() {
+                found = true;
+                cols.add(*alias, rel_schema.all_valid_physical_columns());
+            }
         }
     }
     if found {
@@ -3571,15 +3608,31 @@ fn agg_arg_alias_key(col_sql: &str) -> String {
     }
 }
 
-/// #476/#529: is `col_sql` (a raw aggregate-argument column, e.g. `n.post_id`
-/// or a self-quoting physical-column form like `r."id.orig_h"`) one of the
-/// physical columns that actually exist on this branch's table? Compares by
-/// the unqualified physical-column name, extracted via `split_agg_arg_col`
-/// (NOT a naive `rsplit('.').next()`, which mis-splits a quoted physical
-/// column that itself embeds a dot).
-fn agg_arg_col_valid_for_branch(col_sql: &str, valid_columns: &HashSet<String>) -> bool {
-    let (_, physical) = split_agg_arg_col(col_sql);
-    valid_columns.contains(&physical)
+/// #476/#529/#581: is `col_sql` (a raw aggregate-argument column, e.g.
+/// `n.post_id` or a self-quoting physical-column form like `r."id.orig_h"`)
+/// valid on this branch's tables? The physical column name and the alias are
+/// both extracted via `split_agg_arg_col` (NOT a naive `rsplit('.').next()`,
+/// which mis-splits a quoted physical column that itself embeds a dot).
+///
+/// #581: when the alias part is present AND that alias names a table on this
+/// branch, validity is checked against ONLY that table's columns — so a
+/// column that merely shares a name with an UNRELATED branch table's column
+/// is correctly deemed invalid here (name-coincidence, #546 class). When the
+/// alias can't be attributed to a branch table (absent, or a VLP/CTE alias
+/// like `t` that `table_valid_columns` doesn't map), fall back to the flat
+/// union of all branch columns — the historical behavior. This makes the
+/// check strictly MORE precise for attributable aliases and unchanged
+/// otherwise, so it can never introduce a new false-negative (silent
+/// undercount): a valid column stays valid; only a name-coincidence false
+/// positive is removed.
+fn agg_arg_col_valid_for_branch(col_sql: &str, valid_columns: &BranchColumns) -> bool {
+    let (alias, physical) = split_agg_arg_col(col_sql);
+    if !alias.is_empty() {
+        if let Some(alias_cols) = valid_columns.by_alias.get(alias) {
+            return alias_cols.contains(&physical);
+        }
+    }
+    valid_columns.flat.contains(&physical)
 }
 
 /// Path-materialization metadata column aliases.
@@ -3639,7 +3692,7 @@ fn is_path_metadata_alias(alias: &str) -> bool {
 fn build_union_inner_select(
     select: &SelectItems,
     drop_path_metadata: bool,
-    valid_columns_for_branch: Option<&HashSet<String>>,
+    valid_columns_for_branch: Option<&BranchColumns>,
     extra_required_exprs: &[RenderExpr],
 ) -> (String, Vec<String>) {
     let non_agg_items: Vec<&SelectItem> = select
@@ -8228,6 +8281,61 @@ mod tests {
             !dbx_sql.contains("FINAL"),
             "Databricks must not emit FINAL; got: {dbx_sql}"
         );
+    }
+
+    /// #581: `agg_arg_col_valid_for_branch` must qualify validity by the
+    /// column's ALIAS when that alias names a branch table, not by bare
+    /// physical-column name alone. A column that merely shares a name with an
+    /// UNRELATED branch table's column must NOT be deemed valid on a branch
+    /// whose OWN table lacks it (name-coincidence, #546 class). When the alias
+    /// can't be attributed to a branch table, the check falls back to the flat
+    /// union of all branch columns (historical behavior) — so the change can
+    /// only tighten a false positive, never introduce a false negative.
+    #[test]
+    fn agg_arg_col_valid_qualifies_by_alias_581() {
+        // Two branch tables: `a` (has `city`, `user_id`) and `r` (has
+        // `follower_id`). `city` exists only on `a`; `follower_id` only on `r`.
+        let mut cols = BranchColumns::default();
+        cols.add(Some("a"), ["city".to_string(), "user_id".to_string()]);
+        cols.add(Some("r"), ["follower_id".to_string()]);
+
+        // Alias-qualified: `a.city` is valid (a has city); `r.city` is NOT
+        // (r lacks city) even though `city` exists in the flat union — this is
+        // exactly the name-coincidence false positive #581 removes.
+        assert!(agg_arg_col_valid_for_branch("a.city", &cols));
+        assert!(
+            !agg_arg_col_valid_for_branch("r.city", &cols),
+            "#581: r.city must be invalid — r's table has no city column, \
+             even though an UNRELATED branch table (a) does"
+        );
+        assert!(agg_arg_col_valid_for_branch("r.follower_id", &cols));
+        assert!(
+            !agg_arg_col_valid_for_branch("a.follower_id", &cols),
+            "#581: a.follower_id must be invalid — the edge id column lives on \
+             r, not a"
+        );
+
+        // A genuinely absent column is invalid under any alias.
+        assert!(!agg_arg_col_valid_for_branch("a.nonexistent", &cols));
+
+        // Flat fallback: an alias NOT mapped to any branch table (e.g. a
+        // VLP/CTE alias like `t`) checks against the flat union — unchanged
+        // historical behavior, so no previously-valid column becomes invalid.
+        assert!(
+            agg_arg_col_valid_for_branch("t.city", &cols),
+            "#581: an unattributable alias must fall back to the flat union \
+             (city exists in some branch table) — never a new false-negative"
+        );
+        assert!(
+            agg_arg_col_valid_for_branch("t.follower_id", &cols),
+            "#581: flat fallback also covers r's edge column for unattributable \
+             aliases"
+        );
+        assert!(!agg_arg_col_valid_for_branch("t.nonexistent", &cols));
+
+        // A bare (alias-less) physical column always uses the flat union.
+        assert!(agg_arg_col_valid_for_branch("city", &cols));
+        assert!(!agg_arg_col_valid_for_branch("nonexistent", &cols));
     }
 
     /// #547: `add_order_by_columns_to_select` must recurse into a nested

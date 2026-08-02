@@ -138,10 +138,17 @@ Exit met: one fully green nightly run + xpass count 0.
   pre-existing on main, byte-identical, untouched by #839).
 
 ### P-1 — Keep a small silent-wrong bug lane open  (standing, ≤1 agent)
-**Lane state (2026-08-01): #788 shipped — was mis-triaged as design-cycle but is
-the same small #503-family `__order_col_N` asymmetry.** Since
-the 07-19 reconcile this lane shipped ~22 fixes (all live- or SQL-gen-verified,
-newest first): **#788 (multi-type VLP aggregate ORDER-BY-on-endpoint →
+**Lane state (2026-08-01): #581 shipped — agg-arg NULL-padding validity now
+alias-qualified (was matching by bare physical column name, a latent
+name-coincidence false-positive).** Since
+the 07-19 reconcile this lane shipped ~23 fixes (all live- or SQL-gen-verified,
+newest first): **#581 (agg-arg NULL-padding validity check matched columns by
+unqualified name — a node column sharing a name with an unrelated branch table's
+column was deemed valid on every branch; `table_valid_columns` now also keys
+columns by render alias and `agg_arg_col_valid_for_branch` checks the
+alias-qualified set with a flat-union fallback, so the check can only tighten a
+false positive, never introduce a false-negative; 0 corpus churn)**,
+**#788 (multi-type VLP aggregate ORDER-BY-on-endpoint →
 `__order_col_0` Code 47: `build_outer_aggregate_select`'s expr→alias rewrite map
 now excludes `__order_col_*` items exactly as `build_aliased_group_by` already
 does — the injected ORDER BY helper column could otherwise hijack an aggregate
