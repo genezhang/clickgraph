@@ -475,6 +475,30 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **P-1 — #844 undirected-union buried grouping key loses per-arm
+  origin/dest flip** (branch `fix/844-buried-union-groupby-key`, closes #844).
+  Follow-up to #637. A grouping key BURIED inside an aggregate-bearing RETURN
+  item on an undirected (bidirectional-union) denorm match — e.g.
+  `RETURN a.code + toString(count(r))` — silently under-counted: both UNION arms
+  baked the origin column instead of arm0=origin / arm1=dest, so destination
+  appearances were never grouped. **Root cause was NOT the filed location**
+  (`return_clause.rs build_union_with_aggregation`, which this shape never
+  reaches). The key is globally property-mapped to one physical column
+  (`r.origin_code`) at `group_by_builder.rs:169` BEFORE the union split; the
+  bare-key path recovers the flip via its standalone non-agg SELECT item, but the
+  buried key is filtered out of per-branch projection (`to_sql_query.rs:3744`) and
+  re-emitted identically in both arms. Fix: `build_branch_inner_select_with_own_items`
+  computes a per-arm key-column override by structural correspondence
+  (`corresponding_branch_subexpr`) between the outer/global item tree and the
+  branch's own item tree, applied as a value-only substitution in
+  `build_union_inner_select`'s grouping-key emission. Gated by 5 stacked
+  conditions → empty (no-op) for the bare-key path, directed/non-union,
+  non-denorm schemas, and arm0. corpus_sweep + sql_golden 0-churn; ratchet
+  net-zero; new fail-when-reverted golden (buried + bare-key byte-lock guard) +
+  unit test for the correspondence helper. SQL-shape-verified (no live CH).
+  **Follow-up #876**: expression-WRAPPED buried keys (`toUpper(a.code)`,
+  `coalesce(a.code,'x')`, CASE) still drop the flip (gate excludes non-bare keys)
+  — pre-existing, filed separately.
 - 2026-08-02: **P-1 — literal `?` in a string broke remote execution** (PR #874,
   branch `fix/872-question-mark-escape`, closes #872). Any Cypher query whose
   rendered SQL contained a literal `?` — a string literal like `'why?'`, a regex

@@ -1053,6 +1053,23 @@ const DENORM_CORPUS: &[(&str, &str)] = &[
         "undirected_hop",
         "MATCH (a:Airport)-[:FLIGHT]-(b:Airport) RETURN a.code, b.code",
     ),
+    // #844: a grouping key BURIED inside an aggregate-bearing RETURN item on an
+    // undirected (bidirectional-union) match. `a.code` must flip per arm
+    // (origin on the outgoing arm, dest on the incoming arm) exactly like the
+    // bare-key sibling below — regression: both arms used to bake the origin
+    // column, silently under-counting. The two arms must read
+    // `r.origin_code AS "r.origin_code"` and `r.dest_code AS "r.origin_code"`.
+    (
+        "undirected_buried_agg_key_844",
+        "MATCH (a:Airport)-[r:FLIGHT]-(b:Airport) RETURN a.code + toString(count(r)) AS m",
+    ),
+    // #844 byte-lock guard: the bare-key form (grouping key as its own SELECT
+    // item) was ALWAYS correct and must stay byte-identical — the fix is scoped
+    // to the buried-key shape only.
+    (
+        "undirected_bare_agg_key_844",
+        "MATCH (a:Airport)-[r:FLIGHT]-(b:Airport) RETURN a.code, count(r)",
+    ),
     // Undirected 2-hop (#492): must UNION all four direction assignments
     // (2 per undirected hop) with a relationship-uniqueness guard per branch,
     // NOT collapse to a single directed join chain.

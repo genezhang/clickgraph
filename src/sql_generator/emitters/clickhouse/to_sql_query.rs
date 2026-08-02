@@ -3785,6 +3785,7 @@ fn build_union_inner_select(
     drop_path_metadata: bool,
     valid_columns_for_branch: Option<&BranchColumns>,
     extra_required_exprs: &[RenderExpr],
+    key_branch_overrides: Option<&std::collections::HashMap<String, String>>,
 ) -> (String, Vec<String>) {
     let non_agg_items: Vec<&SelectItem> = select
         .items
@@ -3908,6 +3909,17 @@ fn build_union_inner_select(
         let (alias_part, property_part) = split_agg_arg_col(col_sql);
         let expr_sql = if !branch_has_column {
             "NULL".to_string()
+        } else if let Some(ov) = key_branch_overrides.and_then(|m| m.get(col_sql)) {
+            // #844: this grouping key is buried inside an aggregate-bearing RETURN
+            // item on a bidirectional-union arm, so it has no standalone non-agg
+            // SELECT item to export the per-arm column. The caller resolved this
+            // arm's actual column (e.g. `r.dest_code` on the incoming arm vs the
+            // globally-mapped `r.origin_code`) — emit it under the key's alias so
+            // the two arms unify correctly and the outer GROUP BY groups the right
+            // per-arm value. Only present for the arm(s) whose column differs from
+            // the key (see `build_branch_inner_select_with_own_items`); absent
+            // everywhere else, so this branch never fires for any other shape.
+            ov.clone()
         } else if !alias_part.is_empty() {
             non_agg_items
                 .iter()
@@ -3968,7 +3980,92 @@ fn collect_property_access_sql(expr: &RenderExpr, out: &mut Vec<String>) {
     }
 }
 
-/// Build the outer SELECT for UNION with aggregation.
+/// #844: given two structurally-identical `RenderExpr` trees that differ only at
+/// denorm-mapped column leaves — the OUTER/global projection item and ONE
+/// bidirectional-union arm's OWN projection item for the same output alias — find
+/// the sub-expression in `outer` whose rendered SQL equals `key_sql` (a GROUP BY
+/// grouping key) and return the `branch` sub-expression at the SAME structural
+/// position.
+///
+/// Motivation: an undirected `(a)-[r]-(b)` split yields two arms where `a`'s
+/// denormalized column flips (origin in arm0, dest in arm1). When a grouping key
+/// like `a.code` is buried INSIDE an aggregate-bearing RETURN item
+/// (`a.code + toString(count(r))`), the key is globally property-mapped to a
+/// single physical column (`r.origin_code`) before the split, so both arms would
+/// otherwise export that same column and the per-arm flip is lost. The two arms'
+/// item trees are identical except at the flipped column leaf, so the branch's
+/// correct per-arm column sits at the exact position where the outer tree holds
+/// the key — this returns it.
+///
+/// Returns `None` on ANY shape divergence between the trees (different variant,
+/// operator, function name, or child count). That makes the caller strictly
+/// additive: it can only ever discover a correct per-arm override, never corrupt
+/// a mismatched pair.
+fn corresponding_branch_subexpr<'b>(
+    outer: &RenderExpr,
+    branch: &'b RenderExpr,
+    key_sql: &str,
+) -> Option<&'b RenderExpr> {
+    // Positional match: the outer sub-expression that IS the grouping key.
+    if outer.to_sql() == key_sql {
+        return Some(branch);
+    }
+    // Otherwise recurse only where BOTH trees pair up structurally.
+    match (outer, branch) {
+        (RenderExpr::OperatorApplicationExp(o), RenderExpr::OperatorApplicationExp(b))
+            if o.operator == b.operator && o.operands.len() == b.operands.len() =>
+        {
+            o.operands
+                .iter()
+                .zip(b.operands.iter())
+                .find_map(|(oo, bo)| corresponding_branch_subexpr(oo, bo, key_sql))
+        }
+        (RenderExpr::ScalarFnCall(o), RenderExpr::ScalarFnCall(b))
+            if o.name == b.name && o.args.len() == b.args.len() =>
+        {
+            o.args
+                .iter()
+                .zip(b.args.iter())
+                .find_map(|(oa, ba)| corresponding_branch_subexpr(oa, ba, key_sql))
+        }
+        (RenderExpr::AggregateFnCall(o), RenderExpr::AggregateFnCall(b))
+            if o.name == b.name && o.args.len() == b.args.len() =>
+        {
+            o.args
+                .iter()
+                .zip(b.args.iter())
+                .find_map(|(oa, ba)| corresponding_branch_subexpr(oa, ba, key_sql))
+        }
+        (RenderExpr::Case(o), RenderExpr::Case(b))
+            if o.when_then.len() == b.when_then.len()
+                && o.expr.is_some() == b.expr.is_some()
+                && o.else_expr.is_some() == b.else_expr.is_some() =>
+        {
+            // scrutinee, then each (when, then), then else — first match wins.
+            o.expr
+                .as_deref()
+                .zip(b.expr.as_deref())
+                .and_then(|(oe, be)| corresponding_branch_subexpr(oe, be, key_sql))
+                .or_else(|| {
+                    o.when_then
+                        .iter()
+                        .zip(b.when_then.iter())
+                        .find_map(|((ow, ot), (bw, bt))| {
+                            corresponding_branch_subexpr(ow, bw, key_sql)
+                                .or_else(|| corresponding_branch_subexpr(ot, bt, key_sql))
+                        })
+                })
+                .or_else(|| {
+                    o.else_expr
+                        .as_deref()
+                        .zip(b.else_expr.as_deref())
+                        .and_then(|(oe, be)| corresponding_branch_subexpr(oe, be, key_sql))
+                })
+        }
+        _ => None,
+    }
+}
+
 ///
 /// Non-aggregate items reference their inner-branch alias via backticks.
 /// Aggregate items rewrite property-access arguments to backtick-escaped
@@ -4405,8 +4502,68 @@ fn build_branch_inner_select_with_own_items(
             merged_select.items.push(outer_item.clone());
         }
     }
-    let (branch_inner, _) =
-        build_union_inner_select(&merged_select, drop_path_metadata, None, group_by_exprs);
+
+    // #844: for a bidirectional-union arm, a grouping key BURIED inside an
+    // aggregate-bearing RETURN item (e.g. `a.code + toString(count(r))`) has no
+    // standalone non-agg SELECT item to carry this arm's per-branch column. The
+    // key was globally property-mapped to one physical column (e.g. the origin
+    // column) before the union split, so without help both arms would export
+    // that same column and the per-arm origin/dest flip would be lost. Resolve,
+    // per key, THIS arm's actual column by structural correspondence between the
+    // outer (global) item tree and the branch's own item tree.
+    let mut key_branch_overrides: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for g in group_by_exprs {
+        // Only qualified column/property keys are exported into the inner SELECT
+        // (see `collect_property_access_sql`); bare keys aren't, so skip them.
+        if !matches!(g, RenderExpr::PropertyAccessExp(_) | RenderExpr::Column(_)) {
+            continue;
+        }
+        let g_sql = g.to_sql();
+        if !g_sql.contains('.') {
+            continue;
+        }
+        // If a standalone non-agg outer item already exports this key, the normal
+        // per-branch projection handles the flip (the bare-key path) — no override.
+        if outer_select.items.iter().any(|it| {
+            !render_expr_contains_aggregate(&it.expression) && it.expression.to_sql() == g_sql
+        }) {
+            continue;
+        }
+        // Buried key: find the aggregate-bearing outer item whose tree contains it,
+        // then the same-alias branch item, then this arm's corresponding column.
+        let Some(outer_item) = outer_select.items.iter().find(|it| {
+            render_expr_contains_aggregate(&it.expression)
+                && corresponding_branch_subexpr(&it.expression, &it.expression, &g_sql).is_some()
+        }) else {
+            continue;
+        };
+        let Some(branch_item) = branch_select
+            .items
+            .iter()
+            .find(|it| it.col_alias == outer_item.col_alias)
+        else {
+            continue;
+        };
+        if let Some(bcol) =
+            corresponding_branch_subexpr(&outer_item.expression, &branch_item.expression, &g_sql)
+        {
+            let bcol_sql = bcol.to_sql();
+            // Only record a real flip; when this arm's column already equals the
+            // key (arm0, or any non-denorm schema) the emission is unchanged.
+            if bcol_sql != g_sql {
+                key_branch_overrides.insert(g_sql, bcol_sql);
+            }
+        }
+    }
+
+    let (branch_inner, _) = build_union_inner_select(
+        &merged_select,
+        drop_path_metadata,
+        None,
+        group_by_exprs,
+        Some(&key_branch_overrides),
+    );
     branch_inner
 }
 
@@ -4431,8 +4588,13 @@ fn render_cypher_union_arm(arm: &RenderPlan) -> String {
             // Aggregate OVER the arm's internal union: outer aggregate SELECT
             // wrapping the de-aggregated inner branches.
             let drop_path_metadata = arm.group_by.0.is_empty();
-            let (inner_select_sql, agg_arg_cols) =
-                build_union_inner_select(&arm.select, drop_path_metadata, None, &arm.group_by.0);
+            let (inner_select_sql, agg_arg_cols) = build_union_inner_select(
+                &arm.select,
+                drop_path_metadata,
+                None,
+                &arm.group_by.0,
+                None,
+            );
             core.push_str("SELECT ");
             core.push_str(&build_outer_aggregate_select(
                 &arm.select,
@@ -5245,8 +5407,13 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
 
         // Pre-compute inner SELECT and aggregate arg columns for aggregation+UNION case
         let (inner_select_sql, agg_arg_cols) = if has_aggregation {
-            let (sql, cols) =
-                build_union_inner_select(&plan.select, drop_path_metadata, None, &plan.group_by.0);
+            let (sql, cols) = build_union_inner_select(
+                &plan.select,
+                drop_path_metadata,
+                None,
+                &plan.group_by.0,
+                None,
+            );
             (Some(sql), cols)
         } else {
             (None, vec![])
@@ -5497,6 +5664,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                                         drop_path_metadata,
                                         Some(&valid_cols),
                                         &plan.group_by.0,
+                                        None,
                                     );
                                     branch_sql.push_str(&branch_inner_sql);
                                 }
@@ -6266,6 +6434,7 @@ impl ToSql for Cte {
                                         drop_path_metadata,
                                         valid_cols.as_ref(),
                                         &plan.group_by.0,
+                                        None,
                                     )
                                     .0
                                 };
@@ -6274,6 +6443,7 @@ impl ToSql for Cte {
                                 drop_path_metadata,
                                 None,
                                 &plan.group_by.0,
+                                None,
                             );
                             let outer_select = build_outer_aggregate_select(
                                 &plan.select,
@@ -8487,6 +8657,71 @@ mod tests {
         // A bare (alias-less) physical column always uses the flat union.
         assert!(agg_arg_col_valid_for_branch("city", &cols));
         assert!(!agg_arg_col_valid_for_branch("nonexistent", &cols));
+    }
+
+    /// #844: `corresponding_branch_subexpr` finds the grouping-key position in the
+    /// OUTER item tree and returns the BRANCH tree's sub-expression at the SAME
+    /// position — the mechanism that recovers a bidirectional-union arm's per-arm
+    /// column (e.g. `r.dest_code`) for a key globally mapped to `r.origin_code`
+    /// buried inside an aggregate-bearing item.
+    #[test]
+    fn corresponding_branch_subexpr_finds_per_arm_column_844() {
+        use crate::query_planner::logical_expr::Operator;
+        use crate::render_plan::render_expr::{OperatorApplication, ScalarFnCall};
+
+        // outer:  r.origin_code + toString(count(...))   (global mapping)
+        // branch: r.dest_code   + toString(count(...))   (incoming arm)
+        // Only the first operand's column differs; the aggregate side is identical.
+        let raw = |s: &str| RenderExpr::Raw(s.to_string());
+        let agg_side = RenderExpr::ScalarFnCall(ScalarFnCall {
+            name: "toString".to_string(),
+            args: vec![raw("count(r.flight_id)")],
+        });
+        let outer = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![raw("r.origin_code"), agg_side.clone()],
+        });
+        let branch = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![raw("r.dest_code"), agg_side.clone()],
+        });
+
+        // Key `r.origin_code` (position 0 of outer) → branch's position-0 column.
+        let found = corresponding_branch_subexpr(&outer, &branch, "r.origin_code");
+        assert_eq!(
+            found.map(|e| e.to_sql()),
+            Some("r.dest_code".to_string()),
+            "#844: must return the branch's per-arm column at the key's position"
+        );
+
+        // A key that appears in neither tree yields nothing (no false override).
+        assert!(
+            corresponding_branch_subexpr(&outer, &branch, "r.nonexistent").is_none(),
+            "#844: a key absent from the tree must not match"
+        );
+
+        // Shape divergence (different operator) → None, so the caller stays
+        // strictly additive and never emits a bogus override.
+        let branch_diff_shape = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Multiplication,
+            operands: vec![raw("r.dest_code"), agg_side.clone()],
+        });
+        assert!(
+            corresponding_branch_subexpr(&outer, &branch_diff_shape, "r.origin_code").is_none(),
+            "#844: mismatched operator must abort the correspondence walk"
+        );
+
+        // Identity case (non-denorm / arm0): branch column == key. The helper
+        // still returns it; the caller elides the override when it equals the key.
+        let branch_same = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![raw("r.origin_code"), agg_side],
+        });
+        assert_eq!(
+            corresponding_branch_subexpr(&outer, &branch_same, "r.origin_code").map(|e| e.to_sql()),
+            Some("r.origin_code".to_string()),
+            "#844: identity arm returns the same column (caller then adds no override)"
+        );
     }
 
     /// #547: `add_order_by_columns_to_select` must recurse into a nested
