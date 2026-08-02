@@ -1119,66 +1119,18 @@ impl<'a> VariableLengthCteGenerator<'a> {
         col
     }
 
-    /// Build edge tuple expression for the base case (first hop)
-    /// Returns SQL expression like: `tuple(rel.from_id, rel.to_id)` or `tuple(rel.date, rel.num, ...)`
-    fn build_edge_tuple_base(&self) -> String {
-        match &self.edge_id {
-            Some(Identifier::Single(col)) => {
-                // Single column edge ID: just use that column
-                format!(
-                    "{}.{}",
-                    self.relationship_alias,
-                    self.edge_identity_column(col)
-                )
-            }
-            Some(Identifier::Composite(cols)) => {
-                // Multi-column composite key: build tuple
-                let tuple_elements: Vec<String> = cols
-                    .iter()
-                    .map(|col| {
-                        format!(
-                            "{}.{}",
-                            self.relationship_alias,
-                            self.edge_identity_column(col)
-                        )
-                    })
-                    .collect();
-                format!(
-                    "{}({})",
-                    crate::sql_generator::function_mapper::current_function_mapper()
-                        .tuple_constructor(),
-                    tuple_elements.join(", ")
-                )
-            }
-            None => {
-                // Default: use (from_id, to_id) as edge identity.
-                // #617 doubled-edge walk: from/to are SWAPPED in reverse-orientation
-                // rows, so identity must come from the original-orientation columns —
-                // otherwise the same physical edge traversed the other way would look
-                // like a different relationship and trail-uniqueness would not hold.
-                let (from_c, to_c) = if self.uses_doubled_edges() {
-                    (DOUBLED_EDGES_ORIG_FROM, DOUBLED_EDGES_ORIG_TO)
-                } else {
-                    (
-                        self.relationship_from_column.as_str(),
-                        self.relationship_to_column.as_str(),
-                    )
-                };
-                format!(
-                    "{}({}.{}, {}.{})",
-                    crate::sql_generator::function_mapper::current_function_mapper()
-                        .tuple_constructor(),
-                    self.relationship_alias,
-                    from_c,
-                    self.relationship_alias,
-                    to_c
-                )
-            }
-        }
-    }
-
-    /// Build edge tuple expression for recursive case
-    /// Returns SQL expression like: `tuple(r.from_id, r.to_id)` or `tuple(r.date, r.num, ...)`
+    /// Build the edge-identity tuple for one hop, reading the edge columns off
+    /// `rel_alias`. Used by both the base case (`rel_alias` =
+    /// `self.relationship_alias`) and the recursive case.
+    ///
+    /// Returns SQL like `tuple(r.from_id, r.to_id)` or `tuple(r.date, r.num, …)`.
+    /// Shape depends on `self.edge_id`: a `Single` column emits a bare
+    /// `rel.col`; a `Composite` key builds a `tuple(...)`; `None` defaults to the
+    /// `(from, to)` node pair. #617 doubled-edge walk: from/to are SWAPPED in
+    /// reverse-orientation rows, so the `None` identity comes from the
+    /// original-orientation columns — otherwise the same physical edge traversed
+    /// the other way would look like a different relationship and
+    /// trail-uniqueness would not hold.
     fn build_edge_tuple_recursive(&self, rel_alias: &str) -> String {
         match &self.edge_id {
             Some(Identifier::Single(col)) => {
@@ -1198,7 +1150,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             }
             None => {
                 // #617: original-orientation identity on the doubled-edge walk
-                // (see build_edge_tuple_base).
+                // (see this fn's doc comment).
                 let (from_c, to_c) = if self.uses_doubled_edges() {
                     (DOUBLED_EDGES_ORIG_FROM, DOUBLED_EDGES_ORIG_TO)
                 } else {
@@ -2444,7 +2396,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             if self.uses_edge_uniqueness() {
                 select_items.push(format!(
                     "{} as path_edges",
-                    arr(&self.build_edge_tuple_base())
+                    arr(&self.build_edge_tuple_recursive(&self.relationship_alias))
                 ));
             }
 

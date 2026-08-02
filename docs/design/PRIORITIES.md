@@ -466,7 +466,7 @@ fixed stats fixture.
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
-- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 DONE #890)
+- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slice 1 #893)
   (`docs/design/VLP_EDGE_IDENTITY_UNIFICATION.md`). Bug-driven refactor of the
   VLP relationship-uniqueness axis: one canonical `EdgeUniquenessPolicy`
   (`PatternSchemaContext`-derived, rule-#7 clean) replaces ~14 inline sites / 3
@@ -490,6 +490,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+<<<<<<< HEAD
 - 2026-08-02: **P-1 — temporal component access / duration arithmetic on a native
   Date column threw CH Code 43** (branch `fix/854-temporal-date-epoch-wrap`,
   closes #854). PR3 (final) of the operand-typing design cycle. `year(x)`/`month(x)`
@@ -514,18 +515,30 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   name through `property_mappings` (the mapped DB column arrives here, e.g.
   `p.date`→`post_date`, not the Cypher name), trying direct then reverse lookup.
   6 existing interval goldens improved (were the Code-43 epoch-wrap-on-Date shape,
-  now direct date arithmetic — the #854 bug surfacing in the corpus); 6 new
+  now direct date arithmetic — the #854 bug surfacing in the corpus); 7 new
   fail-when-reverted #854 goldens (Date column/reverse-mapped/date-literal
-  component access, datetime baseline, + epoch-column negative controls that KEEP
-  the wrap on both component access AND interval arithmetic). corpus_sweep 0-churn;
-  ratchet net-zero; full gate green. DDL-coupling note: declaring the Date type
-  flips the generated benchmark DDL (String→Date32), but `load_schema_sources` is
-  reached only at server chdb-ingest init (never in tests), so no test reloads it;
-  translation surface unaffected. SQL-shape-verified (no live CH). **Completes the
-  #871→#880→#854 arc** — one shared render-site type classifier
-  (`type_inference.rs`) now backs string-concat, OrNull-cast, and temporal-wrap
-  decisions, consumed by both the projection (`to_sql_query.rs`) and VLP-filter
-  (`cte_extraction.rs`) renderers.
+  component access, datetime baseline, datetime+duration, + epoch-column negative
+  controls that KEEP the wrap on both component access AND interval arithmetic).
+  corpus_sweep 0-churn; ratchet net-zero; full gate green. DDL note: the declared
+  types match the real physical benchmark columns (`create_writable_tables` in
+  clickgraph-embedded IS a live `property_types` consumer, so the declaration must
+  be accurate); the translation goldens are unaffected regardless (only the
+  classifier reads `property_types` at render). Adversarial review verdict
+  fix-then-ship (Post.date accuracy: date→datetime); applied. SQL-shape-verified
+  (no live CH). **Completes the #871→#880→#854 arc** — one shared render-site type
+  classifier (`type_inference.rs`) now backs string-concat, OrNull-cast, and
+  temporal-wrap decisions, consumed by both the projection (`to_sql_query.rs`) and
+  VLP-filter (`cte_extraction.rs`) renderers.
+- 2026-08-02: **#887 Phase 1 slice 1 — merge duplicate edge-tuple builders**
+  (branch `refactor/vlp-phase1-edge-tuple-dedup`, #893 / `3dee12a6`). Next slice
+  of the VLP unification after Phase 0 (#890). `build_edge_tuple_base` was
+  token-identical to `build_edge_tuple_recursive(&self.relationship_alias)` (the
+  base hard-coded the alias both recursive callers already pass), so merging them
+  is byte-identical by substitution — verified arm-by-arm (Single/Composite/None
+  incl. #617 doubled-edge) and against 374 `path_edges` goldens. Deleted the base
+  builder, redirected its sole caller. 6 edge-identity spellings → 5.
+  `corpus_sweep` byte-identical (0 golden churn), single-file −48 lines, review
+  APPROVE-0.
 - 2026-08-02: **P-1 — `toInteger`/`toFloat` on an unparseable string threw CH
   Code 6 instead of returning null** (branch `fix/880-tointeger-tofloat-ornull`,
   closes #880). PR2 of the operand-typing design cycle (built on PR1's #889
