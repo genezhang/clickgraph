@@ -1317,7 +1317,67 @@ impl ProjectionTagging {
                     };
 
                     if let Some(t_alias) = table_alias_opt {
+                        // #910: a scalar-valued aggregate argument — a WITH-scalar
+                        // alias (`WITH u.age AS a`), UNWIND element, or parameter —
+                        // is NOT a graph entity, so the per-label node/rel id-column
+                        // rewrite below does not apply. It must instead reference the
+                        // scalar CTE column directly (`ColumnAlias(a)` → `a.a`).
+                        // Leaving it as a bare `TableAlias(a)` makes the downstream
+                        // PropertyRequirements analyzer `require_all(a)` (meaningless
+                        // for a scalar, registers no concrete column), so the CTE
+                        // pruner strips the `u.age AS a` column → `SELECT *` and the
+                        // outer `<agg>(a.a)` references a column the CTE never exports
+                        // (Code 47). #903 fixed this for `count` only, inside the
+                        // count-specific block below; this hoists the SAME scalar
+                        // rewrite to ALL aggregates (sum/avg/min/max/collect/…).
+                        //
+                        // Two scalar shapes: (i) the analyzer typed the alias as a
+                        // scalar variable (`is_scalar()` — literals, UNWIND elements),
+                        // and (ii) a WITH property projection (`u.age AS a`) that types
+                        // as a Node (inheriting u's label) but whose underlying
+                        // projection expression is NOT a bare TableAlias rename — a
+                        // scalar in every meaningful sense (see #903). Both must
+                        // reference the CTE column, not the node-id form.
+                        let is_scalar_alias = plan_ctx
+                            .lookup_variable(t_alias)
+                            .is_some_and(|v| v.is_scalar())
+                            || (plan_ctx.is_projection_alias(t_alias)
+                                && plan_ctx.get_projection_alias_expr(t_alias).is_some_and(
+                                    |underlying| !matches!(underlying, LogicalExpr::TableAlias(_)),
+                                ));
+                        if is_scalar_alias {
+                            let col = LogicalExpr::ColumnAlias(
+                                crate::query_planner::logical_expr::ColumnAlias(
+                                    t_alias.to_string(),
+                                ),
+                            );
+                            let new_arg = if is_distinct {
+                                LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                                    operator: Operator::Distinct,
+                                    operands: vec![col],
+                                })
+                            } else {
+                                col
+                            };
+                            item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                name: aggregate_fn_call.name.clone(),
+                                args: vec![new_arg],
+                            });
+                            return Ok(());
+                        }
+
                         if aggregate_fn_call.name.to_lowercase() == "count" {
+                            // NOTE (#910): the two scalar-alias sub-branches inside
+                            // this count block (the `is_scalar()` branch just below and
+                            // the `_ =>` projection-alias-with-scalar-underlying branch
+                            // from #903) are now SUPERSEDED by the aggregate-agnostic
+                            // `is_scalar_alias` rewrite hoisted above — which returns
+                            // early for every scalar arg, count included. They are kept
+                            // (unreachable-but-harmless) rather than deleted because
+                            // removing the `_ =>` arm would make the `match
+                            // underlying_expr` below non-exhaustive; the remaining
+                            // count-only logic here handles genuine graph-entity args
+                            // (node id-column / rel edge-id resolution).
                             // A scalar variable (UNWIND element, WITH-scalar alias,
                             // or parameter) is NOT a graph entity: it has no label or
                             // id column, so the per-label node/rel id-column rewrite
