@@ -551,6 +551,23 @@ fn render_interval_arithmetic(op: &OperatorApplication, rendered: &[String]) -> 
 /// for non-constant lists (those are expanded to OR/AND by the caller first).
 /// `rendered[0]` is the path-rendered LHS; list items are constants so they
 /// render identically regardless of aliasing.
+///
+/// Does the RHS of an `IN`/`NOT IN` contain an explicit `null` list element?
+/// openCypher's `IN` is three-valued: when the probe matches no non-null
+/// element AND the list holds an unknown (null), the result is `null`, not
+/// `false` (`3 IN [1,2,null]` → null; `3 NOT IN [1,null]` → null). ClickHouse's
+/// `x IN (…)` / `x IN [array]` treat a null element as a plain non-match (→ 0),
+/// losing that. When this returns true the caller routes the predicate through
+/// the OR/AND element-wise expansion instead, where a `x = null` / `x <> null`
+/// term propagates the null exactly per three-valued logic (verified on CH).
+/// A null-free list is unaffected (keeps the byte-stable `IN` form).
+fn in_list_has_null_literal(op: &OperatorApplication) -> bool {
+    matches!(op.operator, Operator::In | Operator::NotIn)
+        && matches!(&op.operands.get(1),
+            Some(RenderExpr::List(items))
+                if items.iter().any(|i| matches!(i, RenderExpr::Literal(Literal::Null))))
+}
+
 fn render_constant_in_list(op: &OperatorApplication, rendered: &[String]) -> Option<String> {
     use crate::server::query_context::get_current_dialect;
     use crate::sql_generator::SqlDialect;
@@ -7619,7 +7636,11 @@ impl RenderExpr {
                         let has_non_constant = list_items.iter().any(|item| {
                             !matches!(item, RenderExpr::Literal(_) | RenderExpr::Parameter(_))
                         });
-                        if has_non_constant {
+                        // A null element forces the element-wise OR/AND expansion
+                        // so three-valued IN/NOT IN semantics hold (#855): a
+                        // `x = null` / `x <> null` term propagates the unknown,
+                        // whereas CH `IN (…)` collapses it to a non-match.
+                        if has_non_constant || in_list_has_null_literal(op) {
                             let lhs = &rendered[0];
                             let item_sqls: Vec<String> =
                                 list_items.iter().map(|item| item.to_sql()).collect();
@@ -8112,7 +8133,11 @@ impl RenderExpr {
                         let has_non_constant = list_items.iter().any(|item| {
                             !matches!(item, RenderExpr::Literal(_) | RenderExpr::Parameter(_))
                         });
-                        if has_non_constant {
+                        // A null element forces the element-wise OR/AND expansion
+                        // so three-valued IN/NOT IN semantics hold (#855): a
+                        // `x = null` / `x <> null` term propagates the unknown,
+                        // whereas CH `IN (…)` collapses it to a non-match.
+                        if has_non_constant || in_list_has_null_literal(op) {
                             let lhs = &rendered[0];
                             let item_sqls: Vec<String> =
                                 list_items.iter().map(|item| item.to_sql()).collect();
@@ -8460,7 +8485,9 @@ impl ToSql for OperatorApplication {
                 let has_non_constant = list_items
                     .iter()
                     .any(|item| !matches!(item, RenderExpr::Literal(_) | RenderExpr::Parameter(_)));
-                if has_non_constant {
+                // A null element forces the element-wise OR/AND expansion so
+                // three-valued IN/NOT IN semantics hold (#855).
+                if has_non_constant || in_list_has_null_literal(self) {
                     let lhs = &rendered[0];
                     let item_sqls: Vec<String> =
                         list_items.iter().map(|item| item.to_sql()).collect();
@@ -9094,6 +9121,63 @@ mod tests {
             },
         )
         .await;
+    }
+
+    // ---- #855: three-valued IN / NOT IN when the list holds an explicit null ----
+
+    /// `x IN [1, 2, null]` must NOT render the plain `IN` form (CH collapses a
+    /// null element to a non-match → `false`, but openCypher wants `null` when
+    /// no non-null element matches). It expands element-wise so the `x = NULL`
+    /// term propagates the unknown.
+    #[test]
+    fn test_in_list_with_null_literal_expands_to_or_for_three_valued_logic() {
+        let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::In,
+            operands: vec![
+                RenderExpr::Literal(Literal::Integer(3)),
+                RenderExpr::List(vec![
+                    RenderExpr::Literal(Literal::Integer(1)),
+                    RenderExpr::Literal(Literal::Integer(2)),
+                    RenderExpr::Literal(Literal::Null),
+                ]),
+            ],
+        });
+        assert_eq!(expr.to_sql(), "(3 = 1 OR 3 = 2 OR 3 = NULL)");
+    }
+
+    /// `x NOT IN [1, null]` expands to an AND chain including `x <> NULL`, which
+    /// yields null (not `true`) when the probe matches no non-null element.
+    #[test]
+    fn test_not_in_list_with_null_literal_expands_to_and_for_three_valued_logic() {
+        let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::NotIn,
+            operands: vec![
+                RenderExpr::Literal(Literal::Integer(3)),
+                RenderExpr::List(vec![
+                    RenderExpr::Literal(Literal::Integer(1)),
+                    RenderExpr::Literal(Literal::Null),
+                ]),
+            ],
+        });
+        assert_eq!(expr.to_sql(), "(3 <> 1 AND 3 <> NULL)");
+    }
+
+    /// A null-free constant list keeps the byte-stable `IN [array]` form — the
+    /// fix must not churn the common case (this is what keeps existing goldens
+    /// unchanged).
+    #[test]
+    fn test_in_list_without_null_keeps_plain_in_form() {
+        let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::In,
+            operands: vec![
+                RenderExpr::Literal(Literal::Integer(3)),
+                RenderExpr::List(vec![
+                    RenderExpr::Literal(Literal::Integer(1)),
+                    RenderExpr::Literal(Literal::Integer(2)),
+                ]),
+            ],
+        });
+        assert_eq!(expr.to_sql(), "3 IN [1, 2]");
     }
 
     // ---- WHERE alias inlining for Spark/Databricks (LDBC Q10) ----

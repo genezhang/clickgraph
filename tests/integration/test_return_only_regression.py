@@ -155,3 +155,64 @@ class TestQuestionMarkInStringLiterals:
         result = execute_cypher("RETURN 'no marks here' AS s", schema_name="social_integration")
         assert_query_success(result)
         assert result["results"][0]["s"] == "no marks here"
+
+
+class TestInListThreeValuedLogic:
+    """Regression tests for #855 — openCypher three-valued IN / NOT IN.
+
+    When an `IN` / `NOT IN` list contains an explicit `null` and the probe
+    matches none of the non-null elements, the result is `null` (unknown), not
+    `false` / `true`. ClickHouse's `x IN (…)` treats a null element as a plain
+    non-match, so the null-bearing list is expanded element-wise
+    (`x = a OR x = b OR x = NULL`) where the `x = NULL` term propagates the
+    unknown. Null-free lists are unaffected.
+    """
+
+    def test_in_list_null_no_match_is_null(self, simple_graph):
+        """3 IN [1, 2, null] -> null (no non-null match, list has a null)."""
+        result = execute_cypher(
+            "RETURN 3 IN [1, 2, null] AS x", schema_name="social_integration"
+        )
+        assert_query_success(result)
+        assert result["results"][0]["x"] is None
+
+    def test_not_in_list_null_no_match_is_null(self, simple_graph):
+        """3 NOT IN [1, null] -> null."""
+        result = execute_cypher(
+            "RETURN 3 NOT IN [1, null] AS x", schema_name="social_integration"
+        )
+        assert_query_success(result)
+        assert result["results"][0]["x"] is None
+
+    def test_in_list_null_with_match_is_true(self, simple_graph):
+        """1 IN [1, null] -> true (matches a non-null element)."""
+        result = execute_cypher(
+            "RETURN 1 IN [1, null] AS x", schema_name="social_integration"
+        )
+        assert_query_success(result)
+        assert result["results"][0]["x"] in (True, 1)
+
+    def test_not_in_list_null_with_match_is_false(self, simple_graph):
+        """1 NOT IN [1, null] -> false (a non-null element matches)."""
+        result = execute_cypher(
+            "RETURN 1 NOT IN [1, null] AS x", schema_name="social_integration"
+        )
+        assert_query_success(result)
+        assert result["results"][0]["x"] in (False, 0)
+
+    def test_in_list_no_null_no_match_is_false(self, simple_graph):
+        """3 IN [1, 2] -> false (null-free list, unchanged behavior)."""
+        result = execute_cypher(
+            "RETURN 3 IN [1, 2] AS x", schema_name="social_integration"
+        )
+        assert_query_success(result)
+        assert result["results"][0]["x"] in (False, 0)
+
+    def test_in_list_no_null_with_match_is_true(self, simple_graph):
+        """1 IN [1, 2] -> true (null-free control)."""
+        result = execute_cypher(
+            "RETURN 1 IN [1, 2] AS x", schema_name="social_integration"
+        )
+        assert_query_success(result)
+        assert result["results"][0]["x"] in (True, 1)
+

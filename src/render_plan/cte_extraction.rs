@@ -1683,6 +1683,26 @@ fn render_in_list_rhs(
         .iter()
         .map(|item| render_expr_to_sql_string(item, alias_mapping))
         .collect();
+    // An explicit null element in the list requires three-valued IN/NOT IN
+    // semantics (#855): `x IN [1,2,null]` with no non-null match is null, not
+    // false. The `IN (…)` value-list collapses that to a non-match, so expand
+    // to element-wise OR/AND where a `x = null` / `x <> null` term propagates
+    // the unknown. A null-free list keeps the byte-stable value-list form.
+    let has_null = items
+        .iter()
+        .any(|i| matches!(i, RenderExpr::Literal(super::render_expr::Literal::Null)));
+    if has_null && !item_sqls.is_empty() {
+        let (cmp, joiner) = if negate {
+            ("<>", " AND ")
+        } else {
+            ("=", " OR ")
+        };
+        let clauses: Vec<String> = item_sqls
+            .iter()
+            .map(|rhs| format!("{} {} {}", lhs_sql, cmp, rhs))
+            .collect();
+        return Some(format!("({})", clauses.join(joiner)));
+    }
     Some(
         crate::sql_generator::function_mapper::current_function_mapper()
             .in_list_predicate(lhs_sql, &item_sqls, negate),
@@ -8436,6 +8456,36 @@ mod tests {
     use super::*;
     use crate::query_planner::logical_expr::{Literal, LogicalExpr};
     use std::sync::Arc;
+
+    #[test]
+    fn render_in_list_rhs_with_null_expands_for_three_valued_logic_855() {
+        use crate::render_plan::render_expr::Literal as RLit;
+        // `x IN [1, 2, null]` on the CTE-body path must expand element-wise so
+        // three-valued IN holds (#855): a plain `x IN (…)` value-list would
+        // collapse the null to a non-match. `x` here is a pre-rendered LHS.
+        let list = RenderExpr::List(vec![
+            RenderExpr::Literal(RLit::Integer(1)),
+            RenderExpr::Literal(RLit::Integer(2)),
+            RenderExpr::Literal(RLit::Null),
+        ]);
+        assert_eq!(
+            render_in_list_rhs(&list, "x", false, &[]).unwrap(),
+            "(x = 1 OR x = 2 OR x = NULL)"
+        );
+        assert_eq!(
+            render_in_list_rhs(&list, "x", true, &[]).unwrap(),
+            "(x <> 1 AND x <> 2 AND x <> NULL)"
+        );
+        // A null-free list keeps the byte-stable value-list form (0 churn).
+        let nn = RenderExpr::List(vec![
+            RenderExpr::Literal(RLit::Integer(1)),
+            RenderExpr::Literal(RLit::Integer(2)),
+        ]);
+        assert_eq!(
+            render_in_list_rhs(&nn, "x", false, &[]).unwrap(),
+            "x IN (1, 2)"
+        );
+    }
 
     #[test]
     fn rewrite_cte_name_structural_targets_refs_not_string_literals_618() {
