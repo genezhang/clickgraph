@@ -9,8 +9,8 @@ use crate::clickhouse_query_generator::variable_length_cte::{
     NodeProperty, VariableLengthCteGenerator,
 };
 use crate::graph_catalog::{
-    graph_schema::GraphSchema, EdgeAccessStrategy, JoinStrategy, NodeAccessStrategy,
-    PatternSchemaContext,
+    config::Identifier, graph_schema::GraphSchema, EdgeAccessStrategy, JoinStrategy,
+    NodeAccessStrategy, PatternSchemaContext,
 };
 use crate::query_planner::join_context::{
     VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
@@ -342,6 +342,14 @@ pub struct DenormalizedCteStrategy {
     from_col: String,
     to_col: String,
     schema: Arc<GraphSchema>,
+    /// Schema-declared composite edge identity (`edge_id:` in YAML), if any.
+    /// When present it uniquely distinguishes parallel edges that share the
+    /// same `(from, to)` node pair (e.g. two flights on the same route keyed by
+    /// `flight_id`); when `None` the edge identity degrades to the `(from, to)`
+    /// pair. Resolved once at construction from the relationship's schema so
+    /// [`Self::edge_tuple`] can spell the correct trail-uniqueness key (#710,
+    /// the denormalized counterpart of #806/#606's flat/recursive paths).
+    edge_id: Option<Identifier>,
 }
 
 // ===== DenormalizedCteStrategy =====
@@ -374,12 +382,30 @@ impl DenormalizedCteStrategy {
                 table: table.clone(),
                 from_col: Self::get_from_column(pattern_ctx)?,
                 to_col: Self::get_to_column(pattern_ctx)?,
+                edge_id: Self::resolve_edge_id(pattern_ctx, &schema),
                 schema,
             }),
             _ => Err(CteError::InvalidStrategy(
                 "DenormalizedCteStrategy requires JoinStrategy::SingleTableScan".into(),
             )),
         }
+    }
+
+    /// Resolve the relationship's schema-declared composite `edge_id`, if any,
+    /// from its first relationship type. Mirrors the emitter's resolution at
+    /// `cte_extraction.rs` (`schema.get_rel_schema(label).edge_id`), so the
+    /// denormalized path spells edge identity the same way the flat/recursive
+    /// paths do (#710/#806/#606). Returns `None` when there is no rel type or
+    /// the schema declares no `edge_id` — the historical `(from, to)` behavior.
+    fn resolve_edge_id(
+        pattern_ctx: &PatternSchemaContext,
+        schema: &GraphSchema,
+    ) -> Option<Identifier> {
+        pattern_ctx
+            .rel_types
+            .first()
+            .and_then(|label| schema.get_rel_schema(label).ok())
+            .and_then(|rel_schema| rel_schema.edge_id.clone())
     }
 
     fn get_from_column(pattern_ctx: &PatternSchemaContext) -> Result<String, CteError> {
@@ -418,23 +444,50 @@ impl DenormalizedCteStrategy {
     ///   cannot seed a 1-hop `path_edges` tuple; seeding it only in the
     ///   ordinary base would diverge from the zero-hop base's column shape.
     ///
-    /// A denormalized edge has no separate edge-id column, so its edge identity
-    /// is the `(from_col, to_col)` pair — see [`Self::edge_tuple`].
+    /// A denormalized edge's identity is its schema-declared `edge_id` when one
+    /// is present, else the `(from_col, to_col)` node pair — see
+    /// [`Self::edge_tuple`] (#710).
     fn uses_edge_uniqueness(&self, context: &CteGenerationContext) -> bool {
         context.shortest_path_mode.is_none() && context.spec.effective_min_hops() >= 1
     }
 
-    /// The `(from, to)` edge-identity tuple for one hop, read off `rel_alias`
-    /// (base case) or `next` (recursive case). Denormalized edges carry no
-    /// dedicated edge-id column, so the ordered endpoint pair uniquely
-    /// identifies the physical edge row for trail-uniqueness.
+    /// The edge-identity value for one hop, read off `rel_alias` (base case) or
+    /// `next` (recursive case), seeded into / matched against `path_edges` for
+    /// trail-uniqueness.
+    ///
+    /// When the relationship schema declares an `edge_id` (#710, the
+    /// denormalized counterpart of #806/#606), that column (or composite tuple)
+    /// IS the edge identity — this distinguishes parallel edges that share the
+    /// same `(from, to)` node pair (e.g. two flights on one route keyed by
+    /// `flight_id`), which the `(from, to)` pair alone would collapse into a
+    /// single edge and under-count. Spelled identically to the standard
+    /// emitter's [`VariableLengthCteGenerator::build_edge_tuple_recursive`]:
+    ///
+    /// - `Single(col)` → bare `rel_alias.col` (scalar element),
+    /// - `Composite(cols)` → `tuple(rel_alias.c1, rel_alias.c2, …)`,
+    /// - `None` → the historical `tuple(rel_alias.from, rel_alias.to)` pair
+    ///   (byte-identical to the pre-#710 behavior).
+    ///
+    /// A denormalized VLP is a single directional recursive self-join over the
+    /// edge table (no #617 doubled-edge CTE), so no from/to orientation swap is
+    /// needed — the identity columns are read verbatim.
     fn edge_tuple(&self, rel_alias: &str) -> String {
         let tuple_ctor =
             crate::sql_generator::function_mapper::current_function_mapper().tuple_constructor();
-        format!(
-            "{}({}.{}, {}.{})",
-            tuple_ctor, rel_alias, self.from_col, rel_alias, self.to_col
-        )
+        match &self.edge_id {
+            Some(Identifier::Single(col)) => format!("{}.{}", rel_alias, col),
+            Some(Identifier::Composite(cols)) => {
+                let elems: Vec<String> = cols
+                    .iter()
+                    .map(|col| format!("{}.{}", rel_alias, col))
+                    .collect();
+                format!("{}({})", tuple_ctor, elems.join(", "))
+            }
+            None => format!(
+                "{}({}.{}, {}.{})",
+                tuple_ctor, rel_alias, self.from_col, rel_alias, self.to_col
+            ),
+        }
     }
 
     pub fn generate_sql(
@@ -1444,6 +1497,7 @@ impl VariableLengthCteStrategy {
                 table: self.rel_table.clone(),
                 from_col: self.rel_from_col.clone(),
                 to_col: self.rel_to_col.clone(),
+                edge_id: DenormalizedCteStrategy::resolve_edge_id(&self.pattern_ctx, schema),
                 schema: Arc::new(schema.clone()),
             };
 
@@ -1758,6 +1812,108 @@ mod tests {
         assert!(
             !sql.contains("has(vp.path_edges"),
             "Databricks SQL leaked ClickHouse `has(...)` cycle check; got:\n{sql}"
+        );
+    }
+
+    /// Build a denormalized strategy with an explicit `edge_id`, bypassing the
+    /// schema round-trip so `edge_tuple`'s three arms can be exercised directly.
+    fn denorm_strategy_with_edge_id(edge_id: Option<Identifier>) -> DenormalizedCteStrategy {
+        let pattern_ctx = denormalized_flights_pattern_ctx();
+        let schema = Arc::new(GraphSchema::build(
+            1,
+            "test".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+        ));
+        DenormalizedCteStrategy {
+            pattern_ctx,
+            table: "flights".to_string(),
+            from_col: "Origin".to_string(),
+            to_col: "Dest".to_string(),
+            edge_id,
+            schema,
+        }
+    }
+
+    /// #710: a denormalized VLP's edge identity must consult the schema
+    /// `edge_id` so parallel edges sharing one `(from, to)` node pair are not
+    /// collapsed (silent under-count). `edge_tuple` mirrors the standard
+    /// emitter's `build_edge_tuple_recursive`:
+    ///   - `Composite` → `tuple(alias.c1, alias.c2, …)`,
+    ///   - `Single`    → bare scalar `alias.col`,
+    ///   - `None`      → the historical `(from, to)` pair (byte-identical).
+    #[test]
+    fn denorm_edge_tuple_uses_schema_edge_id_710() {
+        // Composite edge_id — the parallel-edge case (e.g. flight_id + number).
+        let composite = denorm_strategy_with_edge_id(Some(Identifier::Composite(vec![
+            "flight_id".to_string(),
+            "flight_number".to_string(),
+        ])));
+        assert_eq!(
+            composite.edge_tuple("next"),
+            "tuple(next.flight_id, next.flight_number)",
+            "composite edge_id must spell the full ordered tuple (#710)"
+        );
+
+        // Single-column edge_id — bare scalar element (matches the emitter's
+        // Single arm; `arr(...)` wraps it into a scalar `path_edges` array).
+        // Live-reachable via single-column denorm `edge_id` schemas such as
+        // `schemas/test/denorm_selfloop_multitype.yaml` (`edge_id: evt_id`),
+        // though no golden-corpus VLP currently exercises it.
+        let single = denorm_strategy_with_edge_id(Some(Identifier::Single("evt_id".to_string())));
+        assert_eq!(
+            single.edge_tuple("next"),
+            "next.evt_id",
+            "single-column edge_id must render as a bare scalar (#710)"
+        );
+
+        // No edge_id — byte-identical to the pre-#710 `(from, to)` behavior.
+        let none = denorm_strategy_with_edge_id(None);
+        assert_eq!(
+            none.edge_tuple("next"),
+            "tuple(next.Origin, next.Dest)",
+            "absent edge_id must preserve the historical node-pair identity"
+        );
+        // ...and on the base-case alias too.
+        assert_eq!(none.edge_tuple("f"), "tuple(f.Origin, f.Dest)");
+    }
+
+    /// #710: end-to-end — a composite `edge_id` must appear on ALL THREE
+    /// edge-identity sites of the generated recursive CTE (base seed, recursive
+    /// append, cycle check), and the collapsing `(Origin, Dest)` node pair must
+    /// be gone from `path_edges`.
+    #[test]
+    fn denorm_vlp_composite_edge_id_in_generated_sql_710() {
+        let composite =
+            Identifier::Composite(vec!["flight_id".to_string(), "flight_number".to_string()]);
+        let strategy = denorm_strategy_with_edge_id(Some(composite));
+        let context = CteGenerationContext::new().with_spec(VariableLengthSpec {
+            min_hops: Some(1),
+            max_hops: Some(3),
+        });
+        let sql = strategy
+            .generate_sql(&context, &[], &empty_filters())
+            .unwrap()
+            .sql;
+        // Base seed.
+        assert!(
+            sql.contains("[tuple(flights.flight_id, flights.flight_number)] as path_edges"),
+            "base seed must use the composite edge_id; got:\n{sql}"
+        );
+        // Recursive append.
+        assert!(
+            sql.contains("arrayConcat(vp.path_edges, [tuple(next.flight_id, next.flight_number)])"),
+            "recursive append must use the composite edge_id; got:\n{sql}"
+        );
+        // Cycle check.
+        assert!(
+            sql.contains("NOT has(vp.path_edges, tuple(next.flight_id, next.flight_number))"),
+            "cycle check must use the composite edge_id; got:\n{sql}"
+        );
+        // The collapsing node-pair identity must no longer key path_edges.
+        assert!(
+            !sql.contains("tuple(next.Origin, next.Dest)"),
+            "node-pair (Origin, Dest) must not key path_edges once edge_id exists; got:\n{sql}"
         );
     }
 

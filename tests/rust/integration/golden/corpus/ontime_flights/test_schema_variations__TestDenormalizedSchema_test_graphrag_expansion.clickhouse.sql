@@ -3,7 +3,7 @@ WITH RECURSIVE vlp_a_dest AS (
         t0.Origin as start_id,
         t0.Dest as end_id,
         1 as hop_count,
-        [tuple(t0.Origin, t0.Dest)] as path_edges,
+        [tuple(t0.flight_id, t0.flight_number)] as path_edges,
         [t0.Origin, t0.Dest] as path_nodes,
         ['FLIGHT'] as path_relationships,
         t0."Dest" as "end_Dest"
@@ -14,13 +14,13 @@ WITH RECURSIVE vlp_a_dest AS (
         vp.start_id as start_id,
         next.Dest as end_id,
         vp.hop_count + 1,
-        arrayConcat(vp.path_edges, [tuple(next.Origin, next.Dest)]),
+        arrayConcat(vp.path_edges, [tuple(next.flight_id, next.flight_number)]),
         arrayConcat(vp.path_nodes, [next.Dest]),
         arrayConcat(vp.path_relationships, ['FLIGHT']) as path_relationships,
         next."Dest" as "end_Dest"
     FROM vlp_a_dest vp
     JOIN default.flights next ON next.Origin = vp.end_id
-    WHERE vp.hop_count < 2 AND NOT has(vp.path_edges, tuple(next.Origin, next.Dest))
+    WHERE vp.hop_count < 2 AND NOT has(vp.path_edges, tuple(next.flight_id, next.flight_number))
 )
 SELECT 
       t.hop_count AS "length(p)", 

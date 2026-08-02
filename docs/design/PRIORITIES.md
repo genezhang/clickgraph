@@ -466,7 +466,7 @@ fixed stats fixture.
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
-- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slice 1 #893, **Phase 3 #806 + Phase 4 #628 fixed**)
+- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slice 1 #893, **Phase 3 #806 + Phase 4 #628 + Phase 5 #710 fixed**)
   (`docs/design/VLP_EDGE_IDENTITY_UNIFICATION.md`). Bug-driven refactor of the
   VLP relationship-uniqueness axis: one canonical `EdgeUniquenessPolicy`
   (`PatternSchemaContext`-derived, rule-#7 clean) replaces ~14 inline sites / 3
@@ -483,13 +483,26 @@ fixed stats fixture.
   **Phase 4 (#628) SHIPPED**: closed `*0..N` (`(a)-[*0..N]->(a)`) — was a loud
   `UnsupportedFeature` — now counts real cycles via edge-uniqueness (zero-hop base
   seeds empty `path_edges`), live-verified against the trail oracle; OPEN `*0..N`
-  byte-unchanged. Remaining:
-  Phase 1–2 (`EdgeUniquenessPolicy` + transition-assert + switch, byte-identical),
-  then Phase 5 (optional, #710 parallel-edge denorm). Explicitly NOT this cluster:
-  #643/#840/#627/#683 (different subsystems). Adjacent bugs found during Phase 3/4
+  byte-unchanged.
+  **Phase 5 (#710) SHIPPED (PR #TBD)**: the DENORMALIZED VLP strategy
+  (`DenormalizedCteStrategy::edge_tuple`) now consults the schema `edge_id`
+  (resolved once via `resolve_edge_id`, spelled like `build_edge_tuple_recursive`:
+  Composite→tuple / Single→scalar / None→byte-identical `(from,to)` fallback), so
+  parallel denorm edges keyed by e.g. `flight_id` no longer collapse into one
+  `(from,to)` tuple and under-count trails. 78 goldens regenerated (72 corpus + 6
+  SQL-IR snapshot), every changed line an edge-identity line (`path_nodes`/joins
+  byte-identical); live-verified length-3 parallel-edge trail = buggy 0 vs fixed 2
+  (oracle 2), end-to-end through `cg`. Ratchet-clean (`edge_id` not a tracked
+  token). Remaining:
+  Phase 1–2 (`EdgeUniquenessPolicy` + transition-assert + switch, byte-identical
+  design-cycle refactor). Explicitly NOT this cluster:
+  #643/#840/#627/#683 (different subsystems). Adjacent bugs found during Phase 3/4/5
   and filed separately (NOT folded in): flat exact-bound polymorphic VLP drops the
-  `interaction_type` discriminator (`FOLLOWS*2` counts other edge types), and an
-  OPTIONAL-MATCH closed-VLP projection bug (`vt0.<prop>`, #899).
+  `interaction_type` discriminator (#897), an OPTIONAL-MATCH closed-VLP projection
+  bug (`vt0.<prop>`, #899), FK-edge self-ref VLP degenerate recursive join (#902),
+  and #808 (mixed-access VLP arm is corpus-unreachable — resolve by adding one
+  mixed-schema VLP corpus entry, which will surface its node-uniqueness as
+  #606-inconsistent and convert it to edge-uniqueness).
 
 ## 3. Capacity split (guideline)
 
