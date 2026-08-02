@@ -121,6 +121,28 @@ impl RemoteClickHouseExecutor {
     }
 }
 
+/// Escape literal `?` as `??` for the `clickhouse` crate's `Client::query`.
+///
+/// The crate treats `?` in the SQL template as a bind-parameter placeholder
+/// (and `?fields` as a special field-list placeholder), erroring with
+/// "unbound query argument" at execution if no matching `.bind()` supplies a
+/// value (see clickhouse-rs `src/sql/mod.rs`). ClickGraph never parameterizes —
+/// it hands the crate fully-rendered SQL with all literals inlined — so every
+/// `?` is meant to reach ClickHouse verbatim (e.g. a string literal like
+/// `'why?'`, a regex `=~ 'a?c'`, or a `(?i)` inline flag). The crate's own
+/// escape for a literal `?` is `??`, which its template scanner collapses back
+/// to a single `?`; doubling is therefore an exact, reversible transform.
+///
+/// This MUST be applied only on the crate `Client::query` path — the direct-HTTP
+/// path (`execute_json_via_http`) sends the raw body and needs the literal `?`.
+fn escape_question_marks(sql: &str) -> std::borrow::Cow<'_, str> {
+    if sql.contains('?') {
+        std::borrow::Cow::Owned(sql.replace('?', "??"))
+    } else {
+        std::borrow::Cow::Borrowed(sql)
+    }
+}
+
 /// Parse the `X-ClickHouse-Summary` JSON (fields are quoted decimal strings) and
 /// record read_rows / read_bytes / elapsed_ns into the per-query metrics slot.
 fn record_summary_header(header: &str) {
@@ -170,10 +192,13 @@ impl QueryExecutor for RemoteClickHouseExecutor {
             return self.execute_json_via_http(sql, role).await;
         }
         let client = self.pool.get_client(role).await;
-        let cursor = client.query(sql).fetch_bytes("JSONEachRow").map_err(|e| {
-            log::error!("ClickHouse query failed. SQL was:\n{}\nError: {}", sql, e);
-            ExecutorError::QueryFailed(e.to_string())
-        })?;
+        let cursor = client
+            .query(&escape_question_marks(sql))
+            .fetch_bytes("JSONEachRow")
+            .map_err(|e| {
+                log::error!("ClickHouse query failed. SQL was:\n{}\nError: {}", sql, e);
+                ExecutorError::QueryFailed(e.to_string())
+            })?;
         let buf = drain_cursor(cursor, sql).await?;
 
         let mut rows = Vec::new();
@@ -197,10 +222,13 @@ impl QueryExecutor for RemoteClickHouseExecutor {
         role: Option<&str>,
     ) -> Result<String, ExecutorError> {
         let client = self.pool.get_client(role).await;
-        let cursor = client.query(sql).fetch_bytes(format).map_err(|e| {
-            log::error!("ClickHouse query failed. SQL was:\n{}\nError: {}", sql, e);
-            ExecutorError::QueryFailed(e.to_string())
-        })?;
+        let cursor = client
+            .query(&escape_question_marks(sql))
+            .fetch_bytes(format)
+            .map_err(|e| {
+                log::error!("ClickHouse query failed. SQL was:\n{}\nError: {}", sql, e);
+                ExecutorError::QueryFailed(e.to_string())
+            })?;
         let buf = drain_cursor(cursor, sql).await?;
 
         let mut text = String::from_utf8(buf).map_err(|e| ExecutorError::Parse(e.to_string()))?;
@@ -217,6 +245,85 @@ impl QueryExecutor for RemoteClickHouseExecutor {
 mod tests {
     use super::*;
     use crate::server::metrics::{current_ch_stats, with_ch_stats_scope};
+
+    #[test]
+    fn escape_question_marks_doubles_every_literal_question_mark() {
+        assert_eq!(escape_question_marks("no marks here"), "no marks here");
+        assert_eq!(escape_question_marks("SELECT 'why?'"), "SELECT 'why??'");
+        assert_eq!(
+            escape_question_marks("replace('a?b', '?', '!')"),
+            "replace('a??b', '??', '!')"
+        );
+        // Regex operands: a `?` quantifier and a `(?i)` inline flag.
+        assert_eq!(escape_question_marks("match(x, 'a?c')"), "match(x, 'a??c')");
+        assert_eq!(
+            escape_question_marks("match(x, '(?i)hello')"),
+            "match(x, '(??i)hello')"
+        );
+    }
+
+    #[test]
+    fn escaped_sql_round_trips_through_the_clickhouse_query_builder() {
+        // The crate collapses `??` back to a single `?` and treats a bare `?` as
+        // an unbound placeholder. `Query::sql_display()` renders the final SQL the
+        // crate would send; feeding our escaped form must reproduce the original
+        // literal `?` exactly, with no leftover placeholder.
+        let client = clickhouse::Client::default();
+        for original in [
+            "SELECT 'why?' AS s",
+            "SELECT replace('a?b', '?', '!') AS s",
+            "SELECT match('Hello', '(?i)hello') AS s",
+            "SELECT 'no marks' AS s",
+        ] {
+            let escaped = escape_question_marks(original);
+            let rendered = client.query(&escaped).sql_display().to_string();
+            assert_eq!(
+                rendered, original,
+                "escaped SQL did not round-trip back to the literal for {original:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unescaped_question_mark_is_rejected_by_the_builder_but_escaped_is_accepted() {
+        // Necessity check: `fetch_bytes` calls the crate's `SqlBuilder::finish()`
+        // (which errors on any unbound `?` placeholder) BEFORE any network I/O —
+        // `do_execute` only *builds* the request future, it does not await it — so
+        // this proves the failure mode, and that the escape fixes it, without a
+        // live server. A `?` run of any parity must round-trip.
+        //
+        // The client needs a syntactically valid URL so the only pre-network
+        // failure is the unbound `?` itself (a default client has an empty URL
+        // that would fail `Url::parse` regardless).
+        let client = clickhouse::Client::default().with_url("http://localhost:8123");
+        let is_unbound = |sql: &str| {
+            client
+                .clone()
+                .query(sql)
+                .fetch_bytes("TSV")
+                .err()
+                .map(|e| e.to_string().contains("unbound query argument"))
+                .unwrap_or(false)
+        };
+        for sql in [
+            "SELECT 'why?' AS s",
+            "SELECT 'a???b' AS s",
+            "SELECT '?fields' AS s",
+        ] {
+            // Raw literal `?` -> the crate reads a placeholder and refuses to build.
+            assert!(
+                is_unbound(sql),
+                "expected an unbound-argument error for raw {sql:?}"
+            );
+            // Escaped -> no unbound placeholder remains, so the builder succeeds.
+            assert!(
+                !is_unbound(&escape_question_marks(sql)),
+                "escaped {sql:?} should build without an unbound argument"
+            );
+        }
+        // A `?`-free query never trips the placeholder path.
+        assert!(!is_unbound("SELECT 1 AS s"));
+    }
 
     #[tokio::test]
     async fn summary_header_parsed_and_recorded() {

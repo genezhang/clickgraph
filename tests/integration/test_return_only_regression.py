@@ -102,3 +102,56 @@ class TestReturnOnlyRegression:
         assert_query_success(result)
         assert len(result["results"]) == 1
         assert result["results"][0]["num"] == 1
+
+
+class TestQuestionMarkInStringLiterals:
+    """Regression tests for #872.
+
+    A literal `?` in the generated SQL (e.g. inside a string literal) was
+    consumed by the clickhouse-rs `Client::query` template scanner as a
+    bind-parameter placeholder, so the query failed with "unbound query
+    argument" even though the SQL was valid. The remote executor now escapes
+    `?` -> `??` on the crate path (the crate collapses it back to a literal
+    `?`). These execute end-to-end through the server's remote executor.
+    """
+
+    def test_return_string_with_trailing_question_mark(self, simple_graph):
+        """RETURN 'why?' - the minimal repro that used to fail."""
+        result = execute_cypher("RETURN 'why?' AS s", schema_name="social_integration")
+        assert_query_success(result)
+        assert len(result["results"]) == 1
+        assert result["results"][0]["s"] == "why?"
+
+    def test_return_string_with_embedded_question_mark(self, simple_graph):
+        """A `?` in the middle of a string literal."""
+        result = execute_cypher("RETURN 'a?b' AS s", schema_name="social_integration")
+        assert_query_success(result)
+        assert result["results"][0]["s"] == "a?b"
+
+    def test_return_multiple_question_marks(self, simple_graph):
+        """Several `?` in one literal all survive."""
+        result = execute_cypher(
+            "RETURN 'is it? yes! or? no?' AS s", schema_name="social_integration"
+        )
+        assert_query_success(result)
+        assert result["results"][0]["s"] == "is it? yes! or? no?"
+
+    def test_replace_question_mark(self, simple_graph):
+        """`?` as both a function argument and inside the target string."""
+        result = execute_cypher(
+            "RETURN replace('a?b', '?', '!') AS s", schema_name="social_integration"
+        )
+        assert_query_success(result)
+        assert result["results"][0]["s"] == "a!b"
+
+    def test_regex_match_with_question_quantifier(self, simple_graph):
+        """A regex `=~` operand containing a `?` quantifier."""
+        result = execute_cypher("RETURN 'abc' =~ 'a?bc' AS s", schema_name="social_integration")
+        assert_query_success(result)
+        assert result["results"][0]["s"] in (True, 1)
+
+    def test_no_question_mark_unaffected(self, simple_graph):
+        """A query with no `?` is passed through unchanged (control)."""
+        result = execute_cypher("RETURN 'no marks here' AS s", schema_name="social_integration")
+        assert_query_success(result)
+        assert result["results"][0]["s"] == "no marks here"
