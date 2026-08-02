@@ -421,6 +421,17 @@ const CORPUS: &[(&str, &str)] = &[
         "fn_range",
         "MATCH (u:User) RETURN range(1, 5) AS r",
     ),
+    // count(<scalar>) — a scalar variable (WITH-scalar / UNWIND element /
+    // parameter) is not a graph entity, so it must render as a plain
+    // `count(one)`, NOT be rewritten to a per-label node-id column. On main this
+    // crashed in ProjectionTagging ("Missing label for node") because the
+    // count-arg node/rel id rewrite assumed a graph alias. The scalar `one`
+    // stays `count(one)`; the sibling `count(u)` still routes to the node-id
+    // form (`count(u.user_id)`) — proving the guard fires only for scalars.
+    (
+        "count_scalar_and_node",
+        "MATCH (u:User) WITH u, 1 AS one RETURN count(one) AS c, count(u) AS uc",
+    ),
     (
         "optional_match",
         "MATCH (u:User) OPTIONAL MATCH (u)-[:AUTHORED]->(p:Post) RETURN u.name, p.title",
