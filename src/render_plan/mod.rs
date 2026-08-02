@@ -32,7 +32,7 @@ use render_expr::{ColumnAlias, OperatorApplication, RenderExpr};
 
 pub use cte_generation::CteGenerationContext;
 pub use cte_manager::{
-    CteColumnMetadata, CteError, CteGenerationResult, CteManager, CteStrategy, VlpEndpointInfo,
+    CteColumnMetadata, CteError, CteGenerationResult, CteManager, VlpEndpointInfo,
 };
 pub use filter_pipeline::CategorizedFilters;
 pub use from_table::FromTable;
