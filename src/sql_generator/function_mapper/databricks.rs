@@ -142,6 +142,12 @@ impl FunctionMapper for DatabricksFunctionMapper {
         "array_contains"
     }
 
+    fn integer_division(&self) -> &'static str {
+        // Spark `div(a, b)` is integer division truncating toward zero
+        // (div(-7, 2) = -3), matching Neo4j and CH `intDiv`.
+        "div"
+    }
+
     fn empty_string_array_cast(&self) -> &'static str {
         "CAST(array() AS ARRAY<STRING>)"
     }
@@ -284,6 +290,7 @@ mod tests {
         assert_eq!(m.cast_string(), "string");
         assert_eq!(m.array_concat(), "concat");
         assert_eq!(m.array_contains(), "array_contains");
+        assert_eq!(m.integer_division(), "div");
         assert_eq!(m.epoch_millis_to_timestamp("x"), "timestamp_millis(x)");
         assert_eq!(m.timestamp_to_epoch_millis("x"), "unix_millis(x)");
         assert_eq!(

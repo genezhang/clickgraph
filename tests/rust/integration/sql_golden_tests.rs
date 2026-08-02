@@ -386,6 +386,15 @@ const CORPUS: &[(&str, &str)] = &[
         "fn_reduce",
         "MATCH (u:User) RETURN reduce(s = 0, x IN [1, 2, 3] | s + x) AS r",
     ),
+    // Integer-constant division truncates toward zero in Cypher (`7/2 = 3`,
+    // `-7/2 = -3`); CH/Spark `/` is float division (`7/2 = 3.5`). Both integer
+    // constants (literals or the `-n` negation form) -> CH `intDiv(a, b)` /
+    // Spark `div(a, b)`. A float operand keeps `/` (float division); a column
+    // operand isn't typeable at render time so also keeps `/` (#847).
+    (
+        "int_division_literals",
+        "MATCH (u:User) RETURN 7 / 2 AS a, -7 / 2 AS b, 7 / 2.0 AS c",
+    ),
     // range is INCLUSIVE in Cypher. CH range() is exclusive -> end bumped +1
     // (was silently wrong: range(1,5) gave [1,2,3,4]); Spark has no range() ->
     // sequence() (already inclusive).

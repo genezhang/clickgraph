@@ -1776,7 +1776,25 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                 }
                 Operator::Subtraction => format!("{} - {}", operands[0], operands[1]),
                 Operator::Multiplication => format!("{} * {}", operands[0], operands[1]),
-                Operator::Division => format!("{} / {}", operands[0], operands[1]),
+                Operator::Division => {
+                    // Cypher integer-constant division truncates toward zero
+                    // (`7/2 = 3`); CH/Spark `/` is float division. Mirror Path A
+                    // (`render_integer_division`): both operands integer constants
+                    // → `intDiv(a, b)` (CH) / `div(a, b)` (Spark). Column operands
+                    // aren't typeable here so stay `/` (tracked in #847).
+                    let both_int_consts = op.operands.len() == 2
+                        && op.operands.iter().all(
+                            crate::sql_generator::emitters::clickhouse::to_sql_query::is_integer_constant,
+                        );
+                    if both_int_consts {
+                        let int_div =
+                            crate::sql_generator::function_mapper::current_function_mapper()
+                                .integer_division();
+                        format!("{}({}, {})", int_div, operands[0], operands[1])
+                    } else {
+                        format!("{} / {}", operands[0], operands[1])
+                    }
+                }
                 Operator::ModuloDivision => format!("{} % {}", operands[0], operands[1]),
                 Operator::Exponentiation => format!("POWER({}, {})", operands[0], operands[1]),
                 Operator::In => {

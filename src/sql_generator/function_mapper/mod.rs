@@ -129,6 +129,12 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// Used for cycle detection in VLP recursive CTEs.
     fn array_contains(&self) -> &'static str;
 
+    /// Integer (truncate-toward-zero) division. CH: `intDiv`. Spark: `div`.
+    /// Both match Neo4j's `int / int` (`intDiv(-7, 2) = -3`, toward zero, not
+    /// floor). Used to render Cypher integer-literal division, whose default
+    /// `/` is float division on both engines.
+    fn integer_division(&self) -> &'static str;
+
     /// Empty `Array(String)` literal with explicit cast. CH:
     /// `CAST([] AS Array(String))`. Spark: `CAST(array() AS ARRAY<STRING>)`.
     /// Returned as a full snippet (not a function name) because the array

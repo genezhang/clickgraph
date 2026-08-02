@@ -384,6 +384,48 @@ fn render_string_addition(op: &OperatorApplication) -> Option<String> {
     None
 }
 
+/// True when `e` is a compile-time INTEGER constant: an integer literal, or the
+/// unary-minus lowering `0 - <integer constant>` the parser emits for `-7`
+/// (`Subtraction(Integer(0), …)`). Used to classify integer division operands
+/// (see `render_integer_division`). Deliberately does NOT recurse into general
+/// arithmetic — only literals and negation — so it stays a conservative,
+/// type-certain check; a column or computed operand is never an integer constant
+/// here (its type isn't known at render time, #847).
+pub(crate) fn is_integer_constant(e: &RenderExpr) -> bool {
+    match e {
+        RenderExpr::Literal(Literal::Integer(_)) => true,
+        RenderExpr::OperatorApplicationExp(op)
+            if op.operator == Operator::Subtraction
+                && op.operands.len() == 2
+                && matches!(&op.operands[0], RenderExpr::Literal(Literal::Integer(0))) =>
+        {
+            is_integer_constant(&op.operands[1])
+        }
+        _ => false,
+    }
+}
+
+/// Integer division: Cypher `int / int` truncates toward zero (`7/2 = 3`,
+/// `-7/2 = -3`), only becoming float division when an operand is a float. CH/
+/// Spark `/` is always float division, so `7/2` wrongly yields `3.5`. When BOTH
+/// operands are integer CONSTANTS (literals or the `-n` negation form) we emit
+/// `intDiv(a, b)` (CH) / `div(a, b)` (Spark) — both truncate toward zero,
+/// matching Neo4j. Bounded to integer constants: a column's type isn't known at
+/// render time (the schema carries no column types), so `u.a / u.b` can't be
+/// classified here and stays `/` (tracked in #847). `rendered` holds the
+/// already-rendered operand SQL.
+fn render_integer_division(op: &OperatorApplication, rendered: &[String]) -> Option<String> {
+    if op.operator != Operator::Division || op.operands.len() != 2 || rendered.len() != 2 {
+        return None;
+    }
+    if !op.operands.iter().all(is_integer_constant) {
+        return None;
+    }
+    let int_div =
+        crate::sql_generator::function_mapper::current_function_mapper().integer_division();
+    Some(format!("{}({}, {})", int_div, rendered[0], rendered[1]))
+}
+
 /// Interval arithmetic on epoch-millis: wrap non-interval operands as a
 /// timestamp, do the `+`/`-`, and convert the result back to epoch-millis.
 /// Dialect-aware via the function mapper — ClickHouse:
@@ -7350,6 +7392,9 @@ impl RenderExpr {
                 if let Some(s) = render_interval_arithmetic(op, &rendered) {
                     return s;
                 }
+                if let Some(s) = render_integer_division(op, &rendered) {
+                    return s;
+                }
 
                 let sql_op = op_str(op.operator);
 
@@ -7827,6 +7872,9 @@ impl RenderExpr {
                 if let Some(s) = render_interval_arithmetic(op, &rendered) {
                     return s;
                 }
+                if let Some(s) = render_integer_division(op, &rendered) {
+                    return s;
+                }
 
                 let sql_op = op_str(op.operator);
 
@@ -8140,6 +8188,9 @@ impl ToSql for OperatorApplication {
             return s;
         }
         if let Some(s) = render_interval_arithmetic(self, &rendered) {
+            return s;
+        }
+        if let Some(s) = render_integer_division(self, &rendered) {
             return s;
         }
 
