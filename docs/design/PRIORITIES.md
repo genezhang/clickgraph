@@ -475,6 +475,30 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **P-1 — exponentiation operator `^` supported end-to-end** (PR
+  #862, branch `fix/861-exponentiation-power`, closes #861). Corrects the
+  original #861 filing: `^` did not render wrong on Path A — it **never parsed
+  at all**. `parse_multiplicative_expression` handled only `*`/`/`/`%`, so any
+  query with `^` failed with `Unparsed input`; the operator enum, precedence
+  table, and all render sites were unreachable dead code, and a
+  `#[cfg(test)]`-only helper (`parse_operator_symbols`) gave false confidence.
+  Fix: new `parse_exponent_expression` tier between multiplicative and unary,
+  faithful to the checked-in openCypher grammar (`<arithmetic factor> ::=
+  <arithmetic unary> | <arithmetic factor> <circumflex> <arithmetic unary>`) —
+  `^` binds tighter than `*`/`/`/`%`, looser than unary sign, LEFT-associative
+  (`2^3^2` = `(2^3)^2` = 64, per the repo grammar; not the right-assoc math
+  convention). Render: neither CH (Code 62 on bare `^`) nor Spark has infix `^`;
+  both accept ANSI `POWER(base, exp)`. New `FunctionMapper::power()` (shared
+  default — Rule #7) routes the 3 `to_sql_query.rs` infix sites + the
+  `pattern_comprehension_sql.rs` site; Path C already emitted POWER. Live-
+  verified against CH: `2^3, 1+2^3, 2^3*4, 2^3^2, -2^2` = 8, 9, 32, 64, 4.
+  Zero golden churn (`^` was unparseable, so no existing golden used it); +1
+  golden (both dialects), +4 parser tests, +2 mapper tests; ratchet passes.
+  Adversarial review APPROVE-0 (all 5 render paths audited, no reachable infix
+  fallback for `^`, existing-operator precedence unregressed). NOTE surfaced,
+  not fixed: `groupArray(1)` drops the projection for *computed* pattern-
+  comprehension expressions (`[(n)-[]->(m) | m.id * 2]`) — pre-existing on main,
+  file separately.
 - 2026-08-02: **P-6 hygiene — #808 deleted the structurally-dead VLP recursive
   generators (mixed arms kept)** (branch `fix/808-dead-vlp-recursive-generators`).
   Follow-up to #606/#807. Adversarial review split the node-unique generators:
