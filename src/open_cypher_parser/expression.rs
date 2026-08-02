@@ -719,7 +719,7 @@ fn parse_unary_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
 
 // Multiplicative operators: * / %
 fn parse_multiplicative_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
-    let (input, lhs) = parse_unary_expression(input)?;
+    let (input, lhs) = parse_exponent_expression(input)?;
 
     let mut remaining_input = input;
     let mut final_expression = lhs;
@@ -732,6 +732,38 @@ fn parse_multiplicative_expression(input: &'_ str) -> IResult<&'_ str, Expressio
             map(tag_no_case("%"), |_| Operator::ModuloDivision),
         )))
         .parse(remaining_input);
+
+        match op_result {
+            Ok((new_input, op)) => {
+                let (new_input, rhs) = parse_exponent_expression(new_input)?;
+                final_expression = Expression::OperatorApplicationExp(OperatorApplication {
+                    operator: op,
+                    operands: vec![final_expression, rhs],
+                });
+                remaining_input = new_input;
+            }
+            Err(nom::Err::Error(_)) => break,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok((remaining_input, final_expression))
+}
+
+// Exponentiation: ^ — binds tighter than * / %, looser than unary sign, per the
+// openCypher grammar (`<arithmetic factor> ::= <arithmetic unary> |
+// <arithmetic factor> <circumflex> <arithmetic unary>`). The production is
+// left-recursive → left-associative, so `2 ^ 3 ^ 2` parses as `(2 ^ 3) ^ 2`.
+// Operands are unary expressions, so `-2 ^ 2` parses as `(-2) ^ 2` (the sign
+// binds tighter than `^`, matching the grammar's `<arithmetic unary>` operand).
+fn parse_exponent_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    let (input, lhs) = parse_unary_expression(input)?;
+
+    let mut remaining_input = input;
+    let mut final_expression = lhs;
+
+    loop {
+        let op_result =
+            ws(map(tag_no_case("^"), |_| Operator::Exponentiation)).parse(remaining_input);
 
         match op_result {
             Ok((new_input, op)) => {
@@ -1944,6 +1976,77 @@ mod tests {
                 panic!("Parser should handle 100 * size([pattern])");
             }
         }
+    }
+
+    #[test]
+    fn test_parse_exponentiation_basic() {
+        // `2 ^ 3` parses as Exponentiation(2, 3).
+        let (rem, expr) = parse_expression("2 ^ 3").unwrap();
+        assert_eq!(rem, "");
+        if let Expression::OperatorApplicationExp(op) = expr {
+            assert_eq!(op.operator, Operator::Exponentiation);
+            assert_eq!(op.operands.len(), 2);
+        } else {
+            panic!("Expected Exponentiation, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_exponentiation_binds_tighter_than_multiply() {
+        // `2 ^ 3 * 4` → `(2 ^ 3) * 4`: outer op is Multiplication, left is `^`.
+        let (rem, expr) = parse_expression("2 ^ 3 * 4").unwrap();
+        assert_eq!(rem, "");
+        let Expression::OperatorApplicationExp(op) = expr else {
+            panic!("Expected operator, got {:?}", expr);
+        };
+        assert_eq!(op.operator, Operator::Multiplication);
+        assert!(
+            matches!(
+                &op.operands[0],
+                Expression::OperatorApplicationExp(inner) if inner.operator == Operator::Exponentiation
+            ),
+            "left of `*` should be the `^` subtree, got {:?}",
+            op.operands[0]
+        );
+    }
+
+    #[test]
+    fn test_parse_exponentiation_binds_tighter_than_add() {
+        // `1 + 2 ^ 3` → `1 + (2 ^ 3)`: outer op is Addition, right is `^`.
+        let (rem, expr) = parse_expression("1 + 2 ^ 3").unwrap();
+        assert_eq!(rem, "");
+        let Expression::OperatorApplicationExp(op) = expr else {
+            panic!("Expected operator, got {:?}", expr);
+        };
+        assert_eq!(op.operator, Operator::Addition);
+        assert!(
+            matches!(
+                &op.operands[1],
+                Expression::OperatorApplicationExp(inner) if inner.operator == Operator::Exponentiation
+            ),
+            "right of `+` should be the `^` subtree, got {:?}",
+            op.operands[1]
+        );
+    }
+
+    #[test]
+    fn test_parse_exponentiation_left_associative() {
+        // Grammar's `<arithmetic factor>` is left-recursive: `2 ^ 3 ^ 2`
+        // parses as `(2 ^ 3) ^ 2` — the OUTER `^` has a `^` subtree on its LEFT.
+        let (rem, expr) = parse_expression("2 ^ 3 ^ 2").unwrap();
+        assert_eq!(rem, "");
+        let Expression::OperatorApplicationExp(op) = expr else {
+            panic!("Expected operator, got {:?}", expr);
+        };
+        assert_eq!(op.operator, Operator::Exponentiation);
+        assert!(
+            matches!(
+                &op.operands[0],
+                Expression::OperatorApplicationExp(inner) if inner.operator == Operator::Exponentiation
+            ),
+            "left-associative: outer `^` left operand should be a `^` subtree, got {:?}",
+            op.operands[0]
+        );
     }
 
     #[test]

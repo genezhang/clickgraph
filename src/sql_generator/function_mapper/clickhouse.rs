@@ -238,6 +238,15 @@ mod tests {
     }
 
     #[test]
+    fn power_uses_ansi_power_call_form() {
+        // ClickHouse has no infix `^` (Code 62 SYNTAX_ERROR); the exponentiation
+        // operator must render as the ANSI `POWER(base, exp)` call.
+        let m = ClickhouseFunctionMapper;
+        assert_eq!(m.power("2", "3"), "POWER(2, 3)");
+        assert_eq!(m.power("n.user_id", "2"), "POWER(n.user_id, 2)");
+    }
+
+    #[test]
     fn epoch_millis_timestamp_roundtrip_uses_clickhouse_functions() {
         let m = ClickhouseFunctionMapper;
         assert_eq!(

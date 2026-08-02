@@ -135,6 +135,16 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// `/` is float division on both engines.
     fn integer_division(&self) -> &'static str;
 
+    /// Render the Cypher exponentiation operator `a ^ b`. Both ClickHouse and
+    /// Databricks/Spark accept the ANSI `POWER(base, exp)` call form; NEITHER
+    /// has an infix `^` operator (ClickHouse errors with Code 62 SYNTAX_ERROR
+    /// on a bare `^`). `base`/`exp` are pre-rendered SQL fragments. Keeping the
+    /// spelling in the dialect layer satisfies Rule #7; the shared default is
+    /// correct for both shipped dialects.
+    fn power(&self, base: &str, exp: &str) -> String {
+        format!("POWER({}, {})", base, exp)
+    }
+
     /// Empty `Array(String)` literal with explicit cast. CH:
     /// `CAST([] AS Array(String))`. Spark: `CAST(array() AS ARRAY<STRING>)`.
     /// Returned as a full snippet (not a function name) because the array

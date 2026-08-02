@@ -426,6 +426,19 @@ fn render_integer_division(op: &OperatorApplication, rendered: &[String]) -> Opt
     Some(format!("{}({}, {})", int_div, rendered[0], rendered[1]))
 }
 
+/// Render the Cypher exponentiation operator `a ^ b`. Neither ClickHouse nor
+/// Databricks/Spark has an infix `^` (ClickHouse errors Code 62 on a bare `^`);
+/// both accept the ANSI `POWER(base, exp)` call form, routed through the
+/// function mapper (Rule #7). The call form is self-delimiting, so no
+/// precedence parens are needed around it or its operands.
+fn render_exponentiation(op: &OperatorApplication, rendered: &[String]) -> Option<String> {
+    if op.operator != Operator::Exponentiation || rendered.len() != 2 {
+        return None;
+    }
+    let mapper = crate::sql_generator::function_mapper::current_function_mapper();
+    Some(mapper.power(&rendered[0], &rendered[1]))
+}
+
 /// Interval arithmetic on epoch-millis: wrap non-interval operands as a
 /// timestamp, do the `+`/`-`, and convert the result back to epoch-millis.
 /// Dialect-aware via the function mapper — ClickHouse:
@@ -7448,6 +7461,9 @@ impl RenderExpr {
                 if let Some(s) = render_integer_division(op, &rendered) {
                     return s;
                 }
+                if let Some(s) = render_exponentiation(op, &rendered) {
+                    return s;
+                }
 
                 let sql_op = op_str(op.operator);
 
@@ -7935,6 +7951,9 @@ impl RenderExpr {
                 if let Some(s) = render_integer_division(op, &rendered) {
                     return s;
                 }
+                if let Some(s) = render_exponentiation(op, &rendered) {
+                    return s;
+                }
 
                 let sql_op = op_str(op.operator);
 
@@ -8257,6 +8276,9 @@ impl ToSql for OperatorApplication {
             return s;
         }
         if let Some(s) = render_integer_division(self, &rendered) {
+            return s;
+        }
+        if let Some(s) = render_exponentiation(self, &rendered) {
             return s;
         }
 

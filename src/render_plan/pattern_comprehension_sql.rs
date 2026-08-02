@@ -1798,6 +1798,11 @@ fn render_logical_expr_to_sql(
                     join_clauses,
                     node_joins_added,
                 );
+                // Exponentiation has no infix form on ClickHouse/Spark; route
+                // through the dialect mapper's `POWER(base, exp)` (Rule #7).
+                if op.operator == Op::Exponentiation {
+                    return current_function_mapper().power(&left, &right);
+                }
                 format!("{}{}{}", left, op_str, right)
             } else {
                 let rendered: Vec<String> = op
