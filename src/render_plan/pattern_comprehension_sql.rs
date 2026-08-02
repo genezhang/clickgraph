@@ -1564,6 +1564,115 @@ fn find_cte_column_for_list_alias(
 /// Render a WHERE clause from a LogicalExpr for use inside a correlated subquery.
 /// Resolves property accesses to schema-mapped column names on edge table aliases.
 /// May add additional JOINs for intermediate node tables referenced in the WHERE clause.
+/// Render a pattern comprehension's inner WHERE for the property-projection
+/// path (`build_pattern_comprehension_sql`). Unlike `render_pc_where_clause`
+/// (used by the count/correlated path), this path has no `pattern_hops` —
+/// the single target node is already joined as `__tgt`. We therefore map the
+/// target variable to the `__tgt` alias (marked already-joined so no extra
+/// JOIN is emitted) and resolve its properties through the target node schema.
+///
+/// Returns `None` (dropping the filter) unless the predicate is BOTH:
+///   (a) fully renderable by `render_logical_expr_to_sql` on this path (i.e.
+///       every node is a variant that renderer emits SQL for — comparisons,
+///       boolean/arithmetic operators, string-op predicates, `IS [NOT] NULL`,
+///       `NOT`, property accesses, literals, parameters), and
+///   (b) referencing only the target variable.
+///
+/// This all-or-nothing gate is deliberate: `render_logical_expr_to_sql` has a
+/// catch-all that yields an empty fragment for unsupported variants
+/// (`ScalarFnCall`, `List`, `Case`, `ArraySubscript`, …). If such a node is
+/// buried inside an otherwise-renderable predicate, naively rendering would emit
+/// dangling SQL (`WHERE __tgt.age > 3 AND  = 'x'`). Dropping the whole predicate
+/// instead preserves the pre-#878 behavior (the inner WHERE was always absent on
+/// this path) and never emits invalid SQL. Lifting this limitation — actually
+/// applying function/IN/CASE filters — requires completing the shared renderer
+/// and is tracked as a follow-up.
+fn render_target_where_predicate(
+    expr: &crate::query_planner::logical_expr::LogicalExpr,
+    target_var: &str,
+    target_label: &str,
+    schema: &GraphSchema,
+) -> Option<String> {
+    // Gate: only render predicates the renderer can emit faithfully and that
+    // reference only the target var. Anything else → drop (never broken SQL).
+    if !is_renderable_target_predicate(expr, target_var) {
+        log::warn!(
+            "⚠️ Pattern comprehension inner WHERE is not fully renderable on the \
+             projection path (unsupported expr variant or non-target alias) — \
+             filter not applied (#878)"
+        );
+        return None;
+    }
+
+    // Only the target variable is resolvable here → map it to `__tgt`.
+    let mut node_alias_map: HashMap<String, (String, String)> = HashMap::new();
+    node_alias_map.insert(
+        target_var.to_string(),
+        (target_label.to_string(), "__tgt".to_string()),
+    );
+    // Mark `__tgt` as already joined so the renderer never emits a JOIN for it
+    // (it is joined by the enclosing branch).
+    let mut node_joins_added: HashSet<String> = HashSet::new();
+    node_joins_added.insert(target_var.to_string());
+
+    // Empty hops/edges → no additional joins are generated.
+    let mut join_clauses: Vec<String> = Vec::new();
+    let sql = render_logical_expr_to_sql(
+        expr,
+        &node_alias_map,
+        &[],
+        &[],
+        schema,
+        &mut join_clauses,
+        &mut node_joins_added,
+    );
+
+    if sql.is_empty() {
+        None
+    } else {
+        Some(sql)
+    }
+}
+
+/// Whether `render_logical_expr_to_sql` can emit faithful SQL for this predicate
+/// on the projection path, AND every property access references `target_var`.
+///
+/// This MUST stay in lockstep with the variants `render_logical_expr_to_sql`
+/// actually handles: any node reaching that renderer's catch-all arm produces an
+/// empty fragment, so it must be rejected here to avoid dangling SQL. A property
+/// access to a non-target alias is also rejected (only `__tgt` is in scope in
+/// this single-hop subquery).
+fn is_renderable_target_predicate(
+    expr: &crate::query_planner::logical_expr::LogicalExpr,
+    target_var: &str,
+) -> bool {
+    use crate::query_planner::logical_expr::{LogicalExpr, Operator as Op};
+    match expr {
+        // A property access is renderable iff it references the target var
+        // (which maps to `__tgt`); any other alias is out of scope here.
+        LogicalExpr::PropertyAccessExp(pa) => pa.table_alias.0 == target_var,
+        // Literals and parameters render directly.
+        LogicalExpr::Literal(_) | LogicalExpr::Parameter(_) => true,
+        LogicalExpr::OperatorApplicationExp(op) => {
+            // `Distinct` renders to a placeholder (" ?? ") — never valid SQL.
+            // Every other operator the renderer supports emits real SQL, but
+            // only if all operands are themselves renderable. Notably this
+            // rejects `IN [list]` / `NOT IN [list]` because the `List` RHS is an
+            // unsupported variant (would render a dangling `IN `).
+            if matches!(op.operator, Op::Distinct) {
+                return false;
+            }
+            op.operands
+                .iter()
+                .all(|o| is_renderable_target_predicate(o, target_var))
+        }
+        // ScalarFnCall, AggregateFnCall, List, Case, ArraySubscript, ArraySlicing,
+        // MapLiteral, ReduceExpr, Lambda, subqueries, … all reach the renderer's
+        // catch-all (empty fragment) → not renderable here.
+        _ => false,
+    }
+}
+
 fn render_pc_where_clause(
     expr: &crate::query_planner::logical_expr::LogicalExpr,
     pattern_hops: &[crate::query_planner::logical_plan::ConnectedPatternInfo],
@@ -1998,6 +2107,7 @@ fn replace_count_star_in_expr(expr: &mut RenderExpr, pc_subqueries: &[String], p
 ///   UNION ALL ...
 /// ) GROUP BY node_id
 /// ```
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_pattern_comprehension_sql(
     correlation_label: &str,
     direction: &crate::open_cypher_parser::ast::Direction,
@@ -2006,9 +2116,24 @@ pub(crate) fn build_pattern_comprehension_sql(
     schema: &GraphSchema,
     target_label: Option<&str>,
     target_property: Option<&str>,
+    target_var: Option<&str>,
+    where_clause: Option<&crate::query_planner::logical_expr::LogicalExpr>,
 ) -> Option<String> {
     use crate::open_cypher_parser::ast::Direction;
     use crate::query_planner::logical_plan::AggregationType;
+
+    // Render the pattern comprehension's inner WHERE predicate (if any) once, up
+    // front. It references the target-node variable (e.g. `v` in
+    // `[(u)-[:R]->(v) WHERE v.age > 3 | v.name]`), which is joined as `__tgt` in
+    // each property-projection branch — so we map that variable to `__tgt` and
+    // resolve its properties through the target node schema. Without this the
+    // filter is silently dropped (#878).
+    let inner_where_sql = match (where_clause, target_var, target_label) {
+        (Some(expr), Some(tvar), Some(tlabel)) => {
+            render_target_where_predicate(expr, tvar, tlabel, schema)
+        }
+        _ => None,
+    };
 
     // Resolve target node table/column for property-based aggregation (e.g., collect(f.name))
     let target_join_info = target_label.and_then(|tl| {
@@ -2086,6 +2211,17 @@ pub(crate) fn build_pattern_comprehension_sql(
                         .collect::<Vec<_>>()
                         .join(" AND ")
                 };
+                // The inner WHERE references `__tgt`, which exists only in this
+                // JOIN arm — append it here (not in the no-JOIN arm below).
+                let mut join_where = branch_where.clone();
+                if let Some(ref iw) = inner_where_sql {
+                    join_where.push(iw.clone());
+                }
+                let join_where_str = if join_where.is_empty() {
+                    String::new()
+                } else {
+                    format!(" WHERE {}", join_where.join(" AND "))
+                };
                 branches.push(format!(
                     "SELECT {} AS node_id, __tgt.{} AS target_prop FROM {} INNER JOIN {} AS __tgt ON {}{}",
                     rel_schema.from_id.to_pipe_joined_sql(""),
@@ -2093,7 +2229,7 @@ pub(crate) fn build_pattern_comprehension_sql(
                     db_table,
                     tgt_table,
                     join_cond,
-                    where_str
+                    join_where_str
                 ));
             } else {
                 branches.push(format!(
@@ -2136,6 +2272,17 @@ pub(crate) fn build_pattern_comprehension_sql(
                         .collect::<Vec<_>>()
                         .join(" AND ")
                 };
+                // The inner WHERE references `__tgt`, which exists only in this
+                // JOIN arm — append it here (not in the no-JOIN arm below).
+                let mut join_where = branch_where.clone();
+                if let Some(ref iw) = inner_where_sql {
+                    join_where.push(iw.clone());
+                }
+                let join_where_str = if join_where.is_empty() {
+                    String::new()
+                } else {
+                    format!(" WHERE {}", join_where.join(" AND "))
+                };
                 branches.push(format!(
                     "SELECT {} AS node_id, __tgt.{} AS target_prop FROM {} INNER JOIN {} AS __tgt ON {}{}",
                     rel_schema.to_id.to_pipe_joined_sql(""),
@@ -2143,7 +2290,7 @@ pub(crate) fn build_pattern_comprehension_sql(
                     db_table,
                     tgt_table,
                     join_cond,
-                    where_str
+                    join_where_str
                 ));
             } else {
                 branches.push(format!(
@@ -2636,5 +2783,151 @@ pub(crate) fn rewrite_logical_expr_aliases(
             })
         }
         _ => expr.clone(),
+    }
+}
+
+#[cfg(test)]
+mod inner_where_gate_tests {
+    //! Unit tests for `is_renderable_target_predicate`, the #878 gate that
+    //! decides whether a projection pattern comprehension's inner WHERE can be
+    //! rendered faithfully (target-only + fully renderable) or must be dropped
+    //! whole. These lock the exact regression classes that the first cut of the
+    //! fix mis-handled: scalar-function / IN-list / CASE-buried predicates that
+    //! would otherwise render to dangling SQL.
+    use super::is_renderable_target_predicate;
+    use crate::graph_catalog::expression_parser::PropertyValue;
+    use crate::query_planner::logical_expr::{
+        AggregateFnCall, Literal, LogicalCase, LogicalExpr, Operator, OperatorApplication,
+        PropertyAccess, ScalarFnCall, TableAlias,
+    };
+
+    fn prop(alias: &str, col: &str) -> LogicalExpr {
+        LogicalExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: TableAlias(alias.to_string()),
+            column: PropertyValue::Column(col.to_string()),
+        })
+    }
+
+    fn binop(op: Operator, l: LogicalExpr, r: LogicalExpr) -> LogicalExpr {
+        LogicalExpr::OperatorApplicationExp(OperatorApplication {
+            operator: op,
+            operands: vec![l, r],
+        })
+    }
+
+    #[test]
+    fn renderable_simple_comparison_on_target() {
+        // v.age > 3
+        let e = binop(
+            Operator::GreaterThan,
+            prop("v", "age"),
+            LogicalExpr::Literal(Literal::Integer(3)),
+        );
+        assert!(is_renderable_target_predicate(&e, "v"));
+    }
+
+    #[test]
+    fn renderable_and_of_two_target_comparisons() {
+        // v.age > 3 AND v.age < 90
+        let e = binop(
+            Operator::And,
+            binop(
+                Operator::GreaterThan,
+                prop("v", "age"),
+                LogicalExpr::Literal(Literal::Integer(3)),
+            ),
+            binop(
+                Operator::LessThan,
+                prop("v", "age"),
+                LogicalExpr::Literal(Literal::Integer(90)),
+            ),
+        );
+        assert!(is_renderable_target_predicate(&e, "v"));
+    }
+
+    #[test]
+    fn rejects_non_target_alias() {
+        // u.age > 3  (u is not the target var)
+        let e = binop(
+            Operator::GreaterThan,
+            prop("u", "age"),
+            LogicalExpr::Literal(Literal::Integer(3)),
+        );
+        assert!(!is_renderable_target_predicate(&e, "v"));
+    }
+
+    #[test]
+    fn rejects_scalar_fn_call() {
+        // toLower(v.name) = 'bob' — ScalarFnCall is unrenderable on this path
+        let e = binop(
+            Operator::Equal,
+            LogicalExpr::ScalarFnCall(ScalarFnCall {
+                name: "toLower".to_string(),
+                args: vec![prop("v", "name")],
+            }),
+            LogicalExpr::Literal(Literal::String("bob".to_string())),
+        );
+        assert!(!is_renderable_target_predicate(&e, "v"));
+    }
+
+    #[test]
+    fn rejects_partial_fn_conjunct() {
+        // v.age > 3 AND toLower(v.name) = 'x' — whole predicate must be rejected,
+        // NOT partially rendered into a dangling `AND`.
+        let e = binop(
+            Operator::And,
+            binop(
+                Operator::GreaterThan,
+                prop("v", "age"),
+                LogicalExpr::Literal(Literal::Integer(3)),
+            ),
+            binop(
+                Operator::Equal,
+                LogicalExpr::ScalarFnCall(ScalarFnCall {
+                    name: "toLower".to_string(),
+                    args: vec![prop("v", "name")],
+                }),
+                LogicalExpr::Literal(Literal::String("x".to_string())),
+            ),
+        );
+        assert!(!is_renderable_target_predicate(&e, "v"));
+    }
+
+    #[test]
+    fn rejects_case_hiding_non_target_alias() {
+        // v.age > 3 AND CASE WHEN u.age > 1 THEN true END
+        // The CASE both hides a non-target alias (u) AND is itself unrenderable.
+        let case = LogicalExpr::Case(LogicalCase {
+            expr: None,
+            when_then: vec![(
+                binop(
+                    Operator::GreaterThan,
+                    prop("u", "age"),
+                    LogicalExpr::Literal(Literal::Integer(1)),
+                ),
+                LogicalExpr::Literal(Literal::Boolean(true)),
+            )],
+            else_expr: None,
+        });
+        let e = binop(
+            Operator::And,
+            binop(
+                Operator::GreaterThan,
+                prop("v", "age"),
+                LogicalExpr::Literal(Literal::Integer(3)),
+            ),
+            case,
+        );
+        assert!(!is_renderable_target_predicate(&e, "v"));
+    }
+
+    #[test]
+    fn rejects_aggregate_fn_call() {
+        // count(v.age) — AggregateFnCall is unrenderable on this path
+        let e = LogicalExpr::AggregateFnCall(AggregateFnCall {
+            name: "count".to_string(),
+            args: vec![prop("v", "age")],
+        });
+        assert!(!is_renderable_target_predicate(&e, "v"));
     }
 }

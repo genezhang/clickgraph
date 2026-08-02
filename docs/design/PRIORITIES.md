@@ -475,6 +475,47 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **P-1 — projection pattern comprehension silently drops its inner
+  WHERE** (branch `fix/878-pattern-comp-inner-where`, closes #878). A PROJECTION
+  pattern comprehension with an inner filter — e.g.
+  `RETURN [(u)-[:FOLLOWS]->(v:User) WHERE v.age > 3 | v.name]` — returned the
+  *unfiltered* set (ground-rule-1 wrong answer): the `WHERE v.age > 3` never
+  appeared in the generated SQL. Two root causes, both fixed: (1) the
+  RETURN-position rewrite in `return_clause.rs` hardcoded `where_clause: None` in
+  the `PatternComprehensionMeta`, discarding the AST WHERE before it could reach
+  the renderer; (2) the projection builder `build_pattern_comprehension_sql`
+  (`pattern_comprehension_sql.rs`) had no WHERE parameter at all — its
+  `branch_where` was populated only from the polymorphic `type_column` / `$any`
+  label discriminators. Fix: convert the inner WHERE to a `LogicalExpr` and thread
+  it (plus the target variable name, captured via a widened `extract_target_info`)
+  through the meta into the builder; render it via a new
+  `render_target_where_predicate` that maps the target var → the `__tgt` join
+  alias (already joined in each property-projection branch, empty hops → no extra
+  JOIN) and resolves properties through the target node schema. A renderability
+  gate (`is_renderable_target_predicate`) drops the predicate to `None`
+  (preserving pre-#878 behavior — the whole inner WHERE was always absent on this
+  path — and never emitting invalid SQL) UNLESS the predicate is BOTH fully
+  renderable by `render_logical_expr_to_sql` (comparisons, boolean/arithmetic
+  operators, string-op predicates, `IS [NOT] NULL`, `NOT`, property accesses,
+  literals, parameters) AND references only the target var. The gate is
+  deliberately in lockstep with the renderer's actual capability: the renderer
+  has a catch-all that yields an empty fragment for unsupported variants
+  (`ScalarFnCall`, `List`/`IN`, `Case`, …), so naively rendering `WHERE v.age > 3
+  AND toLower(v.name)='x'` would emit dangling SQL — the gate rejects the whole
+  predicate instead. The `size([...WHERE...|proj])` form routes through the same
+  builder and is fixed by the same change; the count/correlated path
+  (`render_pc_where_clause`) was already correct and is untouched. corpus_sweep +
+  sql_golden 0-churn (fix is purely additive — a WHERE appears only when a
+  fully-renderable inner predicate exists); ratchet net-zero; new
+  fail-when-reverted golden (`pattern_comp_projection_inner_where_878` locks
+  `WHERE __tgt.age > 3`) + a base-no-WHERE byte-lock guard + 3 safe-drop goldens
+  (function / IN-list / partial-function-conjunct, each byte-identical to base) +
+  7 gate unit tests. SQL-shape-verified (no live CH). Adversarial review caught a
+  first-cut regression (an alias-only guard that diverged from the renderer,
+  emitting dangling SQL for function/IN/CASE predicates) — refixed to the
+  renderability gate above. **Follow-up #882**: actually APPLY function / IN-list
+  / CASE inner filters (currently dropped) by completing the shared
+  `render_logical_expr_to_sql` variant coverage.
 - 2026-08-02: **P-1 — IN / NOT IN with a null list element lost three-valued
   logic** (PR #877, branch `fix/855-in-null-3valued`, closes #855). Silent-wrong:
   `3 IN [1,2,null]` returned `false` and `3 NOT IN [1,null]` returned `true`,
@@ -500,7 +541,8 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   re-executed on live CH). **Follow-up #878**: projection pattern comprehension
   `[(a)-[:R]->(b) WHERE <pred> | b.prop]` silently drops the inner WHERE —
   `build_pattern_comprehension_sql` has no param for `pc_meta.where_clause`
-  (distinct code path from the size()/count forms that do thread it).
+  (distinct code path from the size()/count forms that do thread it). — DONE (see
+  #878 entry above).
 - 2026-08-02: **P-1 — exponentiation `^` verified fixed, #861 closed.** #861
   (filed pre-#862 as a Path-A infix-`^` residual) was already fully resolved by
   #862: all three Path-A `op_str` sites are guarded by `render_exponentiation` →
@@ -511,6 +553,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   <circumflex> <arithmetic unary>` (left-recursive → left-associative), so
   `2^3^2` = `(2^3)^2` = 64 is correct-by-spec. Verify-and-close only (no code
   change); PRIORITIES already logged #862.
+
 - 2026-08-02: **P-1 — #844 undirected-union buried grouping key loses per-arm
   origin/dest flip** (branch `fix/844-buried-union-groupby-key`, closes #844).
   Follow-up to #637. A grouping key BURIED inside an aggregate-bearing RETURN

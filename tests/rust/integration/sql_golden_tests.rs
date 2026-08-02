@@ -508,6 +508,45 @@ const CORPUS: &[(&str, &str)] = &[
         "group_two_keys",
         "MATCH (u:User) RETURN u.country, u.city, count(u) AS n",
     ),
+    // #878: a PROJECTION pattern comprehension with an inner WHERE must render
+    // that predicate against the target (`__tgt`) — previously it was silently
+    // dropped, returning the unfiltered set (ground-rule-1 wrong answer). The
+    // golden locks `WHERE __tgt.age > 3` inside the groupArray subquery. The
+    // `v.name`→`__tgt.full_name` projection and `v.age`→`__tgt.age` predicate
+    // both flow through the target node schema's property mappings.
+    (
+        "pattern_comp_projection_inner_where_878",
+        "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) WHERE v.age > 3 | v.name] AS names",
+    ),
+    // #878 byte-lock guard: the base (no-WHERE) projection form must stay
+    // byte-identical — the fix is purely additive (a WHERE appears only when an
+    // inner predicate exists). If this churns, the fix leaked into the base path.
+    (
+        "pattern_comp_projection_no_where_878",
+        "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) | v.name] AS names",
+    ),
+    // #878 safe-drop guard: an inner WHERE the projection-path renderer cannot
+    // emit faithfully (a scalar function call — `render_logical_expr_to_sql`
+    // has no arm for `ScalarFnCall`) must be DROPPED WHOLE, yielding the same
+    // byte-identical no-WHERE subquery as the base form — never a dangling
+    // `WHERE  = 'bob'`. Locks the renderability gate (`is_renderable_target_predicate`).
+    (
+        "pattern_comp_projection_where_fn_dropped_878",
+        "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) WHERE toLower(v.name) = 'bob' | v.name] AS names",
+    ),
+    // #878 safe-drop guard: an `IN [list]` predicate must drop whole (the `List`
+    // RHS is unrenderable → would emit a dangling `IN `). Byte-identical to base.
+    (
+        "pattern_comp_projection_where_inlist_dropped_878",
+        "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) WHERE v.age IN [1,2,3] | v.name] AS names",
+    ),
+    // #878 safe-drop guard: a renderable target predicate AND-ed with an
+    // unrenderable function call must drop WHOLE (not partially render the
+    // renderable conjunct into a dangling `AND`). Byte-identical to base.
+    (
+        "pattern_comp_projection_where_partial_fn_dropped_878",
+        "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) WHERE v.age > 3 AND toLower(v.name) = 'x' | v.name] AS names",
+    ),
     // NOTE: Path D coverage (EXISTS / pattern-predicate, e.g.
     // `WHERE (u)-[:AUTHORED]->(:Post)`) is intentionally absent — that path
     // currently hits `unimplemented!` in render_expr for anonymous pattern

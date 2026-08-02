@@ -240,26 +240,36 @@ fn extract_target_info(
     pattern: &crate::open_cypher_parser::ast::PathPattern<'_>,
     projection: &crate::open_cypher_parser::ast::Expression<'_>,
     correlation_var: &str,
-) -> (Option<String>, Option<String>) {
+) -> (Option<String>, Option<String>, Option<String>) {
     use crate::open_cypher_parser::ast::PathPattern;
 
-    // Extract target node label from the pattern (the node that is NOT the correlation var)
-    let target_label = match pattern {
-        PathPattern::ConnectedPattern(connected) => {
-            connected.iter().find_map(|conn| {
+    // Extract target node label + variable name from the pattern (the node that
+    // is NOT the correlation var). The variable name is needed so an inner WHERE
+    // predicate referencing the target (e.g. `WHERE v.age > 3`) can be mapped to
+    // the `__tgt` join alias when rendered.
+    let (target_label, target_var) = match pattern {
+        PathPattern::ConnectedPattern(connected) => connected
+            .iter()
+            .find_map(|conn| {
                 let start = conn.start_node.borrow();
                 let end = conn.end_node.borrow();
                 // Target is the node that is NOT the correlation variable
                 if start.name.map(|n| n == correlation_var).unwrap_or(false) {
-                    end.first_label().map(|l| l.to_string())
+                    Some((
+                        end.first_label().map(|l| l.to_string()),
+                        end.name.map(|n| n.to_string()),
+                    ))
                 } else if end.name.map(|n| n == correlation_var).unwrap_or(false) {
-                    start.first_label().map(|l| l.to_string())
+                    Some((
+                        start.first_label().map(|l| l.to_string()),
+                        start.name.map(|n| n.to_string()),
+                    ))
                 } else {
                     None
                 }
             })
-        }
-        _ => None,
+            .unwrap_or((None, None)),
+        _ => (None, None),
     };
 
     // Extract property from the projection expression (e.g., f.name → "name")
@@ -270,7 +280,7 @@ fn extract_target_info(
         _ => None,
     };
 
-    (target_label, target_property)
+    (target_label, target_property, target_var)
 }
 
 /// Rewrite pattern comprehensions in return items
@@ -460,8 +470,15 @@ fn rewrite_pattern_comprehensions<'a>(
             let (direction, rel_types) = extract_direction_and_rel_types(&pattern);
 
             // Extract target node label and projected property from the pattern
-            let (target_label, target_property) =
+            let (target_label, target_property, target_var) =
                 extract_target_info(&pattern, &projection, &correlation_var);
+
+            // Convert the pattern comprehension's inner WHERE (if any) to a
+            // LogicalExpr so the projection subquery can apply it. Without this
+            // the filter is silently dropped (#878).
+            let pc_where_clause = _where_clause.as_ref().and_then(|w| {
+                crate::query_planner::logical_expr::LogicalExpr::try_from(w.as_ref().clone()).ok()
+            });
 
             // Determine aggregation type from the rewritten expression
             let agg_type = match &rewritten_expr {
@@ -506,9 +523,10 @@ fn rewrite_pattern_comprehensions<'a>(
                     result_alias: result_alias.clone(),
                     target_label,
                     target_property,
+                    target_var,
                     correlation_vars: vec![],
                     pattern_hops: vec![],
-                    where_clause: None,
+                    where_clause: pc_where_clause,
                     position_index: pc_counter,
                     list_constraint: None,
                 },
