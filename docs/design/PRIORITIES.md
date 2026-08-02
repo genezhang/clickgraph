@@ -499,6 +499,31 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **Fix — expression-WRAPPED buried grouping key now flips per arm
+  on a denorm undirected union** (branch `fix/876-wrapped-buried-groupby-key`,
+  closes #876; #844 residual). #844 restored the per-arm origin/dest flip for a
+  grouping key buried in an aggregate-bearing RETURN item
+  (`a.code + toString(count(r))`) on a bidirectional-union denorm match, but
+  gated the per-arm override on the key being a bare `PropertyAccessExp`/`Column`.
+  A key WRAPPED in a scalar fn (`toUpper(a.code) + toString(count(r))`,
+  `coalesce(a.code,'x') + …`) is a `ScalarFnCall`, so it skipped the override and
+  both arms baked the origin column → the identical **silent under-count** #844
+  fixed. **Fix:** in `build_branch_inner_select_with_own_items`
+  (`to_sql_query.rs`), instead of gating on the whole key being a bare column,
+  walk the key with `collect_property_access_sql` for the denorm COMPONENT columns
+  it references and record a per-COMPONENT override — the inner SELECT already
+  exports those component columns and the emission side already looks them up by
+  component SQL, so the map just needed component-level keys. For a bare key the
+  component IS the key → #844 path byte-identical. Both wrapped arms now correctly
+  read `r.origin_code`/`r.dest_code AS "r.origin_code"`. 4 dual-dialect goldens
+  (upper, coalesce × CH/Databricks), all fail-when-reverted; #844 bare+buried
+  goldens byte-unchanged. corpus_sweep 0-churn; ratchet net-zero; full gate green.
+  SQL-shape-verified both dialects (no live CH). **Out of scope / filed separately:
+  #906** — the CASE-buried form (`CASE WHEN count(r)>5 THEN a.code ELSE 'x' END`)
+  has an upstream property-mapping defect (the denorm column leaks unmapped as a
+  phantom `r.code`, so no real column reaches the flip); byte-identical on main
+  and here (not a regression), rooted in grouping-key extraction
+  (`groupby-three-split-sites` class), not the union override.
 - 2026-08-02: **Fix — chained double-WITH rename of a scalar no longer drops
   the alias** (branch `fix/886-chained-with-rename`, closes #886; follow-up to
   #864). `UNWIND [1,2,3] AS x WITH x AS y WITH y AS z RETURN count(z)` (and the

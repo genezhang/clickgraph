@@ -4589,45 +4589,62 @@ fn build_branch_inner_select_with_own_items(
     let mut key_branch_overrides: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     for g in group_by_exprs {
-        // Only qualified column/property keys are exported into the inner SELECT
-        // (see `collect_property_access_sql`); bare keys aren't, so skip them.
-        if !matches!(g, RenderExpr::PropertyAccessExp(_) | RenderExpr::Column(_)) {
-            continue;
-        }
-        let g_sql = g.to_sql();
-        if !g_sql.contains('.') {
-            continue;
-        }
-        // If a standalone non-agg outer item already exports this key, the normal
-        // per-branch projection handles the flip (the bare-key path) — no override.
-        if outer_select.items.iter().any(|it| {
-            !render_expr_contains_aggregate(&it.expression) && it.expression.to_sql() == g_sql
-        }) {
-            continue;
-        }
-        // Buried key: find the aggregate-bearing outer item whose tree contains it,
-        // then the same-alias branch item, then this arm's corresponding column.
-        let Some(outer_item) = outer_select.items.iter().find(|it| {
-            render_expr_contains_aggregate(&it.expression)
-                && corresponding_branch_subexpr(&it.expression, &it.expression, &g_sql).is_some()
-        }) else {
-            continue;
-        };
-        let Some(branch_item) = branch_select
-            .items
-            .iter()
-            .find(|it| it.col_alias == outer_item.col_alias)
-        else {
-            continue;
-        };
-        if let Some(bcol) =
-            corresponding_branch_subexpr(&outer_item.expression, &branch_item.expression, &g_sql)
-        {
-            let bcol_sql = bcol.to_sql();
-            // Only record a real flip; when this arm's column already equals the
-            // key (arm0, or any non-denorm schema) the emission is unchanged.
-            if bcol_sql != g_sql {
-                key_branch_overrides.insert(g_sql, bcol_sql);
+        // Resolve the per-arm flip against each denorm COLUMN the key references,
+        // not the key as a whole. A bare key (`r.origin_code`, #844) references
+        // exactly itself; an expression-WRAPPED key (`upper(r.origin_code)`,
+        // `coalesce(r.origin_code,'x')`, #876) references the same column as a
+        // sub-expression. The inner SELECT exports those component columns (see
+        // `collect_property_access_sql` on `extra_required_exprs` in
+        // `build_union_inner_select`) and looks up the override by the component
+        // column's SQL — so the map must be keyed by component column, which for
+        // a bare key collapses to the #844 behavior (byte-identical).
+        let mut key_cols: Vec<String> = Vec::new();
+        collect_property_access_sql(g, &mut key_cols);
+        for g_sql in key_cols {
+            // Only qualified column refs are exported into the inner SELECT.
+            if !g_sql.contains('.') {
+                continue;
+            }
+            if key_branch_overrides.contains_key(&g_sql) {
+                continue;
+            }
+            // If a standalone non-agg outer item already exports this column, the
+            // normal per-branch projection handles the flip (the bare-key path) —
+            // no override.
+            if outer_select.items.iter().any(|it| {
+                !render_expr_contains_aggregate(&it.expression) && it.expression.to_sql() == g_sql
+            }) {
+                continue;
+            }
+            // Buried column: find the aggregate-bearing outer item whose tree
+            // contains it, then the same-alias branch item, then this arm's
+            // corresponding column.
+            let Some(outer_item) = outer_select.items.iter().find(|it| {
+                render_expr_contains_aggregate(&it.expression)
+                    && corresponding_branch_subexpr(&it.expression, &it.expression, &g_sql)
+                        .is_some()
+            }) else {
+                continue;
+            };
+            let Some(branch_item) = branch_select
+                .items
+                .iter()
+                .find(|it| it.col_alias == outer_item.col_alias)
+            else {
+                continue;
+            };
+            if let Some(bcol) = corresponding_branch_subexpr(
+                &outer_item.expression,
+                &branch_item.expression,
+                &g_sql,
+            ) {
+                let bcol_sql = bcol.to_sql();
+                // Only record a real flip; when this arm's column already equals
+                // the key (arm0, or any non-denorm schema) the emission is
+                // unchanged.
+                if bcol_sql != g_sql {
+                    key_branch_overrides.insert(g_sql, bcol_sql);
+                }
             }
         }
     }
