@@ -690,6 +690,38 @@ const CORPUS: &[(&str, &str)] = &[
         "pattern_comp_projection_corrvar_fallback_863",
         "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) | u.age + v.age] AS x",
     ),
+    // #866: plain list comprehension in projection position lowers to nested
+    // ClickHouse `arrayMap`/`arrayFilter` (Spark `transform`/`filter` with the
+    // args swapped, since Spark HOFs take (collection, lambda) and CH takes
+    // (lambda, collection)). Four shapes:
+    //   WHERE only  -> arrayFilter(x -> p, l)          / filter(l, x -> p)
+    //   `|` only    -> arrayMap(x -> e, l)             / transform(l, x -> e)
+    //   both        -> arrayMap(x -> e, arrayFilter(x -> p, l)) / nested Spark
+    //   identity    -> the bare list (no wrap)
+    // The lambda-bound var is kept as a local variable (projection tagging
+    // shadows it — see projection_tagging.rs Lambda arm), NOT resolved as a
+    // graph alias.
+    (
+        "listcomp_where_only_866",
+        "RETURN [x IN [1, 2, 3] WHERE x > 1] AS c",
+    ),
+    ("listcomp_map_only_866", "RETURN [x IN [1, 2, 3] | x * 2] AS c"),
+    (
+        "listcomp_where_and_map_866",
+        "RETURN [x IN range(1, 5) WHERE x % 2 = 0 | x * 10] AS c",
+    ),
+    // The list source is a WITH-bound alias (resolves to the CTE column `lst.lst`
+    // inside the lambda's collection arg, while the lambda var `x` stays local).
+    (
+        "listcomp_with_bound_list_866",
+        "WITH [1, 2, 3, 4] AS lst RETURN [x IN lst WHERE x > 2] AS c",
+    ),
+    // Nested comprehension: the inner lambda var `y` and outer `x` are both local;
+    // the inner list `range(1, x)` references the outer lambda var.
+    (
+        "listcomp_nested_866",
+        "RETURN [x IN range(1, 3) | [y IN range(1, x) | y]] AS c",
+    ),
     // NOTE: Path D coverage (EXISTS / pattern-predicate, e.g.
     // `WHERE (u)-[:AUTHORED]->(:Post)`) is intentionally absent — that path
     // currently hits `unimplemented!` in render_expr for anonymous pattern

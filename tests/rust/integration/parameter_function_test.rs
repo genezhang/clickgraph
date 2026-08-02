@@ -427,19 +427,27 @@ fn test_function_on_parameter_in_return() {
 }
 
 #[test]
-fn test_list_comprehension_in_return_errors_not_panics() {
-    // Regression: a list comprehension in RETURN reaches ProjectionItem
-    // conversion without any rewrite pass having lowered it. That conversion
-    // used to `.expect()` on the failing `LogicalExpr::try_from`, PANICKING the
-    // worker thread and taking down the whole server on otherwise-valid Cypher.
-    // It must now surface as a clean planning error (Err), not a panic.
+fn test_list_comprehension_in_return_lowers_not_panics() {
+    // #866: a scalar list comprehension in RETURN now lowers to nested
+    // arrayMap/arrayFilter (previously it reached ProjectionItem conversion with
+    // no rewrite pass having lowered it — first PANICKING the worker thread on
+    // otherwise-valid Cypher, then #612 downgraded it to a clean planning Err,
+    // and #866 finally supports it). It must plan successfully AND never panic.
     let query = "MATCH (n:User) RETURN [x IN [1, 2, 3, 4] WHERE x > 2] AS r";
     let ast = parse_query(query).expect("Failed to parse query");
     let schema = create_test_schema();
 
-    let result = build_logical_plan(&ast, &schema, None, None, None);
+    let (logical_plan, plan_ctx) =
+        build_logical_plan(&ast, &schema, None, None, None).expect("should plan, not error/panic");
+    let render_plan =
+        logical_plan_to_render_plan_with_ctx((*logical_plan).clone(), &schema, Some(&plan_ctx))
+            .expect("Failed to render SQL");
+    let sql = render_plan.to_sql();
+
+    // Lowered to CH arrayFilter(x -> x > 2, [1,2,3,4]) — no lingering raw
+    // comprehension, and the lambda-bound `x` stays local (not a graph alias).
     assert!(
-        result.is_err(),
-        "list comprehension in RETURN should return a planning error, not panic"
+        sql.contains("arrayFilter(x -> x > 2"),
+        "expected arrayFilter lowering, got:\n{sql}"
     );
 }

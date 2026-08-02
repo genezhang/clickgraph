@@ -490,7 +490,37 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
-<<<<<<< HEAD
+- 2026-08-02: **Feature — list comprehension in RETURN/WITH projection now
+  supported** (branch `feature/866-list-comprehension-lowering`, closes #866).
+  A plain `[x IN list WHERE p | e]` in projection position failed loud
+  (`ListComprehensionNotRewritten`) — no rewrite pass lowered it. Fix, mirroring
+  how `reduce(...)` lowers to `arrayFold`: a pure `ast_conversion.rs` lowering
+  (Option A — NO new `LogicalExpr`/`RenderExpr` variant) builds nested
+  CH-native `ScalarFnCall`s carrying `Lambda` args —
+  `[x IN l WHERE p | e]` → `arrayMap(x -> e, arrayFilter(x -> p, l))`; WHERE-only
+  → `arrayFilter`; `|`-only → `arrayMap`; identity → the bare list. Reuses the
+  existing `ScalarFnCall`+`Lambda` render paths (Path A and the WITH→CTE path),
+  so ZERO new CH render code. **Conservative guard:** a WHERE holding a graph
+  pattern (`[p IN posts WHERE (p)-[:R]->()]`) has no scalar lowering — it keeps
+  returning `ListComprehensionNotRewritten` (routed elsewhere inside
+  `size()`/`length()`, so #612/#629 are byte-unchanged). Two supporting fixes:
+  (1) **Databricks/Spark mapping** — registered `arrayFilter`→`filter`,
+  `arrayMap`→`transform` in `function_registry.rs` with a dialect-gated arg swap
+  (Spark HOFs take `(collection, lambda)`, CH takes `(lambda, collection)`;
+  swap Databricks-only, like `split`), routed through `FunctionMapper`/`Dialect`
+  (Rule #7); CH byte-identical. (2) **Latent lambda-param bug fixed** — the
+  `projection_tagging.rs` `Lambda` arm documented "params are local variables
+  (don't resolve them)" but tagged the whole body, so a bound param `x` (a
+  `TableAlias`) errored `No table context for alias 'x'` — which broke even
+  explicit `ch.arrayFilter(x -> …, …)` today. Now the arm registers each param
+  as a projection alias for the duration of body tagging (save/restore to honor
+  shadowing), so the param stays a local. 10 new dual-dialect goldens (5 shapes ×
+  CH/Databricks: WHERE-only, map-only, both, WITH-bound list, nested) + 6
+  `ast_conversion` unit tests (4 lowering shapes + 2 pattern-predicate loud-fail
+  negative controls); updated the #612 "errors-not-panics" regression to
+  "lowers-not-panics". corpus_sweep 0-churn; sql_golden +10; ratchet net-zero;
+  full gate green (lib 1669, integration 542). SQL-shape-verified both dialects
+  (no live CH). Entirely outside the VLP files bronco owns (#887).
 - 2026-08-02: **P-1 — temporal component access / duration arithmetic on a native
   Date column threw CH Code 43** (branch `fix/854-temporal-date-epoch-wrap`,
   closes #854). PR3 (final) of the operand-typing design cycle. `year(x)`/`month(x)`

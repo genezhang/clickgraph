@@ -690,8 +690,59 @@ impl<'a> std::convert::TryFrom<open_cypher_parser::ast::Expression<'a>> for Logi
             Expression::PatternComprehension(_) => {
                 Err(errors::LogicalExprError::PatternComprehensionNotRewritten)
             }
-            Expression::ListComprehension(_) => {
-                Err(errors::LogicalExprError::ListComprehensionNotRewritten)
+            Expression::ListComprehension(lc) => {
+                // #866: lower a plain (scalar) list comprehension in projection
+                // position to nested ClickHouse `arrayMap`/`arrayFilter` calls,
+                // mirroring how `reduce(...)` lowers to `arrayFold`. The four
+                // shapes:
+                //   [x IN l WHERE p | e] -> arrayMap(x->e, arrayFilter(x->p, l))
+                //   [x IN l WHERE p]     -> arrayFilter(x->p, l)
+                //   [x IN l | e]         -> arrayMap(x->e, l)
+                //   [x IN l]             -> l              (identity)
+                // CONSERVATIVE GUARD: a WHERE holding a graph pattern
+                // (`[p IN posts WHERE (p)-[:R]->()]`) has NO scalar lowering and
+                // is handled upstream inside `size()`/`length()`
+                // (with_clause.rs). Such a bare pattern-predicate comprehension
+                // keeps failing loud here so #612/#629 routing is byte-unchanged.
+                if let Some(ref where_expr) = lc.where_clause {
+                    if list_comprehension_where_has_pattern(where_expr) {
+                        return Err(errors::LogicalExprError::ListComprehensionNotRewritten);
+                    }
+                }
+
+                let var = lc.variable.to_string();
+                let list = Self::try_from(*lc.list_expr)?;
+
+                // Inner: filter, only when a (scalar) WHERE is present.
+                let filtered = match lc.where_clause {
+                    Some(where_expr) => LogicalExpr::ScalarFnCall(ScalarFnCall {
+                        name: "arrayFilter".to_string(),
+                        args: vec![
+                            LogicalExpr::Lambda(LambdaExpr {
+                                params: vec![var.clone()],
+                                body: Box::new(Self::try_from(*where_expr)?),
+                            }),
+                            list,
+                        ],
+                    }),
+                    None => list,
+                };
+
+                // Outer: map, only when a projection (`| expr`) is present.
+                // `None` = identity projection, so the filtered list is the result.
+                match lc.projection {
+                    Some(proj) => Ok(LogicalExpr::ScalarFnCall(ScalarFnCall {
+                        name: "arrayMap".to_string(),
+                        args: vec![
+                            LogicalExpr::Lambda(LambdaExpr {
+                                params: vec![var],
+                                body: Box::new(Self::try_from(*proj)?),
+                            }),
+                            filtered,
+                        ],
+                    })),
+                    None => Ok(filtered),
+                }
             }
             Expression::ArraySubscript { array, index } => Ok(LogicalExpr::ArraySubscript {
                 array: Box::new(LogicalExpr::try_from(*array)?),
@@ -707,5 +758,188 @@ impl<'a> std::convert::TryFrom<open_cypher_parser::ast::Expression<'a>> for Logi
                     .transpose()?,
             }),
         }
+    }
+}
+
+/// #866: returns true if a list-comprehension WHERE clause contains a graph
+/// pattern (`(p)-[:R]->()`), recursing through operator operands (AND/OR/NOT).
+/// A pattern-predicate comprehension has no scalar `arrayFilter` lowering — it
+/// is handled upstream inside `size()`/`length()` (with_clause.rs) — so we keep
+/// it failing loud rather than emit wrong SQL. Mirrors
+/// `extract_path_pattern_from_expression` in `logical_plan::with_clause`.
+fn list_comprehension_where_has_pattern(expr: &open_cypher_parser::ast::Expression<'_>) -> bool {
+    use open_cypher_parser::ast::Expression;
+    match expr {
+        Expression::PathPattern(_) => true,
+        Expression::OperatorApplicationExp(op) => {
+            op.operands.iter().any(list_comprehension_where_has_pattern)
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod listcomp_lowering_tests {
+    //! #866: a plain (scalar) list comprehension in projection position lowers
+    //! to nested `arrayMap`/`arrayFilter` `ScalarFnCall`s carrying `Lambda`
+    //! args. A pattern-predicate WHERE has no scalar lowering and keeps failing
+    //! loud (routed elsewhere for `size([...])`).
+    use super::*;
+    use crate::open_cypher_parser::ast::{
+        Expression, ListComprehension, Literal as AstLiteral, NodePattern, Operator,
+        OperatorApplication, PathPattern as AstPathPattern,
+    };
+
+    /// `[1, 2, 3]` as an AST list expression.
+    fn list_123<'a>() -> Expression<'a> {
+        Expression::List(vec![
+            Expression::Literal(AstLiteral::Integer(1)),
+            Expression::Literal(AstLiteral::Integer(2)),
+            Expression::Literal(AstLiteral::Integer(3)),
+        ])
+    }
+
+    /// `x <op> <int>` scalar predicate/projection over the iteration var.
+    fn bin_x<'a>(op: Operator, rhs: i64) -> Expression<'a> {
+        Expression::OperatorApplicationExp(OperatorApplication {
+            operator: op,
+            operands: vec![
+                Expression::Variable("x"),
+                Expression::Literal(AstLiteral::Integer(rhs)),
+            ],
+        })
+    }
+
+    fn lower(lc: ListComprehension<'_>) -> Result<LogicalExpr, errors::LogicalExprError> {
+        LogicalExpr::try_from(Expression::ListComprehension(lc))
+    }
+
+    fn scalar_fn(expr: &LogicalExpr) -> &ScalarFnCall {
+        match expr {
+            LogicalExpr::ScalarFnCall(f) => f,
+            other => panic!("expected ScalarFnCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn where_only_lowers_to_array_filter() {
+        // [x IN [1,2,3] WHERE x > 1] -> arrayFilter(x -> x > 1, [1,2,3])
+        let lowered = lower(ListComprehension {
+            variable: "x",
+            list_expr: Box::new(list_123()),
+            where_clause: Some(Box::new(bin_x(Operator::GreaterThan, 1))),
+            projection: None,
+        })
+        .unwrap();
+        let f = scalar_fn(&lowered);
+        assert_eq!(f.name, "arrayFilter");
+        assert_eq!(f.args.len(), 2);
+        match &f.args[0] {
+            LogicalExpr::Lambda(l) => assert_eq!(l.params, vec!["x".to_string()]),
+            other => panic!("expected Lambda, got {other:?}"),
+        }
+        assert!(matches!(&f.args[1], LogicalExpr::List(_)));
+    }
+
+    #[test]
+    fn map_only_lowers_to_array_map() {
+        // [x IN [1,2,3] | x * 2] -> arrayMap(x -> x * 2, [1,2,3])
+        let lowered = lower(ListComprehension {
+            variable: "x",
+            list_expr: Box::new(list_123()),
+            where_clause: None,
+            projection: Some(Box::new(bin_x(Operator::Multiplication, 2))),
+        })
+        .unwrap();
+        let f = scalar_fn(&lowered);
+        assert_eq!(f.name, "arrayMap");
+        assert_eq!(f.args.len(), 2);
+        assert!(matches!(&f.args[0], LogicalExpr::Lambda(_)));
+        assert!(matches!(&f.args[1], LogicalExpr::List(_)));
+    }
+
+    #[test]
+    fn where_and_map_nests_map_over_filter() {
+        // [x IN l WHERE p | e] -> arrayMap(x -> e, arrayFilter(x -> p, l))
+        let lowered = lower(ListComprehension {
+            variable: "x",
+            list_expr: Box::new(list_123()),
+            where_clause: Some(Box::new(bin_x(Operator::GreaterThan, 1))),
+            projection: Some(Box::new(bin_x(Operator::Multiplication, 10))),
+        })
+        .unwrap();
+        let outer = scalar_fn(&lowered);
+        assert_eq!(outer.name, "arrayMap");
+        // The map's collection arg is the inner arrayFilter.
+        let inner = scalar_fn(&outer.args[1]);
+        assert_eq!(inner.name, "arrayFilter");
+        assert!(matches!(&inner.args[1], LogicalExpr::List(_)));
+    }
+
+    #[test]
+    fn identity_lowers_to_bare_list() {
+        // [x IN [1,2,3]] -> [1,2,3] (no filter, no map)
+        let lowered = lower(ListComprehension {
+            variable: "x",
+            list_expr: Box::new(list_123()),
+            where_clause: None,
+            projection: None,
+        })
+        .unwrap();
+        assert!(
+            matches!(&lowered, LogicalExpr::List(items) if items.len() == 3),
+            "expected bare List, got {lowered:?}"
+        );
+    }
+
+    #[test]
+    fn pattern_predicate_where_keeps_failing_loud() {
+        // A graph-pattern WHERE has no scalar lowering — it must return the
+        // ListComprehensionNotRewritten error unchanged (routed elsewhere for
+        // `size([...])`, #612/#629), never silently emit wrong SQL. The guard
+        // fires on any `Expression::PathPattern` in the WHERE; the inner pattern
+        // shape is irrelevant, so a bare `PathPattern::Node` suffices here.
+        let pattern = Expression::PathPattern(AstPathPattern::Node(NodePattern {
+            name: Some("p"),
+            labels: None,
+            properties: None,
+        }));
+        let err = lower(ListComprehension {
+            variable: "p",
+            list_expr: Box::new(Expression::Variable("posts")),
+            where_clause: Some(Box::new(pattern)),
+            projection: None,
+        })
+        .unwrap_err();
+        assert!(
+            matches!(err, errors::LogicalExprError::ListComprehensionNotRewritten),
+            "expected ListComprehensionNotRewritten, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn pattern_predicate_nested_in_operator_still_fails_loud() {
+        // The guard recurses through operator operands, so a pattern buried in
+        // `AND`/`NOT`/`OR` (`WHERE x > 0 AND (p)-[...]->()`) is still caught.
+        let pattern = Expression::PathPattern(AstPathPattern::Node(NodePattern {
+            name: Some("p"),
+            labels: None,
+            properties: None,
+        }));
+        let where_clause = Expression::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::And,
+            operands: vec![bin_x(Operator::GreaterThan, 0), pattern],
+        });
+        let err = lower(ListComprehension {
+            variable: "p",
+            list_expr: Box::new(Expression::Variable("posts")),
+            where_clause: Some(Box::new(where_clause)),
+            projection: None,
+        })
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            errors::LogicalExprError::ListComprehensionNotRewritten
+        ));
     }
 }

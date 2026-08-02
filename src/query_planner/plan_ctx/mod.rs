@@ -331,6 +331,15 @@ impl PlanCtx {
         self.projection_aliases.contains_key(alias)
     }
 
+    /// Remove a projection alias, returning its expression if it was present.
+    /// Used to scope lambda-bound parameter names to the lambda body during
+    /// projection tagging (#866): the param is registered before tagging the
+    /// body and removed after, so a bare param reference is kept as-is (a local
+    /// variable) instead of being resolved as a graph alias.
+    pub fn remove_projection_alias(&mut self, alias: &str) -> Option<LogicalExpr> {
+        self.projection_aliases.remove(alias)
+    }
+
     /// Get the original expression for a projection alias
     pub fn get_projection_alias_expr(&self, alias: &str) -> Option<&LogicalExpr> {
         self.projection_aliases.get(alias)
