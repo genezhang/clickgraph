@@ -1939,6 +1939,22 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                     mapper.cast_float64_or_null(&args[0])
                 };
             }
+            // #866: arrayFilter/arrayMap (list-comprehension lowering) need the
+            // dialect name + arg swap on this Path-C renderer too. Spark's
+            // filter/transform take (collection, lambda); CH's arrayFilter/
+            // arrayMap take (lambda, collection). `dialect_function_name` below
+            // deliberately SKIPS registry entries that carry an `arg_transform`
+            // (it can't rewrite args), so without this a list comprehension
+            // reaching Path C — e.g. `size([x IN l WHERE p])` inside a VLP WHERE
+            // filter — would emit the raw CH name + CH arg order on Spark
+            // (invalid). The shared helper applies BOTH, matching Path A
+            // (to_sql_query.rs), routing through the registry (no inline dialect
+            // branch here — Rule #7).
+            if let Some(sql) =
+                crate::clickhouse_query_generator::list_higher_order_fn_sql(&fn_lower, &args)
+            {
+                return sql;
+            }
             // Map dialect-divergent names (e.g. tuple -> Spark struct) via the registry.
             let name = crate::clickhouse_query_generator::dialect_function_name(&func.name);
             format!("{}({})", name, args.join(", "))

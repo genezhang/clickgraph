@@ -451,3 +451,23 @@ fn test_list_comprehension_in_return_lowers_not_panics() {
         "expected arrayFilter lowering, got:\n{sql}"
     );
 }
+
+#[test]
+fn test_list_comprehension_with_hidden_pattern_errors_not_panics() {
+    // #866 guard: a graph pattern hidden in a CASE inside the comprehension
+    // WHERE has no scalar per-element lowering. It must surface as a clean
+    // planning Err (ListComprehensionNotRewritten), NOT lower into a lambda body
+    // that renders a pattern in expression context — a pre-existing
+    // `unimplemented!` PANIC at render_expr.rs. Locks the no-panic behavior at
+    // the full-planner level (the classifier guard recurses into CASE/exists/…).
+    let query = "MATCH (n:User) WITH collect(n) AS ns \
+                 RETURN [p IN ns WHERE CASE WHEN (p)-[:FOLLOWS]->() THEN true ELSE false END] AS r";
+    let ast = parse_query(query).expect("Failed to parse query");
+    let schema = create_test_schema();
+
+    let result = build_logical_plan(&ast, &schema, None, None, None);
+    assert!(
+        result.is_err(),
+        "a pattern hidden in a list-comprehension CASE should error, not panic"
+    );
+}

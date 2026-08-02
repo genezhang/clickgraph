@@ -699,15 +699,27 @@ impl<'a> std::convert::TryFrom<open_cypher_parser::ast::Expression<'a>> for Logi
                 //   [x IN l WHERE p]     -> arrayFilter(x->p, l)
                 //   [x IN l | e]         -> arrayMap(x->e, l)
                 //   [x IN l]             -> l              (identity)
-                // CONSERVATIVE GUARD: a WHERE holding a graph pattern
-                // (`[p IN posts WHERE (p)-[:R]->()]`) has NO scalar lowering and
-                // is handled upstream inside `size()`/`length()`
-                // (with_clause.rs). Such a bare pattern-predicate comprehension
-                // keeps failing loud here so #612/#629 routing is byte-unchanged.
-                if let Some(ref where_expr) = lc.where_clause {
-                    if list_comprehension_where_has_pattern(where_expr) {
-                        return Err(errors::LogicalExprError::ListComprehensionNotRewritten);
-                    }
+                // CONSERVATIVE GUARD: a graph pattern anywhere in the WHERE or
+                // projection (`[p IN posts WHERE (p)-[:R]->()]`, or hidden inside
+                // a CASE / exists() / function arg) has NO scalar per-element
+                // lowering — the pattern is a graph traversal, not an array
+                // predicate. Such comprehensions keep failing loud here
+                // (`ListComprehensionNotRewritten`) rather than lowering into a
+                // lambda body that renders a pattern in expression context (a
+                // pre-existing `unimplemented!` panic at
+                // render_expr.rs). `size([...])`-wrapped pattern comprehensions
+                // are already intercepted upstream (with_clause.rs, #612/#629),
+                // so this is the guard for the BARE projection-position form.
+                if lc
+                    .where_clause
+                    .as_deref()
+                    .is_some_and(expr_contains_path_pattern)
+                    || lc
+                        .projection
+                        .as_deref()
+                        .is_some_and(expr_contains_path_pattern)
+                {
+                    return Err(errors::LogicalExprError::ListComprehensionNotRewritten);
                 }
 
                 let var = lc.variable.to_string();
@@ -761,20 +773,79 @@ impl<'a> std::convert::TryFrom<open_cypher_parser::ast::Expression<'a>> for Logi
     }
 }
 
-/// #866: returns true if a list-comprehension WHERE clause contains a graph
-/// pattern (`(p)-[:R]->()`), recursing through operator operands (AND/OR/NOT).
-/// A pattern-predicate comprehension has no scalar `arrayFilter` lowering — it
-/// is handled upstream inside `size()`/`length()` (with_clause.rs) — so we keep
-/// it failing loud rather than emit wrong SQL. Mirrors
-/// `extract_path_pattern_from_expression` in `logical_plan::with_clause`.
-fn list_comprehension_where_has_pattern(expr: &open_cypher_parser::ast::Expression<'_>) -> bool {
+/// #866: returns true if a list-comprehension WHERE or projection expression
+/// contains a graph pattern anywhere — a bare `PathPattern`, or one nested
+/// inside an operator / CASE / function arg / EXISTS / pattern-comprehension /
+/// another comprehension. Such an expression has no scalar per-element
+/// `arrayFilter`/`arrayMap` lowering (the pattern is a graph traversal, not an
+/// array predicate), so the comprehension keeps failing loud
+/// (`ListComprehensionNotRewritten`) instead of lowering into a lambda body
+/// that renders a pattern in expression context — a pre-existing
+/// `unimplemented!` panic at `render_expr.rs`.
+///
+/// The match is exhaustive (no catch-all) so a new `Expression` variant that
+/// could carry a pattern is a compile error here until it is classified,
+/// rather than silently slipping a pattern through to the panic path.
+fn expr_contains_path_pattern(expr: &open_cypher_parser::ast::Expression<'_>) -> bool {
     use open_cypher_parser::ast::Expression;
     match expr {
-        Expression::PathPattern(_) => true,
+        // Directly a pattern, or a node whose very presence implies a pattern.
+        Expression::PathPattern(_)
+        | Expression::ExistsExpression(_)
+        | Expression::PatternComprehension(_) => true,
+
+        // Recurse through every expression-bearing child.
+        Expression::List(items) => items.iter().any(expr_contains_path_pattern),
+        Expression::FunctionCallExp(fc) => fc.args.iter().any(expr_contains_path_pattern),
         Expression::OperatorApplicationExp(op) => {
-            op.operands.iter().any(list_comprehension_where_has_pattern)
+            op.operands.iter().any(expr_contains_path_pattern)
         }
-        _ => false,
+        Expression::Case(case) => {
+            case.expr.as_deref().is_some_and(expr_contains_path_pattern)
+                || case
+                    .when_then
+                    .iter()
+                    .any(|(w, t)| expr_contains_path_pattern(w) || expr_contains_path_pattern(t))
+                || case
+                    .else_expr
+                    .as_deref()
+                    .is_some_and(expr_contains_path_pattern)
+        }
+        Expression::ReduceExp(r) => {
+            expr_contains_path_pattern(&r.initial_value)
+                || expr_contains_path_pattern(&r.list)
+                || expr_contains_path_pattern(&r.expression)
+        }
+        Expression::MapLiteral(entries) => {
+            entries.iter().any(|(_, v)| expr_contains_path_pattern(v))
+        }
+        Expression::Lambda(l) => expr_contains_path_pattern(&l.body),
+        Expression::ListComprehension(lc) => {
+            expr_contains_path_pattern(&lc.list_expr)
+                || lc
+                    .where_clause
+                    .as_deref()
+                    .is_some_and(expr_contains_path_pattern)
+                || lc
+                    .projection
+                    .as_deref()
+                    .is_some_and(expr_contains_path_pattern)
+        }
+        Expression::ArraySubscript { array, index } => {
+            expr_contains_path_pattern(array) || expr_contains_path_pattern(index)
+        }
+        Expression::ArraySlicing { array, from, to } => {
+            expr_contains_path_pattern(array)
+                || from.as_deref().is_some_and(expr_contains_path_pattern)
+                || to.as_deref().is_some_and(expr_contains_path_pattern)
+        }
+
+        // Leaves that cannot contain a pattern.
+        Expression::Literal(_)
+        | Expression::Variable(_)
+        | Expression::Parameter(_)
+        | Expression::PropertyAccessExp(_)
+        | Expression::LabelExpression { .. } => false,
     }
 }
 
@@ -935,6 +1006,63 @@ mod listcomp_lowering_tests {
             list_expr: Box::new(Expression::Variable("posts")),
             where_clause: Some(Box::new(where_clause)),
             projection: None,
+        })
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            errors::LogicalExprError::ListComprehensionNotRewritten
+        ));
+    }
+
+    #[test]
+    fn pattern_hidden_in_case_fails_loud_not_panics() {
+        // A pattern buried in a CASE inside the WHERE
+        // (`[p IN l WHERE CASE WHEN (p)-[:R]->() THEN … END]`) has no scalar
+        // lowering. Before the guard recursed into CASE, this lowered and then
+        // PANICKED at render_expr.rs (pattern in expression context is
+        // `unimplemented!`). It must fail loud instead.
+        let pattern = Expression::PathPattern(AstPathPattern::Node(NodePattern {
+            name: Some("p"),
+            labels: None,
+            properties: None,
+        }));
+        let case = Expression::Case(crate::open_cypher_parser::ast::Case {
+            expr: None,
+            when_then: vec![(pattern, Expression::Literal(AstLiteral::Boolean(true)))],
+            else_expr: Some(Box::new(Expression::Literal(AstLiteral::Boolean(false)))),
+        });
+        let err = lower(ListComprehension {
+            variable: "p",
+            list_expr: Box::new(Expression::Variable("posts")),
+            where_clause: Some(Box::new(case)),
+            projection: None,
+        })
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            errors::LogicalExprError::ListComprehensionNotRewritten
+        ));
+    }
+
+    #[test]
+    fn pattern_in_projection_fails_loud() {
+        // The guard also covers the projection (`| …`), not just the WHERE:
+        // `[p IN l | CASE WHEN (p)-[:R]->() THEN 1 ELSE 0 END]` must fail loud.
+        let pattern = Expression::PathPattern(AstPathPattern::Node(NodePattern {
+            name: Some("p"),
+            labels: None,
+            properties: None,
+        }));
+        let projection = Expression::Case(crate::open_cypher_parser::ast::Case {
+            expr: None,
+            when_then: vec![(pattern, Expression::Literal(AstLiteral::Integer(1)))],
+            else_expr: Some(Box::new(Expression::Literal(AstLiteral::Integer(0)))),
+        });
+        let err = lower(ListComprehension {
+            variable: "p",
+            list_expr: Box::new(list_123()),
+            where_clause: None,
+            projection: Some(Box::new(projection)),
         })
         .unwrap_err();
         assert!(matches!(

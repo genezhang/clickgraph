@@ -722,6 +722,16 @@ const CORPUS: &[(&str, &str)] = &[
         "listcomp_nested_866",
         "RETURN [x IN range(1, 3) | [y IN range(1, x) | y]] AS c",
     ),
+    // #866 Path C: a list comprehension inside a VLP WHERE filter renders through
+    // the CTE-build renderer (cte_extraction.rs::render_expr_to_sql_string), NOT
+    // the final-SELECT Path A. Locks that the Databricks name+arg swap
+    // (arrayFilter -> filter(collection, lambda)) is applied there too — without
+    // the Path-C fix this leaked raw `arrayFilter(lambda, collection)` on Spark
+    // (invalid). CH stays native `arrayFilter(lambda, collection)`.
+    (
+        "listcomp_in_vlp_where_path_c_866",
+        "MATCH (u:User)-[:FOLLOWS*1..3]->(v:User) WHERE size([x IN [1, 2, 3] WHERE x > 1]) > 0 RETURN u.user_id",
+    ),
     // NOTE: Path D coverage (EXISTS / pattern-predicate, e.g.
     // `WHERE (u)-[:AUTHORED]->(:Post)`) is intentionally absent — that path
     // currently hits `unimplemented!` in render_expr for anonymous pattern

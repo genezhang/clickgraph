@@ -325,6 +325,32 @@ pub fn dialect_function_name(name: &str) -> String {
     }
 }
 
+/// #866: render `arrayFilter`/`arrayMap` (the list-comprehension lowering) for
+/// the duplicate generic `ScalarFnCall` renderers (Path C in `render_plan`,
+/// e.g. `cte_extraction`). These registry entries carry an `arg_transform`
+/// (the CH↔Spark arg swap), so `dialect_function_name` deliberately leaves them
+/// raw — this shim applies BOTH the dialect name and the transform, matching
+/// the canonical Path-A `RenderExpr::to_sql` arm. Returns `None` for any other
+/// function so the caller keeps its existing `dialect_function_name` path.
+/// `rendered_args` are already-rendered SQL strings (the transform operates on
+/// strings, like the Path-A `arg_transform` application).
+pub fn list_higher_order_fn_sql(fn_lower: &str, rendered_args: &[String]) -> Option<String> {
+    if fn_lower != "arrayfilter" && fn_lower != "arraymap" {
+        return None;
+    }
+    let mapping = super::function_registry::get_function_mapping(fn_lower)?;
+    let dialect = crate::server::query_context::get_current_dialect();
+    let args = match mapping.arg_transform {
+        Some(t) => t(rendered_args),
+        None => rendered_args.to_vec(),
+    };
+    Some(format!(
+        "{}({})",
+        mapping.name_for(dialect),
+        args.join(", ")
+    ))
+}
+
 /// Intercept the openCypher percentile aggregates and render them through
 /// `FunctionMapper::percentile_aggregate`, honoring the percentile argument
 /// (#639). Returns `Some(sql)` for `percentileCont`/`percentileDisc` called
