@@ -568,6 +568,21 @@ const CORPUS: &[(&str, &str)] = &[
         "pattern_comp_projection_computed_mapped_prop_863",
         "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) | v.name * 2] AS x",
     ),
+    // #863 safe-fallback guard: a projection that is NOT resolvable against the
+    // single target node — a whole-entity/bare variable (`| v`), the correlation
+    // var, or a computed expr referencing the correlation var (`| u.age + v.age`)
+    // — must fall back to the `groupArray(1)` cardinality form (byte-identical to
+    // pre-#863), NOT emit an out-of-scope identifier (`v AS target_prop`) or a
+    // broken inline `groupArray(u.x + v.y)`. Locks the allowlist gate
+    // (`is_target_safe_projection`) + the no-bail fallthrough.
+    (
+        "pattern_comp_projection_whole_entity_fallback_863",
+        "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) | v] AS x",
+    ),
+    (
+        "pattern_comp_projection_corrvar_fallback_863",
+        "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) | u.age + v.age] AS x",
+    ),
     // NOTE: Path D coverage (EXISTS / pattern-predicate, e.g.
     // `WHERE (u)-[:AUTHORED]->(:Post)`) is intentionally absent — that path
     // currently hits `unimplemented!` in render_expr for anonymous pattern
