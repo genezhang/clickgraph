@@ -439,6 +439,42 @@ fn render_exponentiation(op: &OperatorApplication, rendered: &[String]) -> Optio
     Some(mapper.power(&rendered[0], &rendered[1]))
 }
 
+/// Is `expr` a non-negative integer literal? Cypher list-range bounds that are
+/// plain non-negative constants need no from-the-end normalization, so the slice
+/// renderer keeps them on the simple `bound (+ 1)` path — which also keeps the
+/// existing positive-slice goldens byte-identical.
+pub(crate) fn is_nonneg_int_literal(expr: &RenderExpr) -> bool {
+    matches!(expr, RenderExpr::Literal(Literal::Integer(n)) if *n >= 0)
+}
+
+/// Normalize one Cypher list-slice bound into a non-negative index usable by
+/// `arraySlice`/`slice`. Cypher allows negative bounds that count from the end
+/// (`list[-2..]`) and clamps out-of-range bounds to the array edge, whereas the
+/// ClickHouse/Spark array-slice offset has no from-the-end meaning. A runtime or
+/// negative bound `i` is therefore rewritten to `i >= 0 ? i : greatest(len + i,
+/// 0)`, where `len` is the dialect's array-length call (Rule #7, via
+/// [`FunctionMapper::array_length`]). A statically non-negative integer literal
+/// is returned verbatim so positive slices render exactly as before.
+/// `bound_sql`/`array_sql` are pre-rendered SQL fragments; `array_sql` is
+/// re-evaluated inside the guard (fine for the column/literal arrays slicing
+/// targets in practice, matching the existing Spark 2-arg `array_slice` form).
+pub(crate) fn normalize_slice_bound(
+    bound_sql: &str,
+    array_sql: &str,
+    is_nonneg_literal: bool,
+) -> String {
+    if is_nonneg_literal {
+        return bound_sql.to_string();
+    }
+    let len =
+        crate::sql_generator::function_mapper::current_function_mapper().array_length(array_sql);
+    format!(
+        "if(({b}) >= 0, ({b}), greatest({len} + ({b}), 0))",
+        b = bound_sql,
+        len = len
+    )
+}
+
 /// Interval arithmetic on epoch-millis: wrap non-interval operands as a
 /// timestamp, do the `+`/`-`, and convert the result back to epoch-millis.
 /// Dialect-aware via the function mapper — ClickHouse:
@@ -7703,32 +7739,56 @@ impl RenderExpr {
                 // both 1-based offset + element count. Cypher list ranges are 0-based
                 // and HALF-OPEN: `list[from..to]` yields indices [from, to), i.e.
                 // `to - from` elements. So offset = from + 1 and length = to - from.
+                // Cypher also permits NEGATIVE bounds that count from the end
+                // (`list[-2..]`) and clamps out-of-range bounds; each bound is
+                // normalized to a non-negative index first (see
+                // `normalize_slice_bound`). Statically non-negative integer
+                // literals bypass normalization, so positive slices render
+                // exactly as before.
                 let array_sql = array.to_sql();
                 let mapper = crate::sql_generator::function_mapper::current_function_mapper();
 
                 match (from, to) {
                     (Some(from_expr), Some(to_expr)) => {
                         // [from..to) -> 1-based offset + half-open length (to - from).
-                        // Floor at 0: when from > to the slice is empty, but a negative
+                        // Floor the length at 0: when from >= to (after
+                        // normalization) the slice is empty, but a negative
                         // length means "drop from the end" on ClickHouse arraySlice
                         // (silent wrong data) and errors on Databricks slice().
+                        let nf = normalize_slice_bound(
+                            &from_expr.to_sql(),
+                            &array_sql,
+                            is_nonneg_int_literal(from_expr),
+                        );
+                        let nt = normalize_slice_bound(
+                            &to_expr.to_sql(),
+                            &array_sql,
+                            is_nonneg_int_literal(to_expr),
+                        );
                         mapper.array_slice(
                             &array_sql,
-                            &format!("{} + 1", from_expr.to_sql()),
-                            Some(&format!(
-                                "greatest({} - {}, 0)",
-                                to_expr.to_sql(),
-                                from_expr.to_sql()
-                            )),
+                            &format!("{} + 1", nf),
+                            Some(&format!("greatest({} - {}, 0)", nt, nf)),
                         )
                     }
                     (Some(from_expr), None) => {
                         // [from..] - slice to end. CH 2-arg form; Spark computes the length.
-                        mapper.array_slice(&array_sql, &format!("{} + 1", from_expr.to_sql()), None)
+                        let nf = normalize_slice_bound(
+                            &from_expr.to_sql(),
+                            &array_sql,
+                            is_nonneg_int_literal(from_expr),
+                        );
+                        mapper.array_slice(&array_sql, &format!("{} + 1", nf), None)
                     }
                     (None, Some(to_expr)) => {
                         // [..to) - from index 1, take `to` elements (indices [0, to)).
-                        mapper.array_slice(&array_sql, "1", Some(&to_expr.to_sql()))
+                        // With offset 1 the length equals the normalized end index.
+                        let nt = normalize_slice_bound(
+                            &to_expr.to_sql(),
+                            &array_sql,
+                            is_nonneg_int_literal(to_expr),
+                        );
+                        mapper.array_slice(&array_sql, "1", Some(&nt))
                     }
                     (None, None) => {
                         // [..] - no bounds, return entire array (identity operation)

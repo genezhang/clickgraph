@@ -194,6 +194,18 @@ const CORPUS: &[(&str, &str)] = &[
     ),
     // tail() -> CH arraySlice(list, 2) / Spark slice(list, 2, greatest(size-1, 0))
     ("list_tail", "MATCH (u:User) RETURN tail([10, 20, 30]) AS t"),
+    // Negative list-range bounds count from the end (`list[-2..]` = last two) and
+    // out-of-range bounds clamp — Cypher semantics the raw `from + 1` offset got
+    // wrong (silently) on both dialects. Each non-literal / negative bound is
+    // normalized to `i >= 0 ? i : greatest(len + i, 0)` via the dialect's
+    // array-length call (CH `length`, Spark `size`). `d` mixes a negative from
+    // with a negative to; `e` exercises the `[..to)` (from-index-1) path.
+    (
+        "list_slice_negative",
+        "MATCH (u:User) RETURN [10, 20, 30, 40, 50][-2..] AS a, \
+         [10, 20, 30, 40, 50][1..-1] AS b, [10, 20, 30, 40, 50][-10..2] AS c, \
+         [10, 20, 30, 40, 50][-3..-1] AS d, [10, 20, 30, 40, 50][..-1] AS e",
+    ),
     // Interval arithmetic on an epoch-millis column -> CH
     // `toUnixTimestamp64Milli(fromUnixTimestamp64Milli(x) + toIntervalDay(n))`
     // vs Spark `unix_millis(timestamp_millis(x) + make_dt_interval(n,0,0,0))`.
