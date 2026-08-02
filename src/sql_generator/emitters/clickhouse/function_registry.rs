@@ -435,9 +435,17 @@ lazy_static::lazy_static! {
         });
 
         // range(start, end [, step]) — Cypher range is INCLUSIVE of `end`.
-        //   CH `range(start, end [, step])` is EXCLUSIVE of `end`  -> bump end +1
-        //     (range(1,5) gave [1,2,3,4], must be [1,2,3,4,5]; silently wrong).
-        //   Spark has no `range`; `sequence(start, end [, step])` is inclusive -> use as-is.
+        //   CH `range(start, end [, step])` is EXCLUSIVE of `end`  -> bump end
+        //     toward `start` by one step's worth so `end` is included.
+        //     For the ascending forms that means +1 (range(1,5) gave [1,2,3,4],
+        //     must be [1,2,3,4,5]; silently wrong). For a NEGATIVE step the
+        //     sequence descends, so the inclusive bump is -1 instead — otherwise
+        //     range(5,1,-1) gave [5,4,3] instead of [5,4,3,2,1] (also silently
+        //     wrong). The direction-mismatch cases (e.g. range(1,5,-1)) still
+        //     yield [] because CH range() returns empty when start/end disagree
+        //     with the step sign — the ±1 bump preserves that.
+        //   Spark has no `range`; `sequence(start, end [, step])` is inclusive in
+        //     BOTH directions -> use as-is.
         m.insert("range", FunctionMapping {
             neo4j_name: "range",
             clickhouse_name: "range",
@@ -450,14 +458,27 @@ lazy_static::lazy_static! {
                     return args.to_vec();
                 }
                 // ClickHouse range() is exclusive of `end`; make it inclusive by
-                // bumping the end bound (2nd arg) by 1. Works for the 2-arg and
-                // 3-arg (step) ascending forms.
-                if args.len() >= 2 {
-                    let mut out = args.to_vec();
-                    out[1] = format!("({}) + 1", args[1]);
-                    out
-                } else {
-                    args.to_vec()
+                // bumping the end bound (2nd arg) by one step's direction.
+                match args.len() {
+                    // 3-arg form: the step (arg 2) may be negative or a runtime
+                    // expression, so pick the bump direction at SQL-eval time —
+                    // +1 when step >= 0, -1 when step < 0. (Neo4j rejects step 0;
+                    // treating it as +1 here is harmless — CH range() with step 0
+                    // errors regardless.)
+                    n if n >= 3 => {
+                        let mut out = args.to_vec();
+                        out[1] = format!("({}) + if(({}) < 0, -1, 1)", args[1], args[2]);
+                        out
+                    }
+                    // 2-arg form: the default step is +1 (ascending), so the
+                    // inclusive bump is always +1. Kept as a separate arm to
+                    // preserve byte-identical output for the common case.
+                    2 => {
+                        let mut out = args.to_vec();
+                        out[1] = format!("({}) + 1", args[1]);
+                        out
+                    }
+                    _ => args.to_vec(),
                 }
             }),
         });
@@ -1150,6 +1171,37 @@ mod tests {
         let args = vec!["'hello,world'".to_string(), "','".to_string()];
         let result = transform(&args);
         assert_eq!(result, vec!["','", "'hello,world'"]);
+    }
+
+    #[test]
+    fn test_range_inclusive_end_bump_follows_step_sign() {
+        // Cypher range() is inclusive of `end`; CH range() is exclusive, so the
+        // end bound is bumped toward `start` by the step's direction. Outside a
+        // query context the dialect defaults to ClickHouse, so this exercises the
+        // CH branch.
+        let transform = get_function_mapping("range")
+            .expect("range mapping should exist")
+            .arg_transform
+            .expect("range should have an arg_transform");
+
+        // 2-arg (default +1 step): always +1, byte-identical to the old form.
+        assert_eq!(
+            transform(&["1".to_string(), "5".to_string()]),
+            vec!["1", "(5) + 1"]
+        );
+        // 3-arg positive step: +1.
+        assert_eq!(
+            transform(&["1".to_string(), "10".to_string(), "2".to_string()]),
+            vec!["1", "(10) + if((2) < 0, -1, 1)", "2"]
+        );
+        // 3-arg negative step: the bump flips to -1 so the final element is kept
+        // (this is the #range-negative-step fix — was dropping it via a hardcoded
+        // +1). The `if` defers the sign test to SQL-eval time so a runtime step
+        // expression works too.
+        assert_eq!(
+            transform(&["5".to_string(), "1".to_string(), "-1".to_string()]),
+            vec!["5", "(1) + if((-1) < 0, -1, 1)", "-1"]
+        );
     }
 
     #[test]
