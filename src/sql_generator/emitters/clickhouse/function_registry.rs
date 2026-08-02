@@ -58,6 +58,20 @@ fn wrap_epoch_millis_arg(args: &[String]) -> Vec<String> {
 /// Argument transformation: maps SQL-string args to (possibly rewritten) SQL-string args.
 pub type ArgTransform = fn(&[String]) -> Vec<String>;
 
+/// #866: arg transform shared by the `arrayFilter`/`arrayMap` mappings.
+/// ClickHouse higher-order array functions take `(lambda, collection)`; Spark's
+/// `filter`/`transform` take `(collection, lambda)`. The list-comprehension
+/// lowering builds the CH order, so swap the two args on Databricks only. CH is
+/// left byte-identical. Non-2-arg calls are passed through untouched.
+fn list_higher_order_arg_transform(args: &[String]) -> Vec<String> {
+    let dialect = crate::server::query_context::get_current_dialect();
+    if dialect == crate::sql_generator::SqlDialect::Databricks && args.len() == 2 {
+        vec![args[1].clone(), args[0].clone()]
+    } else {
+        args.to_vec()
+    }
+}
+
 /// Cypher-semantic return kind of a function, used by the render-site type
 /// classifier ([`super::type_inference::infer_render_type`]) to decide things
 /// like string `+` → `concat` (#871), `toInteger`/`toFloat` OrNull dispatch
@@ -884,15 +898,28 @@ lazy_static::lazy_static! {
         // reduce() - complex, needs special handling but add placeholder
         // Note: ClickHouse has arrayReduce() but syntax differs significantly
 
-        // filter() -> arrayFilter() [list comprehension style]
-        // Neo4j: [x IN list WHERE x > 0] or filter(x IN list WHERE x > 0)
-        // ClickHouse: arrayFilter(x -> x > 0, list)
-        // This requires special AST handling, placeholder for now
-
-        // extract() -> arrayMap() for extracting properties
-        // Neo4j: [x IN list | x.prop] or extract(x IN list | x.prop)
-        // ClickHouse: arrayMap(x -> x.prop, list)
-        // This requires special AST handling, placeholder for now
+        // #866: list-comprehension lowering emits CH-native `arrayFilter`/
+        // `arrayMap` (see ast_conversion.rs). These entries carry those CH names
+        // through unchanged AND supply the Databricks/Spark mapping:
+        //   [x IN l WHERE p]  -> CH   arrayFilter(x -> p, l)      (lambda, list)
+        //                        Spark filter(l, x -> p)          (list, lambda)
+        //   [x IN l | e]      -> CH   arrayMap(x -> e, l)         (lambda, list)
+        //                        Spark transform(l, x -> e)       (list, lambda)
+        // Spark's higher-order functions take (collection, lambda) — the reverse
+        // of CH — so the arg swap is Databricks-only (dialect-gated, like
+        // `split`). CH keeps its native order byte-identical.
+        m.insert("arrayfilter", FunctionMapping {
+            neo4j_name: "arrayFilter",
+            clickhouse_name: "arrayFilter",
+            databricks_name: Some("filter"),
+            arg_transform: Some(list_higher_order_arg_transform),
+        });
+        m.insert("arraymap", FunctionMapping {
+            neo4j_name: "arrayMap",
+            clickhouse_name: "arrayMap",
+            databricks_name: Some("transform"),
+            arg_transform: Some(list_higher_order_arg_transform),
+        });
 
         // all() -> arrayAll() - check if all elements match predicate
         m.insert("all", FunctionMapping {

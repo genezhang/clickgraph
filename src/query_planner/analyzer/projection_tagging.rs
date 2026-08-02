@@ -1908,12 +1908,43 @@ impl ProjectionTagging {
                 // Lambda expressions need special handling:
                 // - Lambda parameters are local variables (don't resolve them)
                 // - Lambda body may contain references that need resolution
-                // We recursively transform the body expression
+                //
+                // #866: to honor "don't resolve the params", register each param
+                // name as a projection alias for the duration of body tagging.
+                // The `TableAlias` arm returns early for projection aliases
+                // (keeping the bare name as-is), so a param reference like `x` in
+                // `arrayFilter(x -> x > 1, list)` is no longer resolved as a
+                // graph alias (which errored `No table context for alias 'x'`).
+                // Params are removed afterwards, and any pre-existing alias of
+                // the same name is saved and restored so an outer binding that a
+                // param shadows is not clobbered.
+                let mut shadowed: Vec<(String, Option<LogicalExpr>)> = Vec::new();
+                for param in &lambda_expr.params {
+                    let prev = plan_ctx.remove_projection_alias(param);
+                    plan_ctx.register_projection_alias(
+                        param.clone(),
+                        LogicalExpr::TableAlias(TableAlias(param.clone())),
+                    );
+                    shadowed.push((param.clone(), prev));
+                }
+
                 let mut body_item = ProjectionItem {
                     expression: (*lambda_expr.body).clone(),
                     col_alias: None,
                 };
-                Self::tag_projection(&mut body_item, plan_ctx, graph_schema, input_plan)?;
+                let result =
+                    Self::tag_projection(&mut body_item, plan_ctx, graph_schema, input_plan);
+
+                // Restore prior alias state regardless of tagging outcome.
+                for (param, prev) in shadowed.into_iter().rev() {
+                    match prev {
+                        Some(expr) => plan_ctx.register_projection_alias(param, expr),
+                        None => {
+                            plan_ctx.remove_projection_alias(&param);
+                        }
+                    }
+                }
+                result?;
 
                 item.expression = LogicalExpr::Lambda(LambdaExpr {
                     params: lambda_expr.params.clone(),

@@ -495,6 +495,57 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **Feature — list comprehension in RETURN/WITH projection now
+  supported** (branch `feature/866-list-comprehension-lowering`, closes #866).
+  A plain `[x IN list WHERE p | e]` in projection position failed loud
+  (`ListComprehensionNotRewritten`) — no rewrite pass lowered it. Fix, mirroring
+  how `reduce(...)` lowers to `arrayFold`: a pure `ast_conversion.rs` lowering
+  (Option A — NO new `LogicalExpr`/`RenderExpr` variant) builds nested
+  CH-native `ScalarFnCall`s carrying `Lambda` args —
+  `[x IN l WHERE p | e]` → `arrayMap(x -> e, arrayFilter(x -> p, l))`; WHERE-only
+  → `arrayFilter`; `|`-only → `arrayMap`; identity → the bare list. Reuses the
+  existing `ScalarFnCall`+`Lambda` render paths (Path A and the WITH→CTE path),
+  so ZERO new CH render code. **Conservative guard:** a WHERE holding a graph
+  pattern (`[p IN posts WHERE (p)-[:R]->()]`) has no scalar lowering — it keeps
+  returning `ListComprehensionNotRewritten` (routed elsewhere inside
+  `size()`/`length()`, so #612/#629 are byte-unchanged). **The guard is
+  exhaustive** — it recurses through every pattern-bearing `Expression` variant
+  (CASE, function args, EXISTS, nested comprehensions) in BOTH the WHERE and the
+  projection, because a pattern hidden in e.g. a CASE would otherwise lower into
+  a lambda body that renders a pattern in expression context — a pre-existing
+  `unimplemented!` PANIC at `render_expr.rs` (a clean error on main → a crash;
+  now kept a clean error). Two supporting fixes:
+  (1) **Databricks/Spark mapping** — registered `arrayFilter`→`filter`,
+  `arrayMap`→`transform` in `function_registry.rs` with a dialect-gated arg swap
+  (Spark HOFs take `(collection, lambda)`, CH takes `(lambda, collection)`;
+  swap Databricks-only, like `split`), routed through `FunctionMapper`/`Dialect`
+  (Rule #7); CH byte-identical. **Applied to BOTH renderers** — Path A
+  (`to_sql_query.rs`, final SELECT / WITH→CTE) AND Path C
+  (`cte_extraction.rs::render_expr_to_sql_string`, reached by a `size([…])`
+  comprehension inside a VLP WHERE filter) via a shared `list_higher_order_fn_sql`
+  helper in `common.rs`; `dialect_function_name` skips `arg_transform` entries, so
+  without the Path-C fix a VLP-embedded comprehension leaked raw
+  `arrayFilter`/`arrayMap` + CH arg order on Spark (the recurring Path-A-only bug
+  class caught on #871/#880 — caught here by adversarial review too).
+  (2) **Latent lambda-param bug fixed** — the
+  `projection_tagging.rs` `Lambda` arm documented "params are local variables
+  (don't resolve them)" but tagged the whole body, so a bound param `x` (a
+  `TableAlias`) errored `No table context for alias 'x'` — which broke even
+  explicit `ch.arrayFilter(x -> …, …)` today. Now the arm registers each param
+  as a projection alias for the duration of body tagging (save/restore to honor
+  shadowing), so the param stays a local. 12 new dual-dialect goldens (6 shapes ×
+  CH/Databricks: WHERE-only, map-only, both, WITH-bound list, nested, +VLP-WHERE
+  Path-C) + 8 `ast_conversion` unit tests (4 lowering shapes + 4 pattern-loud-fail
+  controls incl. CASE-nested + projection-side) + a full-planner panic-guard
+  integration test; updated the #612 "errors-not-panics" regression to
+  "lowers-not-panics". corpus_sweep 0-churn; sql_golden +12; ratchet net-zero;
+  full gate green (lib 1671, integration 543). SQL-shape-verified both dialects
+  (no live CH). Adversarial review verdict fix-then-ship (2 HIGH: exhaustive
+  guard, Path-C Databricks leak); both fixed pre-merge. Entirely outside the VLP
+  files bronco owns (#887). Pre-existing out-of-scope gaps noted: a graph pattern
+  in a CASE/expression context still `unimplemented!`-panics on main independent
+  of comprehensions (filed separately); property access on a lambda-bound scalar
+  param (`p.foo`) errors cleanly on both main and here (not a #866 target).
 - 2026-08-02: **P-6 — flat VLP composite edge-identity (#806, #887 Phase 3)**
   (branch `fix/806-flat-vlp-composite-edge-id`). The flat exact-bound pairwise
   relationship-uniqueness guard spelled "the same edge" as the `(from, to)` node
