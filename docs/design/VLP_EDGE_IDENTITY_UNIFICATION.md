@@ -299,10 +299,39 @@ discipline §7):** the flat exact-bound POLYMORPHIC path drops the
 too). That is a filter/join axis, not the edge-identity axis, so it gets its own
 issue rather than being mixed into #806.
 
-### Phase 4 — fix #628 (`*0..N` closed cycle) → behavior change
-With the policy owning "zero-hop base is node-tracked, hop≥1 is edge-unique,"
-route the closed `*0..N` recursive arm to edge-uniqueness so real cycles survive
-(`(a)-[:FOLLOWS*0..2]->(a)` → 14, not 8). Live-verify. **NEXT.**
+### Phase 4 — fix #628 (`*0..N` closed cycle) → **DONE** — behavior change
+**Shipped.** A CLOSED `*0..N` pattern (`(a)-[*0..N]->(a)`) previously **failed
+loud** (`UnsupportedFeature`, #625) because the recursive CTE enforced
+NODE-uniqueness for `min_hops == 0`, which structurally cannot return to the
+start, so every real cycle was dropped. Fix, three parts:
+- `uses_edge_uniqueness()` (`variable_length_cte.rs`) now also returns `true`
+  when `effective_min_hops() == 0 && is_closed_pattern()` (new helper:
+  `start_cypher_alias == end_cypher_alias`). Scoped to the closed case so an OPEN
+  `*0..N` is byte-unchanged (still node-unique).
+- The zero-hop base seeds an EMPTY `path_edges` array (`[] as path_edges`,
+  ClickHouse `Array(Nothing)` — the bottom type unifies with the recursive arm's
+  concrete `Array(Tuple(...))` on `arrayConcat`; a CAST to a *guessed* element
+  type would instead risk `NO_COMMON_TYPE` against the real column types — proven
+  live). Hops ≥ 1 accumulate and dedupe via `NOT has(path_edges, …)` as usual.
+- `filter_builder.rs` drops the loud `*0..N` closed error and falls through to
+  emit the outer `start_id = end_id` closed constraint. The DENORMALIZED closed
+  case is still failed loud (its generator has no separate node identity to seed
+  edge-uniqueness — unchanged, all lower bounds).
+
+**Live-verified** on `db_standard` (5 users): directed `*0..2` closed → **9**
+(5 zero-hop self + 4 real 2-cycles), undirected → **13** (8 + 5), `*0..3` → 12,
+`*0..1` → 5, `*0..0` → 5 — all matching the trail oracle, and the invariant
+`*0..N = *1..N + node_count` holds. `*1..N` closed regression: unchanged (4 / 8).
+Golden churn: the `test_625_..._fails_loud` corpus entry became a working SQL
+golden (renamed `test_628_..._counts_cycles`) and one OPTIONAL closed-`*0..`
+entry now renders — 2 entries, plus a stale `.err` pair removed. Unit regression
+`closed_zero_hop_vlp_uses_edge_uniqueness_628`. Ratchet green.
+
+**Pre-existing bug surfaced (filed #899, NOT in scope):** the OPTIONAL
+closed-`*0..` entry now RENDERS (previously failed loud), and reaching execution
+exposes a pre-existing OPTIONAL-MATCH projection bug (`vt0.<prop>` — anchor
+property wrongly bound to the VLP CTE alias). Reproduces on `*1..` on the old
+binary, so it is independent of #628.
 
 ### Phase 5 (optional) — #710 parallel-edge denorm
 Only if a real parallel-edge denorm schema is in scope. Needs a synthetic

@@ -220,45 +220,26 @@ impl FilterBuilder for LogicalPlan {
                                 use crate::query_planner::join_context::{
                                     VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
                                 };
-                                // #625 lower-bound-0 guard: a `*0..N` recursive
-                                // CTE enforces NODE-uniqueness (`NOT
-                                // has(vp.path_nodes, end_id)`) — the zero-hop base
-                                // has no edges to seed `path_edges`, so it cannot
-                                // use edge-uniqueness (documented in
-                                // variable_length_cte.rs, #598 part 2). Node-
-                                // uniqueness forbids a walk from EVER revisiting a
-                                // node it has already seen, including its start, so
-                                // no hop>0 row can satisfy `start_id = end_id`:
-                                // adding the equality would silently drop every
-                                // real cycle and return ONLY the zero-length self
-                                // rows (a NEW silent wrong result — undercount 8 vs
-                                // 14, more plausible-looking than the pre-fix
-                                // overcount). Fail loud instead (ground rule 1);
-                                // full `*0..N` closed support needs the CTE to
-                                // switch to edge-uniqueness for closed patterns —
-                                // tracked as a follow-up. Lower-bound>=1 closed
-                                // VLPs use edge-uniqueness and compose correctly.
-                                let min_hops = graph_rel
-                                    .variable_length
-                                    .as_ref()
-                                    .map(|s| s.effective_min_hops())
-                                    .unwrap_or(1);
-                                // shortestPath is EXEMPT: it legitimately keeps
-                                // node-uniqueness (revisiting a node never
-                                // shortens a path) and its zero-length self path
-                                // IS the correct shortest cycle, so `start_id =
-                                // end_id` keeping only the hop-0 row is right.
-                                if min_hops == 0 && graph_rel.shortest_path_mode.is_none() {
-                                    return Err(RenderBuildError::UnsupportedFeature(format!(
-                                        "closed variable-length path with lower bound 0 \
-                                         (`({a})-[*0..N]-({a})`): the recursive CTE enforces \
-                                         node-uniqueness for *0..N, which structurally cannot \
-                                         return to the start node, so the cycle constraint would \
-                                         silently drop all real cycles. Use a lower bound >= 1 \
-                                         (e.g. `*1..N`) to count cycles. (#625)",
-                                        a = graph_rel.left_connection
-                                    )));
-                                }
+                                // #628: a closed `*0..N` on a STANDARD/FK/poly
+                                // schema is now fully supported. The recursive CTE
+                                // switches to EDGE-uniqueness for closed patterns
+                                // (`uses_edge_uniqueness()` in variable_length_cte.rs
+                                // now returns true when `min_hops == 0 &&
+                                // is_closed_pattern()`), seeding an empty
+                                // `path_edges` at the zero-hop base and deduping
+                                // edges from hop 1 — so real cycles survive and the
+                                // outer `start_id = end_id` selects them (plus the
+                                // zero-length self rows). This replaces the old
+                                // loud #625 `*0..N` error (node-uniqueness could not
+                                // return to the start, so cycles were dropped);
+                                // lower-bound ≥ 1 closed VLPs already used
+                                // edge-uniqueness and are unchanged. shortestPath is
+                                // unaffected (it stays node-unique and its
+                                // zero-length self path is the correct shortest
+                                // cycle). The DENORMALIZED closed case is still
+                                // unsupported — its generator has no separate node
+                                // identity to seed edge-uniqueness — and is failed
+                                // loud just below, for every lower bound including 0.
                                 // #605/#625 denormalized closed guard: a
                                 // DENORMALIZED closed VLP's recursive CTE enforces
                                 // NODE-uniqueness (`NOT has(vp.path_nodes, ...)`)
