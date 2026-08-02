@@ -269,16 +269,40 @@ policy calls. Goldens byte-identical (asserts from Phase 1 guarantee it). Retire
 the second `uses_edge_uniqueness` copy by making CM Denormalized consume the same
 policy.
 
-### Phase 3 — fix #806 (flat-path identity) → behavior change, goldens regenerated
-Now that the flat pairwise guard reads `EdgeIdentity` (schema `edge_id`), the
-`(from,to)`-only collapse is fixed by construction. Regenerate the (small) set
-of goldens for parallel-edge schemas; live-verify the count against the trail
-oracle (`scratchpad/vlp_oracle.py`, per #606).
+### Phase 3 — fix #806 (flat-path identity) → **DONE (PR #TBD)** — behavior change, goldens regenerated
+**Shipped ahead of the full policy landing** (the fix is small and self-contained,
+so it did not need Phase 2's policy type first). The flat exact-bound pairwise
+guard (`generate_cycle_prevention_filters_composite`, `cte_extraction.rs`) now
+takes an `edge_id_cols: Option<&[&str]>` and, when the relationship schema
+declares an `edge_id`, spells the per-hop-pair inequality over that FULL identity
+column set — matching the recursive path's `build_edge_tuple_recursive`. The
+caller (`filter_builder.rs`) resolves `rel_schema.edge_id` (schema already in
+hand via `get_current_schema_with_fallback`) and applies the #617 doubled-edge
+orientation correction (from/to → `__cg_orig_from/to`; non-from/to identity
+columns pass through unchanged). When no `edge_id` is declared, identity falls
+back to the `(from, to)` node pair — byte-identical to the pre-#806 behaviour.
+Consulted only on the Normal/Polymorphic pairwise path; the legacy
+FkEdge/multi-type start != end guard ignores it. **26 goldens regenerated**
+(single-line guard change each — 13 entries × 2 dialects, all on
+`edge_id`-declaring schemas: social_integration `follow_id`, social_polymorphic
+composite, composite_id `transfer_id`, standard/#617 `follow_id`). **Live-verified
+no regression** (old vs new guard identical on non-parallel data: standard 35=35,
+composite_id 8=8, #617 undirected 122=122) and **fix confirmed** on a controlled
+parallel-edge fixture (`db_806_test`: two parallel FOLLOWS self-loops → `FOLLOWS*2`
+now returns 2, was 0; undirected returns 8 = oracle). Ratchet green (no raw
+axis-flag branching — routes through `rel_schema.edge_id`). Unit regression
+`flat_cycle_prevention_uses_composite_edge_id_806`.
+
+**Separate bug discovered during this phase (filed, NOT folded in — scope
+discipline §7):** the flat exact-bound POLYMORPHIC path drops the
+`interaction_type` type discriminator entirely (`FOLLOWS*2` counts LIKES chains
+too). That is a filter/join axis, not the edge-identity axis, so it gets its own
+issue rather than being mixed into #806.
 
 ### Phase 4 — fix #628 (`*0..N` closed cycle) → behavior change
 With the policy owning "zero-hop base is node-tracked, hop≥1 is edge-unique,"
 route the closed `*0..N` recursive arm to edge-uniqueness so real cycles survive
-(`(a)-[:FOLLOWS*0..2]->(a)` → 14, not 8). Live-verify.
+(`(a)-[:FOLLOWS*0..2]->(a)` → 14, not 8). Live-verify. **NEXT.**
 
 ### Phase 5 (optional) — #710 parallel-edge denorm
 Only if a real parallel-edge denorm schema is in scope. Needs a synthetic

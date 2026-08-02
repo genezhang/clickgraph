@@ -624,6 +624,70 @@ impl FilterBuilder for LogicalPlan {
                                 start_id_cols.iter().map(String::as_str).collect();
                             let end_id_refs: Vec<&str> =
                                 end_id_cols.iter().map(String::as_str).collect();
+                            // #806: a schema-declared composite `edge_id` (e.g. a
+                            // polymorphic `interactions` table keyed
+                            // `[from_id, to_id, interaction_type, timestamp]`) is
+                            // the true physical-edge identity. The flat pairwise
+                            // uniqueness guard must compare that full column set —
+                            // matching the recursive path's
+                            // `build_edge_tuple_recursive` — or two PARALLEL edges
+                            // (same node pair, distinct timestamp) collapse into
+                            // one relationship and every trail through them is
+                            // dropped (under-count). Consulted only on the
+                            // Normal/Polymorphic pairwise path; the legacy
+                            // FkEdge/multi-type start != end guard has no edge
+                            // table and ignores it (kept None there).
+                            //
+                            // #617: on the doubled-edge undirected walk the from/to
+                            // columns are SWAPPED in reverse-orientation rows, so we
+                            // apply the same orientation correction the recursive
+                            // path uses — replace the schema from/to columns with
+                            // the original-orientation `__cg_orig_from/to` columns
+                            // the doubled CTE projects. Any non-from/to identity
+                            // column (interaction_type, timestamp) is
+                            // orientation-independent and passes through unchanged.
+                            let edge_id_cols_owned: Option<Vec<String>> =
+                                (!use_legacy_start_end_guard)
+                                    .then(|| {
+                                        schema_for_ids.as_ref().and_then(|schema| {
+                                            graph_rel.labels.as_ref().and_then(|labels| {
+                                                labels.first().and_then(|label| {
+                                                    schema
+                                                        .get_rel_schema(label)
+                                                        .ok()
+                                                        .and_then(|rs| rs.edge_id.clone())
+                                                })
+                                            })
+                                        })
+                                    })
+                                    .flatten()
+                                    .map(|edge_id| {
+                                        use crate::sql_generator::emitters::clickhouse::variable_length_cte as vlc;
+                                        let (from_key, to_key) = (
+                                            rel_cols.from_id.columns(),
+                                            rel_cols.to_id.columns(),
+                                        );
+                                        edge_id
+                                            .columns()
+                                            .iter()
+                                            .map(|c| {
+                                                if undirected_doubled {
+                                                    if from_key.iter().any(|k| k == c) {
+                                                        return vlc::DOUBLED_EDGES_ORIG_FROM
+                                                            .to_string();
+                                                    }
+                                                    if to_key.iter().any(|k| k == c) {
+                                                        return vlc::DOUBLED_EDGES_ORIG_TO
+                                                            .to_string();
+                                                    }
+                                                }
+                                                c.to_string()
+                                            })
+                                            .collect::<Vec<String>>()
+                                    });
+                            let edge_id_refs: Option<Vec<&str>> = edge_id_cols_owned
+                                .as_ref()
+                                .map(|cols| cols.iter().map(String::as_str).collect());
                             // Generate relationship-uniqueness filters
                             if let Some(cycle_filter) = crate::render_plan::cte_extraction::generate_cycle_prevention_filters_composite(
                                 exact_hops,
@@ -634,6 +698,7 @@ impl FilterBuilder for LogicalPlan {
                                 &graph_rel.left_connection,
                                 &graph_rel.right_connection,
                                 use_legacy_start_end_guard,
+                                edge_id_refs.as_deref(),
                             ) {
                                 crate::debug_println!("DEBUG: extract_filters - Generated relationship-uniqueness filter");
                                 all_predicates.push(cycle_filter);
