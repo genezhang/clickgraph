@@ -53,6 +53,108 @@ fn wrap_epoch_millis_arg(args: &[String]) -> Vec<String> {
 /// Argument transformation: maps SQL-string args to (possibly rewritten) SQL-string args.
 pub type ArgTransform = fn(&[String]) -> Vec<String>;
 
+/// Cypher-semantic return kind of a function, used by the render-site type
+/// classifier ([`super::type_inference::infer_render_type`]) to decide things
+/// like string `+` → `concat` (#871), `toInteger`/`toFloat` OrNull dispatch
+/// (#880), and skipping the epoch-millis wrap on native Date/DateTime temporal
+/// args (#854).
+///
+/// CRITICAL: this encodes the **Cypher** return semantic, NOT the ClickHouse
+/// mapping's raw type. E.g. `contains`/`startsWith`/`endsWith` map to CH
+/// `position`/`startsWith` (integer-ish) but are Cypher **Bool**; `size` maps to
+/// `length` but returns an **Int** (a count, not the arg's type); `timestamp`/
+/// `toUnixTimestampMillis` return epoch **Int**s, NOT DateTime (matters for the
+/// #854 wrap decision). Deriving the kind mechanically from `clickhouse_name`
+/// would mis-tag these.
+///
+/// Unlisted functions classify as [`FnReturnKind::Unknown`] → the classifier
+/// returns `None` (unknown), which must always route to the identical legacy
+/// behavior (conservative-None invariant).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FnReturnKind {
+    /// Always a string (toString, toUpper, trim, substring, …).
+    Str,
+    /// Always an integer (size, id, year/month/…, timestamp epoch ints).
+    Int,
+    /// Always a float (toFloat, sqrt, avg, stdev, …).
+    Float,
+    /// Numeric of unresolved int/float subtype (abs, ceil, round, sign, …).
+    Num,
+    /// Boolean (toBoolean, isEmpty, startsWith/endsWith/contains, all/any/…).
+    Bool,
+    /// A date (date()).
+    Date,
+    /// A datetime (datetime(), localdatetime, localtime).
+    DateTime,
+    /// A list/array (split, tail, range, collect, keys).
+    List,
+    /// Return type equals the type of argument 0 — recurse into arg0 to type it
+    /// (reverse: string→string / list→list; coalesce/nullIf/min/max/anyLast).
+    SameAsArg0,
+    /// Returns the ELEMENT type of a list argument (head/last). Unknowable at
+    /// render time (we have no element type), so the classifier yields `None`.
+    ElementOfArg0,
+    /// Unknown / not classified — classifier yields `None`.
+    Unknown,
+}
+
+/// Single source of truth for a function's Cypher-semantic return kind, keyed by
+/// the lowercased Neo4j name (same key space as [`FUNCTION_MAPPINGS`]). A
+/// dedicated classifier rather than a `FunctionMapping` field so the ~85 registry
+/// literals stay untouched; unlisted names fall through to [`FnReturnKind::Unknown`]
+/// (conservative-None). See [`FnReturnKind`] for the Cypher-vs-CH-mapping rule.
+pub fn function_return_kind(fn_lower: &str) -> FnReturnKind {
+    use FnReturnKind::*;
+    match fn_lower {
+        // ---- String-returning ----
+        "toupper" | "tolower" | "trim" | "ltrim" | "rtrim" | "substring" | "replace" | "left"
+        | "right" | "normalize" | "tostring" | "valuetype" => Str,
+
+        // ---- Integer-returning (counts, ids, temporal components, epoch ints) ----
+        "size"
+        | "id"
+        | "timestamp"
+        | "tounixtimestampmillis"
+        | "year"
+        | "month"
+        | "day"
+        | "hour"
+        | "minute"
+        | "second"
+        | "dayofweek"
+        | "dayofyear"
+        | "quarter"
+        | "week"
+        | "tointeger" => Int,
+
+        // ---- Float-returning ----
+        "tofloat" | "sqrt" | "stdev" | "stdevp" | "avg" => Float,
+
+        // ---- Numeric (int/float subtype unresolved) ----
+        "abs" | "ceil" | "floor" | "round" | "sign" | "rand" | "exp" | "log" | "log10" | "pow"
+        | "pi" | "e" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2" | "sum" => Num,
+
+        // ---- Boolean (Cypher semantic, regardless of CH mapping) ----
+        "toboolean" | "isempty" | "startswith" | "endswith" | "contains" | "all" | "any"
+        | "none" | "single" => Bool,
+
+        // ---- Temporal constructors ----
+        "date" => Date,
+        "datetime" | "localdatetime" | "localtime" => DateTime,
+
+        // ---- List-returning ----
+        "split" | "tail" | "range" | "collect" | "keys" | "labels" => List,
+
+        // ---- Polymorphic on argument 0 ----
+        "reverse" | "coalesce" | "nullif" | "min" | "max" | "anylast" => SameAsArg0,
+
+        // ---- Element of a list argument (unknowable at render time) ----
+        "head" | "last" => ElementOfArg0,
+
+        _ => Unknown,
+    }
+}
+
 /// Function mapping entry
 #[derive(Clone)]
 pub struct FunctionMapping {

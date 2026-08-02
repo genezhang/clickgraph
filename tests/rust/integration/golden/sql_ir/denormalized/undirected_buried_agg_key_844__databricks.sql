@@ -1,4 +1,4 @@
-SELECT `r.origin_code` + string(count(`r.flight_id`)) AS `m` FROM (
+SELECT concat(`r.origin_code`, string(count(`r.flight_id`))) AS `m` FROM (
 SELECT 
       r.flight_id AS `r.flight_id`,
       r.origin_code AS `r.origin_code`
