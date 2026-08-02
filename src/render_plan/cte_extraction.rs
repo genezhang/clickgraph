@@ -1750,6 +1750,35 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                     .collect()
             };
 
+            // Parenthesize arithmetic operands to preserve grouping — Path C
+            // previously emitted bare `{a} OP {b}`, dropping parens on BOTH sides
+            // (`(1+2)*3` → `1 + 2 * 3`, `10-(2+3)` → `10 - 2 + 3`). Uses the same
+            // precedence rules as Path A (`needs_left_parens`/`needs_right_parens`).
+            let arith_lhs = || {
+                if op.operands.len() == 2
+                    && crate::render_plan::render_expr::needs_left_parens(
+                        op.operator,
+                        &op.operands[0],
+                    )
+                {
+                    format!("({})", operands[0])
+                } else {
+                    operands[0].clone()
+                }
+            };
+            let arith_rhs = || {
+                if op.operands.len() == 2
+                    && crate::render_plan::render_expr::needs_right_parens(
+                        op.operator,
+                        &op.operands[1],
+                    )
+                {
+                    format!("({})", operands[1])
+                } else {
+                    operands[1].clone()
+                }
+            };
+
             match op.operator {
                 Operator::Equal => format!("{} = {}", operands[0], operands[1]),
                 Operator::NotEqual => format!("{} != {}", operands[0], operands[1]),
@@ -1771,11 +1800,11 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                             .collect();
                         format!("concat({})", flattened.join(", "))
                     } else {
-                        format!("{} + {}", operands[0], operands[1])
+                        format!("{} + {}", arith_lhs(), arith_rhs())
                     }
                 }
-                Operator::Subtraction => format!("{} - {}", operands[0], operands[1]),
-                Operator::Multiplication => format!("{} * {}", operands[0], operands[1]),
+                Operator::Subtraction => format!("{} - {}", arith_lhs(), arith_rhs()),
+                Operator::Multiplication => format!("{} * {}", arith_lhs(), arith_rhs()),
                 Operator::Division => {
                     // Cypher integer-constant division truncates toward zero
                     // (`7/2 = 3`); CH/Spark `/` is float division. Mirror Path A
@@ -1792,10 +1821,10 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                                 .integer_division();
                         format!("{}({}, {})", int_div, operands[0], operands[1])
                     } else {
-                        format!("{} / {}", operands[0], operands[1])
+                        format!("{} / {}", arith_lhs(), arith_rhs())
                     }
                 }
-                Operator::ModuloDivision => format!("{} % {}", operands[0], operands[1]),
+                Operator::ModuloDivision => format!("{} % {}", arith_lhs(), arith_rhs()),
                 Operator::Exponentiation => format!("POWER({}, {})", operands[0], operands[1]),
                 Operator::In => {
                     // Cypher: x IN array_property → CH: has(arr, x), Spark: array_contains(arr, x)

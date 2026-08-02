@@ -7472,10 +7472,17 @@ impl RenderExpr {
                                 format!("({} {} {})", &rendered[0], sql_op, &rendered[1])
                             }
                             _ => {
+                                let lhs =
+                                    if render_expr::needs_left_parens(op.operator, &op.operands[0])
+                                    {
+                                        format!("({})", &rendered[0])
+                                    } else {
+                                        rendered[0].clone()
+                                    };
                                 if render_expr::needs_right_parens(op.operator, &op.operands[1]) {
-                                    format!("{} {} ({})", &rendered[0], sql_op, &rendered[1])
+                                    format!("{} {} ({})", lhs, sql_op, &rendered[1])
                                 } else {
-                                    format!("{} {} {}", &rendered[0], sql_op, &rendered[1])
+                                    format!("{} {} {}", lhs, sql_op, &rendered[1])
                                 }
                             }
                         }
@@ -7946,10 +7953,16 @@ impl RenderExpr {
                             format!("({} {} {})", &rendered[0], sql_op, &rendered[1])
                         }
                         _ => {
+                            let lhs =
+                                if render_expr::needs_left_parens(op.operator, &op.operands[0]) {
+                                    format!("({})", &rendered[0])
+                                } else {
+                                    rendered[0].clone()
+                                };
                             if render_expr::needs_right_parens(op.operator, &op.operands[1]) {
-                                format!("{} {} ({})", &rendered[0], sql_op, &rendered[1])
+                                format!("{} {} ({})", lhs, sql_op, &rendered[1])
                             } else {
-                                format!("{} {} {}", &rendered[0], sql_op, &rendered[1])
+                                format!("{} {} {}", lhs, sql_op, &rendered[1])
                             }
                         }
                     },
@@ -8265,10 +8278,15 @@ impl ToSql for OperatorApplication {
                 }
             }
             2 => {
-                if render_expr::needs_right_parens(self.operator, &self.operands[1]) {
-                    format!("{} {} ({})", &rendered[0], sql_op, &rendered[1])
+                let lhs = if render_expr::needs_left_parens(self.operator, &self.operands[0]) {
+                    format!("({})", &rendered[0])
                 } else {
-                    format!("{} {} {}", &rendered[0], sql_op, &rendered[1])
+                    rendered[0].clone()
+                };
+                if render_expr::needs_right_parens(self.operator, &self.operands[1]) {
+                    format!("{} {} ({})", lhs, sql_op, &rendered[1])
+                } else {
+                    format!("{} {} {}", lhs, sql_op, &rendered[1])
                 }
             }
             _ => {
