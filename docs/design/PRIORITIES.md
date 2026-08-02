@@ -466,21 +466,21 @@ fixed stats fixture.
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
-- **VLP edge-identity & uniqueness unification — #887**
+- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 DONE #890)
   (`docs/design/VLP_EDGE_IDENTITY_UNIFICATION.md`). Bug-driven refactor of the
   VLP relationship-uniqueness axis: one canonical `EdgeUniquenessPolicy`
   (`PatternSchemaContext`-derived, rule-#7 clean) replaces ~14 inline sites / 3
   inconsistent edge-vs-node copies / 6 edge-identity spellings. Retires the
-  self-spawning residual chain #606/#628/#710/#806/#808. Key finding: the 5
-  `analyze_pattern` CM strategies are corpus-unreachable dead code (sole caller
-  is `#[cfg(test)]` at `cte_manager/mod.rs:3826`), so **Phase 0 (dead-code
-  deletion) is unblocked and shippable today**, ratchets the 148-occurrence VLP
-  axis-predicate baseline down immediately. Phases 1–2 (policy + transition-
-  assert + switch, byte-identical) then Phases 3–4 fix #806/#628 with
-  regenerated goldens + live oracle. A **design-cycle commitment** (~4 refactor
-  PRs before the first behavior fix) — pick up when there's appetite for a
-  multi-PR arc, or when a new corpus makes a latent node-unique arm reachable.
-  Explicitly NOT this cluster: #643/#840/#627/#683 (different subsystems).
+  self-spawning residual chain #606/#628/#710/#806/#808. **Phase 0 SHIPPED
+  (#890, `1c3bce85`)**: deleted the test-only `CteStrategy` dispatch cluster (the
+  5 `analyze_pattern` strategies were corpus-unreachable — sole caller inside
+  `#[cfg(test)]`), −2290 lines, byte-identical corpus sweep, APPROVE-0. Remaining:
+  Phase 1–2 (`EdgeUniquenessPolicy` + transition-assert + switch, byte-identical)
+  then Phases 3–4 fix #806/#628 with regenerated goldens + live oracle. A
+  **design-cycle commitment** (~3 more refactor PRs before the first behavior
+  fix) — pick up when there's appetite for a multi-PR arc, or when a new corpus
+  makes a latent node-unique arm reachable. Explicitly NOT this cluster:
+  #643/#840/#627/#683 (different subsystems).
 
 ## 3. Capacity split (guideline)
 
@@ -504,11 +504,13 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   `List`), deliberately kept out of `SchemaType` so the schema/DDL/serde surface
   is untouched. **Conservative-None invariant:** unknown → `None`, and `None` must
   route to the identical legacy branch — loud errors may only become correct SQL,
-  never silent-wrong. #871 fix: widen the concat gate (`is_string_operand`,
-  formerly `contains_string_literal`) to treat an operand the classifier proves is
-  `String` (a string-returning fn call, or later a declared string column) as a
-  string operand — so `toString(1)+toString(2)` and `toUpper(a)+toUpper(b)` render
-  `concat(...)` instead of the previously-invalid `String + String`. Negative
+  never silent-wrong. #871 fix: widen BOTH concat gates (`is_string_operand` in
+  `to_sql_query.rs`, `contains_string_literal` in `render_plan/expression_utils.rs`
+  — the latter backs the VLP bound-node WHERE-filter path, a review-caught gap) to
+  treat an operand the classifier proves is `String` (a string-returning fn call,
+  or a declared string column) as a string operand — so `toString(1)+toString(2)`
+  and `toUpper(a)+toUpper(b)` render `concat(...)` instead of the previously-invalid
+  `String + String`, on projection, WITH, WHERE, AND VLP-filter paths. Negative
   controls hold: `toFloat('1')+toFloat('2')` / `toInteger('5')+toInteger('10')`
   stay numeric `+` (Float/Integer, not String); `reverse([list])+reverse([list])`
   stays `+` (polymorphic-arg0 classifier → List, not String). `FnReturnKind`
@@ -517,10 +519,29 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   corpus golden improved (#844's `a.code + toString(count(r))` now correctly
   `concat`, its per-arm GROUP BY key unchanged); otherwise corpus_sweep +
   sql_golden 0-churn, ratchet net-zero (schema-agnostic classifier, no axis-flag
-  predicates); 13 new classifier unit tests + 4 fail-when-reverted goldens
-  (2 concat fixes, 2 numeric negative controls). SQL-shape-verified against the CH
-  forms the issue cites as accepted (no live CH). Shared infra consumed by the
-  pending #880 (OrNull dispatch) and #854 (temporal Date epoch-wrap skip) slices.
+  predicates); 13 new classifier unit tests + 5 fail-when-reverted goldens
+  (2 concat fixes, 2 numeric negative controls, 1 VLP-filter concat). Adversarial
+  review verdict fix-then-ship (widen the 2nd gate); applied. SQL-shape-verified
+  against the CH forms the issue cites as accepted (no live CH). Shared infra
+  consumed by the pending #880 (OrNull dispatch) and #854 (temporal Date
+  epoch-wrap skip) slices.
+- 2026-08-02: **#887 Phase 0 — delete test-only `CteStrategy` dispatch cluster**
+  (branch `refactor/vlp-phase0-dead-strategies`, #890 / `1c3bce85`). First slice
+  of the VLP edge-identity/uniqueness unification
+  (`docs/design/VLP_EDGE_IDENTITY_UNIFICATION.md`). Pure dead-code deletion:
+  `CteManager::analyze_pattern` (sole builder of the `Traditional / FkEdge /
+  MixedAccess / EdgeToEdge / Coupled` `CteStrategy` variants + `::Denormalized`)
+  had exactly one caller, inside `#[cfg(test)]` — the live VLP path builds
+  `VariableLengthCteStrategy` / `DenormalizedCteStrategy` directly, never through
+  the enum. Deleted the enum + dispatch, `analyze_pattern`, the 5 dead strategy
+  structs+impls+tests, `get_fk_edge_node_id_column`, `build_where_clause_from_filters`,
+  the test-only `CteGenerationContext::with_schema`, and the dead re-export.
+  Deadness compiler-verified (construction confined to the test-only factory).
+  **−2290 lines**; `corpus_sweep` byte-identical (0 golden churn); ratchet
+  `is_denormalized` in cte_manager 13→12 (baseline locked); adversarial review
+  APPROVE-0. KEPT: `generate_mixed_*` VLC arms (corpus-empty but reachable, per
+  #808/#860). Phases 1–4 (the actual `EdgeUniquenessPolicy` unification + #806/#628
+  fixes) remain a design-cycle commitment.
 - 2026-08-02: **P-1 — WITH-rename of an UNWIND scalar dropped the `AS` alias in
   the CTE body → `count(y.y)` Code 47** (branch `fix/864-with-rename-unwind-scalar`,
   closes #864). `UNWIND [1,2,3] AS x WITH x AS y RETURN count(y)` rendered an
