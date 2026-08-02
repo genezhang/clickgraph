@@ -213,14 +213,30 @@ Every slice: byte-identical goldens + 319-of-1229 VLP corpus-sweep entries
 worktree-isolated adversarial subagent review, `PRIORITIES.md` + this
 checklist updated in the same PR.
 
-### Phase 0 — delete the dead code (pure hygiene, 0 behavior change) → closes part of #606, #808
-Delete the 5 corpus-unreachable CM strategy classes (`Traditional / FkEdge /
-MixedAccess / EdgeToEdge / Coupled` + `analyze_pattern` + its `#[cfg(test)]`
-caller), and the 3 confirmed-dead VLC recursive arms (#808 option (a)). Prove
-dead first: the `analyze_pattern`-only-test-caller fact + the #808 eprintln
-sweep are the evidence; re-run the sweep with an `unreachable!()` tripwire in
-each before deleting. **Ratchet baseline falls immediately** (much of the
-`is_denormalized`×13 / `from_label_column`×6 in CM is in these classes).
+### Phase 0 — delete the dead code (pure hygiene, 0 behavior change) → **DONE (#890, `1c3bce85`)**
+**Shipped.** Deleted the test-only `CteStrategy` dispatch cluster: the enum + its
+`generate_sql`/`validate` dispatch, `analyze_pattern` (sole builder of the 5
+`Traditional / FkEdge / MixedAccess / EdgeToEdge / Coupled` variants and of
+`CteStrategy::Denormalized`, with its only caller inside `#[cfg(test)]`), the
+arg-taking `generate_cte`/`validate_strategy` (0 live callers), the 5 dead
+strategy structs+impls + their `#[cfg(test)]` tests, `get_fk_edge_node_id_column`,
+the orphaned `build_where_clause_from_filters`, the test-only
+`CteGenerationContext::with_schema`, and the `render_plan::CteStrategy`
+re-export. Deadness was **compiler-verified** (construction statically confined
+to the test-only `analyze_pattern`, so the crate compiling after deletion proves
+nothing live referenced it) — stronger than the tripwire originally planned.
+Kept `DenormalizedCteStrategy` + `VariableLengthCteStrategy` (live via direct
+construction) and every `VariableLengthCteGenerator` arm. **−2290 lines.**
+Adversarial review APPROVE-0 (multiset line-diff: kept lines byte-identical);
+`corpus_sweep` byte-identical with zero golden churn; ratchet `is_denormalized`
+in CM 13→12 (baseline locked).
+
+NOTE (corrects an earlier draft): the "3 dead VLC recursive arms" this section
+first named were **already deleted in #860** (denorm + heterogeneous-polymorphic
+recursive generators); the still-present `generate_mixed_*` arms are
+corpus-empty **but reachable** (`cte_manager` `new_mixed`), so they were
+deliberately KEPT — deleting them would silently change SQL. Phase 0 was
+therefore the CM dispatch cluster only.
 
 ### Phase 1 — introduce `EdgeUniquenessPolicy`, transition-assert only (no switch) → §2.5
 Land the type + `from_pattern`. At each of the ~14 sites, compute the policy's
