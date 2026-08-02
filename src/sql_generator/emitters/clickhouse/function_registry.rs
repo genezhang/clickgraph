@@ -376,10 +376,13 @@ lazy_static::lazy_static! {
 
         // ===== LIST FUNCTIONS =====
 
-        // head(list) -> arrayElement(list, 1) [first element]
+        // head(list) -> arrayElementOrNull(list, 1) [first element, NULL if empty]
+        // openCypher: head([]) is null, not the element type's default. CH
+        // `arrayElement` returns 0/'' on an empty list; `arrayElementOrNull`
+        // returns NULL. Spark `element_at` already returns NULL on out-of-bounds.
         m.insert("head", FunctionMapping {
             neo4j_name: "head",
-            clickhouse_name: "arrayElement",
+            clickhouse_name: "arrayElementOrNull",
             databricks_name: Some("element_at"), // Spark 1-based element access
             arg_transform: Some(|args| {
                 if !args.is_empty() {
@@ -416,10 +419,11 @@ lazy_static::lazy_static! {
             }),
         });
 
-        // last(list) -> arrayElement(list, -1) [last element]
+        // last(list) -> arrayElementOrNull(list, -1) [last element, NULL if empty]
+        // openCypher: last([]) is null, not the element type's default (see head).
         m.insert("last", FunctionMapping {
             neo4j_name: "last",
-            clickhouse_name: "arrayElement",
+            clickhouse_name: "arrayElementOrNull",
             databricks_name: Some("element_at"), // Spark element_at supports -1 (last)
             arg_transform: Some(|args| {
                 if !args.is_empty() {
