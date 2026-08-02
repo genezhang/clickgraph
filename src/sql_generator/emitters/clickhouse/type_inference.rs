@@ -26,6 +26,7 @@ use super::function_registry::{function_return_kind, FnReturnKind};
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::schema_types::SchemaType;
 use crate::render_plan::render_expr::{Literal, Operator, RenderExpr};
+use std::collections::HashMap;
 
 /// Render-layer type. A superset of [`SchemaType`] with two extra shapes that
 /// exist only during rendering:
@@ -138,12 +139,19 @@ fn infer_fn_call(name: &str, args: &[RenderExpr]) -> Option<RenderType> {
 /// any. Returns `None` (safe) for rel-var aliases, unknown labels, undeclared
 /// properties, or when the alias resolves ambiguously to both a node label and a
 /// relationship type.
+///
+/// The `column` name at this render stage may be EITHER the Cypher property name
+/// or the already-mapped physical DB column (the property mapping is applied
+/// upstream, so e.g. `p.date` arrives here as `post_date`). `property_types` is
+/// keyed by the Cypher name, so we try a direct lookup first, then reverse-map
+/// the name through `property_mappings` (DB column → Cypher prop → type).
 fn infer_property_type(alias: &str, column: &PropertyValue) -> Option<RenderType> {
+    use crate::graph_catalog::expression_parser::PropertyValue as PV;
     use crate::server::query_context::{get_current_schema, get_node_label_for_alias};
 
-    // Only a simple column reference carries a Cypher property name that keys
-    // `property_types`. An Expression is a raw computed string — untyped.
-    let prop = match column {
+    // Only a simple column reference carries a resolvable name. An Expression is
+    // a raw computed string — untyped.
+    let name = match column {
         PropertyValue::Column(name) => name.as_str(),
         PropertyValue::Expression(_) => return None,
     };
@@ -151,14 +159,40 @@ fn infer_property_type(alias: &str, column: &PropertyValue) -> Option<RenderType
     let schema = get_current_schema()?;
     let label = get_node_label_for_alias(alias)?;
 
+    // Resolve `name` (Cypher prop OR physical DB column) to its declared type via
+    // a (property_types, property_mappings) pair. Direct lookup first (name is the
+    // Cypher prop); else reverse-map (name is the DB column that some Cypher prop
+    // maps to) and look that prop's type up.
+    let resolve = |types: &HashMap<String, SchemaType>,
+                   mappings: &HashMap<String, PV>|
+     -> Option<SchemaType> {
+        if let Some(t) = types.get(name) {
+            return Some(t.clone());
+        }
+        for (cypher_prop, mapped) in mappings.iter() {
+            if let PV::Column(col) = mapped {
+                if col == name {
+                    if let Some(t) = types.get(cypher_prop) {
+                        return Some(t.clone());
+                    }
+                }
+            }
+        }
+        None
+    };
+
     // A name could match a node label AND a relationship type. If it matches
-    // both, we can't tell which `property_types` map applies — return None
-    // rather than guess (avoids a wrong String→concat trigger, #871).
+    // both, we can't tell which schema applies — return None rather than guess
+    // (avoids a wrong classification triggering concat/OrNull/etc.).
     let node = schema.node_schema_opt(&label);
     let rel = schema.get_relationships_schema_opt(&label);
     match (node, rel) {
-        (Some(ns), None) => ns.property_types.get(prop).cloned().map(RenderType::from),
-        (None, Some(rs)) => rs.property_types.get(prop).cloned().map(RenderType::from),
+        (Some(ns), None) => {
+            resolve(&ns.property_types, &ns.property_mappings).map(RenderType::from)
+        }
+        (None, Some(rs)) => {
+            resolve(&rs.property_types, &rs.property_mappings).map(RenderType::from)
+        }
         // Ambiguous (both) or neither → unknown.
         _ => None,
     }

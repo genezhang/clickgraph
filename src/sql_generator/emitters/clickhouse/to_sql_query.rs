@@ -484,6 +484,27 @@ pub(crate) fn normalize_slice_bound(
     )
 }
 
+/// True for the Cypher temporal-component functions (`year`/`month`/`day`/…)
+/// whose registry `arg_transform` is `wrap_epoch_millis_arg`. Used by the #854
+/// Date/DateTime-arg fast-path in the `ScalarFnCall` renderer to decide whether
+/// to skip the epoch-millis wrap. Kept in lockstep with the `Some(wrap_epoch_millis_arg)`
+/// entries in `function_registry.rs`.
+fn is_temporal_component_fn(fn_lower: &str) -> bool {
+    matches!(
+        fn_lower,
+        "year"
+            | "month"
+            | "day"
+            | "hour"
+            | "minute"
+            | "second"
+            | "dayofweek"
+            | "dayofyear"
+            | "quarter"
+            | "week"
+    )
+}
+
 /// Interval arithmetic on epoch-millis: wrap non-interval operands as a
 /// timestamp, do the `+`/`-`, and convert the result back to epoch-millis.
 /// Dialect-aware via the function mapper — ClickHouse:
@@ -511,6 +532,34 @@ fn render_interval_arithmetic(op: &OperatorApplication, rendered: &[String]) -> 
         && rendered.len() == 2
         && rendered.iter().any(|r| is_interval(r))
     {
+        // #854: when the non-interval operand is a native Date/DateTime (a
+        // `date(…)`/`datetime(…)` constructor or a declared Date/DateTime column),
+        // there is no epoch-millis round-trip to do — CH/Spark add an interval to
+        // a date/datetime directly and return a date/datetime. Emit
+        // `{temporal} +/- {interval}` verbatim; wrapping it in
+        // `fromUnixTimestamp64Milli` (as the epoch path below does) would reject a
+        // Date arg (Code 43). Gated on the structured classifier so epoch-millis
+        // BIGINT and unknown operands still take the round-trip path (unchanged).
+        let temporal_operand_idx = op.operands.iter().position(|o| {
+            matches!(
+                super::type_inference::infer_render_type(o),
+                Some(super::type_inference::RenderType::Date)
+                    | Some(super::type_inference::RenderType::DateTime)
+            )
+        });
+        if let Some(idx) = temporal_operand_idx {
+            // The other operand is the interval term.
+            if idx < rendered.len() && !is_interval(&rendered[idx]) {
+                let sql_op = if op.operator == Operator::Addition {
+                    "+"
+                } else {
+                    "-"
+                };
+                let (lhs, rhs) = (&rendered[0], &rendered[1]);
+                return Some(format!("{} {} {}", lhs, sql_op, rhs));
+            }
+        }
+
         // An operand that is already a timestamp expression must not be re-wrapped.
         // Databricks function markers are anchored on the call `(`; `current_timestamp`
         // is intentionally bare (Spark allows it as a keyword without parens). The CH
@@ -7126,6 +7175,33 @@ impl RenderExpr {
                     } else {
                         mapper.cast_float64_or_null(&arg_sql)
                     };
+                }
+
+                // #854: Cypher temporal component access (`.year`/`.month`/… →
+                // `year(x)`/`month(x)`/…) on a native Date/DateTime arg must NOT
+                // be epoch-wrapped. The registry `arg_transform`
+                // (`wrap_epoch_millis_arg`) assumes every temporal arg is an
+                // epoch-millis BIGINT and wraps it in `fromUnixTimestamp64Milli`,
+                // which CH rejects (Code 43) on a real Date/DateTime. When the
+                // classifier proves the arg is Date/DateTime (a `date(…)`/
+                // `datetime(…)` constructor, or a declared Date/DateTime column),
+                // emit `{toYear|…}({arg})` directly — no wrap. Epoch-millis BIGINT
+                // and unknown args fall through to the registry path (wrap kept,
+                // unchanged for LDBC-style epoch schemas).
+                if is_temporal_component_fn(&fn_name_lower) && fn_call.args.len() == 1 {
+                    if let Some(t) = super::type_inference::infer_render_type(&fn_call.args[0]) {
+                        if matches!(
+                            t,
+                            super::type_inference::RenderType::Date
+                                | super::type_inference::RenderType::DateTime
+                        ) {
+                            if let Some(mapping) = get_function_mapping(&fn_name_lower) {
+                                let dialect = crate::server::query_context::get_current_dialect();
+                                let arg_sql = fn_call.args[0].to_sql();
+                                return format!("{}({})", mapping.name_for(dialect), arg_sql);
+                            }
+                        }
+                    }
                 }
 
                 // Check if we have a Neo4j -> ClickHouse mapping

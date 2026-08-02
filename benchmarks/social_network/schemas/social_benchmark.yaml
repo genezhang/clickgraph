@@ -14,6 +14,13 @@ graph_schema:
         is_active: is_active
         country: country
         city: city
+      # #854: declaring native temporal column types lets the render-site type
+      # classifier skip the epoch-millis wrap on Date/DateTime component access
+      # and duration arithmetic (`u.registration_date.year`,
+      # `u.registration_date + duration({days:7})`). Consumed by DDL generation
+      # and the classifier only — inert for existing translation goldens.
+      property_types:
+        registration_date: date
 
     - label: Post
       database: social
@@ -25,6 +32,8 @@ graph_schema:
         content: post_content
         date: post_date
         author_id: author_id
+      property_types:
+        date: datetime
 
   edges:
     - type: FOLLOWS
