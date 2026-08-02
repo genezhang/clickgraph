@@ -524,6 +524,26 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **Fix — graph pattern in scalar-expression context returns a clean
+  error instead of panicking** (branch `fix/901-pattern-in-expr-context-panic`,
+  closes #901). `MATCH (u:User) RETURN CASE WHEN (u)-[:FOLLOWS]->() THEN 1 ELSE 0
+  END` (and the WHERE-CASE form) panicked the tokio worker with `unimplemented!`
+  at `render_expr.rs:2036` — in server mode this took down the worker on
+  otherwise-valid Cypher. **Root cause:** `RenderExpr::try_from(LogicalExpr)` had
+  a catch-all `_ => unimplemented!(...)` (plus a nested `unimplemented!` for a
+  name/label-less `PathPattern::Node`); a relationship pattern in expression
+  context (`PathPattern::ConnectedPattern`) reached it — only the bare
+  `PathPattern::Node` label-check form was lowered. **Fix:** replace both
+  `unimplemented!` calls with a clean `RenderBuildError::UnsupportedFeature` Err
+  (the fn already returns `Result<_, RenderBuildError>`), naming the offending
+  variant and suggesting a top-level MATCH / `EXISTS { … }` workaround. Ground-
+  rule-1 safe: a panic becomes a loud error, never wrong SQL. The full lowering
+  (relationship pattern → correlated EXISTS subquery, the #574/#587 neighborhood)
+  is out of scope. Supported paths unchanged: `(u:User)` node-label pattern in a
+  CASE still lowers to `u.__label__ = 'User'`; normal `EXISTS { … }` unaffected.
+  2 fail-when-reverted panic-guard tests (RETURN + WHERE CASE forms) at the render
+  level; corpus_sweep 0-churn; ratchet net-zero; full gate green (lib 1676,
+  integration 549). Discovered while fixing #866.
 - 2026-08-02: **Fix — count() of a scalar property through a WITH barrier no
   longer collapses to count(\*)** (branch `fix/903-count-scalar-property-with`,
   closes #903). `MATCH (u:User) WITH u.age AS a RETURN count(a)` rendered the CTE

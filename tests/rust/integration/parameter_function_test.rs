@@ -471,3 +471,48 @@ fn test_list_comprehension_with_hidden_pattern_errors_not_panics() {
         "a pattern hidden in a list-comprehension CASE should error, not panic"
     );
 }
+
+#[test]
+fn test_relationship_pattern_in_case_return_errors_not_panics_901() {
+    // #901: a relationship pattern in scalar-expression context inside a CASE
+    // (`RETURN CASE WHEN (u)-[:FOLLOWS]->() THEN 1 ELSE 0 END`) has no scalar
+    // lowering. It plans fine but reaches `RenderExpr::try_from(LogicalExpr)`,
+    // where a catch-all `unimplemented!` used to PANIC the tokio worker on
+    // otherwise-valid Cypher (taking down the server). It must now surface as a
+    // clean render Err (UnsupportedFeature), never a panic.
+    let query = "MATCH (u:User) RETURN CASE WHEN (u)-[:FOLLOWS]->() THEN 1 ELSE 0 END AS c";
+    let ast = parse_query(query).expect("Failed to parse query");
+    let schema = create_test_schema();
+
+    let (logical_plan, plan_ctx) = build_logical_plan(&ast, &schema, None, None, None)
+        .expect("should plan (error is at render)");
+    let result =
+        logical_plan_to_render_plan_with_ctx((*logical_plan).clone(), &schema, Some(&plan_ctx));
+    assert!(
+        result.is_err(),
+        "a relationship pattern in a CASE expression must render-error, not panic"
+    );
+    let err = format!("{:?}", result.unwrap_err());
+    assert!(
+        err.contains("UnsupportedFeature"),
+        "expected a clean UnsupportedFeature error, got: {err}"
+    );
+}
+
+#[test]
+fn test_relationship_pattern_in_where_case_errors_not_panics_901() {
+    // #901 (WHERE form): same panic path via a CASE predicate in WHERE.
+    let query = "MATCH (u:User) WHERE CASE WHEN (u)-[:FOLLOWS]->() THEN true ELSE false END \
+                 RETURN u.user_id";
+    let ast = parse_query(query).expect("Failed to parse query");
+    let schema = create_test_schema();
+
+    let (logical_plan, plan_ctx) = build_logical_plan(&ast, &schema, None, None, None)
+        .expect("should plan (error is at render)");
+    let result =
+        logical_plan_to_render_plan_with_ctx((*logical_plan).clone(), &schema, Some(&plan_ctx));
+    assert!(
+        result.is_err(),
+        "a relationship pattern in a WHERE CASE must render-error, not panic"
+    );
+}

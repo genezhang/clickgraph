@@ -2030,10 +2030,30 @@ impl TryFrom<LogicalExpr> for RenderExpr {
                         ],
                     })
                 } else {
-                    unimplemented!("PathPattern::Node without name or label is not supported in expression context")
+                    // #901: a bare node pattern with neither name nor label in
+                    // expression context has no scalar lowering. Return a clean
+                    // error instead of panicking the worker.
+                    return Err(RenderBuildError::UnsupportedFeature(
+                        "a bare node pattern with neither variable nor label in \
+                         expression context (e.g. inside CASE/WHERE) is not supported"
+                            .to_string(),
+                    ));
                 }
             }
-            _ => unimplemented!("Conversion for this LogicalExpr variant is not implemented"),
+            // #901: a relationship pattern (or any other unhandled variant) in
+            // expression context — e.g. `CASE WHEN (u)-[:R]->() THEN … END` — has no
+            // scalar lowering yet (a correlated EXISTS-style subquery, the #574/#587
+            // neighborhood). Previously this hit a catch-all `unimplemented!` that
+            // PANICKED the tokio worker on otherwise-valid Cypher; return a clean,
+            // loud error instead (ground-rule-1 safe: never wrong SQL). Express such
+            // a pattern via a top-level MATCH or an EXISTS { … } subquery.
+            other => {
+                return Err(RenderBuildError::UnsupportedFeature(format!(
+                    "a graph pattern or unsupported expression in scalar-expression \
+                     context (e.g. inside CASE/WHERE) is not supported: {other:?}. \
+                     Express it as a top-level MATCH or an EXISTS {{ … }} subquery"
+                )));
+            }
         };
         Ok(expression)
     }
