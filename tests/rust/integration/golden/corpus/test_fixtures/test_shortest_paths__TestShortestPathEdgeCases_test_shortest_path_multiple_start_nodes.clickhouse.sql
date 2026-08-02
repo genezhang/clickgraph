@@ -10,7 +10,7 @@ WITH RECURSIVE vlp_a_b_inner AS (
     FROM test_integration.users AS start_node
     JOIN test_integration.follows AS rel ON start_node.user_id = rel.follower_id
     JOIN test_integration.users AS end_node ON rel.followed_id = end_node.user_id
-    WHERE start_node.name IN ('Alice', 'Bob')
+    WHERE start_node.name IN ['Alice', 'Bob']
     UNION ALL
     SELECT
         vp.start_id,

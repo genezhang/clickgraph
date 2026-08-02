@@ -47,6 +47,28 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// pre-rendered SQL fragments (the caller applies the 1-based offset).
     fn array_element_or_null(&self, arr: &str, idx: &str) -> String;
 
+    /// Render an `x IN <list-literal>` / `x NOT IN <list-literal>` predicate when
+    /// the dialect needs a form OTHER than the default `{lhs} IN {array_literal}`.
+    /// Returns `None` to signal "use the default array-literal form" — correct on
+    /// ClickHouse, whose `x IN [a, b]` is valid. On Databricks the default
+    /// `x IN array(a, b)` compares a scalar against ONE array value, so this
+    /// returns the Spark-valid paren value-list `x IN (a, b)` for a constant list
+    /// (or an `(x = a OR x = b …)` / `(x != a AND …)` chain when items are
+    /// non-constant, which Spark's `IN` also rejects). `lhs_sql` and `item_sqls`
+    /// are pre-rendered; `all_constant` is true iff every item is a literal or
+    /// parameter; `negate` selects `NOT IN`. Empty `item_sqls` yields the constant
+    /// predicate (`FALSE` for IN, `TRUE` for NOT IN) since Spark `IN ()` is a
+    /// syntax error. Keeping the dialect decision here (the canonical dialect
+    /// layer) instead of an inline dialect branch in the renderer satisfies
+    /// Rule #7 and mirrors Path A's `render_constant_in_list`.
+    fn in_list_predicate(
+        &self,
+        lhs_sql: &str,
+        item_sqls: &[String],
+        all_constant: bool,
+        negate: bool,
+    ) -> Option<String>;
+
     /// Conditional count. CH: `countIf`. Spark: `count_if` (DBR 13.1+).
     fn count_if(&self) -> &'static str;
 

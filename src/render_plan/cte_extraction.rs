@@ -1658,6 +1658,41 @@ fn substitute_pattern_branch_refs(
     }
 }
 
+/// Render the RHS of an `x IN <list>` / `x NOT IN <list>` predicate for the CTE
+/// body, matching the canonical Path A (`render_constant_in_list` +
+/// `has_non_constant` expansion in `to_sql_query.rs`). Returns `None` to fall
+/// through to the caller's default `{lhs} IN {rhs}` (used on ClickHouse, whose
+/// `x IN [array]` form is valid and kept byte-stable).
+///
+/// The `List` arm now renders as an ARRAY literal (`[...]` / `array(...)`), which
+/// is correct everywhere EXCEPT a Spark `IN` value-list. The per-dialect decision
+/// lives in `FunctionMapper::in_list_predicate` (the canonical dialect layer, per
+/// Rule #7); this helper only does the RenderExpr-specific work of rendering the
+/// items and detecting whether they are all constants.
+fn render_in_list_rhs(
+    rhs: &RenderExpr,
+    lhs_sql: &str,
+    negate: bool,
+    alias_mapping: &[(String, String)],
+) -> Option<String> {
+    let RenderExpr::List(items) = rhs else {
+        return None;
+    };
+    let item_sqls: Vec<String> = items
+        .iter()
+        .map(|item| render_expr_to_sql_string(item, alias_mapping))
+        .collect();
+    let all_constant = items
+        .iter()
+        .all(|i| matches!(i, RenderExpr::Literal(_) | RenderExpr::Parameter(_)));
+    crate::sql_generator::function_mapper::current_function_mapper().in_list_predicate(
+        lhs_sql,
+        &item_sqls,
+        all_constant,
+        negate,
+    )
+}
+
 /// Convert a RenderExpr to a SQL string for use in CTE WHERE clauses
 pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String)]) -> String {
     match expr {
@@ -1755,6 +1790,10 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                             crate::sql_generator::function_mapper::current_function_mapper()
                                 .array_contains();
                         format!("{}({}, {})", contains, operands[1], operands[0])
+                    } else if let Some(in_sql) =
+                        render_in_list_rhs(&op.operands[1], &operands[0], false, alias_mapping)
+                    {
+                        in_sql
                     } else {
                         format!("{} IN {}", operands[0], operands[1])
                     }
@@ -1765,6 +1804,10 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                             crate::sql_generator::function_mapper::current_function_mapper()
                                 .array_contains();
                         format!("NOT {}({}, {})", contains, operands[1], operands[0])
+                    } else if let Some(in_sql) =
+                        render_in_list_rhs(&op.operands[1], &operands[0], true, alias_mapping)
+                    {
+                        in_sql
                     } else {
                         format!("{} NOT IN {}", operands[0], operands[1])
                     }
@@ -1826,7 +1869,14 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                 .iter()
                 .map(|item| render_expr_to_sql_string(item, alias_mapping))
                 .collect();
-            format!("({})", items.join(", "))
+            // Render as an ARRAY literal (CH `[...]` / Spark `array(...)`), matching
+            // the canonical Path A (`RenderExpr::to_sql`). A bare `(a, b, c)` is a
+            // TUPLE in ClickHouse — `arrayElement`/`length`/`has` all reject it
+            // (Code 43) — and only coincidentally worked for `x IN (...)`. CH
+            // accepts `x IN [array]` identically, so the array form is correct in
+            // every context this CTE-body renderer reaches.
+            crate::sql_generator::function_mapper::current_function_mapper()
+                .array_literal(&items.join(", "))
         }
         RenderExpr::InSubquery(subq) => {
             format!(
@@ -1900,8 +1950,36 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
         }
         RenderExpr::ArraySubscript { array, index } => {
             let array_sql = render_expr_to_sql_string(array, alias_mapping);
-            let index_sql = render_expr_to_sql_string(index, alias_mapping);
-            format!("{}[{}]", array_sql, index_sql)
+            // Mirror the canonical Path A (`RenderExpr::to_sql`) exactly:
+            //   * a string-literal index is a MAP-KEY access (`m['key']`) — left
+            //     verbatim, no offset, no null-safe accessor;
+            //   * a numeric index is Cypher 0-based, so it needs +1 for CH/Spark
+            //     1-based element access, with negative (from-the-end) indices
+            //     passed through unchanged (`-1` = last), and the whole thing
+            //     routed through `array_element_or_null` so an out-of-bounds index
+            //     yields NULL (openCypher) rather than the element type default.
+            // The previous raw `{array}[{index}]` was doubly wrong here: no +1
+            // offset (off-by-one vs Cypher) and, combined with the List arm's old
+            // tuple output, produced `(1,2,3)[0]` — a Code 43 on ClickHouse.
+            match index.as_ref() {
+                RenderExpr::Literal(Literal::String(_)) => {
+                    let index_sql = render_expr_to_sql_string(index, alias_mapping);
+                    format!("{}[{}]", array_sql, index_sql)
+                }
+                _ => {
+                    let idx_1based = match index.as_ref() {
+                        RenderExpr::Literal(Literal::Integer(n)) if *n >= 0 => {
+                            format!("{}", n + 1)
+                        }
+                        _ => {
+                            let i = render_expr_to_sql_string(index, alias_mapping);
+                            format!("if(({i}) >= 0, ({i})+1, ({i}))")
+                        }
+                    };
+                    crate::sql_generator::function_mapper::current_function_mapper()
+                        .array_element_or_null(&array_sql, &idx_1based)
+                }
+            }
         }
         RenderExpr::ArraySlicing { array, from, to } => {
             // Use to_sql method which handles ClickHouse arraySlice generation

@@ -57,6 +57,38 @@ impl FunctionMapper for DatabricksFunctionMapper {
         format!("element_at({}, {})", arr, idx)
     }
 
+    fn in_list_predicate(
+        &self,
+        lhs_sql: &str,
+        item_sqls: &[String],
+        all_constant: bool,
+        negate: bool,
+    ) -> Option<String> {
+        // Spark `x IN array(a, b)` compares a scalar to ONE array value, and
+        // `x IN [col, ...]` is rejected outright — so an array-literal RHS must be
+        // re-expressed. Constant list -> paren value-list `x IN (a, b)`;
+        // non-constant list -> `(x = a OR x = b …)` / `(x != a AND …)` chain.
+        // Empty list -> constant predicate (Spark `IN ()` is a syntax error).
+        if item_sqls.is_empty() {
+            return Some(if negate { "TRUE" } else { "FALSE" }.to_string());
+        }
+        if all_constant {
+            let kw = if negate { "NOT IN" } else { "IN" };
+            Some(format!("{} {} ({})", lhs_sql, kw, item_sqls.join(", ")))
+        } else {
+            let (cmp, joiner) = if negate {
+                ("!=", " AND ")
+            } else {
+                ("=", " OR ")
+            };
+            let clauses: Vec<String> = item_sqls
+                .iter()
+                .map(|rhs| format!("{} {} {}", lhs_sql, cmp, rhs))
+                .collect();
+            Some(format!("({})", clauses.join(joiner)))
+        }
+    }
+
     fn count_if(&self) -> &'static str {
         // Databricks Runtime 13.1+ ships count_if. Older runtimes need
         // SUM(CASE WHEN ... THEN 1 ELSE 0 END) — flagged here so a future
@@ -323,6 +355,38 @@ mod tests {
         assert_eq!(
             m.percentile_aggregate("t.x", "0.9", false),
             "try_element_at(array_sort(collect_list(t.x)), greatest(1, cast(ceil(0.9 * count(t.x)) as int)))"
+        );
+    }
+
+    #[test]
+    fn in_list_predicate_reexpresses_array_literal_for_spark() {
+        // Spark `x IN array(...)` is wrong (scalar vs one array value); a
+        // constant list becomes a paren value-list, a non-constant list becomes
+        // an OR/AND equality chain, and an empty list becomes a constant.
+        let m = for_dialect(SqlDialect::Databricks);
+        assert_eq!(
+            m.in_list_predicate("x", &["1".into(), "2".into()], true, false),
+            Some("x IN (1, 2)".to_string())
+        );
+        assert_eq!(
+            m.in_list_predicate("x", &["1".into(), "2".into()], true, true),
+            Some("x NOT IN (1, 2)".to_string())
+        );
+        assert_eq!(
+            m.in_list_predicate("x", &["a.c".into(), "b.d".into()], false, false),
+            Some("(x = a.c OR x = b.d)".to_string())
+        );
+        assert_eq!(
+            m.in_list_predicate("x", &["a.c".into()], false, true),
+            Some("(x != a.c)".to_string())
+        );
+        assert_eq!(
+            m.in_list_predicate("x", &[], true, false),
+            Some("FALSE".to_string())
+        );
+        assert_eq!(
+            m.in_list_predicate("x", &[], true, true),
+            Some("TRUE".to_string())
         );
     }
 

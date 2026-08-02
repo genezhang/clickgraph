@@ -22,6 +22,18 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         format!("arrayElementOrNull({}, {})", arr, idx)
     }
 
+    fn in_list_predicate(
+        &self,
+        _lhs_sql: &str,
+        _item_sqls: &[String],
+        _all_constant: bool,
+        _negate: bool,
+    ) -> Option<String> {
+        // ClickHouse `x IN [a, b]` (array literal) is valid — use the default
+        // `{lhs} IN {array}` rendering, kept byte-stable.
+        None
+    }
+
     fn count_if(&self) -> &'static str {
         "countIf"
     }
@@ -208,6 +220,19 @@ mod tests {
             m.array_element_or_null("names", "if((0 - 1) >= 0, (0 - 1)+1, (0 - 1))"),
             "arrayElementOrNull(names, if((0 - 1) >= 0, (0 - 1)+1, (0 - 1)))"
         );
+    }
+
+    #[test]
+    fn in_list_predicate_returns_none_on_clickhouse() {
+        // CH `x IN [array]` is valid — the default array-literal rendering is
+        // kept, so the mapper signals "use default" with None for every case.
+        let m = ClickhouseFunctionMapper;
+        assert_eq!(
+            m.in_list_predicate("x", &["1".into(), "2".into()], true, false),
+            None
+        );
+        assert_eq!(m.in_list_predicate("x", &[], true, false), None);
+        assert_eq!(m.in_list_predicate("x", &["a.c".into()], false, true), None);
     }
 
     #[test]

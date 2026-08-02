@@ -244,6 +244,27 @@ const CORPUS: &[(&str, &str)] = &[
         "multi_type_rel_type_fn",
         "MATCH (a:User)-[r:FOLLOWS|AUTHORED]->(b) RETURN type(r) AS t",
     ),
+    // Path C (CTE-body `render_expr_to_sql_string`) list rendering. A multi-type
+    // relationship builds a UNION CTE whose per-arm WHERE is rendered by Path C,
+    // NOT the canonical Path A. Two regressions lived there: (1) the `List` arm
+    // emitted a TUPLE `(1, 2, 3)` — `arrayElement`/`length`/`has` reject a tuple
+    // on ClickHouse (Code 43); (2) the `ArraySubscript` arm emitted raw
+    // `arr[index]` with no +1 offset (off-by-one vs Cypher 0-based) and no
+    // null-safe accessor. Now both mirror Path A: array literal + 1-based
+    // `arrayElementOrNull`. CH `[1, 2, 3][0]` (Cypher index 0 = first) renders
+    // `arrayElementOrNull([1, 2, 3], 1)`.
+    (
+        "multi_type_where_list_subscript",
+        "MATCH (a:User)-[r:FOLLOWS|AUTHORED]->(b) WHERE [1, 2, 3][0] = 1 RETURN a.name",
+    ),
+    // Path C IN-list: CH keeps `x IN [array]` (valid); Databricks must NOT emit
+    // `x IN array(...)` (compares a scalar to one array value) — it re-expresses
+    // a constant list as the paren value-list `x IN (a, b)` via
+    // `FunctionMapper::in_list_predicate`.
+    (
+        "multi_type_where_in_list",
+        "MATCH (a:User)-[r:FOLLOWS|AUTHORED]->(b) WHERE b.user_id IN [1, 2, 3] RETURN a.name",
+    ),
     // --- #485: single-type VLP relationship-type literals must be the
     // Cypher-visible type name ('FOLLOWS'), never the internal composite
     // schema key ('FOLLOWS::User::User'). Composite keys exist to
