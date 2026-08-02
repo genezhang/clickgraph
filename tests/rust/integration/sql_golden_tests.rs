@@ -223,6 +223,14 @@ const CORPUS: &[(&str, &str)] = &[
         "vlp_where_string_concat_both_fn_calls_871",
         "MATCH (a:User)-[:FOLLOWS*1..3]->(b:User) WHERE toString(a.user_id) + toString(a.user_id) = 'x' RETURN b.user_id",
     ),
+    // #880 (VLP-filter path): toInteger/toFloat on a string-typed arg inside a
+    // VLP bound-node WHERE must dispatch to toInt64OrNull/toFloat64OrNull, same
+    // as the projection path. Renders through `cte_extraction::render_expr_to_sql_string`
+    // ("Path C") — the review-caught second-renderer gap in the first #880 cut.
+    (
+        "vlp_where_to_integer_string_ornull_880",
+        "MATCH (a:User)-[:FOLLOWS*1..3]->(b:User) WHERE toInteger('7') = a.user_id RETURN b.user_id",
+    ),
     ("whole_entity", "MATCH (u:User) RETURN u"),
     // List slicing -> arraySlice (CH) / slice (Spark). Both the 3-arg bounded
     // form and the 2-arg open-ended form (Spark needs a computed length).

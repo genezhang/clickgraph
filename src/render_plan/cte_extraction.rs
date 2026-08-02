@@ -1915,6 +1915,30 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                     return sql;
                 }
             }
+            // #880: toInteger/toFloat on a string-typed arg must dispatch to the
+            // dialect's parse-or-null cast (CH toInt64OrNull/toFloat64OrNull;
+            // Spark bigint/double already null-on-failure) so an unparseable
+            // string yields NULL instead of throwing Code 6. Mirrors the Path-A
+            // renderer (to_sql_query.rs); gated on the classifier so numeric/
+            // unknown args keep the plain cast (conservative-None). This Path-C
+            // renderer backs VLP bound-node / pattern-comprehension WHERE filters.
+            let fn_lower = func.name.to_lowercase();
+            if (fn_lower == "tointeger" || fn_lower == "tofloat")
+                && func.args.len() == 1
+                && args.len() == 1
+                && crate::sql_generator::emitters::clickhouse::type_inference::infer_render_type(
+                    &func.args[0],
+                ) == Some(
+                    crate::sql_generator::emitters::clickhouse::type_inference::RenderType::String,
+                )
+            {
+                let mapper = crate::sql_generator::function_mapper::current_function_mapper();
+                return if fn_lower == "tointeger" {
+                    mapper.cast_int64_or_null(&args[0])
+                } else {
+                    mapper.cast_float64_or_null(&args[0])
+                };
+            }
             // Map dialect-divergent names (e.g. tuple -> Spark struct) via the registry.
             let name = crate::clickhouse_query_generator::dialect_function_name(&func.name);
             format!("{}({})", name, args.join(", "))
