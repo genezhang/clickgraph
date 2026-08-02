@@ -7435,6 +7435,31 @@ pub fn detect_vlp_schema_type(
     VlpSchemaType::Normal
 }
 
+/// Whether this VLP's relationship is an FK-edge (edge = FK column on a node
+/// table, no separate edge table), per the schema catalog.
+///
+/// Canonical schema-pattern dispatch helper (axis-dispatch rule §2.1): callers
+/// outside this module ask this predicate instead of reading the relationship
+/// schema's FK-edge flag inline. Used by the closed-`*0..N` guard in
+/// `filter_builder.rs` (#628/#902): a self-referencing FK-edge's VLP recursive
+/// join has a pre-existing degenerate-join defect (#902), so the
+/// zero-hop-enabled closed case must stay loud rather than silently over-count.
+/// Reads the FIRST label's relationship schema (the same FK-edge signal the CTE
+/// builder consults early on).
+pub fn vlp_relationship_is_foreign_key_edge(
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+) -> bool {
+    let Some(schema) = crate::server::query_context::get_current_schema_with_fallback() else {
+        return false;
+    };
+    graph_rel
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.first())
+        .and_then(|label| schema.get_rel_schema(label).ok().map(|rs| rs.is_fk_edge))
+        .unwrap_or(false)
+}
+
 /// Extract table name from a node plan
 fn extract_node_table(plan: &LogicalPlan) -> Option<String> {
     match plan {

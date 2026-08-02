@@ -9124,6 +9124,65 @@ async fn fk_edge_vlp_range_uses_edge_uniqueness_606() {
     }
 }
 
+/// #628/#902: a CLOSED `*0..N` VLP on a self-referencing FK-edge schema must
+/// FAIL LOUD, not render. #628 enables closed `*0..N` cycle counting on
+/// STANDARD schemas (edge-uniqueness + empty zero-hop `path_edges` seed), but
+/// the FK-edge VLP recursive generator has a pre-existing degenerate-join
+/// defect (#902) — it joins the node id to itself instead of following the FK
+/// column — which would make the newly-rendering closed `*0..N` case silently
+/// OVER-count via phantom `(n,n)` self-loops. Ground rule 1 (fail loud over
+/// silent-wrong): keep it loud (it already failed loud pre-#628), scoped to
+/// `min_hops == 0` so FK-edge `*1..N` closed (which already rendered, with the
+/// same #902 bug) is untouched. Standard closed `*0..N` is unaffected (verified
+/// elsewhere: directed *0..2 → 9). shortestPath is exempt.
+#[tokio::test]
+async fn closed_fk_edge_zero_hop_vlp_stays_loud_628_902() {
+    let schema = load_schema("schemas/examples/filesystem_single.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // CLOSED (same var both ends) `*0..N` on FK-edge → loud.
+        let err = try_render(
+            &schema,
+            "MATCH (a:Object)-[:PARENT*0..2]->(a) RETURN count(*)",
+            dialect,
+        )
+        .await
+        .expect_err(&format!(
+            "closed FK-edge *0..N must fail loud (not silently over-count) for {dialect:?}"
+        ));
+        assert!(
+            err.contains("#902") && err.contains("FK-edge"),
+            "expected the #628/#902 FK-edge closed *0..N guard for {dialect:?}, got: {err}"
+        );
+
+        // CLOSED FK-edge `*1..N` still renders (untouched — pre-existing path).
+        let sql_1n = try_render(
+            &schema,
+            "MATCH (a:Object)-[:PARENT*1..2]->(a) RETURN count(*)",
+            dialect,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("FK-edge *1..N closed must still render for {dialect:?}: {e}"));
+        assert!(
+            sql_1n.contains("WITH RECURSIVE"),
+            "[{dialect:?}] FK-edge *1..N closed must render a recursive CTE, got:\n{sql_1n}"
+        );
+
+        // OPEN FK-edge `*0..N` (distinct endpoints) is NOT guarded — it stays
+        // node-unique and renders (the guard is closed-only).
+        let sql_open = try_render(
+            &schema,
+            "MATCH (a:Object)-[:PARENT*0..2]->(b:Object) RETURN a.object_id, b.object_id",
+            dialect,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("OPEN FK-edge *0..N must still render for {dialect:?}: {e}"));
+        assert!(
+            sql_open.contains("WITH RECURSIVE"),
+            "[{dialect:?}] OPEN FK-edge *0..N must render, got:\n{sql_open}"
+        );
+    }
+}
+
 /// #511: a hardcoded `LIMIT 1000` "safety cap" on every `pattern_union` CTE
 /// branch (unlabeled/multi-type relationship scans, e.g.
 /// `MATCH ()-[r]->() RETURN ...`) silently truncated results — with no

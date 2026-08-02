@@ -313,10 +313,16 @@ start, so every real cycle was dropped. Fix, three parts:
   concrete `Array(Tuple(...))` on `arrayConcat`; a CAST to a *guessed* element
   type would instead risk `NO_COMMON_TYPE` against the real column types — proven
   live). Hops ≥ 1 accumulate and dedupe via `NOT has(path_edges, …)` as usual.
-- `filter_builder.rs` drops the loud `*0..N` closed error and falls through to
-  emit the outer `start_id = end_id` closed constraint. The DENORMALIZED closed
-  case is still failed loud (its generator has no separate node identity to seed
-  edge-uniqueness — unchanged, all lower bounds).
+- `filter_builder.rs` drops the loud `*0..N` closed error for the STANDARD case
+  and falls through to emit the outer `start_id = end_id` closed constraint. Two
+  shapes stay loud (ground rule 1 — fail loud over silent-wrong): DENORMALIZED
+  (all lower bounds — no separate node identity to seed edge-uniqueness), and
+  FK-EDGE (`min_hops == 0` only — its VLP recursive join has a pre-existing
+  degenerate-join defect, #902, that would silently over-count via phantom
+  self-loops on the FK-on-`to_id` self-ref convention; `*1..N` FK-edge closed is
+  untouched). FK-edge detection routes through the canonical schema-catalog
+  dispatch helper `vlp_relationship_is_foreign_key_edge` (cte_extraction.rs), not
+  an inline flag read.
 
 **Live-verified** on `db_standard` (5 users): directed `*0..2` closed → **9**
 (5 zero-hop self + 4 real 2-cycles), undirected → **13** (8 + 5), `*0..3` → 12,

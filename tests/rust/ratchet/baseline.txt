@@ -109,7 +109,7 @@ schema	is_fk_edge	src/query_planner/analyzer/multi_type_vlp_expansion.rs	4
 schema	is_fk_edge	src/query_planner/logical_plan/optional_match_clause.rs	1
 schema	is_fk_edge	src/query_planner/logical_plan/write_clause_builder.rs	3
 schema	is_fk_edge	src/query_planner/write_guard.rs	3
-schema	is_fk_edge	src/render_plan/cte_extraction.rs	13
+schema	is_fk_edge	src/render_plan/cte_extraction.rs	14
 schema	is_fk_edge	src/render_plan/cte_manager/mod.rs	4
 schema	is_fk_edge	src/render_plan/select_builder.rs	3
 schema	is_fk_edge	src/render_plan/write_plan_builder.rs	1
