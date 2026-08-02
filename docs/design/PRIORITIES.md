@@ -466,7 +466,7 @@ fixed stats fixture.
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
-- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 DONE #890)
+- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slice 1 #893)
   (`docs/design/VLP_EDGE_IDENTITY_UNIFICATION.md`). Bug-driven refactor of the
   VLP relationship-uniqueness axis: one canonical `EdgeUniquenessPolicy`
   (`PatternSchemaContext`-derived, rule-#7 clean) replaces ~14 inline sites / 3
@@ -490,6 +490,16 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **#887 Phase 1 slice 1 — merge duplicate edge-tuple builders**
+  (branch `refactor/vlp-phase1-edge-tuple-dedup`, #893 / `3dee12a6`). Next slice
+  of the VLP unification after Phase 0 (#890). `build_edge_tuple_base` was
+  token-identical to `build_edge_tuple_recursive(&self.relationship_alias)` (the
+  base hard-coded the alias both recursive callers already pass), so merging them
+  is byte-identical by substitution — verified arm-by-arm (Single/Composite/None
+  incl. #617 doubled-edge) and against 374 `path_edges` goldens. Deleted the base
+  builder, redirected its sole caller. 6 edge-identity spellings → 5.
+  `corpus_sweep` byte-identical (0 golden churn), single-file −48 lines, review
+  APPROVE-0.
 - 2026-08-02: **P-1 — `toInteger`/`toFloat` on an unparseable string threw CH
   Code 6 instead of returning null** (branch `fix/880-tointeger-tofloat-ornull`,
   closes #880). PR2 of the operand-typing design cycle (built on PR1's #889

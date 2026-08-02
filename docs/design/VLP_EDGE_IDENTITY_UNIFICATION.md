@@ -238,15 +238,33 @@ corpus-empty **but reachable** (`cte_manager` `new_mixed`), so they were
 deliberately KEPT — deleting them would silently change SQL. Phase 0 was
 therefore the CM dispatch cluster only.
 
-### Phase 1 — introduce `EdgeUniquenessPolicy`, transition-assert only (no switch) → §2.5
-Land the type + `from_pattern`. At each of the ~14 sites, compute the policy's
-predicate **alongside** the existing inline one and `debug_assert_eq!` them
-(+ corpus sweep). This proves the canonical API reproduces every arm's current
-string **before** anything is deleted. Intentional divergences (if any) surface
-here as assert failures, not production bugs.
+### Phase 1 — collapse the edge-identity duplication (incremental, byte-identical) → ◐ IN PROGRESS
+Rather than land the full `EdgeUniquenessPolicy` type in one large step, Phase 1
+proceeds as a series of tightest-provable de-duplication slices, each
+byte-identical, shrinking the "6 independent edge-identity spellings" toward one
+shared helper. Once the identity spellings are consolidated, the policy type
+(below) becomes a thin wrapper the remaining sites adopt.
+
+- **Slice 1 — DONE (#893, `3dee12a6`)**: merged `build_edge_tuple_base` into
+  `build_edge_tuple_recursive`. The two were token-identical once the relationship
+  alias is unified (base hard-coded `self.relationship_alias`; both recursive
+  callers already pass exactly that), so the merge is byte-identical by
+  substitution — verified arm-by-arm and against 374 `path_edges` goldens incl.
+  the #617 doubled-edge branch. 6 spellings → 5. Review APPROVE-0.
+- **Next candidate slices** (unstarted): fold `build_fk_edge_tuple` and the flat
+  pairwise identity onto one `EdgeIdentity::spell(...)`; unify the two
+  `uses_edge_uniqueness` copies (VLC `&self` vs CM Denormalized `&self, context`
+  — they differ only by the hetero-poly exclusion term denorm can't hit) into one
+  free helper taking primitives.
+
+**Original heavyweight framing** (still the end state): introduce
+`EdgeUniquenessPolicy` + `from_pattern`, compute the policy's predicate
+**alongside** each inline site and `debug_assert_eq!` them (+ corpus sweep, §2.5)
+before deleting the inline copies. Intentional divergences surface as assert
+failures, not production bugs.
 
 ### Phase 2 — switch the recursive generator to the policy → refactor, byte-identical
-Replace the VLC inline switches (2805/3183/3315) and the 4 identity helpers with
+Replace the VLC inline switches (2805/3183/3315) and the identity helpers with
 policy calls. Goldens byte-identical (asserts from Phase 1 guarantee it). Retires
 the second `uses_edge_uniqueness` copy by making CM Denormalized consume the same
 policy.
