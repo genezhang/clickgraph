@@ -433,6 +433,15 @@ const CORPUS: &[(&str, &str)] = &[
         "fn_range",
         "MATCH (u:User) RETURN range(1, 5) AS r",
     ),
+    // range with an explicit step, ascending and DESCENDING. The inclusive-end
+    // bump must follow the step's sign: +1 for a positive step, -1 for a
+    // negative one — otherwise range(5,1,-1) dropped its final element ([5,4,3]
+    // instead of [5,4,3,2,1], silently wrong). Spark sequence() stays as-is
+    // (inclusive both directions).
+    (
+        "fn_range_step",
+        "MATCH (u:User) RETURN range(1, 10, 2) AS asc, range(5, 1, -1) AS desc",
+    ),
     // count(<scalar>) — a scalar variable (WITH-scalar / UNWIND element /
     // parameter) is not a graph entity, so it must render as a plain
     // `count(one)`, NOT be rewritten to a per-label node-id column. On main this
