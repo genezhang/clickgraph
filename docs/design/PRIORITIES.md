@@ -475,6 +475,32 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **P-1 — integer-constant division truncates toward zero** (PR
+  #857, branch `fix/847-intdiv-literal`, closes the bounded half of #847).
+  Cypher `int / int` truncates toward zero (`7/2 = 3`, `-7/2 = -3`); CH/Spark
+  `/` is always float, so `7/2` returned `3.5`. Fix (Rule #7): when BOTH
+  operands are integer CONSTANTS (integer literal or the parser's `-n` negation
+  form `Subtraction(0, n)`), emit `intDiv(a, b)` (CH) / `div(a, b)` (Spark) via
+  new `FunctionMapper::integer_division`. New `is_integer_constant` (pub(crate),
+  conservative — literals + `0-n` only, never misclassifies `5-3`/`8/(4-2)`) +
+  `render_integer_division` at the 3 Path A operator sites (alongside
+  `render_interval_arithmetic`); Path C (`cte_extraction.rs`) mirrors via the
+  shared helper. Bounded: column operands aren't typeable at render time (schema
+  carries no column types) so `u.a/u.b` stays `/` — residual kept on #847. Float
+  operands correctly stay `/`. Live-verified all 8 sign combos + float
+  non-regression + Path A/C. 0 corpus/golden churn (latent hardening). New
+  `int_division_literals` golden (both dialects). Adversarial review APPROVE-0
+  (float non-regression + false-positive boundary both independently
+  live-verified; Databricks `div(a,b)` call-form confirmed valid via Spark
+  `IntegralDivide` source). Gate: fmt · clippy · 1626 lib · 249 golden · corpus
+  + ratchet net-zero. **Two bugs filed from the same hunt:** #854 (temporal
+  component/arithmetic on native Date columns → Code 43, wrap_epoch_millis_arg
+  assumes epoch-millis BIGINT; design-cycle, arithmetic half in `to_sql_query.rs`),
+  #855 (three-valued IN/NOT IN with a null list element returns false/true not
+  null), and **#858 (HIGH-IMPACT silent-wrong: parens dropped on a
+  lower-precedence LEFT operand — `(1+2)*3` → 7 not 9; root = missing
+  `needs_left_parens` in `render_expr.rs`; clean fix, strong next pick)**.
+
 - 2026-08-02: **P-1 / SQL-IR — Path C (CTE-body) list literal + subscript
   rendering** (PR #853, branch `fix/path-c-list-subscript`). Loud bug (CH Code
   43) in `render_expr_to_sql_string` (`cte_extraction.rs`), the CTE-build-stage
