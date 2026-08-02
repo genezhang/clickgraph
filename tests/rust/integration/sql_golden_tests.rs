@@ -135,7 +135,10 @@ const CORPUS: &[(&str, &str)] = &[
     ),
     // #871 negative controls: numeric-returning function operands must STAY the
     // numeric `+` path (never misroute to concat). `toFloat`/`toInteger` classify
-    // as Float/Integer, so the concat gate does not fire.
+    // as Float/Integer, so the concat gate does not fire — the operator stays `+`.
+    // NOTE (#880): the string-literal args make these `toFloat64OrNull(...)` /
+    // `toInt64OrNull(...)` (parse-or-null on a string arg); the load-bearing
+    // #871 assertion is that the OPERATOR is `+`, not `concat`.
     (
         "numeric_add_tofloat_stays_plus_871",
         "RETURN toFloat('1') + toFloat('2') AS s",
@@ -143,6 +146,25 @@ const CORPUS: &[(&str, &str)] = &[
     (
         "numeric_add_tointeger_stays_plus_871",
         "RETURN toInteger('5') + toInteger('10') AS s",
+    ),
+    // #880: `toInteger`/`toFloat` on an unparseable STRING must return NULL, not
+    // throw. CH `toInt64`/`toFloat64` throw (Code 6) on a bad string, so a
+    // string-typed arg dispatches to `toInt64OrNull`/`toFloat64OrNull` (Spark
+    // `bigint`/`double` are already null-on-failure). A string literal and a
+    // `toString(...)` result are both string-typed.
+    ("to_integer_string_literal_ornull_880", "RETURN toInteger('abc') AS s"),
+    ("to_float_string_literal_ornull_880", "RETURN toFloat('xyz') AS s"),
+    (
+        "to_integer_tostring_arg_ornull_880",
+        "RETURN toInteger(toString(42)) AS s",
+    ),
+    // #880 negative controls: a numeric arg must keep the plain (never-throwing)
+    // cast — `toInteger(3.9)` = 3 (truncation), never OrNull. A column of unknown
+    // type also stays plain (conservative-None → no OrNull).
+    ("to_integer_numeric_literal_plain_880", "RETURN toInteger(3.9) AS s"),
+    (
+        "to_integer_column_unknown_plain_880",
+        "MATCH (u:User) RETURN toInteger(u.name) AS s",
     ),
     (
         "case_expr",

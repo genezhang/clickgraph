@@ -118,6 +118,25 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// (function-call cast alias).
     fn cast_float64(&self) -> &'static str;
 
+    /// Parse-or-null cast to a 64-bit integer, for Cypher `toInteger(<string>)`,
+    /// which returns NULL (not an error) when the string is not a valid number
+    /// (#880). `expr` is a pre-rendered SQL fragment.
+    ///
+    /// ClickHouse `toInt64` THROWS (Code 6) on an unparseable string, so the CH
+    /// impl must use `toInt64OrNull({expr})` — but that variant only accepts a
+    /// String argument, so the caller must route here ONLY when `expr` is known
+    /// to be string-typed (a string literal, `toString(...)`, or a declared
+    /// string column; see the render-site type classifier). Spark's `bigint(...)`
+    /// already returns NULL on parse failure, so the Databricks impl returns the
+    /// plain cast — byte-identical to `cast_int64`.
+    fn cast_int64_or_null(&self, expr: &str) -> String;
+
+    /// Parse-or-null cast to a 64-bit float, for Cypher `toFloat(<string>)`
+    /// (#880). CH: `toFloat64OrNull({expr})` (String arg only — caller gates on
+    /// string type); Spark: plain `double({expr})` (already null-on-failure). See
+    /// [`cast_int64_or_null`](Self::cast_int64_or_null).
+    fn cast_float64_or_null(&self, expr: &str) -> String;
+
     /// Cast to string. CH: `toString`. Spark: `string` (function-call alias).
     fn cast_string(&self) -> &'static str;
 

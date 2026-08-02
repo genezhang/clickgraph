@@ -7104,6 +7104,30 @@ impl RenderExpr {
                     }
                 }
 
+                // #880: Cypher `toInteger`/`toFloat` return NULL (not an error)
+                // for an unparseable STRING. CH `toInt64`/`toFloat64` THROW
+                // (Code 6) on a bad string, so when the argument is known to be
+                // string-typed we route to the dialect's parse-or-null cast
+                // (CH `toInt64OrNull`/`toFloat64OrNull`; Spark keeps the plain
+                // null-on-failure cast). The OrNull variants accept ONLY a String
+                // arg, so this fires strictly when the classifier proves the arg
+                // is a String — a numeric/unknown arg falls through to the plain
+                // cast below (byte-identical to today), preserving `toInteger(3.9)`
+                // = 3 and never mis-parsing a numeric column.
+                if (fn_name_lower == "tointeger" || fn_name_lower == "tofloat")
+                    && fn_call.args.len() == 1
+                    && super::type_inference::infer_render_type(&fn_call.args[0])
+                        == Some(super::type_inference::RenderType::String)
+                {
+                    let arg_sql = fn_call.args[0].to_sql();
+                    let mapper = crate::sql_generator::function_mapper::current_function_mapper();
+                    return if fn_name_lower == "tointeger" {
+                        mapper.cast_int64_or_null(&arg_sql)
+                    } else {
+                        mapper.cast_float64_or_null(&arg_sql)
+                    };
+                }
+
                 // Check if we have a Neo4j -> ClickHouse mapping
                 match get_function_mapping(&fn_name_lower) {
                     Some(mapping) => {
