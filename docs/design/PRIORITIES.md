@@ -475,6 +475,33 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **P-1 — negative-index list slicing returned wrong elements
+  (silent)** (PR #867, branch `fix/list-slice-negative-index`). Cypher list
+  ranges allow negative bounds counting from the end (`list[-2..]` = last two)
+  and clamp out-of-range bounds; both SQL-emission paths (Path A
+  `RenderExpr::to_sql`, Path C `render_expr_to_sql_string`) applied the
+  0→1-based `from + 1` offset shift blindly to every bound, so a negative offset
+  landed at the wrong place on CH `arraySlice` / Spark `slice`. Silent wrong
+  data, not an error: `[1,2,3,4,5][-2..]`→`[5]` (Neo4j `[4,5]`),
+  `[-1..]`→`[]` (`[5]`), `[1..-1]`→`[]` (`[2,3,4]`), `[..-1]`→length `-1`
+  (`[1,2,3,4]`). The array-**index** path (`list[-1]`) already normalized
+  negatives; the **slice** path never did. Fix: normalize each non-literal /
+  negative bound to `i >= 0 ? i : greatest(len + i, 0)`, where `len` is the
+  dialect's array-length call. That length spelling is the only dialect-specific
+  piece — CH `length` is overloaded for arrays+strings, Spark reserves `length`
+  for strings and needs `size` for arrays — so it routes through a new
+  `FunctionMapper::array_length` (Rule #7), not inline branching. Statically
+  non-negative integer literals bypass normalization → every positive-slice
+  golden byte-identical (0 churn). Shared helpers `normalize_slice_bound` /
+  `is_nonneg_int_literal` live in `to_sql_query.rs`, reused by Path C so both
+  stay in lockstep. Live-verified against CH: 24-case matrix (positive, negative
+  from/to, both-negative, over-negative, from>=to, single-bound `[from..]` /
+  `[..to]`, empty, column-valued arrays, nested slices, expression bounds,
+  slice-in-expr) all match Neo4j; Path C confirmed live via WITH-barrier CTE.
+  Adversarial review APPROVE-0 (float bounds `[1.5..]` loud Code 43 = matches
+  Neo4j integer-only, not a regression; array re-eval in the guard is cosmetic
+  only). +1 golden (both dialects), +2 mapper unit tests; ratchet passes; full
+  suite green.
 - 2026-08-02: **P-1 — `count(<scalar>)` crash fixed** (PR #865, branch
   `fix/count-scalar-missing-label`). `count(x)` where `x` is a scalar variable
   (UNWIND element, WITH-scalar passthrough, or parameter) crashed loudly in
