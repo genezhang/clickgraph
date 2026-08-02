@@ -475,6 +475,28 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **P-1 — `range()` with a negative step dropped the final element
+  (silent)** (PR #869, branch `fix/range-negative-step`). Cypher
+  `range(start, end, step)` is inclusive of `end` in BOTH directions; CH
+  `range()` is exclusive, so the `range` `arg_transform` bumps the end bound to
+  re-include it — but the bump was a hardcoded `+ 1`, correct only for ascending
+  ranges. With a negative step the sequence descends and the inclusive bump must
+  be `- 1`; the `+ 1` pushed the end past the last element and CH's exclusive
+  bound dropped it. Silent wrong data: `range(5,1,-1)` → `[5,4,3]` (Neo4j
+  `[5,4,3,2,1]`), `range(10,1,-2)` → `[10,8,6,4]` (`[10,8,6,4,2]`). Fix: choose
+  the bump direction at SQL-eval time — `end + if(step < 0, -1, 1)` — for the
+  3-arg form; the step may be a negative literal or a runtime expression. The
+  2-arg form (default step +1) keeps its own `+ 1` arm, so its SQL and the
+  existing `fn_range` golden stay byte-identical. Direction-mismatch cases
+  (`range(1,5,-1)`, `range(5,1,1)`) still yield `[]` — CH `range()` returns empty
+  when the step sign disagrees with start/end, preserved by the ±1 bump.
+  Databricks `sequence()` is inclusive both directions, left untouched.
+  Adversarial review APPROVE-0 — stress-tested the reachability edge (ranges
+  where `end` is not an exact step multiple, e.g. `range(1,9,3)`=`[1,4,7]`,
+  `range(1,10,3)`=`[1,4,7,10]`, descending mirrors): the ±1 bump can never
+  over/under-shoot because on an integer grid there is no other grid point in the
+  half-open `[end, end±1)` interval. New `fn_range_step` golden (both dialects) +
+  registry unit test; ratchet passes; full suite green; 0 existing-golden churn.
 - 2026-08-02: **P-1 — negative-index list slicing returned wrong elements
   (silent)** (PR #867, branch `fix/list-slice-negative-index`). Cypher list
   ranges allow negative bounds counting from the end (`list[-2..]` = last two)
