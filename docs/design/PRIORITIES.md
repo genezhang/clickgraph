@@ -475,6 +475,34 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **P-1 — literal `?` in a string broke remote execution** (PR #874,
+  branch `fix/872-question-mark-escape`, closes #872). Any Cypher query whose
+  rendered SQL contained a literal `?` — a string literal like `'why?'`, a regex
+  `=~ 'a?c'`, or a `(?i)` inline flag — failed at execution with
+  `invalid SQL: unbound query argument`. The translation was correct; the
+  clickhouse-rs `Client::query(sql)` treats `?` in the SQL template as a
+  bind-parameter placeholder (and `?fields` specially), erroring if no `.bind()`
+  supplies a value. ClickGraph never parameterizes — it inlines all literals — so
+  every `?` should reach ClickHouse verbatim, yet the crate consumed it. The
+  crate path is the DEFAULT (`ch_summary == false`), so server, Bolt, `cg query`,
+  and embedded-remote were all affected. Fix: escape `?` → `??` (the crate's own
+  literal-`?` escape, collapsed back to a single `?` by its template scanner)
+  immediately before `Client::query`, on both crate-path sites (`execute_json`,
+  `execute_text`) in `src/executor/remote.rs`. The doubling is an exact,
+  reversible transform (a `?`-run of any parity round-trips; `?fields` →
+  `??fields` → literal). The direct-HTTP path (`execute_json_via_http`, gated on
+  `CLICKGRAPH_METRICS_CH_SUMMARY`) sends the raw body and is deliberately left
+  untouched. Scope verified: chdb (`session.execute`, C FFI) and Databricks (SQL
+  in a JSON REST body) do not parse `?` placeholders — unaffected; the other
+  `client.query()` sites render only schema-controlled identifiers/DDL, no user
+  `?`. Verified end-to-end on a live ClickGraph server (`'why?'`→`why?`,
+  `replace('a?b','?','!')`→`a!b`, multi-`?`, regex `=~`, graph queries
+  unregressed; pre-fix binary still fails). Rust unit tests prove the escape
+  doubles every `?` AND that a raw `?` trips the crate's real
+  `SqlBuilder::finish()` while the escaped form does not; Python integration adds
+  a `TestQuestionMarkInStringLiterals` server-path regression class. Adversarial
+  review APPROVE-0 (escape correctness proven from crate source for odd runs +
+  `?fields`; no missed user-SQL path). Ratchet/clippy/fmt clean; full suite green.
 - 2026-08-02: **P-1 — `range()` with a negative step dropped the final element
   (silent)** (PR #869, branch `fix/range-negative-step`). Cypher
   `range(start, end, step)` is inclusive of `end` in BOTH directions; CH
