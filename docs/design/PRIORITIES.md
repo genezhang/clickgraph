@@ -499,6 +499,43 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **Fix — chained double-WITH rename of a scalar no longer drops
+  the alias** (branch `fix/886-chained-with-rename`, closes #886; follow-up to
+  #864). `UNWIND [1,2,3] AS x WITH x AS y WITH y AS z RETURN count(z)` (and the
+  literal/property scalar analogues `WITH 1 AS one WITH one AS two`,
+  `WITH u.age AS a WITH a AS b`) rendered a CTE body that degenerated to
+  `SELECT *` while the outer aggregate referenced a never-emitted renamed column
+  → ClickHouse Code 47. **Root cause (two compounding defects):**
+  (a) `is_simple_passthrough` in `try_collapse_passthrough_with`
+  (`with_to_cte/mod.rs`) matched only `TableAlias(_)` on the item expression and
+  ignored `col_alias`, so a RENAME (`WITH y AS z`, `col_alias: Some(z)`) was
+  indistinguishable from a genuine passthrough (`WITH y`, `col_alias: None`) —
+  the second hop was collapsed away and the CTE-column pruner then stripped the
+  now-unreferenced source column → `SELECT *`. (b) Even when the collapse is
+  suppressed (e.g. a trailing WHERE), the non-UNWIND `TableAlias` projection
+  branch in `build_with_projection_select_items` called
+  `expand_table_alias_to_select_items` (which names the output after the SOURCE
+  alias) and never honored the caller's `col_alias`, so the emitted column stayed
+  named `y` and was pruned. **Fix:** (a) require the item's `col_alias` to be
+  absent or equal the source alias for a passthrough (real renames fall through
+  to normal per-CTE rendering); (b) when the expansion yields a single column and
+  `col_alias` differs from the source, override the output name to the rename
+  target — mirroring the #864 UNWIND-alias branch's `out_name`, restricted to the
+  single-column case so multi-property node expansions are untouched. Both fixes
+  independently verified load-bearing (each alone leaves the headline case
+  failing). **Conservative:** rename-then-passthrough (`WITH x AS y WITH y`),
+  single-rename #864, and passthrough-passthrough all stay byte-identical
+  (regression-guarded). 6 new dual-dialect corpus goldens (3 shapes: UNWIND
+  chained, literal chained, chained+WHERE) + 3 focused assertion tests
+  (`sql_golden_tests.rs`, incl. the collapse-must-still-fire guard). corpus_sweep
+  0-churn on existing goldens; ratchet net-zero (no dialect/axis predicates); full
+  gate green. SQL-shape-verified both dialects (no live CH). Single renderer path
+  — no Path-C duplicate (`is_simple_passthrough` is the only WITH-passthrough
+  collapse predicate; grep-confirmed). Entirely outside the VLP files bronco owns
+  (#887). **Pre-existing out-of-scope gap filed separately:** the single-hop
+  property rename `MATCH (u) WITH u.age AS a RETURN count(a)` renders `SELECT *` +
+  `count(*)` identically on main (a scalar-property-into-CTE-column projection
+  bug, not a chained-rename defect) → **#903**.
 - 2026-08-02: **Feature — list comprehension in RETURN/WITH projection now
   supported** (branch `feature/866-list-comprehension-lowering`, closes #866).
   A plain `[x IN list WHERE p | e]` in projection position failed loud

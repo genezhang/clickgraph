@@ -15912,3 +15912,81 @@ async fn round_neo4j_faithful_dialect_spellings() {
         "Spark 2-arg round() must stay a plain call, got:\n{dbx_2}"
     );
 }
+
+/// #886: a CHAINED double-WITH rename of a scalar (`WITH x AS y WITH y AS z`)
+/// must emit a second CTE that preserves the rename, not collapse the second
+/// hop as if it were a passthrough. Before the fix, `is_simple_passthrough`
+/// mistook `WITH y AS z` for `WITH y` (both carry a `TableAlias(y)` expression),
+/// collapsed it away, and the CTE-column pruner then stripped the now-unreferenced
+/// `y` column → `SELECT *` + a dangling outer `count(z)` (ClickHouse Code 47).
+/// Follow-up to #864 (single-hop rename).
+#[tokio::test]
+async fn chained_with_rename_of_unwind_scalar_preserved_886() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "UNWIND [1, 2, 3] AS x WITH x AS y WITH y AS z RETURN count(z) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    // A second CTE must exist for the second rename hop, exporting `z`.
+    assert!(
+        sql.contains("with_z_cte_1") && sql.contains(r#"y.y AS "z""#),
+        "second rename hop must render its own CTE `SELECT y.y AS z`, got:\n{sql}"
+    );
+    // The outer aggregate resolves against the renamed CTE column, not a
+    // never-emitted one, and the CTE body must NOT have degenerated to SELECT *.
+    assert!(
+        sql.contains("count(z.z)"),
+        "outer count must resolve to the renamed CTE column z.z, got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("SELECT *"),
+        "no CTE should collapse to SELECT * (rename dropped), got:\n{sql}"
+    );
+}
+
+/// #886: the chained rename also applies to a bare-literal scalar
+/// (`WITH 1 AS one WITH one AS two`) — same collapse-mistakes-rename bug,
+/// different scalar source. The second hop must carry the rename into its CTE.
+#[tokio::test]
+async fn chained_with_rename_of_literal_scalar_preserved_886() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "WITH 1 AS one WITH one AS two RETURN count(two) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("with_two_cte_1") && sql.contains(r#"one.one AS "two""#),
+        "second rename hop must render its own CTE `SELECT one.one AS two`, got:\n{sql}"
+    );
+    assert!(
+        sql.contains("count(two.two)") && !sql.contains("SELECT *"),
+        "outer count must resolve to two.two with no SELECT * collapse, got:\n{sql}"
+    );
+}
+
+/// #886 (regression guard): a rename-then-PASSTHROUGH (`WITH x AS y WITH y`)
+/// is NOT a chained rename — the trailing `WITH y` is a genuine passthrough
+/// (no `col_alias`), so it must still collapse into the single `with_y_cte_0`
+/// exactly as before the fix. This guards the tightened `is_simple_passthrough`
+/// predicate against over-firing (it must only spare true renames).
+#[tokio::test]
+async fn rename_then_passthrough_still_collapses_886() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "UNWIND [1, 2, 3] AS x WITH x AS y WITH y RETURN count(y) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("with_y_cte_0")
+            && !sql.contains("with_y_cte_1")
+            && sql.contains(r#"x AS "y""#)
+            && sql.contains("count(y.y)"),
+        "rename-then-passthrough must stay a single collapsed CTE, got:\n{sql}"
+    );
+}

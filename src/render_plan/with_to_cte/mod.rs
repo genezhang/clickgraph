@@ -6854,7 +6854,15 @@ fn try_collapse_passthrough_with(
 ) -> RenderPlanBuilderResult<bool> {
     if let LogicalPlan::WithClause(wc) = with_plan {
         if let Some(existing_cte) = is_cte_reference(&wc.input) {
-            // Check if this is a simple passthrough (same alias, no modifications)
+            // Check if this is a simple passthrough (same alias, no modifications).
+            // A RENAME (`WITH y AS z`) is NOT a passthrough: it carries the same
+            // `TableAlias` expression but a `col_alias` that differs from the source
+            // alias. Collapsing it would drop the rename (the collapse machinery only
+            // remaps the source alias onto the existing CTE, never the new output
+            // name), leaving downstream references to `z` dangling → `SELECT *` +
+            // Code 47 (#886). Require `col_alias` to be absent or equal to the source
+            // alias so only genuine passthroughs collapse; real renames fall through
+            // to normal per-CTE rendering, which honors the output name.
             let is_simple_passthrough = wc.items.len() == 1
                 && wc.order_by.is_none()
                 && wc.skip.is_none()
@@ -6863,7 +6871,11 @@ fn try_collapse_passthrough_with(
                 && wc.where_clause.is_none()  // CRITICAL: WHERE clause makes it not a passthrough!
                 && matches!(
                     &wc.items[0].expression,
-                    crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
+                    crate::query_planner::logical_expr::LogicalExpr::TableAlias(ta)
+                        if wc.items[0]
+                            .col_alias
+                            .as_ref()
+                            .is_none_or(|ca| ca.0 == ta.0)
                 );
 
             log::debug!("🔧 build_chained_with_match_cte_plan: Checking passthrough: items={}, order_by={}, skip={}, limit={}, distinct={}, where_clause={}, is_table_alias={}, is_passthrough={}",
@@ -7266,7 +7278,7 @@ fn build_with_projection_select_items(
                                 // This allows "WITH a, b, c" to find "a" and "b" from previous CTEs
                                 //
                                 // The unified helper automatically handles anyLast() wrapping when has_aggregation=true
-                                let expanded = expand_table_alias_to_select_items(
+                                let mut expanded = expand_table_alias_to_select_items(
                                     &alias.0,
                                     plan_to_render,
                                     cte_schemas,
@@ -7277,6 +7289,24 @@ fn build_with_projection_select_items(
                                 );
                                 log::debug!("🔧 build_chained_with_match_cte_plan: Expanded alias '{}' to {} items (aggregation={})",
                                            alias.0, expanded.len(), has_aggregation);
+
+                                // Honor a WITH rename of a CTE-scoped scalar
+                                // (`WITH y AS z`, where `y` is a prior WITH's exported
+                                // column). The expansion above names the output after
+                                // the SOURCE alias `y`; the outer query references the
+                                // rename target `z`, so without this the emitted column
+                                // (`y`) is pruned as dead → `SELECT *` + Code 47 (#886).
+                                // Restricted to the single-column case: a multi-property
+                                // node expansion legitimately keeps its per-property
+                                // names and has no single rename target. Mirrors the
+                                // UNWIND-alias branch's `out_name` logic (#864).
+                                if expanded.len() == 1 {
+                                    if let Some(col_alias) = &item.col_alias {
+                                        if col_alias.0 != alias.0 {
+                                            expanded[0].col_alias = Some(ColumnAlias(col_alias.0.clone()));
+                                        }
+                                    }
+                                }
 
                                 expanded
                             }
