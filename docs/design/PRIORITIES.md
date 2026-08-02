@@ -475,6 +475,42 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **P-1 — IN / NOT IN with a null list element lost three-valued
+  logic** (PR #877, branch `fix/855-in-null-3valued`, closes #855). Silent-wrong:
+  `3 IN [1,2,null]` returned `false` and `3 NOT IN [1,null]` returned `true`,
+  but openCypher's `IN` is three-valued — an unmatched probe against a list that
+  contains an unknown (null) is itself `null`. ClickHouse `x IN (…)` / `x IN
+  [array]` treats a null element as a plain non-match (→ 0), dropping that.
+  **Root cause**: the element-wise OR/AND expansion the render paths already use
+  for *non-constant* lists (`x = a OR x = b OR x = NULL`) is three-valued-correct
+  on both dialects (a `x = null` / `x <> null` term propagates the unknown,
+  verified live on CH), but a *constant* list containing a null was routed to the
+  plain infix `IN` instead. Fix: a shared `in_list_has_null_literal` predicate
+  detects a `Literal::Null` element and routes the predicate through that same
+  expansion — 3 near-identical Path-A sites in `to_sql_query.rs` (extend the
+  expansion gate) + Path-C `render_in_list_rhs` in `cte_extraction.rs` (expand
+  before the `FunctionMapper::in_list_predicate` value-list). Null-free lists keep
+  the byte-stable `IN` form → **0 golden churn** (no corpus golden had an
+  `IN (...NULL...)` list predicate); full suite 2226 passing, ratchet green. Rule
+  #7 clean (structural match on `RenderExpr`, dialect-neutral `=`/`<>`
+  expansion). Live-verified full truth table incl `3 IN [null]`→null and
+  nullable-property lists; the issue's `#581` coordination note is obsolete (#581
+  closed). Rust unit tests (both paths) + Python `TestInListThreeValuedLogic`
+  server-path class (6 tests, pass live). Adversarial review APPROVE-0 (every cell
+  re-executed on live CH). **Follow-up #878**: projection pattern comprehension
+  `[(a)-[:R]->(b) WHERE <pred> | b.prop]` silently drops the inner WHERE —
+  `build_pattern_comprehension_sql` has no param for `pc_meta.where_clause`
+  (distinct code path from the size()/count forms that do thread it).
+- 2026-08-02: **P-1 — exponentiation `^` verified fixed, #861 closed.** #861
+  (filed pre-#862 as a Path-A infix-`^` residual) was already fully resolved by
+  #862: all three Path-A `op_str` sites are guarded by `render_exponentiation` →
+  `FunctionMapper::power` → `POWER(...)`, matching Path C; live CH exec of
+  `POWER(POWER(2,3),2)` = 64 is clean (no Code 62). The issue's secondary
+  associativity concern is spec-compliant, not a bug: the upstream openCypher BNF
+  defines `<arithmetic factor> ::= <arithmetic unary> | <arithmetic factor>
+  <circumflex> <arithmetic unary>` (left-recursive → left-associative), so
+  `2^3^2` = `(2^3)^2` = 64 is correct-by-spec. Verify-and-close only (no code
+  change); PRIORITIES already logged #862.
 - 2026-08-02: **P-1 — #844 undirected-union buried grouping key loses per-arm
   origin/dest flip** (branch `fix/844-buried-union-groupby-key`, closes #844).
   Follow-up to #637. A grouping key BURIED inside an aggregate-bearing RETURN
