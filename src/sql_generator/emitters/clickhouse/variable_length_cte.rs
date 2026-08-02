@@ -986,8 +986,29 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// and the recursive cycle predicate switches to [`emit_edge_cycle_check`].
     fn uses_edge_uniqueness(&self) -> bool {
         self.shortest_path_mode.is_none()
-            && self.spec.effective_min_hops() >= 1
             && !self.is_heterogeneous_polymorphic_path()
+            && (self.spec.effective_min_hops() >= 1
+                // #628: a CLOSED `*0..N` pattern (`(a)-[*0..N]->(a)`) must count
+                // real cycles, which requires EDGE-uniqueness — node-uniqueness
+                // structurally forbids returning to the start, so every real
+                // cycle is dropped and only the zero-length self rows survive
+                // (documented in filter_builder.rs, #625). The zero-hop base has
+                // no edge, but it CAN seed an empty `path_edges` array (`[] as
+                // path_edges`, ClickHouse `Array(Nothing)` which unifies with the
+                // recursive arm's real tuple type on `arrayConcat`); hops ≥ 1
+                // accumulate and dedupe normally. Scoped to the closed case so an
+                // OPEN `*0..N` (whose node-uniqueness is a separate, non-cyclic
+                // concern) is unchanged.
+                || (self.spec.effective_min_hops() == 0 && self.is_closed_pattern()))
+    }
+
+    /// Whether this VLP is a CLOSED pattern — the same Cypher variable on both
+    /// endpoints (`(a)-[*..]->(a)`). The planner leaves the two connection
+    /// aliases equal for a same-variable pattern (never renaming one), so the
+    /// generator sees `start_cypher_alias == end_cypher_alias`. A closed pattern
+    /// counts cycles (the outer query adds `start_id = end_id`); see #625/#628.
+    fn is_closed_pattern(&self) -> bool {
+        self.start_cypher_alias == self.end_cypher_alias
     }
 
     /// #617: whether this VLP walks a DOUBLED-EDGE set instead of the raw edge
@@ -2225,6 +2246,20 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 ))
             ),
         ];
+
+        // #628: a CLOSED `*0..N` walk enforces EDGE-uniqueness (so real cycles
+        // survive — see `uses_edge_uniqueness`). The zero-hop base has no edge,
+        // so it seeds an EMPTY `path_edges` array. A bare `[]` is ClickHouse's
+        // `Array(Nothing)`, the bottom type, which unifies with the recursive
+        // arm's concrete `Array(Tuple(...))` on `arrayConcat` (a CAST to a
+        // guessed element type would instead risk a NO_COMMON_TYPE error against
+        // the real column types). The recursive arm's `NOT has(path_edges, …)`
+        // then dedupes edges from hop 1 onward. Gated identically to the base /
+        // recursive arms via `uses_edge_uniqueness()`, so a pattern that stays
+        // node-unique (open `*0..N`, shortestPath) is byte-unchanged.
+        if self.uses_edge_uniqueness() {
+            select_items.push(format!("{} as path_edges", arr("")));
+        }
 
         // Add properties for start node (which is also the end node)
         for prop in &self.properties {
@@ -3710,6 +3745,77 @@ mod tests {
         // Should contain recursive case
         assert!(sql.contains("UNION ALL"));
         assert!(sql.contains("hop_count < 5")); // DEFAULT_MAX_HOPS = 5 (reduced from 10 for memory safety)
+    }
+
+    /// #628: a CLOSED `*0..N` VLP (same start/end alias) must count real cycles,
+    /// which requires EDGE-uniqueness. The zero-hop base seeds an empty
+    /// `path_edges` array; hops ≥ 1 accumulate and dedupe via `NOT has(...)`.
+    /// An OPEN `*0..N` (distinct aliases) keeps NODE-uniqueness — unchanged.
+    #[test]
+    fn closed_zero_hop_vlp_uses_edge_uniqueness_628() {
+        let schema = create_test_schema();
+        let make = |start_alias: &str, end_alias: &str| {
+            VariableLengthCteGenerator::new(
+                &schema,
+                VariableLengthSpec::range(0, 2),
+                "users",
+                "user_id",
+                "follows",
+                "follower_id",
+                "followed_id",
+                "users",
+                "user_id",
+                start_alias,
+                end_alias,
+                vec![],
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+
+        // CLOSED: same alias on both endpoints → edge-uniqueness.
+        let closed = make("a", "a");
+        assert!(closed.is_closed_pattern());
+        assert!(
+            closed.uses_edge_uniqueness(),
+            "closed *0..N must use edge-uniqueness"
+        );
+        let closed_sql = closed.generate_recursive_sql();
+        // Zero-hop base seeds an empty path_edges array...
+        assert!(
+            closed_sql.contains("[] as path_edges"),
+            "closed *0..N zero-hop base must seed empty path_edges; got:\n{closed_sql}"
+        );
+        // ...and the recursive arm enforces EDGE-uniqueness (not node).
+        assert!(
+            closed_sql.contains("NOT has(vp.path_edges,"),
+            "closed *0..N recursive arm must dedupe on path_edges; got:\n{closed_sql}"
+        );
+        assert!(
+            !closed_sql.contains("NOT has(vp.path_nodes,"),
+            "closed *0..N must NOT use node-uniqueness; got:\n{closed_sql}"
+        );
+
+        // OPEN: distinct aliases → stays node-unique, no path_edges seed.
+        let open = make("a", "b");
+        assert!(!open.is_closed_pattern());
+        assert!(
+            !open.uses_edge_uniqueness(),
+            "open *0..N must stay node-unique"
+        );
+        let open_sql = open.generate_recursive_sql();
+        assert!(
+            !open_sql.contains("path_edges"),
+            "open *0..N must not project path_edges; got:\n{open_sql}"
+        );
+        assert!(
+            open_sql.contains("NOT has(vp.path_nodes,"),
+            "open *0..N must use node-uniqueness; got:\n{open_sql}"
+        );
     }
     #[test]
     fn test_fixed_length_spec() {

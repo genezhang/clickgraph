@@ -466,7 +466,7 @@ fixed stats fixture.
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
-- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slice 1 #893, **Phase 3 #806 fixed**)
+- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slice 1 #893, **Phase 3 #806 + Phase 4 #628 fixed**)
   (`docs/design/VLP_EDGE_IDENTITY_UNIFICATION.md`). Bug-driven refactor of the
   VLP relationship-uniqueness axis: one canonical `EdgeUniquenessPolicy`
   (`PatternSchemaContext`-derived, rule-#7 clean) replaces ~14 inline sites / 3
@@ -479,13 +479,17 @@ fixed stats fixture.
   identity with the schema `edge_id` (composite-aware, #617-orientation-correct),
   matching the recursive path — parallel edges no longer collapse. 26 goldens
   regenerated (guard line only), live-verified no regression + fix confirmed on a
-  parallel-edge fixture. Remaining:
-  Phase 1–2 (`EdgeUniquenessPolicy` + transition-assert + switch, byte-identical)
-  then Phase 4 fixes #628 (`*0..N` closed cycle) with regenerated goldens + live
-  oracle. Explicitly NOT this cluster:
-  #643/#840/#627/#683 (different subsystems). Adjacent bug found during #806 and
-  filed separately (NOT folded in): flat exact-bound polymorphic VLP drops the
-  `interaction_type` discriminator (`FOLLOWS*2` counts other edge types too).
+  parallel-edge fixture; adversarial review APPROVE-0.
+  **Phase 4 (#628) SHIPPED**: closed `*0..N` (`(a)-[*0..N]->(a)`) — was a loud
+  `UnsupportedFeature` — now counts real cycles via edge-uniqueness (zero-hop base
+  seeds empty `path_edges`), live-verified against the trail oracle; OPEN `*0..N`
+  byte-unchanged. Remaining:
+  Phase 1–2 (`EdgeUniquenessPolicy` + transition-assert + switch, byte-identical),
+  then Phase 5 (optional, #710 parallel-edge denorm). Explicitly NOT this cluster:
+  #643/#840/#627/#683 (different subsystems). Adjacent bugs found during Phase 3/4
+  and filed separately (NOT folded in): flat exact-bound polymorphic VLP drops the
+  `interaction_type` discriminator (`FOLLOWS*2` counts other edge types), and an
+  OPTIONAL-MATCH closed-VLP projection bug (`vt0.<prop>`, #899).
 
 ## 3. Capacity split (guideline)
 
@@ -546,6 +550,33 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   in a CASE/expression context still `unimplemented!`-panics on main independent
   of comprehensions (filed separately); property access on a lambda-bound scalar
   param (`p.foo`) errors cleanly on both main and here (not a #866 target).
+- 2026-08-02: **P-6 — closed VLP `*0..N` cycle counting (#628, #887 Phase 4)**
+  (branch `fix/628-closed-vlp-zero-hop-cycles`). A closed `*0..N` pattern
+  (`(a)-[*0..N]->(a)`) previously FAILED LOUD (`UnsupportedFeature`, #625): the
+  recursive CTE enforced NODE-uniqueness for `min_hops == 0`, which structurally
+  cannot return to the start, so every real cycle would have been dropped. Fix:
+  (1) `uses_edge_uniqueness()` now also true when `effective_min_hops() == 0 &&
+  is_closed_pattern()` (new helper `start_cypher_alias == end_cypher_alias`),
+  scoped to the closed case so OPEN `*0..N` is byte-unchanged; (2) the zero-hop
+  base seeds an empty `path_edges` array (bare `[]` = ClickHouse `Array(Nothing)`,
+  which unifies with the recursive arm's concrete tuple type on `arrayConcat` — a
+  guessed CAST would risk NO_COMMON_TYPE); (3) `filter_builder.rs` drops the loud
+  `*0..N` error for STANDARD and emits the outer `start_id = end_id` closed
+  constraint; DENORMALIZED (all bounds) and FK-EDGE (`min_hops == 0` only, via the
+  new canonical dispatch helper `vlp_relationship_is_foreign_key_edge`) stay loud
+  — the FK-edge VLP recursive join has a pre-existing degenerate-join defect
+  (#902) that would silently over-count. Live: directed `*0..2` closed → 9 (5
+  zero-hop + 4 cycles), undirected → 13, `*0..3` → 12, all = trail oracle; `*1..N`
+  closed unchanged (4 / 8); OPEN `*0..N` byte-identical. Golden churn:
+  `test_625_..._fails_loud` corpus entry became a working SQL golden (renamed
+  `test_628_..._counts_cycles`) + one OPTIONAL closed-`*0..` entry now renders;
+  stale `.err` pair removed. Unit regressions
+  `closed_zero_hop_vlp_uses_edge_uniqueness_628` +
+  `closed_fk_edge_zero_hop_vlp_stays_loud_628_902`. Ratchet `is_fk_edge`
+  cte_extraction 13→14 (justified — centralized dispatch helper). Adversarial
+  review APPROVE-1 → resolved (FK-edge loud guard). Pre-existing bugs surfaced +
+  filed separately (not in scope): #899 (OPTIONAL projection), #902 (FK-edge VLP
+  degenerate join).
 - 2026-08-02: **P-6 — flat VLP composite edge-identity (#806, #887 Phase 3)**
   (branch `fix/806-flat-vlp-composite-edge-id`). The flat exact-bound pairwise
   relationship-uniqueness guard spelled "the same edge" as the `(from, to)` node

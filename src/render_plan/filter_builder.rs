@@ -220,45 +220,48 @@ impl FilterBuilder for LogicalPlan {
                                 use crate::query_planner::join_context::{
                                     VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
                                 };
-                                // #625 lower-bound-0 guard: a `*0..N` recursive
-                                // CTE enforces NODE-uniqueness (`NOT
-                                // has(vp.path_nodes, end_id)`) — the zero-hop base
-                                // has no edges to seed `path_edges`, so it cannot
-                                // use edge-uniqueness (documented in
-                                // variable_length_cte.rs, #598 part 2). Node-
-                                // uniqueness forbids a walk from EVER revisiting a
-                                // node it has already seen, including its start, so
-                                // no hop>0 row can satisfy `start_id = end_id`:
-                                // adding the equality would silently drop every
-                                // real cycle and return ONLY the zero-length self
-                                // rows (a NEW silent wrong result — undercount 8 vs
-                                // 14, more plausible-looking than the pre-fix
-                                // overcount). Fail loud instead (ground rule 1);
-                                // full `*0..N` closed support needs the CTE to
-                                // switch to edge-uniqueness for closed patterns —
-                                // tracked as a follow-up. Lower-bound>=1 closed
-                                // VLPs use edge-uniqueness and compose correctly.
-                                let min_hops = graph_rel
-                                    .variable_length
-                                    .as_ref()
-                                    .map(|s| s.effective_min_hops())
-                                    .unwrap_or(1);
-                                // shortestPath is EXEMPT: it legitimately keeps
-                                // node-uniqueness (revisiting a node never
-                                // shortens a path) and its zero-length self path
-                                // IS the correct shortest cycle, so `start_id =
-                                // end_id` keeping only the hop-0 row is right.
-                                if min_hops == 0 && graph_rel.shortest_path_mode.is_none() {
-                                    return Err(RenderBuildError::UnsupportedFeature(format!(
-                                        "closed variable-length path with lower bound 0 \
-                                         (`({a})-[*0..N]-({a})`): the recursive CTE enforces \
-                                         node-uniqueness for *0..N, which structurally cannot \
-                                         return to the start node, so the cycle constraint would \
-                                         silently drop all real cycles. Use a lower bound >= 1 \
-                                         (e.g. `*1..N`) to count cycles. (#625)",
-                                        a = graph_rel.left_connection
-                                    )));
-                                }
+                                // #628: a closed `*0..N` on a STANDARD schema is now
+                                // supported. The recursive CTE switches to
+                                // EDGE-uniqueness for closed patterns
+                                // (`uses_edge_uniqueness()` in variable_length_cte.rs
+                                // now returns true when `min_hops == 0 &&
+                                // is_closed_pattern()`), seeding an empty
+                                // `path_edges` at the zero-hop base and deduping
+                                // edges from hop 1 — so real cycles survive and the
+                                // outer `start_id = end_id` selects them (plus the
+                                // zero-length self rows). This replaces the old
+                                // loud #625 `*0..N` error (node-uniqueness could not
+                                // return to the start, so cycles were dropped);
+                                // lower-bound ≥ 1 closed VLPs already used
+                                // edge-uniqueness and are unchanged. shortestPath is
+                                // unaffected (it stays node-unique and its
+                                // zero-length self path is the correct shortest
+                                // cycle).
+                                //
+                                // Two schema shapes are NOT covered and stay loud for
+                                // the closed `*0..N` case (ground rule 1 — fail loud
+                                // over silent-wrong):
+                                //   - DENORMALIZED (guard just below, all lower
+                                //     bounds): the generator has no separate node
+                                //     identity to seed edge-uniqueness, so a cycle
+                                //     count would be silently 0.
+                                //   - FK-EDGE (guard below, `min_hops == 0` only):
+                                //     the FK-edge VLP recursive arm has a pre-existing
+                                //     degenerate-join bug for the FK-on-`to_id`
+                                //     self-ref convention (e.g. ldbc `REPLY_OF`:
+                                //     node_id=commentId, to_id=replyOfCommentId),
+                                //     joining node_id to itself and producing phantom
+                                //     `(n,n)` self-loops → a silent OVER-count. That
+                                //     traversal bug is tracked separately (#902) and
+                                //     is independent of #628 (it corrupts `*1..N`
+                                //     identically). Because pre-#628 the closed
+                                //     `*0..N` case failed loud for FK-edge too,
+                                //     keeping it loud here is a no-op for the working
+                                //     FK-on-`from_id` convention and prevents the
+                                //     loud→silent regression for the FK-on-`to_id`
+                                //     one. FK-edge `*1..N` closed is untouched (it
+                                //     already rendered pre-#628, with the same #902
+                                //     bug — not this fix's concern).
                                 // #605/#625 denormalized closed guard: a
                                 // DENORMALIZED closed VLP's recursive CTE enforces
                                 // NODE-uniqueness (`NOT has(vp.path_nodes, ...)`)
@@ -286,6 +289,39 @@ impl FilterBuilder for LogicalPlan {
                                          identity to seed edge-uniqueness), which structurally \
                                          cannot return to the start node, so the cycle count \
                                          would silently be 0. (#605/#625)",
+                                        a = graph_rel.left_connection
+                                    )));
+                                }
+                                // #628/#902 FK-edge closed `*0..N` guard: the
+                                // zero-hop-enabled closed path must NOT render for a
+                                // self-referencing FK-edge — its VLP recursive arm has
+                                // a pre-existing degenerate-join bug (#902) that
+                                // yields phantom `(n,n)` self-loops (silent
+                                // over-count). Scoped to `min_hops == 0` (the case
+                                // #628 newly enables): `*1..N` FK-edge closed already
+                                // rendered before #628 and is left as-is. Routes
+                                // through the canonical schema-catalog dispatch
+                                // predicate (axis-dispatch rule), not an inline
+                                // schema-flag read.
+                                let closed_min_hops = graph_rel
+                                    .variable_length
+                                    .as_ref()
+                                    .map(|s| s.effective_min_hops())
+                                    .unwrap_or(1);
+                                if closed_min_hops == 0
+                                    && crate::render_plan::cte_extraction::vlp_relationship_is_foreign_key_edge(
+                                        graph_rel,
+                                    )
+                                    && graph_rel.shortest_path_mode.is_none()
+                                {
+                                    return Err(RenderBuildError::UnsupportedFeature(format!(
+                                        "closed variable-length path with lower bound 0 on a \
+                                         self-referencing FK-edge schema \
+                                         (`({a})-[*0..N]->({a})`): the FK-edge VLP recursive \
+                                         join has a pre-existing degenerate-join defect (#902) \
+                                         that would silently over-count via phantom self-loops. \
+                                         Use a lower bound >= 1, or a standard (edge-table) \
+                                         schema, to count cycles. (#628/#902)",
                                         a = graph_rel.left_connection
                                     )));
                                 }
