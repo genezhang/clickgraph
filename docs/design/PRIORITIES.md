@@ -466,7 +466,7 @@ fixed stats fixture.
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
-- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slice 1 #893)
+- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slice 1 #893, **Phase 3 #806 fixed**)
   (`docs/design/VLP_EDGE_IDENTITY_UNIFICATION.md`). Bug-driven refactor of the
   VLP relationship-uniqueness axis: one canonical `EdgeUniquenessPolicy`
   (`PatternSchemaContext`-derived, rule-#7 clean) replaces ~14 inline sites / 3
@@ -474,13 +474,18 @@ fixed stats fixture.
   self-spawning residual chain #606/#628/#710/#806/#808. **Phase 0 SHIPPED
   (#890, `1c3bce85`)**: deleted the test-only `CteStrategy` dispatch cluster (the
   5 `analyze_pattern` strategies were corpus-unreachable — sole caller inside
-  `#[cfg(test)]`), −2290 lines, byte-identical corpus sweep, APPROVE-0. Remaining:
+  `#[cfg(test)]`), −2290 lines, byte-identical corpus sweep, APPROVE-0.
+  **Phase 3 (#806) SHIPPED**: flat exact-bound pairwise guard now spells edge
+  identity with the schema `edge_id` (composite-aware, #617-orientation-correct),
+  matching the recursive path — parallel edges no longer collapse. 26 goldens
+  regenerated (guard line only), live-verified no regression + fix confirmed on a
+  parallel-edge fixture. Remaining:
   Phase 1–2 (`EdgeUniquenessPolicy` + transition-assert + switch, byte-identical)
-  then Phases 3–4 fix #806/#628 with regenerated goldens + live oracle. A
-  **design-cycle commitment** (~3 more refactor PRs before the first behavior
-  fix) — pick up when there's appetite for a multi-PR arc, or when a new corpus
-  makes a latent node-unique arm reachable. Explicitly NOT this cluster:
-  #643/#840/#627/#683 (different subsystems).
+  then Phase 4 fixes #628 (`*0..N` closed cycle) with regenerated goldens + live
+  oracle. Explicitly NOT this cluster:
+  #643/#840/#627/#683 (different subsystems). Adjacent bug found during #806 and
+  filed separately (NOT folded in): flat exact-bound polymorphic VLP drops the
+  `interaction_type` discriminator (`FOLLOWS*2` counts other edge types too).
 
 ## 3. Capacity split (guideline)
 
@@ -541,6 +546,25 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   in a CASE/expression context still `unimplemented!`-panics on main independent
   of comprehensions (filed separately); property access on a lambda-bound scalar
   param (`p.foo`) errors cleanly on both main and here (not a #866 target).
+- 2026-08-02: **P-6 — flat VLP composite edge-identity (#806, #887 Phase 3)**
+  (branch `fix/806-flat-vlp-composite-edge-id`). The flat exact-bound pairwise
+  relationship-uniqueness guard spelled "the same edge" as the `(from, to)` node
+  pair only, so two PARALLEL edges (same node pair, distinct `edge_id` column such
+  as a timestamp) collapsed into one relationship and every trail through them was
+  dropped (silent under-count). The recursive-CTE path was already correct via
+  `build_edge_tuple_recursive`. Fix threads the schema `edge_id` into
+  `generate_cycle_prevention_filters_composite` (new `edge_id_cols: Option<&[&str]>`
+  param); the caller (`filter_builder.rs`) resolves `rel_schema.edge_id` and
+  applies the #617 doubled-edge orientation correction (from/to →
+  `__cg_orig_from/to`; other identity columns pass through). No `edge_id` declared
+  → falls back to `(from, to)` (byte-identical for edge_id-less schemas). 26
+  goldens regenerated (single guard line each, all on `edge_id`-declaring schemas).
+  Live-verified: old vs new guard IDENTICAL on non-parallel data (standard 35=35,
+  composite_id 8=8, #617 undirected 122=122 — no regression); parallel-edge fixture
+  `FOLLOWS*2` now 2 (was 0), undirected 8 = oracle. Ratchet green. Unit regression
+  `flat_cycle_prevention_uses_composite_edge_id_806`. Adjacent bug filed separately
+  (NOT folded in): flat exact-bound polymorphic VLP drops the `interaction_type`
+  discriminator.
 - 2026-08-02: **P-1 — temporal component access / duration arithmetic on a native
   Date column threw CH Code 43** (branch `fix/854-temporal-date-epoch-wrap`,
   closes #854). PR3 (final) of the operand-typing design cycle. `year(x)`/`month(x)`

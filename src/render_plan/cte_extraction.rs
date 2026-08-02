@@ -8295,6 +8295,7 @@ pub fn generate_cycle_prevention_filters(
         start_alias,
         end_alias,
         use_legacy_start_end_guard,
+        None,
     )
 }
 
@@ -8323,6 +8324,18 @@ pub fn generate_cycle_prevention_filters(
 /// * `end_alias` - Alias for end node (e.g., "c")
 /// * `use_legacy_start_end_guard` - true for FkEdge / multi-type VLP (preserve
 ///   legacy start != end guard instead of pairwise rel-uniqueness)
+/// * `edge_id_cols` - #806: when the relationship schema declares a composite
+///   `edge_id` (e.g. `[from_id, to_id, interaction_type, timestamp]`), the FULL
+///   ordered identity column set to compare per hop-pair — matching the
+///   recursive path's `build_edge_tuple_recursive`. Two parallel edges sharing a
+///   `(from, to)` node pair but differing in a later identity column (a distinct
+///   timestamp) are then correctly treated as DISTINCT relationships. When
+///   `None`, the identity falls back to `from_cols ++ to_cols` (the `(from, to)`
+///   node pair), byte-identical to the pre-#806 behaviour for schemas without a
+///   declared `edge_id`. The caller applies the #617 doubled-edge orientation
+///   correction (from/to → `__cg_orig_from/to`) before passing these columns.
+///   Consulted only on the Normal/Polymorphic (`!use_legacy_start_end_guard`)
+///   pairwise path; the legacy FkEdge/multi-type start != end guard ignores it.
 ///
 /// # Returns
 /// RenderExpr combining all uniqueness conditions with AND
@@ -8336,6 +8349,7 @@ pub fn generate_cycle_prevention_filters_composite(
     start_alias: &str,
     end_alias: &str,
     use_legacy_start_end_guard: bool,
+    edge_id_cols: Option<&[&str]>,
 ) -> Option<RenderExpr> {
     use super::render_expr::{
         Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
@@ -8449,23 +8463,33 @@ pub fn generate_cycle_prevention_filters_composite(
         // be a DISTINCT physical edge. A path IS allowed to return to its start
         // (e.g. 1→2→1 is a valid 2-path with a == b), so we deliberately do NOT
         // emit a start != end guard. For each pair of hops i<j emit
-        //   NOT (r_i.from = r_j.from AND r_i.to = r_j.to)
+        //   NOT (r_i.<id> = r_j.<id> AND ...)
         // which forbids reusing the same physical edge. This is the same rule as
         // the fixed multi-hop path in graph_join/cross_branch.rs. A single hop
         // (exact_hops < 2) has no pair, hence no constraint.
         if exact_hops < 2 {
             return None;
         }
-        // edge_cols = from_cols ++ to_cols → generate_composite_not_equal emits
-        // NOT (r_i.from = r_j.from AND r_i.to = r_j.to) (widened for composite IDs).
-        let edge_cols: Vec<&str> = from_cols.iter().chain(to_cols.iter()).copied().collect();
+        // #806: the physical edge's identity is the schema `edge_id` when one is
+        // declared (e.g. a polymorphic `interactions` table with
+        // `edge_id: [from_id, to_id, interaction_type, timestamp]`), matching the
+        // recursive path's `build_edge_tuple_recursive`. Comparing only the
+        // (from, to) node pair collapses two PARALLEL edges (same node pair,
+        // distinct later identity column) into one relationship and drops valid
+        // trails (under-count). When no `edge_id` is declared, identity is the
+        // `(from, to)` node pair (`edge_cols = from_cols ++ to_cols`) — the
+        // pre-#806 behaviour, byte-identical for edge_id-less schemas.
+        let default_edge_cols: Vec<&str> =
+            from_cols.iter().chain(to_cols.iter()).copied().collect();
+        let edge_cols: &[&str] = match edge_id_cols {
+            Some(cols) if !cols.is_empty() => cols,
+            _ => &default_edge_cols,
+        };
         for i in 1..exact_hops {
             for j in (i + 1)..=exact_hops {
                 let ri = format!("r{i}");
                 let rj = format!("r{j}");
-                filters.push(generate_composite_not_equal(
-                    &ri, &edge_cols, &rj, &edge_cols,
-                ));
+                filters.push(generate_composite_not_equal(&ri, edge_cols, &rj, edge_cols));
             }
         }
     }
@@ -8524,6 +8548,95 @@ mod tests {
         assert_eq!(
             render_in_list_rhs(&nn, "x", false, &[]).unwrap(),
             "x IN (1, 2)"
+        );
+    }
+
+    /// #806: the flat exact-bound pairwise relationship-uniqueness guard must
+    /// spell "the same edge" using the schema-declared composite `edge_id` when
+    /// one is passed, so two PARALLEL edges (same `(from, to)` node pair, distinct
+    /// later identity column such as a timestamp) are treated as DISTINCT
+    /// relationships instead of collapsing to one (which silently under-counts).
+    #[test]
+    fn flat_cycle_prevention_uses_composite_edge_id_806() {
+        // *2 with a composite edge_id [from_id, to_id, interaction_type,
+        // timestamp] — the guard compares the FULL identity, not just (from,to).
+        let edge_id_cols = ["from_id", "to_id", "interaction_type", "timestamp"];
+        let expr = generate_cycle_prevention_filters_composite(
+            2,
+            &["user_id"],
+            &["to_id"],
+            &["from_id"],
+            &["user_id"],
+            "a",
+            "b",
+            false,
+            Some(&edge_id_cols),
+        )
+        .expect("2-hop guard is non-empty");
+        assert_eq!(
+            render_expr_to_sql_string(&expr, &[]),
+            "NOT ((((r1.from_id = r2.from_id AND r1.to_id = r2.to_id) \
+             AND r1.interaction_type = r2.interaction_type) \
+             AND r1.timestamp = r2.timestamp))"
+        );
+
+        // A single composite-id column (e.g. `edge_id: follow_id`) collapses to
+        // the simple `<>` form — the strictest and cheapest edge identity.
+        let single = ["follow_id"];
+        let expr = generate_cycle_prevention_filters_composite(
+            2,
+            &["user_id"],
+            &["followed_id"],
+            &["follower_id"],
+            &["user_id"],
+            "a",
+            "b",
+            false,
+            Some(&single),
+        )
+        .expect("2-hop guard is non-empty");
+        assert_eq!(
+            render_expr_to_sql_string(&expr, &[]),
+            "r1.follow_id != r2.follow_id"
+        );
+
+        // No edge_id declared (None) → byte-identical to the pre-#806 (from,to)
+        // node-pair identity, so edge_id-less schemas are unaffected.
+        let expr = generate_cycle_prevention_filters_composite(
+            2,
+            &["user_id"],
+            &["followed_id"],
+            &["follower_id"],
+            &["user_id"],
+            "a",
+            "b",
+            false,
+            None,
+        )
+        .expect("2-hop guard is non-empty");
+        assert_eq!(
+            render_expr_to_sql_string(&expr, &[]),
+            "NOT ((r1.follower_id = r2.follower_id AND r1.followed_id = r2.followed_id))"
+        );
+
+        // The legacy FkEdge / multi-type start != end guard IGNORES edge_id
+        // (those paths have no r1..rN edge-table aliases) — passing edge_id_cols
+        // must not change the emitted start != end node guard.
+        let expr = generate_cycle_prevention_filters_composite(
+            2,
+            &["user_id"],
+            &["followed_id"],
+            &["follower_id"],
+            &["user_id"],
+            "a",
+            "b",
+            true, // use_legacy_start_end_guard
+            Some(&edge_id_cols),
+        )
+        .expect("2-hop legacy guard is non-empty");
+        assert_eq!(
+            render_expr_to_sql_string(&expr, &[]),
+            "a.user_id != b.user_id"
         );
     }
 

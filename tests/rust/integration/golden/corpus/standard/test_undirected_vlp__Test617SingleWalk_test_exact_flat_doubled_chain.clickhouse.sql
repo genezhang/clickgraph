@@ -10,5 +10,5 @@ FROM test_integration.users_test AS a
 INNER JOIN undir_edges_a_b_test_integration_user_follows_test AS r1 ON a.user_id = r1.follower_id
 INNER JOIN undir_edges_a_b_test_integration_user_follows_test AS r2 ON r1.followed_id = r2.follower_id
 INNER JOIN test_integration.users_test AS b ON r2.followed_id = b.user_id
-WHERE NOT (r1.__cg_orig_from = r2.__cg_orig_from AND r1.__cg_orig_to = r2.__cg_orig_to)
+WHERE r1.follow_id <> r2.follow_id
 ORDER BY a.full_name ASC, b.full_name ASC
