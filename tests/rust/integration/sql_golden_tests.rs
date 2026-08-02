@@ -292,9 +292,10 @@ const CORPUS: &[(&str, &str)] = &[
         "MATCH (u:User) RETURN [10, 20, 30][10] AS oob_hi, [10, 20, 30][-10] AS oob_lo, [10, 20, 30][0] AS first",
     ),
     // Dialect function-name mappings (regression for the Databricks overrides):
-    // replace -> CH replaceAll / Spark replace; head/last -> CH arrayElement /
-    // Spark element_at; stdev -> CH stddevSamp / Spark stddev_samp. Previously all
-    // emitted the CH name on Databricks (unmapped function -> execution error).
+    // replace -> CH replaceAll / Spark replace; head/last -> CH
+    // arrayElementOrNull / Spark element_at; stdev -> CH stddevSamp / Spark
+    // stddev_samp. Previously all emitted the CH name on Databricks (unmapped
+    // function -> execution error).
     (
         "fn_replace",
         "MATCH (u:User) RETURN replace(u.name, 'a', 'X') AS r",
@@ -302,6 +303,15 @@ const CORPUS: &[(&str, &str)] = &[
     (
         "fn_head_last",
         "MATCH (u:User) WITH collect(u.name) AS ns RETURN head(ns) AS h, last(ns) AS l",
+    ),
+    // head([])/last([]) on an empty list must be NULL (openCypher), not the
+    // element type's default. CH `arrayElement` returns 0/'' on an empty list,
+    // so head/last route through `arrayElementOrNull`; Spark `element_at`
+    // already returns NULL out of bounds. (The empty list is produced by a
+    // collect() over a WHERE that matches no rows.)
+    (
+        "fn_head_last_empty",
+        "MATCH (u:User) WHERE u.name = 'NOBODY' WITH collect(u.name) AS ns RETURN head(ns) AS h, last(ns) AS l",
     ),
     (
         "fn_stdev",
