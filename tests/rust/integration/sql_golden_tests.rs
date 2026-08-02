@@ -268,12 +268,17 @@ const CORPUS: &[(&str, &str)] = &[
          [10, 20, 30, 40, 50][1..-1] AS b, [10, 20, 30, 40, 50][-10..2] AS c, \
          [10, 20, 30, 40, 50][-3..-1] AS d, [10, 20, 30, 40, 50][..-1] AS e",
     ),
-    // Interval arithmetic on an epoch-millis column -> CH
-    // `toUnixTimestamp64Milli(fromUnixTimestamp64Milli(x) + toIntervalDay(n))`
-    // vs Spark `unix_millis(timestamp_millis(x) + make_dt_interval(n,0,0,0))`.
-    // Day-time, year-month, and same-family multi-unit are the validated cases
-    // (verified live on Databricks SQL). Mixing year-month with day-time in one
-    // duration() is unsupported on Spark and intentionally not in the corpus.
+    // Interval arithmetic on a native Date column (#854): `registration_date` is
+    // declared `date` in the benchmark schema, so the render-site type classifier
+    // recognizes it and emits direct date arithmetic — CH `x + toIntervalDay(n)`,
+    // Spark `x + make_dt_interval(n,0,0,0)` — returning a date. (Before #854, an
+    // untyped column was assumed epoch-millis and wrapped
+    // `toUnixTimestamp64Milli(fromUnixTimestamp64Milli(x) + …)`, which CH rejects
+    // on a real Date — Code 43.) Day-time, year-month, and same-family multi-unit
+    // are the validated cases. Mixing year-month with day-time in one duration()
+    // is unsupported on Spark and intentionally not in the corpus. An epoch-millis
+    // (untyped/BIGINT) column still takes the round-trip path — see
+    // `interval_add_days_epoch_column_854` below.
     (
         "interval_add_days",
         "MATCH (u:User) RETURN u.registration_date + duration({days: 7}) AS d",
@@ -285,6 +290,38 @@ const CORPUS: &[(&str, &str)] = &[
     (
         "interval_multi_same_family",
         "MATCH (u:User) RETURN u.registration_date + duration({days: 5, hours: 2}) AS d",
+    ),
+    // #854: temporal component access on a native Date must NOT epoch-wrap the
+    // arg. A declared Date column → `toYear(u.registration_date)`; a `date('…')`
+    // literal (→ `toDate(…)`) → `toYear(toDate(…))`. Before #854 both wrapped in
+    // `fromUnixTimestamp64Milli`, which CH rejects on a Date (Code 43).
+    (
+        "date_column_year_component_854",
+        "MATCH (u:User) RETURN u.registration_date.year AS y",
+    ),
+    (
+        "date_column_month_via_reverse_mapping_854",
+        "MATCH (p:Post) RETURN p.date.month AS m",
+    ),
+    ("date_literal_year_component_854", "RETURN date('2024-06-15').year AS y"),
+    // Baseline (unchanged): datetime() renders parseDateTime64BestEffort, already
+    // detected as a datetime, so it was never epoch-wrapped.
+    (
+        "datetime_literal_year_component_854",
+        "RETURN datetime('2024-06-15').year AS y",
+    ),
+    // #854 negative control: an UNDECLARED (epoch-millis-assumed) column keeps the
+    // `fromUnixTimestamp64Milli` wrap — the fix must not drop it where the epoch
+    // assumption still holds. `follow_date` on FOLLOWS has no declared type.
+    (
+        "epoch_column_year_keeps_wrap_854",
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN r.follow_date.year AS y",
+    ),
+    // #854 negative control: a native Date column + duration renders direct date
+    // arithmetic (no epoch round-trip); an epoch column still round-trips.
+    (
+        "interval_add_days_epoch_column_854",
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN r.follow_date + duration({days: 7}) AS d",
     ),
     // Heterogeneous end type (User|Post) routes through multi_type_vlp_joins,
     // locking the generator output for both dialects (incl. dialect-aware

@@ -34,6 +34,11 @@ fn wrap_epoch_millis_arg(args: &[String]) -> Vec<String> {
                 || arg.contains("now64")
                 || arg.contains("now()")
                 || arg.contains("toDateTime")
+                // #854: `date('…')` renders `toDate('…')` — a real Date, not an
+                // epoch-millis BIGINT. Skip the wrap so `date('…').year` emits
+                // `toYear(toDate('…'))` (valid) instead of
+                // `toYear(fromUnixTimestamp64Milli(toDate('…')))` (CH Code 43).
+                || arg.contains("toDate(")
         }
     };
     if already_datetime {
