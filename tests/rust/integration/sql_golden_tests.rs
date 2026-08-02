@@ -299,8 +299,11 @@ const CORPUS: &[(&str, &str)] = &[
         "date_column_year_component_854",
         "MATCH (u:User) RETURN u.registration_date.year AS y",
     ),
+    // Reverse-mapped DateTime column: `p.date` maps to the physical `post_date`
+    // (declared `datetime`); the classifier resolves the type through
+    // `property_mappings` and skips the wrap → `toMonth(p.post_date)`.
     (
-        "date_column_month_via_reverse_mapping_854",
+        "datetime_column_month_via_reverse_mapping_854",
         "MATCH (p:Post) RETURN p.date.month AS m",
     ),
     ("date_literal_year_component_854", "RETURN date('2024-06-15').year AS y"),
@@ -309,6 +312,13 @@ const CORPUS: &[(&str, &str)] = &[
     (
         "datetime_literal_year_component_854",
         "RETURN datetime('2024-06-15').year AS y",
+    ),
+    // #854: datetime() literal + duration renders direct temporal arithmetic
+    // (returns a DateTime), no epoch round-trip — the DateTime arm of
+    // `render_interval_arithmetic`.
+    (
+        "datetime_literal_add_duration_854",
+        "RETURN datetime('2024-06-15') + duration({days: 7}) AS d",
     ),
     // #854 negative control: an UNDECLARED (epoch-millis-assumed) column keeps the
     // `fromUnixTimestamp64Milli` wrap — the fix must not drop it where the epoch

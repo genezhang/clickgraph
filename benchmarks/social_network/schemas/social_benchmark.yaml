@@ -33,7 +33,7 @@ graph_schema:
         date: post_date
         author_id: author_id
       property_types:
-        date: date
+        date: datetime
 
   edges:
     - type: FOLLOWS

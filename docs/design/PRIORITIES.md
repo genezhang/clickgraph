@@ -508,9 +508,9 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   off the structured path. Epoch-millis BIGINT and unknown args → wrap kept
   (conservative-None; LDBC-style epoch schemas unchanged). The COLUMN case
   additionally required declaring `property_types:` on the benchmark temporal
-  columns (`registration_date: date`, `Post.date: date`) — the classifier's first
-  render-time consumer of `property_types` (previously DDL/loader-only, so inert
-  for translation goldens). Classifier's `infer_property_type` reverse-maps the
+  columns (`registration_date: date`, `Post.date: datetime` — matching the real
+  physical column types) — the classifier's first render-time consumer of
+  `property_types` (previously DDL/loader-only, so inert for translation goldens). Classifier's `infer_property_type` reverse-maps the
   name through `property_mappings` (the mapped DB column arrives here, e.g.
   `p.date`→`post_date`, not the Cypher name), trying direct then reverse lookup.
   6 existing interval goldens improved (were the Code-43 epoch-wrap-on-Date shape,
