@@ -491,16 +491,31 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   through the meta into the builder; render it via a new
   `render_target_where_predicate` that maps the target var → the `__tgt` join
   alias (already joined in each property-projection branch, empty hops → no extra
-  JOIN) and resolves properties through the target node schema. A `collect_where_aliases`
-  guard drops the predicate to `None` (preserving prior behavior, never invalid
-  SQL) if it references any alias other than the target var, since only `__tgt`
-  is in scope in this single-hop subquery. The `size([...WHERE...|proj])` form
-  routes through the same builder and is fixed by the same change; the count/
-  correlated path (`render_pc_where_clause`) was already correct and is untouched.
-  corpus_sweep + sql_golden 0-churn (fix is purely additive — a WHERE appears
-  only when an inner predicate exists); ratchet net-zero; new fail-when-reverted
-  golden (`pattern_comp_projection_inner_where_878` locks `WHERE __tgt.age > 3`)
-  + a base-no-WHERE byte-lock guard. SQL-shape-verified (no live CH).
+  JOIN) and resolves properties through the target node schema. A renderability
+  gate (`is_renderable_target_predicate`) drops the predicate to `None`
+  (preserving pre-#878 behavior — the whole inner WHERE was always absent on this
+  path — and never emitting invalid SQL) UNLESS the predicate is BOTH fully
+  renderable by `render_logical_expr_to_sql` (comparisons, boolean/arithmetic
+  operators, string-op predicates, `IS [NOT] NULL`, `NOT`, property accesses,
+  literals, parameters) AND references only the target var. The gate is
+  deliberately in lockstep with the renderer's actual capability: the renderer
+  has a catch-all that yields an empty fragment for unsupported variants
+  (`ScalarFnCall`, `List`/`IN`, `Case`, …), so naively rendering `WHERE v.age > 3
+  AND toLower(v.name)='x'` would emit dangling SQL — the gate rejects the whole
+  predicate instead. The `size([...WHERE...|proj])` form routes through the same
+  builder and is fixed by the same change; the count/correlated path
+  (`render_pc_where_clause`) was already correct and is untouched. corpus_sweep +
+  sql_golden 0-churn (fix is purely additive — a WHERE appears only when a
+  fully-renderable inner predicate exists); ratchet net-zero; new
+  fail-when-reverted golden (`pattern_comp_projection_inner_where_878` locks
+  `WHERE __tgt.age > 3`) + a base-no-WHERE byte-lock guard + 3 safe-drop goldens
+  (function / IN-list / partial-function-conjunct, each byte-identical to base) +
+  7 gate unit tests. SQL-shape-verified (no live CH). Adversarial review caught a
+  first-cut regression (an alias-only guard that diverged from the renderer,
+  emitting dangling SQL for function/IN/CASE predicates) — refixed to the
+  renderability gate above. **Follow-up #882**: actually APPLY function / IN-list
+  / CASE inner filters (currently dropped) by completing the shared
+  `render_logical_expr_to_sql` variant coverage.
 - 2026-08-02: **P-1 — IN / NOT IN with a null list element lost three-valued
   logic** (PR #877, branch `fix/855-in-null-3valued`, closes #855). Silent-wrong:
   `3 IN [1,2,null]` returned `false` and `3 NOT IN [1,null]` returned `true`,
