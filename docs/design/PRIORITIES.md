@@ -466,6 +466,21 @@ fixed stats fixture.
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
+- **VLP edge-identity & uniqueness unification — #887**
+  (`docs/design/VLP_EDGE_IDENTITY_UNIFICATION.md`). Bug-driven refactor of the
+  VLP relationship-uniqueness axis: one canonical `EdgeUniquenessPolicy`
+  (`PatternSchemaContext`-derived, rule-#7 clean) replaces ~14 inline sites / 3
+  inconsistent edge-vs-node copies / 6 edge-identity spellings. Retires the
+  self-spawning residual chain #606/#628/#710/#806/#808. Key finding: the 5
+  `analyze_pattern` CM strategies are corpus-unreachable dead code (sole caller
+  is `#[cfg(test)]` at `cte_manager/mod.rs:3826`), so **Phase 0 (dead-code
+  deletion) is unblocked and shippable today**, ratchets the 148-occurrence VLP
+  axis-predicate baseline down immediately. Phases 1–2 (policy + transition-
+  assert + switch, byte-identical) then Phases 3–4 fix #806/#628 with
+  regenerated goldens + live oracle. A **design-cycle commitment** (~4 refactor
+  PRs before the first behavior fix) — pick up when there's appetite for a
+  multi-PR arc, or when a new corpus makes a latent node-unique arm reachable.
+  Explicitly NOT this cluster: #643/#840/#627/#683 (different subsystems).
 
 ## 3. Capacity split (guideline)
 
