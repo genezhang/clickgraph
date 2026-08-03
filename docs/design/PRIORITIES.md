@@ -524,6 +524,28 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — `size()`/`reverse()` UTF8 dispatch for proven-string
+  args (completes the #960 string-fidelity family)** (branch
+  `fix/962-size-reverse-utf8-dispatch`, PR #964, closes #962). `size`/`length`
+  and `reverse` are OVERLOADED across strings AND arrays, so unlike #960's
+  registry-level swap they need argument-type dispatch: ClickHouse's
+  `lengthUTF8`/`reverseUTF8` are string-only (reject arrays); plain
+  `length`/`reverse` are byte-based on strings (`size('héllo')`=6 not 5,
+  `reverse('héllo')`=garbage) but correct on arrays. **Fix:** new
+  `clickhouse_utf8_string_fn` (parallel to `databricks_size_name`) upgrades to the
+  UTF8 variant ONLY when `infer_render_type(arg)==String`; array/unknown args keep
+  the plain name (correct for arrays, byte-identical for unknowns → no regression,
+  never breaks an array). Wired into BOTH render paths (`to_sql_query.rs` Path A +
+  `cte_extraction.rs` Path C). ClickHouse-only (Spark already codepoint-based).
+  Live-verified strings upgrade + arrays unchanged; zero golden churn; 1688 lib +
+  568 integration + ratchet (net-neutral) green. Golden + unit tests,
+  load-bearing. **Adversarial review APPROVE-0** — the crux array-safety audit
+  PASSED: exhaustively verified `infer_render_type` never types an
+  array-producing expression as `String` (list literals, `collect`/`range`/
+  `split`, list-comp→`arrayFilter`, `SameAsArg0` recursion, and decisively
+  `SchemaType` has NO array variant), live-confirmed `size(collect(...))`/
+  `size(range(...))` keep the plain name.
+
 - 2026-08-03: **Correctness — ClickHouse string functions were byte-based, now
   codepoint-based (UTF8) — silent-wrong on non-ASCII** (branch
   `fix/960-string-utf8-fidelity`, PR #961, closes #960). Cypher string functions
