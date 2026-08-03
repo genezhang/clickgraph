@@ -524,6 +524,39 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **Bug-driven refactor (#929 continuation) — the Databricks
+  WHERE-alias inliner now recurses into `reduce()`/map + shields lambda binders**
+  (branch `fix/940-substitute-alias-refs-reduce-shield`, PR #942, closes #940).
+  `substitute_alias_refs_in_expr` (`to_sql_query.rs`) is the **Databricks-only**
+  WHERE-alias inliner — it replaces a bare same-scope SELECT-alias reference with
+  that alias's source expression, restoring ClickHouse/Neo4j alias-in-WHERE
+  semantics (`inline_where_alias_refs_for_spark` returns early for ClickHouse, so
+  the whole path is Databricks-gated). It was a hand-rolled `&mut RenderExpr`
+  walker whose `_ => {}` catch-all **never descended into `ReduceExpr` or
+  `MapLiteral`**, so a bare alias buried in a `reduce()` (initial value / list /
+  body) or a map value was silently NOT inlined → on Databricks the bare name
+  resolves against FROM tables only → unresolved column / `AMBIGUOUS_REFERENCE`
+  (the same reachable silent-drop the function exists to prevent, just inside a
+  wrapper it never entered). This is the third drifting `_ => {}` copy of the
+  render-expr walk cluster (#906/#929). **Fix:** fold onto the exhaustive
+  `visit_render_expr_mut` / `descend_render_expr_mut` walker (added in #929) — no
+  `_` catch-all. Because the walker rewrites bare `ColumnAlias`/`TableAlias`/
+  `Column` (exactly what a `reduce()` lambda binder renders as), descending into
+  reduce bodies reintroduces the **#929 reduce-binder-shadow hazard**; fixed with
+  the identical binder-shielding: `initial_value`/`list` inline in the outer
+  scope, `accumulator`/`variable` are pushed onto a `shielded` stack for the body
+  only, leaf arms short-circuit on a shielded name. **Databricks-only → ClickHouse
+  goldens byte-identical** (`corpus_sweep`, 563); ratchet net-neutral; 1682 lib
+  tests green. Two walker-level regression tests (reduce/map recurse; binder
+  shielding for variable- AND accumulator-name collisions), proven load-bearing
+  (neutering the reduce arm makes the recurse test catch `arrayFold(…ages…)`).
+  **Adversarial review APPROVE-0** — independently verified covered-arm
+  equivalence, shielding push/pop balance + short-circuit-before-lookup, no
+  double-visit in the `other =>` descend path, and added a test with the
+  `reduce()` nested inside a `ScalarFnCall` wrapper (reached via descend, not the
+  top-level arm) with a colliding binder — passed. Retires the third copy of the
+  #906/#929 walk cluster.
+
 - 2026-08-02: **Bug-driven refactor — render-side denorm property-mapping walks
   now recurse into ALL `RenderExpr` wrappers** (branch
   `refactor/929-fold-property-mapping-walks`, PR #938, closes #929). The two
