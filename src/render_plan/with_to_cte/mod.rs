@@ -6239,8 +6239,9 @@ fn publish_cte_alias_scopes(
         // correlation variable that must resolve through the CTE scope
         // active *at this exact point* in `build_chained_with_match_cte_plan`,
         // before the variable moves on to a later WITH clause's CTE. It
-        // is written only here and read only by `generate_exists_sql`'s
-        // `GraphRel` branch, so it cannot affect any other resolution.
+        // is written only here and read by `resolve_correlation_id_sql`
+        // (EXISTS `GraphRel` correlation and, since #613, `size()`
+        // pattern-count correlation), so it cannot affect any other resolution.
         crate::server::query_context::set_cte_scope_for_correlation(
             alias.clone(),
             extract_from_alias_from_cte_name(cte_name).to_string(),
