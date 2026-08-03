@@ -3416,6 +3416,225 @@ impl<'a> VariableLengthCteGenerator<'a> {
     // - Denorm → Standard: Start from rel table (no start table), end with standard table JOIN
     // - Standard → Denorm: Start from standard table, but end is denormalized (no end table JOIN)
 
+    /// #908: Emit the mixed pattern's endpoint property columns into `select_items`
+    /// in a FIXED order — every start-side property first, then every end-side
+    /// property — for BOTH the base (`recursive == false`) and recursive
+    /// (`recursive == true`) arms, and return the own-table JOIN(s) the denorm
+    /// endpoint(s) need.
+    ///
+    /// Column ORDER must be identical across the two arms: a recursive CTE binds
+    /// its `UNION ALL` columns BY POSITION, not by name, so any per-arm ordering
+    /// difference silently swaps values between output columns on hops ≥ 2 (the
+    /// #908-review defect: base emitted `[end_name, start_name]` while the
+    /// recursive arm emitted `[start_name, end_name]`). Centralizing emission here
+    /// guarantees the two arms agree.
+    ///
+    /// Per side, the source depends on standard-vs-denorm and base-vs-recursive:
+    ///   - START (fixed across the recursion): base reads the standard node
+    ///     (`start_node.<col>`) or the denorm own-table join; recursive CARRIES the
+    ///     already-materialized column (`vp.start_<alias>`) in BOTH standard and
+    ///     denorm cases.
+    ///   - END (advances each hop): standard reads the joined end node
+    ///     (`end_node.<col>`) in both arms; denorm re-derives via a fresh own-table
+    ///     join in both arms.
+    ///
+    /// Returns `(start_join, end_join)` — the denorm own-table joins to append to
+    /// FROM (a standard side or the recursive carried start yields `None`).
+    fn emit_mixed_property_items(
+        &self,
+        recursive: bool,
+        select_items: &mut Vec<String>,
+    ) -> (Option<String>, Option<String>) {
+        // START side first (stable position across arms).
+        let start_join = if self.start_is_denormalized {
+            if recursive {
+                // Carried from the CTE (base seeded it via the own-table join).
+                for prop in &self.properties {
+                    if prop.cypher_alias == self.start_cypher_alias {
+                        select_items
+                            .push(format!("vp.start_{} as start_{}", prop.alias, prop.alias));
+                    }
+                }
+                None
+            } else {
+                self.mixed_denorm_endpoint_property_items(true, select_items)
+            }
+        } else {
+            for prop in &self.properties {
+                if prop.cypher_alias == self.start_cypher_alias {
+                    if recursive {
+                        select_items
+                            .push(format!("vp.start_{} as start_{}", prop.alias, prop.alias));
+                    } else {
+                        select_items.push(format!(
+                            "{}.{} as start_{}",
+                            self.start_node_alias, prop.column_name, prop.alias
+                        ));
+                    }
+                }
+            }
+            None
+        };
+
+        // END side second.
+        let end_join = if self.end_is_denormalized {
+            // Denorm end re-derives via a fresh own-table join in BOTH arms.
+            self.mixed_denorm_endpoint_property_items(false, select_items)
+        } else {
+            for prop in &self.properties {
+                if prop.cypher_alias == self.end_cypher_alias {
+                    select_items.push(format!(
+                        "{}.{} as end_{}",
+                        self.end_node_alias, prop.column_name, prop.alias
+                    ));
+                }
+            }
+            None
+        };
+
+        (start_join, end_join)
+    }
+
+    /// #908: Project a DENORMALIZED mixed endpoint's requested properties and
+    /// return the own-table JOIN needed to resolve its non-id properties.
+    ///
+    /// `is_start` selects the start (true) or end (false) endpoint. Returns `None`
+    /// (pushes nothing) unless that endpoint is denormalized.
+    ///
+    /// A denorm endpoint of a MIXED pattern is always the foreign-embedded /
+    /// partial-role shape: its `*_node_table` is the EDGE table and its
+    /// `*_node_id_column` is the EMBEDDED id column (e.g. `reports` / `mgr_id`),
+    /// because only its id lives on the edge. Every non-id property lives on the
+    /// node's OWN table (the fully-denormalized shape, where a role embeds all
+    /// properties, is not mixed — it is intercepted earlier by
+    /// `DenormalizedCteStrategy`). So the id property maps to the already-
+    /// materialized `start_id`/`end_id`, and any other property is read from the
+    /// own table (resolved from the schema: node label → table + node_id + column)
+    /// via a LEFT JOIN back on the embedded id link
+    /// (`own.<node_id> = rel.<embedded_id_col>`). Without this the outer SELECT
+    /// references `t.start_<prop>` that the CTE never projects → ClickHouse Code 47.
+    fn mixed_denorm_endpoint_property_items(
+        &self,
+        is_start: bool,
+        select_items: &mut Vec<String>,
+    ) -> Option<String> {
+        let denormalized = if is_start {
+            self.start_is_denormalized
+        } else {
+            self.end_is_denormalized
+        };
+        if !denormalized {
+            return None;
+        }
+        let cypher_alias = if is_start {
+            &self.start_cypher_alias
+        } else {
+            &self.end_cypher_alias
+        };
+        let out_prefix = if is_start { "start" } else { "end" };
+        // The embedded id column on the edge (from_col for the start role, to_col
+        // for the end role) and the id expression already used for start/end_id.
+        let embedded_id_col = if is_start {
+            &self.relationship_from_column
+        } else {
+            &self.relationship_to_column
+        };
+        let id_expr = format!("{}.{}", self.relationship_alias, embedded_id_col);
+
+        // Resolve the denorm node's schema (own table + node_id) from the
+        // relationship type and the from/to role. Without a schema match we cannot
+        // know the own table, so fall back to the pre-#908 behavior (project
+        // nothing — the outer projection gap is pre-existing).
+        let rel_type = self.relationship_types.as_ref().and_then(|t| t.first())?;
+        let rel_schema = self.schema.get_relationships_schema_opt(rel_type)?;
+        let node_label = if is_start {
+            &rel_schema.from_node
+        } else {
+            &rel_schema.to_node
+        };
+        let node_schema = self.schema.node_schema_opt(node_label)?;
+        // Qualify the own table with the node's OWN database (the generator's
+        // `format_table_name` uses the generator-level default database, which may
+        // differ from or be absent for this node). `table_name` may already be
+        // db-qualified — only prefix when it isn't.
+        let own_table = if node_schema.table_name.contains('.') || node_schema.database.is_empty() {
+            node_schema.table_name.clone()
+        } else {
+            format!("{}.{}", node_schema.database, node_schema.table_name)
+        };
+        // The own-table node_id. #908 review: only the single-column case is
+        // supported here — the embedded id link (`embedded_id_col`) is a single
+        // relationship column, so a COMPOSITE own node_id can't be matched against
+        // it. Bail (return None → project nothing, the pre-#908 loud gap) rather
+        // than silently joining on only the first column (wrong / fan-out). Also
+        // bail if the node declares no id column at all, instead of emitting a
+        // join on a fabricated `id` column that may not exist.
+        let own_id_cols = node_schema.node_id.columns();
+        if own_id_cols.len() != 1 {
+            return None;
+        }
+        let own_node_id = own_id_cols[0];
+        let own_alias = format!("{}_own", out_prefix);
+
+        // The id property maps to the id expression; any non-id property is read
+        // from the own table via the LEFT JOIN below (see the doc comment above).
+        // Collect the non-id property columns so the join target can be a
+        // deduplicated subquery (one row per node_id) — see the join comment.
+        let mut own_cols: Vec<String> = Vec::new();
+        for prop in &self.properties {
+            if &prop.cypher_alias != cypher_alias {
+                continue;
+            }
+            if prop.column_name == own_node_id || prop.column_name == *embedded_id_col {
+                select_items.push(format!("{} as {}_{}", id_expr, out_prefix, prop.alias));
+            } else {
+                if !own_cols.contains(&prop.column_name) {
+                    own_cols.push(prop.column_name.clone());
+                }
+                select_items.push(format!(
+                    "{}.{} as {}_{}",
+                    own_alias, prop.column_name, out_prefix, prop.alias
+                ));
+            }
+        }
+
+        if !own_cols.is_empty() {
+            // LEFT JOIN (not INNER): the denorm endpoint's id is already fixed by
+            // the edge, so this join only RESOLVES its own-table properties — it
+            // must NOT add or drop path rows.
+            //
+            // #908 review: the join is emitted whenever a denorm-endpoint non-id
+            // property is in `self.properties`, which the planner populates even for
+            // `RETURN count(*)` / `RETURN b.name` (the unused `start_<prop>` SELECT
+            // column is pruned downstream, but the JOIN would remain). Unlike the
+            // standard `end_node` join (which already exists on `main` for the id),
+            // a START-side own-table join is a NEW join surface, so on a node table
+            // with a duplicated node_id it would FAN OUT and inflate `count(*)`
+            // (review: 11 vs 9). To be provably row-preserving regardless of id
+            // uniqueness, join a DEDUPLICATED subquery that yields exactly one row
+            // per node_id (`GROUP BY node_id`, `any()`/`any_value()` on the property
+            // columns) instead of the raw table.
+            let any_fn = match crate::server::query_context::get_current_dialect() {
+                crate::sql_generator::SqlDialect::Databricks => "any_value",
+                _ => "any",
+            };
+            let projected: Vec<String> = own_cols
+                .iter()
+                .map(|c| format!("{any_fn}({c}) as {c}"))
+                .collect();
+            Some(format!(
+                "LEFT JOIN (SELECT {node_id}, {cols} FROM {own_table} GROUP BY {node_id}) {own_alias} ON {own_alias}.{node_id} = {id_expr}",
+                node_id = own_node_id,
+                cols = projected.join(", "),
+                own_table = own_table,
+                own_alias = own_alias,
+                id_expr = id_expr,
+            ))
+        } else {
+            None
+        }
+    }
+
     /// Generate base case for mixed patterns
     fn generate_mixed_base_case(&self, hop_count: u32) -> String {
         if hop_count != 1 {
@@ -3482,21 +3701,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
             ));
         }
 
-        // Add properties for non-denormalized nodes
-        for prop in &self.properties {
-            if prop.cypher_alias == self.start_cypher_alias && !self.start_is_denormalized {
-                select_items.push(format!(
-                    "{}.{} as start_{}",
-                    self.start_node_alias, prop.column_name, prop.alias
-                ));
-            }
-            if prop.cypher_alias == self.end_cypher_alias && !self.end_is_denormalized {
-                select_items.push(format!(
-                    "{}.{} as end_{}",
-                    self.end_node_alias, prop.column_name, prop.alias
-                ));
-            }
-        }
+        // #908: Emit endpoint properties in a FIXED start-then-end order (base
+        // arm) so the recursive arm's UNION ALL columns line up positionally, and
+        // collect the denorm own-table join(s) to append to FROM. See
+        // `emit_mixed_property_items`.
+        let (denorm_start_join, denorm_end_join) =
+            self.emit_mixed_property_items(false, &mut select_items);
 
         let select_clause = select_items.join(",\n        ");
 
@@ -3537,6 +3747,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
             select = select_clause,
             from_clause = from_clause
         );
+
+        // #908: append the denorm endpoint's own-table join (foreign-embedded
+        // shape) so its non-id properties resolve. Only one of the two can be set
+        // in a mixed pattern (exactly one endpoint is denormalized).
+        if let Some(join) = denorm_start_join.or(denorm_end_join) {
+            query.push_str(&format!("\n    {}", join));
+        }
 
         // Add WHERE conditions
         let mut where_conditions = Vec::new();
@@ -3624,18 +3841,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
             ));
         }
 
-        // Add properties - start from CTE, end from joined node (if not denorm)
-        for prop in &self.properties {
-            if prop.cypher_alias == self.start_cypher_alias && !self.start_is_denormalized {
-                select_items.push(format!("vp.start_{} as start_{}", prop.alias, prop.alias));
-            }
-            if prop.cypher_alias == self.end_cypher_alias && !self.end_is_denormalized {
-                select_items.push(format!(
-                    "{}.{} as end_{}",
-                    self.end_node_alias, prop.column_name, prop.alias
-                ));
-            }
-        }
+        // #908: Emit endpoint properties in the SAME fixed start-then-end order as
+        // the base arm (recursive mode) so the UNION ALL columns line up
+        // positionally. START columns are carried from the CTE; a denorm END
+        // re-derives via a fresh own-table join appended to FROM below.
+        let (_start_join, denorm_end_recursive_join) =
+            self.emit_mixed_property_items(true, &mut select_items);
 
         let select_clause = select_items.join(",\n        ");
 
@@ -3708,6 +3919,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
         }
 
         let where_clause = where_conditions.join("\n      AND ");
+
+        // #908: append the denorm END endpoint's own-table join (foreign-embedded)
+        // so its non-id properties resolve on each recursive hop.
+        let from_clause = match denorm_end_recursive_join {
+            Some(join) => format!("{from_clause}\n    {join}"),
+            None => from_clause,
+        };
 
         format!(
             "    SELECT\n        {select}\n    {from_clause}\n    WHERE {where_clause}",

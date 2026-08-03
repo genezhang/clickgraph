@@ -9,6 +9,7 @@ WITH RECURSIVE vlp_a_b_inner AS (
         end_node.name as end_name
     FROM testdb.reports rel
     JOIN testdb.people end_node ON rel.emp_id = end_node.pid
+    LEFT JOIN (SELECT pid, any_value(name) as name FROM testdb.people GROUP BY pid) start_own ON start_own.pid = rel.mgr_id
     UNION ALL
     SELECT
         vp.start_id,
