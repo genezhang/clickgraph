@@ -10276,8 +10276,77 @@ mod walker_drift_family_484_490_495_476_483 {
         );
     }
 
-    /// #483: `count(DISTINCT n)` on an unlabeled endpoint of an UNDIRECTED
-    /// GraphRel (routed at render time through a `multi_type_vlp_joins`/
+    /// #929: the RENDER-side denorm remapper
+    /// `apply_property_mapping_to_expr` (`plan_builder_helpers.rs`) rewrites a
+    /// denormalized node's cypher alias onto the edge table alias that embeds
+    /// it (`s` → `t1`, via the task-local `get_denormalized_alias_mapping`
+    /// populated during planning). Unlike the property-NAME resolution (#906,
+    /// done analyzer-side in FilterTagging), this table-alias remap runs ONLY
+    /// at render. The walk previously recursed into
+    /// `Operator`/`ScalarFn`/`Aggregate` only; a property buried in a `CASE`
+    /// (or `List`/`ArraySubscript`/…) fell through its `_ => {}` catch-all
+    /// UN-remapped, leaking the raw cypher alias `s` — which is bound to no
+    /// table in the FROM → `Code 47 Unknown identifier 's.id.orig_h'` on live
+    /// ClickHouse. The fix routes recursion through the EXHAUSTIVE
+    /// `descend_render_expr_mut`, so every wrapper (incl. `Case`) is covered
+    /// and a new `RenderExpr` variant is a compile error, not a silent drop.
+    ///
+    /// Live-verified (2026-08-02, `zeek` fixture): pre-fix the CASE-WHERE SQL
+    /// errored `Code 47`; post-fix it executes and returns the SAME count (3)
+    /// as the plain-equality `WHERE s.ip = …` form.
+    #[tokio::test]
+    async fn denorm_alias_remap_recurses_into_case_render_side_929() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+
+        // WHERE path (filter_builder → apply_property_mapping_to_expr).
+        // The rendered edge-table alias is an auto-generated counter
+        // (`t1`/`t2`/… depending on test ordering within the process — see the
+        // #495 test), so assert on the remapped SHAPE (`t{n}."id.orig_h"`
+        // inside the CASE) and, decisively, that the raw cypher alias `s` did
+        // NOT leak — never a hard-coded counter value.
+        let where_sql = render(
+            &schema,
+            "MATCH (s:IP)-[:REQUESTED]->(d:Domain) \
+             WHERE CASE WHEN s.ip = '1.2.3.4' THEN true ELSE false END \
+             RETURN d.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            where_sql.contains("CASE WHEN t") && where_sql.contains("\"id.orig_h\" = '1.2.3.4'"),
+            "#929: denorm alias `s` inside a CASE WHERE must remap to an edge \
+             table alias `t{{n}}`:\n{where_sql}"
+        );
+        // The raw cypher alias must NOT leak (quoted-alias form distinguishes
+        // an unbound reference from a legitimate `AS \"s.…\"` output alias).
+        assert!(
+            !where_sql.contains("s.\"id.orig_h\"") && !where_sql.contains("WHEN s.\""),
+            "#929: raw cypher alias `s` leaked unremapped into the CASE \
+             predicate (would be Code 47 on live CH):\n{where_sql}"
+        );
+
+        // ORDER BY path (clause_extractors → apply_property_mapping_to_expr),
+        // 2-hop so the remapped endpoint (`dest` → its edge alias) is
+        // unambiguous. Same counter-agnostic shape assertion.
+        let order_sql = render(
+            &schema,
+            "MATCH (s:IP)-[:ACCESSED]->(dest:IP) RETURN s.ip \
+             ORDER BY CASE WHEN dest.ip = 'x' THEN 0 ELSE 1 END",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            order_sql.contains("ORDER BY CASE WHEN t") && order_sql.contains("\"id.resp_h\" = 'x'"),
+            "#929: denorm alias `dest` inside a CASE ORDER BY must remap to an \
+             edge table alias `t{{n}}`:\n{order_sql}"
+        );
+        assert!(
+            !order_sql.contains("WHEN dest.\""),
+            "#929: raw cypher alias `dest` leaked unremapped into the CASE \
+             ORDER BY expression:\n{order_sql}"
+        );
+    }
+
     /// `bidirectional_union` CTE, e.g. `MATCH (a:User)-[r]-(o)`) used to
     /// build its cross-label DISTINCT discriminator tuple from the #467
     /// per-label-raw-column logic (designed for a bare `MATCH (n)`

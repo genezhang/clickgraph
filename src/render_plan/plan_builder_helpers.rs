@@ -2779,23 +2779,25 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                 prop.table_alias = TableAlias(rel_alias);
             }
         }
-        RenderExpr::OperatorApplicationExp(op) => {
-            for operand in &mut op.operands {
-                apply_property_mapping_to_expr(operand, plan);
-            }
-        }
-        RenderExpr::AggregateFnCall(agg) => {
-            for arg in &mut agg.args {
-                apply_property_mapping_to_expr(arg, plan);
-            }
-        }
-        RenderExpr::ScalarFnCall(scalar) => {
-            for arg in &mut scalar.args {
-                apply_property_mapping_to_expr(arg, plan);
-            }
-        }
-        _ => {
-            // PropertyAccess, Column, Literal, etc. don't need modification
+        // Every wrapper variant recurses structurally through the EXHAUSTIVE
+        // `descend_render_expr_mut` (no `_` catch-all — a new `RenderExpr`
+        // variant is a compile error here, not a silently-skipped remap).
+        // Previously only Operator/Aggregate/ScalarFn recursed and every other
+        // wrapper — `Case`, `List`, `ArraySubscript`, `ArraySlicing`,
+        // `MapLiteral`, `ReduceExpr` — fell through `_ => {}`, dropping the
+        // denorm alias/property remap for a property buried inside it (#929:
+        // `WHERE CASE WHEN s.ip = … END` leaked the raw cypher alias `s`
+        // instead of the edge alias → Code 47 on live ClickHouse). Genuine
+        // leaves (`Literal`/`Column`/`Parameter`/…) and deliberately-not-
+        // descended nodes (`InSubquery`/`ExistsSubquery`/`PatternCount`/
+        // `CteEntityRef`) are no-ops in `descend_render_expr_mut`, matching the
+        // prior catch-all exactly.
+        other => {
+            let mut recur = |child: &mut RenderExpr| -> super::render_expr::MutVisit {
+                apply_property_mapping_to_expr(child, plan);
+                super::render_expr::MutVisit::Stop
+            };
+            super::render_expr::descend_render_expr_mut(other, &mut recur);
         }
     }
 }

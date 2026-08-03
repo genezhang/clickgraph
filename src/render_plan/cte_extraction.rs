@@ -2546,47 +2546,11 @@ fn apply_property_mapping_to_expr_with_context(
                 }
             }
         }
-        RenderExpr::OperatorApplicationExp(op) => {
-            for operand in &mut op.operands {
-                apply_property_mapping_to_expr_with_context(
-                    operand,
-                    plan,
-                    relationship_type,
-                    node_role,
-                );
-            }
-        }
-        RenderExpr::ScalarFnCall(func) => {
-            for arg in &mut func.args {
-                apply_property_mapping_to_expr_with_context(
-                    arg,
-                    plan,
-                    relationship_type,
-                    node_role,
-                );
-            }
-        }
-        RenderExpr::AggregateFnCall(agg) => {
-            for arg in &mut agg.args {
-                apply_property_mapping_to_expr_with_context(
-                    arg,
-                    plan,
-                    relationship_type,
-                    node_role,
-                );
-            }
-        }
-        RenderExpr::List(list) => {
-            for item in list {
-                apply_property_mapping_to_expr_with_context(
-                    item,
-                    plan,
-                    relationship_type,
-                    node_role,
-                );
-            }
-        }
         RenderExpr::InSubquery(subq) => {
+            // Copy-2 has always descended into the subquery's scalar expr. The
+            // shared `descend_render_expr_mut` deliberately does NOT enter
+            // subqueries (they own a separate FROM/alias scope), so keep this
+            // explicit arm to preserve the existing behavior exactly.
             apply_property_mapping_to_expr_with_context(
                 &mut subq.expr,
                 plan,
@@ -2594,8 +2558,27 @@ fn apply_property_mapping_to_expr_with_context(
                 node_role,
             );
         }
-        // Other expression types don't contain nested expressions
-        _ => {}
+        // Every other wrapper recurses structurally through the EXHAUSTIVE
+        // `descend_render_expr_mut` (no `_` catch-all — a new `RenderExpr`
+        // variant is a compile error here, not a silently-skipped remap).
+        // Previously only Operator/ScalarFn/Aggregate/List recursed and
+        // `Case`/`ArraySubscript`/`ArraySlicing`/`MapLiteral`/`ReduceExpr` fell
+        // through `_ => {}`, dropping the denorm property/alias remap for a
+        // property buried inside them (#929). Genuine leaves and deliberately-
+        // not-descended nodes (`ExistsSubquery`/`PatternCount`/`CteEntityRef`)
+        // are no-ops in `descend_render_expr_mut`, matching the prior catch-all.
+        other => {
+            let mut recur = |child: &mut RenderExpr| -> super::render_expr::MutVisit {
+                apply_property_mapping_to_expr_with_context(
+                    child,
+                    plan,
+                    relationship_type,
+                    node_role,
+                );
+                super::render_expr::MutVisit::Stop
+            };
+            super::render_expr::descend_render_expr_mut(other, &mut recur);
+        }
     }
 }
 

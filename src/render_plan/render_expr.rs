@@ -1670,6 +1670,129 @@ where
     }
 }
 
+/// Decision returned by a [`visit_render_expr_mut`] closure for a node.
+pub enum MutVisit {
+    /// This node was handled in place — do NOT recurse into its children.
+    Stop,
+    /// Recurse structurally into this node's value-carrying children (via
+    /// [`descend_render_expr_mut`]).
+    Recurse,
+}
+
+/// In-place (`&mut`) structural sibling of [`map_render_expr`]. For each node
+/// `f` decides [`MutVisit::Stop`] (handled — no descent) or [`MutVisit::Recurse`]
+/// (descend into value children via [`descend_render_expr_mut`], whose match is
+/// EXHAUSTIVE — a new [`RenderExpr`] variant is a compile error, not a silently
+/// skipped rewrite).
+///
+/// This exists to retire the hand-rolled `match … _ => {}` `&mut RenderExpr`
+/// walkers (e.g. the `apply_property_mapping_to_expr` denorm remappers) whose
+/// catch-alls silently dropped rewrites inside
+/// `Case`/`List`/`ArraySubscript`/`ArraySlicing`/`MapLiteral`/`ReduceExpr`
+/// wrappers (#906/#929). A caller keeps its leaf-mutation logic in `f` and
+/// returns `Recurse` for wrappers; descent is centralized and exhaustive.
+///
+/// DESCENT POLICY mirrors [`map_render_expr`]: descends into value-carrying
+/// wrappers only. It does NOT descend into `InSubquery`/`ExistsSubquery`
+/// (correlated subqueries own a separate FROM/alias scope), `PatternCount`
+/// (structural pattern + validated SQL cache), or `CteEntityRef`. A caller that
+/// wants to enter a subquery must handle it explicitly in `f` before returning
+/// `Recurse`.
+pub fn visit_render_expr_mut<F>(expr: &mut RenderExpr, f: &mut F)
+where
+    F: FnMut(&mut RenderExpr) -> MutVisit,
+{
+    match f(expr) {
+        MutVisit::Stop => {}
+        MutVisit::Recurse => descend_render_expr_mut(expr, f),
+    }
+}
+
+/// Recurse `f` into each value-wrapper child of `expr` in place. Leaves,
+/// subqueries, `PatternCount`, and `CteEntityRef` are not descended (see
+/// [`visit_render_expr_mut`] descent policy). EXHAUSTIVE — no `_` catch-all, so
+/// a new [`RenderExpr`] variant fails to compile here until its child structure
+/// is spelled out.
+pub fn descend_render_expr_mut<F>(expr: &mut RenderExpr, f: &mut F)
+where
+    F: FnMut(&mut RenderExpr) -> MutVisit,
+{
+    match expr {
+        RenderExpr::ScalarFnCall(sf) => {
+            for a in &mut sf.args {
+                visit_render_expr_mut(a, f);
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            for a in &mut agg.args {
+                visit_render_expr_mut(a, f);
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for o in &mut op.operands {
+                visit_render_expr_mut(o, f);
+            }
+        }
+        RenderExpr::Case(case) => {
+            if let Some(e) = case.expr.as_mut() {
+                visit_render_expr_mut(e, f);
+            }
+            for (w, t) in &mut case.when_then {
+                visit_render_expr_mut(w, f);
+                visit_render_expr_mut(t, f);
+            }
+            if let Some(e) = case.else_expr.as_mut() {
+                visit_render_expr_mut(e, f);
+            }
+        }
+        RenderExpr::ReduceExpr(reduce) => {
+            visit_render_expr_mut(&mut reduce.initial_value, f);
+            visit_render_expr_mut(&mut reduce.list, f);
+            visit_render_expr_mut(&mut reduce.expression, f);
+        }
+        RenderExpr::List(items) => {
+            for i in items {
+                visit_render_expr_mut(i, f);
+            }
+        }
+        RenderExpr::MapLiteral(entries) => {
+            for (_k, v) in entries {
+                visit_render_expr_mut(v, f);
+            }
+        }
+        RenderExpr::ArraySubscript { array, index } => {
+            visit_render_expr_mut(array, f);
+            visit_render_expr_mut(index, f);
+        }
+        RenderExpr::ArraySlicing { array, from, to } => {
+            visit_render_expr_mut(array, f);
+            if let Some(x) = from.as_mut() {
+                visit_render_expr_mut(x, f);
+            }
+            if let Some(x) = to.as_mut() {
+                visit_render_expr_mut(x, f);
+            }
+        }
+
+        // Leaves + deliberately-not-descended nodes (subqueries own a separate
+        // scope; PatternCount carries a pattern + validated SQL cache, not
+        // descended until #613). NO `_` catch-all — every variant is named so a
+        // new one forces a compile error here.
+        RenderExpr::PropertyAccessExp(_)
+        | RenderExpr::Literal(_)
+        | RenderExpr::Raw(_)
+        | RenderExpr::Star
+        | RenderExpr::TableAlias(_)
+        | RenderExpr::ColumnAlias(_)
+        | RenderExpr::Column(_)
+        | RenderExpr::Parameter(_)
+        | RenderExpr::InSubquery(_)
+        | RenderExpr::ExistsSubquery(_)
+        | RenderExpr::PatternCount(_)
+        | RenderExpr::CteEntityRef(_) => {}
+    }
+}
+
 /// CTE Entity Reference for render plan
 /// Represents a node or relationship that was exported through a WITH clause
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -2566,5 +2689,103 @@ mod tests {
             map_render_expr(&expr, &mut |_| RenderRewrite::Recurse),
             expr
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // visit_render_expr_mut — the in-place (&mut) structural dual
+    // -------------------------------------------------------------------------
+
+    /// Suffix every property-access column with `_x` IN PLACE, recursing
+    /// everywhere via the exhaustive `descend_render_expr_mut`.
+    fn suffix_mut(expr: &mut RenderExpr) {
+        visit_render_expr_mut(expr, &mut |node| {
+            if let RenderExpr::PropertyAccessExp(pa) = node {
+                pa.column = crate::graph_catalog::expression_parser::PropertyValue::Column(
+                    format!("{}_x", pa.column.raw()),
+                );
+                MutVisit::Stop
+            } else {
+                MutVisit::Recurse
+            }
+        });
+    }
+
+    /// The regression this slice targets (#929): the hand-rolled `&mut
+    /// RenderExpr` denorm remappers' `_ => {}` catch-all silently skipped
+    /// property accesses nested inside
+    /// Case/List/ArraySubscript/ArraySlicing/ReduceExpr/MapLiteral wrappers.
+    /// `visit_render_expr_mut` must reach ALL of them.
+    #[test]
+    fn visit_render_expr_mut_reaches_previously_skipped_wrappers() {
+        // Case — the specific #929 shape (denorm property buried in CASE).
+        let mut case = RenderExpr::Case(RenderCase {
+            expr: Some(Box::new(rprop("scrut"))),
+            when_then: vec![(rprop("w"), rprop("t"))],
+            else_expr: Some(Box::new(rprop("e"))),
+        });
+        suffix_mut(&mut case);
+        assert_eq!(
+            case,
+            RenderExpr::Case(RenderCase {
+                expr: Some(Box::new(rprop("scrut_x"))),
+                when_then: vec![(rprop("w_x"), rprop("t_x"))],
+                else_expr: Some(Box::new(rprop("e_x"))),
+            })
+        );
+
+        let mut list = RenderExpr::List(vec![rprop("c1"), rprop("c2")]);
+        suffix_mut(&mut list);
+        assert_eq!(list, RenderExpr::List(vec![rprop("c1_x"), rprop("c2_x")]));
+
+        let mut sub = RenderExpr::ArraySubscript {
+            array: Box::new(rprop("arr")),
+            index: Box::new(rprop("i")),
+        };
+        suffix_mut(&mut sub);
+        assert_eq!(
+            sub,
+            RenderExpr::ArraySubscript {
+                array: Box::new(rprop("arr_x")),
+                index: Box::new(rprop("i_x")),
+            }
+        );
+
+        let mut reduce = RenderExpr::ReduceExpr(ReduceExpr {
+            accumulator: "acc".to_string(),
+            initial_value: Box::new(rprop("init")),
+            variable: "v".to_string(),
+            list: Box::new(rprop("lst")),
+            expression: Box::new(rprop("body")),
+        });
+        suffix_mut(&mut reduce);
+        assert_eq!(
+            reduce,
+            RenderExpr::ReduceExpr(ReduceExpr {
+                accumulator: "acc".to_string(),
+                initial_value: Box::new(rprop("init_x")),
+                variable: "v".to_string(),
+                list: Box::new(rprop("lst_x")),
+                expression: Box::new(rprop("body_x")),
+            })
+        );
+    }
+
+    /// Descent policy parity with `map_render_expr`: `Stop` handles a node
+    /// without descending into its children; subqueries are NOT descended.
+    #[test]
+    fn visit_render_expr_mut_stop_skips_children() {
+        let mut expr = RenderExpr::List(vec![rprop("c1")]);
+        let mut hits = 0;
+        visit_render_expr_mut(&mut expr, &mut |node| {
+            hits += 1;
+            if matches!(node, RenderExpr::List(_)) {
+                MutVisit::Stop
+            } else {
+                MutVisit::Recurse
+            }
+        });
+        assert_eq!(hits, 1); // only the List node visited, no child descent
+                             // Unchanged — the closure stopped without mutating.
+        assert_eq!(expr, RenderExpr::List(vec![rprop("c1")]));
     }
 }
