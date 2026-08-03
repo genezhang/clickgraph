@@ -10670,6 +10670,83 @@ mod walker_drift_family_484_490_495_476_483 {
         );
     }
 
+    /// #955: a `reduce()` over an EMPTY list literal does zero iterations, so the
+    /// result is the initial accumulator. Emitting the fold anyway
+    /// (`arrayFold(…, [], init)`) fails on ClickHouse with Code 53 — the bare
+    /// `[]` is `Array(Nothing)`, so the lambda return type can't unify with the
+    /// accumulator (Spark's untyped `array()` is the same hazard). Both render
+    /// paths short-circuit to the init expression.
+    #[tokio::test]
+    async fn reduce_over_empty_list_returns_init_955() {
+        let schema = load_schema("benchmarks/social_network/schemas/social_benchmark.yaml");
+
+        // ClickHouse: numeric init → `toInt64(7)`, no `arrayFold`.
+        let ch_sql = render(
+            &schema,
+            "MATCH (u:User) RETURN reduce(acc = 7, y IN [] | acc + y) AS r",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !ch_sql.contains("arrayFold"),
+            "#955: an empty-list reduce must NOT emit arrayFold (Code 53 on the \
+             untyped `[]`):\n{ch_sql}"
+        );
+        assert!(
+            ch_sql.contains("toInt64(7)"),
+            "#955: an empty-list reduce must short-circuit to the (cast) init \
+             expression:\n{ch_sql}"
+        );
+
+        // Databricks: same short-circuit → `bigint(7)`, no `aggregate`.
+        let dbx_sql = render(
+            &schema,
+            "MATCH (u:User) RETURN reduce(acc = 7, y IN [] | acc + y) AS r",
+            SqlDialect::Databricks,
+        )
+        .await;
+        assert!(
+            !dbx_sql.contains("aggregate("),
+            "#955: an empty-list reduce must NOT emit aggregate() on Databricks \
+             either:\n{dbx_sql}"
+        );
+        assert!(
+            dbx_sql.contains("bigint(7)"),
+            "#955: Databricks empty-list reduce must short-circuit to the (cast) \
+             init:\n{dbx_sql}"
+        );
+
+        // A non-numeric init keeps its own rendering (no numeric cast).
+        let str_sql = render(
+            &schema,
+            "MATCH (u:User) RETURN reduce(acc = 'seed', y IN [] | acc + y) AS r",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !str_sql.contains("arrayFold") && str_sql.contains("'seed'"),
+            "#955: an empty-list reduce with a string init returns the init \
+             verbatim:\n{str_sql}"
+        );
+
+        // Path C coverage: a reduce inside a VLP WHERE filter is rendered by
+        // `cte_extraction::render_expr_to_sql_string` (not `RenderExpr::to_sql`),
+        // so it needs its OWN short-circuit. Without it this emits
+        // `arrayFold(…, [], toInt64(0))` inside the VLP CTE → Code 53.
+        let vlp_sql = render(
+            &schema,
+            "MATCH (u:User)-[r:FOLLOWS*1..2]->(v:User) \
+             WHERE reduce(acc = 0, y IN [] | acc + y) = 0 RETURN u.user_id",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !vlp_sql.contains("arrayFold") && vlp_sql.contains("toInt64(0)"),
+            "#955: an empty-list reduce in a VLP WHERE (Path C) must also \
+             short-circuit to the init:\n{vlp_sql}"
+        );
+    }
+
     /// `bidirectional_union` CTE, e.g. `MATCH (a:User)-[r]-(o)`) used to
     /// build its cross-label DISTINCT discriminator tuple from the #467
     /// per-label-raw-column logic (designed for a bare `MATCH (n)`

@@ -2039,6 +2039,15 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                 init_sql
             };
 
+            // #955: a fold over an EMPTY list literal does zero iterations, so
+            // the result is exactly the initial accumulator. The fold would fail
+            // on ClickHouse with Code 53 (the bare `[]` is `Array(Nothing)`, so
+            // the lambda return type can't unify with the accumulator). Mirrors
+            // the Path A (`RenderExpr::to_sql`) short-circuit exactly.
+            if matches!(reduce.list.as_ref(), RenderExpr::List(items) if items.is_empty()) {
+                return init_cast;
+            }
+
             crate::clickhouse_query_generator::reduce_fold_sql(
                 &reduce.variable,
                 &reduce.accumulator,
