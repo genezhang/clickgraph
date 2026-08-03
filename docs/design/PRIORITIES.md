@@ -524,6 +524,21 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — Float `reduce()` accumulator seed now casts to
+  Float64 (was Code 53)** (branch `fix/971-reduce-float-seed-cast`, PR #973,
+  closes #971; completes the reduce-init-cast family with #955). `reduce(n = 0.0,
+  x IN [1.5,2.5] | n + x)` rendered `arrayFold(n, x -> n + x, [1.5,2.5], 0)` — the
+  bare `0.0` seed renders as `0` (UInt8), can't unify with the Float64 lambda →
+  TYPE_MISMATCH. The `init_cast` only wrapped Integer literal seeds (#955); extend
+  the match at both render sites (to_sql_query.rs Path A, cte_extraction.rs Path
+  C) to wrap a Float literal seed in `cast_float64` (CH `toFloat64`, Spark
+  `double`), symmetric to the Integer arm via the FunctionMapper (Rule #7). Live:
+  → 4 (was Code 53); Integer→6, string→'abc' unchanged; non-literal/Boolean seeds
+  no-cast (unchanged). Zero golden churn; 1689 lib + 571 integration + ratchet
+  net-neutral green. Golden (CH + Databricks + Integer-unaffected + Path-C
+  VLP-WHERE), load-bearing. **Adversarial review APPROVE-0**; its Path-C-coverage
+  NIT addressed by adding the VLP-WHERE assertion. Filed from the #969 review.
+
 - 2026-08-03: **Correctness — `reduce()` string-concat body renders `concat()`
   (was Code 43)** (branch `fix/969-reduce-string-concat`, PR #970, closes #969).
   `reduce(s = '', x IN ['a','b','c'] | s + x)` rendered `arrayFold(s, x -> s + x,
