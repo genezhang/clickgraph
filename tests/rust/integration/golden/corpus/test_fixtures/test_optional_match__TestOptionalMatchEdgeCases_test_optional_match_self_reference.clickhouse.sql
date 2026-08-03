@@ -22,8 +22,8 @@ WITH RECURSIVE vlp_a_a AS (
       AND NOT has(vp.path_edges, tuple(rel.follower_id, rel.followed_id))
 )
 SELECT 
-      vt0.name AS "a.name", 
+      a.name AS "a.name", 
       count(*) AS "paths"
 FROM test_integration.users AS a
 LEFT JOIN vlp_a_a AS vt0 ON a.user_id = vt0.start_id
-GROUP BY vt0.name
+GROUP BY a.name
