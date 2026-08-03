@@ -524,6 +524,31 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **Fix — chained double-WITH rename of a scalar PROPERTY consumed by
+  a NON-count aggregate no longer renders `SELECT *`** (branch
+  `fix/914-chained-with-rename-non-count-aggregate`, PR #915, closes #914;
+  follow-up to #910 single-hop and #886 chained-`count`).
+  `MATCH (u:User) WITH u.age AS a WITH a AS b RETURN sum(b)` (and avg/min/max/
+  collect) collapsed both CTE bodies to `SELECT *`; the outer `sum(b.b)`
+  referenced a never-exported column → ClickHouse Code 47. **Root cause:** the
+  #910 scalar-aggregate-arg rewrite (`projection_tagging.rs`) recognized a scalar
+  alias only ONE level deep — its shape-(ii) check required the alias's underlying
+  projection expr to be NON-`TableAlias`. On the second rename hop (`WITH a AS b`)
+  `b`'s underlying IS a bare `TableAlias(a)`, so the check was false, the rewrite
+  never fired, `sum(b)` kept a bare `TableAlias(b)` → `require_all(b)` → the CTE
+  column was pruned → `SELECT *`. **Fix:** replace the one-level check with
+  `resolves_to_scalar`, which follows the chain of `TableAlias` renames back to its
+  origin (any hop `is_scalar()`, or the innermost underlying is a non-`TableAlias`
+  scalar projection like `u.age`); a chain bottoming out in an unregistered alias
+  is a genuine graph entity → NOT scalar (falls through to node/rel id-column
+  logic). Bounded by `PlanCtx::projection_alias_count()` so a pathological
+  self-referential registration can't loop. Scope: the rewrite only fires for a
+  bare-`TableAlias` arg, so `sum(v.age)` (PropertyAccess) and whole-node
+  `collect(v)` are untouched. Live-verified (`test_integration.users_test`, 30
+  users, `sum(age)=889`): old binary → Code 47; fixed → 889 (matches oracle).
+  Zero existing-golden churn (554 corpus); 2 new corpus goldens (sum/collect ×
+  CH+Databricks) + unit test over sum/avg/min/max/collect, all fail-when-reverted;
+  ratchet net-zero (helper-routed).
 - 2026-08-02: **Fix — graph pattern in scalar-expression context returns a clean
   error instead of panicking** (branch `fix/901-pattern-in-expr-context-panic`,
   closes #901). `MATCH (u:User) RETURN CASE WHEN (u)-[:FOLLOWS]->() THEN 1 ELSE 0
