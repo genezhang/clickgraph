@@ -524,6 +524,38 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Feature — #629 PR2: DIRECTED multi-hop uncorrelated
+  `size([x IN list WHERE (x)-[:R]->()-[:R]->()])`** (branch
+  `feature/629-multihop`, references #629). PR1 shipped single-hop
+  (start/target/undirected); this admits a **directed multi-hop chain led by the
+  iteration variable**. **Key finding:** the render (`generate_list_comp_array_count`,
+  `pattern_comprehension_sql.rs`) *already* builds a correct INNER-JOIN chain
+  (`prev.to_id = curr.from_id`, direction-flipped) and position-derives the element
+  column — verified empirically that leading-var directed chains render the exact
+  right SQL in both dialects. So **no render change** was needed; the fix is purely
+  the plan-time gate. **Gate** (`uncorrelated_list_pattern_is_render_safe`,
+  `with_clause.rs`) is now **schema-aware** (takes `&GraphSchema` via
+  `plan_ctx.schema()`), split into `is_single_hop_render_safe` (unchanged) +
+  `is_multi_hop_render_safe`. The multi-hop arm admits only: iteration var at the
+  LEADING endpoint (hop-0 start) and NOWHERE else; every hop directed
+  (Outgoing/Incoming), non-var-length; every hop's rel_type resolves to EXACTLY ONE
+  edge schema (anonymous `()` intermediate → ambiguous rel_type would let
+  `find_edge_table_in_schema` silently pick the alphabetically-first table); adjacent
+  junction node TYPES agree (hop[i] arrival == hop[i+1] departure, via schema
+  from_node/to_node roles). **Empirically-confirmed silent-wrong shapes it rejects:**
+  trailing var `()->()->( f)` (renders empty → literal 0), cycle `(f)->()->(f)`
+  (drops the closing `=f` → over-count), middle var, type-mismatch junction
+  `(f)-[:LIKED]->()-[:FOLLOWS]->()` (joins `post_id = follower_id`, unsound),
+  undirected mid-chain, variable-length. **Load-bearing invariant** (unchanged): a
+  render `None` becomes literal `"0"`, so the plan-time gate is the ONLY safe guard.
+  Axis-dispatch: junction check uses schema-catalog node-type roles, NOT raw
+  `is_denormalized`/table-name flags → ratchet net-zero. Verified full matrix both
+  dialects; corpus entry `..._multihop_fails_loud` → `..._multihop_leading_renders`
+  (`.sql`) + 5 new `.err` variants (trailing/cycle/middle/type_mismatch/
+  undirected_mid); curated shape test extended (leading renders both dialects + 7
+  loud shapes); full gate green; corpus 0-churn elsewhere. Not verifiable in-env (no
+  live CH): bar = SQL shape + byte goldens.
+
 - 2026-08-03: **Correctness — Float `reduce()` accumulator seed now casts to
   Float64 (was Code 53)** (branch `fix/971-reduce-float-seed-cast`, PR #973,
   closes #971; completes the reduce-init-cast family with #955). `reduce(n = 0.0,
