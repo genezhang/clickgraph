@@ -16357,3 +16357,79 @@ async fn chained_with_rename_of_property_non_count_aggregate_914() {
         );
     }
 }
+
+/// #908: the mixed-access VLP arm projects a denormalized endpoint's non-id
+/// properties by joining the node's own table. The base and recursive arms of
+/// the recursive CTE MUST emit the endpoint property columns in the SAME
+/// positional order — ClickHouse binds `UNION ALL` columns by position, so a
+/// per-arm order difference silently swaps values on hops ≥ 2 (the #908-review
+/// defect: base `[end_name, start_name]` vs recursive `[start_name, end_name]`).
+/// This structural check catches that without executing SQL: it extracts the
+/// ordered list of `as (start|end)_<prop>` aliases from each arm and asserts the
+/// two sequences are identical.
+#[tokio::test]
+async fn mixed_vlp_denorm_endpoint_property_column_order_matches_across_arms_908() {
+    let schema = load_schema("schemas/test/foreign_selfloop.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(
+            &schema,
+            "MATCH (a:Person)-[:REPORTS_TO*2..3]->(b:Person) RETURN a.name, b.name",
+            dialect,
+        )
+        .await;
+
+        // Split into the base arm and the recursive arm at the UNION ALL.
+        let upper = sql.to_uppercase();
+        let union_pos = upper.find("UNION ALL").unwrap_or_else(|| {
+            panic!("#908 ({dialect:?}): expected a recursive UNION ALL:\n{sql}")
+        });
+        let (base_arm, recursive_arm) = sql.split_at(union_pos);
+
+        // Extract the ordered endpoint-property aliases (`as start_name` /
+        // `as end_name`) from each arm.
+        let endpoint_aliases = |arm: &str| -> Vec<String> {
+            arm.split(" as ")
+                .skip(1)
+                .filter_map(|tail| tail.split([',', '\n', ' ']).next())
+                .filter(|tok| {
+                    (tok.starts_with("start_") || tok.starts_with("end_"))
+                        && !tok.ends_with("_id")
+                        && *tok != "start_id"
+                        && *tok != "end_id"
+                })
+                .map(|s| s.to_string())
+                .collect()
+        };
+        let base_order = endpoint_aliases(base_arm);
+        let rec_order = endpoint_aliases(recursive_arm);
+
+        assert!(
+            !base_order.is_empty(),
+            "#908 ({dialect:?}): expected endpoint property columns in the base arm:\n{sql}"
+        );
+        assert_eq!(
+            base_order, rec_order,
+            "#908 ({dialect:?}): base and recursive arms must emit endpoint property \
+             columns in the SAME positional order (UNION ALL binds by position):\n{sql}"
+        );
+        // Concretely for this Denorm→Standard case: both must be [start_name, end_name].
+        assert_eq!(
+            base_order,
+            vec!["start_name".to_string(), "end_name".to_string()],
+            "#908 ({dialect:?}): expected [start_name, end_name] in both arms:\n{sql}"
+        );
+
+        // #908 review: the denorm-START own-table resolve-join must be a
+        // DEDUPLICATED subquery (`GROUP BY <node_id>`), NOT a raw table join —
+        // otherwise it is a NEW join surface that fans out `count(*)` on a
+        // duplicated node_id (the standard end_node join pre-exists on main, but a
+        // start-side raw join does not). The dedup makes it provably row-preserving.
+        assert!(
+            sql.contains("start_own")
+                && sql.contains("GROUP BY pid) start_own")
+                && !sql.contains("FROM testdb.people start_own"),
+            "#908 ({dialect:?}): the start-side resolve-join must be a deduplicated \
+             `GROUP BY pid` subquery, not a raw table join (fan-out risk):\n{sql}"
+        );
+    }
+}
