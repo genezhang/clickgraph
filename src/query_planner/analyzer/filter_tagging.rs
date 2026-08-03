@@ -755,7 +755,7 @@ impl FilterTagging {
         graph_schema: &GraphSchema,
         plan: Option<&LogicalPlan>,
     ) -> AnalyzerResult<LogicalExpr> {
-        self.apply_property_mapping_internal(expr, plan_ctx, graph_schema, plan, false)
+        self.apply_property_mapping_internal(expr, plan_ctx, graph_schema, plan, false, &[])
     }
 
     /// Apply property mapping for projection items - preserves id() function
@@ -766,7 +766,7 @@ impl FilterTagging {
         graph_schema: &GraphSchema,
         plan: Option<&LogicalPlan>,
     ) -> AnalyzerResult<LogicalExpr> {
-        self.apply_property_mapping_internal(expr, plan_ctx, graph_schema, plan, true)
+        self.apply_property_mapping_internal(expr, plan_ctx, graph_schema, plan, true, &[])
     }
 
     // ========================================================================
@@ -932,6 +932,15 @@ impl FilterTagging {
         graph_schema: &GraphSchema,
         plan: Option<&LogicalPlan>,
         preserve_id_function: bool,
+        // #949: names bound by an enclosing `reduce()` lambda
+        // (`accumulator`/`variable`). A property mapping is keyed on an alias
+        // resolved in `plan_ctx`, so a body reference `binder.prop` where the
+        // binder SHADOWS a real node alias must be left alone — mapping it would
+        // rewrite the lambda element onto the shadowed node's column (the
+        // #929/#940/#944 reduce-binder-shadow hazard, analyzer-side). Only the
+        // shadowed binder names are shielded, so a DIFFERENT node's property in
+        // the same body still maps.
+        shielded: &[String],
     ) -> AnalyzerResult<LogicalExpr> {
         match expr {
             LogicalExpr::PropertyAccessExp(property_access) => {
@@ -940,6 +949,13 @@ impl FilterTagging {
                     property_access.table_alias.0,
                     property_access.column.raw()
                 );
+
+                // #949: shadowed by an enclosing reduce binder — this is the
+                // lambda element (`binder.prop`), not the node alias it shares a
+                // name with; leave it unmapped.
+                if shielded.iter().any(|n| n == &property_access.table_alias.0) {
+                    return Ok(LogicalExpr::PropertyAccessExp(property_access));
+                }
 
                 // NOTE: We used to convert temporal property names (year, month, day) to function
                 // calls here, but that was wrong. In Cypher, `r.year` is only a temporal accessor
@@ -1293,6 +1309,7 @@ impl FilterTagging {
                         graph_schema,
                         plan,
                         preserve_id_function,
+                        shielded,
                     )?);
                 }
                 op.operands = mapped_operands;
@@ -1498,6 +1515,7 @@ impl FilterTagging {
                                         graph_schema,
                                         plan,
                                         preserve_id_function,
+                                        shielded,
                                     );
                                 }
                             }
@@ -1520,6 +1538,7 @@ impl FilterTagging {
                             graph_schema,
                             plan,
                             preserve_id_function,
+                            shielded,
                         )?);
                     }
                     return Ok(LogicalExpr::ScalarFnCall(ScalarFnCall {
@@ -1566,6 +1585,7 @@ impl FilterTagging {
                         graph_schema,
                         plan,
                         preserve_id_function,
+                        shielded,
                     )?);
                 }
                 Ok(LogicalExpr::ScalarFnCall(ScalarFnCall {
@@ -1583,6 +1603,7 @@ impl FilterTagging {
                         graph_schema,
                         plan,
                         preserve_id_function,
+                        shielded,
                     )?);
                 }
                 agg_call.args = mapped_args;
@@ -1598,6 +1619,7 @@ impl FilterTagging {
                         graph_schema,
                         plan,
                         preserve_id_function,
+                        shielded,
                     )?);
                 }
                 Ok(LogicalExpr::List(mapped_elements))
@@ -1611,6 +1633,7 @@ impl FilterTagging {
                     graph_schema,
                     plan,
                     preserve_id_function,
+                    shielded,
                 )?;
                 let mapped_from = if let Some(f) = from {
                     Some(Box::new(self.apply_property_mapping_internal(
@@ -1619,6 +1642,7 @@ impl FilterTagging {
                         graph_schema,
                         plan,
                         preserve_id_function,
+                        shielded,
                     )?))
                 } else {
                     None
@@ -1630,6 +1654,7 @@ impl FilterTagging {
                         graph_schema,
                         plan,
                         preserve_id_function,
+                        shielded,
                     )?))
                 } else {
                     None
@@ -1655,6 +1680,7 @@ impl FilterTagging {
                     graph_schema,
                     plan,
                     preserve_id_function,
+                    shielded,
                 )?;
                 let mapped_index = self.apply_property_mapping_internal(
                     *index,
@@ -1662,6 +1688,7 @@ impl FilterTagging {
                     graph_schema,
                     plan,
                     preserve_id_function,
+                    shielded,
                 )?;
                 Ok(LogicalExpr::ArraySubscript {
                     array: Box::new(mapped_array),
@@ -1680,28 +1707,25 @@ impl FilterTagging {
                         graph_schema,
                         plan,
                         preserve_id_function,
+                        shielded,
                     )?;
                     mapped_entries.push((key, mapped_value));
                 }
                 Ok(LogicalExpr::MapLiteral(mapped_entries))
             }
-            // #946: a `ReduceExpr` (`reduce(acc = init, x IN list | body)`) must
-            // map `initial_value` and `list` (they evaluate in the OUTER scope) so
-            // a property buried there resolves to its physical column. The body
-            // BINDS `accumulator`/`variable`, which shadow any same-named node
-            // alias — and property mapping is keyed on an alias found in
-            // `plan_ctx`, so a body reference like `x.name` (where `x` is the
-            // binder over a list of maps) would be WRONGLY rewritten to the
-            // shadowed node's column. This is the analyzer-side of the #929/#940/
-            // #944 reduce-binder-shadow hazard: recursing into the body to close a
-            // silent-DROP opens a silent-MIS-REWRITE. There is no binder-scoped
-            // property-mapping context here, so conservatively skip mapping the
-            // body whenever a binder name resolves to a real table alias (exactly
-            // the pre-#946 behavior for that case — the body stayed unmapped
-            // because `ReduceExpr` fell through the `other` catch-all). The common
-            // case — binders that do NOT shadow a node/CTE alias — still maps the
-            // body normally, so `initial_value`/`list` and unshadowed bodies get
-            // the fix.
+            // #946/#949: a `ReduceExpr` (`reduce(acc = init, x IN list | body)`)
+            // maps `initial_value` and `list` (they evaluate in the OUTER scope)
+            // so a property buried there resolves to its physical column, and maps
+            // the body too. The body BINDS `accumulator`/`variable`, which shadow
+            // any same-named node alias — and mapping is keyed on an alias in
+            // `plan_ctx`, so a body reference `binder.prop` (the lambda element)
+            // would be WRONGLY rewritten to the shadowed node's column (the
+            // #929/#940/#944 reduce-binder-shadow hazard, analyzer-side). #946
+            // first guarded this by skipping the WHOLE body when a binder shadowed
+            // an alias; #949 makes it precise: shield ONLY the binder names for
+            // the body, so a DIFFERENT node's property in the same body still maps
+            // (`reduce(acc = '', u IN [1] | acc + p.date)` maps `p.date` while
+            // leaving a shadowing `u.x` alone).
             LogicalExpr::ReduceExpr(reduce) => {
                 let mapped_initial = self.apply_property_mapping_internal(
                     *reduce.initial_value,
@@ -1709,6 +1733,7 @@ impl FilterTagging {
                     graph_schema,
                     plan,
                     preserve_id_function,
+                    shielded,
                 )?;
                 let mapped_list = self.apply_property_mapping_internal(
                     *reduce.list,
@@ -1716,24 +1741,21 @@ impl FilterTagging {
                     graph_schema,
                     plan,
                     preserve_id_function,
+                    shielded,
                 )?;
-                // A binder shadows a real alias iff `plan_ctx` resolves its name
-                // to a table context; if either binder does, leave the body
-                // unmapped (safe, matches pre-#946) rather than risk mis-mapping a
-                // `binder.prop` reference onto the shadowed node's column.
-                let binder_shadows_alias = plan_ctx.get_table_ctx(&reduce.accumulator).is_ok()
-                    || plan_ctx.get_table_ctx(&reduce.variable).is_ok();
-                let mapped_body = if binder_shadows_alias {
-                    *reduce.expression
-                } else {
-                    self.apply_property_mapping_internal(
-                        *reduce.expression,
-                        plan_ctx,
-                        graph_schema,
-                        plan,
-                        preserve_id_function,
-                    )?
-                };
+                // Shield the binder names for the body only (push, recurse, the
+                // extended slice is dropped after). Duplicate names are harmless.
+                let mut body_shielded = shielded.to_vec();
+                body_shielded.push(reduce.accumulator.clone());
+                body_shielded.push(reduce.variable.clone());
+                let mapped_body = self.apply_property_mapping_internal(
+                    *reduce.expression,
+                    plan_ctx,
+                    graph_schema,
+                    plan,
+                    preserve_id_function,
+                    &body_shielded,
+                )?;
                 Ok(LogicalExpr::ReduceExpr(
                     crate::query_planner::logical_expr::ReduceExpr {
                         accumulator: reduce.accumulator,
@@ -1828,6 +1850,7 @@ impl FilterTagging {
                         graph_schema,
                         plan,
                         preserve_id_function,
+                        shielded,
                     )?)),
                     None => None,
                 };
@@ -1839,6 +1862,7 @@ impl FilterTagging {
                         graph_schema,
                         plan,
                         preserve_id_function,
+                        shielded,
                     )?;
                     let mapped_then = self.apply_property_mapping_internal(
                         then_val,
@@ -1846,6 +1870,7 @@ impl FilterTagging {
                         graph_schema,
                         plan,
                         preserve_id_function,
+                        shielded,
                     )?;
                     mapped_when_then.push((mapped_when, mapped_then));
                 }
@@ -1856,6 +1881,7 @@ impl FilterTagging {
                         graph_schema,
                         plan,
                         preserve_id_function,
+                        shielded,
                     )?)),
                     None => None,
                 };

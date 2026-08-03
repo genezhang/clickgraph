@@ -10594,6 +10594,53 @@ mod walker_drift_family_484_490_495_476_483 {
         );
     }
 
+    /// #949: the reduce-binder shield must be PRECISE — shielding only the binder
+    /// names, not the whole body. #946 first guarded the hazard by skipping the
+    /// entire body when a binder shadowed an alias, which over-skipped a DIFFERENT
+    /// node's property in the same body. Now the shielded set carries only the
+    /// binder names, so `binder.prop` stays unmapped while `otherNode.prop` maps.
+    #[tokio::test]
+    async fn computed_projection_reduce_binder_shield_is_precise_949() {
+        let schema = load_schema("benchmarks/social_network/schemas/social_benchmark.yaml");
+
+        // Binder `u` shadows node `u`; the body ALSO references a DIFFERENT bound
+        // node `p` (Post) via `p.date`. `p.date` must map to its physical column
+        // `post_date`, while a shadowing `u.<prop>` (if present) would stay.
+        let sql = render(
+            &schema,
+            "MATCH (u:User), (p:Post) \
+             RETURN reduce(acc = '', u IN [1] | acc + toString(p.date)) AS x",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("post_date"),
+            "#949: a DIFFERENT node's property in a reduce body (with a shadowing \
+             binder) must still map — only the binder name is shielded:\n{sql}"
+        );
+        assert!(
+            !sql.contains("p.date") && !sql.contains("p.\"date\""),
+            "#949: `p.date` leaked unmapped — the whole body was skipped instead \
+             of only the shadowing binder:\n{sql}"
+        );
+
+        // Nested reduce: the outer binder `u` shadows node `u`, and its shield
+        // must propagate through an inner reduce so a body `u.name` (still the
+        // outer binder) stays unmapped.
+        let nested_sql = render(
+            &schema,
+            "MATCH (u:User), (p:Post) \
+             RETURN reduce(a = '', u IN [1] | a + reduce(b = '', p IN [1] | b + toString(u.name))) AS x",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !nested_sql.contains("full_name"),
+            "#949: an outer reduce binder's shield must propagate into a nested \
+             reduce body:\n{nested_sql}"
+        );
+    }
+
     /// `bidirectional_union` CTE, e.g. `MATCH (a:User)-[r]-(o)`) used to
     /// build its cross-label DISTINCT discriminator tuple from the #467
     /// per-label-raw-column logic (designed for a bare `MATCH (n)`
