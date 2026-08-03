@@ -524,6 +524,40 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — closed OPTIONAL VLP now keeps its anchor `WHERE`
+  and closed constraint** (branch `fix/922-closed-optional-vlp-anchor-where-closed-constraint`,
+  PR #976, closes #922). `MATCH (a) WHERE a.name='X' OPTIONAL MATCH (a)-[:R*..]->(a)
+  RETURN a.name, COUNT(*)` silently dropped **two** things → every anchor returned
+  with an inflated path count instead of just the filtered anchor null-extended
+  (live: Alice 9→1 acyclic, and on a cyclic graph the reviewer saw `WHERE a.name='Bob'`
+  vanish entirely). Two independent silent-wrong defects (ground rule 1).
+  **Defect 1 (anchor WHERE dropped):** the mandatory filter is a `LogicalPlan::Filter`
+  on the anchor; `GraphJoinInference` (runs first) captures a `GraphRel` clone into
+  the VLP LEFT JOIN's `graph_rel`, then `DuplicateScansRemoving` (runs after —
+  the module doc's "step 3 / step 9" numbering is REVERSED vs actual invocation)
+  elides the pattern's left endpoint scan to `Empty` because `a` is BOTH endpoints,
+  taking the Filter with it; its `GraphJoins` arm only recurses into `.input`, not
+  `joins[].graph_rel`, so the clone survives. **Fix:** the `extract_filters`
+  `GraphJoins` arm recovers the anchor filter from the closed VLP join's own
+  `graph_rel.left` and ANDs it into the outer WHERE (deduped by `RenderExpr`
+  equality; gate mirrors the inference-side optional gate `is_optional ||
+  optional_aliases.contains`). **Defect 2 (closed constraint missing):** the LEFT
+  JOIN was only `ON anchor.id = vt0.start_id`, counting every path leaving the
+  anchor; the non-optional `WHERE t.start_id = t.end_id` (#625) block is unreachable
+  for OPTIONAL. **Fix:** append `AND anchor.id = vt0.end_id` to the JOIN ON (not a
+  WHERE — a WHERE drops the NULL-extended anchor). `anchor_is_end` is always false
+  for closed (its first conjunct is `left != right`) so `cte_id_col == "start_id"`,
+  making the added `end_id` conjunct non-redundant. Regenerated the frozen corpus
+  golden (line 819, both dialects). 1689 lib + 572 integration + corpus + ratchet +
+  clippy green; both fixes proven load-bearing by neutering each. **Adversarial
+  review APPROVE** (independent cyclic-graph repro; two non-blocking findings —
+  two-closed-VLP double-add + gate-asymmetry NIT — both addressed). Immediate
+  successor to #899 on the same closed-optional shape. Out of scope / pre-existing
+  loud: denorm closed optional (fails loud, `MissingTableInfo`), composite-id
+  closed optional (pre-existing single-vs-composite key mismatch). Adjacent VLP
+  design-cycle work still open: #643 (chained VLP endpoint alias), #840
+  (shortestPath reverse-arm join drop).
+
 - 2026-08-03: **Feature — #629 PR2: DIRECTED multi-hop uncorrelated
   `size([x IN list WHERE (x)-[:R]->()-[:R]->()])`** (branch
   `feature/629-multihop`, references #629). PR1 shipped single-hop
