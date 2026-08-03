@@ -524,6 +524,29 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **Fix — `NOT (composite-FK pattern)` now fails LOUD instead of
+  emitting malformed SQL** (branch `fix/928-not-composite-fk-guard`, closes #928;
+  sibling of #921, flagged in its review). `MATCH (a:Account) WHERE NOT
+  (a)-[:TRANSFERRED]->()` emitted `NOT EXISTS (... WHERE transfers.from_bank_id,
+  from_account_number = (...))` — the correlation WHERE **LHS** is a bare
+  comma-list (composite `rel_schema.from_id`/`to_id` stringified), invalid SQL
+  (ground-rule-1). **Root cause:** `generate_not_exists_from_path_pattern`
+  (`render_expr.rs`) interpolates the facing edge FK column verbatim into the
+  correlated `NOT EXISTS` WHERE and had no composite guard — the same gap #921
+  closed for the pattern-count paths and `generate_exists_graph_rel_sql` already
+  guards. **Fix:** add a **direction-aware** composite guard — defer LOUD
+  (`UnsupportedFeature`, suggesting `OPTIONAL MATCH ... WHERE <rel> IS NULL`) when
+  a column actually used as a correlation predicate is composite. Shape-aware
+  `from_used`/`to_used`: an anonymous-end DIRECTED pattern uses only the facing
+  column (so `(c:Customer)-[:OWNS]->()` on single `from_id` still renders even
+  though `to_id` is composite); named-end and undirected shapes use both. Standard
+  single-column schemas byte-identical (corpus_sweep 0-churn); new regression test
+  (composite out/in/undirected/named-end + single-column anon-end negative
+  control), fail-when-reverted; ratchet net-zero. (NOTE: this #928 is the
+  `size()`/NOT render-path composite comma-list — distinct from the
+  denorm-CASE render-side twin that #906's log entry cross-references under the
+  same number; the render-path leak was the one that reproduced and is fixed here.)
+
 - 2026-08-02: **Fix — denorm property buried in a CASE is now property-mapped**
   (branch `fix/906-denorm-case-buried-grouping-key-v2`, PR #930, closes #906).
   On a denormalized UNDIRECTED match, `RETURN CASE WHEN count(r) > 5 THEN a.code
