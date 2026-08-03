@@ -902,8 +902,10 @@ fn generate_list_comp_array_count(
     // from-side. `find_edge_id_column` flips start/end for `Incoming` internally,
     // so pass the pattern start/end boolean. The gate
     // (`uncorrelated_list_pattern_is_render_safe`) guarantees the variable is
-    // present at a single-hop start OR end; the first occurrence is authoritative
-    // (a multi-hop middle var's two positions are join-equated).
+    // present at a start OR end position; the first occurrence is authoritative.
+    // For a multi-hop chain (#629 PR2) the gate additionally proves the variable
+    // is the LEADING (hop-0 start) endpoint and occurs nowhere else, so
+    // `positions.first()` is the sole, correct read.
     let list_element_col = {
         let positions = find_iteration_var_position(&pc_meta.pattern_hops, &lc.variable);
         let (idx, is_start) = *positions.first()?;

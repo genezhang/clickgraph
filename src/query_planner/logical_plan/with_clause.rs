@@ -329,12 +329,19 @@ fn rewrite_with_pattern_comprehensions<'a>(
             // outer var) has a correlation variable and is unaffected by this block.
             if correlation_var.is_none() {
                 if let Some((ref iter_var, _)) = pc_info.list_constraint {
-                    if !uncorrelated_list_pattern_is_render_safe(&pc_info.pattern, iter_var) {
+                    if !uncorrelated_list_pattern_is_render_safe(
+                        &pc_info.pattern,
+                        iter_var,
+                        plan_ctx.schema(),
+                    ) {
                         return Err(LogicalPlanError::QueryPlanningError(
-                            "size([x IN list WHERE (pattern)]) is only supported when the pattern \
-                             is a SINGLE hop with the iteration variable at one endpoint \
-                             (e.g. `(x)-[:REL]->()`, `()-[:REL]->(x)`, or undirected \
-                             `(x)-[:REL]-()`); a multi-hop, self-loop `(x)-[:REL]->(x)`, or \
+                            "size([x IN list WHERE (pattern)]) is supported for a SINGLE hop \
+                             with the iteration variable at one endpoint (e.g. `(x)-[:REL]->()`, \
+                             `()-[:REL]->(x)`, or undirected `(x)-[:REL]-()`), and for a DIRECTED \
+                             multi-hop chain led by the iteration variable (e.g. \
+                             `(x)-[:REL]->()-[:REL]->()`). A self-loop `(x)-[:REL]->(x)`, a \
+                             cycle back to `x`, a trailing/middle `x`, an undirected or \
+                             ambiguous-rel-type or type-mismatched multi-hop, or a \
                              variable-length pattern would return a wrong count and is not yet \
                              supported (#629). Workaround: correlate the pattern to an outer \
                              variable, or express the constrained count via a top-level \
@@ -777,11 +784,12 @@ fn rewrite_expression_pattern_comprehensions<'a>(
 ///
 /// The render path derives the iteration element's column from where the variable
 /// sits (`find_iteration_var_position` → start-side/end-side, direction-flipped
-/// for `Incoming`) and, for an undirected hop, UNIONs the from-side and to-side
-/// columns. It is provably correct for:
-///   - a single-hop `ConnectedPattern` (a multi-hop chain has intermediate
-///     anonymous nodes whose labels are unknown, so its edge table can resolve to
-///     the wrong table on an ambiguous rel type — deferred, #629 PR2), and
+/// for `Incoming`), for an undirected single hop UNIONs the from-side and to-side
+/// columns, and for a multi-hop chain INNER-JOINs each hop on the shared junction
+/// FK (`prev.to_id = curr.from_id`, both direction-flipped). It is provably
+/// correct for two shapes:
+///
+/// **Single hop** (`is_single_hop_render_safe`):
 ///   - direction `Outgoing`, `Incoming`, OR `Either` (undirected → from∪to), and
 ///   - not variable-length, and
 ///   - the iteration variable at the START or END of the hop (either endpoint;
@@ -789,25 +797,53 @@ fn rewrite_expression_pattern_comprehensions<'a>(
 ///   - NOT a self-loop back to the iteration variable (`(f)-[:R]->(f)`), which
 ///     needs a `from = to` predicate the render does not emit.
 ///
+/// **Multi-hop** (`is_multi_hop_render_safe`, #629 PR2) — a chain like
+/// `(f)-[:R]->()-[:R]->()`. The render reads the element column from the FIRST
+/// hop's facing side and joins the chain, so it is correct ONLY when:
+///   - the iteration variable is at the LEADING endpoint (hop-0 start-side for
+///     the render's `find_iteration_var_position().first()`), and appears NOWHERE
+///     ELSE in the chain (a re-occurrence — e.g. a cycle `(f)…->(f)` — is silently
+///     dropped: the render never emits the closing `= f` constraint → over-count);
+///   - EVERY hop is directed (`Outgoing`/`Incoming`), none variable-length
+///     (undirected/Either mid-chain has no single junction column to join, and the
+///     first-hop-only UNION branch does not compose with the chain);
+///   - EVERY hop's rel_type resolves to EXACTLY ONE edge schema (an anonymous
+///     `()` intermediate carries no label, so an ambiguous rel_type would let
+///     `find_edge_table_in_schema` silently pick the alphabetically-first table);
+///   - adjacent junction node TYPES agree: hop[i]'s arrival node type ==
+///     hop[i+1]'s departure node type (else the join equates unrelated FK columns,
+///     e.g. `post_id = follower_id` — a type-unsound join). Checked via the
+///     schema's from_node/to_node roles (schema-catalog, not raw table names).
+///
 /// A render `None` becomes the literal `"0"` downstream (silently-wrong count),
 /// so this plan-time gate is the ONLY safe guard: anything it admits MUST render
 /// correctly, and everything else keeps failing loud (the #612/#629 contract,
-/// ground rule 1). Multi-hop, self-loop, and variable-length stay loud.
+/// ground rule 1). Self-loop, variable-length, trailing/middle-var multi-hop,
+/// ambiguous-rel-type multi-hop, and type-mismatched junctions all stay loud.
 fn uncorrelated_list_pattern_is_render_safe(
     pattern: &crate::open_cypher_parser::ast::PathPattern<'_>,
     iteration_var: &str,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
 ) -> bool {
-    use crate::open_cypher_parser::ast::{Direction, PathPattern};
+    use crate::open_cypher_parser::ast::PathPattern;
 
     let PathPattern::ConnectedPattern(hops) = pattern else {
         return false;
     };
-    // Single hop only — a multi-hop chain puts the iteration var at a middle
-    // position and involves anonymous intermediate nodes whose edge table can
-    // resolve wrong on an ambiguous rel type. Deferred to #629 PR2.
-    let [hop] = hops.as_slice() else {
-        return false;
-    };
+    match hops.as_slice() {
+        [hop] => is_single_hop_render_safe(hop, iteration_var),
+        // Multi-hop chain — #629 PR2. Gated schema-aware below.
+        _ => is_multi_hop_render_safe(hops, iteration_var, schema),
+    }
+}
+
+/// Single-hop arm of `uncorrelated_list_pattern_is_render_safe` (see its docs).
+fn is_single_hop_render_safe(
+    hop: &crate::open_cypher_parser::ast::ConnectedPattern<'_>,
+    iteration_var: &str,
+) -> bool {
+    use crate::open_cypher_parser::ast::Direction;
+
     // Directed OR undirected — the render path derives the element column per
     // position and UNIONs both sides for `Either`.
     if !matches!(
@@ -831,6 +867,96 @@ fn uncorrelated_list_pattern_is_render_safe(
     // The iteration variable must appear at exactly one endpoint (start OR end) —
     // that is the position the render reads as the list element column.
     at_start || at_end
+}
+
+/// Multi-hop arm of `uncorrelated_list_pattern_is_render_safe` (see its docs).
+/// Schema-aware: proves unique per-hop edge resolution + junction-type agreement
+/// so the render's JOIN chain is type-sound. The iteration variable must be the
+/// LEADING endpoint and occur nowhere else.
+fn is_multi_hop_render_safe(
+    hops: &[crate::open_cypher_parser::ast::ConnectedPattern<'_>],
+    iteration_var: &str,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+) -> bool {
+    use crate::open_cypher_parser::ast::Direction;
+
+    // The render reads the element column from hop-0's facing side, so the
+    // iteration variable must be at the FIRST hop's start endpoint...
+    if hops[0].start_node.borrow().name != Some(iteration_var) {
+        return false;
+    }
+    // ...and appear NOWHERE else in the chain. A re-occurrence (cycle
+    // `(f)-[:R]->()-[:R]->(f)`, or the var reused mid-chain) is silently dropped
+    // by the render — it never emits the closing `= f` equality → over-count.
+    for hop in &hops[1..] {
+        if hop.start_node.borrow().name == Some(iteration_var) {
+            return false;
+        }
+    }
+    for hop in hops {
+        if hop.end_node.borrow().name == Some(iteration_var) {
+            return false;
+        }
+    }
+
+    // Per-hop: directed, single-hop (no var-length), rel_type resolves to exactly
+    // one edge schema. Collect each hop's resolved (departure_type, arrival_type)
+    // so adjacent junctions can be checked for type agreement.
+    let mut junction_types: Vec<(String, String)> = Vec::with_capacity(hops.len());
+    for hop in hops {
+        // Undirected/`Either` mid-chain has no single junction column to join on
+        // (the render's from∪to UNION branch is first-hop-only and does not
+        // compose with a chain). Require a concrete direction.
+        let is_from = match hop.relationship.direction {
+            Direction::Outgoing => true,
+            Direction::Incoming => false,
+            Direction::Either => return false,
+        };
+        if hop.relationship.variable_length.is_some() {
+            return false;
+        }
+        // Exactly one rel_type label, resolving to exactly one edge schema — else
+        // an anonymous intermediate makes `find_edge_table_in_schema` guess.
+        let rel_labels = hop.relationship.labels.as_ref();
+        let Some([rel_type]) = rel_labels.map(|l| l.as_slice()) else {
+            return false;
+        };
+        let matching: Vec<_> = schema
+            .get_relationships_schemas()
+            .iter()
+            .filter(|(k, _)| {
+                k.split("::")
+                    .next()
+                    .unwrap_or(k)
+                    .eq_ignore_ascii_case(rel_type)
+            })
+            .map(|(_, v)| v)
+            .collect();
+        let [rel_schema] = matching.as_slice() else {
+            return false;
+        };
+        // Departure = the endpoint the iteration/junction column faces; arrival =
+        // the far endpoint whose type the NEXT hop's departure must match. For
+        // `Outgoing` the pattern runs from_node → to_node; `Incoming` reverses it.
+        let (departure, arrival) = if is_from {
+            (rel_schema.from_node.clone(), rel_schema.to_node.clone())
+        } else {
+            (rel_schema.to_node.clone(), rel_schema.from_node.clone())
+        };
+        junction_types.push((departure, arrival));
+    }
+
+    // Adjacent junctions must agree: hop[i] arrival type == hop[i+1] departure
+    // type. Otherwise the chain join equates FK columns of unrelated node types
+    // (e.g. a Post id to a User FK) — a type-unsound, silently-wrong join.
+    for pair in junction_types.windows(2) {
+        let arrival_prev = &pair[0].1;
+        let departure_next = &pair[1].0;
+        if !arrival_prev.eq_ignore_ascii_case(departure_next) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Extract the correlation variable from a pattern.

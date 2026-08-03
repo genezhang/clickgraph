@@ -8182,18 +8182,56 @@ async fn uncorrelated_listcomp_pattern_count_renders_arraycount_629() {
         "Databricks undirected must explode + UNION in the WHERE IN:\n{dbx_un}"
     );
 
+    // #629 PR2: DIRECTED multi-hop chain LED by the iteration variable
+    // `(f)-[:FOLLOWS]->()-[:FOLLOWS]->()` renders — the arrayCount subquery reads
+    // the leading from-side (follower_id) and INNER-JOINs the chain on the shared
+    // junction FK (`__r0.followed_id = __r1.follower_id`).
+    let multihop = "MATCH (a:User)-[:FOLLOWS]->(b:User) \
+         WITH a, collect(b.user_id) AS friends \
+         WITH a, size([f IN friends WHERE (f)-[:FOLLOWS]->()-[:FOLLOWS]->()]) AS c \
+         RETURN a.user_id AS id, c ORDER BY id";
+    let ch_mh = render(&schema, multihop, SqlDialect::ClickHouse).await;
+    assert!(
+        ch_mh.contains("arrayCount(x -> x IN (SELECT __r0.follower_id")
+            && ch_mh.contains(
+                "INNER JOIN test_integration.user_follows_test AS __r1 \
+                 ON __r0.followed_id = __r1.follower_id"
+            ),
+        "directed leading multi-hop must read the leading from-side and join the chain:\n{ch_mh}"
+    );
+    // Databricks renders the same JOIN chain inside the explode+WHERE-IN form.
+    let dbx_mh = render(&schema, multihop, SqlDialect::Databricks).await;
+    assert!(
+        dbx_mh.contains("explode(") && dbx_mh.contains("ON __r0.followed_id = __r1.follower_id"),
+        "Databricks directed multi-hop must explode + join the chain:\n{dbx_mh}"
+    );
+
     // #629 scope guard: shapes the arrayCount render path would translate to a
     // SILENTLY-WRONG count (a render None becomes the literal "0" downstream) MUST
-    // fail loud, not render. These remain out of scope until PR2 / later.
+    // fail loud, not render. These remain out of scope until a later PR.
     let unsafe_shapes = [
         // Self-loop back to the iteration variable — the render models only one
         // side, dropping the `end == f` self-constraint.
         "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b.user_id) AS friends \
          WITH a, size([f IN friends WHERE (f)-[:FOLLOWS]->(f)]) AS c RETURN a.user_id AS id, c",
-        // Multi-hop — intermediate anonymous nodes have unknown labels, so the
-        // edge table can resolve wrong on an ambiguous rel type.
+        // Multi-hop with the iteration variable TRAILING — the render reads hop-0's
+        // side (where f is absent), rendering an empty membership set → silent 0.
         "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b.user_id) AS friends \
-         WITH a, size([f IN friends WHERE (f)-[:FOLLOWS]->()-[:FOLLOWS]->()]) AS c RETURN a.user_id AS id, c",
+         WITH a, size([f IN friends WHERE ()-[:FOLLOWS]->()-[:FOLLOWS]->(f)]) AS c RETURN a.user_id AS id, c",
+        // Multi-hop CYCLE back to f — the render never emits the closing `= f`
+        // constraint, so the count is inflated (over-counts).
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b.user_id) AS friends \
+         WITH a, size([f IN friends WHERE (f)-[:FOLLOWS]->()-[:FOLLOWS]->(f)]) AS c RETURN a.user_id AS id, c",
+        // Multi-hop with the iteration variable in a MIDDLE position.
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b.user_id) AS friends \
+         WITH a, size([f IN friends WHERE ()-[:FOLLOWS]->(f)-[:FOLLOWS]->()]) AS c RETURN a.user_id AS id, c",
+        // Multi-hop TYPE-MISMATCH junction — `(f)-[:LIKED]->()-[:FOLLOWS]->()` joins
+        // a Post id to a User FK (post_id = follower_id): a type-unsound join.
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b.user_id) AS friends \
+         WITH a, size([f IN friends WHERE (f)-[:LIKED]->()-[:FOLLOWS]->()]) AS c RETURN a.user_id AS id, c",
+        // Multi-hop with an UNDIRECTED middle hop — no single junction column.
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b.user_id) AS friends \
+         WITH a, size([f IN friends WHERE (f)-[:FOLLOWS]-()-[:FOLLOWS]->()]) AS c RETURN a.user_id AS id, c",
         // Variable-length — no expansion modeled.
         "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b.user_id) AS friends \
          WITH a, size([f IN friends WHERE (f)-[:FOLLOWS*1..2]->()]) AS c RETURN a.user_id AS id, c",
@@ -8208,7 +8246,7 @@ async fn uncorrelated_listcomp_pattern_count_renders_arraycount_629() {
             })
             .clone();
         assert!(
-            err.contains("SINGLE hop with the iteration variable at one endpoint"),
+            err.contains("size([x IN list WHERE (pattern)]) is supported"),
             "[{cypher}] expected the #629 scope-guard error, got:\n{err}"
         );
     }
