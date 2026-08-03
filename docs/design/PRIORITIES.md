@@ -524,6 +524,36 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — composite-key OPTIONAL VLP now fails loud instead
+  of silently mismatching** (branch `fix/979`, PR #990, closes #979). An OPTIONAL
+  variable-length path anchored on a node with a COMPOSITE node id silently
+  returned wrong counts. The recursive VLP CTE emits its `start_id`/`end_id` as a
+  pipe-joined `concat(toString(a.c1), '|', toString(a.c2))` composite key, but the
+  anchor `LEFT JOIN` in the optional-VLP join builder (`inference.rs`) keyed off
+  only the FIRST id column (`a.region = vt0.start_id`) — a single column that can
+  never equal the `concat(...)` composite — so the LEFT JOIN matched nothing and
+  every anchor was NULL-extended. Live-proven on composite tree data: a node with
+  two ancestor paths reported `count(*) = 1` instead of 2 (oracle a=2/b=2, main
+  1/1); a manually composite-keyed join matched the oracle exactly. Added a loud
+  `AnalyzerError::UnsupportedPattern` gated on `anchor_schema.node_id.id.is_composite()`
+  (a schema-catalog `Identifier` API, Rule #7-clean). Both closed
+  (`(a)-[*..]->(a)`) and non-closed (`(a)-[*..]->(b)`) shapes, plus the reversed /
+  undirected forms and the anchor-at-end path, all route through this single block
+  → one guard covers them (surviving-silent-wrong check: every written form now
+  errors). Composite-id VLP endpoints stay loud rather than silently wrong
+  (#604/#623/#625/#627, ground rule 1); this is the OPTIONAL-VLP facet.
+  **Unaffected (still render):** non-optional composite closed VLP (keys off the
+  CTE's own `t.start_id = t.end_id`, no anchor table), non-optional composite
+  non-closed VLP, single-hop composite OPTIONAL (a plain relationship), and
+  single-column optional VLP on any schema (byte-identical to main).
+  **Adversarial review APPROVE:** built two clean binaries in isolated target
+  dirs, confirmed the undercount on main, verified no false-loud and no surviving
+  silent-wrong, ratchet-clean, zero `UPDATE_GOLDEN` churn. One MINOR message
+  over-promise ("executes correctly" for the closed non-optional workaround, which
+  has a separate pre-existing loud Code 215) fixed in-PR. 1689 lib + 577
+  integration + corpus + ratchet + clippy + fmt green. Facet of the #989
+  `VlpEndpointResolution` epic (folded there as a completed row).
+
 - 2026-08-03: **Correctness — closed single-hop relationship now emits the
   self-loop constraint** (branch `fix/983-closed-single-hop-self-loop-constraint`,
   PR #986, closes #983). A closed single-hop `(a)-[:R]->(a)` (and `*1`/`*1..1`,
