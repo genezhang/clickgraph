@@ -3348,6 +3348,46 @@ impl GraphJoinInference {
                 (&left_alias, &left_node_schema, "start_id")
             };
 
+            // #979: an OPTIONAL VLP whose ANCHOR node has a COMPOSITE node id
+            // must FAIL LOUD, not silently mismatch. The recursive VLP CTE emits
+            // its `start_id`/`end_id` as the pipe-joined composite key
+            // (`concat(toString(a.c1), '|', toString(a.c2))`, see
+            // `cte_extraction.rs`), but the anchor LEFT JOIN below binds
+            // `anchor_id_col` from `node_id.columns().first()` — only the FIRST
+            // column. So the ON clause renders `a.c1 = vt0.start_id`, a single
+            // column compared against a `concat(...)` composite that it can never
+            // equal → the LEFT JOIN matches NOTHING and every anchor is silently
+            // NULL-extended (live-proven: composite ancestor `count(*)` returns 1
+            // for every node instead of the true path counts, e.g. a node with
+            // two ancestor paths reports 1). Both the closed (`(a)-[*..]->(a)`)
+            // and non-closed (`(a)-[*..]->(b)`) shapes, and the reversed /
+            // undirected written forms, all route through this block with the
+            // same first-column-only `anchor_id_col`, so this single guard covers
+            // them. Composite-id VLP endpoints are a known unsupported area that
+            // stays loud rather than silently wrong (#604/#605/#623/#625/#627 —
+            // `endpoints_are_composite`, ground rule 1). The non-optional path is
+            // unaffected: it keys the closed constraint off the CTE's own
+            // `t.start_id = t.end_id` (composite-to-composite, no anchor table),
+            // so it renders and executes correctly and is not rejected here.
+            if anchor_schema.node_id.id.is_composite() {
+                return Err(AnalyzerError::UnsupportedPattern {
+                    message: format!(
+                        "OPTIONAL variable-length path anchored on a node with a \
+                         COMPOSITE key (`{anchor}`, node_id has multiple columns): \
+                         the recursive path CTE emits its endpoint ids as a \
+                         pipe-joined `concat(...)` composite key, but the anchor \
+                         LEFT JOIN can only compare the first key column against \
+                         it, so the join silently matches nothing and every anchor \
+                         is NULL-extended (wrong counts). Composite-id VLP \
+                         endpoints are not yet supported for OPTIONAL MATCH; use a \
+                         single-column node id, or a non-optional MATCH (which \
+                         keys the path off the CTE's own composite start/end ids \
+                         rather than the anchor table). (#604/#623/#979)",
+                        anchor = anchor_alias
+                    ),
+                });
+            }
+
             // 1. Create FROM marker for the anchor node
             helpers::JoinBuilder::from_marker(anchor_schema.full_table_name(), anchor_alias)
                 .build_and_push(collected_graph_joins);
