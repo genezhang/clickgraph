@@ -1338,13 +1338,45 @@ impl ProjectionTagging {
                         // projection expression is NOT a bare TableAlias rename — a
                         // scalar in every meaningful sense (see #903). Both must
                         // reference the CTE column, not the node-id form.
-                        let is_scalar_alias = plan_ctx
-                            .lookup_variable(t_alias)
-                            .is_some_and(|v| v.is_scalar())
-                            || (plan_ctx.is_projection_alias(t_alias)
-                                && plan_ctx.get_projection_alias_expr(t_alias).is_some_and(
-                                    |underlying| !matches!(underlying, LogicalExpr::TableAlias(_)),
-                                ));
+                        //
+                        // #914: a CHAINED rename (`WITH u.age AS a WITH a AS b`) makes
+                        // `b`'s underlying projection expr a bare `TableAlias(a)`, so
+                        // the shape-(ii) check above (which requires the underlying to
+                        // be NON-TableAlias) is FALSE at `b` and the rewrite misses —
+                        // `sum(b)` keeps a bare `TableAlias(b)` → pruned → `SELECT *` +
+                        // Code 47. Follow the chain of `TableAlias` renames back to its
+                        // origin: if any hop resolves to a scalar variable, or the
+                        // innermost underlying is a non-`TableAlias` scalar projection,
+                        // the whole chain is scalar. A rename that bottoms out in an
+                        // unregistered alias (a genuine graph entity from MATCH) is NOT
+                        // scalar and falls through to the node/rel id-column logic.
+                        fn resolves_to_scalar(plan_ctx: &PlanCtx, alias: &str) -> bool {
+                            let mut current = alias.to_string();
+                            // Bound the walk by the number of registered aliases so a
+                            // pathological self-referential registration can't loop.
+                            for _ in 0..plan_ctx.projection_alias_count() + 1 {
+                                if plan_ctx
+                                    .lookup_variable(&current)
+                                    .is_some_and(|v| v.is_scalar())
+                                {
+                                    return true;
+                                }
+                                match plan_ctx.get_projection_alias_expr(&current) {
+                                    // A rename hop — follow it to the source alias.
+                                    Some(LogicalExpr::TableAlias(TableAlias(src))) => {
+                                        current = src.clone();
+                                    }
+                                    // Bottoms out in a non-TableAlias projection expr
+                                    // (e.g. `u.age`): a scalar in every meaningful sense.
+                                    Some(_) => return true,
+                                    // Not a projection alias (unregistered) and not a
+                                    // scalar variable → a genuine graph entity.
+                                    None => return false,
+                                }
+                            }
+                            false
+                        }
+                        let is_scalar_alias = resolves_to_scalar(plan_ctx, t_alias);
                         if is_scalar_alias {
                             let col = LogicalExpr::ColumnAlias(
                                 crate::query_planner::logical_expr::ColumnAlias(

@@ -1233,3 +1233,5 @@
 {"cypher": "UNWIND [1, 2, 3] AS x\n            WITH x AS y\n            WITH y AS z\n            WHERE z > 0\n            RETURN count(z) AS c", "name": "test_886__chained_with_rename_then_where_count", "schema": "social_integration"}
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO*2..3]->(b:Person) RETURN b.name", "name": "test_808__mixed_arm_vlp_uses_edge_uniqueness", "schema": "foreign_selfloop"}
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person) RETURN count(*) AS trails", "name": "test_808__mixed_arm_vlp_range_count", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (u:User)\n            WITH u.age AS a\n            WITH a AS b\n            RETURN sum(b) AS total", "name": "test_914__chained_with_rename_of_property_sum", "schema": "social_integration"}
+{"cypher": "MATCH (u:User)\n            WITH u.age AS a\n            WITH a AS b\n            RETURN collect(b) AS ages", "name": "test_914__chained_with_rename_of_property_collect", "schema": "social_integration"}
