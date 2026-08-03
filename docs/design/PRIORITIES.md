@@ -524,6 +524,33 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — denorm closed NON-optional VLP with lower bound
+  >= 1 now renders (was a stale-premise false-loud)** (branch
+  `fix/980-denorm-closed-nonoptional-vlp-stale-guard`, PR #984, closes #980;
+  non-optional sibling of #978). The render-side `is_denorm_closed` guard
+  (`filter_builder.rs`, #605/#625) rejected ALL denorm closed non-optional VLPs
+  (`MATCH (a:Airport)-[:FLIGHT*..]->(a) RETURN count(*)`) on the premise the
+  denorm CTE is node-unique and can't count cycles. STALE since #606/#710
+  switched `DenormalizedCteStrategy` to EDGE-uniqueness for `min_hops >= 1`
+  (`NOT has(vp.path_edges, edge_id)`), which counts cycles CORRECTLY — the guard
+  was a false-loud. Narrowed to `effective_min_hops() == 0 && max_hops !=
+  Some(0)` (mirror of the #978 optional-path fix; the sibling FK-edge guard's
+  `closed_min_hops` binding is reused). Live-verified vs an independent
+  edge-unique per-length oracle on rich cyclic data (2-cycle + 3-cycle +
+  self-loop + parallel edges): `*1..`→21, `*2..2`→4, `*1..3`→11 all match;
+  composite `edge_id` distinguishes parallel edges, self-loops counted, closed
+  constraint `WHERE t.start_id = t.end_id` selects only cycles. `*0../*0..3`
+  still fail loud (node-uniqueness drops cycles); `*0..0` renders (degenerate).
+  Flipped the 2 frozen `test_605_denorm_closed_{exact,range}_vlp_fails_loud`
+  goldens (both `*2..N`) from `.err` to rendered `.sql` (`test_980_*_renders_
+  edge_unique`) + added a `*0..` loud entry. 1689 lib + 574 integration + corpus
+  + ratchet + clippy green; load-bearing curated test. **Adversarial review
+  APPROVE** (independent oracle verification; two NITs addressed — dialect-aware
+  node-uniqueness assertion + direction-agnostic error arrow). Filed #983 (a
+  pre-existing, orthogonal closed single-hop `*1..1`/`*1` drops-the-constraint
+  bug, unchanged on main). **Completes the denorm-closed-VLP stale-premise
+  family (#978 optional + #980 non-optional).**
+
 - 2026-08-03: **Correctness — denorm closed OPTIONAL VLP with lower bound 0
   (traversable upper bound) now fails loud instead of silently undercounting**
   (branch `fix/978-denorm-closed-optional-vlp-loud-guard`, PR #981, closes
