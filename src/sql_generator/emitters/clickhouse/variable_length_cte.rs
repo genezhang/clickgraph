@@ -1208,6 +1208,45 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// physical column into the tuple, so the edge identity is the full ordered
     /// column list `(from.c1, from.c2, …, to.c1, to.c2, …)`. Single-column ids
     /// degrade byte-identically to `tuple(from.col, to.col)`.
+    /// #902: return the FK column to follow for a self-referencing FK-edge hop.
+    ///
+    /// An FK-edge hop `(child)-[:R]->(parent)` joins `child.<FK> = parent.<PK>`
+    /// where `<PK>` is the node_id and `<FK>` is the edge column pointing at it.
+    /// The schemas declare the FK inconsistently across the from/to roles:
+    ///   filesystem PARENT: node_id=object_id, from_id=parent_id (FK),
+    ///     to_id=object_id (PK) → FK = from_id.
+    ///   ldbc REPLY_OF: node_id=commentId, from_id=commentId (PK),
+    ///     to_id=replyOfCommentId (FK) → FK = to_id.
+    /// So the FK is whichever of {from_id, to_id} is NOT the node_id. The
+    /// recursive/base FK-edge joins previously hardcoded `relationship_from_column`
+    /// as the FK; when `from_id == node_id` that made every hop an IDENTITY
+    /// self-join (`x.commentId = y.commentId`), collapsing all paths to phantom
+    /// self-loops (#902). This mirrors the single-hop path
+    /// (`join_generation.rs` #632/#646), which resolves the same way.
+    ///
+    /// Only self-referencing FK-edges (start table == end table) are ambiguous;
+    /// for a non-self-ref FK-edge the two aliases are DIFFERENT tables and the
+    /// original `relationship_from_column` pairing is correct, so this returns
+    /// it unchanged (byte-identical). `node_id_col` is the node_id column set of
+    /// the joined-to (PK) side. (Called only from the FK-edge base/append/prepend
+    /// join sites, so the FK-edge-pattern precondition is already established by
+    /// the caller — the self-ref-table test below is the only remaining gate.)
+    fn fk_hop_fk_column(&self, node_id_col: &str) -> String {
+        if self.start_node_table != self.end_node_table {
+            return self.relationship_from_column.clone();
+        }
+        let from_id = Identifier::from_comma_separated(&self.relationship_from_column);
+        let node_id = Identifier::from_comma_separated(node_id_col);
+        // The PK side is whichever role's columns equal the node_id's; the FK is
+        // the other. For single-column ids this is the plain `from_id == node_id`
+        // test. Composite ids compare the full ordered column sets.
+        if from_id.columns() == node_id.columns() {
+            self.relationship_to_column.clone()
+        } else {
+            self.relationship_from_column.clone()
+        }
+    }
+
     fn build_fk_edge_tuple(
         &self,
         from_alias: &str,
@@ -3022,12 +3061,16 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // #713: composite-aware — the FK column set and the end-node id column set
         // are zipped per-column (`a.c1 = b.c1 AND a.c2 = b.c2`); single-column
         // degrades byte-identically to `a.col = b.col`.
-        let base_join_on = Identifier::from_comma_separated(&self.relationship_from_column)
-            .to_sql_equality(
-                &self.start_node_alias,
-                &Identifier::from_comma_separated(&self.end_node_id_column),
-                &self.end_node_alias,
-            );
+        // #902: for a self-referencing FK-edge the FK is whichever role column is
+        // NOT the node_id, not unconditionally `relationship_from_column` (which is
+        // the PK when from_id == node_id, degenerating to an identity self-join).
+        let base_join_on =
+            Identifier::from_comma_separated(&self.fk_hop_fk_column(&self.end_node_id_column))
+                .to_sql_equality(
+                    &self.start_node_alias,
+                    &Identifier::from_comma_separated(&self.end_node_id_column),
+                    &self.end_node_alias,
+                );
         let mut query = format!(
             "    SELECT \n        {select}\n    FROM {start_table} {start}\n    JOIN {end_table} {end} ON {join_on}",
             select = select_clause,
@@ -3215,12 +3258,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
             "vp.end_id = {}",
             emit_id_expr("current_node", &end_id_identifier)
         );
-        let parent_on = Identifier::from_comma_separated(&self.relationship_from_column)
-            .to_sql_equality(
-                "current_node",
-                &Identifier::from_comma_separated(&self.end_node_id_column),
-                "new_end",
-            );
+        let parent_on =
+            Identifier::from_comma_separated(&self.fk_hop_fk_column(&self.end_node_id_column))
+                .to_sql_equality(
+                    "current_node",
+                    &Identifier::from_comma_separated(&self.end_node_id_column),
+                    "new_end",
+                );
         format!(
             "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {current_table} current_node ON {anchor_on}\n    JOIN {end_table} new_end ON {parent_on}\n    WHERE {where_clause}",
             select = select_clause,
@@ -3346,12 +3390,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
             "vp.start_id = {}",
             emit_id_expr("current_node", &start_id_identifier)
         );
-        let child_on = Identifier::from_comma_separated(&self.relationship_from_column)
-            .to_sql_equality(
-                "new_start",
-                &Identifier::from_comma_separated(&self.start_node_id_column),
-                "current_node",
-            );
+        let child_on =
+            Identifier::from_comma_separated(&self.fk_hop_fk_column(&self.start_node_id_column))
+                .to_sql_equality(
+                    "new_start",
+                    &Identifier::from_comma_separated(&self.start_node_id_column),
+                    "current_node",
+                );
         format!(
             "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {current_table} current_node ON {anchor_on}\n    JOIN {start_table} new_start ON {child_on}\n    WHERE {where_clause}",
             select = select_clause,
@@ -3865,6 +3910,105 @@ mod tests {
     /// FK / denormalized arms. Live-verified against a 3-cycle fixture: `*2..3`
     /// returns 6 relationship-unique trails (3 length-2 + 3 node-revisiting
     /// length-3) versus the old node-unique 3.
+    /// #902: a SELF-REFERENCING FK-edge whose `from_id` equals the node_id (the
+    /// PK) and whose `to_id` is the real FK (e.g. ldbc `REPLY_OF`:
+    /// node_id=commentId, from_id=commentId, to_id=replyOfCommentId). The
+    /// base/recursive FK-edge joins previously hardcoded `relationship_from_column`
+    /// (=commentId) as the FK, degenerating every hop to an identity self-join
+    /// (`x.commentId = y.commentId`) → phantom self-loops. They must instead follow
+    /// the actual FK (`replyOfCommentId`), the way the single-hop path does.
+    #[test]
+    fn fk_edge_selfref_vlp_follows_fk_when_from_id_is_pk_902() {
+        let schema = create_test_schema();
+        // node_id=commentId, from_id=commentId (=PK), to_id=replyOfCommentId (=FK).
+        let gen = VariableLengthCteGenerator::new_with_fk_edge(
+            &schema,
+            VariableLengthSpec::range(1, 2),
+            "comment",          // start table
+            "commentId",        // start id col (node_id)
+            "comment",          // relationship table (same → self-ref)
+            "commentId",        // rel from col (== node_id → the PK side)
+            "replyOfCommentId", // rel to col (the real FK)
+            "comment",          // end table
+            "commentId",        // end id col
+            "a",
+            "b",
+            "r",
+            vec![],
+            None,                                         // shortest_path_mode
+            Some("start_node.commentId = 1".to_string()), // start filter → APPEND path
+            None,
+            None,
+            None,
+            Some(vec!["REPLY_OF".to_string()]),
+            None, // edge_id
+            None, // polymorphic discriminator col
+            None, // polymorphic from-role label col
+            None, // polymorphic to-role label col
+            None, // from_node_label
+            None, // to_node_label
+            true, // FK-edge pattern (edge is an FK on the node table)
+        );
+        let sql = gen.generate_recursive_sql();
+        // Base + recursive joins must follow the FK column, NOT the PK identity.
+        assert!(
+            sql.contains("start_node.replyOfCommentId = end_node.commentId"),
+            "#902 base join must follow the FK (replyOfCommentId), not commentId identity; got:\n{sql}"
+        );
+        assert!(
+            sql.contains("new_end.replyOfCommentId = ")
+                || sql.contains("current_node.replyOfCommentId = "),
+            "#902 recursive join must follow the FK (replyOfCommentId); got:\n{sql}"
+        );
+        assert!(
+            !sql.contains("start_node.commentId = end_node.commentId"),
+            "#902 must NOT emit the identity self-join start.commentId = end.commentId; got:\n{sql}"
+        );
+    }
+
+    /// #902 (regression guard): a self-ref FK-edge whose `from_id` IS the real FK
+    /// (filesystem PARENT: node_id=object_id, from_id=parent_id, to_id=object_id)
+    /// must be UNCHANGED — the fix is a no-op when from_id != node_id, so the join
+    /// still follows `parent_id`.
+    #[test]
+    fn fk_edge_selfref_vlp_keeps_from_id_when_it_is_the_fk_902() {
+        let schema = create_test_schema();
+        // node_id=object_id, from_id=parent_id (=FK), to_id=object_id (=PK).
+        let gen = VariableLengthCteGenerator::new_with_fk_edge(
+            &schema,
+            VariableLengthSpec::range(1, 2),
+            "fs_objects",
+            "object_id",
+            "fs_objects",
+            "parent_id", // rel from col (the FK, differs from node_id)
+            "object_id", // rel to col (== node_id → PK)
+            "fs_objects",
+            "object_id",
+            "a",
+            "b",
+            "r",
+            vec![],
+            None,
+            Some("start_node.object_id = 1".to_string()),
+            None,
+            None,
+            None,
+            Some(vec!["PARENT".to_string()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            true,
+        );
+        let sql = gen.generate_recursive_sql();
+        assert!(
+            sql.contains("start_node.parent_id = end_node.object_id"),
+            "#902 no-op case must keep following parent_id (the FK); got:\n{sql}"
+        );
+    }
+
     #[test]
     fn mixed_vlp_uses_edge_uniqueness_808() {
         let schema = create_test_schema();
