@@ -145,8 +145,9 @@ pub struct QueryContext {
     /// property access instead resolves forward via the render-site registry
     /// identity self-map and `plan_ctx` CTE columns — see the F0/F1
     /// forward-resolution work). Written only in
-    /// `build_chained_with_match_cte_plan`; read only by `generate_exists_sql`
-    /// — cannot affect any other resolution path.
+    /// `build_chained_with_match_cte_plan`; read by `resolve_correlation_id_sql`
+    /// (EXISTS `GraphRel` correlation and, since #613, `size()` pattern-count
+    /// correlation) — cannot affect any other resolution path.
     ///
     /// The `generation` tag (see `cte_scope_generation` /
     /// `enter_cte_scope_generation`) is what keeps this safe across
