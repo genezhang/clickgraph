@@ -10522,6 +10522,78 @@ mod walker_drift_family_484_490_495_476_483 {
         );
     }
 
+    /// #946: on a STANDARD schema, a property inside a computed RETURN wrapper
+    /// (`ArraySubscript`/`MapLiteral`/`ReduceExpr`) must map its Cypher property
+    /// name to the physical column (`u.name` → `u.full_name`), exactly as the
+    /// bare `u.name` and the sibling `List`/`ArraySlicing`/`Case` wrappers do.
+    /// The analyzer's `apply_property_mapping_internal` dropped these three
+    /// wrappers via `other => Ok(other)` → the raw property name leaked → Code 47
+    /// (`users` has `full_name`, not `name`).
+    #[tokio::test]
+    async fn computed_projection_property_name_mapped_946() {
+        let schema = load_schema("benchmarks/social_network/schemas/social_benchmark.yaml");
+
+        for cypher in [
+            "MATCH (u:User) RETURN [u.name][0] AS x",
+            "MATCH (u:User) RETURN [u.name][0..1] AS x",
+            "MATCH (u:User) RETURN {a: u.name} AS x",
+            "MATCH (u:User) RETURN reduce(acc = '', y IN [u.name] | acc) AS x",
+        ] {
+            let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+            assert!(
+                sql.contains("full_name"),
+                "#946: property in a computed projection must map to its physical \
+                 column:\n{cypher}\n{sql}"
+            );
+            // The raw Cypher property name must NOT leak as `u.name` (would be
+            // Code 47 — `users` has no `name` column). Guard against the
+            // qualified form specifically so a substring in an output alias
+            // (`AS \"x\"`) does not false-positive.
+            assert!(
+                !sql.contains("u.name") && !sql.contains("u.\"name\""),
+                "#946: raw Cypher property `u.name` leaked unmapped in a computed \
+                 projection:\n{cypher}\n{sql}"
+            );
+        }
+    }
+
+    /// #946 (shielding guard): the analyzer-side fold recurses into `reduce()`
+    /// bodies, so a lambda binder that shadows a node alias must NOT have a
+    /// `binder.prop` reference mapped onto the shadowed node's column — the
+    /// analyzer-side #929/#940/#944 reduce-binder-shadow hazard. Conservatively
+    /// the body is left unmapped whenever a binder name resolves to a real alias.
+    #[tokio::test]
+    async fn computed_projection_reduce_binder_shadow_not_mapped_946() {
+        let schema = load_schema("benchmarks/social_network/schemas/social_benchmark.yaml");
+
+        // Binder `u` shadows node `u`; `u.name` in the body is the binder (a map
+        // element), NOT the node — it must stay `u.name`, not become `full_name`.
+        let shadow_sql = render(
+            &schema,
+            "MATCH (u:User) RETURN reduce(acc = '', u IN [{name: 'a'}] | acc + u.name) AS y",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !shadow_sql.contains("full_name"),
+            "#946: a reduce body `binder.prop` where the binder shadows a node \
+             alias must NOT be mapped onto the node column:\n{shadow_sql}"
+        );
+
+        // Non-shadowing binder: an OUTER prop in the `list` still maps (the fix).
+        let win_sql = render(
+            &schema,
+            "MATCH (u:User) RETURN reduce(acc = '', y IN [u.name] | acc + y) AS z",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            win_sql.contains("full_name"),
+            "#946: an OUTER prop in the reduce list (binder does not shadow) must \
+             still map:\n{win_sql}"
+        );
+    }
+
     /// `bidirectional_union` CTE, e.g. `MATCH (a:User)-[r]-(o)`) used to
     /// build its cross-label DISTINCT discriminator tuple from the #467
     /// per-label-raw-column logic (designed for a bare `MATCH (n)`

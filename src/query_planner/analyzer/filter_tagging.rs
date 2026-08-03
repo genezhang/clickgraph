@@ -1640,6 +1640,110 @@ impl FilterTagging {
                     to: mapped_to,
                 })
             }
+            // #946: an `ArraySubscript` (`[u.name][0]`, `labels(n)[1]`) must
+            // recurse into its array and index so a property buried in it is
+            // mapped from its Cypher name to its physical column — exactly as the
+            // sibling `ArraySlicing`/`List`/`Case` arms already do. Without this
+            // it fell through the `other => Ok(other)` catch-all unmapped
+            // (`u.name` instead of `u.full_name`) → Code 47 at execution. Standard
+            // properties recurse to an identity mapping, so this is byte-identical
+            // for un-renamed schemas.
+            LogicalExpr::ArraySubscript { array, index } => {
+                let mapped_array = self.apply_property_mapping_internal(
+                    *array,
+                    plan_ctx,
+                    graph_schema,
+                    plan,
+                    preserve_id_function,
+                )?;
+                let mapped_index = self.apply_property_mapping_internal(
+                    *index,
+                    plan_ctx,
+                    graph_schema,
+                    plan,
+                    preserve_id_function,
+                )?;
+                Ok(LogicalExpr::ArraySubscript {
+                    array: Box::new(mapped_array),
+                    index: Box::new(mapped_index),
+                })
+            }
+            // #946: a `MapLiteral` (`{a: u.name}`) must map each value; keys are
+            // literal identifiers, never property references. Sibling of the
+            // `List` arm.
+            LogicalExpr::MapLiteral(entries) => {
+                let mut mapped_entries = Vec::with_capacity(entries.len());
+                for (key, value) in entries {
+                    let mapped_value = self.apply_property_mapping_internal(
+                        value,
+                        plan_ctx,
+                        graph_schema,
+                        plan,
+                        preserve_id_function,
+                    )?;
+                    mapped_entries.push((key, mapped_value));
+                }
+                Ok(LogicalExpr::MapLiteral(mapped_entries))
+            }
+            // #946: a `ReduceExpr` (`reduce(acc = init, x IN list | body)`) must
+            // map `initial_value` and `list` (they evaluate in the OUTER scope) so
+            // a property buried there resolves to its physical column. The body
+            // BINDS `accumulator`/`variable`, which shadow any same-named node
+            // alias — and property mapping is keyed on an alias found in
+            // `plan_ctx`, so a body reference like `x.name` (where `x` is the
+            // binder over a list of maps) would be WRONGLY rewritten to the
+            // shadowed node's column. This is the analyzer-side of the #929/#940/
+            // #944 reduce-binder-shadow hazard: recursing into the body to close a
+            // silent-DROP opens a silent-MIS-REWRITE. There is no binder-scoped
+            // property-mapping context here, so conservatively skip mapping the
+            // body whenever a binder name resolves to a real table alias (exactly
+            // the pre-#946 behavior for that case — the body stayed unmapped
+            // because `ReduceExpr` fell through the `other` catch-all). The common
+            // case — binders that do NOT shadow a node/CTE alias — still maps the
+            // body normally, so `initial_value`/`list` and unshadowed bodies get
+            // the fix.
+            LogicalExpr::ReduceExpr(reduce) => {
+                let mapped_initial = self.apply_property_mapping_internal(
+                    *reduce.initial_value,
+                    plan_ctx,
+                    graph_schema,
+                    plan,
+                    preserve_id_function,
+                )?;
+                let mapped_list = self.apply_property_mapping_internal(
+                    *reduce.list,
+                    plan_ctx,
+                    graph_schema,
+                    plan,
+                    preserve_id_function,
+                )?;
+                // A binder shadows a real alias iff `plan_ctx` resolves its name
+                // to a table context; if either binder does, leave the body
+                // unmapped (safe, matches pre-#946) rather than risk mis-mapping a
+                // `binder.prop` reference onto the shadowed node's column.
+                let binder_shadows_alias = plan_ctx.get_table_ctx(&reduce.accumulator).is_ok()
+                    || plan_ctx.get_table_ctx(&reduce.variable).is_ok();
+                let mapped_body = if binder_shadows_alias {
+                    *reduce.expression
+                } else {
+                    self.apply_property_mapping_internal(
+                        *reduce.expression,
+                        plan_ctx,
+                        graph_schema,
+                        plan,
+                        preserve_id_function,
+                    )?
+                };
+                Ok(LogicalExpr::ReduceExpr(
+                    crate::query_planner::logical_expr::ReduceExpr {
+                        accumulator: reduce.accumulator,
+                        initial_value: Box::new(mapped_initial),
+                        variable: reduce.variable,
+                        list: Box::new(mapped_list),
+                        expression: Box::new(mapped_body),
+                    },
+                ))
+            }
             LogicalExpr::LabelExpression {
                 variable,
                 label: check_label,
