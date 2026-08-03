@@ -10728,6 +10728,23 @@ mod walker_drift_family_484_490_495_476_483 {
             "#955: an empty-list reduce with a string init returns the init \
              verbatim:\n{str_sql}"
         );
+
+        // Path C coverage: a reduce inside a VLP WHERE filter is rendered by
+        // `cte_extraction::render_expr_to_sql_string` (not `RenderExpr::to_sql`),
+        // so it needs its OWN short-circuit. Without it this emits
+        // `arrayFold(…, [], toInt64(0))` inside the VLP CTE → Code 53.
+        let vlp_sql = render(
+            &schema,
+            "MATCH (u:User)-[r:FOLLOWS*1..2]->(v:User) \
+             WHERE reduce(acc = 0, y IN [] | acc + y) = 0 RETURN u.user_id",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !vlp_sql.contains("arrayFold") && vlp_sql.contains("toInt64(0)"),
+            "#955: an empty-list reduce in a VLP WHERE (Path C) must also \
+             short-circuit to the init:\n{vlp_sql}"
+        );
     }
 
     /// `bidirectional_union` CTE, e.g. `MATCH (a:User)-[r]-(o)`) used to
