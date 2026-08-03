@@ -309,36 +309,55 @@ fn rewrite_with_pattern_comprehensions<'a>(
         for pc_info in pattern_comprehensions {
             let correlation_var =
                 extract_correlation_variable_from_pattern(&pc_info.pattern, plan_ctx);
+            // #629: a list-comprehension pattern-count
+            // (`size([f IN friends WHERE (f)-[:FOLLOWS]->()])`) whose pattern has
+            // NO outer correlation variable — it references only the iteration
+            // variable — renders as an UNcorrelated `arrayCount(x -> x IN
+            // (SELECT ...), list)` (the empty `correlation_vars` branch of
+            // `generate_list_comp_array_count`). #612 previously failed EVERY such
+            // shape loud (it had been silently dropping the pattern predicate and
+            // returning a plain per-group `count(*)`).
+            //
+            // #629 lets it through ONLY for the shape the arrayCount render path
+            // translates correctly (`uncorrelated_list_pattern_is_render_safe`:
+            // single directed hop, iteration var at the start position). The render
+            // path hardcodes the element column as the first hop's facing side and
+            // emits one direction, so target-position / undirected / multi-hop
+            // shapes would produce a silently-WRONG count — those KEEP failing loud
+            // (the #612 contract; adversarial-review finding on the first cut of
+            // #629). The CORRELATED shape (`(a)-[:FOLLOWS]->(f)` referencing an
+            // outer var) has a correlation variable and is unaffected by this block.
             if correlation_var.is_none() {
-                // #612: a list-comprehension pattern-count
-                // (`size([f IN friends WHERE (f)-[:FOLLOWS]->()])`) whose pattern
-                // has NO outer correlation variable — it references only the
-                // iteration variable — cannot become a correlated arrayCount
-                // subquery. The WITH rewrite already replaced the whole size([...])
-                // with a bare `count(*)`; skipping the PC here (the historical
-                // behavior) leaves that `count(*)` as a plain per-group aggregate,
-                // silently DROPPING the pattern predicate and returning a row
-                // count instead of the constrained count (returned 1 for every
-                // group). Fail loud for this shape (ground rule 1). The CORRELATED
-                // shape (`(a)-[:FOLLOWS]->(f)` referencing an outer var) has a
-                // correlation variable, passes this check, and still renders its
-                // arrayCount subquery unchanged. A non-list-constraint PC with no
-                // correlation keeps the historical skip.
-                if pc_info.list_constraint.is_some() {
-                    return Err(LogicalPlanError::QueryPlanningError(
-                        "size([x IN list WHERE (pattern)]) where the pattern has no correlation \
-                         to an outer variable (it references only the iteration variable) is not \
-                         yet supported — the count would silently drop the pattern predicate and \
-                         return a plain row count (#612). Workaround: correlate the pattern to an \
-                         outer variable, or express the constrained count via a top-level MATCH \
-                         ... WHERE ... WITH count(...)."
-                            .to_string(),
-                    ));
+                if let Some((ref iter_var, _)) = pc_info.list_constraint {
+                    if !uncorrelated_list_pattern_is_render_safe(&pc_info.pattern, iter_var) {
+                        return Err(LogicalPlanError::QueryPlanningError(
+                            "size([x IN list WHERE (pattern)]) is only supported when the pattern \
+                             is a single directed hop starting at the iteration variable \
+                             (e.g. `(x)-[:REL]->()` or `(x)<-[:REL]-()`); a target-position, \
+                             undirected, or multi-hop pattern would return a wrong count and is \
+                             not yet supported (#629). Workaround: correlate the pattern to an \
+                             outer variable, or express the constrained count via a top-level \
+                             MATCH ... WHERE ... WITH count(...)."
+                                .to_string(),
+                        ));
+                    }
+                    // Render-safe uncorrelated list shape — fall through with an
+                    // empty correlation var (handled below).
+                } else {
+                    // No list to iterate AND no outer correlation — nothing to
+                    // build; keep the historical skip.
+                    log::warn!("⚠️  Pattern comprehension has no correlation variable - skipping");
+                    continue;
                 }
-                log::warn!("⚠️  Pattern comprehension has no correlation variable - skipping");
-                continue;
             }
-            let correlation_var = correlation_var.unwrap();
+            // `correlation_var` may still be None here iff `list_constraint.is_some()`
+            // AND the shape is render-safe (the #629 uncorrelated list shape) —
+            // default to an empty alias. The metadata below is all
+            // correlation-independent for that shape
+            // (`extract_all_correlation_variables_from_pattern` returns an empty
+            // Vec, `source_label` is inferred from the list's `collect()` source),
+            // and the list render path never reads the singular `correlation_var`.
+            let correlation_var = correlation_var.unwrap_or_default();
 
             // Extract correlation variable's label from plan context
             let correlation_label = plan_ctx
@@ -750,6 +769,61 @@ fn rewrite_expression_pattern_comprehensions<'a>(
 // 2. Hard-coded node type-specific id columns (e.g., `user_id`)
 // 3. Wrote to render-time context during logical planning
 // 4. Could diverge from actual columns/aliases produced during SQL rendering
+
+/// #629: is an UNcorrelated list-comprehension pattern
+/// (`size([f IN list WHERE (f)-[:R]->()])`) one that the arrayCount render path
+/// (`generate_list_comp_array_count`) translates CORRECTLY?
+///
+/// The render path is not general: it hardcodes the iteration element's column as
+/// the FIRST hop's facing side (from-id for Outgoing, to-id for Incoming — see
+/// `list_element_col` in `pattern_comprehension_sql.rs`) and models only a single
+/// directed membership subquery. So it is provably correct ONLY when:
+///   - the pattern is a single-hop `ConnectedPattern` (no multi-hop chain), and
+///   - the relationship is directed (`Outgoing`/`Incoming`, not `Either` — the
+///     render path has no reverse-direction UNION for the uncorrelated case), and
+///   - it is not variable-length, and
+///   - the iteration variable is the START node of that hop (the position the
+///     render path reads as the list element).
+///
+/// Every other uncorrelated shape — iteration var at the TARGET or a MIDDLE hop,
+/// undirected, or multi-hop — would make the render path emit a confidently-WRONG
+/// count (wrong column/direction), silently. Those MUST keep failing loud (the
+/// #612 contract, ground rule 1). Returns true only for the render-safe shape.
+fn uncorrelated_list_pattern_is_render_safe(
+    pattern: &crate::open_cypher_parser::ast::PathPattern<'_>,
+    iteration_var: &str,
+) -> bool {
+    use crate::open_cypher_parser::ast::{Direction, PathPattern};
+
+    let PathPattern::ConnectedPattern(hops) = pattern else {
+        return false;
+    };
+    // Single hop only — a multi-hop chain puts the iteration var at a middle/
+    // target position the render path does not model.
+    let [hop] = hops.as_slice() else {
+        return false;
+    };
+    // Directed only — the uncorrelated render path emits one direction.
+    if !matches!(
+        hop.relationship.direction,
+        Direction::Outgoing | Direction::Incoming
+    ) {
+        return false;
+    }
+    // Not variable-length.
+    if hop.relationship.variable_length.is_some() {
+        return false;
+    }
+    // The iteration variable must be the START node (what the render path reads as
+    // `list_element_col`). A target-position iteration var renders the wrong column.
+    if hop.start_node.borrow().name != Some(iteration_var) {
+        return false;
+    }
+    // Reject a self-loop back to the iteration variable (`(f)-[:R]->(f)`): the
+    // render models only the start-side membership, so it would silently DROP the
+    // `end == f` self-constraint (under-counting). Keep it loud until modeled.
+    hop.end_node.borrow().name != Some(iteration_var)
+}
 
 /// Extract the correlation variable from a pattern.
 /// The correlation variable is a node alias from outer scope used in the pattern.
