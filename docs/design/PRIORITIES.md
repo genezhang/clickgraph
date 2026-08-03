@@ -524,6 +524,35 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — closed single-hop property form binds the node
+  once (Code 179 fixed)** (branch `fix/987-facet1-dup-alias`, PR #994, refs #987
+  facet 1). A closed single-hop `(a)-[:R]->(a)` in PROPERTY-projection form bound
+  `a` to BOTH the start-node scan (FROM marker) and a separate end-node JOIN with
+  the SAME alias → ClickHouse Code 179 (MULTIPLE_EXPRESSIONS_FOR_ALIAS). Live:
+  `MATCH (a:TestUser)-[:TEST_FOLLOWS]->(a) RETURN a.name` errored 179 on main.
+  Root cause in the ANALYZER (`generate_pattern_joins`, `JoinStrategy::Traditional`
+  `(false, false)` arm): it emits a FROM marker for the left node plus a
+  `right_node_join()` for the right node, both with the same alias when
+  `left_connection == right_connection`. Fix: detect the closed hop
+  (`t.left_alias == t.right_alias`, non-VLP) and fold BOTH endpoint equalities onto
+  the edge join (`edge.from = a.id AND edge.to = a.id`) instead of the duplicate
+  node scan — binds `a` once, self-contained (implies `edge.from = edge.to`).
+  Live-verified: returns exactly the self-follower's name (= oracle). A closed hop
+  can only hit `(false, false)` or `(true, true)`; the latter already emits just
+  `edge_join(true, true)`, so only `(false, false)` changed. Covers all directions
+  + multi-prop + named-rel + `*1`/`*1..1`; OPEN/denorm/FK-edge/closed-VLP unchanged.
+  **Bonus:** the OPTIONAL closed hop was ALSO Code-179 on main and is repaired here
+  (fold into LEFT JOIN ON, optional semantics intact). Corpus golden
+  `test_self_loop_membership` was locking the Code-179-broken SQL (`ds_groups AS g`
+  twice) → regenerated to single-scan, now executes. **Adversarial review APPROVE,
+  zero defects** (isolated `CARGO_TARGET_DIR` builds; byte-identical across 4
+  schemas × ~50 non-closed queries; only intended closed-hop diffs; ratchet clean;
+  zero unintended golden churn). 1689 lib + 579 integration + corpus + ratchet +
+  clippy + fmt green. Remaining #987 facets: FK-edge self-ref (different
+  `node_id == fk_col` test) + unlabeled `(a)-[r]->(a)` (pattern_combinations
+  early-return). Filed #995 (pre-existing: inline node-property filter on a closed
+  hop silently dropped).
+
 - 2026-08-03: **Correctness — denorm closed single-hop now emits the self-loop
   constraint** (branch `fix/987-denorm-self-loop`, PR #992, refs #987 facet 2).
   #983 fixed the STANDARD closed single-hop `(a)-[:R]->(a)` self-loop-constraint
