@@ -500,7 +500,7 @@ const CORPUS: &[(&str, &str)] = &[
         "fn_regex_match",
         "MATCH (u:User) WHERE u.name =~ '.*a.*' RETURN u.user_id",
     ),
-    // reduce -> CH arrayFold((x, acc) -> expr, list, init) / Spark
+    // reduce -> CH arrayFold((acc, x) -> expr, list, init) / Spark
     // aggregate(list, init, (acc, x) -> expr). Spark has no arrayFold; it
     // previously emitted the CH name on Databricks (UNRESOLVED_ROUTINE).
     (
