@@ -10841,6 +10841,44 @@ mod walker_drift_family_484_490_495_476_483 {
         );
     }
 
+    /// #966: Cypher `rand()` is a uniform random Float64 in [0, 1). ClickHouse
+    /// `rand()` returns a UInt32, so the old registry entry emitted
+    /// `rand(rand() / 4294967295.0)` — the normalization was buried as a UInt32
+    /// seed and discarded, returning a huge integer. Map to ClickHouse's native
+    /// `randCanonical()` ([0, 1) Float64); Spark's `rand()` is already [0, 1).
+    #[tokio::test]
+    async fn rand_maps_to_rand_canonical_on_clickhouse_966() {
+        let schema = load_schema("benchmarks/social_network/schemas/social_benchmark.yaml");
+
+        let ch = render(
+            &schema,
+            "MATCH (u:User) RETURN rand() AS v",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            ch.contains("randCanonical()"),
+            "#966: ClickHouse rand() must map to randCanonical() ([0,1) float):\n{ch}"
+        );
+        assert!(
+            !ch.contains("rand(rand(") && !ch.contains("4294967295"),
+            "#966: the malformed `rand(rand() / N)` (returns a UInt32) must be \
+             gone:\n{ch}"
+        );
+
+        // Spark's rand() is already [0,1) — keep the plain name.
+        let dbx = render(
+            &schema,
+            "MATCH (u:User) RETURN rand() AS v",
+            SqlDialect::Databricks,
+        )
+        .await;
+        assert!(
+            dbx.contains("rand()") && !dbx.contains("randCanonical"),
+            "#966: Databricks keeps the plain rand() (already [0,1)):\n{dbx}"
+        );
+    }
+
     /// `bidirectional_union` CTE, e.g. `MATCH (a:User)-[r]-(o)`) used to
     /// per-label-raw-column logic (designed for a bare `MATCH (n)`
     /// ViewScan UNION, which has genuinely separate `post_id`/`user_id`

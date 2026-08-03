@@ -481,16 +481,18 @@ lazy_static::lazy_static! {
             arg_transform: None,
         });
 
-        // rand() -> rand() / 4294967295.0 (normalize to 0.0-1.0)
+        // rand() -> randCanonical() [#966]. Cypher/Neo4j `rand()` is a uniform
+        // random Float64 in [0, 1). ClickHouse `rand()` returns a UInt32, so the
+        // old entry emitted `rand(rand() / 4294967295.0)` — the normalization was
+        // buried as a UInt32 SEED and discarded, returning a huge integer.
+        // `randCanonical()` is ClickHouse's native uniform [0, 1) Float64 —
+        // exactly the Neo4j semantics, no arg transform. Spark's `rand()` is
+        // ALREADY [0, 1), so keep the plain name there.
         m.insert("rand", FunctionMapping {
             neo4j_name: "rand",
-            clickhouse_name: "rand",
-            databricks_name: None,
-            arg_transform: Some(|_args| {
-                // Neo4j rand() returns 0.0-1.0
-                // ClickHouse rand() returns UInt32
-                vec!["rand() / 4294967295.0".to_string()]
-            }),
+            clickhouse_name: "randCanonical",
+            databricks_name: Some("rand"),
+            arg_transform: None,
         });
 
         // sign() -> sign() [1:1 mapping]
