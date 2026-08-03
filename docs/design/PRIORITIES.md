@@ -524,6 +524,24 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **Fix — mixed-access VLP projects a denormalized endpoint's non-id
+  properties** (branch `fix/908-mixed-vlp-denorm-start-property`, PR #920, closes
+  #908). `RETURN <denorm-endpoint>.<non-id-prop>` (e.g. `a.name` where `a` is the
+  denorm start) failed Code 47 `t.start_name cannot be resolved` — the mixed
+  base/recursive only projected the STANDARD endpoint. **Fix:** resolve the denorm
+  node's own table + node_id from the schema and read the property via a
+  DEDUPLICATED own-table join (`SELECT node_id, any(col) … GROUP BY node_id`,
+  Databricks `any_value`) on the embedded id link; a unified
+  `emit_mixed_property_items(recursive)` emits BOTH arms' columns in ONE fixed
+  order (a recursive CTE binds UNION ALL columns positionally — a per-arm order
+  difference silently swapped start/end values). **Two adversarial-review rounds:**
+  round 1 caught the positional column swap; round 2 caught that a RAW start-side
+  join fans out `count(*)` on a duplicated node_id (11 vs 9) → fixed with the dedup
+  subquery (proven equal to main with a dup). Composite node_id bails loud. Filed
+  #927 (composite-id gap) + #934 (denorm-start WHERE-filter, pre-existing). Review
+  APPROVE-0. **All six 2026-08-02-filed VLP/render bugs (#914 #902 #897 #899 #906
+  #908) now fixed + closed.**
+
 - 2026-08-02: **Fix — `NOT (composite-FK pattern)` now fails LOUD instead of
   emitting malformed SQL** (branch `fix/928-not-composite-fk-guard`, closes #928;
   sibling of #921, flagged in its review). `MATCH (a:Account) WHERE NOT
