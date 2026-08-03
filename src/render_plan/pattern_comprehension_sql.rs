@@ -790,6 +790,31 @@ fn generate_pc_cte_with_either(
 /// ```
 ///
 /// This avoids correlated subqueries, which fail with ClickHouse's
+/// #629: find every hop position where the iteration variable appears, as
+/// `(hop_idx, is_start_side)`. The uncorrelated list arrayCount membership tests
+/// the iteration element against the edge column at THIS position — so the
+/// element column must be derived from where the variable actually sits, not
+/// hardcoded to hop-0's from-side. `is_start_side` is the PATTERN start/end
+/// boolean (`find_edge_id_column` flips it for `Incoming` internally). Returns
+/// one entry per occurrence (a variable can be both end-of-hop-N and
+/// start-of-hop-N+1 in a multi-hop chain; those columns are equated by the join,
+/// so the first occurrence is authoritative).
+fn find_iteration_var_position(
+    pattern_hops: &[crate::query_planner::logical_plan::ConnectedPatternInfo],
+    var: &str,
+) -> Vec<(usize, bool)> {
+    let mut positions = Vec::new();
+    for (idx, hop) in pattern_hops.iter().enumerate() {
+        if hop.start_alias.as_deref() == Some(var) {
+            positions.push((idx, true));
+        }
+        if hop.end_alias.as_deref() == Some(var) {
+            positions.push((idx, false));
+        }
+    }
+    positions
+}
+
 /// "Cannot clone Union plan step" error when the outer query has UNION ALL.
 fn generate_list_comp_array_count(
     pc_meta: &crate::query_planner::logical_plan::PatternComprehensionMeta,
@@ -872,11 +897,19 @@ fn generate_list_comp_array_count(
         }
     }
 
-    // Find the list element column (first hop's from_id — the iteration variable)
+    // #629: derive the list element column from WHERE the iteration variable
+    // actually sits in the pattern (start vs end side), not a hardcoded hop-0
+    // from-side. `find_edge_id_column` flips start/end for `Incoming` internally,
+    // so pass the pattern start/end boolean. The gate
+    // (`uncorrelated_list_pattern_is_render_safe`) guarantees the variable is
+    // present at a single-hop start OR end; the first occurrence is authoritative
+    // (a multi-hop middle var's two positions are join-equated).
     let list_element_col = {
-        let (_, first_alias, first_hop) = &edge_tables[0];
-        let col = find_edge_id_column(schema, &edge_tables[0].0, true, first_hop);
-        format!("{}.{}", first_alias, col)
+        let positions = find_iteration_var_position(&pc_meta.pattern_hops, &lc.variable);
+        let (idx, is_start) = *positions.first()?;
+        let (db_table, alias, hop) = &edge_tables[idx];
+        let col = find_edge_id_column(schema, db_table, is_start, hop);
+        format!("{}.{}", alias, col)
     };
 
     // Find correlation variable columns (from edge tables) — go into the tuple
@@ -1024,13 +1057,33 @@ fn generate_list_comp_array_count(
         format!(" WHERE {}", where_conditions.join(" AND "))
     };
 
-    let inner_select = format!(
-        "SELECT {} FROM {}{}{}",
-        select_cols.join(", "),
-        from_clause,
-        joins_str,
-        where_str
-    );
+    // #629: an UNDIRECTED single hop (`(f)-[:R]-()`) matches the iteration
+    // variable in EITHER role, so the membership set is the UNION of both the
+    // from-side and to-side columns. (The gate restricts undirected to a single
+    // hop, so `edge_tables[0]` is the only hop; a from/to UNION over the one edge
+    // table is exact — no direction-variant JOIN chains needed.) Every other
+    // (directed) shape uses the single `select_cols` membership above.
+    let inner_select = if pc_meta
+        .pattern_hops
+        .first()
+        .is_some_and(|h| h.direction == crate::query_planner::logical_expr::Direction::Either)
+    {
+        let (db_table, alias, hop) = &edge_tables[0];
+        let from_col = find_edge_id_column(schema, db_table, true, hop);
+        let to_col = find_edge_id_column(schema, db_table, false, hop);
+        format!(
+            "SELECT {alias}.{from_col} FROM {from_clause}{joins_str}{where_str} \
+             UNION SELECT {alias}.{to_col} FROM {from_clause}{joins_str}{where_str}"
+        )
+    } else {
+        format!(
+            "SELECT {} FROM {}{}{}",
+            select_cols.join(", "),
+            from_clause,
+            joins_str,
+            where_str
+        )
+    };
 
     let result = emit_array_count_in_subquery("x", &inner_select, &list_col);
 
@@ -2951,5 +3004,69 @@ mod target_projection_gate_tests {
             args: vec![prop("u", "age")],
         });
         assert!(!is_target_safe_projection(&e, "v"));
+    }
+}
+
+#[cfg(test)]
+mod iteration_var_position_tests {
+    //! #629: `find_iteration_var_position` locates where the list-comprehension
+    //! iteration variable sits in the pattern, which drives the arrayCount element
+    //! column. A wrong position renders a silently-wrong count, so this is
+    //! correctness-critical.
+    use super::find_iteration_var_position;
+    use crate::query_planner::logical_expr::Direction;
+    use crate::query_planner::logical_plan::ConnectedPatternInfo;
+
+    fn hop(start: Option<&str>, end: Option<&str>, dir: Direction) -> ConnectedPatternInfo {
+        ConnectedPatternInfo {
+            start_label: None,
+            start_alias: start.map(|s| s.to_string()),
+            rel_type: Some("FOLLOWS".to_string()),
+            rel_alias: None,
+            direction: dir,
+            end_label: None,
+            end_alias: end.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn var_at_start() {
+        let hops = [hop(Some("f"), None, Direction::Outgoing)];
+        assert_eq!(find_iteration_var_position(&hops, "f"), vec![(0, true)]);
+    }
+
+    #[test]
+    fn var_at_end() {
+        let hops = [hop(None, Some("f"), Direction::Outgoing)];
+        assert_eq!(find_iteration_var_position(&hops, "f"), vec![(0, false)]);
+    }
+
+    #[test]
+    fn var_at_both_ends_self_loop() {
+        // `(f)-[:R]->(f)` — appears as both start and end of the one hop.
+        let hops = [hop(Some("f"), Some("f"), Direction::Outgoing)];
+        assert_eq!(
+            find_iteration_var_position(&hops, "f"),
+            vec![(0, true), (0, false)]
+        );
+    }
+
+    #[test]
+    fn var_absent() {
+        let hops = [hop(Some("g"), None, Direction::Outgoing)];
+        assert!(find_iteration_var_position(&hops, "f").is_empty());
+    }
+
+    #[test]
+    fn var_in_middle_of_multi_hop() {
+        // `()-[:R]->(f)-[:R]->()` — f is end-of-hop0 AND start-of-hop1.
+        let hops = [
+            hop(None, Some("f"), Direction::Outgoing),
+            hop(Some("f"), None, Direction::Outgoing),
+        ];
+        assert_eq!(
+            find_iteration_var_position(&hops, "f"),
+            vec![(0, false), (1, true)]
+        );
     }
 }

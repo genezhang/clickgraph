@@ -332,11 +332,12 @@ fn rewrite_with_pattern_comprehensions<'a>(
                     if !uncorrelated_list_pattern_is_render_safe(&pc_info.pattern, iter_var) {
                         return Err(LogicalPlanError::QueryPlanningError(
                             "size([x IN list WHERE (pattern)]) is only supported when the pattern \
-                             is a single directed hop starting at the iteration variable \
-                             (e.g. `(x)-[:REL]->()` or `(x)<-[:REL]-()`); a target-position, \
-                             undirected, or multi-hop pattern would return a wrong count and is \
-                             not yet supported (#629). Workaround: correlate the pattern to an \
-                             outer variable, or express the constrained count via a top-level \
+                             is a SINGLE hop with the iteration variable at one endpoint \
+                             (e.g. `(x)-[:REL]->()`, `()-[:REL]->(x)`, or undirected \
+                             `(x)-[:REL]-()`); a multi-hop, self-loop `(x)-[:REL]->(x)`, or \
+                             variable-length pattern would return a wrong count and is not yet \
+                             supported (#629). Workaround: correlate the pattern to an outer \
+                             variable, or express the constrained count via a top-level \
                              MATCH ... WHERE ... WITH count(...)."
                                 .to_string(),
                         ));
@@ -774,21 +775,24 @@ fn rewrite_expression_pattern_comprehensions<'a>(
 /// (`size([f IN list WHERE (f)-[:R]->()])`) one that the arrayCount render path
 /// (`generate_list_comp_array_count`) translates CORRECTLY?
 ///
-/// The render path is not general: it hardcodes the iteration element's column as
-/// the FIRST hop's facing side (from-id for Outgoing, to-id for Incoming — see
-/// `list_element_col` in `pattern_comprehension_sql.rs`) and models only a single
-/// directed membership subquery. So it is provably correct ONLY when:
-///   - the pattern is a single-hop `ConnectedPattern` (no multi-hop chain), and
-///   - the relationship is directed (`Outgoing`/`Incoming`, not `Either` — the
-///     render path has no reverse-direction UNION for the uncorrelated case), and
-///   - it is not variable-length, and
-///   - the iteration variable is the START node of that hop (the position the
-///     render path reads as the list element).
+/// The render path derives the iteration element's column from where the variable
+/// sits (`find_iteration_var_position` → start-side/end-side, direction-flipped
+/// for `Incoming`) and, for an undirected hop, UNIONs the from-side and to-side
+/// columns. It is provably correct for:
+///   - a single-hop `ConnectedPattern` (a multi-hop chain has intermediate
+///     anonymous nodes whose labels are unknown, so its edge table can resolve to
+///     the wrong table on an ambiguous rel type — deferred, #629 PR2), and
+///   - direction `Outgoing`, `Incoming`, OR `Either` (undirected → from∪to), and
+///   - not variable-length, and
+///   - the iteration variable at the START or END of the hop (either endpoint;
+///     the render reads the matching side), and
+///   - NOT a self-loop back to the iteration variable (`(f)-[:R]->(f)`), which
+///     needs a `from = to` predicate the render does not emit.
 ///
-/// Every other uncorrelated shape — iteration var at the TARGET or a MIDDLE hop,
-/// undirected, or multi-hop — would make the render path emit a confidently-WRONG
-/// count (wrong column/direction), silently. Those MUST keep failing loud (the
-/// #612 contract, ground rule 1). Returns true only for the render-safe shape.
+/// A render `None` becomes the literal `"0"` downstream (silently-wrong count),
+/// so this plan-time gate is the ONLY safe guard: anything it admits MUST render
+/// correctly, and everything else keeps failing loud (the #612/#629 contract,
+/// ground rule 1). Multi-hop, self-loop, and variable-length stay loud.
 fn uncorrelated_list_pattern_is_render_safe(
     pattern: &crate::open_cypher_parser::ast::PathPattern<'_>,
     iteration_var: &str,
@@ -798,31 +802,35 @@ fn uncorrelated_list_pattern_is_render_safe(
     let PathPattern::ConnectedPattern(hops) = pattern else {
         return false;
     };
-    // Single hop only — a multi-hop chain puts the iteration var at a middle/
-    // target position the render path does not model.
+    // Single hop only — a multi-hop chain puts the iteration var at a middle
+    // position and involves anonymous intermediate nodes whose edge table can
+    // resolve wrong on an ambiguous rel type. Deferred to #629 PR2.
     let [hop] = hops.as_slice() else {
         return false;
     };
-    // Directed only — the uncorrelated render path emits one direction.
+    // Directed OR undirected — the render path derives the element column per
+    // position and UNIONs both sides for `Either`.
     if !matches!(
         hop.relationship.direction,
-        Direction::Outgoing | Direction::Incoming
+        Direction::Outgoing | Direction::Incoming | Direction::Either
     ) {
         return false;
     }
-    // Not variable-length.
+    // Not variable-length (no expansion modeled).
     if hop.relationship.variable_length.is_some() {
         return false;
     }
-    // The iteration variable must be the START node (what the render path reads as
-    // `list_element_col`). A target-position iteration var renders the wrong column.
-    if hop.start_node.borrow().name != Some(iteration_var) {
+    let at_start = hop.start_node.borrow().name == Some(iteration_var);
+    let at_end = hop.end_node.borrow().name == Some(iteration_var);
+    // Reject a self-loop back to the iteration variable (`(f)-[:R]->(f)`): the
+    // render models only one side's membership, so it would silently DROP the
+    // `end == f` self-constraint (under-counting). Keep it loud until modeled.
+    if at_start && at_end {
         return false;
     }
-    // Reject a self-loop back to the iteration variable (`(f)-[:R]->(f)`): the
-    // render models only the start-side membership, so it would silently DROP the
-    // `end == f` self-constraint (under-counting). Keep it loud until modeled.
-    hop.end_node.borrow().name != Some(iteration_var)
+    // The iteration variable must appear at exactly one endpoint (start OR end) —
+    // that is the position the render reads as the list element column.
+    at_start || at_end
 }
 
 /// Extract the correlation variable from a pattern.

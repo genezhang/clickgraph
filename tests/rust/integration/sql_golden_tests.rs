@@ -8143,20 +8143,60 @@ async fn uncorrelated_listcomp_pattern_count_renders_arraycount_629() {
         "Incoming iteration-at-start must test the to-side (followed_id):\n{ch_in}"
     );
 
-    // #629 scope guard (adversarial-review HIGH findings): shapes the arrayCount
-    // render path would translate to a SILENTLY-WRONG count MUST fail loud, not
-    // render. The render path hardcodes the element column as the first hop's
-    // facing side and emits one direction.
+    // #629 extension: TARGET-position `()-[:FOLLOWS]->(f)` — f is the END node, so
+    // the render must test the to-side column (followed_id), NOT follower_id.
+    let target = "MATCH (a:User)-[:FOLLOWS]->(b:User) \
+         WITH a, collect(b.user_id) AS friends \
+         WITH a, size([f IN friends WHERE ()-[:FOLLOWS]->(f)]) AS c \
+         RETURN a.user_id AS id, c ORDER BY id";
+    let ch_tgt = render(&schema, target, SqlDialect::ClickHouse).await;
+    assert!(
+        ch_tgt.contains("arrayCount(x -> x IN (SELECT __r0.followed_id"),
+        "target-position must test the to-side (followed_id) in the arrayCount subquery:\n{ch_tgt}"
+    );
+    // The arrayCount membership subquery must NOT read follower_id (the outer
+    // CTE's own JOIN legitimately uses follower_id — assert on the subquery only).
+    assert!(
+        !ch_tgt.contains("x IN (SELECT __r0.follower_id"),
+        "target-position arrayCount must not read the from-side follower_id:\n{ch_tgt}"
+    );
+
+    // #629 extension: UNDIRECTED `(f)-[:FOLLOWS]-()` matches f in either role, so
+    // the membership is the UNION of the from-side and to-side columns.
+    let undirected = "MATCH (a:User)-[:FOLLOWS]->(b:User) \
+         WITH a, collect(b.user_id) AS friends \
+         WITH a, size([f IN friends WHERE (f)-[:FOLLOWS]-()]) AS c \
+         RETURN a.user_id AS id, c ORDER BY id";
+    let ch_un = render(&schema, undirected, SqlDialect::ClickHouse).await;
+    assert!(
+        ch_un.contains("follower_id FROM test_integration.user_follows_test")
+            && ch_un.contains("UNION")
+            && ch_un.contains("followed_id FROM test_integration.user_follows_test"),
+        "undirected must UNION both the from-side and to-side columns:\n{ch_un}"
+    );
+    // Databricks undirected still routes through the explode form with the UNION
+    // living in the WHERE-IN subquery (allowed — only HOF lambdas forbid subqueries).
+    let dbx_un = render(&schema, undirected, SqlDialect::Databricks).await;
+    assert!(
+        dbx_un.contains("explode(") && dbx_un.contains("UNION"),
+        "Databricks undirected must explode + UNION in the WHERE IN:\n{dbx_un}"
+    );
+
+    // #629 scope guard: shapes the arrayCount render path would translate to a
+    // SILENTLY-WRONG count (a render None becomes the literal "0" downstream) MUST
+    // fail loud, not render. These remain out of scope until PR2 / later.
     let unsafe_shapes = [
-        // Iteration var at the TARGET position (would read follower_id, wrong).
+        // Self-loop back to the iteration variable — the render models only one
+        // side, dropping the `end == f` self-constraint.
         "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b.user_id) AS friends \
-         WITH a, size([f IN friends WHERE ()-[:FOLLOWS]->(f)]) AS c RETURN a.user_id AS id, c",
-        // Undirected (render drops the reverse direction).
+         WITH a, size([f IN friends WHERE (f)-[:FOLLOWS]->(f)]) AS c RETURN a.user_id AS id, c",
+        // Multi-hop — intermediate anonymous nodes have unknown labels, so the
+        // edge table can resolve wrong on an ambiguous rel type.
         "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b.user_id) AS friends \
-         WITH a, size([f IN friends WHERE (f)-[:FOLLOWS]-()]) AS c RETURN a.user_id AS id, c",
-        // Multi-hop with the iteration var in the middle.
+         WITH a, size([f IN friends WHERE (f)-[:FOLLOWS]->()-[:FOLLOWS]->()]) AS c RETURN a.user_id AS id, c",
+        // Variable-length — no expansion modeled.
         "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b.user_id) AS friends \
-         WITH a, size([f IN friends WHERE ()-[:FOLLOWS]->(f)-[:FOLLOWS]->()]) AS c RETURN a.user_id AS id, c",
+         WITH a, size([f IN friends WHERE (f)-[:FOLLOWS*1..2]->()]) AS c RETURN a.user_id AS id, c",
     ];
     for cypher in unsafe_shapes {
         let result = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
@@ -8168,7 +8208,7 @@ async fn uncorrelated_listcomp_pattern_count_renders_arraycount_629() {
             })
             .clone();
         assert!(
-            err.contains("single directed hop starting at the iteration variable"),
+            err.contains("SINGLE hop with the iteration variable at one endpoint"),
             "[{cypher}] expected the #629 scope-guard error, got:\n{err}"
         );
     }
