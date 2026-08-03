@@ -1773,8 +1773,21 @@ impl SelectBuilder for LogicalPlan {
                                 "🔍 SelectBuilder Case 6 (Other): Expression type = {:?}",
                                 item.expression
                             );
+                            // #944: a COMPUTED, non-aggregate projection expression
+                            // (`[s.ip][1]`, `{a: s.ip}`, `reduce(...)`, a scalar-fn
+                            // wrapper, etc.) must still resolve denormalized node
+                            // references, exactly as Case 6a does for the
+                            // aggregate-bearing form and Case 4 does for a bare
+                            // property. Without it a denorm property buried in the
+                            // wrapper leaked its raw cypher alias → `s.ip` instead of
+                            // `t1."id.orig_h"` → live Code 47.
+                            // `resolve_denorm_refs_in_expr` now recurses into every
+                            // wrapper (with reduce-binder shielding) and is a no-op
+                            // for standard nodes → byte-identical goldens there.
+                            let mut expr: RenderExpr = item.expression.clone().try_into()?;
+                            self.resolve_denorm_refs_in_expr(&mut expr, plan_ctx);
                             select_items.push(SelectItem {
-                                expression: item.expression.clone().try_into()?,
+                                expression: expr,
                                 col_alias: item
                                     .col_alias
                                     .as_ref()
@@ -2213,9 +2226,28 @@ impl LogicalPlan {
         expr: &mut RenderExpr,
         plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
     ) {
+        self.resolve_denorm_refs_in_expr_shielded(expr, plan_ctx, &mut Vec::new());
+    }
+
+    /// As [`resolve_denorm_refs_in_expr`], but carries `shielded` — names bound
+    /// by an enclosing `reduce()` lambda (`accumulator`/`variable`). The leaf
+    /// arms below rewrite a bare `TableAlias`/`PropertyAccessExp` keyed on its
+    /// NAME, so a lambda binder that shadows a node/rel alias must be left alone
+    /// (the #929/#940 reduce-binder-shadow hazard). A shielded name
+    /// short-circuits before any remap.
+    fn resolve_denorm_refs_in_expr_shielded(
+        &self,
+        expr: &mut RenderExpr,
+        plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
+        shielded: &mut Vec<String>,
+    ) {
         match expr {
             RenderExpr::PropertyAccessExp(pa) => {
                 let alias = pa.table_alias.0.clone();
+                // Shadowed by an enclosing reduce binder — not a node/rel alias.
+                if shielded.iter().any(|n| n == &alias) {
+                    return;
+                }
                 // CTE-sourced variables resolve forward through their CTE
                 // columns (CLAUDE.md rule 2) — never remap them here.
                 if let Some(ctx) = plan_ctx {
@@ -2340,6 +2372,10 @@ impl LogicalPlan {
                 // planner error instead of a numeric id-column result),
                 // that's a deliberate, separate decision — not a bug fix.
                 let alias = t.0.clone();
+                // Shadowed by an enclosing reduce binder — not a node alias.
+                if shielded.iter().any(|n| n == &alias) {
+                    return;
+                }
                 // CTE-sourced / pattern_union node variables resolve forward
                 // through their own columns — never remap them here (same
                 // gate as the PropertyAccessExp case above). Node-ness itself
@@ -2362,43 +2398,55 @@ impl LogicalPlan {
                 }
                 if let Some(id_expr) = node_alias_id_expr(&alias, plan_ctx) {
                     let mut resolved = id_expr;
-                    self.resolve_denorm_refs_in_expr(&mut resolved, plan_ctx);
+                    self.resolve_denorm_refs_in_expr_shielded(&mut resolved, plan_ctx, shielded);
                     *expr = resolved;
                 }
             }
-            RenderExpr::AggregateFnCall(agg) => {
-                for arg in &mut agg.args {
-                    self.resolve_denorm_refs_in_expr(arg, plan_ctx);
-                }
+            RenderExpr::ReduceExpr(reduce) => {
+                // #944: `initial_value` and `list` evaluate in the OUTER scope —
+                // resolve normally (an outer denorm prop there is legitimate).
+                // The `expression` (body) BINDS `accumulator`/`variable`, which
+                // shadow any same-named node/rel alias; the leaf arms above are
+                // NAME-keyed, so a lambda binder colliding with an alias must be
+                // shielded or it is rewritten into that node's column (the
+                // #929/#940 reduce-binder-shadow hazard). Push the binders for
+                // the body only.
+                self.resolve_denorm_refs_in_expr_shielded(
+                    &mut reduce.initial_value,
+                    plan_ctx,
+                    shielded,
+                );
+                self.resolve_denorm_refs_in_expr_shielded(&mut reduce.list, plan_ctx, shielded);
+                shielded.push(reduce.accumulator.clone());
+                shielded.push(reduce.variable.clone());
+                self.resolve_denorm_refs_in_expr_shielded(
+                    &mut reduce.expression,
+                    plan_ctx,
+                    shielded,
+                );
+                shielded.pop();
+                shielded.pop();
             }
-            RenderExpr::ScalarFnCall(sf) => {
-                for arg in &mut sf.args {
-                    self.resolve_denorm_refs_in_expr(arg, plan_ctx);
-                }
+            // Every OTHER wrapper recurses structurally through the EXHAUSTIVE
+            // `descend_render_expr_mut` (no `_` catch-all — a new `RenderExpr`
+            // variant is a compile error here, not a silently-dropped denorm
+            // resolution). Previously a `_ => {}` catch-all dropped
+            // `ArraySubscript`/`ArraySlicing`/`MapLiteral`/`ReduceExpr`, leaking a
+            // denorm property buried in a computed RETURN projection wrapper
+            // (`RETURN [s.ip][1]` → `s.ip` not `t1."id.orig_h"` → live Code 47,
+            // #944). `ReduceExpr` is handled above (binder shielding); leaves and
+            // deliberately-not-descended nodes (`InSubquery`/`ExistsSubquery`/
+            // `PatternCount`/`CteEntityRef`) are no-ops in
+            // `descend_render_expr_mut`, matching the prior catch-all. Mirrors the
+            // #929/#940 folds of the sibling property-mapping walks.
+            other => {
+                let mut recur =
+                    |child: &mut RenderExpr| -> crate::render_plan::render_expr::MutVisit {
+                        self.resolve_denorm_refs_in_expr_shielded(child, plan_ctx, shielded);
+                        crate::render_plan::render_expr::MutVisit::Stop
+                    };
+                crate::render_plan::render_expr::descend_render_expr_mut(other, &mut recur);
             }
-            RenderExpr::OperatorApplicationExp(op) => {
-                for operand in &mut op.operands {
-                    self.resolve_denorm_refs_in_expr(operand, plan_ctx);
-                }
-            }
-            RenderExpr::Case(case) => {
-                if let Some(ref mut e) = case.expr {
-                    self.resolve_denorm_refs_in_expr(e, plan_ctx);
-                }
-                for (cond, result) in &mut case.when_then {
-                    self.resolve_denorm_refs_in_expr(cond, plan_ctx);
-                    self.resolve_denorm_refs_in_expr(result, plan_ctx);
-                }
-                if let Some(ref mut e) = case.else_expr {
-                    self.resolve_denorm_refs_in_expr(e, plan_ctx);
-                }
-            }
-            RenderExpr::List(items) => {
-                for item in items {
-                    self.resolve_denorm_refs_in_expr(item, plan_ctx);
-                }
-            }
-            _ => {}
         }
     }
 
