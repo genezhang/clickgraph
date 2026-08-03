@@ -524,6 +524,24 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — `rand()` returned a huge UInt32, not a [0,1) float**
+  (branch `fix/966-rand-canonical`, PR #967, closes #966). Cypher `rand()` is a
+  uniform Float64 in [0,1). The registry mapped `rand`→`rand` with an
+  `arg_transform` returning `["rand() / 4294967295.0"]`, but `arg_transform`
+  produces the ARGUMENTS, so the emission was `rand(rand() / 4294967295.0)` — CH
+  `rand(seed)` returns a UInt32, so the normalization was buried as a seed and
+  discarded → a huge integer (`2159533164`). Every `rand()` use (sampling, `ORDER
+  BY rand()`, `WHERE rand() < p`) was silently wrong. **Fix:** map `rand`→ CH
+  `randCanonical()` (native uniform [0,1) Float64), no arg transform;
+  `databricks_name: Some("rand")` (Spark's is already [0,1)). Live-verified
+  0.47/0.88/0.25 per row (was 2159533164); zero golden churn; 1688 lib + 569
+  integration + ratchet green; new golden `rand_maps_to_rand_canonical_on_
+  clickhouse_966`. **Adversarial review** found the fix clean + caught a stray
+  10K-line scratch backup file accidentally committed at the repo root (`git add
+  -A` swept it in) — removed; refreshed the stale doc snippet. Pre-existing CH
+  CSE within-row collapse (multiple `rand()` in one row → one value) noted, out
+  of scope. Found by a math-family fidelity scout.
+
 - 2026-08-03: **Correctness — `size()`/`reverse()` UTF8 dispatch for proven-string
   args (completes the #960 string-fidelity family)** (branch
   `fix/962-size-reverse-utf8-dispatch`, PR #964, closes #962). `size`/`length`
