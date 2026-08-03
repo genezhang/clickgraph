@@ -10444,6 +10444,84 @@ mod walker_drift_family_484_490_495_476_483 {
         );
     }
 
+    /// #944: a denormalized node's property buried inside a COMPUTED RETURN
+    /// projection wrapper (`ArraySubscript`/`ArraySlicing`/`MapLiteral`/
+    /// `ReduceExpr`/`List`) must resolve to its physical edge-table column, just
+    /// like a bare `s.ip` projection and the same wrappers in WHERE/ORDER BY. The
+    /// projection path's computed-expression arm (`select_builder.rs` Case 6)
+    /// previously did a raw `try_into()` with no denorm resolution, and
+    /// `resolve_denorm_refs_in_expr` itself dropped those wrappers via a `_ => {}`
+    /// catch-all → the raw cypher alias `s` leaked into
+    /// `arrayElementOrNull([toString(s.ip)], …)` → live Code 47. The fold routes
+    /// the resolver's wrapper recursion through the exhaustive
+    /// `descend_render_expr_mut` (with `reduce()` binder shielding, #929/#940).
+    #[tokio::test]
+    async fn computed_projection_denorm_prop_resolves_944() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+
+        // Each computed wrapper over a denorm prop must remap `s.ip` → the edge
+        // table's `id.orig_h` (auto-counter alias `t{n}`), and must NOT leak the
+        // raw cypher alias `s`.
+        for cypher in [
+            "MATCH (s:IP)-[:ACCESSED]->(d:IP) RETURN [s.ip][1] AS x",
+            "MATCH (s:IP)-[:ACCESSED]->(d:IP) RETURN [s.ip][0..1] AS x",
+            "MATCH (s:IP)-[:ACCESSED]->(d:IP) RETURN {a: s.ip} AS x",
+            "MATCH (s:IP)-[:ACCESSED]->(d:IP) RETURN [s.ip] AS x",
+            "MATCH (s:IP)-[:ACCESSED]->(d:IP) RETURN reduce(acc = '', y IN [s.ip] | acc) AS x",
+        ] {
+            let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+            assert!(
+                sql.contains("\"id.orig_h\""),
+                "#944: denorm prop in a computed projection must remap to the \
+                 physical column:\n{cypher}\n{sql}"
+            );
+            assert!(
+                !sql.contains("toString(s.ip)")
+                    && !sql.contains("[s.ip]")
+                    && !sql.contains("s.\"id.orig_h\""),
+                "#944: raw cypher alias `s` leaked unremapped in a computed \
+                 projection (would be Code 47 on live CH):\n{cypher}\n{sql}"
+            );
+        }
+    }
+
+    /// #944 (shielding guard): the projection-path denorm resolver descends into
+    /// `reduce()` bodies, so a lambda binder that shadows a bound denorm node
+    /// alias must be shielded — same hazard #929/#940 fixed on the WHERE/inline
+    /// paths, here on the SELECT path.
+    #[tokio::test]
+    async fn computed_projection_reduce_binder_shielded_944() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+
+        // Iteration var `s` shadows the bound denorm node alias `s` — the body
+        // `s` must stay, NOT become the node column.
+        let var_sql = render(
+            &schema,
+            "MATCH (s:IP)-[:ACCESSED]->(d:IP) RETURN reduce(acc = 0, s IN [1, 2] | acc + s) AS y",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            var_sql.contains("acc + s") && !var_sql.contains("acc + t"),
+            "#944: reduce iteration var `s` shadowing a denorm node alias must \
+             NOT be remapped in a projection:\n{var_sql}"
+        );
+
+        // But an OUTER denorm prop in the reduce `list` (not shadowed) STILL
+        // remaps — the legitimate win is preserved.
+        let outer_sql = render(
+            &schema,
+            "MATCH (s:IP)-[:ACCESSED]->(d:IP) RETURN reduce(acc = '', x IN [s.ip] | acc) AS y",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            outer_sql.contains("\"id.orig_h\"") && !outer_sql.contains("toString(s.ip)"),
+            "#944: an OUTER denorm prop in the reduce list must STILL remap in a \
+             projection (only binder-shadowed names are shielded):\n{outer_sql}"
+        );
+    }
+
     /// `bidirectional_union` CTE, e.g. `MATCH (a:User)-[r]-(o)`) used to
     /// build its cross-label DISTINCT discriminator tuple from the #467
     /// per-label-raw-column logic (designed for a bare `MATCH (n)`
