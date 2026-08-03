@@ -7369,6 +7369,19 @@ pub struct VlpContext {
     pub type_column: Option<String>,
     pub type_value: Option<String>,
 
+    /// #897: For polymorphic edges, the node-label discriminator columns and the
+    /// endpoint label values. The flat exact-bound expander adds
+    /// `r{n}.from_type = '<from_label>' AND r{n}.to_type = '<to_label>'` (and the
+    /// edge-type equality via the type discriminator) on each hop, so that a typed
+    /// `FOLLOWS*N` follows only that edge type between the requested node types —
+    /// baking the SAME per-hop discriminators the single-hop and recursive-CTE
+    /// paths already emit (whatever the recursive path bakes, the flat path now
+    /// matches, so all three agree). `None` for non-polymorphic edges.
+    pub from_label_column: Option<String>,
+    pub to_label_column: Option<String>,
+    pub from_node_label: Option<String>,
+    pub to_node_label: Option<String>,
+
     /// For denormalized edges: property mappings (logical_name -> ClickHouse column/expression)
     pub from_node_properties: Option<std::collections::HashMap<String, PropertyValue>>,
     pub to_node_properties: Option<std::collections::HashMap<String, PropertyValue>>,
@@ -7614,6 +7627,38 @@ pub fn build_vlp_context(
         (None, None)
     };
 
+    // #897: Extract polymorphic node-label discriminator columns + endpoint label
+    // values so the flat exact-bound expander can filter each hop by node type
+    // (`r{n}.from_type = 'User' AND r{n}.to_type = 'User'`), the way the single-hop
+    // and recursive-CTE paths already do. The label columns come from the edge's
+    // ViewScan; the endpoint label values come from the relationship schema's
+    // from_node/to_node (a self-composable VLP is homogeneous — from_node ==
+    // to_node — so both endpoints carry the same label on every hop).
+    let (from_label_column, to_label_column) =
+        if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
+            (scan.from_label_column.clone(), scan.to_label_column.clone())
+        } else {
+            (None, None)
+        };
+    // The endpoint label values come from the query pattern's node labels
+    // (`(a:User)-[:FOLLOWS*2]->(b:User)` → 'User'), NOT the polymorphic edge
+    // schema's `from_node`/`to_node` (which is the `$any` wildcard for a
+    // multi-type edge). Fall back to the rel schema only for an unlabeled pattern
+    // and only when the schema names a concrete (non-`$any`) node type.
+    let concrete = |label: Option<String>| label.filter(|l| l != "$any" && !l.is_empty());
+    let schema_from_to = graph_rel
+        .labels
+        .as_ref()
+        .and_then(|l| l.first())
+        .and_then(|rel_type| schema.rel_schemas_for_type(rel_type).first().copied())
+        .map(|rs| (rs.from_node.clone(), rs.to_node.clone()));
+    let from_node_label =
+        concrete(extract_node_labels(&graph_rel.left).and_then(|l| l.first().cloned()))
+            .or_else(|| concrete(schema_from_to.as_ref().map(|(f, _)| f.clone())));
+    let to_node_label =
+        concrete(extract_node_labels(&graph_rel.right).and_then(|l| l.first().cloned()))
+            .or_else(|| concrete(schema_from_to.as_ref().map(|(_, t)| t.clone())));
+
     // Extract denormalized property mappings
     let (from_node_properties, to_node_properties) =
         if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
@@ -7656,6 +7701,10 @@ pub fn build_vlp_context(
         rel_table_parameterized,
         type_column,
         type_value,
+        from_label_column,
+        to_label_column,
+        from_node_label,
+        to_node_label,
         from_node_properties,
         to_node_properties,
         is_fk_edge,
@@ -8046,7 +8095,50 @@ fn vlp_join_eq_conditions(
         .collect()
 }
 
-/// Schema-aware fixed-length VLP JOIN generation using VlpContext
+/// #897: Build the polymorphic per-hop discriminator conditions
+/// (`rel.interaction_type = 'FOLLOWS' AND rel.from_type = 'User' AND
+/// rel.to_type = 'User'`) for one hop alias of a flat exact-bound VLP.
+///
+/// The single-hop and recursive-CTE paths already emit these; the flat r1..rN
+/// self-join dropped them (#897), so a `FOLLOWS*2` counted 2-chains of ANY
+/// interaction type. Returns an empty vec for non-polymorphic edges (all label
+/// columns `None`), keeping those byte-identical. Emitted as equalities on the
+/// hop alias so they land in that hop's JOIN `ON` clause.
+fn vlp_polymorphic_hop_conditions(
+    ctx: &VlpContext,
+    rel_alias: &str,
+) -> Vec<super::render_expr::OperatorApplication> {
+    use super::render_expr::{
+        Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+    };
+
+    let eq_literal = |column: &str, value: &str| OperatorApplication {
+        operator: Operator::Equal,
+        operands: vec![
+            RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(rel_alias.to_string()),
+                column: PropertyValue::Column(column.to_string()),
+            }),
+            RenderExpr::Literal(Literal::String(value.to_string())),
+        ],
+    };
+
+    let mut conds = Vec::new();
+    // Edge-type discriminator (interaction_type = 'FOLLOWS').
+    if let (Some(type_col), Some(type_val)) = (&ctx.type_column, &ctx.type_value) {
+        conds.push(eq_literal(type_col, type_val));
+    }
+    // From-node label discriminator (from_type = 'User').
+    if let (Some(from_col), Some(from_label)) = (&ctx.from_label_column, &ctx.from_node_label) {
+        conds.push(eq_literal(from_col, from_label));
+    }
+    // To-node label discriminator (to_type = 'User').
+    if let (Some(to_col), Some(to_label)) = (&ctx.to_label_column, &ctx.to_node_label) {
+        conds.push(eq_literal(to_col, to_label));
+    }
+    conds
+}
+
 ///
 /// This is the consolidated version that handles all schema types correctly:
 /// - Normal: FROM start_node, JOINs through r1...rN, final JOIN to end_node
@@ -8158,16 +8250,23 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                     (format!("r{}", hop - 1), ctx.rel_to_col.clone())
                 };
 
+                // Base equi-join on the id columns, plus (#897) the polymorphic
+                // per-hop type/label discriminators so this hop only follows the
+                // requested edge type between the requested node types. The extra
+                // conditions are empty (byte-identical) for non-polymorphic edges.
+                let mut joining_on = vlp_join_eq_conditions(
+                    &prev_alias,
+                    &prev_id_col,
+                    &rel_alias,
+                    &ctx.rel_from_col,
+                );
+                joining_on.extend(vlp_polymorphic_hop_conditions(ctx, &rel_alias));
+
                 // Add relationship JOIN
                 joins.push(Join {
                     table_name: rel_table_ref.clone(),
                     table_alias: rel_alias.clone(),
-                    joining_on: vlp_join_eq_conditions(
-                        &prev_alias,
-                        &prev_id_col,
-                        &rel_alias,
-                        &ctx.rel_from_col,
-                    ),
+                    joining_on,
                     join_type: JoinType::Inner,
                     pre_filter: None,
                     from_id_column: None,

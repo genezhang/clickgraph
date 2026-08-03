@@ -1239,3 +1239,4 @@
 {"cypher": "MATCH (a:Comment)-[:REPLY_OF*1..2]->(b:Comment) RETURN count(*) AS c", "name": "test_902__fk_edge_selfref_vlp_open_follows_fk", "schema": "ldbc_snb"}
 {"cypher": "MATCH (a:User)\n            WITH a\n            RETURN a.user_id, size((a)-[:FOLLOWS]->()) AS c", "name": "test_613__size_pattern_count_after_with_single_hop", "schema": "social_integration"}
 {"cypher": "MATCH (a:User)\n            WITH a\n            RETURN a.user_id, size((a)-[:FOLLOWS]->()-[:FOLLOWS]->()) AS c", "name": "test_613__size_pattern_count_after_with_multi_hop", "schema": "social_integration"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*2]->(b:User) RETURN count(*) AS c", "name": "test_897__flat_poly_vlp_type_discriminator_count", "schema": "social_polymorphic"}

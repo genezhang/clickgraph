@@ -3767,6 +3767,33 @@ async fn polymorphic_whole_edge_r_keeps_discriminator() {
     }
 }
 
+/// #897: a flat exact-bound VLP (`FOLLOWS*2`) on a polymorphic edge previously
+/// dropped the per-hop type/label discriminator entirely — the r1..rN self-join
+/// counted 2-chains of ANY interaction type. Each hop alias must now carry
+/// `interaction_type = 'FOLLOWS' AND from_type = 'User' AND to_type = 'User'`,
+/// exactly as the single-hop and recursive-CTE paths do.
+#[tokio::test]
+async fn flat_poly_vlp_exact_emits_per_hop_discriminator_897() {
+    let schema = load_schema(SchemaId::Polymorphic.yaml_path());
+    let cypher = "MATCH (a:User)-[:FOLLOWS*2]->(b:User) RETURN count(*)";
+
+    for (dialect, dname) in [
+        (SqlDialect::ClickHouse, "clickhouse"),
+        (SqlDialect::Databricks, "databricks"),
+    ] {
+        let sql = render(&schema, cypher, dialect).await;
+        // Both hop aliases r1 and r2 must carry all three discriminators.
+        for r in ["r1", "r2"] {
+            assert!(
+                sql.contains(&format!("{r}.interaction_type = 'FOLLOWS'"))
+                    && sql.contains(&format!("{r}.from_type = 'User'"))
+                    && sql.contains(&format!("{r}.to_type = 'User'")),
+                "flat poly VLP ({dname}) hop {r} missing the type/label discriminator (#897):\n{sql}"
+            );
+        }
+    }
+}
+
 /// #458 follow-up regression: the FROM-marker pre_filter promotion (the
 /// whole_edge_r fix above) must NOT fire when `extract_from` renders a CTE as
 /// the FROM instead of the marker's own edge table. With UNLABELED endpoints
