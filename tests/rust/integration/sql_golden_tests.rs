@@ -10790,6 +10790,57 @@ mod walker_drift_family_484_490_495_476_483 {
         );
     }
 
+    /// #962: `size`/`reverse` are overloaded across strings AND arrays, so —
+    /// unlike the string-only functions in #960 — the UTF8 upgrade must be
+    /// argument-type-dispatched: `lengthUTF8`/`reverseUTF8` (string-only on
+    /// ClickHouse) fire only when the argument is a PROVEN string; an array or
+    /// unknown-typed argument keeps the plain `length`/`reverse`.
+    #[tokio::test]
+    async fn size_reverse_utf8_dispatch_by_arg_type_962() {
+        let schema = load_schema("benchmarks/social_network/schemas/social_benchmark.yaml");
+
+        // PROVEN string (literal, and a string-returning-fn arg) → UTF8 variant.
+        let str_sql = render(
+            &schema,
+            "MATCH (u:User) RETURN size('héllo') AS a, reverse('héllo') AS b, \
+             size(toUpper('x')) AS c",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            str_sql.contains("lengthUTF8(") && str_sql.contains("reverseUTF8("),
+            "#962: size/reverse over a proven string must use the UTF8 variant:\n{str_sql}"
+        );
+
+        // ARRAY argument → plain `length`/`reverse` (UTF8 variants reject arrays).
+        let arr_sql = render(
+            &schema,
+            "MATCH (u:User) RETURN size([1, 2, 3]) AS a, reverse([1, 2, 3]) AS b",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            arr_sql.contains("length(")
+                && arr_sql.contains("reverse(")
+                && !arr_sql.contains("lengthUTF8(")
+                && !arr_sql.contains("reverseUTF8("),
+            "#962: size/reverse over an ARRAY must keep the plain (non-UTF8) name:\n{arr_sql}"
+        );
+
+        // Databricks keeps plain names for both (Spark is already codepoint-based;
+        // `size` over a collection is separately dispatched to Spark `size`).
+        let dbx = render(
+            &schema,
+            "MATCH (u:User) RETURN size('héllo') AS a, reverse('héllo') AS b",
+            SqlDialect::Databricks,
+        )
+        .await;
+        assert!(
+            !dbx.contains("UTF8"),
+            "#962: Databricks must not emit any UTF8 variant:\n{dbx}"
+        );
+    }
+
     /// `bidirectional_union` CTE, e.g. `MATCH (a:User)-[r]-(o)`) used to
     /// per-label-raw-column logic (designed for a bare `MATCH (n)`
     /// ViewScan UNION, which has genuinely separate `post_id`/`user_id`

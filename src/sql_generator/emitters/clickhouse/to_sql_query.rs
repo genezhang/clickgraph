@@ -1005,6 +1005,40 @@ fn databricks_size_name(
     arg.filter(|a| render_arg_is_collection(a)).map(|_| "size")
 }
 
+/// #962: ClickHouse UTF8 upgrade for the OVERLOADED string/array functions
+/// `size`→`length` and `reverse`. ClickHouse's `length`/`reverse` are
+/// byte-based on strings (silently wrong on multi-byte UTF-8 — `size('héllo')`
+/// counts 6 bytes, not 5 codepoints; `reverse('héllo')` byte-reverses into
+/// garbage), but `lengthUTF8`/`reverseUTF8` are STRING-ONLY (reject arrays).
+/// So — unlike the string-only functions fixed at the registry level in #960 —
+/// we can only upgrade when the argument is PROVEN to be a string. An array or
+/// an unknown-typed argument keeps the plain `length`/`reverse` (correct for
+/// arrays; byte-identical to pre-#962 for unknowns, so no regression and never
+/// breaks an array). ClickHouse only — Spark's `length`/`reverse` are already
+/// codepoint-based (and `size` there is separately dispatched to Spark `size`
+/// for collections via [`databricks_size_name`]).
+pub(crate) fn clickhouse_utf8_string_fn(
+    fn_name_lower: &str,
+    arg: Option<&RenderExpr>,
+    dialect: crate::sql_generator::SqlDialect,
+) -> Option<&'static str> {
+    use crate::sql_generator::SqlDialect;
+    if dialect == SqlDialect::Databricks {
+        return None;
+    }
+    let arg = arg?;
+    let is_string = super::type_inference::infer_render_type(arg)
+        == Some(super::type_inference::RenderType::String);
+    if !is_string {
+        return None;
+    }
+    match fn_name_lower {
+        "size" => Some("lengthUTF8"),
+        "reverse" => Some("reverseUTF8"),
+        _ => None,
+    }
+}
+
 /// True when a `size()` argument is recognizably a collection (vs a string).
 fn render_arg_is_collection(arg: &RenderExpr) -> bool {
     fn name_is_collection(name: &str) -> bool {
@@ -7259,8 +7293,15 @@ impl RenderExpr {
                         // Cypher `size()` is dialect-/type-sensitive on Spark: emit
                         // `size` for a collection argument, else the string-safe
                         // `length` default. ClickHouse keeps overloaded `length`.
+                        // #962: on ClickHouse, `size`/`reverse` over a PROVEN
+                        // string upgrade to the codepoint-based `lengthUTF8`/
+                        // `reverseUTF8` (array/unknown args keep the plain name).
                         let fn_name = if fn_name_lower == "size" {
-                            databricks_size_name(fn_call.args.first(), dialect)
+                            clickhouse_utf8_string_fn(&fn_name_lower, fn_call.args.first(), dialect)
+                                .or_else(|| databricks_size_name(fn_call.args.first(), dialect))
+                                .unwrap_or_else(|| mapping.name_for(dialect))
+                        } else if fn_name_lower == "reverse" {
+                            clickhouse_utf8_string_fn(&fn_name_lower, fn_call.args.first(), dialect)
                                 .unwrap_or_else(|| mapping.name_for(dialect))
                         } else {
                             mapping.name_for(dialect)
@@ -9734,6 +9775,44 @@ mod tests {
         let lit = RenderExpr::Literal(Literal::String("abc".to_string()));
         assert_eq!(
             databricks_size_name(Some(&lit), SqlDialect::Databricks),
+            None
+        );
+    }
+
+    /// #962: `clickhouse_utf8_string_fn` upgrades `size`/`reverse` to the
+    /// codepoint-based UTF8 variants ONLY for a proven-string arg on ClickHouse.
+    #[test]
+    fn clickhouse_utf8_string_fn_dispatches_by_arg_type() {
+        use crate::sql_generator::SqlDialect;
+        let str_lit = RenderExpr::Literal(Literal::String("héllo".to_string()));
+        let arr = RenderExpr::List(vec![RenderExpr::Literal(Literal::Integer(1))]);
+
+        // Proven string on ClickHouse → UTF8 variant.
+        assert_eq!(
+            clickhouse_utf8_string_fn("size", Some(&str_lit), SqlDialect::ClickHouse),
+            Some("lengthUTF8")
+        );
+        assert_eq!(
+            clickhouse_utf8_string_fn("reverse", Some(&str_lit), SqlDialect::ClickHouse),
+            Some("reverseUTF8")
+        );
+        // Array arg → None (keep the plain, array-safe name).
+        assert_eq!(
+            clickhouse_utf8_string_fn("size", Some(&arr), SqlDialect::ClickHouse),
+            None
+        );
+        assert_eq!(
+            clickhouse_utf8_string_fn("reverse", Some(&arr), SqlDialect::ClickHouse),
+            None
+        );
+        // Databricks → None (Spark is already codepoint-based).
+        assert_eq!(
+            clickhouse_utf8_string_fn("size", Some(&str_lit), SqlDialect::Databricks),
+            None
+        );
+        // A non-size/reverse function name → None even for a string.
+        assert_eq!(
+            clickhouse_utf8_string_fn("upper", Some(&str_lit), SqlDialect::ClickHouse),
             None
         );
     }
