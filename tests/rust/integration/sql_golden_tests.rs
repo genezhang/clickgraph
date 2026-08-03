@@ -10987,6 +10987,22 @@ mod walker_drift_family_484_490_495_476_483 {
             int_seed.contains("toInt64(0)") && !int_seed.contains("toFloat64"),
             "#971: an Integer reduce seed must keep the Int64 cast:\n{int_seed}"
         );
+
+        // Path C coverage: a reduce with a Float seed inside a VLP WHERE filter
+        // is rendered by `cte_extraction::render_expr_to_sql_string` (not
+        // `RenderExpr::to_sql`), so it needs its OWN Float arm.
+        let vlp = render(
+            &schema,
+            "MATCH (u:User)-[r:FOLLOWS*1..2]->(v:User) \
+             WHERE reduce(n = 0.0, x IN [1.5, 2.5] | n + x) > 3 RETURN u.user_id",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            vlp.contains("toFloat64(0"),
+            "#971: a Float reduce seed in a VLP WHERE (Path C) must also cast to \
+             Float64:\n{vlp}"
+        );
     }
 
     /// `bidirectional_union` CTE, e.g. `MATCH (a:User)-[r]-(o)`) used to
