@@ -1705,6 +1705,64 @@ impl FilterTagging {
                     label: check_label,
                 })
             }
+            // #906: a CASE expression must recurse into its scrutinee, each
+            // WHEN/THEN, and the ELSE so a denorm property buried inside it (e.g.
+            // `CASE WHEN a.code = 'X' THEN ...`) is resolved to its physical column
+            // (`a.Origin`) — exactly as the OperatorApplicationExp / ScalarFnCall /
+            // List arms already do for the bare / `toUpper(a.code)` / `a.code + ...`
+            // shapes. Without this arm the CASE fell through the `other` catch-all
+            // unchanged, leaving `a.code` unmapped; on an UNDIRECTED denorm match
+            // that unresolved name then leaked as a nonexistent `r.code` column and
+            // the BidirectionalUnion per-arm origin/dest flip had no physical column
+            // to swap (#906). Standard (non-denorm) properties recurse to an
+            // identity mapping, so this is byte-identical for them.
+            LogicalExpr::Case(logical_case) => {
+                let mapped_scrutinee = match logical_case.expr {
+                    Some(e) => Some(Box::new(self.apply_property_mapping_internal(
+                        *e,
+                        plan_ctx,
+                        graph_schema,
+                        plan,
+                        preserve_id_function,
+                    )?)),
+                    None => None,
+                };
+                let mut mapped_when_then = Vec::with_capacity(logical_case.when_then.len());
+                for (when_cond, then_val) in logical_case.when_then {
+                    let mapped_when = self.apply_property_mapping_internal(
+                        when_cond,
+                        plan_ctx,
+                        graph_schema,
+                        plan,
+                        preserve_id_function,
+                    )?;
+                    let mapped_then = self.apply_property_mapping_internal(
+                        then_val,
+                        plan_ctx,
+                        graph_schema,
+                        plan,
+                        preserve_id_function,
+                    )?;
+                    mapped_when_then.push((mapped_when, mapped_then));
+                }
+                let mapped_else = match logical_case.else_expr {
+                    Some(e) => Some(Box::new(self.apply_property_mapping_internal(
+                        *e,
+                        plan_ctx,
+                        graph_schema,
+                        plan,
+                        preserve_id_function,
+                    )?)),
+                    None => None,
+                };
+                Ok(LogicalExpr::Case(
+                    crate::query_planner::logical_expr::LogicalCase {
+                        expr: mapped_scrutinee,
+                        when_then: mapped_when_then,
+                        else_expr: mapped_else,
+                    },
+                ))
+            }
             // For other expression types, return as-is
             other => Ok(other),
         }

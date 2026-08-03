@@ -1347,6 +1347,16 @@ const DENORM_CORPUS: &[(&str, &str)] = &[
         "undirected_wrapped_buried_agg_key_coalesce_876",
         "MATCH (a:Airport)-[r:FLIGHT]-(b:Airport) RETURN coalesce(a.code, 'x') + toString(count(r)) AS m",
     ),
+    // #906 (#876 sibling): a buried grouping key inside a CASE must ALSO
+    // property-map + flip per arm. FilterTagging's `apply_property_mapping_internal`
+    // had no `Case` arm, so `a.code` inside a CASE fell through unmapped → both
+    // undirected arms leaked a nonexistent `r.code` and `GROUP BY r.code` (invalid
+    // SQL). Now the CASE recurses like the scalar-fn/operator forms: arm 1 reads
+    // `r.Origin`, arm 2 flips to `r.Dest` (aliased `r.Origin`), GROUP BY `r.Origin`.
+    (
+        "undirected_case_buried_agg_key_906",
+        "MATCH (a:Airport)-[r:FLIGHT]-(b:Airport) RETURN CASE WHEN count(r) > 5 THEN a.code ELSE 'x' END AS m",
+    ),
     // #844 byte-lock guard: the bare-key form (grouping key as its own SELECT
     // item) was ALWAYS correct and must stay byte-identical — the fix is scoped
     // to the buried-key shape only.
@@ -10106,13 +10116,19 @@ mod walker_drift_family_484_490_495_476_483 {
         // used by the (already-working) plain-equality case — extract that
         // alias from the WHERE clause rather than hard-coding an
         // auto-generated counter value (t1/t2 vs t5/t6 depending on test
-        // ordering within the process).
+        // ordering within the process). #906: the `ip` property is now ALSO
+        // resolved to its physical denorm column (`id.orig_h`) inside the CASE
+        // — FilterTagging's new `Case` arm recurses like the operator/scalar-fn
+        // forms — so the predicate reads `t{n}."id.orig_h" = t{m}."id.orig_h"`
+        // (previously the property was left unresolved as `.ip`, a less-complete
+        // binding this test happened to lock).
         assert!(
             sql.contains("CASE WHEN ")
-                && sql.contains(".ip = ")
-                && !sql.contains("srcip1.ip = srcip2.ip"),
-            "#495: CASE predicate must bind to edge aliases, not the raw \
-             cypher aliases:\n{sql}"
+                && sql.contains(".orig_h\" = ")
+                && !sql.contains("srcip1.ip = srcip2.ip")
+                && !sql.contains("srcip1.\"id.orig_h\""),
+            "#495/#906: CASE predicate must bind to edge aliases AND resolve the \
+             denorm property to its physical column, not the raw cypher aliases:\n{sql}"
         );
     }
 
