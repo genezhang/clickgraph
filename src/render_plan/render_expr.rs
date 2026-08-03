@@ -908,6 +908,19 @@ fn generate_multi_hop_pattern_count_sql(
         Direction::Incoming => &first_rel_schema.to_id,
         _ => &first_rel_schema.from_id, // default
     };
+    // #921: the correlation predicate `r1.{first_col} = ...` references the edge
+    // column verbatim; a COMPOSITE FK column stringifies to a bare comma-list =
+    // malformed SQL. Defer LOUD rather than emit garbage (mirrors the single-hop
+    // guard and `generate_exists_graph_rel_sql`).
+    if first_col.columns().len() != 1 {
+        return Err(RenderBuildError::UnsupportedFeature(format!(
+            "size() multi-hop pattern count over relationship '{}' with a COMPOSITE \
+             foreign-key column is not supported (the correlation predicate needs \
+             composite-key tuple equality). Express it as a top-level MATCH ... \
+             WITH count(*) instead.",
+            first_rel_type
+        )));
+    }
     where_conditions.push(format!("r1.{} = {}", first_col, start_id_sql));
 
     // Add subsequent relationships as JOINs
@@ -997,6 +1010,19 @@ fn generate_multi_hop_pattern_count_sql(
             Direction::Incoming => &rel_schema.to_id,
             _ => &rel_schema.from_id,
         };
+
+        // #921: the JOIN ON references both columns verbatim; a COMPOSITE column
+        // on either side stringifies to a bare comma-list = malformed SQL. Defer
+        // LOUD (consistent with the correlation guard above).
+        if prev_end_col.columns().len() != 1 || curr_start_col.columns().len() != 1 {
+            return Err(RenderBuildError::UnsupportedFeature(format!(
+                "size() multi-hop pattern count over relationship '{}' with a COMPOSITE \
+                 foreign-key column is not supported (the JOIN predicate needs \
+                 composite-key tuple equality). Express it as a top-level MATCH ... \
+                 WITH count(*) instead.",
+                rel_type
+            )));
+        }
 
         from_clause.push_str(&format!(
             " INNER JOIN {} AS {} ON {}.{} = {}.{}",
@@ -1096,6 +1122,34 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                     };
                     let from_col = &rel_schema.from_id;
                     let to_col = &rel_schema.to_id;
+
+                    // #921: the correlation WHERE below references the facing edge
+                    // column verbatim (`{table}.{from_col}`/`{to_col}`). A COMPOSITE
+                    // FK column stringifies to a bare comma-list (`from_bank_id,
+                    // from_account_number`), which is malformed SQL there. Defer LOUD
+                    // (ground-rule-1) rather than emit garbage — mirrors the composite
+                    // deferral `generate_exists_graph_rel_sql` already applies. The
+                    // guard is DIRECTION-AWARE: only the column(s) actually used as the
+                    // correlation predicate matter, so a single-column facing side
+                    // (e.g. `(c:Customer)-[:OWNS]->()` on a single `from_id`) keeps
+                    // working even when the OPPOSITE side is composite.
+                    let correlation_is_composite = match conn.relationship.direction {
+                        Direction::Outgoing => from_col.columns().len() != 1,
+                        Direction::Incoming => to_col.columns().len() != 1,
+                        // Undirected references BOTH facing columns in the OR.
+                        Direction::Either => {
+                            from_col.columns().len() != 1 || to_col.columns().len() != 1
+                        }
+                    };
+                    if correlation_is_composite {
+                        return Err(RenderBuildError::UnsupportedFeature(format!(
+                            "size() pattern count over relationship '{}' with a COMPOSITE \
+                             foreign-key column is not supported (the correlation predicate \
+                             needs composite-key tuple equality). Express it as a top-level \
+                             MATCH ... WITH count(*) instead.",
+                            rel_type
+                        )));
+                    }
 
                     // Get the start node's ID column.
                     // First try the explicit label from the pattern, then fall back to relationship schema.

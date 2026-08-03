@@ -524,6 +524,29 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **Fix — `size((composite-FK pattern))` now fails LOUD instead of
+  emitting malformed SQL** (branch `fix/921-composite-fk-size-guard`, closes #921;
+  follow-up to #613, surfaced during its review). On a composite-id schema,
+  `size((a:Account)-[:TRANSFERRED]->())` (composite `from_id`) emitted
+  `WHERE transfers.from_bank_id, from_account_number = (...)` — the correlation
+  WHERE **LHS** is a bare comma-list (`rel_schema.from_id`/`to_id` stringified),
+  invalid SQL (ground-rule-1). **Root cause:** `generate_pattern_count_sql` and
+  `generate_multi_hop_pattern_count_sql` (`render_expr.rs`) interpolate the facing
+  edge FK column verbatim into the WHERE/JOIN and had no composite guard — unlike
+  `generate_exists_graph_rel_sql`, which already defers composite FK columns.
+  **Fix:** add a **direction-aware** composite guard to both pattern-count paths —
+  defer LOUD (`UnsupportedFeature`, suggesting a top-level `MATCH ... WITH
+  count(*)`) when the column actually used as the correlation/JOIN predicate is
+  composite. Direction-aware so a SINGLE-column facing side still renders even when
+  the opposite side is composite: `(c:Customer)-[:OWNS]->()` (single `from_id`)
+  keeps working; `(a:Account)<-[:OWNS]-()` (composite `to_id`) and
+  `(a)-[:TRANSFERRED]->()` (composite `from_id`) now error cleanly. Standard/FK
+  single-column schemas byte-identical (corpus_sweep 0-churn, #613 goldens
+  unchanged); new regression test over composite out/in/after-WITH/multi-hop +
+  single-column negative control, fail-when-reverted; ratchet net-zero. Option 1
+  (loud guard) of #921; option 2 (real composite tuple-equality) remains open if
+  composite `size()` support is wanted.
+
 - 2026-08-02: **Fix — closed self-ref OPTIONAL VLP resolves the anchor property
   from the anchor table** (branch `fix/899-optional-closed-vlp-anchor-prop`, PR
   #923, closes #899). `MATCH (a) OPTIONAL MATCH (a)-[:R*..]->(a) RETURN a.name,

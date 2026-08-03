@@ -8077,6 +8077,64 @@ async fn size_pattern_count_after_with_resolves_cte_column_613() {
     }
 }
 
+/// #921 (follow-up to #613): `size((pattern))` over a relationship whose FACING
+/// correlation FK column is COMPOSITE must fail LOUD, not emit malformed SQL.
+/// Before the guard, `generate_pattern_count_sql`/`generate_multi_hop_...`
+/// interpolated `rel_schema.from_id`/`to_id` verbatim into the WHERE/JOIN, and a
+/// composite id stringifies to a bare comma-list (`from_bank_id,
+/// from_account_number`) → invalid SQL (ground-rule-1 violation). The guard is
+/// DIRECTION-AWARE: only the column(s) actually used as the correlation/JOIN
+/// predicate matter, so a single-column FACING side still renders even when the
+/// opposite side is composite.
+#[tokio::test]
+async fn size_pattern_count_composite_fk_errors_cleanly_921() {
+    let schema = load_schema(SchemaId::CompositeId.yaml_path());
+    // Composite FACING column → clean UnsupportedFeature error.
+    let composite_cases = [
+        // TRANSFERRED outgoing: from_id = [from_bank_id, from_account_number].
+        "MATCH (a:Account) RETURN size((a)-[:TRANSFERRED]->()) AS n",
+        // OWNS incoming: to_id = [bank_id, account_number].
+        "MATCH (a:Account) RETURN size((a)<-[:OWNS]-()) AS n",
+        // After a WITH barrier (the #613 position) — still errors, not malformed.
+        "MATCH (a:Account) WITH a RETURN size((a)-[:TRANSFERRED]->()) AS n",
+        // Multi-hop over a composite edge.
+        "MATCH (a:Account) RETURN size((a)-[:TRANSFERRED]->()-[:TRANSFERRED]->()) AS n",
+    ];
+    for cypher in composite_cases {
+        let result = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+        let err = result
+            .as_ref()
+            .err()
+            .unwrap_or_else(|| {
+                panic!("[{cypher}] composite-FK size() must error, not render: {result:?}")
+            })
+            .clone();
+        assert!(
+            err.contains("UnsupportedFeature") && err.contains("COMPOSITE"),
+            "[{cypher}] expected a composite-FK UnsupportedFeature error, got:\n{err}"
+        );
+        // Never leak the malformed bare comma-list into any emitted string.
+        assert!(
+            !err.contains("from_bank_id, from_account_number")
+                && !err.contains("bank_id, account_number"),
+            "[{cypher}] error must not contain the malformed comma-list SQL:\n{err}"
+        );
+    }
+
+    // Negative control: a SINGLE-column facing side still renders (direction-aware
+    // guard). OWNS outgoing correlates on the single `from_id = customer_id`.
+    let sql = render(
+        &schema,
+        "MATCH (c:Customer) RETURN size((c)-[:OWNS]->()) AS n",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("account_ownership.customer_id = c.customer_id"),
+        "single-column OWNS outgoing must still render its correlation:\n{sql}"
+    );
+}
+
 /// #466 round 4 (adversarial-review blocking finding): `id(alias)` on a
 /// `pattern_union` endpoint must resolve LABEL-AGNOSTICALLY to the CTE's
 /// start_id/end_id — never to ONE label's id column.
