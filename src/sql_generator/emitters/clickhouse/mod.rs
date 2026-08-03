@@ -22,8 +22,8 @@ mod where_clause_tests;
 
 pub use common::{
     contains_predicate, dialect_function_name, ends_with_predicate, list_higher_order_fn_sql,
-    qualified_column, quote_identifier, reduce_fold_sql, regex_match_predicate, round_half_up_sql,
-    starts_with_predicate,
+    qualified_column, quote_identifier, reduce_binder_type_map, reduce_fold_sql,
+    regex_match_predicate, round_half_up_sql, starts_with_predicate,
 };
 pub use errors::ClickhouseQueryGeneratorError;
 pub use function_translator::{

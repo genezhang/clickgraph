@@ -67,6 +67,19 @@ pub struct QueryContext {
     /// Used for IS NULL checks on relationship aliases
     pub relationship_columns: HashMap<String, (String, String)>,
 
+    /// #969: types of `reduce()` lambda binders in scope while the CURRENT
+    /// reduce body is being rendered — `accumulator → type of initial_value`,
+    /// `variable → element type of list`. `infer_render_type` consults this so a
+    /// bare binder reference (`s`/`x`, which otherwise types as unknown) resolves
+    /// to its real type. That lets the string-`+`→`concat` detector (#871) fire
+    /// for `reduce(s = '', x IN ['a','b','c'] | s + x)` — otherwise the body
+    /// renders a numeric `+` on two strings → ClickHouse Code 43. Pushed (saving
+    /// the prior map) around the body render at each `ReduceExpr` site and
+    /// restored after, so nested reduces scope correctly. Empty outside any
+    /// reduce → unknown binder stays `None` (conservative, unchanged behavior).
+    pub reduce_binder_types:
+        HashMap<String, crate::sql_generator::emitters::clickhouse::type_inference::RenderType>,
+
     /// Multi-type VLP aliases: alias → cte_name
     /// For aliases that are multi-type VLP endpoints requiring JSON extraction
     pub multi_type_vlp_aliases: HashMap<String, String>,
@@ -487,6 +500,37 @@ pub fn set_relationship_columns(columns: HashMap<String, (String, String)>) {
 pub fn get_relationship_columns(alias: &str) -> Option<(String, String)> {
     QUERY_CONTEXT
         .try_with(|ctx| ctx.borrow().relationship_columns.get(alias).cloned())
+        .ok()
+        .flatten()
+}
+
+/// #969: install the reduce-lambda binder-type map for the CURRENT reduce body
+/// render, returning the PRIOR map so the caller can restore it after (so nested
+/// reduces scope correctly). See [`QueryContext::reduce_binder_types`].
+pub fn push_reduce_binder_types(
+    types: HashMap<String, crate::sql_generator::emitters::clickhouse::type_inference::RenderType>,
+) -> HashMap<String, crate::sql_generator::emitters::clickhouse::type_inference::RenderType> {
+    QUERY_CONTEXT
+        .try_with(|ctx| std::mem::replace(&mut ctx.borrow_mut().reduce_binder_types, types))
+        .unwrap_or_default()
+}
+
+/// #969: restore a reduce binder-type map saved by [`push_reduce_binder_types`].
+pub fn restore_reduce_binder_types(
+    prev: HashMap<String, crate::sql_generator::emitters::clickhouse::type_inference::RenderType>,
+) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().reduce_binder_types = prev;
+    });
+}
+
+/// #969: the declared type of a `reduce()` lambda binder currently in scope, if
+/// any. `None` outside a reduce body (map empty) → conservative, unchanged.
+pub fn get_reduce_binder_type(
+    name: &str,
+) -> Option<crate::sql_generator::emitters::clickhouse::type_inference::RenderType> {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().reduce_binder_types.get(name).copied())
         .ok()
         .flatten()
 }

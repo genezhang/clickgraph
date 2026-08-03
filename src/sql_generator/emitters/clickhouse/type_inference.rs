@@ -111,8 +111,46 @@ pub fn infer_render_type(expr: &RenderExpr) -> Option<RenderType> {
         // Column (bare, no alias→label), TableAlias, ColumnAlias, Parameter,
         // Raw, Star, MapLiteral, Case, ReduceExpr, ArraySubscript (element type
         // unknown), CteEntityRef.
+        //
+        // NOTE (#969): a `reduce()` lambda binder DOES have a known type inside
+        // its body, but it is deliberately NOT surfaced here. This shared
+        // classifier feeds #880 (toInteger/toFloat-OrNull), #854 (temporal), and
+        // #962 (size/reverse UTF8) as well as #871 (string-`+`→concat); typing a
+        // binder here made #880 rewrite `toInteger(x)` on a string-element binder
+        // to `toInt64OrNull` → `Nullable` → Code 53 (a regression). The binder
+        // type is instead consulted ONLY by the string-concat detectors
+        // (`is_string_operand` / `expression_utils::contains_string_literal`) via
+        // `query_context::get_reduce_binder_type`, keeping the conservative-None
+        // invariant intact for every other consumer.
         _ => None,
     }
+}
+
+/// #969: infer the ELEMENT type of a list-valued expression, if uniform.
+///
+/// Used to type a `reduce()` iteration variable from its `list`. A `List` of
+/// literals/expressions returns the common element type when every non-null
+/// element agrees (e.g. `['a','b','c']` → `String`); an empty, mixed-type, or
+/// non-`List` expression returns `None` (conservative — the binder then stays
+/// untyped and behavior is unchanged).
+pub fn infer_list_element_type(expr: &RenderExpr) -> Option<RenderType> {
+    let RenderExpr::List(items) = expr else {
+        return None;
+    };
+    let mut elem: Option<RenderType> = None;
+    for item in items {
+        match infer_render_type(item) {
+            // A typeless element (e.g. Cypher null) doesn't constrain the type.
+            None => {}
+            Some(t) => match elem {
+                None => elem = Some(t),
+                Some(prev) if prev == t => {}
+                // Mixed element types → not uniform.
+                Some(_) => return None,
+            },
+        }
+    }
+    elem
 }
 
 /// Classify a function call by its registry [`FnReturnKind`], recursing for the
@@ -440,5 +478,40 @@ mod tests {
             column: PropertyValue::Column("name".into()),
         });
         assert_eq!(infer_render_type(&pa), None);
+    }
+
+    #[test]
+    fn infer_list_element_type_uniform_and_mixed() {
+        use crate::render_plan::render_expr::Literal;
+        let s = |v: &str| RenderExpr::Literal(Literal::String(v.to_string()));
+        let i = |v: i64| RenderExpr::Literal(Literal::Integer(v));
+
+        // Uniform string list → String.
+        assert_eq!(
+            infer_list_element_type(&RenderExpr::List(vec![s("a"), s("b"), s("c")])),
+            Some(RenderType::String)
+        );
+        // Uniform integer list → Integer.
+        assert_eq!(
+            infer_list_element_type(&RenderExpr::List(vec![i(1), i(2)])),
+            Some(RenderType::Integer)
+        );
+        // Mixed → None.
+        assert_eq!(
+            infer_list_element_type(&RenderExpr::List(vec![s("a"), i(1)])),
+            None
+        );
+        // Empty → None.
+        assert_eq!(infer_list_element_type(&RenderExpr::List(vec![])), None);
+        // A null element doesn't constrain: [null, 'a'] → String.
+        assert_eq!(
+            infer_list_element_type(&RenderExpr::List(vec![
+                RenderExpr::Literal(Literal::Null),
+                s("a")
+            ])),
+            Some(RenderType::String)
+        );
+        // Non-list → None.
+        assert_eq!(infer_list_element_type(&s("a")), None);
     }
 }
