@@ -524,6 +524,37 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Bug-driven refactor (#906/#929/#940 cluster, SELECT path) — denorm
+  props inside computed RETURN projection wrappers now resolve** (branch
+  `fix/944-computed-projection-denorm-remap`, PR #945, closes #944). A
+  denormalized node's property buried in a computed RETURN wrapper (`[s.ip][1]`,
+  `{a: s.ip}`, `reduce(...)`, `[s.ip]`, `[s.ip][0..1]`) leaked its raw cypher
+  alias → `arrayElementOrNull([toString(s.ip)], …)` with `s` bound to no table →
+  live `Code 47`. The identical expressions in WHERE/ORDER BY resolve, and a bare
+  `s.ip` projection resolves via Case 4 — only the computed-projection arm was
+  uncovered. **Two coordinated `select_builder.rs` edits:** (1) the computed-expr
+  projection arm ("Case 6") did a raw `try_into()` with NO denorm resolution —
+  unlike Case 6a (aggregate-bearing, already calls `resolve_denorm_refs_in_expr`)
+  and Case 4 (bare property) — so wire Case 6 to call the resolver too; (2)
+  `resolve_denorm_refs_in_expr` itself hand-rolled recursion with a `_ => {}`
+  that dropped `ArraySubscript`/`ArraySlicing`/`MapLiteral`/`ReduceExpr`, so even
+  when called it stopped at the wrapper — fold its recursion onto the exhaustive
+  `descend_render_expr_mut` (no `_` catch-all). Because the resolver rewrites bare
+  `TableAlias`/`PropertyAccessExp` keyed on the NAME, descending into `reduce()`
+  bodies reintroduces the #929/#940 binder-shadow hazard → fixed with the identical
+  shielding (`initial_value`/`list` outer-scope, `accumulator`/`variable` shielded
+  for the body). BOTH edits load-bearing (neuter either → leak returns). Live-verified
+  all five wrappers return correct denorm values; non-denorm = no-op → `corpus_sweep`
+  byte-identical (563); ratchet net-neutral; 1682 lib green. 2 golden tests
+  (`computed_projection_denorm_prop_resolves_944`,
+  `computed_projection_reduce_binder_shielded_944`). **Adversarial review APPROVE-0**
+  (every claim backed by live SQL diff + neuter-and-fail). **Process note:** nearly
+  abandoned the correct fix because a stale `cg` binary (plain `cargo build` does
+  NOT rebuild `clickgraph-tool`, a separate workspace member) made marker-injection
+  show false "0 calls" → always `cargo build -p clickgraph-tool` before trusting
+  `cg` output. Filed **#946** (analyzer-side sibling: standard-schema computed
+  wrapper drops property-name→column mapping, `u.name` not `full_name`).
+
 - 2026-08-02: **Feature — #629 extension: target-position + undirected uncorrelated
   `size([x IN list WHERE (pattern)])`** (branch `feature/629-extend-target-undirected`,
   references #629). #629 shipped the arrayCount render gated to a single directed hop
