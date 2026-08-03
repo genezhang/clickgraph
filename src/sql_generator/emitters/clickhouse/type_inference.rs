@@ -107,12 +107,48 @@ pub fn infer_render_type(expr: &RenderExpr) -> Option<RenderType> {
         RenderExpr::InSubquery(_) | RenderExpr::ExistsSubquery(_) => Some(RenderType::Boolean),
         RenderExpr::PatternCount(_) => Some(RenderType::Integer),
 
+        // ---- #969: a `reduce()` lambda binder in scope ----
+        // A bare `TableAlias`/`Column` is normally untyped (unknown), but while a
+        // reduce BODY is being rendered its `accumulator`/`variable` binders have
+        // a known type (seeded from `initial_value` / the list element type),
+        // installed task-locally by the ReduceExpr render sites. Consulting it
+        // lets the string-`+`→`concat` detector see that `s + x` is a string
+        // concatenation. Empty outside a reduce → `None` (unchanged).
+        RenderExpr::TableAlias(ta) => crate::server::query_context::get_reduce_binder_type(&ta.0),
+        RenderExpr::Column(col) => crate::server::query_context::get_reduce_binder_type(col.raw()),
+
         // ---- Everything else: unknown (conservative) ----
-        // Column (bare, no alias→label), TableAlias, ColumnAlias, Parameter,
-        // Raw, Star, MapLiteral, Case, ReduceExpr, ArraySubscript (element type
-        // unknown), CteEntityRef.
+        // ColumnAlias, Parameter, Raw, Star, MapLiteral, Case, ReduceExpr,
+        // ArraySubscript (element type unknown), CteEntityRef.
         _ => None,
     }
+}
+
+/// #969: infer the ELEMENT type of a list-valued expression, if uniform.
+///
+/// Used to type a `reduce()` iteration variable from its `list`. A `List` of
+/// literals/expressions returns the common element type when every non-null
+/// element agrees (e.g. `['a','b','c']` → `String`); an empty, mixed-type, or
+/// non-`List` expression returns `None` (conservative — the binder then stays
+/// untyped and behavior is unchanged).
+pub fn infer_list_element_type(expr: &RenderExpr) -> Option<RenderType> {
+    let RenderExpr::List(items) = expr else {
+        return None;
+    };
+    let mut elem: Option<RenderType> = None;
+    for item in items {
+        match infer_render_type(item) {
+            // A typeless element (e.g. Cypher null) doesn't constrain the type.
+            None => {}
+            Some(t) => match elem {
+                None => elem = Some(t),
+                Some(prev) if prev == t => {}
+                // Mixed element types → not uniform.
+                Some(_) => return None,
+            },
+        }
+    }
+    elem
 }
 
 /// Classify a function call by its registry [`FnReturnKind`], recursing for the
@@ -440,5 +476,40 @@ mod tests {
             column: PropertyValue::Column("name".into()),
         });
         assert_eq!(infer_render_type(&pa), None);
+    }
+
+    #[test]
+    fn infer_list_element_type_uniform_and_mixed() {
+        use crate::render_plan::render_expr::Literal;
+        let s = |v: &str| RenderExpr::Literal(Literal::String(v.to_string()));
+        let i = |v: i64| RenderExpr::Literal(Literal::Integer(v));
+
+        // Uniform string list → String.
+        assert_eq!(
+            infer_list_element_type(&RenderExpr::List(vec![s("a"), s("b"), s("c")])),
+            Some(RenderType::String)
+        );
+        // Uniform integer list → Integer.
+        assert_eq!(
+            infer_list_element_type(&RenderExpr::List(vec![i(1), i(2)])),
+            Some(RenderType::Integer)
+        );
+        // Mixed → None.
+        assert_eq!(
+            infer_list_element_type(&RenderExpr::List(vec![s("a"), i(1)])),
+            None
+        );
+        // Empty → None.
+        assert_eq!(infer_list_element_type(&RenderExpr::List(vec![])), None);
+        // A null element doesn't constrain: [null, 'a'] → String.
+        assert_eq!(
+            infer_list_element_type(&RenderExpr::List(vec![
+                RenderExpr::Literal(Literal::Null),
+                s("a")
+            ])),
+            Some(RenderType::String)
+        );
+        // Non-list → None.
+        assert_eq!(infer_list_element_type(&s("a")), None);
     }
 }

@@ -10879,6 +10879,54 @@ mod walker_drift_family_484_490_495_476_483 {
         );
     }
 
+    /// #969: a `reduce()` whose body concatenates strings via `+` must render
+    /// `concat(...)`, not numeric `+` (ClickHouse `+` on strings → Code 43). The
+    /// operands are lambda binders (`s` = accumulator, `x` = variable), so the
+    /// string-`+`→`concat` detector needs their types — installed task-locally
+    /// from `initial_value` (String seed) and the list element type. A numeric
+    /// reduce (Integer seed + integer list) must stay `+`.
+    #[tokio::test]
+    async fn reduce_string_concat_body_renders_concat_969() {
+        let schema = load_schema("benchmarks/social_network/schemas/social_benchmark.yaml");
+
+        // String fold: `+` → concat, both dialects.
+        let ch = render(
+            &schema,
+            "MATCH (u:User) RETURN reduce(s = '', x IN ['a', 'b', 'c'] | s + x) AS v",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            ch.contains("concat(s, x)") && !ch.contains("s + x"),
+            "#969: a string reduce body must render concat(s, x), not numeric \
+             `s + x`:\n{ch}"
+        );
+        let dbx = render(
+            &schema,
+            "MATCH (u:User) RETURN reduce(s = '', x IN ['a', 'b', 'c'] | s + x) AS v",
+            SqlDialect::Databricks,
+        )
+        .await;
+        assert!(
+            dbx.contains("concat(s, x)"),
+            "#969: string reduce body must concat on Databricks too:\n{dbx}"
+        );
+
+        // Numeric fold: must stay `+` (no over-fire to concat) — guards the
+        // conservative binder-type gate.
+        let num = render(
+            &schema,
+            "MATCH (u:User) RETURN reduce(s = 0, x IN [1, 2, 3] | s + x) AS v",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            num.contains("s + x") && !num.contains("concat"),
+            "#969: a numeric reduce body must stay `s + x` (binder types are \
+             Integer, not String):\n{num}"
+        );
+    }
+
     /// `bidirectional_union` CTE, e.g. `MATCH (a:User)-[r]-(o)`) used to
     /// per-label-raw-column logic (designed for a bare `MATCH (n)`
     /// ViewScan UNION, which has genuinely separate `post_id`/`user_id`

@@ -168,6 +168,37 @@ pub fn reduce_fold_sql(
     }
 }
 
+/// #969: build the `{binder_name → RenderType}` map for a `reduce()`'s lambda
+/// body from its structural components — `accumulator` takes the type of
+/// `initial_value`, `variable` the ELEMENT type of `list`. Only binders whose
+/// type resolves are inserted (an unresolved binder stays untyped → unchanged).
+///
+/// Install it around the body render with
+/// `push_reduce_binder_types` / `restore_reduce_binder_types` so
+/// `infer_render_type` can type a bare binder reference — letting the string-`+`
+/// → `concat` detector fire for `reduce(s = '', x IN ['a','b'] | s + x)`.
+pub fn reduce_binder_type_map(
+    accumulator: &str,
+    initial_value: &crate::render_plan::render_expr::RenderExpr,
+    variable: &str,
+    list: &crate::render_plan::render_expr::RenderExpr,
+) -> std::collections::HashMap<
+    String,
+    crate::sql_generator::emitters::clickhouse::type_inference::RenderType,
+> {
+    use crate::sql_generator::emitters::clickhouse::type_inference::{
+        infer_list_element_type, infer_render_type,
+    };
+    let mut map = std::collections::HashMap::new();
+    if let Some(t) = infer_render_type(initial_value) {
+        map.insert(accumulator.to_string(), t);
+    }
+    if let Some(t) = infer_list_element_type(list) {
+        map.insert(variable.to_string(), t);
+    }
+    map
+}
+
 /// Render a Cypher *simple* CASE (`CASE expr WHEN v1 THEN r1 ... ELSE d END`)
 /// for the active dialect, from its already-rendered component strings.
 ///

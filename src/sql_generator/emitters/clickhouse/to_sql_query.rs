@@ -8015,7 +8015,21 @@ impl RenderExpr {
                 // Cast numeric init to Int64 to prevent type mismatch issues
                 let init_sql = reduce.initial_value.to_sql();
                 let list_sql = reduce.list.to_sql();
+                // #969: install the lambda binder types (acc = type of
+                // initial_value, x = element type of list) around the BODY render
+                // only, so the string-`+`→`concat` detector can see `s + x` as a
+                // string concatenation. initial_value/list are outer-scope and
+                // rendered above, unaffected. Save/restore for nested reduces.
+                let binder_types = super::common::reduce_binder_type_map(
+                    &reduce.accumulator,
+                    &reduce.initial_value,
+                    &reduce.variable,
+                    &reduce.list,
+                );
+                let prev_binders =
+                    crate::server::query_context::push_reduce_binder_types(binder_types);
                 let expr_sql = reduce.expression.to_sql();
+                crate::server::query_context::restore_reduce_binder_types(prev_binders);
 
                 // Wrap numeric init values in a 64-bit-int cast to prevent
                 // type mismatch when the lambda returns a wider type.
