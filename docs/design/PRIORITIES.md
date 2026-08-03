@@ -524,6 +524,28 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — ClickHouse string functions were byte-based, now
+  codepoint-based (UTF8) — silent-wrong on non-ASCII** (branch
+  `fix/960-string-utf8-fidelity`, PR #961, closes #960). Cypher string functions
+  are codepoint-based; ClickGraph lowered them to ClickHouse's BYTE-based
+  `substring`/`upper`/`lower`, silently mangling any multi-byte UTF-8 char:
+  `substring('héllo',0,3)` → `hé` (cut `é` mid-sequence) not `hél`;
+  `toUpper('café')` → `CAFé`. **Fix:** route the string-ONLY functions through
+  their `…UTF8` variants in the function registry (Rule #7 dispatch point) —
+  `substring`/`left`/`right` → `substringUTF8`, `toUpper` → `upperUTF8`,
+  `toLower` → `lowerUTF8` — with `databricks_name: Some("<plain>")` on each so
+  Spark (already codepoint-based) keeps the plain name (a bare `clickhouse_name`
+  swap would emit a nonexistent `substringUTF8` on Spark). Found by a unicode
+  fidelity scout probe (`é`=2 bytes). Live-verified all correct; ASCII unchanged;
+  goldens regenerated ClickHouse-only (11 files, all plain→UTF8 swaps), ZERO
+  Databricks churn; 1687 lib + integration + ratchet (net-neutral) green. New
+  golden `string_functions_use_utf8_variants_on_clickhouse_960`. **Adversarial
+  review APPROVE-0** (arg-transform parity incl. negative offsets, Databricks
+  plain on all 5, registry sole emit path, non-string args reject identically).
+  Scoped to string-ONLY; **filed #962** (part 2: `size`/`length`/`reverse` are
+  overloaded strings+arrays → need arg-type dispatch via `infer_render_type` /
+  the `databricks_size_name` precedent; also the `FixedString`/`Enum` arg note).
+
 - 2026-08-03: **Correctness — `reduce()` over an empty list literal returns the
   init accumulator** (branch `fix/955-empty-list-reduce-returns-init`, PR #958,
   closes #955; follow-up to #950). A fold over zero elements is the seed, but the
