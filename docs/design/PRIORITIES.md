@@ -524,6 +524,27 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — `reduce()` over an empty list literal returns the
+  init accumulator** (branch `fix/955-empty-list-reduce-returns-init`, PR #958,
+  closes #955; follow-up to #950). A fold over zero elements is the seed, but the
+  renderer emitted `arrayFold(…, [], init)` (CH) / `aggregate(array(), init, …)`
+  (Spark) anyway → `Code 53 TYPE_MISMATCH` (bare `[]` is `Array(Nothing)`, lambda
+  return type can't unify with the accumulator). Can't synthesize a typed empty
+  array (element type unknowable from `[]`, and can differ from the accumulator),
+  and it isn't needed: at BOTH `RenderExpr::ReduceExpr` render sites
+  (`to_sql_query.rs` Path A + `cte_extraction.rs` Path C), when `reduce.list` is
+  an empty `RenderExpr::List` literal, short-circuit to the (numeric-cast-
+  preserved) init. Dialect-agnostic. Deliberately INLINE-literal only — a
+  runtime-typed non-literal list folds fine, left untouched. Live-verified: empty
+  → 7 (was Code 53), string init → 'seed', Databricks `bigint(7)`, non-empty
+  unchanged (123). No corpus churn; 1687 lib + integration + ratchet + snapshots
+  green. Golden `reduce_over_empty_list_returns_init_955` covers BOTH paths
+  (projection = A, VLP-WHERE = C) + Databricks + string-init, load-bearing.
+  **Adversarial review APPROVE-0** (live-confirmed, both-path parity, runtime
+  arrays untouched; its Path-C-coverage finding addressed by the VLP-WHERE
+  assertion). Filed **#957** (a `[]` bound through WITH still fails Code 53 — an
+  upstream WITH-literal-array site this fix correctly doesn't touch).
+
 - 2026-08-03: **Correctness — `reduce()` ClickHouse `arrayFold` lambda arg order
   was SWAPPED (silent-wrong)** (branch `fix/950-arrayfold-lambda-arg-order`, PR
   #954, closes #950). ClickHouse binds `arrayFold`'s FIRST lambda param to the
