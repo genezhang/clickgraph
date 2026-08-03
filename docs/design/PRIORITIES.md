@@ -524,6 +524,25 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **Fix — denorm property buried in a CASE is now property-mapped**
+  (branch `fix/906-denorm-case-buried-grouping-key-v2`, PR #930, closes #906).
+  On a denormalized UNDIRECTED match, `RETURN CASE WHEN count(r) > 5 THEN a.code
+  ELSE 'x' END` leaked `a.code` as a nonexistent `r.code` column in both
+  BidirectionalUnion arms and `GROUP BY r.code` → Code 47. **Root cause:**
+  `FilterTagging::apply_property_mapping_internal` (the denorm resolver) had no
+  `LogicalExpr::Case` arm — it recurses into operator/scalar-fn/list forms (so
+  bare / `toUpper(a.code)` / `a.code + …` resolve) but a CASE fell through the
+  catch-all. Undirected-only because FilterTagging runs AFTER the BidirectionalUnion
+  split, and the directed path's `ProjectionTagging` Case arm covers it. **Fix:**
+  add a `Case` arm that recurses into scrutinee / WHEN-THEN / ELSE; resolving
+  `a.code`→`a.Origin` before the split lets the existing per-arm swap flip arm 2 to
+  `Dest`. Byte-identical for standard properties (identity mapping); zero
+  existing-golden churn. Also tightened `remap_denormalized_case_expr_alias_bound_495`
+  (its CASE predicate now resolves the property to the physical column — the old
+  assertion locked invalid SQL that fails Code 47 on live CH). Review APPROVE-0.
+  Filed #928/#929 (render-side twin `apply_property_mapping_to_expr` + other
+  buried-CASE-alias-binding shapes, both pre-existing/latent).
+
 - 2026-08-02: **Fix — `size((composite-FK pattern))` now fails LOUD instead of
   emitting malformed SQL** (branch `fix/921-composite-fk-size-guard`, closes #921;
   follow-up to #613, surfaced during its review). On a composite-id schema,
