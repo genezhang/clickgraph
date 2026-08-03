@@ -8087,6 +8087,93 @@ async fn size_pattern_count_after_with_resolves_cte_column_613() {
     }
 }
 
+/// #629 (follow-up to #612): an UNCORRELATED `size([x IN list WHERE (pattern)])`
+/// — the pattern references ONLY the iteration variable, not an outer WITH var —
+/// now renders an uncorrelated `arrayCount(x -> x IN (SELECT <fk> FROM <edge>), list)`
+/// instead of failing loud (#612). The render layer already had the empty-
+/// `correlation_vars` branch; #612's guard just prevented the shape from reaching
+/// it. This is the WITH-position shape; the correlated shape
+/// (`(a)-[:FOLLOWS]->(f)` referencing outer `a`) is unchanged.
+///
+/// No live ClickHouse in-env, so the bar is SQL shape: the correlation must be a
+/// real `arrayCount(... IN (SELECT follower_id ...))`, NOT a bare `count(*)` (the
+/// pre-#612 silent-wrong form) and NOT the literal `0` (a source-label inference
+/// failure).
+#[tokio::test]
+async fn uncorrelated_listcomp_pattern_count_renders_arraycount_629() {
+    // Standard social schema (User-FOLLOWS->User), as the corpus test uses.
+    let schema = load_schema("schemas/test/social_integration.yaml");
+    let cypher = "MATCH (a:User)-[:FOLLOWS]->(b:User) \
+         WITH a, collect(b.user_id) AS friends \
+         WITH a, size([f IN friends WHERE (f)-[:FOLLOWS]->()]) AS c \
+         RETURN a.user_id AS id, c ORDER BY id";
+
+    // ClickHouse: native arrayCount over the list, membership tested by an
+    // uncorrelated IN (SELECT follower_id ...) — no outer-row correlation.
+    let ch = render(&schema, cypher, SqlDialect::ClickHouse).await;
+    assert!(
+        ch.contains("arrayCount(x -> x IN (SELECT")
+            && ch.contains("follower_id FROM test_integration.user_follows_test"),
+        "ClickHouse must render an uncorrelated arrayCount(x -> x IN (SELECT follower_id ...), list):\n{ch}"
+    );
+    // Must NOT be the pre-#612 silent-wrong plain count(*), nor the source-label
+    // failure literal `0`.
+    assert!(
+        !ch.contains("count(*)") && !ch.contains(r#"0 AS "c""#),
+        "ClickHouse must not fall back to count(*) or literal 0:\n{ch}"
+    );
+
+    // Databricks: subquery cannot live inside a HOF lambda, so it explodes the
+    // array and moves the membership test to a plain WHERE.
+    let dbx = render(&schema, cypher, SqlDialect::Databricks).await;
+    assert!(
+        dbx.contains("explode(") && dbx.contains("WHERE x IN (SELECT"),
+        "Databricks must render the explode + WHERE x IN (SELECT ...) form:\n{dbx}"
+    );
+
+    // Incoming, iteration var still at the START position → the render flips to
+    // the to-side column (followed_id). Also render-safe.
+    let incoming = "MATCH (a:User)-[:FOLLOWS]->(b:User) \
+         WITH a, collect(b.user_id) AS friends \
+         WITH a, size([f IN friends WHERE (f)<-[:FOLLOWS]-()]) AS c \
+         RETURN a.user_id AS id, c ORDER BY id";
+    let ch_in = render(&schema, incoming, SqlDialect::ClickHouse).await;
+    assert!(
+        ch_in.contains("followed_id FROM test_integration.user_follows_test"),
+        "Incoming iteration-at-start must test the to-side (followed_id):\n{ch_in}"
+    );
+
+    // #629 scope guard (adversarial-review HIGH findings): shapes the arrayCount
+    // render path would translate to a SILENTLY-WRONG count MUST fail loud, not
+    // render. The render path hardcodes the element column as the first hop's
+    // facing side and emits one direction.
+    let unsafe_shapes = [
+        // Iteration var at the TARGET position (would read follower_id, wrong).
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b.user_id) AS friends \
+         WITH a, size([f IN friends WHERE ()-[:FOLLOWS]->(f)]) AS c RETURN a.user_id AS id, c",
+        // Undirected (render drops the reverse direction).
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b.user_id) AS friends \
+         WITH a, size([f IN friends WHERE (f)-[:FOLLOWS]-()]) AS c RETURN a.user_id AS id, c",
+        // Multi-hop with the iteration var in the middle.
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b.user_id) AS friends \
+         WITH a, size([f IN friends WHERE ()-[:FOLLOWS]->(f)-[:FOLLOWS]->()]) AS c RETURN a.user_id AS id, c",
+    ];
+    for cypher in unsafe_shapes {
+        let result = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+        let err = result
+            .as_ref()
+            .err()
+            .unwrap_or_else(|| {
+                panic!("[{cypher}] unsafe uncorrelated list shape must fail loud, not render: {result:?}")
+            })
+            .clone();
+        assert!(
+            err.contains("single directed hop starting at the iteration variable"),
+            "[{cypher}] expected the #629 scope-guard error, got:\n{err}"
+        );
+    }
+}
+
 /// #921 (follow-up to #613): `size((pattern))` over a relationship whose FACING
 /// correlation FK column is COMPOSITE must fail LOUD, not emit malformed SQL.
 /// Before the guard, `generate_pattern_count_sql`/`generate_multi_hop_...`

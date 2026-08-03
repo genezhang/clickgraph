@@ -524,6 +524,42 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **Feature — uncorrelated `size([x IN list WHERE (pattern)])` now
+  computes the per-element count** (branch `feature/629-uncorrelated-listcomp-pattern`,
+  closes #629; follow-up to #612). `MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a,
+  collect(b.user_id) AS friends WITH a, size([f IN friends WHERE (f)-[:FOLLOWS]->()])
+  AS c` — where the pattern references ONLY the iteration variable `f` (no outer
+  correlation) — previously **failed loud** (#612 guard). #612 had made it loud
+  because it was silently returning a plain per-group `count(*)`; #629 implements
+  it. **Key finding:** the render layer ALREADY handled this shape — the empty-
+  `correlation_vars` branch of `generate_list_comp_array_count`
+  (`pattern_comprehension_sql.rs`) emits an uncorrelated
+  `arrayCount(x -> x IN (SELECT follower_id FROM user_follows_test), friends)`
+  (ClickHouse) / `(SELECT count(*) FROM (SELECT explode(friends) AS x) WHERE x IN
+  (...))` (Databricks). It just never ran because the #612 guard rejected the shape
+  in logical planning first. **Fix (one function, `with_clause.rs`
+  `rewrite_with_pattern_comprehensions`):** relax the guard so the uncorrelated +
+  list_constraint shape flows through (keep the historical skip only for
+  uncorrelated + NO list_constraint), and change the `correlation_var.unwrap()` to
+  `unwrap_or_default()` (empty sentinel — the list render path never reads the
+  singular `correlation_var`; verified all `.correlation_var` reads are on the
+  legacy CTE / Phase-A path). No struct/render changes. **Scope-gated to the
+  render-safe shape only** (`uncorrelated_list_pattern_is_render_safe`): a SINGLE
+  DIRECTED hop with the iteration variable at the START position — the exact shape
+  the arrayCount render path (which hardcodes the element column as the first hop's
+  facing side and emits one direction) translates correctly. Adversarial review
+  caught that a broader relaxation made target-position / undirected / multi-hop
+  shapes render a silently-WRONG count (reintroducing the #612 loud→silent class);
+  those now KEEP failing loud with a clear message (ground rule 1). Corpus positive
+  uses `collect(b.user_id)` (scalar list — a whole-node `collect(b)` would compare a
+  node-tuple to a scalar id subquery); dual-dialect `.sql` goldens (renamed
+  test_612_..._fails_loud → test_629_..._per_element_count) + a target-position
+  `.err` golden + curated shape/negative tests, fail-when-reverted; corpus 0-churn
+  elsewhere; ratchet net-zero; full gate green. **Not verifiable in-env** (no live
+  CH): bar = SQL shape + byte goldens. Follow-ups: target-position/undirected/
+  multi-hop support, and RETURN-position uncorrelated size([...]) (routes through
+  plan_builder) — all still fail loud today.
+
 - 2026-08-02: **Fix — mixed-access VLP projects a denormalized endpoint's non-id
   properties** (branch `fix/908-mixed-vlp-denorm-start-property`, PR #920, closes
   #908). `RETURN <denorm-endpoint>.<non-id-prop>` (e.g. `a.name` where `a` is the
@@ -541,7 +577,6 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   #927 (composite-id gap) + #934 (denorm-start WHERE-filter, pre-existing). Review
   APPROVE-0. **All six 2026-08-02-filed VLP/render bugs (#914 #902 #897 #899 #906
   #908) now fixed + closed.**
-
 - 2026-08-02: **Fix — `NOT (composite-FK pattern)` now fails LOUD instead of
   emitting malformed SQL** (branch `fix/928-not-composite-fk-guard`, closes #928;
   sibling of #921, flagged in its review). `MATCH (a:Account) WHERE NOT
