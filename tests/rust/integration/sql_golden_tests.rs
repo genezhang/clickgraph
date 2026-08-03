@@ -10925,6 +10925,24 @@ mod walker_drift_family_484_490_495_476_483 {
             "#969: a numeric reduce body must stay `s + x` (binder types are \
              Integer, not String):\n{num}"
         );
+
+        // #969 (review): the binder-type signal must NOT leak into the shared
+        // `infer_render_type` classifier — only the string-concat detectors read
+        // it. Otherwise #880's `toInteger(x)`→`toInt64OrNull` dispatch would fire
+        // on a string-element binder, producing `Nullable(Int64)` that can't
+        // unify with the Int accumulator → Code 53 (a regression). The binder
+        // stays untyped for #880, so `toInteger(x)` keeps the plain `toInt64`.
+        let coerce = render(
+            &schema,
+            "MATCH (u:User) RETURN reduce(n = 0, x IN ['1', '2'] | n + toInteger(x)) AS v",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            coerce.contains("toInt64(") && !coerce.contains("toInt64OrNull"),
+            "#969: a reduce binder must NOT bleed into the #880 toInteger/toFloat \
+             string-arg dispatch (would be Code 53):\n{coerce}"
+        );
     }
 
     /// `bidirectional_union` CTE, e.g. `MATCH (a:User)-[r]-(o)`) used to

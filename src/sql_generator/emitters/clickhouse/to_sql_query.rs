@@ -55,6 +55,18 @@ fn is_string_operand(expr: &RenderExpr) -> bool {
         RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
             op.operands.iter().any(is_string_operand)
         }
+        // #969: a bare reduce lambda binder (`s`/`x`) whose task-local type is
+        // String — consulted ONLY here (the string-concat detector), never via
+        // the shared `infer_render_type` classifier, so #880/#854/#962 keep
+        // seeing binders as untyped (preserving the conservative-None invariant).
+        RenderExpr::TableAlias(ta) => {
+            crate::server::query_context::get_reduce_binder_type(&ta.0)
+                == Some(super::type_inference::RenderType::String)
+        }
+        RenderExpr::Column(col) => {
+            crate::server::query_context::get_reduce_binder_type(col.raw())
+                == Some(super::type_inference::RenderType::String)
+        }
         _ => {
             super::type_inference::infer_render_type(expr)
                 == Some(super::type_inference::RenderType::String)

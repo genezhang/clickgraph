@@ -391,6 +391,21 @@ pub fn contains_string_literal(expr: &RenderExpr) -> bool {
         RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
             op.operands.iter().any(contains_string_literal)
         }
+        // #969: a bare reduce lambda binder typed String task-locally — consulted
+        // ONLY by the string-concat detectors (mirrors `is_string_operand` in the
+        // clickhouse emitter), never via the shared `infer_render_type`.
+        RenderExpr::TableAlias(ta) => {
+            crate::server::query_context::get_reduce_binder_type(&ta.0)
+                == Some(
+                    crate::sql_generator::emitters::clickhouse::type_inference::RenderType::String,
+                )
+        }
+        RenderExpr::Column(col) => {
+            crate::server::query_context::get_reduce_binder_type(col.raw())
+                == Some(
+                    crate::sql_generator::emitters::clickhouse::type_inference::RenderType::String,
+                )
+        }
         _ => {
             crate::sql_generator::emitters::clickhouse::type_inference::infer_render_type(expr)
                 == Some(

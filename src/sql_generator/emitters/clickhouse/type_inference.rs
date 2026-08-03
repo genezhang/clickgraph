@@ -107,19 +107,21 @@ pub fn infer_render_type(expr: &RenderExpr) -> Option<RenderType> {
         RenderExpr::InSubquery(_) | RenderExpr::ExistsSubquery(_) => Some(RenderType::Boolean),
         RenderExpr::PatternCount(_) => Some(RenderType::Integer),
 
-        // ---- #969: a `reduce()` lambda binder in scope ----
-        // A bare `TableAlias`/`Column` is normally untyped (unknown), but while a
-        // reduce BODY is being rendered its `accumulator`/`variable` binders have
-        // a known type (seeded from `initial_value` / the list element type),
-        // installed task-locally by the ReduceExpr render sites. Consulting it
-        // lets the string-`+`→`concat` detector see that `s + x` is a string
-        // concatenation. Empty outside a reduce → `None` (unchanged).
-        RenderExpr::TableAlias(ta) => crate::server::query_context::get_reduce_binder_type(&ta.0),
-        RenderExpr::Column(col) => crate::server::query_context::get_reduce_binder_type(col.raw()),
-
         // ---- Everything else: unknown (conservative) ----
-        // ColumnAlias, Parameter, Raw, Star, MapLiteral, Case, ReduceExpr,
-        // ArraySubscript (element type unknown), CteEntityRef.
+        // Column (bare, no alias→label), TableAlias, ColumnAlias, Parameter,
+        // Raw, Star, MapLiteral, Case, ReduceExpr, ArraySubscript (element type
+        // unknown), CteEntityRef.
+        //
+        // NOTE (#969): a `reduce()` lambda binder DOES have a known type inside
+        // its body, but it is deliberately NOT surfaced here. This shared
+        // classifier feeds #880 (toInteger/toFloat-OrNull), #854 (temporal), and
+        // #962 (size/reverse UTF8) as well as #871 (string-`+`→concat); typing a
+        // binder here made #880 rewrite `toInteger(x)` on a string-element binder
+        // to `toInt64OrNull` → `Nullable` → Code 53 (a regression). The binder
+        // type is instead consulted ONLY by the string-concat detectors
+        // (`is_string_operand` / `expression_utils::contains_string_literal`) via
+        // `query_context::get_reduce_binder_type`, keeping the conservative-None
+        // invariant intact for every other consumer.
         _ => None,
     }
 }
