@@ -8233,6 +8233,124 @@ async fn denorm_closed_non_optional_vlp_zero_hop_fails_loud_980() {
     }
 }
 
+/// #983: a CLOSED single-hop relationship `(a)-[:R]->(a)` (and its `*1`/`*1..1`
+/// spelling, stripped to a plain relationship for single-type edges) matches
+/// only SELF-LOOP edges (`from_id == to_id`). The constraint used to survive
+/// only implicitly through the two node-join ON clauses, so a bare `count(*)`
+/// that elides those joins silently counted ALL edges. The `extract_filters`
+/// GraphRel arm now emits an explicit `<edge_alias>.<from> = <edge_alias>.<to>`
+/// self-loop filter for the closed single-hop (standard edge schema only). The
+/// OPEN single hop `(a)-[:R]->(b)` (distinct connections) is untouched.
+#[tokio::test]
+async fn closed_single_hop_emits_self_loop_filter_983() {
+    let schema = load_schema("schemas/test/test_fixtures.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // All spellings of the closed single hop must emit the self-loop filter.
+        for cypher in [
+            "MATCH (a:TestUser)-[:TEST_FOLLOWS*1]->(a) RETURN count(*)",
+            "MATCH (a:TestUser)-[:TEST_FOLLOWS*1..1]->(a) RETURN count(*)",
+            "MATCH (a:TestUser)-[:TEST_FOLLOWS]->(a) RETURN count(*)",
+            "MATCH (a:TestUser)-[:TEST_FOLLOWS*1]-(a) RETURN count(*)",
+        ] {
+            let sql = render(&schema, cypher, dialect).await;
+            // The edge alias varies (t1/t2/…); assert on the self-loop column
+            // equality shape, which is what matters.
+            assert!(
+                sql.contains(".follower_id = ") && sql.contains(".followed_id"),
+                "#983 ({dialect:?}): closed single-hop must emit the self-loop filter \
+                 `<edge>.follower_id = <edge>.followed_id`:\n{cypher}\n{sql}"
+            );
+        }
+
+        // The OPEN single hop must NOT get a self-loop filter (distinct
+        // endpoints), and must not be otherwise disturbed.
+        let open = render(
+            &schema,
+            "MATCH (a:TestUser)-[:TEST_FOLLOWS*1]->(b:TestUser) RETURN count(*)",
+            dialect,
+        )
+        .await;
+        assert!(
+            !(open.contains(".follower_id = ") && open.contains(".followed_id")),
+            "#983 ({dialect:?}): OPEN single hop must NOT get a self-loop filter:\n{open}"
+        );
+
+        // A longer closed VLP keeps its recursive-CTE closed constraint
+        // (`start_id = end_id`), NOT the flat self-loop filter.
+        let vlp = render(
+            &schema,
+            "MATCH (a:TestUser)-[:TEST_FOLLOWS*2..2]->(a) RETURN count(*)",
+            dialect,
+        )
+        .await;
+        assert!(
+            vlp.contains("start_id = t.end_id") || vlp.contains("t.start_id = t.end_id"),
+            "#983 ({dialect:?}): closed `*2..2` VLP must keep the CTE closed constraint:\n{vlp}"
+        );
+
+        // A user WHERE on the anchor must be preserved AND-combined with the
+        // self-loop filter (the fix injects into the normal predicate flow, not
+        // an early return that would drop schema/anchor filters).
+        let with_where = render(
+            &schema,
+            "MATCH (a:TestUser)-[:TEST_FOLLOWS]->(a) WHERE a.name = 'Bob' RETURN count(*)",
+            dialect,
+        )
+        .await;
+        assert!(
+            with_where.contains("a.name = 'Bob'")
+                && with_where.contains(".follower_id = ")
+                && with_where.contains(".followed_id"),
+            "#983 ({dialect:?}): anchor WHERE must be preserved alongside the self-loop filter:\n{with_where}"
+        );
+
+        // OPTIONAL closed single-hop is EXCLUDED (a self-loop equality in the
+        // outer WHERE would drop the NULL-extended anchor rows) — it must NOT get
+        // the self-loop filter, staying byte-identical to its current behavior.
+        let optional = render(
+            &schema,
+            "MATCH (a:TestUser) OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(a) RETURN count(*)",
+            dialect,
+        )
+        .await;
+        assert!(
+            !(optional.contains(".follower_id = ") && optional.contains(".followed_id")),
+            "#983 ({dialect:?}): OPTIONAL closed single-hop must be excluded from the self-loop fix:\n{optional}"
+        );
+    }
+}
+
+/// #983: a COMPOSITE-key self-referencing standard edge closed single-hop must
+/// expand the self-loop equality into a per-column AND chain — a bare `format!`
+/// on the `Identifier` would emit the syntactically-invalid
+/// `t1.from_a, from_b = t1.to_a, to_b` (Display comma-joins composites).
+#[tokio::test]
+async fn closed_single_hop_composite_key_self_loop_983() {
+    let schema = load_schema("schemas/test/composite_node_ids.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(
+            &schema,
+            "MATCH (a:Account)-[:TRANSFERRED]->(a) RETURN count(*)",
+            dialect,
+        )
+        .await;
+        // Per-column AND, each side qualified — never the comma-joined Display.
+        // (The edge alias varies t1/t2/…; assert on the column-equality shape.)
+        assert!(
+            sql.contains(".from_bank_id = ")
+                && sql.contains(".to_bank_id")
+                && sql.contains(".from_account_number = ")
+                && sql.contains(".to_account_number")
+                && sql.contains(" AND "),
+            "#983 ({dialect:?}): composite self-loop must be a per-column AND chain:\n{sql}"
+        );
+        assert!(
+            !sql.contains("from_bank_id, from_account_number ="),
+            "#983 ({dialect:?}): composite self-loop must NOT emit the invalid comma-joined form:\n{sql}"
+        );
+    }
+}
+
 /// #599: `size((pattern))` renders as a bare correlated `COUNT(*)` scalar
 /// subquery; ClickHouse decorrelates that into a LEFT JOIN, so an outer row
 /// with ZERO pattern matches yields NULL instead of 0 — silently breaking
