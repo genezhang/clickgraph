@@ -529,6 +529,35 @@ pub fn and_conditions(conditions: Vec<LogicalExpr>) -> LogicalExpr {
     })
 }
 
+/// Build a self-loop equality filter binding two column sets on the SAME alias:
+/// `alias.fk_c1 = alias.pk_c1 AND alias.fk_c2 = alias.pk_c2 AND ...`.
+///
+/// Used by the closed self-referencing FK-edge single-hop (#987): the edge IS the
+/// node table, so a self-loop is the row whose FK columns equal its own PK
+/// (node_id) columns. `fk_id` and `node_id` are zipped positionally (the author
+/// invariant that FK columns are declared in the same order as the node_id
+/// columns — mirroring the FK-edge JOIN condition builder). Returns `None` if
+/// either identifier is empty (defensive; callers treat `None` as "no filter").
+/// Composite-safe by construction — each column pair is a distinct
+/// `OperatorApplication`, never a comma-joined `Identifier` Display.
+pub fn self_loop_filter(
+    alias: &str,
+    fk_id: &crate::graph_catalog::config::Identifier,
+    node_id: &crate::graph_catalog::config::Identifier,
+) -> Option<LogicalExpr> {
+    let fk_cols = fk_id.columns();
+    let node_cols = node_id.columns();
+    if fk_cols.is_empty() || node_cols.is_empty() {
+        return None;
+    }
+    let eqs: Vec<LogicalExpr> = fk_cols
+        .iter()
+        .zip(node_cols.iter())
+        .map(|(fk, pk)| LogicalExpr::OperatorApplicationExp(eq_condition(alias, *fk, alias, *pk)))
+        .collect();
+    crate::query_planner::logical_expr::combinators::and(eqs)
+}
+
 // =============================================================================
 // JoinBuilder - Fluent Builder for Join Construction
 // =============================================================================

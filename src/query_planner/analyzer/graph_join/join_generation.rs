@@ -245,8 +245,38 @@ pub fn generate_pattern_joins(
             if already_available.contains(t.rel_alias) {
                 vec![] // Edge already available, nothing to add
             } else {
+                // #987 (FK-edge facet, count/aggregate path): a CLOSED
+                // self-referencing FK-edge single-hop (`(a)-[:PARENT]->(a)`) whose
+                // node properties are unreferenced (e.g. bare `count(*)`) takes the
+                // SingleTableScan strategy — the edge table (== the node table) is
+                // scanned once as `t.rel_alias`. Without the self-loop constraint
+                // it silently counts ALL rows instead of only self-loops (the row
+                // whose FK equals its own PK). The property form takes the
+                // FkEdgeJoin strategy and is fixed separately (see the
+                // `closed_self_ref` branch there). AND the self-loop
+                // (`rel_alias.from_id = rel_alias.to_id`, per-column, composite-safe
+                // via `self_loop_filter`) into the FROM-marker `pre_filter` — it
+                // lives on the single scanned table so it survives even when the
+                // count(*) form prunes everything else. Denorm closed self-hops
+                // are not foreign-key edges and are handled by the render-side #983
+                // filter, so there is no double-add. Gated to the closed
+                // (`left_alias == right_alias`) self-referencing FK-edge.
+                let self_loop_pre_filter = if rel_schema.is_self_referencing_fk_edge()
+                    && t.left_alias == t.right_alias
+                {
+                    helpers::self_loop_filter(t.rel_alias, &rel_schema.from_id, &rel_schema.to_id)
+                } else {
+                    None
+                };
+                let merged_pre_filter = match (pre_filter, self_loop_pre_filter) {
+                    (Some(p), Some(s)) => {
+                        crate::query_planner::logical_expr::combinators::and(vec![p, s])
+                    }
+                    (Some(p), None) => Some(p),
+                    (None, s) => s,
+                };
                 let mut builder = JoinBuilder::new(t.rel_table, t.rel_alias)
-                    .pre_filter(pre_filter)
+                    .pre_filter(merged_pre_filter)
                     .from_id(rel_schema.from_id.first_column().to_string())
                     .to_id(rel_schema.to_id.first_column().to_string());
 
@@ -433,6 +463,41 @@ pub fn generate_pattern_joins(
                     };
                     let right_avail = already_available.contains(t.right_alias);
                     let left_avail = already_available.contains(t.left_alias);
+
+                    // #987 (FK-edge facet): a CLOSED self-referencing FK-edge
+                    // single-hop (`(a)-[:PARENT]->(a)`, `left_alias ==
+                    // right_alias`) must bind the shared node ONCE. The default
+                    // `(false, false)` layout emits a FROM marker for the right
+                    // node plus a separate JOIN for the left node, both with the
+                    // SAME alias (the edge IS the node table, self-referencing) →
+                    // duplicate table alias → ClickHouse Code 179 for the property
+                    // form, and — because the self-loop equality lives ONLY in
+                    // that JOIN's ON — the bare `count(*)` form silently drops the
+                    // constraint when `remove_unreferenced_joins` elides the
+                    // unreferenced node join, counting ALL rows instead of only
+                    // self-loops. Emit a SINGLE FROM-marker scan and attach the
+                    // self-loop equality (`fk == node_id` on the one alias, e.g.
+                    // `a.parent_region = a.region AND a.parent_id = a.object_id`)
+                    // as its `pre_filter` — `from_marker_pre_filter` promotes it to
+                    // the outer WHERE, which lives on the FROM anchor (never
+                    // pruned) so it survives `count(*)` elision. Composite-safe:
+                    // built from the same `cond_left_id`/`cond_right_id` Identifier
+                    // column sets the JOIN would have used, zipped per-column and
+                    // AND-combined (never a bare `format!`, which would comma-join
+                    // a composite Identifier into invalid SQL). Gated to
+                    // `is_self_referencing && left_alias == right_alias`, so
+                    // non-self-ref FK-edges (distinct tables) and OPEN self-ref
+                    // FK-edges (distinct aliases) are untouched.
+                    let closed_self_ref = *is_self_referencing && t.left_alias == t.right_alias;
+                    if closed_self_ref && !right_avail && !left_avail {
+                        let self_loop =
+                            helpers::self_loop_filter(t.right_alias, cond_left_id, cond_right_id);
+                        return Ok(vec![JoinBuilder::from_marker(t.right_table, t.right_alias)
+                            .from_id(from_id.clone())
+                            .to_id(to_id.clone())
+                            .pre_filter(self_loop)
+                            .build()]);
+                    }
 
                     match (right_avail, left_avail) {
                         (false, false) => vec![
