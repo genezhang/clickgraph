@@ -524,6 +524,34 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Bug-driven refactor (#906/#929/#940/#944 cluster, analyzer side) —
+  property names inside computed RETURN wrappers now map to their columns** (branch
+  `fix/946-computed-projection-property-name-mapping`, PR #948, closes #946).
+  Analyzer-side sibling of #944: on a standard schema a property inside a computed
+  RETURN wrapper (`[u.name][0]`, `{a: u.name}`, `reduce(...)`) leaked its raw Cypher
+  name (`u.name` not `u.full_name`) → live `Code 47` (`users` has `full_name`).
+  `FilterTagging::apply_property_mapping_internal` handled `List`/`ArraySlicing`/
+  `Case` (Case=#906) but its `other => Ok(other)` dropped `ArraySubscript`/
+  `MapLiteral`/`ReduceExpr`. **Fix:** add the three missing arms (explicit, not a
+  fold — `LogicalExpr` has no `children()` API / exhaustive walker, unlike the
+  render side's `descend_render_expr_mut`). The `ReduceExpr` arm carries the
+  analyzer-side reduce-binder-shadow hazard: recursing into the body to close a
+  silent-DROP opens a silent-MIS-REWRITE (a body `binder.prop` where the binder
+  shadows a node alias gets mapped onto the shadowed node's column). No
+  binder-scoped mapping context exists in the analyzer, so conservatively skip
+  mapping the body when a binder resolves to a real alias (matches pre-fix for that
+  case). Caught the hazard pre-review via stash-and-compare (main left the whole
+  body unmapped; my change introduced the mis-map). Standard = identity mapping →
+  `corpus_sweep` byte-identical (565); 1687 lib green; ratchet net-neutral.
+  Live-verified on db_standard (all wrappers return correct values; #944 denorm
+  composition intact — analyzer maps NAME, render maps ALIAS). 2 golden tests,
+  proven load-bearing. **Adversarial review APPROVE-0.** Filed **#949** (shadow
+  guard is coarse — skips the WHOLE body over a different node's prop; needs
+  binder-scoped context; not a regression) and **#950** (pre-existing orthogonal
+  `reduce()`→`arrayFold` Code 43 with pure literals). This completes the
+  computed-projection wrapper-mapping story on BOTH sides (analyzer name + render
+  alias).
+
 - 2026-08-03: **Bug-driven refactor (#906/#929/#940 cluster, SELECT path) — denorm
   props inside computed RETURN projection wrappers now resolve** (branch
   `fix/944-computed-projection-denorm-remap`, PR #945, closes #944). A
