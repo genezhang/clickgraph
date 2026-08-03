@@ -7948,6 +7948,76 @@ async fn size_pattern_count_coalesces_null_to_zero() {
     }
 }
 
+/// #613: `size((pattern))` in RETURN position AFTER a WITH barrier must
+/// resolve its correlation column CTE-aware. Before the fix,
+/// `generate_pattern_count_sql`/`generate_multi_hop_pattern_count_sql` baked
+/// the raw schema column (`a.user_id`) via `node_id.sql_tuple`, but after the
+/// WITH the outer anchor `a` is a CTE exposing only the renamed column
+/// (`p1_a_user_id`) → ClickHouse Code 47 UNKNOWN_IDENTIFIER (loud, not
+/// silent; violates the forward-through-scope rule, CLAUDE.md §2). The fix
+/// routes both single- and multi-hop start-id resolution through
+/// `resolve_correlation_id_sql` (the same helper `generate_exists_graph_rel_sql`
+/// uses), which returns the CTE column when the anchor is CTE-scoped and falls
+/// back to the raw `sql_tuple` for a fresh MATCH.
+///
+/// Note: WHERE-position size() after WITH already worked (the predicate folds
+/// inside the CTE where the raw column is still in scope) — covered by
+/// `size_pattern_count_coalesces_null_to_zero`; this test is the RETURN
+/// (outer-scope) position that was broken.
+#[tokio::test]
+async fn size_pattern_count_after_with_resolves_cte_column_613() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    // Each of these emits a CTE `with_a_cte_0` that renames user_id to
+    // `p1_a_user_id`; the correlation MUST reference that CTE column.
+    let after_with = [
+        // Outgoing (the #613 headline repro).
+        "MATCH (a:User) WITH a RETURN a.user_id, size((a)-[:FOLLOWS]->()) AS c",
+        // WITH DISTINCT variant.
+        "MATCH (a:User) WITH DISTINCT a RETURN a.user_id, size((a)-[:FOLLOWS]->()) AS c",
+        // Incoming.
+        "MATCH (a:User) WITH a RETURN a.user_id, size((a)<-[:FOLLOWS]-()) AS c",
+        // Undirected.
+        "MATCH (a:User) WITH a RETURN a.user_id, size((a)-[:FOLLOWS]-()) AS c",
+        // Multi-hop chain (generate_multi_hop_pattern_count_sql path).
+        "MATCH (a:User) WITH a RETURN a.user_id, size((a)-[:FOLLOWS]->()-[:FOLLOWS]->()) AS c",
+    ];
+    for cypher in after_with {
+        let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+        // The correlation predicate must reference the CTE column, never the
+        // raw schema column that isn't exported by the CTE.
+        assert!(
+            sql.contains("= a.p1_a_user_id") || sql.contains("r1.follower_id = a.p1_a_user_id"),
+            "[{cypher}] size() correlation must reference the CTE column \
+             a.p1_a_user_id, not the raw schema column:\n{sql}"
+        );
+        assert!(
+            !sql.contains("= a.user_id"),
+            "[{cypher}] size() correlation still bakes the raw schema column \
+             a.user_id (unknown identifier after the WITH barrier → Code 47):\n{sql}"
+        );
+    }
+
+    // Negative control: a FRESH MATCH (no WITH barrier) must be byte-identical
+    // to prior behavior — the anchor is a real table, so the correlation keeps
+    // the raw schema column `a.user_id` (resolve_correlation_id_sql falls back).
+    let fresh_cases = [
+        "MATCH (a:User) RETURN a.user_id, size((a)-[:FOLLOWS]->()) AS c",
+        "MATCH (a:User) RETURN size((a)-[:FOLLOWS]->()-[:FOLLOWS]->()) AS c",
+    ];
+    for cypher in fresh_cases {
+        let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            sql.contains("= a.user_id") || sql.contains("r1.follower_id = a.user_id"),
+            "[{cypher}] fresh-MATCH size() must keep the raw schema column \
+             a.user_id (no CTE scope to resolve against):\n{sql}"
+        );
+        assert!(
+            !sql.contains("p1_a_user_id"),
+            "[{cypher}] fresh MATCH should not introduce a CTE column:\n{sql}"
+        );
+    }
+}
+
 /// #466 round 4 (adversarial-review blocking finding): `id(alias)` on a
 /// `pattern_union` endpoint must resolve LABEL-AGNOSTICALLY to the CTE's
 /// start_id/end_id — never to ONE label's id column.

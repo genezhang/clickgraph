@@ -885,7 +885,9 @@ fn generate_multi_hop_pattern_count_sql(
     let start_node_schema = schema
         .node_schema_opt(&start_node_label)
         .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(start_node_label.clone()))?;
-    let start_id_sql = start_node_schema.node_id.sql_tuple(start_alias);
+    // #613: CTE-aware correlation id (see the single-hop path). Falls back to the
+    // raw `sql_tuple` for a fresh MATCH, so non-WITH multi-hop is byte-identical.
+    let start_id_sql = resolve_correlation_id_sql(start_alias, start_node_schema);
 
     // Build FROM clause with JOINs
     let first_table = if !first_rel_schema.database.is_empty() {
@@ -1095,20 +1097,28 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                     let from_col = &rel_schema.from_id;
                     let to_col = &rel_schema.to_id;
 
-                    // Get the start node's ID column
-                    // First try the explicit label from the pattern, then fall back to relationship schema
+                    // Get the start node's ID column.
+                    // First try the explicit label from the pattern, then fall back to relationship schema.
+                    //
+                    // #613: resolve the correlation id CTE-aware (mirrors
+                    // `generate_exists_graph_rel_sql`). After a WITH barrier the outer
+                    // anchor `a` is a CTE exposing only the renamed column
+                    // `p{N}_a_user_id`, so a raw `a.user_id` reference is an unknown
+                    // identifier (Code 47). `resolve_correlation_id_sql` returns the
+                    // CTE column when `a` is CTE-scoped and falls back to the raw
+                    // `sql_tuple` for a fresh MATCH (byte-identical to prior behavior).
                     let start_id_sql = if let Some(label) = &conn.start_node.label {
                         let node_schema = schema
                             .node_schema_opt(label)
                             .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
-                        node_schema.node_id.sql_tuple(start_alias)
+                        resolve_correlation_id_sql(start_alias, node_schema)
                     } else {
                         // No label in pattern - infer from relationship's from_node
                         let node_type = &rel_schema.from_node;
                         let node_schema = schema.node_schema_opt(node_type).ok_or_else(|| {
                             RenderBuildError::NodeSchemaNotFound(node_type.clone())
                         })?;
-                        node_schema.node_id.sql_tuple(start_alias)
+                        resolve_correlation_id_sql(start_alias, node_schema)
                     };
 
                     // Get end node's ID column

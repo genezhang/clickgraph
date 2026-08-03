@@ -524,7 +524,34 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
-<<<<<<< Updated upstream
+- 2026-08-02: **Fix — `size((pattern))` in RETURN position after a WITH barrier
+  now resolves its correlation column CTE-aware** (branch
+  `fix/613-size-pattern-count-after-with`, closes #613; found during #599's
+  adversarial review, pre-existing on main). `MATCH (a:User) WITH a RETURN
+  a.user_id, size((a)-[:FOLLOWS]->()) AS c` emitted a correlated `COUNT(*)`
+  subquery whose `WHERE user_follows.follower_id = a.user_id` referenced the raw
+  schema column, but after the WITH the outer anchor `a` is a CTE exposing only
+  `p1_a_user_id` → ClickHouse Code 47 UNKNOWN_IDENTIFIER (loud, ground-rule-1
+  safe; violates the forward-through-scope rule, CLAUDE.md §2). **Root cause:**
+  `generate_pattern_count_sql` (single-hop) and
+  `generate_multi_hop_pattern_count_sql` (multi-hop) baked the start-node id via
+  `node_schema.node_id.sql_tuple(start_alias)` — the raw form — instead of the
+  CTE-aware `resolve_correlation_id_sql` that `generate_exists_graph_rel_sql`
+  already uses (the #596 EXISTS template). **Fix:** route both start-id
+  resolutions through `resolve_correlation_id_sql`, which returns the CTE column
+  when the anchor is CTE-scoped and falls back to the raw `sql_tuple` for a fresh
+  MATCH (byte-identical). Only the START node is correlated (named end nodes are
+  internal to the pattern); `_end_id_sql` was already unused. Contrast:
+  WHERE-position size() after WITH already worked (the predicate folds inside the
+  CTE where the raw column is still in scope). Verified all directions
+  (out/in/undirected) + multi-hop after WITH resolve `a.p1_a_user_id`; fresh
+  MATCH stays `a.user_id` byte-identical; corpus_sweep 0-churn (no prior coverage
+  of size()-after-WITH), 2 new dual-dialect corpus goldens + unit test, all
+  fail-when-reverted; ratchet net-zero (shared helper, no axis predicates); full
+  gate green. No live CH (SQL-shape + byte goldens). Composite-id start nodes are
+  unaffected (the correlation falls back to the raw tuple when not all id columns
+  resolve to CTE columns — byte-identical to main; the pre-existing composite LHS
+  malformation is separate and worth a follow-up).
 - 2026-08-02: **Fix — chained double-WITH rename of a scalar PROPERTY consumed by
   a NON-count aggregate no longer renders `SELECT *`** (branch
   `fix/914-chained-with-rename-non-count-aggregate`, PR #915, closes #914;
@@ -550,25 +577,6 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   Zero existing-golden churn (554 corpus); 2 new corpus goldens (sum/collect ×
   CH+Databricks) + unit test over sum/avg/min/max/collect, all fail-when-reverted;
   ratchet net-zero (helper-routed).
-=======
-- 2026-08-02: **Fix — chained WITH rename of a property consumed by a non-count
-  aggregate** (branch `fix/914-chained-with-rename-non-count-aggregate`, PR #915,
-  `05b57045`, closes #914). `MATCH (u:User) WITH u.age AS a WITH a AS b RETURN
-  sum(b)` (and avg/min/max/collect) rendered `SELECT *` in both CTE bodies + an
-  outer `sum(b.b)` referencing a never-exported column → ClickHouse Code 47.
-  **Root cause:** the #910 scalar-aggregate-arg rewrite recognized a scalar alias
-  only one level deep (shape-(ii) required the alias's underlying projection expr
-  to be NON-`TableAlias`); on the second rename hop `b`'s underlying IS a bare
-  `TableAlias(a)`, so the rewrite missed and `sum(b)` kept a bare `TableAlias(b)` →
-  `require_all(b)` → CTE column pruned → `SELECT *`. **Fix:** `resolves_to_scalar`
-  follows the chain of `TableAlias` renames back to its origin (scalar variable, or
-  innermost non-`TableAlias` scalar projection); bottoms out in an unregistered
-  alias → genuine graph entity → NOT scalar. Bounded by new
-  `PlanCtx::projection_alias_count()`. Whole-node `collect(v)` / `sum(v.age)` are
-  untouched (rewrite only fires for a bare-`TableAlias` arg). ZERO existing-golden
-  churn; live-verified sum(age)=889 (old → Code 47). Review APPROVE-0.
-
->>>>>>> Stashed changes
 - 2026-08-02: **Fix — graph pattern in scalar-expression context returns a clean
   error instead of panicking** (branch `fix/901-pattern-in-expr-context-panic`,
   closes #901). `MATCH (u:User) RETURN CASE WHEN (u)-[:FOLLOWS]->() THEN 1 ELSE 0
