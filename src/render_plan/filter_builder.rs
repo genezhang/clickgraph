@@ -164,29 +164,32 @@ impl FilterBuilder for LogicalPlan {
                 // The `left == right` gate is exact and rename-safe (the planner
                 // never renames one endpoint of a same-variable pattern — see
                 // from_builder.rs #605/#625), so the OPEN single hop
-                // `(a)-[:R]->(b)` (distinct connections) is untouched. Scoped to
-                // the STANDARD (separate edge table) schema: a denormalized or
-                // FK-edge "edge" shares a table with a node, so `alias.from =
-                // alias.to` would be a different (or wrong) constraint there —
-                // those stay on their current path (the duplicate-alias / Code 179
-                // property-projection facet is a separate join-builder defect,
-                // tracked in #983's follow-ups). Longer closed VLPs (`*2..2` etc.)
-                // keep their spec and route through the recursive CTE's own
-                // `start_id = end_id` (#625), so the `variable_length.is_none()`
-                // guard excludes them. OPTIONAL is excluded too: an OPTIONAL closed
-                // single-hop is already broken on main (Code 179 duplicate anchor
-                // alias with a property, anchor dropped for bare count), and a
-                // self-loop equality in the outer WHERE would filter out the
-                // NULL-extended anchor rows — leave it on its current (unchanged)
-                // path rather than risk a new OPTIONAL-semantics violation.
+                // `(a)-[:R]->(b)` (distinct connections) is untouched. Applies to
+                // the STANDARD separate-edge-table schema AND the DENORMALIZED
+                // schema (#987 facet 2): for a denorm edge the endpoint columns
+                // (`from_id`/`to_id`, e.g. `Origin`/`Dest`) live on the single
+                // edge=node scan, so `alias.from_id = alias.to_id` is exactly the
+                // self-loop constraint there too (`t1.Origin = t1.Dest`) — the
+                // denorm closed single-hop otherwise bare-counts ALL edges (silent
+                // over-count: 10 flights returned where only 1 is a self-loop).
+                // FK-EDGE is still EXCLUDED: its "edge" is a node table whose
+                // endpoint is a FK column, so the self-loop test is `node_id ==
+                // fk_col`, not `from_id == to_id` — a different constraint tracked
+                // as a separate #987 facet. Longer closed VLPs (`*2..2` etc.) keep
+                // their spec and route through the recursive CTE's own `start_id =
+                // end_id` (#625), so the `variable_length.is_none()` guard excludes
+                // them. OPTIONAL is excluded too: an OPTIONAL closed single-hop is
+                // already broken on main (Code 179 duplicate anchor alias with a
+                // property, anchor dropped for bare count), and a self-loop
+                // equality in the outer WHERE would filter out the NULL-extended
+                // anchor rows — leave it on its current (unchanged) path rather
+                // than risk a new OPTIONAL-semantics violation.
                 let closed_single_hop_self_loop: Option<RenderExpr> = if graph_rel
                     .variable_length
                     .is_none()
                     && graph_rel.shortest_path_mode.is_none()
                     && graph_rel.left_connection == graph_rel.right_connection
                     && !graph_rel.is_optional.unwrap_or(false)
-                    && !is_node_denormalized(&graph_rel.left)
-                    && !is_node_denormalized(&graph_rel.right)
                     && !crate::render_plan::cte_extraction::vlp_relationship_is_foreign_key_edge(
                         graph_rel,
                     ) {
