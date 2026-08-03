@@ -146,6 +146,76 @@ impl FilterBuilder for LogicalPlan {
                 // Example: MATCH (a)-[*2]->(b) WHERE b.name = 'Diana'
                 //   - Uses chained JOINs: a → r1 → r2 → b
                 //   - WHERE b.name = 'Diana' must be in outer query
+
+                // #983: a CLOSED single-hop relationship — `(a)-[:R]->(a)` (and
+                // its `*1`/`*1..1` spelling, which is stripped to
+                // `variable_length: None` for a single-type edge in
+                // `match_clause/helpers.rs`) — matches only SELF-LOOP edges
+                // (`from_id == to_id`). The self-loop constraint used to survive
+                // only IMPLICITLY, through the two node-join ON clauses
+                // (`t1.from = a.id AND a.id = t1.to` ⇒ `from = to` transitively).
+                // But a bare `RETURN count(*)` elides both (unreferenced) node
+                // joins (plan_optimizer.rs), leaving `FROM <edge> AS t1` with the
+                // constraint GONE → it silently counts ALL edges, not just
+                // self-loops (returned 6 where 0 is correct). Compute the explicit
+                // self-loop equality on the edge alias here and inject it into
+                // `all_predicates` below (NOT an early return — the normal path's
+                // schema-filter / OPTIONAL null-safe collection must still run).
+                // The `left == right` gate is exact and rename-safe (the planner
+                // never renames one endpoint of a same-variable pattern — see
+                // from_builder.rs #605/#625), so the OPEN single hop
+                // `(a)-[:R]->(b)` (distinct connections) is untouched. Scoped to
+                // the STANDARD (separate edge table) schema: a denormalized or
+                // FK-edge "edge" shares a table with a node, so `alias.from =
+                // alias.to` would be a different (or wrong) constraint there —
+                // those stay on their current path (the duplicate-alias / Code 179
+                // property-projection facet is a separate join-builder defect,
+                // tracked in #983's follow-ups). Longer closed VLPs (`*2..2` etc.)
+                // keep their spec and route through the recursive CTE's own
+                // `start_id = end_id` (#625), so the `variable_length.is_none()`
+                // guard excludes them. OPTIONAL is excluded too: an OPTIONAL closed
+                // single-hop is already broken on main (Code 179 duplicate anchor
+                // alias with a property, anchor dropped for bare count), and a
+                // self-loop equality in the outer WHERE would filter out the
+                // NULL-extended anchor rows — leave it on its current (unchanged)
+                // path rather than risk a new OPTIONAL-semantics violation.
+                let closed_single_hop_self_loop: Option<RenderExpr> = if graph_rel
+                    .variable_length
+                    .is_none()
+                    && graph_rel.shortest_path_mode.is_none()
+                    && graph_rel.left_connection == graph_rel.right_connection
+                    && !graph_rel.is_optional.unwrap_or(false)
+                    && !is_node_denormalized(&graph_rel.left)
+                    && !is_node_denormalized(&graph_rel.right)
+                    && !crate::render_plan::cte_extraction::vlp_relationship_is_foreign_key_edge(
+                        graph_rel,
+                    ) {
+                    crate::render_plan::cte_extraction::extract_relationship_columns(
+                        &graph_rel.center,
+                    )
+                    .map(|rel_cols| {
+                        // Use `Identifier::to_sql_equality` so a COMPOSITE key
+                        // expands to a per-column AND chain
+                        // (`t1.from_a = t1.to_a AND t1.from_b = t1.to_b`) with
+                        // proper identifier quoting — a bare `format!` would emit
+                        // the invalid `t1.from_a, from_b = t1.to_a, to_b` (the
+                        // `Identifier` Display comma-joins). Same alias on both
+                        // sides (the single edge scan).
+                        let self_loop = rel_cols.from_id.to_sql_equality(
+                            &graph_rel.alias,
+                            &rel_cols.to_id,
+                            &graph_rel.alias,
+                        );
+                        log::info!(
+                            "🔧 #983: closed single-hop self-loop constraint — emitting {}",
+                            self_loop
+                        );
+                        RenderExpr::Raw(self_loop)
+                    })
+                } else {
+                    None
+                };
+
                 if graph_rel.variable_length.is_some() || graph_rel.shortest_path_mode.is_some() {
                     // Check if this uses chained JOINs (fixed-length, no CTE)
                     let uses_cte = if let Some(ref spec) = graph_rel.variable_length {
@@ -436,6 +506,14 @@ impl FilterBuilder for LogicalPlan {
                     .into_iter()
                     .filter(|p| !is_labels_predicate(p))
                     .collect();
+
+                // #983: inject the closed single-hop self-loop equality (computed
+                // above) into the normal predicate flow, so it is AND-ed with the
+                // anchor WHERE, schema filters, and OPTIONAL null-safe filters
+                // collected below (rather than short-circuiting past them).
+                if let Some(self_loop) = closed_single_hop_self_loop {
+                    all_predicates.push(self_loop);
+                }
 
                 // 🔒 Add schema-level filters from ViewScans
                 // For OPTIONAL MATCH (LEFT JOIN), wrap filters with NULL-safety
