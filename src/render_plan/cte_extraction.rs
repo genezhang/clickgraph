@@ -2491,8 +2491,34 @@ fn apply_property_mapping_to_expr_with_context(
     relationship_type: Option<&str>,
     node_role: Option<crate::render_plan::cte_generation::NodeRole>,
 ) {
+    apply_property_mapping_to_expr_ctx_shielded(
+        expr,
+        plan,
+        relationship_type,
+        node_role,
+        &mut Vec::new(),
+    );
+}
+
+/// As [`apply_property_mapping_to_expr_with_context`], but carries `shielded` —
+/// names bound by an enclosing `reduce()` lambda (`accumulator`/`variable`).
+/// The leaf arms resolve a node reference purely by NAME
+/// (`get_node_label_for_alias`), so a lambda variable that shadows a node alias
+/// must be left alone (render-side twin of the #929-review hazard fixed in
+/// `plan_builder_helpers.rs`; latent here today because a denorm alias is not
+/// registered past a WITH barrier, but guarded for parity so it can't surface).
+fn apply_property_mapping_to_expr_ctx_shielded(
+    expr: &mut RenderExpr,
+    plan: &LogicalPlan,
+    relationship_type: Option<&str>,
+    node_role: Option<crate::render_plan::cte_generation::NodeRole>,
+    shielded: &mut Vec<String>,
+) {
     match expr {
         RenderExpr::PropertyAccessExp(prop) => {
+            if shielded.iter().any(|n| n == &prop.table_alias.0) {
+                return;
+            }
             // If the column is already an Expression (resolved by FilterTagging),
             // skip re-mapping — it's already the correct ClickHouse expression.
             if matches!(&prop.column, PropertyValue::Expression(_)) {
@@ -2513,6 +2539,9 @@ fn apply_property_mapping_to_expr_with_context(
             }
         }
         RenderExpr::Column(col) => {
+            if shielded.iter().any(|n| n == col.raw()) {
+                return;
+            }
             // Check if this column name is actually an alias
             if let Some(node_label) = get_node_label_for_alias(col.raw(), plan) {
                 // Convert Column(alias) to PropertyAccess(alias, "id")
@@ -2524,6 +2553,9 @@ fn apply_property_mapping_to_expr_with_context(
             }
         }
         RenderExpr::TableAlias(alias) => {
+            if shielded.iter().any(|n| n == &alias.0) {
+                return;
+            }
             // For denormalized nodes, convert TableAlias to PropertyAccess with the ID column
             // This is especially important for GROUP BY expressions
             //
@@ -2546,56 +2578,73 @@ fn apply_property_mapping_to_expr_with_context(
                 }
             }
         }
-        RenderExpr::OperatorApplicationExp(op) => {
-            for operand in &mut op.operands {
-                apply_property_mapping_to_expr_with_context(
-                    operand,
-                    plan,
-                    relationship_type,
-                    node_role,
-                );
-            }
-        }
-        RenderExpr::ScalarFnCall(func) => {
-            for arg in &mut func.args {
-                apply_property_mapping_to_expr_with_context(
-                    arg,
-                    plan,
-                    relationship_type,
-                    node_role,
-                );
-            }
-        }
-        RenderExpr::AggregateFnCall(agg) => {
-            for arg in &mut agg.args {
-                apply_property_mapping_to_expr_with_context(
-                    arg,
-                    plan,
-                    relationship_type,
-                    node_role,
-                );
-            }
-        }
-        RenderExpr::List(list) => {
-            for item in list {
-                apply_property_mapping_to_expr_with_context(
-                    item,
-                    plan,
-                    relationship_type,
-                    node_role,
-                );
-            }
-        }
         RenderExpr::InSubquery(subq) => {
-            apply_property_mapping_to_expr_with_context(
+            // Copy-2 has always descended into the subquery's scalar expr. The
+            // shared `descend_render_expr_mut` deliberately does NOT enter
+            // subqueries (they own a separate FROM/alias scope), so keep this
+            // explicit arm to preserve the existing behavior exactly.
+            apply_property_mapping_to_expr_ctx_shielded(
                 &mut subq.expr,
                 plan,
                 relationship_type,
                 node_role,
+                shielded,
             );
         }
-        // Other expression types don't contain nested expressions
-        _ => {}
+        RenderExpr::ReduceExpr(reduce) => {
+            // `initial_value`/`list` evaluate in the OUTER scope; the body BINDS
+            // `accumulator`/`variable`, which shadow same-named node aliases —
+            // shield them before descending into the body (render-side parity
+            // with the #929-review reduce-shadow fix in `plan_builder_helpers`).
+            apply_property_mapping_to_expr_ctx_shielded(
+                &mut reduce.initial_value,
+                plan,
+                relationship_type,
+                node_role,
+                shielded,
+            );
+            apply_property_mapping_to_expr_ctx_shielded(
+                &mut reduce.list,
+                plan,
+                relationship_type,
+                node_role,
+                shielded,
+            );
+            shielded.push(reduce.accumulator.clone());
+            shielded.push(reduce.variable.clone());
+            apply_property_mapping_to_expr_ctx_shielded(
+                &mut reduce.expression,
+                plan,
+                relationship_type,
+                node_role,
+                shielded,
+            );
+            shielded.pop();
+            shielded.pop();
+        }
+        // Every OTHER wrapper recurses structurally through the EXHAUSTIVE
+        // `descend_render_expr_mut` (no `_` catch-all — a new `RenderExpr`
+        // variant is a compile error here, not a silently-skipped remap).
+        // Previously only Operator/ScalarFn/Aggregate/List recursed and
+        // `Case`/`ArraySubscript`/`ArraySlicing`/`MapLiteral` fell through
+        // `_ => {}`, dropping the denorm property/alias remap for a property
+        // buried inside them (#929). `ReduceExpr` is handled above (binder
+        // shielding). Genuine leaves and deliberately-not-descended nodes
+        // (`ExistsSubquery`/`PatternCount`/`CteEntityRef`) are no-ops in
+        // `descend_render_expr_mut`, matching the prior catch-all.
+        other => {
+            let mut recur = |child: &mut RenderExpr| -> super::render_expr::MutVisit {
+                apply_property_mapping_to_expr_ctx_shielded(
+                    child,
+                    plan,
+                    relationship_type,
+                    node_role,
+                    shielded,
+                );
+                super::render_expr::MutVisit::Stop
+            };
+            super::render_expr::descend_render_expr_mut(other, &mut recur);
+        }
     }
 }
 
