@@ -524,6 +524,28 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — `reduce()` ClickHouse `arrayFold` lambda arg order
+  was SWAPPED (silent-wrong)** (branch `fix/950-arrayfold-lambda-arg-order`, PR
+  #954, closes #950). ClickHouse binds `arrayFold`'s FIRST lambda param to the
+  accumulator; the renderer emitted the ELEMENT first (`arrayFold(x, acc -> body,
+  …)`), so CH swapped accumulator/element throughout the body. Silent-wrong for
+  any non-commutative/non-associative body — `reduce(acc = 0, y IN [1,2,3] |
+  acc*10 + y)` folded to 60 not 123 (Neo4j left-fold) — and `Code 43` when their
+  types differ (`acc + length(y)`, the originally-reported symptom). A symmetric
+  `acc + y` body masked it. Discovered by scouting the filed Code-43 symptom with
+  an ASYMMETRIC-body test that defeats commutativity masking. **Fix:** swap
+  `variable`/`accumulator` in the ClickHouse branch of `reduce_fold_sql` (the
+  single helper both render paths route through) + correct the inverted doc. The
+  Databricks branch (`aggregate(list, init, (acc, x) -> expr)`) was ALREADY
+  correct → unchanged. Zero corpus churn (no arrayFold in corpus); one snapshot
+  regenerated (`fn_reduce__clickhouse.sql`, Databricks untouched); 1687 lib + 565
+  integration + ratchet green; new golden `reduce_renders_accumulator_first_950`.
+  Live-verified on CH 26.7: 123 (was 60), string body 5 (was Code 43), `acc - y`
+  4 (swapped form -8). **Adversarial review APPROVE-0** (independently confirmed
+  arg order on live CH). Filed **#955** (orthogonal pre-existing empty-list
+  `reduce` → Code 53 TYPE_MISMATCH from untyped `[]` `Array(Nothing)`;
+  order-independent).
+
 - 2026-08-03: **Bug-driven refactor (#946 follow-up) — analyzer reduce-binder
   shield is now precise (per-binder, not whole-body)** (branch
   `fix/949-precise-reduce-binder-shield`, PR #952, closes #949). #946 guarded the
