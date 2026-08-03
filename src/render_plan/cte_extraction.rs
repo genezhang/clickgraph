@@ -2059,15 +2059,16 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
             let expr_sql = render_expr_to_sql_string(&reduce.expression, alias_mapping);
             crate::server::query_context::restore_reduce_binder_types(prev_binders);
 
-            // Wrap numeric init values in a 64-bit integer cast to prevent
-            // type mismatch.
-            let init_cast = if matches!(
-                *reduce.initial_value,
-                RenderExpr::Literal(Literal::Integer(_))
-            ) {
-                format!("{}({})", current_function_mapper().cast_int64(), init_sql)
-            } else {
-                init_sql
+            // Wrap a numeric init literal in the matching 64-bit cast to prevent
+            // a Code 53 type mismatch (mirrors Path A: #955 Integer, #971 Float).
+            let init_cast = match *reduce.initial_value {
+                RenderExpr::Literal(Literal::Integer(_)) => {
+                    format!("{}({})", current_function_mapper().cast_int64(), init_sql)
+                }
+                RenderExpr::Literal(Literal::Float(_)) => {
+                    format!("{}({})", current_function_mapper().cast_float64(), init_sql)
+                }
+                _ => init_sql,
             };
 
             // #955: a fold over an EMPTY list literal does zero iterations, so

@@ -10945,6 +10945,50 @@ mod walker_drift_family_484_490_495_476_483 {
         );
     }
 
+    /// #971: a `reduce()` with a FLOAT accumulator seed (`n = 0.0`) must cast the
+    /// init to Float64 — a bare `0.0` renders as `0` (UInt8), which can't unify
+    /// with a Float64-returning lambda → Code 53. Mirrors the #955 Integer→Int64
+    /// cast for the Float case, at both render paths.
+    #[tokio::test]
+    async fn reduce_float_seed_casts_to_float64_971() {
+        let schema = load_schema("benchmarks/social_network/schemas/social_benchmark.yaml");
+
+        let ch = render(
+            &schema,
+            "MATCH (u:User) RETURN reduce(n = 0.0, x IN [1.5, 2.5] | n + x) AS v",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            ch.contains("toFloat64(0"),
+            "#971: a Float reduce seed must be cast to Float64:\n{ch}"
+        );
+
+        // Databricks: the seed is cast via `double(...)`.
+        let dbx = render(
+            &schema,
+            "MATCH (u:User) RETURN reduce(n = 0.0, x IN [1.5, 2.5] | n + x) AS v",
+            SqlDialect::Databricks,
+        )
+        .await;
+        assert!(
+            dbx.contains("double(0"),
+            "#971: a Float reduce seed must be cast to Spark double:\n{dbx}"
+        );
+
+        // Integer seed unaffected — still Int64 (guards the match arm).
+        let int_seed = render(
+            &schema,
+            "MATCH (u:User) RETURN reduce(n = 0, x IN [1, 2, 3] | n + x) AS v",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            int_seed.contains("toInt64(0)") && !int_seed.contains("toFloat64"),
+            "#971: an Integer reduce seed must keep the Int64 cast:\n{int_seed}"
+        );
+    }
+
     /// `bidirectional_union` CTE, e.g. `MATCH (a:User)-[r]-(o)`) used to
     /// per-label-raw-column logic (designed for a bare `MATCH (n)`
     /// ViewScan UNION, which has genuinely separate `post_id`/`user_id`

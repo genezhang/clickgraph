@@ -8043,16 +8043,22 @@ impl RenderExpr {
                 let expr_sql = reduce.expression.to_sql();
                 crate::server::query_context::restore_reduce_binder_types(prev_binders);
 
-                // Wrap numeric init values in a 64-bit-int cast to prevent
-                // type mismatch when the lambda returns a wider type.
-                let init_cast = if matches!(
-                    *reduce.initial_value,
-                    RenderExpr::Literal(Literal::Integer(_))
-                ) {
-                    let fmap = crate::sql_generator::function_mapper::current_function_mapper();
-                    format!("{}({})", fmap.cast_int64(), init_sql)
-                } else {
-                    init_sql
+                // Wrap a numeric init literal in the matching 64-bit cast to
+                // prevent a Code 53 type mismatch when the lambda returns a wider
+                // type than the bare literal's inferred type. An Integer `0`
+                // infers as UInt8 and a Float `0.0` as Float64-vs-the-bare-`0`
+                // rendering; the cast pins the accumulator type. #955 (Integer),
+                // #971 (Float — `reduce(n = 0.0, x IN [1.5] | n + x)` seeded a
+                // bare `0` (UInt8) against a Float64 body → Code 53).
+                let fmap = crate::sql_generator::function_mapper::current_function_mapper();
+                let init_cast = match *reduce.initial_value {
+                    RenderExpr::Literal(Literal::Integer(_)) => {
+                        format!("{}({})", fmap.cast_int64(), init_sql)
+                    }
+                    RenderExpr::Literal(Literal::Float(_)) => {
+                        format!("{}({})", fmap.cast_float64(), init_sql)
+                    }
+                    _ => init_sql,
                 };
 
                 // #955: a fold over an EMPTY list literal does zero iterations,
