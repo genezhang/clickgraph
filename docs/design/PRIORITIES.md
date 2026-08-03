@@ -524,6 +524,31 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **Feature — #629 extension: target-position + undirected uncorrelated
+  `size([x IN list WHERE (pattern)])`** (branch `feature/629-extend-target-undirected`,
+  references #629). #629 shipped the arrayCount render gated to a single directed hop
+  with the iteration var at START; this extends it to **target-position**
+  `()-[:R]->(f)` and **undirected** `(f)-[:R]-()` (single-hop). **Root render bug:**
+  `list_element_col` was hardcoded to hop-0's from-side (`pattern_comprehension_sql.rs`),
+  so a target-position var read the wrong column. **Fix:** new
+  `find_iteration_var_position(pattern_hops, var)` locates where the iteration var
+  sits (start/end side); the element column is derived from that via
+  `find_edge_id_column` (which flips start/end for `Incoming`). Undirected adds an
+  early branch emitting `SELECT <from_col> ... UNION SELECT <to_col> ...` inside the
+  membership subquery (both dialects; Databricks keeps the explode form with the
+  UNION in the WHERE-`IN`). Gate `uncorrelated_list_pattern_is_render_safe`
+  (`with_clause.rs`) relaxed in lockstep: allow Outgoing|Incoming|Either, var at
+  start OR end; **still loud**: multi-hop (deferred #629 PR2 — anonymous intermediate
+  nodes → ambiguous edge-table resolution → silent wrong table), self-loop
+  `(f)-[:R]->(f)` (needs a from=to predicate), variable-length. **Load-bearing
+  invariant:** a render `None` becomes the literal `"0"` (silently-wrong count), so
+  the plan-time gate is the ONLY safe guard — it admits only render-correct shapes.
+  Verified all shapes both dialects (target→followed_id, incoming→followed_id,
+  undirected→from∪to, per-element→follower_id unchanged); 4 new `.sql` corpus goldens
+  + 2 `.err` (self-loop, multi-hop) + curated shape asserts + 5 `find_iteration_var_position`
+  unit tests, fail-when-reverted; corpus 0-churn elsewhere; ratchet net-zero; full
+  gate green. Not verifiable in-env (no live CH): bar = SQL shape + byte goldens.
+
 - 2026-08-02: **Bug-driven refactor (#929 continuation) — the Databricks
   WHERE-alias inliner now recurses into `reduce()`/map + shields lambda binders**
   (branch `fix/940-substitute-alias-refs-reduce-shield`, PR #942, closes #940).
