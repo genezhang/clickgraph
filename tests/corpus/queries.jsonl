@@ -1237,6 +1237,8 @@
 {"cypher": "MATCH (c:Comment)-[:IN_FORUM]->(f:Forum) RETURN c.comment_id, f.forum_id LIMIT 5", "name": "test_672_composite_non_self_ref_fk_single_hop", "schema": "composite_fk_edge_nonselfref"}
 {"cypher": "MATCH (c:Comment)<-[:IN_FORUM]-(f:Forum) RETURN c.comment_id, f.forum_id LIMIT 5", "name": "test_672_composite_non_self_ref_fk_reverse_single_hop", "schema": "composite_fk_edge_nonselfref"}
 {"cypher": "MATCH (a:Object)-[:PARENT*1..3]->(b:Object) WHERE a.name = 'doc' RETURN b.name", "name": "test_713_composite_self_ref_fk_vlp_ancestors_append", "schema": "composite_self_ref_fk"}
+{"cypher": "MATCH (a:Object)-[:PARENT]->(a) RETURN count(*)", "name": "test_987_composite_self_ref_fk_closed_single_hop_count", "schema": "composite_self_ref_fk"}
+{"cypher": "MATCH (a:Object)-[:PARENT]->(a) RETURN a.name", "name": "test_987_composite_self_ref_fk_closed_single_hop_property", "schema": "composite_self_ref_fk"}
 {"cypher": "MATCH (a:Object) OPTIONAL MATCH (a)-[:PARENT*1..]->(b:Object) RETURN a.name, count(*)", "name": "test_979_composite_optional_vlp_open_fails_loud", "schema": "composite_self_ref_fk"}
 {"cypher": "MATCH (a:Object) OPTIONAL MATCH (a)-[:PARENT*1..]->(a) RETURN a.name, count(*)", "name": "test_979_composite_optional_vlp_closed_fails_loud", "schema": "composite_self_ref_fk"}
 {"cypher": "MATCH (a:Account)-[:TRANSFERRED*2..2]->(b:Account) RETURN a.bank_id, b.bank_id", "name": "test_604_composite_normal_exact_two_hop", "schema": "composite_id"}

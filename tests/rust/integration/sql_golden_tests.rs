@@ -8514,8 +8514,75 @@ async fn closed_single_hop_property_binds_node_once_987() {
     }
 }
 
-/// subquery; ClickHouse decorrelates that into a LEFT JOIN, so an outer row
-/// with ZERO pattern matches yields NULL instead of 0 — silently breaking
+/// #987 (FK-edge facet): a self-referencing FK-edge closed single-hop
+/// `(a)-[:PARENT]->(a)` (the "edge" IS the node table — FK columns live on the
+/// node row) was broken two ways: the `count(*)` form (SingleTableScan strategy)
+/// silently counted ALL rows with no self-loop constraint, and the property form
+/// (FkEdgeJoin strategy) bound the node twice with the same alias → Code 179. Both
+/// forms now emit a single scan with the self-loop `fk == node_id` filter
+/// (`a.parent_id = a.object_id` single-id, or a per-column AND for composite keys).
+/// The OPEN self-ref `(a)->(b)` and non-self-ref FK-edges are untouched.
+#[tokio::test]
+async fn fk_edge_self_ref_closed_single_hop_emits_self_loop_987() {
+    // Single-id self-ref FK-edge: fs_objects_single, fk parent_id → pk object_id.
+    let single = load_schema("schemas/examples/filesystem_single.yaml");
+    // Composite self-ref FK-edge: [parent_region, parent_id] → [region, object_id].
+    let composite = load_schema("schemas/test/composite_self_ref_fk.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // Single-id: both count(*) and property forms get `.parent_id = .object_id`
+        // on a single scan (no duplicate alias).
+        for cypher in [
+            "MATCH (a:Object)-[:PARENT]->(a) RETURN count(*)",
+            "MATCH (a:Object)-[:PARENT]->(a) RETURN a.name",
+        ] {
+            let sql = render(&single, cypher, dialect).await;
+            assert!(
+                sql.contains(".parent_id = ") && sql.contains(".object_id"),
+                "#987 FK-edge ({dialect:?}): single-id self-ref closed hop must emit the self-loop filter:\n{cypher}\n{sql}"
+            );
+            // Single scan: `fs_objects_single` appears exactly once.
+            assert_eq!(
+                sql.matches("fs_objects_single").count(),
+                1,
+                "#987 FK-edge ({dialect:?}): must be a single scan (no duplicate alias):\n{cypher}\n{sql}"
+            );
+        }
+
+        // Composite: per-column AND self-loop, single scan.
+        for cypher in [
+            "MATCH (a:Object)-[:PARENT]->(a) RETURN count(*)",
+            "MATCH (a:Object)-[:PARENT]->(a) RETURN a.name",
+        ] {
+            let sql = render(&composite, cypher, dialect).await;
+            assert!(
+                sql.contains(".parent_region = ")
+                    && sql.contains(".region")
+                    && sql.contains(".parent_id = ")
+                    && sql.contains(".object_id"),
+                "#987 FK-edge ({dialect:?}): composite self-ref closed hop must emit a per-column self-loop:\n{cypher}\n{sql}"
+            );
+            assert_eq!(
+                sql.matches("fs_objects_composite").count(),
+                1,
+                "#987 FK-edge ({dialect:?}): composite must be a single scan:\n{cypher}\n{sql}"
+            );
+        }
+
+        // OPEN self-ref (distinct vars) must NOT get a self-loop filter and keeps
+        // the two-table join.
+        let open = render(
+            &single,
+            "MATCH (a:Object)-[:PARENT]->(b:Object) RETURN count(*)",
+            dialect,
+        )
+        .await;
+        assert!(
+            !(open.contains(".parent_id = a.object_id") && open.contains("WHERE")),
+            "#987 FK-edge ({dialect:?}): OPEN self-ref must NOT get a self-loop WHERE:\n{open}"
+        );
+    }
+}
+
 /// `size(...) = 0` filters, comparisons, arithmetic, and CASE branches on
 /// zero-degree nodes. Every PatternCount rendering (all three direction
 /// variants and the multi-hop chain, in RETURN and WHERE positions alike)
