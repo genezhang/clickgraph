@@ -8145,6 +8145,63 @@ async fn size_pattern_count_composite_fk_errors_cleanly_921() {
     );
 }
 
+/// #928 (sibling of #921): `NOT (pattern)` over a relationship whose FACING
+/// correlation FK column is COMPOSITE must fail LOUD, not emit malformed SQL.
+/// `generate_not_exists_from_path_pattern` interpolates `rel_schema.from_id`/
+/// `to_id` verbatim into the correlated `NOT EXISTS` WHERE; a composite id
+/// stringifies to a bare comma-list (`from_bank_id, from_account_number`) →
+/// invalid SQL (ground-rule-1). Direction-aware guard: an anonymous-end DIRECTED
+/// pattern uses only the facing column, so a single-column facing side still
+/// renders even when the opposite side is composite.
+#[tokio::test]
+async fn not_pattern_composite_fk_errors_cleanly_928() {
+    let schema = load_schema(SchemaId::CompositeId.yaml_path());
+    let composite_cases = [
+        // Outgoing, composite from_id.
+        "MATCH (a:Account) WHERE NOT (a)-[:TRANSFERRED]->() RETURN a.bank_id",
+        // Incoming, composite to_id.
+        "MATCH (a:Account) WHERE NOT (a)<-[:OWNS]-() RETURN a.bank_id",
+        // Undirected (references both facing columns).
+        "MATCH (a:Account) WHERE NOT (a)-[:TRANSFERRED]-() RETURN a.bank_id",
+        // Named end binds BOTH from and to → the composite to_id is used even
+        // though the single from_id side would pass alone.
+        "MATCH (c:Customer) WHERE NOT (c)-[:OWNS]->(a:Account) RETURN c.customer_id",
+    ];
+    for cypher in composite_cases {
+        let result = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+        let err = result
+            .as_ref()
+            .err()
+            .unwrap_or_else(|| {
+                panic!("[{cypher}] composite-FK NOT pattern must error, not render: {result:?}")
+            })
+            .clone();
+        assert!(
+            err.contains("UnsupportedFeature") && err.contains("COMPOSITE"),
+            "[{cypher}] expected a composite-FK UnsupportedFeature error, got:\n{err}"
+        );
+        assert!(
+            !err.contains("from_bank_id, from_account_number")
+                && !err.contains("bank_id, account_number"),
+            "[{cypher}] error must not contain the malformed comma-list SQL:\n{err}"
+        );
+    }
+
+    // Negative control: a SINGLE-column facing side with an anonymous end still
+    // renders (direction-aware guard). OWNS outgoing correlates on `from_id =
+    // customer_id`; the composite `to_id` is not referenced with an anon end.
+    let sql = render(
+        &schema,
+        "MATCH (c:Customer) WHERE NOT (c)-[:OWNS]->() RETURN c.customer_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("account_ownership.customer_id = c.customer_id"),
+        "single-column OWNS outgoing (anon end) must still render its NOT EXISTS:\n{sql}"
+    );
+}
+
 /// #466 round 4 (adversarial-review blocking finding): `id(alias)` on a
 /// `pattern_union` endpoint must resolve LABEL-AGNOSTICALLY to the CTE's
 /// start_id/end_id — never to ONE label's id column.

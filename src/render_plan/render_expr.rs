@@ -1330,7 +1330,34 @@ fn generate_not_exists_from_path_pattern(
                     let from_col = &rel_schema.from_id;
                     let to_col = &rel_schema.to_id;
 
-                    // Get the node ID columns from their labels or infer from relationship schema
+                    // #928: the NOT EXISTS correlation predicates below interpolate the
+                    // edge FK column(s) verbatim (`{table}.{from_col}`/`{to_col}`). A
+                    // COMPOSITE FK column stringifies to a bare comma-list
+                    // (`from_bank_id, from_account_number`) → malformed SQL. Defer LOUD
+                    // (ground-rule-1), mirroring the #921 pattern-count guard and the
+                    // composite deferral `generate_exists_graph_rel_sql` already applies.
+                    // Which columns are actually used depends on the shape: an
+                    // anonymous-end DIRECTED pattern references only the facing column
+                    // (from for Outgoing, to for Incoming); every other shape (named end,
+                    // or undirected) references BOTH. Guard exactly the used column(s) so
+                    // a single-column facing side still renders when the other is
+                    // composite (direction-aware, like #921).
+                    let from_used = !(end_alias.is_none()
+                        && conn.relationship.direction == Direction::Incoming);
+                    let to_used = !(end_alias.is_none()
+                        && conn.relationship.direction == Direction::Outgoing);
+                    if (from_used && from_col.columns().len() != 1)
+                        || (to_used && to_col.columns().len() != 1)
+                    {
+                        return Err(RenderBuildError::UnsupportedFeature(format!(
+                            "NOT pattern over relationship '{}' with a COMPOSITE \
+                             foreign-key column is not supported (the correlation predicate \
+                             needs composite-key tuple equality). Express it as a top-level \
+                             OPTIONAL MATCH ... WHERE <rel> IS NULL instead.",
+                            rel_type
+                        )));
+                    }
+
                     let start_id_sql = if let Some(label) = &conn.start_node.label {
                         let node_schema = schema
                             .node_schema_opt(label)
