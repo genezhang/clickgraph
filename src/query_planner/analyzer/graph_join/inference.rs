@@ -3387,6 +3387,70 @@ impl GraphJoinInference {
             // closed shape stays on the start-side layout, `anchor_is_end ==
             // false`), so we add the matching `end_id` equality.
             let is_closed_vlp = graph_rel.left_connection == graph_rel.right_connection;
+
+            // #978: a CLOSED OPTIONAL VLP on a DENORMALIZED schema with LOWER
+            // BOUND 0 (`(a:Airport)-[:FLIGHT*0..N]->(a)`) must FAIL LOUD, not
+            // silently undercount. The denorm recursive CTE
+            // (`DenormalizedCteStrategy`) switches its cycle guard by lower bound
+            // (mirror of `uses_edge_uniqueness` at `cte_manager/mod.rs`):
+            //   - `*N..` with N >= 1 uses EDGE-uniqueness (`NOT has(vp.path_edges,
+            //     edge_id)`, #606/#710) — a walk CAN revisit nodes and return to
+            //     its start, so closed cycles ARE counted correctly (live-verified:
+            //     JFK<->LAX + LAX->ORD->JFK yields JFK=2/LAX=2/ORD=1, with acyclic
+            //     airports null-extended to 1). This shape renders — do NOT reject.
+            //   - `*0..` uses NODE-uniqueness (`NOT has(vp.path_nodes, next)`)
+            //     because the zero-hop base has no edge to seed edge-uniqueness;
+            //     node-uniqueness structurally forbids returning to the start, so
+            //     every real cycle is dropped and only the zero-length self rows
+            //     survive (silently undercounts — e.g. the JFK cycle above collapses
+            //     to 1). THIS is the genuinely-broken case, and this guard rejects
+            //     exactly it (ground rule 1).
+            // Scope: closed (`left == right`) + `effective_min_hops() == 0` +
+            // non-shortestPath (a closed shortestPath's zero-length self path is its
+            // correct shortest cycle) + denorm on either endpoint. Standard closed
+            // optional (#922), denorm NON-closed optional (#644/#659/#683), and
+            // denorm closed `*1..` all skip this and render unchanged. (The sibling
+            // non-optional guard in `filter_builder.rs` #605/#625 predates the
+            // #606/#710 edge-uniqueness switch and over-rejects `*1..` for the
+            // non-optional path — a separate pre-existing false-loud, tracked in
+            // #978's follow-up, not touched here.)
+            let closed_min_hops = graph_rel
+                .variable_length
+                .as_ref()
+                .map(|s| s.effective_min_hops())
+                .unwrap_or(1);
+            // `*0..0` (min == max == 0) is EXEMPT: it can only ever be the
+            // zero-length self path (no edge is traversable in a 0-hop walk), so
+            // node-uniqueness drops nothing and the count is correctly 1/node.
+            // Rejecting it would be a false-loud with an unsatisfiable remedy
+            // (`*1..0` is an invalid range). Only `*0..N` with N >= 1 — which CAN
+            // traverse edges but silently drops the resulting cycles/self-loops
+            // under node-uniqueness — is broken. Detected via the upper bound.
+            let closed_max_is_zero =
+                graph_rel.variable_length.as_ref().and_then(|s| s.max_hops) == Some(0);
+            if is_closed_vlp
+                && closed_min_hops == 0
+                && !closed_max_is_zero
+                && graph_rel.shortest_path_mode.is_none()
+                && (crate::graph_catalog::is_node_denormalized(&left_node_schema)
+                    || crate::graph_catalog::is_node_denormalized(&right_node_schema))
+            {
+                return Err(AnalyzerError::UnsupportedPattern {
+                    message: format!(
+                        "closed OPTIONAL variable-length path with lower bound 0 on \
+                         a denormalized schema (`({a})-[*0..N]->({a})`): the \
+                         zero-hop recursive CTE enforces node-uniqueness (the \
+                         zero-length base has no edge to seed edge-uniqueness), \
+                         which structurally cannot return to the start node, so \
+                         real cycles are dropped and the count silently collapses \
+                         to the zero-length self rows. Use a lower bound >= 1 (which \
+                         uses edge-uniqueness and counts cycles correctly). \
+                         (#605/#625/#978)",
+                        a = graph_rel.left_connection
+                    ),
+                });
+            }
+
             let mut vlp_joining_on = vec![helpers::eq_condition(
                 anchor_alias,
                 &anchor_id_col,
