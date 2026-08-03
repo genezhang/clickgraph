@@ -8405,7 +8405,63 @@ async fn composite_optional_vlp_fails_loud_979() {
     }
 }
 
-/// #599: `size((pattern))` renders as a bare correlated `COUNT(*)` scalar
+/// #987 (facet 2, denorm): a DENORMALIZED closed single-hop `(a)-[:FLIGHT]->(a)`
+/// matches only self-loop edges (`from_id == to_id`, e.g. `Origin == Dest`), but
+/// #983 excluded denorm from its self-loop injection so it bare-counted ALL edges
+/// (silent over-count: 10 flights where only 1 is a self-loop). For a denorm edge
+/// the endpoint columns live on the single edge=node scan, so the same
+/// `<alias>.<from_id> = <alias>.<to_id>` constraint the standard path uses is
+/// correct here too. The OPEN denorm single hop `(a)->(b)` (distinct connections)
+/// stays untouched. FK-edge remains excluded (a different `node_id == fk_col`
+/// test).
+#[tokio::test]
+async fn denorm_closed_single_hop_emits_self_loop_filter_987() {
+    let denorm = load_schema("schemas/test/denormalized_flights.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // count(*) and property forms both get the denorm self-loop filter.
+        for cypher in [
+            "MATCH (a:Airport)-[:FLIGHT]->(a) RETURN count(*)",
+            "MATCH (a:Airport)-[:FLIGHT]->(a) RETURN a.city",
+        ] {
+            let sql = render(&denorm, cypher, dialect).await;
+            // Denorm endpoint columns are Origin (from_id) / Dest (to_id); the
+            // edge alias varies (t1/t2/…), so assert on the column-equality shape.
+            assert!(
+                sql.contains(".Origin = ") && sql.contains(".Dest"),
+                "#987 ({dialect:?}): denorm closed single-hop must emit the self-loop \
+                 filter `<edge>.Origin = <edge>.Dest`:\n{cypher}\n{sql}"
+            );
+        }
+
+        // The OPEN denorm single hop must NOT get a self-loop filter.
+        let open = render(
+            &denorm,
+            "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) RETURN count(*)",
+            dialect,
+        )
+        .await;
+        assert!(
+            !(open.contains(".Origin = ") && open.contains(".Dest")),
+            "#987 ({dialect:?}): OPEN denorm single hop must NOT get a self-loop filter:\n{open}"
+        );
+
+        // A user WHERE on the anchor must be AND-combined with the self-loop
+        // filter (injected into the normal predicate flow, not an early return).
+        let with_where = render(
+            &denorm,
+            "MATCH (a:Airport)-[:FLIGHT]->(a) WHERE a.state = 'GA' RETURN count(*)",
+            dialect,
+        )
+        .await;
+        assert!(
+            with_where.contains("OriginState = 'GA'")
+                && with_where.contains(".Origin = ")
+                && with_where.contains(".Dest"),
+            "#987 ({dialect:?}): denorm anchor WHERE must be preserved alongside the self-loop filter:\n{with_where}"
+        );
+    }
+}
+
 /// subquery; ClickHouse decorrelates that into a LEFT JOIN, so an outer row
 /// with ZERO pattern matches yields NULL instead of 0 — silently breaking
 /// `size(...) = 0` filters, comparisons, arithmetic, and CASE branches on
