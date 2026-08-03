@@ -1955,6 +1955,25 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
             {
                 return sql;
             }
+            // #962: on ClickHouse, `size`/`reverse` over a PROVEN string arg
+            // upgrade to the codepoint-based `lengthUTF8`/`reverseUTF8` (the
+            // byte-based `length`/`reverse` mangle multi-byte UTF-8). Array /
+            // unknown args keep the plain name (correct for arrays, byte-
+            // identical for unknowns). Mirrors the Path A renderer
+            // (to_sql_query.rs); this Path-C renderer backs VLP bound-node /
+            // pattern-comprehension WHERE filters.
+            if fn_lower == "size" || fn_lower == "reverse" {
+                let dialect = crate::server::query_context::get_current_dialect();
+                if let Some(utf8) =
+                    crate::sql_generator::emitters::clickhouse::to_sql_query::clickhouse_utf8_string_fn(
+                        &fn_lower,
+                        func.args.first(),
+                        dialect,
+                    )
+                {
+                    return format!("{}({})", utf8, args.join(", "));
+                }
+            }
             // Map dialect-divergent names (e.g. tuple -> Spark struct) via the registry.
             let name = crate::clickhouse_query_generator::dialect_function_name(&func.name);
             format!("{}({})", name, args.join(", "))
