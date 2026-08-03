@@ -524,6 +524,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+<<<<<<< Updated upstream
 - 2026-08-02: **Fix — chained double-WITH rename of a scalar PROPERTY consumed by
   a NON-count aggregate no longer renders `SELECT *`** (branch
   `fix/914-chained-with-rename-non-count-aggregate`, PR #915, closes #914;
@@ -549,6 +550,25 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   Zero existing-golden churn (554 corpus); 2 new corpus goldens (sum/collect ×
   CH+Databricks) + unit test over sum/avg/min/max/collect, all fail-when-reverted;
   ratchet net-zero (helper-routed).
+=======
+- 2026-08-02: **Fix — chained WITH rename of a property consumed by a non-count
+  aggregate** (branch `fix/914-chained-with-rename-non-count-aggregate`, PR #915,
+  `05b57045`, closes #914). `MATCH (u:User) WITH u.age AS a WITH a AS b RETURN
+  sum(b)` (and avg/min/max/collect) rendered `SELECT *` in both CTE bodies + an
+  outer `sum(b.b)` referencing a never-exported column → ClickHouse Code 47.
+  **Root cause:** the #910 scalar-aggregate-arg rewrite recognized a scalar alias
+  only one level deep (shape-(ii) required the alias's underlying projection expr
+  to be NON-`TableAlias`); on the second rename hop `b`'s underlying IS a bare
+  `TableAlias(a)`, so the rewrite missed and `sum(b)` kept a bare `TableAlias(b)` →
+  `require_all(b)` → CTE column pruned → `SELECT *`. **Fix:** `resolves_to_scalar`
+  follows the chain of `TableAlias` renames back to its origin (scalar variable, or
+  innermost non-`TableAlias` scalar projection); bottoms out in an unregistered
+  alias → genuine graph entity → NOT scalar. Bounded by new
+  `PlanCtx::projection_alias_count()`. Whole-node `collect(v)` / `sum(v.age)` are
+  untouched (rewrite only fires for a bare-`TableAlias` arg). ZERO existing-golden
+  churn; live-verified sum(age)=889 (old → Code 47). Review APPROVE-0.
+
+>>>>>>> Stashed changes
 - 2026-08-02: **Fix — graph pattern in scalar-expression context returns a clean
   error instead of panicking** (branch `fix/901-pattern-in-expr-context-panic`,
   closes #901). `MATCH (u:User) RETURN CASE WHEN (u)-[:FOLLOWS]->() THEN 1 ELSE 0
