@@ -133,10 +133,20 @@ pub fn regex_match_predicate(haystack: &str, pattern: &str) -> String {
 /// Render a Cypher `reduce(acc = init, x IN list | expr)` fold for the active
 /// dialect, from its already-rendered component strings.
 ///
-/// ClickHouse has `arrayFold((x, acc) -> expr, list, init)`; Spark/Databricks
-/// has no `arrayFold` and uses `aggregate(list, init, (acc, x) -> expr)` (same
-/// semantics, different arg order + spelling). Emitted from every `ReduceExpr`
+/// ClickHouse's `arrayFold` binds the lambda's FIRST parameter to the
+/// **accumulator** and the second to the element:
+/// `arrayFold((accumulator, element) -> expr, list, init)` (CH also accepts the
+/// unparenthesized `arrayFold(acc, x -> expr, list, init)`). Spark/Databricks
+/// has no `arrayFold` and uses `aggregate(list, init, (acc, x) -> expr)` — same
+/// accumulator-first order, different spelling. Emitted from every `ReduceExpr`
 /// render site so the two dialects stay in sync.
+///
+/// #950: the ClickHouse branch previously emitted `arrayFold(x, acc -> expr,
+/// …)` — the ELEMENT first — so ClickHouse bound `x` to the accumulator and
+/// `acc` to the element, SWAPPING the two inside `expr`. That is silently wrong
+/// for any non-commutative/non-associative body (`reduce(acc = 0, y IN [1,2,3] |
+/// acc*10 + y)` gave 60 instead of 123) and a `Code 43` when the element and
+/// accumulator types differ. The Databricks branch was already correct.
 pub fn reduce_fold_sql(
     variable: &str,
     accumulator: &str,
@@ -150,9 +160,10 @@ pub fn reduce_fold_sql(
             "aggregate({}, {}, ({}, {}) -> {})",
             list_sql, init_sql, accumulator, variable, expr_sql
         ),
+        // ClickHouse: accumulator is the FIRST lambda parameter.
         _ => format!(
             "arrayFold({}, {} -> {}, {}, {})",
-            variable, accumulator, expr_sql, list_sql, init_sql
+            accumulator, variable, expr_sql, list_sql, init_sql
         ),
     }
 }
@@ -514,11 +525,12 @@ mod reduce_fold_sql_tests {
 
     #[test]
     fn clickhouse_default_uses_array_fold() {
-        // Default (no scope) = ClickHouse: the historical `arrayFold` spelling,
-        // byte-identical to what both render paths emitted before this helper.
+        // Default (no scope) = ClickHouse. #950: the accumulator is the FIRST
+        // lambda parameter (`arrayFold(acc, x -> …)`), matching ClickHouse's
+        // fold semantics — the element-first form was silently wrong.
         assert_eq!(
             reduce_fold_sql("x", "acc", "acc + x", "[1, 2, 3]", "0"),
-            "arrayFold(x, acc -> acc + x, [1, 2, 3], 0)"
+            "arrayFold(acc, x -> acc + x, [1, 2, 3], 0)"
         );
     }
 

@@ -500,7 +500,7 @@ const CORPUS: &[(&str, &str)] = &[
         "fn_regex_match",
         "MATCH (u:User) WHERE u.name =~ '.*a.*' RETURN u.user_id",
     ),
-    // reduce -> CH arrayFold((x, acc) -> expr, list, init) / Spark
+    // reduce -> CH arrayFold((acc, x) -> expr, list, init) / Spark
     // aggregate(list, init, (acc, x) -> expr). Spark has no arrayFold; it
     // previously emitted the CH name on Databricks (UNRESOLVED_ROUTINE).
     (
@@ -10638,6 +10638,35 @@ mod walker_drift_family_484_490_495_476_483 {
             !nested_sql.contains("full_name"),
             "#949: an outer reduce binder's shield must propagate into a nested \
              reduce body:\n{nested_sql}"
+        );
+    }
+
+    /// #950: ClickHouse `arrayFold` binds the lambda's FIRST parameter to the
+    /// accumulator. The renderer previously emitted the ELEMENT first
+    /// (`arrayFold(x, acc -> …)`), so ClickHouse swapped accumulator/element
+    /// inside the body — silently wrong for a non-commutative body
+    /// (`reduce(acc = 0, y IN [1,2,3] | acc*10 + y)` folded to 60 not 123) and a
+    /// `Code 43` when their types differ. The accumulator must be rendered first.
+    #[tokio::test]
+    async fn reduce_renders_accumulator_first_950() {
+        let schema = load_schema("benchmarks/social_network/schemas/social_benchmark.yaml");
+
+        let sql = render(
+            &schema,
+            "MATCH (u:User) RETURN reduce(acc = 0, y IN [1, 2, 3] | acc * 10 + y) AS r",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        // Accumulator `acc` is the first lambda parameter, element `y` second.
+        assert!(
+            sql.contains("arrayFold(acc, y ->"),
+            "#950: ClickHouse arrayFold must render the accumulator first \
+             (`arrayFold(acc, y -> …)`):\n{sql}"
+        );
+        assert!(
+            !sql.contains("arrayFold(y, acc ->"),
+            "#950: element-first `arrayFold(y, acc -> …)` swaps accumulator and \
+             element inside the body → silently wrong fold:\n{sql}"
         );
     }
 
