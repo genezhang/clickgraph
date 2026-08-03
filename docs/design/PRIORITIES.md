@@ -524,6 +524,39 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — denorm closed OPTIONAL VLP with lower bound 0
+  (traversable upper bound) now fails loud instead of silently undercounting**
+  (branch `fix/978-denorm-closed-optional-vlp-loud-guard`, PR #981, closes
+  #978). A closed self-ref OPTIONAL VLP on a DENORMALIZED schema with `*0..N`
+  (N>=1) — `MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*0..N]->(a)` — silently
+  undercounts: its zero-hop CTE uses node-uniqueness (`NOT has(vp.path_nodes,
+  next)`, the zero-length base has no edge to seed edge-uniqueness), so cycles
+  and self-loops are dropped and the count collapses to the zero-length self
+  rows (live: a JFK self-loop that should count 2 → 1). The analyzer's
+  optional-VLP join builder now returns `AnalyzerError::UnsupportedPattern`
+  (fatal-by-contract) for denorm + closed (`left==right`) + `effective_min_hops
+  == 0` + `max_hops != Some(0)` + non-shortestPath, via the schema-catalog
+  dispatch API `graph_catalog::is_node_denormalized` (Rule #7). **Two
+  live-verified exemptions:** (1) lower bound >= 1 uses EDGE-uniqueness (`NOT
+  has(vp.path_edges, edge_id)`, #606/#710 — `DenormalizedCteStrategy::
+  uses_edge_uniqueness` is true for min_hops>=1) and counts cycles CORRECTLY
+  (`*1..` on JFK↔LAX+LAX→ORD→JFK → JFK=2/LAX=2/ORD=1, parallel-edge JFK=8), so
+  it renders; (2) `*0..0` is the degenerate zero-length-only pattern (no edge
+  traversable → node-uniqueness drops nothing → correct 1/node), rejecting it
+  would be a false-loud with an unsatisfiable `*1..0` remedy. **Review saga:**
+  the first cut rejected ALL lower bounds (mirroring the existing non-optional
+  #605 guard's message); **adversarial review caught it as a CRITICAL false-loud
+  and proved on live ClickHouse** that denorm closed `*1..` counts cycles
+  correctly. Narrowed to `min_hops == 0`; a **re-review APPROVE'd** and flagged
+  the `*0..0` MINOR (now also exempt). ROOT LESSON: the #605/#625 guards'
+  "enforces node-uniqueness for ALL lower bounds" comment is stale (predates the
+  #606/#710 edge-uniqueness switch) — a comment stating an invariant is not
+  proof; render the CTE and live-execute against cyclic data. 1689 lib + 573
+  integration + corpus + ratchet + clippy green; `*0..` corpus `.err` golden +
+  load-bearing curated test. Filed #980 (the sibling non-optional #605 guard has
+  the identical stale-premise false-loud). Immediate follow-up to #922 (filed
+  from its review).
+
 - 2026-08-03: **Correctness — closed OPTIONAL VLP now keeps its anchor `WHERE`
   and closed constraint** (branch `fix/922-closed-optional-vlp-anchor-where-closed-constraint`,
   PR #976, closes #922). `MATCH (a) WHERE a.name='X' OPTIONAL MATCH (a)-[:R*..]->(a)
