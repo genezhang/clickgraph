@@ -3372,15 +3372,40 @@ impl GraphJoinInference {
                     crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string()
                 });
 
-            let vlp_join = Join {
-                table_name: cte_name.clone(),
-                table_alias: vlp_alias.clone(),
-                joining_on: vec![helpers::eq_condition(
+            // #922: a CLOSED OPTIONAL VLP (`(a)-[*..]->(a)`,
+            // `left_connection == right_connection`) must pin the CTE path back
+            // to its start — the pattern requires the walk to RETURN to the
+            // anchor. Without the extra `anchor.id = vt0.end_id` conjunct the
+            // LEFT JOIN counts EVERY path leaving the anchor (silent over-count:
+            // Alice=9 instead of the 1 null-extended row on an acyclic graph),
+            // the closed-constraint sibling of the non-optional `#625`
+            // `t.start_id = t.end_id` outer-WHERE emission in filter_builder.rs
+            // (which is unreachable for the OPTIONAL path — it lives in the
+            // non-optional `else`). It goes in the JOIN ON, NOT the outer WHERE,
+            // so anchors with no cycle are still NULL-extended (OPTIONAL
+            // semantics), not dropped. `cte_id_col` is `start_id` here (the
+            // closed shape stays on the start-side layout, `anchor_is_end ==
+            // false`), so we add the matching `end_id` equality.
+            let is_closed_vlp = graph_rel.left_connection == graph_rel.right_connection;
+            let mut vlp_joining_on = vec![helpers::eq_condition(
+                anchor_alias,
+                &anchor_id_col,
+                &vlp_alias,
+                cte_id_col,
+            )];
+            if is_closed_vlp {
+                vlp_joining_on.push(helpers::eq_condition(
                     anchor_alias,
                     &anchor_id_col,
                     &vlp_alias,
-                    cte_id_col,
-                )],
+                    crate::query_planner::join_context::VLP_END_ID_COLUMN,
+                ));
+            }
+
+            let vlp_join = Join {
+                table_name: cte_name.clone(),
+                table_alias: vlp_alias.clone(),
+                joining_on: vlp_joining_on,
                 join_type: JoinType::Left,
                 pre_filter: None,
                 from_id_column: Some(anchor_id_col),

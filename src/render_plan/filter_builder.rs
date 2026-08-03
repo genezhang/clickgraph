@@ -788,6 +788,77 @@ impl FilterBuilder for LogicalPlan {
                 // For GraphJoins, extract filters from the input
                 let input_filter = graph_joins.input.extract_filters()?;
 
+                // #922: a CLOSED OPTIONAL VLP (`(a)-[*..]->(a)`) loses its
+                // MANDATORY anchor WHERE (`WHERE a.name = 'Alice'`) on the way
+                // here. That filter is a `LogicalPlan::Filter` wrapping the
+                // anchor GraphNode. `GraphJoinInference` runs FIRST and captures
+                // a clone of the pattern's `GraphRel` (Filter and all) into the
+                // VLP LEFT JOIN's own `join.graph_rel`. `DuplicateScansRemoving`
+                // runs AFTER and — because the anchor alias appears at BOTH VLP
+                // endpoints — elides the pattern's LEFT endpoint scan in
+                // `graph_joins.input` to `Empty`, taking the Filter with it (its
+                // `GraphJoins` arm only recurses into `.input`, never into
+                // `joins[].graph_rel`, so the captured clone is untouched). Net
+                // result: `graph_joins.input` no longer carries the anchor
+                // predicate and the recursion above returns None for it, while
+                // the filter survives intact inside the closed VLP join's
+                // `graph_rel.left`. Recover it here: for a closed optional VLP
+                // join (`left_connection == right_connection`), pull the anchor
+                // filter out of that `graph_rel.left` and AND it into the outer
+                // WHERE (where it BELONGS — restricting which base anchors
+                // appear; embedding it only in the CTE would return every anchor
+                // NULL-extended). The `left == right` gate is exclusive to the
+                // closed shape: an OPEN optional VLP keeps its anchor scan
+                // (distinct endpoints, not elided), so `input_filter` already has
+                // the predicate and its endpoints never satisfy this gate — no
+                // double-add. Directed OR undirected, `*0..`/`*1..` all covered.
+                //
+                // Dedup by equality: two closed optional VLPs on the SAME anchor
+                // (`... OPTIONAL MATCH (a)->(a) OPTIONAL MATCH (a)->(a)`) each
+                // carry the same anchor filter, and both would otherwise be AND-ed
+                // in (`a.name='X' AND a.name='X'`). Distinct anchors keep their
+                // distinct filters. Skip anything already present in
+                // `input_filter` (belt-and-suspenders — the gate already excludes
+                // the open shape whose filter lives in the input).
+                let mut input_filter = input_filter;
+                let mut recovered: Vec<RenderExpr> = Vec::new();
+                for join in &graph_joins.joins {
+                    if let Some(gr) = &join.graph_rel {
+                        // Mirror the inference-side `rel_is_optional` gate exactly
+                        // (`optional_aliases.contains(rel) || is_optional`): a VLP
+                        // that became optional purely via `optional_aliases`
+                        // (without the `is_optional` field) would otherwise get the
+                        // closed-constraint conjunct in the JOIN ON but not this
+                        // WHERE recovery → silent-wrong. In practice a
+                        // directly-written OPTIONAL MATCH sets `is_optional:
+                        // Some(true)` at lowering, so they already agree; keying on
+                        // both keeps the two gates provably consistent.
+                        let is_optional_vlp_rel = gr.is_optional.unwrap_or(false)
+                            || graph_joins.optional_aliases.contains(&gr.alias);
+                        let is_closed_optional_vlp = gr.variable_length.is_some()
+                            && is_optional_vlp_rel
+                            && gr.left_connection == gr.right_connection;
+                        if is_closed_optional_vlp {
+                            if let Some(anchor_filter) = gr.left.extract_filters()? {
+                                let already_in_input =
+                                    input_filter.as_ref().is_some_and(|f| *f == anchor_filter);
+                                if !already_in_input && !recovered.contains(&anchor_filter) {
+                                    recovered.push(anchor_filter);
+                                }
+                            }
+                        }
+                    }
+                }
+                for anchor_filter in recovered {
+                    input_filter = Some(match input_filter {
+                        Some(existing) => RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::And,
+                            operands: vec![existing, anchor_filter],
+                        }),
+                        None => anchor_filter,
+                    });
+                }
+
                 // #518: `correlation_predicates` carries relationship-
                 // uniqueness guards (e.g. `NOT (t1.follower_id = t2.follower_id
                 // AND t1.followed_id = t2.followed_id)`, generated by

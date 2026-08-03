@@ -25,5 +25,6 @@ SELECT
       a.name AS "a.name", 
       count(*) AS "paths"
 FROM test_integration.users AS a
-LEFT JOIN vlp_a_a AS vt0 ON a.user_id = vt0.start_id
+LEFT JOIN vlp_a_a AS vt0 ON a.user_id = vt0.start_id AND a.user_id = vt0.end_id
+WHERE a.name = 'Alice'
 GROUP BY a.name

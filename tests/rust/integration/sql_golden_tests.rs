@@ -7977,6 +7977,112 @@ async fn closed_self_ref_optional_vlp_anchor_property_from_anchor_table_899() {
     }
 }
 
+/// #922: a CLOSED self-referencing OPTIONAL VLP `(a)-[:R*..]->(a)` with a
+/// MANDATORY anchor WHERE dropped BOTH the anchor filter and the closed
+/// constraint — two silent-wrong defects.
+///
+/// Defect 1 — anchor WHERE dropped: `WHERE a.name = 'Alice'` never appeared in
+/// the SQL (returned ALL users). The filter is a `LogicalPlan::Filter` wrapping
+/// the anchor; because `a` is BOTH VLP endpoints, `DuplicateScansRemoving`
+/// elides the pattern's left endpoint scan → `Empty` and the Filter goes with
+/// it, so `extract_filters` on `GraphJoins.input` no longer finds it. The
+/// `GraphJoins` arm now recovers it from the closed VLP join's own
+/// `graph_rel.left` and ANDs it into the outer WHERE.
+///
+/// Defect 2 — closed constraint missing: the LEFT JOIN was only
+/// `ON a.user_id = vt0.start_id`, counting EVERY path leaving the anchor
+/// (Alice = 9 on an acyclic graph) instead of only cycles returning to it. The
+/// non-optional path emits `WHERE t.start_id = t.end_id` (#625) but that block
+/// is unreachable for OPTIONAL. Now the closed OPTIONAL join adds
+/// `AND a.user_id = vt0.end_id` in the ON (not the WHERE — so anchors with no
+/// cycle stay NULL-extended, preserving OPTIONAL semantics). On this acyclic
+/// fixture Alice correctly returns a single null-extended row (paths = 1).
+#[tokio::test]
+async fn closed_optional_vlp_keeps_anchor_where_and_closed_constraint_922() {
+    let schema = load_schema("schemas/test/test_fixtures.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // Directed `*1..` — the issue's canonical repro.
+        let sql = render(
+            &schema,
+            "MATCH (a:TestUser) WHERE a.name = 'Alice' \
+             OPTIONAL MATCH (a)-[:TEST_FOLLOWS*1..]->(a) \
+             RETURN a.name, COUNT(*) as paths",
+            dialect,
+        )
+        .await;
+        // Defect 1: the mandatory anchor WHERE must reach the outer query.
+        assert!(
+            sql.contains("WHERE a.name = 'Alice'"),
+            "#922 defect 1 ({dialect:?}): mandatory anchor WHERE must survive to the outer query:\n{sql}"
+        );
+        // Defect 2: the closed constraint must be in the LEFT JOIN ON (both
+        // conjuncts), NOT a WHERE (a WHERE would drop the NULL-extended anchor).
+        assert!(
+            sql.contains("ON a.user_id = vt0.start_id AND a.user_id = vt0.end_id"),
+            "#922 defect 2 ({dialect:?}): closed constraint must be `AND a.user_id = vt0.end_id` in the JOIN ON:\n{sql}"
+        );
+
+        // `*0..` variant (the frozen corpus golden line 819) — same two fixes.
+        let sql0 = render(
+            &schema,
+            "MATCH (a:TestUser) WHERE a.name = 'Alice' \
+             OPTIONAL MATCH (a)-[:TEST_FOLLOWS*0..]->(a) \
+             RETURN a.name, COUNT(*) as paths",
+            dialect,
+        )
+        .await;
+        assert!(
+            sql0.contains("WHERE a.name = 'Alice'")
+                && sql0.contains("ON a.user_id = vt0.start_id AND a.user_id = vt0.end_id"),
+            "#922 ({dialect:?}): `*0..` closed optional must also keep anchor WHERE + closed constraint:\n{sql0}"
+        );
+    }
+
+    // Regression guard: an OPEN optional VLP (distinct endpoints) must NOT gain
+    // the `end_id` conjunct and must NOT double-add the anchor WHERE. The
+    // `left_connection == right_connection` gate excludes it.
+    let open = render(
+        &schema,
+        "MATCH (a:TestUser) WHERE a.name = 'Alice' \
+         OPTIONAL MATCH (a)-[:TEST_FOLLOWS*1..]->(b) \
+         RETURN a.name, count(b)",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        open.contains("LEFT JOIN vlp_a_b AS vt0 ON a.user_id = vt0.start_id")
+            && !open.contains("ON a.user_id = vt0.start_id AND a.user_id = vt0.end_id"),
+        "#922 regression: OPEN optional VLP must keep the single start_id join (no end_id conjunct in the ON):\n{open}"
+    );
+    assert!(
+        open.matches("a.name = 'Alice'").count() == 1,
+        "#922 regression: OPEN optional VLP anchor WHERE must appear exactly once (no double-add):\n{open}"
+    );
+
+    // Two closed optional VLPs on the SAME anchor: each join's captured
+    // `graph_rel.left` carries the anchor filter, so the recovery must DEDUP it
+    // (else `a.name='Alice' AND a.name='Alice'`). Both joins still get the
+    // closed constraint (vt0 + vt1).
+    let two = render(
+        &schema,
+        "MATCH (a:TestUser) WHERE a.name = 'Alice' \
+         OPTIONAL MATCH (a)-[:TEST_FOLLOWS*1..]->(a) \
+         OPTIONAL MATCH (a)-[:TEST_FOLLOWS*1..]->(a) \
+         RETURN a.name, COUNT(*)",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        two.matches("a.name = 'Alice'").count() == 1,
+        "#922 regression: two closed optional VLPs on one anchor must not double-add the anchor WHERE:\n{two}"
+    );
+    assert!(
+        two.contains("vt0 ON a.user_id = vt0.start_id AND a.user_id = vt0.end_id")
+            && two.contains("vt1 ON a.user_id = vt1.start_id AND a.user_id = vt1.end_id"),
+        "#922: both closed optional VLP joins must carry the closed constraint:\n{two}"
+    );
+}
+
 /// #599: `size((pattern))` renders as a bare correlated `COUNT(*)` scalar
 /// subquery; ClickHouse decorrelates that into a LEFT JOIN, so an outer row
 /// with ZERO pattern matches yields NULL instead of 0 — silently breaking
