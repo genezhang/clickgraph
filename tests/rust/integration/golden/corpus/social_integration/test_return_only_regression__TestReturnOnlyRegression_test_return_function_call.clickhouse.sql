@@ -1,2 +1,2 @@
 SELECT 
-      upper('hello') AS "upper"
+      upperUTF8('hello') AS "upper"

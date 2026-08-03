@@ -252,7 +252,11 @@ fn test_parameter_in_where_with_function_in_return() {
     println!("Generated SQL:\n{}", sql);
 
     // Verify both parameter and function present
-    assert!(sql.to_lowercase().contains("upper(") || sql.to_lowercase().contains("ucase("));
+    assert!(
+        sql.to_lowercase().contains("upperutf8(")
+            || sql.to_lowercase().contains("upper(")
+            || sql.to_lowercase().contains("ucase(")
+    );
 }
 
 #[test]
@@ -273,7 +277,11 @@ fn test_function_with_parameter_in_where() {
     println!("Generated SQL:\n{}", sql);
 
     // Verify function and parameter in WHERE
-    assert!(sql.to_lowercase().contains("upper(") || sql.to_lowercase().contains("ucase("));
+    assert!(
+        sql.to_lowercase().contains("upperutf8(")
+            || sql.to_lowercase().contains("upper(")
+            || sql.to_lowercase().contains("ucase(")
+    );
 }
 
 #[test]
@@ -294,7 +302,11 @@ fn test_multiple_parameters_with_multiple_functions() {
     println!("Generated SQL:\n{}", sql);
 
     // Verify multiple functions
-    assert!(sql.to_lowercase().contains("upper(") || sql.to_lowercase().contains("ucase("));
+    assert!(
+        sql.to_lowercase().contains("upperutf8(")
+            || sql.to_lowercase().contains("upper(")
+            || sql.to_lowercase().contains("ucase(")
+    );
     assert!(sql.to_lowercase().contains("ceil("));
 }
 
@@ -337,7 +349,11 @@ fn test_string_function_with_parameters_in_return() {
     println!("Generated SQL:\n{}", sql);
 
     // Verify substring function
-    assert!(sql.to_lowercase().contains("substring(") || sql.to_lowercase().contains("substr("));
+    assert!(
+        sql.to_lowercase().contains("substringutf8(")
+            || sql.to_lowercase().contains("substring(")
+            || sql.to_lowercase().contains("substr(")
+    );
 }
 
 #[tokio::test]
@@ -380,8 +396,16 @@ fn test_nested_functions_with_properties() {
     println!("Generated SQL:\n{}", sql);
 
     // Verify nested functions (both should be present)
-    assert!(sql.to_lowercase().contains("upper(") || sql.to_lowercase().contains("ucase("));
-    assert!(sql.to_lowercase().contains("substring(") || sql.to_lowercase().contains("substr("));
+    assert!(
+        sql.to_lowercase().contains("upperutf8(")
+            || sql.to_lowercase().contains("upper(")
+            || sql.to_lowercase().contains("ucase(")
+    );
+    assert!(
+        sql.to_lowercase().contains("substringutf8(")
+            || sql.to_lowercase().contains("substring(")
+            || sql.to_lowercase().contains("substr(")
+    );
 }
 
 #[test]
@@ -423,7 +447,11 @@ fn test_function_on_parameter_in_return() {
     println!("Generated SQL:\n{}", sql);
 
     // Verify function applied to parameter
-    assert!(sql.to_lowercase().contains("upper(") || sql.to_lowercase().contains("ucase("));
+    assert!(
+        sql.to_lowercase().contains("upperutf8(")
+            || sql.to_lowercase().contains("upper(")
+            || sql.to_lowercase().contains("ucase(")
+    );
 }
 
 #[test]

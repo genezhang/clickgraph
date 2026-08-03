@@ -10747,8 +10747,50 @@ mod walker_drift_family_484_490_495_476_483 {
         );
     }
 
+    /// #960: Cypher string functions are codepoint-based; ClickHouse's plain
+    /// `substring`/`upper`/`lower` are byte-based (silently wrong on any
+    /// multi-byte UTF-8 char — `substring('héllo',0,3)` cuts `é` mid-sequence).
+    /// The ClickHouse dialect must route the string-only functions to their
+    /// `…UTF8` variants; Spark's are already Unicode-aware, so Databricks keeps
+    /// the plain names.
+    #[tokio::test]
+    async fn string_functions_use_utf8_variants_on_clickhouse_960() {
+        let schema = load_schema("benchmarks/social_network/schemas/social_benchmark.yaml");
+
+        let ch = render(
+            &schema,
+            "MATCH (u:User) RETURN substring(u.name, 0, 3) AS a, left(u.name, 2) AS b, \
+             right(u.name, 2) AS c, toUpper(u.name) AS d, toLower(u.country) AS e",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            ch.contains("substringUTF8(") && ch.contains("upperUTF8(") && ch.contains("lowerUTF8("),
+            "#960: ClickHouse string functions must use the UTF8 variants:\n{ch}"
+        );
+        // The byte-based names must NOT appear as a bare call (guard against a
+        // regression that drops the UTF8 suffix). `substringUTF8(` contains
+        // `substring` but not `substring(`, so match the parenthesized call.
+        assert!(
+            !ch.contains("substring(") && !ch.contains("upper(") && !ch.contains("lower("),
+            "#960: byte-based string functions leaked on ClickHouse:\n{ch}"
+        );
+
+        // Databricks keeps the plain (already codepoint-based) names.
+        let dbx = render(
+            &schema,
+            "MATCH (u:User) RETURN substring(u.name, 0, 3) AS a, toUpper(u.name) AS d",
+            SqlDialect::Databricks,
+        )
+        .await;
+        assert!(
+            dbx.contains("substring(") && dbx.contains("upper(") && !dbx.contains("UTF8"),
+            "#960: Databricks string functions must keep the plain codepoint-based \
+             names (no UTF8 variants):\n{dbx}"
+        );
+    }
+
     /// `bidirectional_union` CTE, e.g. `MATCH (a:User)-[r]-(o)`) used to
-    /// build its cross-label DISTINCT discriminator tuple from the #467
     /// per-label-raw-column logic (designed for a bare `MATCH (n)`
     /// ViewScan UNION, which has genuinely separate `post_id`/`user_id`
     /// physical columns). That logic doesn't apply to a

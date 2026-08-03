@@ -1,5 +1,5 @@
 WITH with_prefix_cte_0 AS (SELECT 
-      substring(u.full_name, (1) + 1, 5) AS "prefix"
+      substringUTF8(u.full_name, (1) + 1, 5) AS "prefix"
 FROM test_integration.users_test AS u
 )
 SELECT 
