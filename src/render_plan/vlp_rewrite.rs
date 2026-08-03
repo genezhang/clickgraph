@@ -84,22 +84,27 @@ pub fn rewrite_vlp_aggregate_aliases(plan: &mut RenderPlan) -> RenderPlanBuilder
     // Extract VLP metadata from CTEs
     for cte in &plan.ctes.0 {
         if let Some(ref cypher_end_alias) = cte.vlp_cypher_end_alias {
-            // #647: skip only for a GENUINE end-anchored inversion — the FROM
-            // binds the end alias AND the pattern's two endpoints are distinct
-            // (`start_alias != end_alias`). A CLOSED VLP (`(a)<-[*]-(a)`) has
-            // start_alias == end_alias == the FROM anchor; it is a separate,
-            // loud-on-main shape (#625/#631) left on the original layout by the
-            // analyzer, so it must NOT be skipped here (skipping would silently
-            // change its projection). Guarding on distinct endpoints keeps it
-            // byte-identical.
-            let endpoints_distinct =
-                cte.vlp_cypher_start_alias.as_deref() != Some(cypher_end_alias.as_str());
-            if single_vlp_join
-                && endpoints_distinct
-                && Some(cypher_end_alias.as_str()) == optional_vlp_from_anchor
-            {
+            // #647: skip when the FROM binds the end alias — the anchor's
+            // properties then come from the base table, not the VLP CTE, so
+            // mapping `a.name → vt0.name` emits a column the CTE never exposes
+            // (Code 47). This covers TWO shapes, both with the end alias bound in
+            // FROM:
+            //   (1) end-anchored inversion `(a)<-[*]-(b)` with distinct endpoints
+            //       (#647): FROM binds the END, the far START is CTE-projected.
+            //   (2) closed self-reference `(a)-[*]->(a)` / `(a)<-[*]-(a)` (#899):
+            //       start_alias == end_alias == the FROM anchor. `a.name` is an
+            //       anchor-table property (read from FROM); only its endpoint id /
+            //       path columns live on the CTE, and those are projected via
+            //       `rewrite_vlp_union_branch_aliases`, not here. Previously this
+            //       skip was gated on DISTINCT endpoints, so the closed shape fell
+            //       through and mis-mapped `a.<prop>` to `vt0.<prop>` (#899).
+            // In both cases the FROM anchor equals this CTE's end alias, so keying
+            // the skip on that equality alone is correct and byte-identical for the
+            // common anchor-at-start layout (where the FROM alias is the start, not
+            // the end alias, so the skip never fires).
+            if single_vlp_join && Some(cypher_end_alias.as_str()) == optional_vlp_from_anchor {
                 log::debug!(
-                    "🔧 VLP aggregate rewrite: skipping FROM-bound anchor end alias '{}' (#647 end-anchored OPTIONAL VLP)",
+                    "🔧 VLP aggregate rewrite: skipping FROM-bound anchor end alias '{}' (end-anchored #647 / closed self-ref #899 OPTIONAL VLP)",
                     cypher_end_alias
                 );
                 continue;

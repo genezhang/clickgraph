@@ -7935,6 +7935,38 @@ async fn end_anchored_optional_vlp_drives_from_anchor_and_joins_on_end_id_647() 
     );
 }
 
+/// #899: a CLOSED self-referencing OPTIONAL VLP `(a)-[:R*..]->(a)` (start alias
+/// == end alias == the FROM anchor) previously mis-mapped the anchor's own
+/// properties onto the VLP CTE join alias (`a.name → vt0.name` in SELECT and
+/// GROUP BY), a column the CTE never exposes → ClickHouse Code 47. The anchor
+/// `a` is bound in FROM, so its non-endpoint properties must read from the
+/// anchor table. The aggregate-alias rewrite now skips the FROM-bound end anchor
+/// for the closed case (as it already did for the #647 distinct-endpoint case).
+#[tokio::test]
+async fn closed_self_ref_optional_vlp_anchor_property_from_anchor_table_899() {
+    let schema = load_schema("schemas/test/test_fixtures.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(
+            &schema,
+            "MATCH (a:TestUser) OPTIONAL MATCH (a)-[:TEST_FOLLOWS*1..]->(a) \
+             RETURN a.name, COUNT(*) as paths",
+            dialect,
+        )
+        .await;
+        // The anchor property + GROUP BY must reference the anchor table `a`,
+        // never the VLP CTE join alias `vt0` (which exposes no `name` column).
+        // (Dialects quote the output alias differently — assert on the source ref.)
+        assert!(
+            sql.contains("a.name AS ") && !sql.contains("vt0.name"),
+            "#899 ({dialect:?}): anchor property must project from the anchor table `a.name`, not `vt0.name`:\n{sql}"
+        );
+        assert!(
+            sql.contains("GROUP BY a.name") && !sql.contains("GROUP BY vt0.name"),
+            "#899 ({dialect:?}): GROUP BY must reference the anchor column `a.name`:\n{sql}"
+        );
+    }
+}
+
 /// #599: `size((pattern))` renders as a bare correlated `COUNT(*)` scalar
 /// subquery; ClickHouse decorrelates that into a LEFT JOIN, so an outer row
 /// with ZERO pattern matches yields NULL instead of 0 — silently breaking
