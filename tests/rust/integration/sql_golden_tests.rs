@@ -8083,6 +8083,95 @@ async fn closed_optional_vlp_keeps_anchor_where_and_closed_constraint_922() {
     );
 }
 
+/// #978: a CLOSED OPTIONAL VLP on a DENORMALIZED schema with LOWER BOUND 0
+/// (`*0..`) must FAIL LOUD — its zero-hop CTE uses node-uniqueness, which drops
+/// real cycles (silently collapses to the zero-length self rows). But a denorm
+/// closed optional with lower bound >= 1 uses EDGE-uniqueness (#606/#710) and
+/// counts cycles CORRECTLY, so it MUST render — the guard rejecting all lower
+/// bounds (the first cut of this fix, caught in review) was a false-loud.
+/// Scoped precisely: must NOT reject denorm closed `*1..`, denorm NON-closed
+/// optional, or standard closed optional (#922); only `*0..` denorm closed is
+/// loud.
+#[tokio::test]
+async fn denorm_closed_optional_vlp_zero_hop_fails_loud_978() {
+    let denorm = load_schema("schemas/test/denormalized_flights.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // Lower-bound-0 closed optional denorm VLP → loud (node-uniqueness drops
+        // cycles). Directed + undirected.
+        for cypher in [
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*0..]->(a) RETURN a.code, count(*)",
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*0..]-(a) RETURN a.code, count(*)",
+        ] {
+            let err = try_render(&denorm, cypher, dialect)
+                .await
+                .expect_err(&format!(
+                "#978 ({dialect:?}): `*0..` closed optional denorm VLP must fail loud:\n{cypher}"
+            ));
+            assert!(
+                err.contains("lower bound 0") && err.contains("#978"),
+                "#978 ({dialect:?}): error must name the zero-hop node-uniqueness limitation:\n{err}"
+            );
+        }
+
+        // Must NOT reject: denorm closed optional with lower bound >= 1 (edge-
+        // uniqueness counts cycles correctly). This is the review-caught
+        // false-loud — `*1..`, `*1..3`, `*2..2` all render. Plus `*0..0`, the
+        // degenerate zero-length-only pattern (no edge traversable → node-
+        // uniqueness drops nothing → correct count 1/node; rejecting it would be
+        // a false-loud with an unsatisfiable `*1..0` remedy).
+        for cypher in [
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*1..]->(a) RETURN a.code, count(*)",
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*2..2]->(a) RETURN a.code, count(*)",
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*0..0]->(a) RETURN a.code, count(*)",
+        ] {
+            let ok = try_render(&denorm, cypher, dialect).await;
+            assert!(
+                ok.is_ok(),
+                "#978 ({dialect:?}): denorm closed optional `>=1` uses edge-uniqueness and must render, not fail loud:\n{cypher}\n{ok:?}"
+            );
+        }
+
+        // Must NOT reject: denorm NON-closed optional VLP (distinct endpoints).
+        let non_closed = try_render(
+            &denorm,
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*1..]->(b) RETURN a.code, count(b)",
+            dialect,
+        )
+        .await;
+        assert!(
+            non_closed.is_ok(),
+            "#978 ({dialect:?}): denorm NON-closed optional VLP must still render:\n{non_closed:?}"
+        );
+    }
+
+    // Must NOT reject: standard-schema closed optional VLP (the #922 fix).
+    let standard = load_schema("schemas/test/test_fixtures.yaml");
+    let std_closed = try_render(
+        &standard,
+        "MATCH (a:TestUser) WHERE a.name = 'Alice' \
+         OPTIONAL MATCH (a)-[:TEST_FOLLOWS*1..]->(a) RETURN a.name, COUNT(*)",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        std_closed.is_ok() && std_closed.as_ref().unwrap().contains("vt0.end_id"),
+        "#978: standard closed optional VLP must still render with the #922 closed constraint:\n{std_closed:?}"
+    );
+
+    // Also unaffected: standard `*0..` closed optional (node identity present →
+    // edge-uniqueness via #628, cycles counted) must still render.
+    let std_zero = try_render(
+        &standard,
+        "MATCH (a:TestUser) OPTIONAL MATCH (a)-[:TEST_FOLLOWS*0..]->(a) RETURN a.name, COUNT(*)",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        std_zero.is_ok(),
+        "#978: standard `*0..` closed optional VLP must still render (the guard is denorm-only):\n{std_zero:?}"
+    );
+}
+
 /// #599: `size((pattern))` renders as a bare correlated `COUNT(*)` scalar
 /// subquery; ClickHouse decorrelates that into a LEFT JOIN, so an outer row
 /// with ZERO pattern matches yields NULL instead of 0 — silently breaking
