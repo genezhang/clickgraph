@@ -1,2 +1,2 @@
 SELECT 
-      concat(upper('a'), upper('b')) AS "s"
+      concat(upperUTF8('a'), upperUTF8('b')) AS "s"

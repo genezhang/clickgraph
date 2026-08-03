@@ -300,19 +300,22 @@ lazy_static::lazy_static! {
 
         // ===== STRING FUNCTIONS =====
 
-        // toUpper() -> upper()
+        // toUpper() -> upperUTF8() [#960]. Cypher case functions are
+        // codepoint-based; ClickHouse `upper` is ASCII-only (leaves `é`
+        // untouched), so route to `upperUTF8`. Spark's `upper` is already
+        // Unicode-aware, so keep the plain name there.
         m.insert("toupper", FunctionMapping {
             neo4j_name: "toUpper",
-            clickhouse_name: "upper",
-            databricks_name: None,
+            clickhouse_name: "upperUTF8",
+            databricks_name: Some("upper"),
             arg_transform: None,
         });
 
-        // toLower() -> lower()
+        // toLower() -> lowerUTF8() [#960] (see toUpper).
         m.insert("tolower", FunctionMapping {
             neo4j_name: "toLower",
-            clickhouse_name: "lower",
-            databricks_name: None,
+            clickhouse_name: "lowerUTF8",
+            databricks_name: Some("lower"),
             arg_transform: None,
         });
 
@@ -326,12 +329,15 @@ lazy_static::lazy_static! {
             arg_transform: None,
         });
 
-        // substring(str, start [, length]) -> substring(str, start+1, length)
-        // Note: Neo4j is 0-indexed, ClickHouse is 1-indexed
+        // substring(str, start [, length]) -> substringUTF8(str, start+1, length)
+        // Note: Neo4j is 0-indexed, ClickHouse is 1-indexed. #960: Cypher
+        // substring is codepoint-based; CH `substring` is byte-based (cuts a
+        // multi-byte char mid-sequence), so route to `substringUTF8`. Spark's
+        // `substring` is already character-based, so keep the plain name there.
         m.insert("substring", FunctionMapping {
             neo4j_name: "substring",
-            clickhouse_name: "substring",
-            databricks_name: None,
+            clickhouse_name: "substringUTF8",
+            databricks_name: Some("substring"),
             arg_transform: Some(|args| {
                 if args.len() == 2 {
                     // substring(str, start) - take rest of string
@@ -397,11 +403,11 @@ lazy_static::lazy_static! {
             arg_transform: None,
         });
 
-        // left(str, length) -> substring(str, 1, length)
+        // left(str, length) -> substringUTF8(str, 1, length) [#960: codepoint-based]
         m.insert("left", FunctionMapping {
             neo4j_name: "left",
-            clickhouse_name: "substring",
-            databricks_name: None,
+            clickhouse_name: "substringUTF8",
+            databricks_name: Some("substring"),
             arg_transform: Some(|args| {
                 if args.len() >= 2 {
                     vec![args[0].clone(), "1".to_string(), args[1].clone()]
@@ -411,11 +417,11 @@ lazy_static::lazy_static! {
             }),
         });
 
-        // right(str, length) -> substring(str, -length)
+        // right(str, length) -> substringUTF8(str, -length) [#960: codepoint-based]
         m.insert("right", FunctionMapping {
             neo4j_name: "right",
-            clickhouse_name: "substring",
-            databricks_name: None,
+            clickhouse_name: "substringUTF8",
+            databricks_name: Some("substring"),
             arg_transform: Some(|args| {
                 if args.len() >= 2 {
                     vec![args[0].clone(), format!("-({})", args[1])]
@@ -1269,7 +1275,9 @@ mod tests {
 
         let mapping = get_function_mapping("toUpper")
             .expect("get_function_mapping failed for function in test");
-        assert_eq!(mapping.clickhouse_name, "upper");
+        // #960: codepoint-based casing routes to `upperUTF8` on ClickHouse.
+        assert_eq!(mapping.clickhouse_name, "upperUTF8");
+        assert_eq!(mapping.databricks_name, Some("upper"));
     }
 
     #[test]
