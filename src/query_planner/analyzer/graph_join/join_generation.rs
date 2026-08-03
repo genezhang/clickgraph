@@ -185,14 +185,39 @@ pub fn generate_pattern_joins(
             match (left_avail, right_avail) {
                 // Neither available: first pattern — FROM left, JOIN edge, JOIN right
                 (false, false) => {
-                    let mut v = vec![
-                        JoinBuilder::from_marker(t.left_table, t.left_alias).build(),
-                        edge_join(true, right_is_vlp),
-                    ];
-                    if !right_is_vlp {
-                        v.push(right_node_join());
+                    // #987 facet 1: a CLOSED single-hop (`(a)-[:R]->(a)`, same
+                    // variable at both endpoints, `left_alias == right_alias`)
+                    // must bind the shared node ONCE. The default layout emits a
+                    // FROM marker for the left node AND a separate right-node JOIN
+                    // with the SAME alias → duplicate table alias → ClickHouse
+                    // Code 179. Instead, keep the single FROM marker and fold BOTH
+                    // endpoint equalities onto the edge join
+                    // (`edge.from = a.id AND edge.to = a.id`), which is
+                    // self-contained (it implies the self-loop `edge.from =
+                    // edge.to`) and references `a` exactly once. Scoped to the
+                    // non-VLP, non-available case; the closed VLP routes through
+                    // the recursive CTE (#625) and never reaches here, and a closed
+                    // hop can only land in `(false, false)` or `(true, true)` (both
+                    // avail flags read the same alias), the latter already emitting
+                    // just `edge_join(true, true)`. Denorm (single edge=node scan)
+                    // and FK-edge take their own strategies, not Traditional here.
+                    let is_closed_single_hop =
+                        t.left_alias == t.right_alias && !left_is_vlp && !right_is_vlp;
+                    if is_closed_single_hop {
+                        vec![
+                            JoinBuilder::from_marker(t.left_table, t.left_alias).build(),
+                            edge_join(true, true),
+                        ]
+                    } else {
+                        let mut v = vec![
+                            JoinBuilder::from_marker(t.left_table, t.left_alias).build(),
+                            edge_join(true, right_is_vlp),
+                        ];
+                        if !right_is_vlp {
+                            v.push(right_node_join());
+                        }
+                        v
                     }
-                    v
                 }
                 // Left available: edge anchors on left, right via edge
                 (true, false) => {
