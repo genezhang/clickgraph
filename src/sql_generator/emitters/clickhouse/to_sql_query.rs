@@ -7988,6 +7988,19 @@ impl RenderExpr {
                     init_sql
                 };
 
+                // #955: a fold over an EMPTY list literal does zero iterations,
+                // so the result is exactly the initial accumulator. Emitting the
+                // fold anyway (`arrayFold(…, [], init)`) fails on ClickHouse with
+                // Code 53 — the bare `[]` literal is `Array(Nothing)`, so the
+                // lambda's inferred return type can't unify with the accumulator
+                // (and Spark's untyped `array()` is the same hazard). We can't
+                // synthesize a correctly-typed empty array here (the element type
+                // is unknowable from an empty literal), and it isn't needed:
+                // short-circuit to the init expression.
+                if matches!(reduce.list.as_ref(), RenderExpr::List(items) if items.is_empty()) {
+                    return init_cast;
+                }
+
                 super::common::reduce_fold_sql(
                     &reduce.variable,
                     &reduce.accumulator,
