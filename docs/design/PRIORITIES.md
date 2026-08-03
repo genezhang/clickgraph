@@ -524,6 +524,40 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **Fix — closed self-ref OPTIONAL VLP resolves the anchor property
+  from the anchor table** (branch `fix/899-optional-closed-vlp-anchor-prop`, PR
+  #923, closes #899). `MATCH (a) OPTIONAL MATCH (a)-[:R*..]->(a) RETURN a.name,
+  count(*)` mapped `a.name`/GROUP BY onto the VLP CTE alias (`vt0.name`, a column
+  the CTE never exposes) → Code 47. **Root cause:** `rewrite_vlp_aggregate_aliases`
+  maps a VLP end alias → its CTE join alias; #647 skips this when the FROM binds
+  the end alias, but the skip was gated on DISTINCT endpoints, so the closed
+  self-ref shape (start==end==FROM anchor) fell through. **Fix:** drop the
+  `endpoints_distinct` guard — the skip now fires whenever the CTE end alias is the
+  FROM anchor. Byte-identical for anchor-at-start layouts. Review APPROVE-0. Filed
+  #922 (adjacent: anchor WHERE dropped + closed constraint `end_id=start_id`
+  missing on the OPTIONAL path — both pre-existing).
+
+- 2026-08-02: **Fix — flat exact-bound polymorphic VLP filters each hop by edge
+  type** (branch `fix/897-flat-poly-vlp-type-discriminator`, PR #919, closes #897).
+  `(a:User)-[:FOLLOWS*2]->(b:User)` on a polymorphic edge dropped the per-hop
+  `interaction_type`/`from_type`/`to_type` discriminator, counting 2-chains of ANY
+  type (live 2 vs correct 1). **Fix:** `VlpContext` gains the polymorphic label
+  columns + endpoint label values; the Normal/Polymorphic flat expander appends the
+  discriminator equalities to each hop's JOIN `ON` via one helper
+  `vlp_polymorphic_hop_conditions` (empty → byte-identical for non-poly). Ratchet:
+  justified DTO-plumbing bump. Review APPROVE-0. Filed #924 (denorm-polymorphic
+  flat VLP still skips the discriminator — the Denorm arm).
+
+- 2026-08-02: **Fix — FK-edge self-ref VLP follows the FK column, not node-id
+  identity** (branch `fix/902-fk-edge-selfref-vlp-degenerate-join`, PR #916, closes
+  #902). A self-ref FK-edge with `from_id == node_id` (ldbc REPLY_OF:
+  node_id=commentId, to_id=replyOfCommentId) emitted identity self-joins
+  (`x.commentId = y.commentId`) in the recursive CTE → phantom self-loops (live 5 vs
+  correct 2). **Fix:** new `fk_hop_fk_column` returns the FK as whichever of
+  {from_id,to_id} is NOT the node_id (self-ref only), mirroring the single-hop path
+  (#632/#646). Byte-identical for filesystem-style + all non-self-ref FK-edges.
+  Review APPROVE-0.
+
 - 2026-08-02: **Fix — `size((pattern))` in RETURN position after a WITH barrier
   now resolves its correlation column CTE-aware** (branch
   `fix/613-size-pattern-count-after-with`, closes #613; found during #599's
