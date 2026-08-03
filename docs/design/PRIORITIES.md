@@ -524,6 +524,29 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — `reduce()` string-concat body renders `concat()`
+  (was Code 43)** (branch `fix/969-reduce-string-concat`, PR #970, closes #969).
+  `reduce(s = '', x IN ['a','b','c'] | s + x)` rendered `arrayFold(s, x -> s + x,
+  …)` → CH Code 43 (String `+` String). The #871 string-`+`→`concat` detector
+  couldn't type the lambda binders (`s`/`x` render as bare vars). **Fix:** install
+  a task-local `{binder → RenderType}` map (accumulator = type of initial_value,
+  variable = element type of list via new `infer_list_element_type`) around the
+  body render at both render paths, saved/restored for nesting; the two
+  string-concat detectors (`is_string_operand` / `contains_string_literal`)
+  consult it. Type-carrying analog of the `shielded` binder stack (#929/#944/#949).
+  **Round-1 review caught a MAJOR:** routing the binder type through the SHARED
+  `infer_render_type` violated its conservative-None invariant — #880
+  (`toInteger`/`toFloat`→OrNull) fired on a string-element binder →
+  `reduce(n=0, x IN ['1','2'] | n + toInteger(x))` regressed from 3 to Code 53.
+  Fixed by narrowing the binder consult to ONLY the two concat detectors, leaving
+  the shared classifier conservative-None (main-vs-branch byte-identical for
+  #880/#854/#962). Round-2 APPROVE-0. Live-verified: string→'abc', numeric→6,
+  toInteger→3; zero golden churn; 1689 lib + 570 integration + ratchet green.
+  Golden (CH+Databricks+numeric-regression+toInteger-invariant-guard) + unit test,
+  both mutation-verified. Filed **#971** (pre-existing orthogonal: Float accumulator
+  seed `n=0.0` → Code 53, init_cast only wraps Integer literals). Found by a
+  reduce/list fidelity scout.
+
 - 2026-08-03: **Correctness — `rand()` returned a huge UInt32, not a [0,1) float**
   (branch `fix/966-rand-canonical`, PR #967, closes #966). Cypher `rand()` is a
   uniform Float64 in [0,1). The registry mapped `rand`→`rand` with an
