@@ -524,6 +524,35 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — closed single-hop relationship now emits the
+  self-loop constraint** (branch `fix/983-closed-single-hop-self-loop-constraint`,
+  PR #986, closes #983). A closed single-hop `(a)-[:R]->(a)` (and `*1`/`*1..1`,
+  which is stripped to a plain relationship for single-type edges) matches only
+  SELF-LOOP edges (`from_id == to_id`) but silently counted ALL edges — the
+  constraint survived only IMPLICITLY through the two node-join ON clauses, and a
+  bare `count(*)` elides those (unreferenced) node joins → `FROM <edge> AS t1`
+  with no constraint. Live: 6 → 0 (no self-loops), self-loop present → 1. The
+  `extract_filters` GraphRel arm now computes the self-loop equality via
+  `Identifier::to_sql_equality` (composite-safe per-column AND, proper quoting)
+  and INJECTS it into the normal `all_predicates` flow — NOT an early return — so
+  anchor WHERE + schema filters + OPTIONAL null-safe filters are preserved.
+  Scoped: STANDARD separate-edge-table + NON-optional only (denorm/FK-edge gated
+  out — their edge shares a table with a node; OPTIONAL excluded — a self-loop
+  WHERE would drop null-extended rows). OPEN `(a)->(b)` untouched; closed `*2..2`
+  keeps its CTE `start_id = end_id` (#625). **Adversarial review (2 rounds):**
+  round 1 caught a schema-filter drop (early-return bypass), an OPTIONAL-
+  semantics violation, AND a composite-key invalid-SQL CRITICAL (`t1.from_a,
+  from_b = t1.to_a, to_b` — the bare `format!` used Identifier's comma-joining
+  Display); the restructure (inject-not-early-return + `!is_optional`) fixed the
+  first two and `to_sql_equality` fixed the third; round 2 independently verified
+  (17-query×2-dialect main-vs-branch diff = exactly the intended lines). 1689 lib
+  + 576 integration + corpus + ratchet + clippy green; single-column output
+  byte-identical; composite golden test load-bearing. Only golden churn: one
+  additive `WHERE t0.member_id = t0.group_id` on `test_self_loop_membership`.
+  **Filed #987** (follow-ups: property-form duplicate-alias Code 179 join-builder
+  defect; denorm/FK-edge/OPTIONAL/unlabeled closed single-hop still drop the
+  constraint). Filed from #980's review.
+
 - 2026-08-03: **Correctness — denorm closed NON-optional VLP with lower bound
   >= 1 now renders (was a stale-premise false-loud)** (branch
   `fix/980-denorm-closed-nonoptional-vlp-stale-guard`, PR #984, closes #980;
