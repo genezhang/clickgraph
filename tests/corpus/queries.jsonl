@@ -1142,8 +1142,9 @@
 {"cypher": "MATCH (a:User)-[:FOLLOWS*2..2]->(a) RETURN count(*)", "name": "test_605_closed_exact_vlp_directed_reroutes_to_cte", "schema": "social_integration"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS*2..2]-(a) RETURN count(*)", "name": "test_605_closed_exact_vlp_undirected_reroutes_to_cte", "schema": "social_integration"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS*2..2]->(b:User) RETURN count(*)", "name": "test_605_open_exact_vlp_stays_flat_sentinel", "schema": "social_integration"}
-{"cypher": "MATCH (a:Airport)-[:FLIGHT*2..2]->(a) RETURN count(*)", "name": "test_605_denorm_closed_exact_vlp_fails_loud", "schema": "denormalized_flights"}
-{"cypher": "MATCH (a:Airport)-[:FLIGHT*2..3]->(a) RETURN count(*)", "name": "test_605_denorm_closed_range_vlp_fails_loud", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Airport)-[:FLIGHT*2..2]->(a) RETURN count(*)", "name": "test_980_denorm_closed_exact_vlp_renders_edge_unique", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Airport)-[:FLIGHT*2..3]->(a) RETURN count(*)", "name": "test_980_denorm_closed_range_vlp_renders_edge_unique", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Airport)-[:FLIGHT*0..]->(a) RETURN count(*)", "name": "test_980_denorm_closed_zero_hop_vlp_fails_loud", "schema": "denormalized_flights"}
 {"cypher": "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*0..]->(a) RETURN a.code, count(*)", "name": "test_978_denorm_closed_optional_vlp_zero_hop_fails_loud", "schema": "denormalized_flights"}
 {"cypher": "MATCH (o:Order)-[r:PLACED_BY]->(c:Customer) WITH o, count(r) AS rc RETURN o.order_id, rc ORDER BY o.order_id", "name": "test_584_fk_edge_coupled_rel_var_count_r_in_with", "schema": "fk_edge"}
 {"cypher": "MATCH (o:Order)-[r:PLACED_BY]->(c:Customer) RETURN count(r)", "name": "test_584_fk_edge_standalone_count_r_still_works", "schema": "fk_edge"}
