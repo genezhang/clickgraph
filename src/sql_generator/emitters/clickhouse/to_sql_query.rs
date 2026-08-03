@@ -892,71 +892,91 @@ fn source_contains_aggregate(expr: &RenderExpr) -> bool {
 /// hit a substring or a quoted literal), so a raw predicate referencing an alias
 /// is left as-is.
 fn substitute_alias_refs_in_expr(expr: &mut RenderExpr, alias_map: &HashMap<String, RenderExpr>) {
+    substitute_alias_refs_shielded(expr, alias_map, &mut Vec::new());
+}
+
+/// As [`substitute_alias_refs_in_expr`], but carries `shielded` — the names
+/// currently bound by an enclosing `reduce()` lambda (`accumulator`/`variable`).
+///
+/// The substitution is keyed purely on the NAME of a bare leaf
+/// (`ColumnAlias`/`TableAlias`/`Column`), which is exactly what a `reduce()`
+/// lambda binder renders as. A lambda variable whose name happens to collide
+/// with a same-scope SELECT alias is NOT that alias — inlining the alias's
+/// source expression over it corrupts the fold (the #929 reduce-binder-shadow
+/// hazard, here in the Databricks WHERE-alias inliner). So a shielded name is
+/// left untouched. Mirrors the `shielding` mechanism `variable_scope.rs`
+/// already uses for the same hazard, and the `apply_property_mapping_to_expr`
+/// fold in `plan_builder_helpers.rs`.
+fn substitute_alias_refs_shielded(
+    expr: &mut RenderExpr,
+    alias_map: &HashMap<String, RenderExpr>,
+    shielded: &mut Vec<String>,
+) {
     match expr {
         RenderExpr::ColumnAlias(ca) => {
+            if shielded.iter().any(|n| n == &ca.0) {
+                return;
+            }
             if let Some(src) = alias_map.get(&ca.0) {
                 *expr = src.clone();
             }
         }
         RenderExpr::TableAlias(ta) => {
+            if shielded.iter().any(|n| n == &ta.0) {
+                return;
+            }
             if let Some(src) = alias_map.get(&ta.0) {
                 *expr = src.clone();
             }
         }
         RenderExpr::Column(col) => {
+            if shielded.iter().any(|n| n == col.raw()) {
+                return;
+            }
             if let Some(src) = alias_map.get(col.raw()) {
                 *expr = src.clone();
             }
         }
-        RenderExpr::OperatorApplicationExp(op) => {
-            for operand in op.operands.iter_mut() {
-                substitute_alias_refs_in_expr(operand, alias_map);
-            }
-        }
-        RenderExpr::ScalarFnCall(func) => {
-            for arg in func.args.iter_mut() {
-                substitute_alias_refs_in_expr(arg, alias_map);
-            }
-        }
-        RenderExpr::AggregateFnCall(agg) => {
-            for arg in agg.args.iter_mut() {
-                substitute_alias_refs_in_expr(arg, alias_map);
-            }
-        }
-        RenderExpr::Case(case) => {
-            if let Some(e) = case.expr.as_mut() {
-                substitute_alias_refs_in_expr(e, alias_map);
-            }
-            for (when, then) in case.when_then.iter_mut() {
-                substitute_alias_refs_in_expr(when, alias_map);
-                substitute_alias_refs_in_expr(then, alias_map);
-            }
-            if let Some(e) = case.else_expr.as_mut() {
-                substitute_alias_refs_in_expr(e, alias_map);
-            }
-        }
-        RenderExpr::List(items) => {
-            for item in items.iter_mut() {
-                substitute_alias_refs_in_expr(item, alias_map);
-            }
-        }
-        RenderExpr::ArraySubscript { array, index } => {
-            substitute_alias_refs_in_expr(array, alias_map);
-            substitute_alias_refs_in_expr(index, alias_map);
-        }
-        RenderExpr::ArraySlicing { array, from, to } => {
-            substitute_alias_refs_in_expr(array, alias_map);
-            if let Some(f) = from.as_mut() {
-                substitute_alias_refs_in_expr(f, alias_map);
-            }
-            if let Some(t) = to.as_mut() {
-                substitute_alias_refs_in_expr(t, alias_map);
-            }
+        RenderExpr::ReduceExpr(reduce) => {
+            // `initial_value` and `list` evaluate in the OUTER scope — inline
+            // normally (an outer SELECT alias there is a legitimate reference,
+            // e.g. `reduce(acc = 0, x IN ages | …)` where `ages` is a WITH
+            // alias). The `expression` (body) BINDS `accumulator`/`variable`,
+            // which shadow any same-named alias, so push them before descending
+            // into the body and pop after — otherwise `reduce(acc=0, x IN [1,2]
+            // | acc + x)` where `x` also names a WITH alias would inline the
+            // alias source over the lambda `x` (#940 / #929 shadow hazard).
+            substitute_alias_refs_shielded(&mut reduce.initial_value, alias_map, shielded);
+            substitute_alias_refs_shielded(&mut reduce.list, alias_map, shielded);
+            shielded.push(reduce.accumulator.clone());
+            shielded.push(reduce.variable.clone());
+            substitute_alias_refs_shielded(&mut reduce.expression, alias_map, shielded);
+            shielded.pop();
+            shielded.pop();
         }
         RenderExpr::InSubquery(subq) => {
-            substitute_alias_refs_in_expr(&mut subq.expr, alias_map);
+            // The inliner deliberately reaches into an `InSubquery`'s scalar
+            // `expr` (its left operand), matching the pre-fold walk; the
+            // exhaustive `descend_render_expr_mut` does NOT enter subqueries, so
+            // keep this explicit. The subquery's own plan is a separate scope
+            // and is untouched.
+            substitute_alias_refs_shielded(&mut subq.expr, alias_map, shielded);
         }
-        _ => {}
+        // Every OTHER wrapper recurses structurally through the EXHAUSTIVE
+        // `descend_render_expr_mut` (no `_` catch-all — a new `RenderExpr`
+        // variant is a compile error here, not a silently-skipped substitution).
+        // Previously a `_ => {}` catch-all dropped `ReduceExpr` and `MapLiteral`
+        // entirely, silently failing to inline a bare alias buried inside a
+        // `reduce()` or map value (#940). Leaves and deliberately-not-descended
+        // nodes (`InSubquery` handled above; `ExistsSubquery`/`PatternCount`/
+        // `CteEntityRef`) are no-ops in `descend_render_expr_mut`.
+        other => {
+            let mut recur = |child: &mut RenderExpr| -> crate::render_plan::render_expr::MutVisit {
+                substitute_alias_refs_shielded(child, alias_map, shielded);
+                crate::render_plan::render_expr::MutVisit::Stop
+            };
+            crate::render_plan::render_expr::descend_render_expr_mut(other, &mut recur);
+        }
     }
 }
 
@@ -9392,6 +9412,120 @@ mod tests {
         let sql = expr.to_sql();
         assert!(!sql.contains("friend.birthday"), "got: {sql}");
         assert!(sql.contains("birthday"), "got: {sql}");
+    }
+
+    /// #940: a bare alias buried inside a `reduce()` (list / body) or a map value
+    /// must be inlined. The pre-fold walker's `_ => {}` catch-all dropped
+    /// `ReduceExpr` and `MapLiteral` entirely, silently failing to substitute.
+    #[test]
+    fn substitute_alias_refs_recurses_into_reduce_and_map_940() {
+        use crate::render_plan::render_expr::{OperatorApplication, ReduceExpr};
+
+        let mut map = HashMap::new();
+        map.insert("ages".to_string(), friend_birthday()); // ages => friend.birthday
+
+        // reduce(acc = ages, x IN [ages] | acc + ages)  — `ages` appears in all
+        // three OUTER-visible positions (initial_value, list) and, deliberately,
+        // as a NON-binder ref inside the body (`acc + ages`); every one must be
+        // inlined to friend.birthday. The binders here are `acc` / `x`, which do
+        // NOT collide with `ages`.
+        let ages_ref = || RenderExpr::TableAlias(TableAlias("ages".to_string()));
+        let mut reduce = RenderExpr::ReduceExpr(ReduceExpr {
+            accumulator: "acc".to_string(),
+            initial_value: Box::new(ages_ref()),
+            variable: "x".to_string(),
+            list: Box::new(RenderExpr::List(vec![ages_ref()])),
+            expression: Box::new(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::Addition,
+                operands: vec![
+                    RenderExpr::TableAlias(TableAlias("acc".to_string())),
+                    ages_ref(),
+                ],
+            })),
+        });
+        substitute_alias_refs_in_expr(&mut reduce, &map);
+        let sql = reduce.to_sql();
+        // No bare `ages` anywhere — all three refs inlined.
+        assert!(!sql.contains("ages"), "reduce still has bare alias: {sql}");
+        assert!(
+            sql.matches("friend.birthday").count() >= 3,
+            "expected all 3 ages refs inlined: {sql}"
+        );
+
+        // Map value: {k: ages} must inline too.
+        let mut map_lit = RenderExpr::MapLiteral(vec![("k".to_string(), ages_ref())]);
+        substitute_alias_refs_in_expr(&mut map_lit, &map);
+        let map_sql = map_lit.to_sql();
+        assert!(
+            map_sql.contains("friend.birthday") && !map_sql.contains("ages"),
+            "map value not inlined: {map_sql}"
+        );
+    }
+
+    /// #940 / #929 shadow: a `reduce()` lambda binder (`accumulator` /
+    /// `variable`) whose NAME collides with a SELECT alias is NOT that alias —
+    /// its source must NOT be inlined over the binder-scoped reference. Only the
+    /// OUTER-scope occurrences (initial_value / list) may inline.
+    #[test]
+    fn substitute_alias_refs_shields_reduce_binders_940() {
+        use crate::render_plan::render_expr::{Literal, OperatorApplication, ReduceExpr};
+
+        let mut map = HashMap::new();
+        map.insert("x".to_string(), friend_birthday()); // x => friend.birthday
+
+        // reduce(acc = 0, x IN [x] | acc + x)
+        //   - list `[x]` is OUTER scope → the `x` there IS the alias → inline.
+        //   - body `acc + x`: `x` is the iteration binder → must stay `x`.
+        let x_ref = || RenderExpr::TableAlias(TableAlias("x".to_string()));
+        let mut reduce = RenderExpr::ReduceExpr(ReduceExpr {
+            accumulator: "acc".to_string(),
+            initial_value: Box::new(RenderExpr::Literal(Literal::Integer(0))),
+            variable: "x".to_string(),
+            list: Box::new(RenderExpr::List(vec![x_ref()])),
+            expression: Box::new(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::Addition,
+                operands: vec![
+                    RenderExpr::TableAlias(TableAlias("acc".to_string())),
+                    x_ref(),
+                ],
+            })),
+        });
+        substitute_alias_refs_in_expr(&mut reduce, &map);
+        let sql = reduce.to_sql();
+        // Exactly the OUTER `x` (in the list) inlined; the body binder stayed.
+        assert_eq!(
+            sql.matches("friend.birthday").count(),
+            1,
+            "expected only the outer list `x` inlined, body binder shielded: {sql}"
+        );
+        assert!(
+            sql.contains("acc + x") || sql.contains("acc+x"),
+            "body binder `x` was wrongly inlined: {sql}"
+        );
+
+        // Accumulator-name collision: reduce(x = 0, y IN [1] | x + y), alias `x`.
+        // The `x` in the body is the ACCUMULATOR binder → must stay.
+        let mut reduce2 = RenderExpr::ReduceExpr(ReduceExpr {
+            accumulator: "x".to_string(),
+            initial_value: Box::new(RenderExpr::Literal(Literal::Integer(0))),
+            variable: "y".to_string(),
+            list: Box::new(RenderExpr::List(vec![RenderExpr::Literal(
+                Literal::Integer(1),
+            )])),
+            expression: Box::new(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::Addition,
+                operands: vec![
+                    RenderExpr::TableAlias(TableAlias("x".to_string())),
+                    RenderExpr::TableAlias(TableAlias("y".to_string())),
+                ],
+            })),
+        });
+        substitute_alias_refs_in_expr(&mut reduce2, &map);
+        let sql2 = reduce2.to_sql();
+        assert!(
+            !sql2.contains("friend.birthday"),
+            "accumulator binder `x` was wrongly inlined: {sql2}"
+        );
     }
 
     fn primary_birthday_select() -> SelectItems {
