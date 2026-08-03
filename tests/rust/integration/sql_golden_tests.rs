@@ -8462,6 +8462,58 @@ async fn denorm_closed_single_hop_emits_self_loop_filter_987() {
     }
 }
 
+/// #987 (facet 1): a CLOSED single-hop `(a)-[:R]->(a)` in PROPERTY-projection
+/// form used to bind the same variable `a` to BOTH the start-node scan (FROM) and
+/// the end-node scan (a second JOIN with the SAME alias) → ClickHouse Code 179
+/// (duplicate table alias). The analyzer's Traditional `(false, false)` join
+/// strategy now detects the closed pattern (`left_alias == right_alias`) and folds
+/// BOTH endpoint equalities onto the edge join (`edge.from = a.id AND edge.to =
+/// a.id`), keeping a SINGLE node scan. The OPEN single hop `(a)-[:R]->(b)`
+/// (distinct vars) keeps two scans, and the elided `count(*)` / rel-var-only forms
+/// are unchanged.
+#[tokio::test]
+async fn closed_single_hop_property_binds_node_once_987() {
+    let schema = load_schema("schemas/test/test_fixtures.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // Every closed property-projection spelling must bind `users AS a` exactly
+        // once (no duplicate alias). Count occurrences of the node table+alias.
+        for cypher in [
+            "MATCH (a:TestUser)-[:TEST_FOLLOWS]->(a) RETURN a.name",
+            "MATCH (a:TestUser)<-[:TEST_FOLLOWS]-(a) RETURN a.name",
+            "MATCH (a:TestUser)-[:TEST_FOLLOWS]-(a) RETURN a.name",
+            "MATCH (a:TestUser)-[:TEST_FOLLOWS]->(a) RETURN a.name, a.user_id",
+            "MATCH (a:TestUser)-[r:TEST_FOLLOWS]->(a) RETURN a.name, r.since",
+            "MATCH (a:TestUser)-[:TEST_FOLLOWS*1]->(a) RETURN a.name",
+            "MATCH (a:TestUser)-[:TEST_FOLLOWS*1..1]->(a) RETURN a.name",
+        ] {
+            let sql = render(&schema, cypher, dialect).await;
+            let node_scans = sql.matches("users AS a").count();
+            assert_eq!(
+                node_scans, 1,
+                "#987 facet 1 ({dialect:?}): closed single-hop property form must bind the node ONCE (found {node_scans} `users AS a` scans → duplicate-alias Code 179):\n{cypher}\n{sql}"
+            );
+            // Both endpoint equalities must be on the edge join (fold), so the
+            // self-loop is self-contained.
+            assert!(
+                sql.contains(".follower_id = a.user_id") && sql.contains(".followed_id = a.user_id"),
+                "#987 facet 1 ({dialect:?}): both edge endpoints must bind to the single node scan:\n{cypher}\n{sql}"
+            );
+        }
+
+        // The OPEN single hop keeps TWO distinct node scans (a and b) — unchanged.
+        let open = render(
+            &schema,
+            "MATCH (a:TestUser)-[:TEST_FOLLOWS]->(b:TestUser) RETURN a.name, b.name",
+            dialect,
+        )
+        .await;
+        assert!(
+            open.contains("users AS a") && open.contains("users AS b"),
+            "#987 facet 1 ({dialect:?}): OPEN single hop must keep two distinct node scans:\n{open}"
+        );
+    }
+}
+
 /// subquery; ClickHouse decorrelates that into a LEFT JOIN, so an outer row
 /// with ZERO pattern matches yields NULL instead of 0 — silently breaking
 /// `size(...) = 0` filters, comparisons, arithmetic, and CASE branches on
