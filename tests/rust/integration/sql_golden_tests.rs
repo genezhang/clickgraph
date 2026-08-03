@@ -8172,6 +8172,67 @@ async fn denorm_closed_optional_vlp_zero_hop_fails_loud_978() {
     );
 }
 
+/// #980: the NON-optional sibling of #978. The render-side `is_denorm_closed`
+/// guard (`filter_builder.rs`, #605/#625) formerly rejected ALL denorm closed
+/// non-optional VLPs on a stale node-uniqueness premise. Since #606/#710 the
+/// denorm CTE uses EDGE-uniqueness for `min_hops >= 1` and counts cycles
+/// correctly (live: `*2..2` → 2, `*1..` → 5), so those MUST render; only `*0..N`
+/// (N >= 1, node-uniqueness fallback) fails loud, and `*0..0` (degenerate
+/// zero-length only) renders. Mirrors the analyzer-side #978 fix.
+#[tokio::test]
+async fn denorm_closed_non_optional_vlp_zero_hop_fails_loud_980() {
+    let denorm = load_schema("schemas/test/denormalized_flights.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // Lower-bound-0 (traversable) closed non-optional denorm VLP → loud.
+        for cypher in [
+            "MATCH (a:Airport)-[:FLIGHT*0..]->(a) RETURN count(*)",
+            "MATCH (a:Airport)-[:FLIGHT*0..3]->(a) RETURN count(*)",
+        ] {
+            let err = try_render(&denorm, cypher, dialect)
+                .await
+                .expect_err(&format!(
+                    "#980 ({dialect:?}): `*0..N` closed non-optional denorm VLP must fail loud:\n{cypher}"
+                ));
+            assert!(
+                err.contains("lower bound 0") && err.contains("#980"),
+                "#980 ({dialect:?}): error must name the zero-hop node-uniqueness limitation:\n{err}"
+            );
+        }
+
+        // Must NOT reject (the review-caught stale-premise false-loud): denorm
+        // closed non-optional with lower bound >= 1 renders via edge-uniqueness,
+        // and `*0..0` (degenerate) renders too.
+        for cypher in [
+            "MATCH (a:Airport)-[:FLIGHT*1..]->(a) RETURN count(*)",
+            "MATCH (a:Airport)-[:FLIGHT*2..2]->(a) RETURN count(*)",
+            "MATCH (a:Airport)-[:FLIGHT*2..3]->(a) RETURN count(*)",
+            "MATCH (a:Airport)-[:FLIGHT*0..0]->(a) RETURN count(*)",
+        ] {
+            let ok = try_render(&denorm, cypher, dialect).await;
+            assert!(
+                ok.is_ok(),
+                "#980 ({dialect:?}): denorm closed non-optional `>=1`/`*0..0` must render, not fail loud:\n{cypher}\n{ok:?}"
+            );
+            // The rendered CTE must use edge-uniqueness (path_edges), never the
+            // cycle-dropping node-uniqueness (path_nodes), for the `>=1` cases.
+            // The node-uniqueness marker is dialect-specific: ClickHouse
+            // `has(vp.path_nodes, …)`, Databricks `array_contains(vp.path_nodes,
+            // …)`.
+            if !cypher.contains("*0..0") {
+                let sql = ok.unwrap();
+                let node_unique_marker = match dialect {
+                    SqlDialect::Databricks => "array_contains(vp.path_nodes",
+                    _ => "has(vp.path_nodes",
+                };
+                assert!(
+                    sql.contains("path_edges") && !sql.contains(node_unique_marker),
+                    "#980 ({dialect:?}): denorm closed `>=1` must render edge-uniqueness (path_edges), not node-uniqueness:\n{sql}"
+                );
+            }
+        }
+    }
+}
+
 /// #599: `size((pattern))` renders as a bare correlated `COUNT(*)` scalar
 /// subquery; ClickHouse decorrelates that into a LEFT JOIN, so an outer row
 /// with ZERO pattern matches yields NULL instead of 0 — silently breaking
