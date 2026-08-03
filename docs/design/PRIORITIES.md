@@ -524,6 +524,44 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-02: **Bug-driven refactor — render-side denorm property-mapping walks
+  now recurse into ALL `RenderExpr` wrappers** (branch
+  `refactor/929-fold-property-mapping-walks`, PR #938, closes #929). The two
+  `apply_property_mapping_to_expr` walks (`plan_builder_helpers.rs`, reached from
+  GROUP BY / ORDER BY / WHERE; `cte_extraction.rs`) rewrite a denormalized node's
+  cypher alias onto the edge-table alias that embeds it — a render-time-only remap
+  (distinct from #906's analyzer-side property-NAME resolution). Both recursed into
+  `Operator`/`ScalarFn`/`Aggregate` (copy-2 also `List`) only; a property buried in
+  a `CASE` (or `ArraySubscript`/`ArraySlicing`/`MapLiteral`/`ReduceExpr`) fell
+  through a `_ => {}` catch-all UN-remapped, leaking the raw cypher alias →
+  `Code 47` on live ClickHouse (`WHERE CASE WHEN s.ip = … END` → `s."id.orig_h"`,
+  `s` bound to no table). This is the render-side twin of #906. **Fix:** added an
+  in-place `&mut` structural dual of the existing exhaustive `map_render_expr` —
+  `visit_render_expr_mut` / `descend_render_expr_mut` in `render_expr.rs` (NO `_`
+  catch-all → a new `RenderExpr` variant is a compile error, not a silent drop) —
+  and routed both walks' recursion through it. Delicate leaf arms
+  (#582/#492/#491 logic) untouched and byte-identical; only recursion changed.
+  Closes #929 and every unfiled deep-nesting sibling in one structural move.
+  **Adversarial review (2 rounds) caught a MAJOR self-inflicted regression:** once
+  the walk descended into `reduce()` bodies, a lambda `variable`/`accumulator`
+  whose name SHADOWS a denorm node alias got wrongly remapped into the node column
+  (`reduce(acc=0, s IN [1,2] | acc + s)` → `acc + t1."id.orig_h"` = Code 43;
+  silent-wrong on accumulator collision). Fixed by threading a `shielded`
+  binder-name stack (internal `*_shielded` variants; public signatures unchanged):
+  a `ReduceExpr` remaps `initial_value`/`list` in the OUTER scope (an outer denorm
+  prop there still remaps — the win is preserved) but shields `accumulator`/
+  `variable` inside the body. Mirrors the `shielding` mechanism `variable_scope.rs`
+  already uses for the identical reduce-shadow hazard. Round-2 review APPROVE-0
+  (nested-reduce push/pop discipline, sibling-after-reduce remap, degenerate
+  acc==var all verified; branch is a strict improvement on arraySubscript, which
+  main rendered wrong). 1244-entry corpus_sweep byte-identical; full suite (2275) +
+  ratchet green. New goldens
+  `denorm_alias_remap_recurses_into_case_render_side_929` +
+  `reduce_lambda_name_shadowing_denorm_alias_not_remapped_929` + 2 `render_expr`
+  unit tests. **Retires 2 of the drifting `_ => {}` property-mapping copies (the
+  #906/#929 bug-generator cluster); the canonical exhaustive walker now has an
+  `&mut` dual for future callers.**
+
 - 2026-08-02: **Feature — uncorrelated `size([x IN list WHERE (pattern)])` now
   computes the per-element count** (branch `feature/629-uncorrelated-listcomp-pattern`,
   closes #629; follow-up to #612). `MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a,
