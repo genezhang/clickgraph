@@ -524,6 +524,28 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Bug-driven refactor (#946 follow-up) — analyzer reduce-binder
+  shield is now precise (per-binder, not whole-body)** (branch
+  `fix/949-precise-reduce-binder-shield`, PR #952, closes #949). #946 guarded the
+  analyzer-side reduce-binder-shadow hazard by skipping the ENTIRE reduce body
+  when a binder shadowed a node alias; that over-skipped a DIFFERENT node's prop
+  in the same body (`reduce(acc='', u IN [1] | acc + p.date)` left `p.date`
+  unmapped → Code 47). **Fix:** thread a `shielded: &[String]` binder-name set
+  through `apply_property_mapping_internal` — the `PropertyAccessExp` arm
+  short-circuits only when the base alias is shielded; the `ReduceExpr` arm maps
+  `initial_value`/`list` with the inherited set and the body with `shielded +
+  accumulator + variable`. Public entry points pass `&[]`; ~16 recursive call
+  sites forward it; only the body extends it (fresh `Vec` copy → nested reduces
+  propagate, no aliasing leak). So `binder.prop` stays unmapped while
+  `otherNode.prop` maps. Mirrors the render-side `resolve_denorm_refs_in_expr_
+  shielded` (#944) — both pipeline sides now at parity. corpus_sweep
+  byte-identical (565); 1687 lib green; ratchet net-neutral. 1 golden test, proven
+  load-bearing (revert to coarse skip → fails). **Adversarial review APPROVE-0**
+  (all 7 items PASS incl. nested-reduce Vec isolation, accumulator==variable
+  degenerate, outer-list mapping under name collision). Completes the
+  computed-projection property-mapping cluster with PRECISE shielding on both
+  sides (#906/#929/#940/#944 render + #946/#949 analyzer).
+
 - 2026-08-03: **Bug-driven refactor (#906/#929/#940/#944 cluster, analyzer side) —
   property names inside computed RETURN wrappers now map to their columns** (branch
   `fix/946-computed-projection-property-name-mapping`, PR #948, closes #946).
