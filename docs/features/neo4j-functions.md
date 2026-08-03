@@ -166,11 +166,13 @@ RETURN size('test') AS str_len, size([1,2,3]) AS arr_len
     arg_transform: None
 }
 
-// rand() -> rand() / 4294967295.0 (normalize to 0-1)
+// rand() -> randCanonical()  (Neo4j rand() is a uniform Float64 in [0,1);
+// ClickHouse randCanonical() matches it. Spark rand() is already [0,1).)
 "rand" => FunctionMapping {
     neo4j_name: "rand",
-    clickhouse_name: "rand",
-    arg_transform: Some(|_| vec!["rand() / 4294967295.0".to_string()])
+    clickhouse_name: "randCanonical",
+    databricks_name: Some("rand"),
+    arg_transform: None
 }
 ```
 
