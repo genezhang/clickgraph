@@ -274,10 +274,35 @@ shared helper. Once the identity spellings are consolidated, the policy type
   substitution — verified arm-by-arm and against 374 `path_edges` goldens incl.
   the #617 doubled-edge branch. 6 spellings → 5. Review APPROVE-0.
 - **Next candidate slices** (unstarted): fold `build_fk_edge_tuple` and the flat
-  pairwise identity onto one `EdgeIdentity::spell(...)`; unify the two
-  `uses_edge_uniqueness` copies (VLC `&self` vs CM Denormalized `&self, context`
-  — they differ only by the hetero-poly exclusion term denorm can't hit) into one
-  free helper taking primitives.
+  pairwise identity onto one `EdgeIdentity::spell(...)`.
+
+  **CORRECTION (2026-08-02, post-#628):** the previously-listed slice "unify the
+  two `uses_edge_uniqueness` copies" is **NOT a byte-identical refactor** and is
+  removed from the Phase-1 candidate list. The two copies are now
+  **intentionally divergent**, not just by the hetero-poly term:
+  - VLC `uses_edge_uniqueness(&self)` returns `true` for a CLOSED zero-hop
+    `*0..N` (`min_hops==0 && is_closed_pattern()`) — the #628 fix, so real cycles
+    are counted.
+  - CM `DenormalizedCteStrategy::uses_edge_uniqueness(&self, context)` returns
+    `false` for zero-hop `*0..N` **by design** (documented at `cte_manager/mod.rs`
+    ~442: the zero-hop base row carries no edge, so seeding a `path_edges` tuple
+    only in the ordinary base would diverge from the zero-hop base's column
+    shape). Denorm never hits the hetero-poly term (DenormalizedCteStrategy
+    requires BOTH endpoints EmbeddedInEdge), but it DOES differ on the closed
+    `*0..N` case.
+
+  Unifying them would therefore change the denormalized closed-`*0..N` behavior
+  (whether that denorm case is even corpus-reachable, and whether edge-uniqueness
+  is the correct answer there, is an open behavior question — the denorm-#628
+  analog — NOT a refactor). Any future consolidation must land the denorm
+  zero-hop `path_edges` seed FIRST (as #628 did for the standard path) before the
+  two predicates can share one helper. Tracked as a separate behavior item, not
+  Phase-1 hygiene. The edge-identity SPELLING consolidation (single tuple helper
+  across the 5 remaining spellings) remains the live Phase-1 work — but note the
+  spellings differ non-trivially (single vs two aliases, `tuple(...)` vs
+  `to_sql_tuple`'s `(...)`/`struct(...)`, verbatim vs `quote_identifier`'d columns,
+  and the #617 doubled-edge orientation), so each fold needs per-caller
+  byte-identity proof, not a blanket replace.
 
 **Original heavyweight framing** (still the end state): introduce
 `EdgeUniquenessPolicy` + `from_pattern`, compute the policy's predicate
@@ -287,9 +312,15 @@ failures, not production bugs.
 
 ### Phase 2 — switch the recursive generator to the policy → refactor, byte-identical
 Replace the VLC inline switches (2805/3183/3315) and the identity helpers with
-policy calls. Goldens byte-identical (asserts from Phase 1 guarantee it). Retires
-the second `uses_edge_uniqueness` copy by making CM Denormalized consume the same
-policy.
+policy calls. Goldens byte-identical (asserts from Phase 1 guarantee it).
+
+NOTE (2026-08-02): this phase can NO LONGER "retire the second
+`uses_edge_uniqueness` copy by making CM Denormalized consume the same policy" as
+originally written — the two predicates intentionally diverge on the closed
+zero-hop `*0..N` case post-#628 (see the Phase-1 CORRECTION above). Making CM
+consume the VLC predicate would be a denorm behavior change, gated on first
+landing the denorm zero-hop `path_edges` seed. Phase 2 is therefore scoped to the
+edge-identity SPELLING (the tuple helpers), not the uniqueness PREDICATE.
 
 ### Phase 3 — fix #806 (flat-path identity) → **DONE (PR #TBD)** — behavior change, goldens regenerated
 **Shipped ahead of the full policy landing** (the fix is small and self-contained,
