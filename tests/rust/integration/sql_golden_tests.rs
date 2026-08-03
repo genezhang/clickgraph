@@ -10347,6 +10347,63 @@ mod walker_drift_family_484_490_495_476_483 {
         );
     }
 
+    /// #929 (adversarial-review guard): the render-side denorm alias remap is
+    /// keyed purely on the NAME, and once the fold made it descend into
+    /// `reduce()` bodies, a lambda `variable`/`accumulator` that SHADOWS a
+    /// denorm node alias was wrongly rewritten into the node's physical column —
+    /// `reduce(acc = 0, s IN [1,2] | acc + s)` with a bound denorm node `s`
+    /// emitted `acc + t1."id.orig_h"` (Code 43 on live CH; silent-wrong when the
+    /// accumulator name collides). The binder names are now shielded for the
+    /// body while `initial_value`/`list` (outer scope) still remap. Mirrors the
+    /// `shielding` mechanism in `variable_scope.rs`.
+    #[tokio::test]
+    async fn reduce_lambda_name_shadowing_denorm_alias_not_remapped_929() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+
+        // Iteration variable `s` shadows the bound denorm node alias `s`.
+        let var_sql = render(
+            &schema,
+            "MATCH (s:IP)-[:ACCESSED]->(dest:IP) \
+             WHERE reduce(acc = 0, s IN [1, 2] | acc + s) = 3 RETURN dest.ip",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            var_sql.contains("acc + s") && !var_sql.contains("acc + t"),
+            "#929: reduce iteration var `s` shadowing a denorm node alias must \
+             NOT be remapped to the node column:\n{var_sql}"
+        );
+
+        // Accumulator `s` shadows the bound denorm node alias `s`.
+        let acc_sql = render(
+            &schema,
+            "MATCH (s:IP)-[:ACCESSED]->(dest:IP) \
+             WHERE reduce(s = 0, x IN [1, 2] | s + x) = 3 RETURN dest.ip",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            acc_sql.contains("s + x") && !acc_sql.contains("t1.\"id.orig_h\" + x"),
+            "#929: reduce accumulator `s` shadowing a denorm node alias must NOT \
+             be remapped to the node column:\n{acc_sql}"
+        );
+
+        // The legitimate win must survive: an OUTER denorm prop in the reduce
+        // `initial_value` (NOT shadowed) still remaps to its physical column.
+        let outer_sql = render(
+            &schema,
+            "MATCH (s:IP)-[:ACCESSED]->(dest:IP) \
+             WHERE reduce(acc = s.ip, x IN ['a'] | acc) = 'z' RETURN dest.ip",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            outer_sql.contains("['a'], t1.\"id.orig_h\"") || outer_sql.contains("id.orig_h\") ="),
+            "#929: an OUTER denorm prop in the reduce initial_value must STILL \
+             remap (only binder-shadowed names are shielded):\n{outer_sql}"
+        );
+    }
+
     /// `bidirectional_union` CTE, e.g. `MATCH (a:User)-[r]-(o)`) used to
     /// build its cross-label DISTINCT discriminator tuple from the #467
     /// per-label-raw-column logic (designed for a bare `MATCH (n)`

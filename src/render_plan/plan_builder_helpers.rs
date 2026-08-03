@@ -2547,8 +2547,29 @@ fn get_property_from_viewscan(
 ///
 /// Note: Regular PropertyAccess property name mapping is handled in the FilterTagging analyzer pass.
 pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
+    apply_property_mapping_to_expr_shielded(expr, plan, &mut Vec::new());
+}
+
+/// As [`apply_property_mapping_to_expr`], but carries `shielded` — the set of
+/// names currently bound by an enclosing `reduce()` lambda
+/// (`accumulator`/`variable`). A denorm alias remap is keyed purely on the NAME
+/// (`get_denormalized_node_id_reference`), so a lambda variable that SHADOWS a
+/// denorm node alias must be left alone — rewriting it into the node's physical
+/// column corrupts the lambda (#929 review: `reduce(acc=0, s IN [1,2] | acc + s)`
+/// where `s` is also a bound denorm node → `acc + t1."id.orig_h"` = Code 43, or
+/// silent-wrong when the acc name collides). Mirrors the `shielding` mechanism
+/// `variable_scope.rs` already uses for the same reduce-shadowing hazard.
+fn apply_property_mapping_to_expr_shielded(
+    expr: &mut RenderExpr,
+    plan: &LogicalPlan,
+    shielded: &mut Vec<String>,
+) {
     match expr {
         RenderExpr::TableAlias(alias) => {
+            // Shadowed by an enclosing reduce binder — not a node alias here.
+            if shielded.iter().any(|n| n == &alias.0) {
+                return;
+            }
             // For denormalized schemas, convert TableAlias to the proper ID column reference
             // Example: TableAlias("b") -> PropertyAccess { table_alias: "r2", column: "Origin" }
             if let Some((rel_alias, id_column)) = get_denormalized_node_id_reference(&alias.0, plan)
@@ -2561,6 +2582,14 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
             }
         }
         RenderExpr::PropertyAccessExp(prop) => {
+            // Shadowed by an enclosing reduce binder — a property access whose
+            // base alias is a bound lambda name is not a node reference here, so
+            // leave its (name-keyed) denorm remap alone. Defensive parity with
+            // the `TableAlias` arm; the observed #929-review breakages were all
+            // bare `TableAlias`, but the alias remap below is equally name-keyed.
+            if shielded.iter().any(|n| n == &prop.table_alias.0) {
+                return;
+            }
             // #582: when `prop.table_alias` is the anchor of an OPTIONAL
             // denorm-scan CTE + LEFT JOIN pattern (`is_denorm_scan_anchor_
             // alias`) AND `prop.column` genuinely belongs to that anchor's
@@ -2779,22 +2808,38 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                 prop.table_alias = TableAlias(rel_alias);
             }
         }
-        // Every wrapper variant recurses structurally through the EXHAUSTIVE
-        // `descend_render_expr_mut` (no `_` catch-all — a new `RenderExpr`
-        // variant is a compile error here, not a silently-skipped remap).
-        // Previously only Operator/Aggregate/ScalarFn recursed and every other
-        // wrapper — `Case`, `List`, `ArraySubscript`, `ArraySlicing`,
-        // `MapLiteral`, `ReduceExpr` — fell through `_ => {}`, dropping the
-        // denorm alias/property remap for a property buried inside it (#929:
-        // `WHERE CASE WHEN s.ip = … END` leaked the raw cypher alias `s`
-        // instead of the edge alias → Code 47 on live ClickHouse). Genuine
-        // leaves (`Literal`/`Column`/`Parameter`/…) and deliberately-not-
-        // descended nodes (`InSubquery`/`ExistsSubquery`/`PatternCount`/
-        // `CteEntityRef`) are no-ops in `descend_render_expr_mut`, matching the
-        // prior catch-all exactly.
+        RenderExpr::ReduceExpr(reduce) => {
+            // `initial_value` and `list` evaluate in the OUTER scope — remap
+            // normally (they may legitimately reference an outer denorm prop,
+            // the intended #929 win). The `expression` (body) BINDS
+            // `accumulator` and `variable`, which shadow any same-named node
+            // alias, so push them before descending into the body (#929 review:
+            // otherwise `reduce(acc=0, s IN … | acc + s)` remaps the lambda `s`
+            // into the node's physical column → Code 43 / silent-wrong).
+            apply_property_mapping_to_expr_shielded(&mut reduce.initial_value, plan, shielded);
+            apply_property_mapping_to_expr_shielded(&mut reduce.list, plan, shielded);
+            shielded.push(reduce.accumulator.clone());
+            shielded.push(reduce.variable.clone());
+            apply_property_mapping_to_expr_shielded(&mut reduce.expression, plan, shielded);
+            shielded.pop();
+            shielded.pop();
+        }
+        // Every OTHER wrapper variant recurses structurally through the
+        // EXHAUSTIVE `descend_render_expr_mut` (no `_` catch-all — a new
+        // `RenderExpr` variant is a compile error here, not a silently-skipped
+        // remap). Previously only Operator/Aggregate/ScalarFn recursed and every
+        // other wrapper — `Case`, `List`, `ArraySubscript`, `ArraySlicing`,
+        // `MapLiteral` — fell through `_ => {}`, dropping the denorm alias/
+        // property remap for a property buried inside it (#929: `WHERE CASE WHEN
+        // s.ip = … END` leaked the raw cypher alias `s` instead of the edge
+        // alias → Code 47 on live ClickHouse). `ReduceExpr` is handled above
+        // (binder shielding); genuine leaves (`Literal`/`Column`/`Parameter`/…)
+        // and deliberately-not-descended nodes (`InSubquery`/`ExistsSubquery`/
+        // `PatternCount`/`CteEntityRef`) are no-ops in `descend_render_expr_mut`,
+        // matching the prior catch-all exactly.
         other => {
             let mut recur = |child: &mut RenderExpr| -> super::render_expr::MutVisit {
-                apply_property_mapping_to_expr(child, plan);
+                apply_property_mapping_to_expr_shielded(child, plan, shielded);
                 super::render_expr::MutVisit::Stop
             };
             super::render_expr::descend_render_expr_mut(other, &mut recur);
