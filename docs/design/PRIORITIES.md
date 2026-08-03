@@ -524,6 +524,31 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — denorm closed single-hop now emits the self-loop
+  constraint** (branch `fix/987-denorm-self-loop`, PR #992, refs #987 facet 2).
+  #983 fixed the STANDARD closed single-hop `(a)-[:R]->(a)` self-loop-constraint
+  drop (a bare `count(*)` elides the node joins that implicitly enforced
+  `from == to`) but excluded denormalized schemas out of caution. A denorm closed
+  single-hop `(a:Airport)-[:FLIGHT]->(a)` therefore still bare-counted ALL edges
+  instead of just self-loops (`Origin == Dest`) — silent over-count (live: 10
+  flights returned where only 1 is a self-loop). For a denorm edge the endpoint
+  columns (`from_id`/`to_id` = `Origin`/`Dest`) live on the single edge=node scan,
+  so `<alias>.from_id = <alias>.to_id` is exactly the self-loop constraint —
+  structurally identical to the standard case #983 already handles. Fix removes
+  the two `!is_node_denormalized` conjuncts from #983's gate. Renders
+  `WHERE t1.Origin = t1.Dest` → live returns 1; property form + anchor-WHERE
+  (`(t1.OriginState = 'GA' AND t1.Origin = t1.Dest)`, live GA=1/CA=0) both
+  AND-combine via the normal predicate flow. FK-edge stays EXCLUDED (its "edge" is
+  a node table whose endpoint is a FK column → `node_id == fk_col`, a different
+  test, separate #987 facet); OPTIONAL and VLP paths untouched; standard/composite
+  #983 byte-identical. **Adversarial review APPROVE, zero findings** (isolated
+  `CARGO_TARGET_DIR` builds; confirmed 10→1 vs hand oracle; `from_id`/`to_id` are
+  the identity columns across every denorm fixture; all controls byte-identical;
+  ratchet clean — removes predicate calls, no baseline bump; zero `UPDATE_GOLDEN`
+  churn). 1689 lib + 578 integration + corpus + ratchet + clippy + fmt green.
+  Remaining #987 facets: property-form duplicate-alias Code 179 (join-builder);
+  FK-edge / OPTIONAL / unlabeled closed single-hop self-loop.
+
 - 2026-08-03: **Correctness — composite-key OPTIONAL VLP now fails loud instead
   of silently mismatching** (branch `fix/979`, PR #990, closes #979). An OPTIONAL
   variable-length path anchored on a node with a COMPOSITE node id silently
