@@ -8351,6 +8351,60 @@ async fn closed_single_hop_composite_key_self_loop_983() {
     }
 }
 
+/// #979: an OPTIONAL variable-length path anchored on a COMPOSITE-key node must
+/// FAIL LOUD rather than silently mismatch. The recursive VLP CTE emits its
+/// `start_id`/`end_id` as a pipe-joined `concat(toString(a.c1), '|',
+/// toString(a.c2))` composite key, but the anchor LEFT JOIN keys off only the
+/// FIRST id column (`a.c1 = vt0.start_id`) — a single column that can never
+/// equal the `concat(...)` composite, so the LEFT JOIN matches nothing and every
+/// anchor is silently NULL-extended (live-proven: composite ancestor `count(*)`
+/// returns 1 for every node instead of true path counts). Both closed
+/// (`(a)-[*..]->(a)`) and non-closed (`(a)-[*..]->(b)`), plus the reversed /
+/// undirected written forms, route through the same block. The NON-optional
+/// composite closed VLP is unaffected — it keys off the CTE's own composite
+/// `t.start_id = t.end_id`, so it must still render.
+#[tokio::test]
+async fn composite_optional_vlp_fails_loud_979() {
+    let schema = load_schema("schemas/test/composite_self_ref_fk.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // Every OPTIONAL composite VLP shape must fail loud, naming the issue.
+        for cypher in [
+            "MATCH (a:Object) OPTIONAL MATCH (a)-[:PARENT*1..]->(b:Object) RETURN a.name, count(*)",
+            "MATCH (a:Object) OPTIONAL MATCH (a)-[:PARENT*1..]->(a) RETURN a.name, count(*)",
+            "MATCH (a:Object) OPTIONAL MATCH (a)<-[:PARENT*1..]-(b:Object) RETURN a.name, count(*)",
+            "MATCH (a:Object) OPTIONAL MATCH (a)-[:PARENT*2..3]->(a) RETURN a.name, count(*)",
+        ] {
+            let err = try_render(&schema, cypher, dialect)
+                .await
+                .expect_err(&format!(
+                    "#979 ({dialect:?}): composite-key OPTIONAL VLP must fail loud:\n{cypher}"
+                ));
+            assert!(
+                err.contains("COMPOSITE key") && err.contains("#979"),
+                "#979 ({dialect:?}): error must name the composite-key OPTIONAL-VLP limitation:\n{err}"
+            );
+        }
+
+        // Controls that must STILL render (the guard is scoped to OPTIONAL VLP):
+        //  - non-optional composite closed VLP keys off the CTE's own composite
+        //    `t.start_id = t.end_id` (no anchor table) → renders;
+        //  - non-optional composite non-closed VLP → renders;
+        //  - single-hop composite OPTIONAL (a plain relationship, not a VLP) →
+        //    renders with the intact composite join.
+        for cypher in [
+            "MATCH (a:Object)-[:PARENT*1..]->(a) RETURN a.name, count(*)",
+            "MATCH (a:Object)-[:PARENT*1..2]->(b:Object) RETURN a.name, b.name",
+            "MATCH (a:Object) OPTIONAL MATCH (a)-[:PARENT]->(b:Object) RETURN a.name, count(*)",
+        ] {
+            let ok = try_render(&schema, cypher, dialect).await;
+            assert!(
+                ok.is_ok(),
+                "#979 ({dialect:?}): non-optional composite VLP / single-hop composite OPTIONAL must render, not fail loud:\n{cypher}\n{ok:?}"
+            );
+        }
+    }
+}
+
 /// #599: `size((pattern))` renders as a bare correlated `COUNT(*)` scalar
 /// subquery; ClickHouse decorrelates that into a LEFT JOIN, so an outer row
 /// with ZERO pattern matches yields NULL instead of 0 — silently breaking
