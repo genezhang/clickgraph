@@ -86,6 +86,16 @@ pub fn generate_pattern_joins(
             let r_right_join =
                 helpers::resolve_identifier(right_join_col, t.rel_cte_name, plan_ctx);
 
+            // #1010: same loud guard as the composite FkEdgeJoin branches — a
+            // Traditional composite join zips the node_id columns against the
+            // edge from/to_id columns positionally, so a same-name-set/different-
+            // order pairing crosses silently. No-op for single-column ids,
+            // same-order pairings, and the different-NAME cross-table case (the
+            // usual shape, where the edge FK columns are named differently from
+            // the node PK columns).
+            guard_composite_positional_pairing(&r_left_id, &r_left_join, "Traditional left")?;
+            guard_composite_positional_pairing(&r_right_id, &r_right_join, "Traditional right")?;
+
             let left_avail = already_available.contains(t.left_alias);
             let right_avail = already_available.contains(t.right_alias);
 
@@ -465,7 +475,11 @@ pub fn generate_pattern_joins(
                     // are the same name-set in a different order (provably crossed
                     // positional zip). No-op for single-column and different-name
                     // pairings.
-                    guard_composite_fk_pairing(cond_left_id, cond_right_id, "FkEdgeJoin Left")?;
+                    guard_composite_positional_pairing(
+                        cond_left_id,
+                        cond_right_id,
+                        "FkEdgeJoin Left",
+                    )?;
                     let right_avail = already_available.contains(t.right_alias);
                     let left_avail = already_available.contains(t.left_alias);
 
@@ -564,7 +578,7 @@ pub fn generate_pattern_joins(
                     );
                     // #672 (part 1): loud guard on same-name-set/different-order
                     // composite pairing (see FkEdgeJoin Left).
-                    guard_composite_fk_pairing(&r_right_id, &r_to_id, "FkEdgeJoin Right")?;
+                    guard_composite_positional_pairing(&r_right_id, &r_to_id, "FkEdgeJoin Right")?;
                     let left_avail = already_available.contains(t.left_alias);
                     let right_avail = already_available.contains(t.right_alias);
 
@@ -1134,34 +1148,38 @@ fn own_table_id(strategy: &NodeAccessStrategy, context: &str) -> AnalyzerResult<
     }
 }
 
-/// #672 (part 1): loud guard against a provably-crossed composite FK-edge join.
+/// #672 / #1010: loud guard against a provably-crossed composite positional join
+/// pairing.
 ///
-/// A composite FK-edge join pairs the FK columns with the target node_id columns
-/// POSITIONALLY (`add_identifier_condition` zips `left.columns()[i]` with
-/// `right.columns()[i]`). The pairing is a documented author invariant: the
-/// schema must declare the FK columns in the SAME order as the target node_id
-/// columns. When the FK column names DIFFER from the node_id names (the normal
-/// cross-table case, e.g. FK `parent_id` → PK `object_id`), a mis-order is
-/// fundamentally undetectable from the schema alone — no guard is possible.
+/// A composite join pairs two column vectors POSITIONALLY (`add_identifier_
+/// condition` zips `left.columns()[i]` with `right.columns()[i]`) — the FK
+/// columns against the target node_id columns for an FK-edge (#672), or the
+/// node_id columns against the edge from/to_id columns for a Traditional join
+/// (#1010). The pairing is a documented author invariant: the schema must
+/// declare the two column sets in the SAME order. When the two column-name sets
+/// DIFFER (the normal cross-table case, e.g. FK `parent_id` → PK `object_id`, or
+/// edge `forum_ref` → node `forum_id`), a mis-order is fundamentally undetectable
+/// from the schema alone — no guard is possible.
 ///
 /// But there is one detectable, provably-wrong case: when the two column-name
-/// vectors are the SAME SET of names in a DIFFERENT order (e.g. FK `[object_id,
-/// region]` zipped against node_id `[region, object_id]`). The positional zip
-/// then pairs each column with a DIFFERENT-named column from the same set —
-/// `object_id = region AND region = object_id` — which can never be the intended
-/// join and silently returns wrong rows (ground-rule-1 violation). This function
-/// detects exactly that case and fails loud instead.
+/// vectors are the SAME SET of names in a DIFFERENT order (e.g. `[object_id,
+/// region]` zipped against `[region, object_id]`). The positional zip then pairs
+/// each column with a DIFFERENT-named column from the same set — `object_id =
+/// region AND region = object_id` — which can never be the intended join and
+/// silently returns wrong rows (ground-rule-1 violation). This function detects
+/// exactly that case and fails loud instead.
 ///
 /// Single-column ids can never be a mis-ordered permutation of themselves, so
 /// this is a no-op for them (byte-identical). It also does not fire when the
 /// name sets differ (the undetectable cross-table case) — only a same-set,
 /// different-order pairing trips it.
 ///
-/// Scope: currently called only at the composite `FkEdgeJoin` branches (#672).
-/// The same positional-zip crossing is reachable through the `Traditional`
-/// strategy (separate edge table), which is NOT yet guarded — tracked as a
-/// follow-up (#1010) to extend this check (or centralize it) to that path.
-fn guard_composite_fk_pairing(
+/// Called at the composite `FkEdgeJoin` branches (#672) and the composite
+/// `Traditional` pairings (#1010). Other strategies either pair single columns
+/// (`add_condition`) or present a length-mismatched pair (e.g. `MixedAccess`
+/// zips a possibly-composite node_id against a single-column edge join_col — a
+/// separate composite-mixed gap, #927), both of which this guard no-ops.
+fn guard_composite_positional_pairing(
     left_id: &Identifier,
     right_id: &Identifier,
     context: &str,
@@ -1178,7 +1196,7 @@ fn guard_composite_fk_pairing(
     let left_set: HashSet<&str> = left_cols.iter().copied().collect();
     let right_set: HashSet<&str> = right_cols.iter().copied().collect();
     if left_set != right_set {
-        // Different names → normal cross-table FK↔PK pairing; a mis-order here is
+        // Different names → normal cross-table pairing; a mis-order here is
         // undetectable from the schema, so we do not (and cannot) guard it.
         return Ok(());
     }
@@ -1192,12 +1210,12 @@ fn guard_composite_fk_pairing(
     // Same set, different order → the positional zip provably crosses columns.
     Err(AnalyzerError::UnsupportedPattern {
         message: format!(
-            "composite FK-edge join has FK and node-id columns that are the same \
-             set of names in DIFFERENT order ({context}: {left_cols:?} vs \
-             {right_cols:?}). The join pairs columns positionally, so this would \
-             silently cross them (e.g. `{a} = {b} AND {b} = {a}`) and return wrong \
-             rows. Declare the FK columns in the SAME order as the target node_id \
-             columns. (#672)",
+            "composite join has two column sets that are the same set of names in \
+             DIFFERENT order ({context}: {left_cols:?} vs {right_cols:?}). The join \
+             pairs columns positionally, so this would silently cross them (e.g. \
+             `{a} = {b} AND {b} = {a}`) and return wrong rows. Declare the join \
+             columns (edge FK / node id) in the SAME order on both sides. \
+             (#672/#1010)",
             a = left_cols[0],
             b = right_cols[0],
         ),
@@ -1634,11 +1652,11 @@ mod tests {
     }
 
     #[test]
-    fn guard_composite_fk_pairing_rejects_same_nameset_different_order_672() {
+    fn guard_composite_positional_pairing_rejects_same_nameset_different_order_672() {
         // Same set of names, reversed order → provably crossed → loud.
         let node_id = Identifier::Composite(vec!["region".into(), "forum_id".into()]);
         let fk = Identifier::Composite(vec!["forum_id".into(), "region".into()]);
-        let err = guard_composite_fk_pairing(&node_id, &fk, "test").unwrap_err();
+        let err = guard_composite_positional_pairing(&node_id, &fk, "test").unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("#672") && msg.contains("DIFFERENT order"),
@@ -1647,27 +1665,27 @@ mod tests {
     }
 
     #[test]
-    fn guard_composite_fk_pairing_allows_different_names_672() {
+    fn guard_composite_positional_pairing_allows_different_names_672() {
         // Different names (the normal cross-table FK↔PK case) → undetectable
         // mis-order → NOT guarded (must be a no-op).
         let node_id = Identifier::Composite(vec!["region".into(), "forum_id".into()]);
         let fk = Identifier::Composite(vec!["forum_region".into(), "forum_id".into()]);
-        assert!(guard_composite_fk_pairing(&node_id, &fk, "test").is_ok());
+        assert!(guard_composite_positional_pairing(&node_id, &fk, "test").is_ok());
     }
 
     #[test]
-    fn guard_composite_fk_pairing_allows_same_order_672() {
+    fn guard_composite_positional_pairing_allows_same_order_672() {
         // Same names, same order → clean shared-column equi-join → no-op.
         let node_id = Identifier::Composite(vec!["region".into(), "forum_id".into()]);
         let fk = Identifier::Composite(vec!["region".into(), "forum_id".into()]);
-        assert!(guard_composite_fk_pairing(&node_id, &fk, "test").is_ok());
+        assert!(guard_composite_positional_pairing(&node_id, &fk, "test").is_ok());
     }
 
     #[test]
-    fn guard_composite_fk_pairing_noop_single_column_672() {
+    fn guard_composite_positional_pairing_noop_single_column_672() {
         // Single-column ids can never be a mis-ordered permutation → no-op.
         let node_id = Identifier::Single("id".into());
         let fk = Identifier::Single("parent_id".into());
-        assert!(guard_composite_fk_pairing(&node_id, &fk, "test").is_ok());
+        assert!(guard_composite_positional_pairing(&node_id, &fk, "test").is_ok());
     }
 }

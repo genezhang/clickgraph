@@ -2653,6 +2653,57 @@ async fn composite_fk_edge_misordered_same_nameset_fails_loud_672() {
     }
 }
 
+/// #1010: the same-name-set/different-order composite crossing is also reachable
+/// through the `Traditional` join strategy (a SEPARATE edge table — the common
+/// shape), where `add_identifier_condition` zips the node_id columns against the
+/// edge from/to_id columns positionally. #1010 extends the #672 guard to that
+/// path. Must fail loud, and must remain a NO-OP for correct composite
+/// Traditional joins whose edge columns are named differently from the node_id
+/// (the usual case — verified by the existing `composite_node_ids` /
+/// `cs_composite_id` suites which still render).
+#[tokio::test]
+async fn composite_traditional_misordered_same_nameset_fails_loud_1010() {
+    let misordered = load_schema("schemas/test/composite_traditional_misordered.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // Both written directions route the Traditional composite pairing.
+        for cypher in [
+            "MATCH (f:Forum)-[:MEMBER_OF]->(u:User) RETURN f.title, u.name",
+            "MATCH (u:User)<-[:MEMBER_OF]-(f:Forum) RETURN f.title, u.name",
+        ] {
+            let err = try_render(&misordered, cypher, dialect)
+                .await
+                .expect_err(&format!(
+                    "#1010 ({dialect:?}): same-name-set/different-order composite \
+                     Traditional pairing must fail loud:\n{cypher}"
+                ));
+            assert!(
+                err.contains("#1010")
+                    && err.contains("DIFFERENT order")
+                    && err.contains("Traditional"),
+                "#1010 ({dialect:?}): error must name the crossed Traditional \
+                 pairing:\n{err}"
+            );
+        }
+    }
+
+    // Guard must be a NO-OP for a correct composite Traditional join whose edge
+    // columns are named differently from the node_id columns.
+    let correct = load_schema("schemas/test/composite_node_ids.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let ok = try_render(
+            &correct,
+            "MATCH (a:Account)-[:TRANSFERRED]->(b:Account) RETURN a.account_number, b.account_number",
+            dialect,
+        )
+        .await;
+        assert!(
+            ok.is_ok(),
+            "#1010 ({dialect:?}): correct different-name composite Traditional join \
+             must still render (guard is a no-op there):\n{ok:?}"
+        );
+    }
+}
+
 /// member's value). The whole-node GROUP BY optimization in `group_by_builder.rs`
 /// now expands to the full `node_id.columns()` set via the schema.
 #[tokio::test]
