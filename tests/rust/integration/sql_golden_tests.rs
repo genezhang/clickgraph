@@ -6943,6 +6943,87 @@ async fn exists_predicate_maps_property_nested_in_case_705() {
     );
 }
 
+/// Scalar `exists(v.prop)` — the property-existence FUNCTION (distinct from the
+/// `EXISTS { pattern }` subquery) — must lower to `v.prop IS NOT NULL`, on BOTH
+/// render paths and BOTH dialects. Left unmapped it renders the invalid literal
+/// `exists(...)` on Path A (no such ClickHouse/Databricks scalar fn → Code 46)
+/// and `WHERE false` on Path C (VLP/pattern-comp — silently dropping every row).
+/// The lowering is at the single canonical AST-conversion site so both paths get
+/// it; gated to a single PropertyAccess argument (other shapes stay ScalarFnCall).
+#[tokio::test]
+async fn scalar_exists_property_lowers_to_is_not_null() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // Path A — RETURN position, ClickHouse. Property maps (name → full_name) AND
+    // renders IS NOT NULL, never the literal `exists(`.
+    let ret = normalize(
+        &render(
+            &schema,
+            "MATCH (u:User) RETURN exists(u.name) AS has",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        ret.contains("full_name IS NOT NULL") && !ret.contains("exists("),
+        "scalar exists(u.name) must render `full_name IS NOT NULL`, not a literal exists(...):\n{ret}"
+    );
+
+    // Path A — WHERE position, Databricks (confirms the lowering is dialect-agnostic
+    // — it happens before the dialect split, so no per-dialect work is needed).
+    let where_dbx = normalize(
+        &render(
+            &schema,
+            "MATCH (u:User) WHERE exists(u.name) RETURN u.user_id",
+            SqlDialect::Databricks,
+        )
+        .await,
+    );
+    assert!(
+        where_dbx.contains("full_name IS NOT NULL") && !where_dbx.contains("exists("),
+        "scalar exists(u.name) in WHERE (Databricks) must render IS NOT NULL:\n{where_dbx}"
+    );
+
+    // Path C — inside a VLP WHERE. Pre-fix this rendered `WHERE false` (dropping
+    // every row); it must now carry the endpoint's IS NOT NULL filter.
+    let vlp = normalize(
+        &render(
+            &schema,
+            "MATCH (u:User)-[:FOLLOWS*1..2]->(f) WHERE exists(f.name) RETURN u.user_id",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        vlp.contains("IS NOT NULL") && !vlp.contains("WHERE false") && !vlp.contains("exists("),
+        "scalar exists(f.name) in a VLP WHERE must render IS NOT NULL, not `WHERE false`:\n{vlp}"
+    );
+}
+
+/// Gate for `scalar_exists_property_lowers_to_is_not_null`: the lowering fires
+/// ONLY for a single PropertyAccess argument. A non-property argument (a computed
+/// expression, a bare variable, or ≠1 args) has no unambiguous IS-NOT-NULL
+/// meaning, so it must stay a `ScalarFnCall` (the existing unmapped-function
+/// path) rather than being silently rewritten.
+#[tokio::test]
+async fn scalar_exists_non_property_arg_is_not_lowered() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // A computed-expression argument must NOT become IS NOT NULL.
+    let computed = normalize(
+        &render(
+            &schema,
+            "MATCH (u:User) RETURN exists(u.age + 1) AS x",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        !computed.contains("IS NOT NULL"),
+        "exists(<computed expr>) must NOT be lowered to IS NOT NULL (stays ScalarFnCall):\n{computed}"
+    );
+}
+
 /// Regression test: `EXISTS { pattern }` whose correlated variable was bound
 /// BEFORE a `WITH` barrier — i.e. the variable lives in a CTE by the time the
 /// EXISTS subquery is rendered — must correlate against the variable's
