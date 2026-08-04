@@ -1241,6 +1241,8 @@
 {"cypher": "MATCH (c:Comment)<-[:IN_FORUM]-(f:Forum) RETURN c.comment_id, f.forum_id LIMIT 5", "name": "test_672_composite_non_self_ref_fk_reverse_single_hop", "schema": "composite_fk_edge_nonselfref"}
 {"cypher": "MATCH (c:Comment)-[:IN_FORUM]->(f:Forum) RETURN c.comment_id, f.forum_id", "name": "test_672_composite_fk_misordered_same_nameset_fails_loud", "schema": "composite_fk_edge_misordered"}
 {"cypher": "MATCH (f:Forum)<-[:IN_FORUM]-(c:Comment) RETURN c.comment_id, f.forum_id", "name": "test_672_composite_fk_misordered_reverse_fails_loud", "schema": "composite_fk_edge_misordered"}
+{"cypher": "MATCH (p:Person)-[:MEMBER]->(t:Team) RETURN p.name, t.title", "name": "test_672_composite_fk_misordered_left_branch_fails_loud", "schema": "composite_fk_edge_misordered_left"}
+{"cypher": "MATCH (t:Team)<-[:MEMBER]-(p:Person) RETURN p.name, t.title", "name": "test_672_composite_fk_misordered_left_reverse_fails_loud", "schema": "composite_fk_edge_misordered_left"}
 {"cypher": "MATCH (a:Object)-[:PARENT*1..3]->(b:Object) WHERE a.name = 'doc' RETURN b.name", "name": "test_713_composite_self_ref_fk_vlp_ancestors_append", "schema": "composite_self_ref_fk"}
 {"cypher": "MATCH (a:Object)-[:PARENT]->(a) RETURN count(*)", "name": "test_987_composite_self_ref_fk_closed_single_hop_count", "schema": "composite_self_ref_fk"}
 {"cypher": "MATCH (a:Object)-[:PARENT]->(a) RETURN a.name", "name": "test_987_composite_self_ref_fk_closed_single_hop_property", "schema": "composite_self_ref_fk"}

@@ -1156,6 +1156,11 @@ fn own_table_id(strategy: &NodeAccessStrategy, context: &str) -> AnalyzerResult<
 /// this is a no-op for them (byte-identical). It also does not fire when the
 /// name sets differ (the undetectable cross-table case) — only a same-set,
 /// different-order pairing trips it.
+///
+/// Scope: currently called only at the composite `FkEdgeJoin` branches (#672).
+/// The same positional-zip crossing is reachable through the `Traditional`
+/// strategy (separate edge table), which is NOT yet guarded — tracked as a
+/// follow-up (#1010) to extend this check (or centralize it) to that path.
 fn guard_composite_fk_pairing(
     left_id: &Identifier,
     right_id: &Identifier,

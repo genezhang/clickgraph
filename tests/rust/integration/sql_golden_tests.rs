@@ -2587,25 +2587,50 @@ async fn composite_non_self_ref_fk_edge_emits_multi_column_join_672() {
 /// (that mis-order is undetectable from the schema alone), which the sibling
 /// `composite_non_self_ref_fk_edge_emits_multi_column_join_672` test still
 /// renders correctly.
+///
+/// Both composite `FkEdgeJoin` guard call sites are exercised. Branch selection
+/// depends on which node table equals the edge table, NOT the Cypher writing
+/// direction: the `_misordered` fixture puts the FK on the from_node table →
+/// `FkEdgeJoin Right`; the `_misordered_left` fixture puts it on the to_node
+/// table → `FkEdgeJoin Left`.
 #[tokio::test]
 async fn composite_fk_edge_misordered_same_nameset_fails_loud_672() {
-    let misordered = load_schema("schemas/test/composite_fk_edge_misordered.yaml");
-    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
-        // Both written directions route a composite FkEdgeJoin branch and must
-        // reject the crossed pairing.
-        for cypher in [
+    // (fixture, cypher, expected branch label in the loud message).
+    let loud_cases = [
+        (
+            "schemas/test/composite_fk_edge_misordered.yaml",
             "MATCH (c:Comment)-[:IN_FORUM]->(f:Forum) RETURN c.comment_id, f.forum_id",
+            "FkEdgeJoin Right",
+        ),
+        (
+            "schemas/test/composite_fk_edge_misordered.yaml",
             "MATCH (f:Forum)<-[:IN_FORUM]-(c:Comment) RETURN c.comment_id, f.forum_id",
-        ] {
-            let err = try_render(&misordered, cypher, dialect)
+            "FkEdgeJoin Right",
+        ),
+        (
+            "schemas/test/composite_fk_edge_misordered_left.yaml",
+            "MATCH (p:Person)-[:MEMBER]->(t:Team) RETURN p.name, t.title",
+            "FkEdgeJoin Left",
+        ),
+        (
+            "schemas/test/composite_fk_edge_misordered_left.yaml",
+            "MATCH (t:Team)<-[:MEMBER]-(p:Person) RETURN p.name, t.title",
+            "FkEdgeJoin Left",
+        ),
+    ];
+    for (schema_path, cypher, branch) in loud_cases {
+        let schema = load_schema(schema_path);
+        for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+            let err = try_render(&schema, cypher, dialect)
                 .await
                 .expect_err(&format!(
                     "#672 ({dialect:?}): same-name-set/different-order composite \
                      FK-edge pairing must fail loud:\n{cypher}"
                 ));
             assert!(
-                err.contains("#672") && err.contains("DIFFERENT order"),
-                "#672 ({dialect:?}): error must name the crossed-pairing limitation:\n{err}"
+                err.contains("#672") && err.contains("DIFFERENT order") && err.contains(branch),
+                "#672 ({dialect:?}): error must name the crossed pairing and the \
+                 `{branch}` branch:\n{err}"
             );
         }
     }
