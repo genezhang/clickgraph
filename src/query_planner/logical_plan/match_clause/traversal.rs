@@ -1568,13 +1568,37 @@ fn traverse_connected_pattern_with_mode<'a>(
                 projected_columns: None,
                 node_types: None,
             };
-            register_node_in_context(
-                plan_ctx,
-                &end_node_alias,
-                &end_node_label,
-                end_node_props,
-                end_node_ref.name.is_some(),
-            );
+            // #995: a CLOSED single hop `(a)-[:R]->(a)` names the SAME alias at
+            // both endpoints, so the `start_node_alias` registration above
+            // already created `a`'s `TableCtx` — carrying any inline node-property
+            // map (`{name:'Alice'}`). A blind `register_node_in_context` here
+            // would `insert` a fresh (empty-prop) `TableCtx` over it, silently
+            // discarding the start node's inline filter — `MATCH (a {name:'Alice'})
+            // -[:R]->(a)` then returned ALL self-loops, not just Alice's (the WHERE
+            // form `WHERE a.name='Alice'` and the OPEN hop `(a)->(b)` both kept it,
+            // because WHERE predicates aren't keyed to node registration and the
+            // open hop's endpoints have distinct aliases). APPEND-when-present
+            // instead, mirroring the sibling "start already in ctx" branch above
+            // (its identical end-node guard preserves multi-pattern filters like
+            // `(p1 {id:$a}), (p2 {id:$b}), path=shortestPath(...)`). For the open
+            // case `end_node_alias` is not yet in the ctx, so this stays a plain
+            // register (byte-identical to before).
+            if let Some(existing_ctx) = plan_ctx.get_mut_table_ctx_opt(&end_node_alias) {
+                if end_node_label.is_some() {
+                    existing_ctx.set_labels(end_node_label.clone().map(|l| vec![l]));
+                }
+                if !end_node_props.is_empty() {
+                    existing_ctx.append_properties(end_node_props);
+                }
+            } else {
+                register_node_in_context(
+                    plan_ctx,
+                    &end_node_alias,
+                    &end_node_label,
+                    end_node_props,
+                    end_node_ref.name.is_some(),
+                );
+            }
 
             let (left_conn, right_conn) =
                 compute_connection_aliases(&rel.direction, &start_node_alias, &end_node_alias);
