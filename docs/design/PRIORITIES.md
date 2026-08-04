@@ -526,6 +526,29 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — short-circuit `reduce()` over a WITH-bound empty
+  list** (branch `fix/957-reduce-with-bound-empty-list`, PR #1016 `5b7521e6`,
+  closes #957). Follow-up to #955 (which only caught an INLINE `[]` at the reduce
+  site). `WITH [] AS xs … reduce(…, y IN xs | …)` projects an untyped
+  `Array(Nothing)` column, and the reduce sees `xs` as a column REFERENCE (not a
+  `List` literal), so #955 didn't fire → `arrayFold(…, u_xs.xs, …)` → live Code
+  53 TYPE_MISMATCH (CH can't fold `Array(Nothing)`; CAST doesn't help —
+  verified). Fold over empty = init, so a plan-level pre-pass in
+  `render_plan_to_sql` (after `flatten_all_ctes`) collects CTE columns projected
+  as empty `[]` and rewrites reduces over them to the inline-`[]` form → the
+  existing #955 render-site short-circuit applies the correct dialect init cast
+  (pre-pass carries NO dialect SQL, Rule #7). Covers SELECT / filters / GROUP BY
+  / HAVING / ORDER BY / CTE bodies / UNION branches. SCOPE-SAFE (2 silent-wrongs
+  caught by adversarial review): a name is treated as statically-empty only if
+  projected `[]` EVERYWHERE — a WITH rebind (`WITH [] AS xs WITH [1,2,3] AS xs`)
+  or a cross-UNION-arm same-name non-empty binding disqualifies it, so it folds
+  normally (correct) rather than wrongly short-circuiting to init; the rare
+  empty-but-shadowed case falls back to a still-LOUD Code 53, never silent-wrong.
+  Live-verified (empty→7, rebind→13, non-empty→13, string→'seed', ORDER BY,
+  nested-reduce init). Golden + 2-round review APPROVE. Residual pre-existing
+  loud gap: reduce init referencing an outer column across a WITH barrier (Code
+  47, untouched non-empty path identical). Full suite green.
+
 - 2026-08-03: **Correctness (ground-rule-1) — extend composite crossed-pairing
   loud guard to the Traditional strategy** (branch
   `fix/1010-traditional-composite-misorder-guard`, PR #1013 `4e05753b`, closes
