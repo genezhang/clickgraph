@@ -796,6 +796,42 @@ fn traverse_connected_pattern_with_mode<'a>(
                         &end_node_alias,
                     );
 
+                    // #987: this deferred-UNION (`pattern_combinations`) branch
+                    // hard-codes `variable_length: None` below — a fully-unlabeled
+                    // relationship collapses to a SINGLE-HOP `pattern_union` CTE that
+                    // enumerates one hop per edge type, with the original VLP spec
+                    // (`*1..2`, `*2`, `*`, …) silently DROPPED. For an OPEN pattern
+                    // that is a pre-existing wrong-but-executable shape (#1024). For a
+                    // CLOSED pattern `(a)-[r*..]->(a)` it is worse: the #987 self-loop
+                    // constraint (emitted in filter_builder for the collapsed
+                    // single-hop) would turn the over-count into a plausible-looking
+                    // `0`/`N` that is NOT the true cycle count (the recursive multi-hop
+                    // path is gone). Rather than answer a multi-hop cycle query with a
+                    // single-hop count (silent-wrong, ground rule 1), fail loud here —
+                    // where the VLP spec still exists — and let the user label the
+                    // pattern (the labeled `(a:User)-[r:FOLLOWS*1..2]->(a)` path uses a
+                    // real recursive CTE and answers correctly). Scoped to closed
+                    // (`left_conn == right_conn`) + non-shortestPath: shortestPath VLP
+                    // keeps its `shortest_path_mode` through the collapse and renders
+                    // on its own path; the OPEN unlabeled VLP collapse stays on its
+                    // current (pre-existing) behavior and is tracked in #1024.
+                    if rel.variable_length.is_some()
+                        && shortest_path_mode.is_none()
+                        && left_conn == right_conn
+                    {
+                        return Err(LogicalPlanError::QueryPlanningError(format!(
+                            "closed variable-length path on a fully-unlabeled pattern \
+                             (`({a})-[{r}*..]->({a})`): the untyped relationship expands \
+                             to a per-edge-type UNION that only enumerates a single hop, \
+                             so the multi-hop cycle count cannot be computed correctly. \
+                             Add a node label and/or relationship type (e.g. \
+                             `({a}:Label)-[:REL*..]->({a})`) so the recursive VLP path \
+                             is used. (#987/#1024)",
+                            a = start_node_alias,
+                            r = rel_alias,
+                        )));
+                    }
+
                     // Generate relationship center
                     let from_label_opt = Some(first_combo.from_label.clone());
                     let to_label_opt = Some(first_combo.to_label.clone());
