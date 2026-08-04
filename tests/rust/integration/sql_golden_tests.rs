@@ -11717,19 +11717,22 @@ mod walker_drift_family_484_490_495_476_483 {
             "#957: a NON-empty WITH-bound list must still fold, not short-circuit:\n{nonempty}"
         );
 
-        // A statically-empty list forwarded through a SECOND WITH still collapses
-        // (the pre-pass scans every flattened CTE's projections).
-        let chained = render(
+        // SCOPE-SAFETY guard (adversarial-review catch): a WITH REBIND of the
+        // same name `xs` from `[]` to a NON-empty list must NOT short-circuit the
+        // reduce over the rebound non-empty `xs`. The collector disqualifies any
+        // name that is ever projected non-empty, so this still folds → correct
+        // (13), not the init (7). Was a silent-wrong before the disqualifier.
+        let rebind = render(
             &schema,
-            "MATCH (u:User) WITH u, [] AS xs WITH u, xs \
-             RETURN reduce(acc = 5, y IN xs | acc + y) AS r",
+            "MATCH (u:User) WITH u, [] AS xs WITH u, [1, 2, 3] AS xs \
+             RETURN reduce(acc = 7, y IN xs | acc + y) AS r",
             SqlDialect::ClickHouse,
         )
         .await;
         assert!(
-            !chained.contains("arrayFold") && chained.contains("toInt64(5)"),
-            "#957: an empty list forwarded through a second WITH must still \
-             short-circuit:\n{chained}"
+            rebind.contains("arrayFold"),
+            "#957: a name rebound to a NON-empty list must still fold (no silent \
+             short-circuit to init):\n{rebind}"
         );
     }
 

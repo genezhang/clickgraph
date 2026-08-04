@@ -5214,33 +5214,53 @@ fn flatten_all_ctes(plan: &mut RenderPlan) {
     plan.ctes.0 = collected;
 }
 
-/// #957: collect the set of column names that a CTE projects as a STATICALLY
-/// EMPTY list literal (`[] AS xs`). These render as an untyped `Array(Nothing)`
-/// column, which ClickHouse cannot fold over (`arrayFold(…, xs, init)` → Code 53
-/// TYPE_MISMATCH — the lambda's inferred `Nothing` return can't unify with the
-/// accumulator). A `reduce()` over such a column is short-circuited to its init
-/// (see `short_circuit_reduce_over_empty_list`), so we first gather which
-/// columns are provably empty.
+/// #957: collect the set of column names that are SAFE to treat as a statically
+/// empty list — i.e. projected as an empty `List` literal (`[] AS xs`) in at
+/// least one CTE and NEVER projected as anything else (a non-empty list, or any
+/// non-list expression) in any CTE.
+///
+/// An empty `[] AS xs` renders as an untyped `Array(Nothing)` column that
+/// ClickHouse cannot fold over (`arrayFold(…, xs, init)` → Code 53 — the
+/// lambda's `Nothing` return can't unify with the accumulator); a `reduce()`
+/// over such a column is short-circuited to its init
+/// (`short_circuit_reduce_over_empty_list`).
 ///
 /// Keyed by the bare column name (the CTE's `col_alias`), which is what a
 /// downstream `reduce.list` PropertyAccess/Column references (`u_xs.xs` → `xs`).
-/// Column aliases are unique within a scope and an empty-list projection is
-/// unambiguous, so a bare-name set is sufficient and avoids threading the
-/// CTE→outer-alias mapping.
+/// The bare name is scope-ambiguous, so we must EXCLUDE any name that is
+/// ALSO bound to a non-empty value somewhere — otherwise a WITH REBIND
+/// (`WITH [] AS xs WITH [1,2,3] AS xs … reduce(… IN xs …)`) would wrongly
+/// short-circuit the reduce over the rebound non-empty `xs` to its init
+/// (silent-wrong: 7 instead of 13). Requiring the name to be empty everywhere
+/// it is projected makes the bare-name match provably safe: if any binding is
+/// non-empty we leave every reduce over that name to render normally (correct
+/// on main), trading a still-loud Code 53 on the genuinely-empty-but-shadowed
+/// case (vanishingly rare, and loud not silent — ground rule 1) for never
+/// producing a wrong answer.
 fn collect_static_empty_list_columns(plan: &RenderPlan) -> HashSet<String> {
     let mut empty_cols = HashSet::new();
+    let mut non_empty_cols = HashSet::new();
     for cte in &plan.ctes.0 {
         if let CteContent::Structured(cte_plan) = &cte.content {
             for item in &cte_plan.select.items {
-                if let (Some(alias), RenderExpr::List(items)) = (&item.col_alias, &item.expression)
-                {
-                    if items.is_empty() {
-                        empty_cols.insert(alias.0.clone());
+                if let Some(alias) = &item.col_alias {
+                    match &item.expression {
+                        RenderExpr::List(items) if items.is_empty() => {
+                            empty_cols.insert(alias.0.clone());
+                        }
+                        // Any other projection of this name (a non-empty list, a
+                        // column pass-through, a function, …) makes the bare-name
+                        // match unsafe — record it as a disqualifier.
+                        _ => {
+                            non_empty_cols.insert(alias.0.clone());
+                        }
                     }
                 }
             }
         }
     }
+    // Keep only names that are empty everywhere they are projected.
+    empty_cols.retain(|c| !non_empty_cols.contains(c));
     empty_cols
 }
 
@@ -5261,20 +5281,6 @@ fn reduce_list_column_name(list: &RenderExpr) -> Option<String> {
     }
 }
 
-/// #957: replace every `reduce(acc = init, x IN xs | …)` whose list `xs` is a
-/// reference to a statically-empty WITH-bound column with just `init`. Folding
-/// over a provably-empty list performs zero iterations, so the result is exactly
-/// the initial accumulator — semantically identical, and it sidesteps the
-/// untyped `Array(Nothing)` fold that ClickHouse rejects (Code 53). This is the
-/// WITH-barrier sibling of the inline-`[]` short-circuit at the `ReduceExpr`
-/// render site (#955): there the empty list is a `List` literal AT the reduce;
-/// here it arrived through a WITH projection, so `reduce.list` is a column
-/// reference and the emptiness is discovered from the CTE definitions.
-///
-/// Runs over the outer SELECT, filters, and every CTE body's SELECT/filters so
-/// a reduce nested in any of them is covered. The rewrite is applied
-/// depth-first (init is mapped before substitution) so a reduce whose init is
-/// itself such a reduce also collapses.
 /// #957: rewrite every `reduce(acc = init, x IN xs | …)` whose list `xs` is a
 /// reference to a statically-empty WITH-bound column so its list becomes an
 /// inline empty `[]` literal. That makes the existing #955 short-circuit at the
@@ -5286,8 +5292,8 @@ fn reduce_list_column_name(list: &RenderExpr) -> Option<String> {
 /// This is the WITH-barrier sibling of #955: there the empty list is a `List`
 /// literal AT the reduce; here it arrived through a WITH projection, so
 /// `reduce.list` is a column reference and the emptiness is discovered from the
-/// CTE definitions. Runs over the outer SELECT, filters, and every CTE body so a
-/// reduce nested in any of them is covered.
+/// CTE definitions. Runs over the outer SELECT, filters, CTE bodies, and UNION
+/// branches so a reduce nested in any of them is covered.
 fn short_circuit_reduce_over_empty_list(plan: &mut RenderPlan, empty_cols: &HashSet<String>) {
     use crate::render_plan::render_expr::map_render_expr;
     if empty_cols.is_empty() {
@@ -5305,6 +5311,12 @@ fn short_circuit_reduce_over_empty_list(plan: &mut RenderPlan, empty_cols: &Hash
     for cte in &mut plan.ctes.0 {
         if let CteContent::Structured(cte_plan) = &mut cte.content {
             short_circuit_reduce_over_empty_list(cte_plan, empty_cols);
+        }
+    }
+    // Recurse into UNION branch SELECTs (a reduce can live in a branch).
+    if let Some(union) = plan.union.0.as_mut() {
+        for branch in union.input.iter_mut() {
+            short_circuit_reduce_over_empty_list(branch, empty_cols);
         }
     }
 }
