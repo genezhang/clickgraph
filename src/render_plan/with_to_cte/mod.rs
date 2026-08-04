@@ -7591,6 +7591,71 @@ fn build_with_projection_select_items(
 /// `WITH a` (TableAlias) items — expanding, rewriting (scope-aware, with
 /// denormalized-property resolution), filtering out pattern-comprehension result
 /// aliases, and setting `rendered.select` / `rendered.group_by` (plus the
+/// #1021: is this sibling WITH projection safe to replicate VERBATIM into every
+/// denorm-union role branch? Only ROLE-INDEPENDENT expressions are — those built
+/// purely from literals/parameters and pure combinators over them, with NO
+/// column/alias reference (a node column would bind ONE role and be wrong in the
+/// other branch), NO aggregate (must not be replicated across DISTINCT branches),
+/// and NO correlated subquery / pattern-count (references the outer node,
+/// unresolvable per-branch). Positive allowlist (safe-by-construction),
+/// EXHAUSTIVE over `RenderExpr` — no `_` catch-all, so a new variant is a compile
+/// error here until classified. Replaces an earlier `!references_alias(...)`
+/// blacklist whose `false` arms for `PatternCount`/`ExistsSubquery`/`CteEntityRef`
+/// let a role-dependent correlated ref slip through.
+fn is_role_independent_carryable(expr: &RenderExpr) -> bool {
+    match expr {
+        // Pure constants / free-standing values.
+        RenderExpr::Literal(_) | RenderExpr::Parameter(_) | RenderExpr::Star => true,
+        // Pure combinators — safe iff every child is.
+        RenderExpr::List(items) => items.iter().all(is_role_independent_carryable),
+        RenderExpr::MapLiteral(entries) => entries
+            .iter()
+            .all(|(_, v)| is_role_independent_carryable(v)),
+        RenderExpr::ScalarFnCall(f) => f.args.iter().all(is_role_independent_carryable),
+        RenderExpr::OperatorApplicationExp(op) => {
+            op.operands.iter().all(is_role_independent_carryable)
+        }
+        RenderExpr::Case(c) => {
+            c.expr
+                .as_ref()
+                .is_none_or(|e| is_role_independent_carryable(e))
+                && c.when_then.iter().all(|(w, t)| {
+                    is_role_independent_carryable(w) && is_role_independent_carryable(t)
+                })
+                && c.else_expr
+                    .as_ref()
+                    .is_none_or(|e| is_role_independent_carryable(e))
+        }
+        RenderExpr::ArraySubscript { array, index } => {
+            is_role_independent_carryable(array) && is_role_independent_carryable(index)
+        }
+        RenderExpr::ArraySlicing { array, from, to } => {
+            is_role_independent_carryable(array)
+                && from
+                    .as_ref()
+                    .is_none_or(|f| is_role_independent_carryable(f))
+                && to.as_ref().is_none_or(|t| is_role_independent_carryable(t))
+        }
+        RenderExpr::ReduceExpr(r) => {
+            is_role_independent_carryable(&r.initial_value)
+                && is_role_independent_carryable(&r.list)
+                && is_role_independent_carryable(&r.expression)
+        }
+        // Anything that binds a column/alias, aggregates, or correlates to the
+        // outer node is NOT role-independent — do not carry (stays dropped/loud).
+        RenderExpr::PropertyAccessExp(_)
+        | RenderExpr::TableAlias(_)
+        | RenderExpr::ColumnAlias(_)
+        | RenderExpr::Column(_)
+        | RenderExpr::Raw(_)
+        | RenderExpr::AggregateFnCall(_)
+        | RenderExpr::InSubquery(_)
+        | RenderExpr::ExistsSubquery(_)
+        | RenderExpr::PatternCount(_)
+        | RenderExpr::CteEntityRef(_) => false,
+    }
+}
+
 /// denormalized-UNION restructuring path). No-op when the segment carries no WITH
 /// items. Returns `Err` only on the unsupported-feature path. Mutates `rendered`;
 /// all other params are read-only inputs.
@@ -7800,21 +7865,26 @@ fn apply_with_items_projection(
                     // a computed scalar) lives in `select_items` but is otherwise
                     // dropped here (this branch discards `select_items` in favour of
                     // the per-branch node SELECTs) → the outer `<cte>.xs` reference
-                    // is unresolved (Code 47). A ROLE-INDEPENDENT non-node item (a
-                    // literal/scalar that does NOT reference the denorm node) is
+                    // is unresolved (Code 47). A ROLE-INDEPENDENT non-node item is
                     // identical in every branch, so append each such item to EVERY
                     // branch. Two guards make this safe:
                     //   (a) col_alias is NOT one of the node's branch columns
                     //       (the `rename_alias`-prefixed `<alias>_<prop>` set) —
                     //       i.e. it is a sibling projection, not a node column; and
-                    //   (b) the expression does NOT reference the node alias — a
-                    //       ROLE-DEPENDENT computed scalar (`toUpper(a.code)`) must
-                    //       NOT be blindly copied, because a single rendered form
-                    //       binds ONE role's column (e.g. `origin_code`) and would
-                    //       be WRONG in the other branch (silent-wrong). Leaving it
-                    //       dropped keeps that case LOUD (Code 47), which is correct
-                    //       until per-branch remapping (like the WHERE propagation
-                    //       above) is added — ground rule 1.
+                    //   (b) `is_role_independent_carryable` — a POSITIVE allowlist:
+                    //       the item must be built purely from literals/params/pure
+                    //       combinators, with NO column/alias reference, NO aggregate,
+                    //       and NO correlated subquery / pattern-count. A
+                    //       ROLE-DEPENDENT form (`toUpper(a.code)`, `size((a)-...)`)
+                    //       binds ONE role's column / correlates to the outer node
+                    //       and would be wrong (or a dangling correlation) in the
+                    //       other branch, so it is NOT carried — it stays dropped →
+                    //       LOUD (Code 47), correct until per-branch remapping is
+                    //       added (ground rule 1). The allowlist is exhaustive over
+                    //       `RenderExpr`, so it cannot silently admit a new variant
+                    //       (unlike the earlier `!references_alias(...)` blacklist,
+                    //       which missed `PatternCount`/`ExistsSubquery`/
+                    //       `CteEntityRef`).
                     if let UnionItems(Some(ref mut union)) = rendered.union {
                         let branch_cols: std::collections::HashSet<String> = union
                             .input
@@ -7834,12 +7904,7 @@ fn apply_with_items_projection(
                                     .as_ref()
                                     .map(|a| !branch_cols.contains(&a.0))
                                     .unwrap_or(false);
-                                // Role-independent only: must not reference the node.
-                                alias_ok
-                                    && !super::expression_utils::references_alias(
-                                        &it.expression,
-                                        &rename_alias,
-                                    )
+                                alias_ok && is_role_independent_carryable(&it.expression)
                             })
                             .cloned()
                             .collect();

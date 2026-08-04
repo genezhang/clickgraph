@@ -4276,6 +4276,38 @@ async fn denorm_with_carries_role_independent_sibling_projection_1021() {
              blindly carried into the branches (would be silent-wrong); it stays \
              dropped/loud:\n{role_dep}"
         );
+
+        // Review-caught (positive-allowlist): a PatternCount sibling
+        // (`size((a)-[:FLIGHT]->())`) correlates to the outer node, so it must NOT
+        // be carried into the DISTINCT branches (the earlier `!references_alias`
+        // blacklist missed PatternCount and carried it with one role's column).
+        let pattern_count = render(
+            &schema,
+            "MATCH (a:Airport) WITH a, size((a)-[:FLIGHT]->()) AS deg RETURN deg",
+            dialect,
+        )
+        .await;
+        assert!(
+            !pattern_count.contains("= a.code"),
+            "#1021 ({dialect:?}): a PatternCount sibling must NOT be carried into \
+             the branches (correlated to the node):\n{pattern_count}"
+        );
+
+        // An aggregate sibling (`count(*)`) must not be replicated into the
+        // DISTINCT role branches either.
+        let agg = render(
+            &schema,
+            "MATCH (a:Airport) WITH a, count(*) AS c RETURN a.code, c",
+            dialect,
+        )
+        .await;
+        let count_in_branches =
+            agg.matches("count(*) AS \"c\"").count() + agg.matches("count(*) AS `c`").count();
+        assert_eq!(
+            count_in_branches, 0,
+            "#1021 ({dialect:?}): an aggregate sibling must NOT be replicated into \
+             the DISTINCT role branches:\n{agg}"
+        );
     }
 }
 
