@@ -1257,6 +1257,8 @@
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO*2..3]->(b:Person) RETURN a.name, b.name", "name": "test_908__mixed_arm_vlp_denorm_start_property", "schema": "foreign_selfloop"}
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO*2..3]->(b:Person) WHERE a.name = 'Alice' RETURN b.name", "name": "test_934_mixed_vlp_denorm_start_non_id_where", "schema": "foreign_selfloop"}
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO*2..3]->(b:Person) WHERE a.pid = 1 AND a.name = 'Alice' RETURN b.name", "name": "test_934_mixed_vlp_denorm_start_combined_id_and_non_id_where", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO*2..3]->(b:Person) WHERE b.name = 'Bob' RETURN a.name", "name": "test_934_mixed_vlp_denorm_end_non_id_where_both_arms", "schema": "foreign_selfloop_end"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO*2..3]->(b:Person) WHERE b.pid = 2 AND b.name = 'Bob' RETURN a.name", "name": "test_934_mixed_vlp_denorm_end_combined_id_and_non_id_where", "schema": "foreign_selfloop_end"}
 {"cypher": "MATCH (u:User)\n            WITH u.age AS a\n            WITH a AS b\n            RETURN sum(b) AS total", "name": "test_914__chained_with_rename_of_property_sum", "schema": "social_integration"}
 {"cypher": "MATCH (u:User)\n            WITH u.age AS a\n            WITH a AS b\n            RETURN collect(b) AS ages", "name": "test_914__chained_with_rename_of_property_collect", "schema": "social_integration"}
 {"cypher": "MATCH (a:Comment)-[:REPLY_OF*1..2]->(a) RETURN count(*) AS c", "name": "test_902__fk_edge_selfref_vlp_closed_follows_fk", "schema": "ldbc_snb"}

@@ -1,0 +1,37 @@
+# End-denorm mirror of foreign_selfloop.yaml (#934). Same foreign-embedded
+# self-loop shape that reaches the MIXED-access VLP arm, but the embedded role
+# is the TO-role (end), not the from-role — so on a directed
+# `(a)-[:REPORTS_TO]->(b)` VLP the END node is `EmbeddedInEdge` and
+# `end_is_denormalized` holds. This exercises the recursive-arm end-filter
+# rewrite (#934 Defect 1): a non-id WHERE on the denorm END node
+# (`WHERE b.name = 'Bob'`) must resolve against the `end_own` own-table join on
+# BOTH the base and recursive arms, not the nonexistent `rel.name`.
+#
+# Nodes live on `people` (pid, name); the edge `reports` embeds only the
+# to-role id (`pid` -> `emp_id`). Mirrors foreign_selfloop.yaml (which embeds
+# the from-role) exactly, with from/to_node_properties swapped.
+name: foreign_selfloop_end_test
+version: "1.0"
+description: "End-denorm foreign-embedded self-loop: to-role embedded -> mixed-access VLP arm with end_is_denormalized (#934)"
+
+graph_schema:
+  nodes:
+    - label: Person
+      database: testdb
+      table: people
+      node_id: pid
+      is_denormalized: true
+      property_mappings:
+        pid: pid
+        name: name
+      to_node_properties:
+        pid: emp_id
+  edges:
+    - type: REPORTS_TO
+      database: testdb
+      table: reports
+      from_node: Person
+      to_node: Person
+      from_id: mgr_id
+      to_id: emp_id
+      property_mappings: {}
