@@ -28,7 +28,7 @@ WITH RECURSIVE vlp_a_b_inner AS (
       AND NOT has(vp.path_edges, tuple(rel.mgr_id, rel.emp_id))
 ),
 vlp_a_b AS (
-    SELECT * FROM vlp_a_b_inner WHERE ((end_id = 2 AND end_name = 'Bob')) AND hop_count >= 2
+    SELECT * FROM vlp_a_b_inner WHERE (end_name = 'Alice') AND hop_count >= 2
 )
 SELECT 
       t.start_name AS "a.name"

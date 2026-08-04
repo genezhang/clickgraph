@@ -18106,12 +18106,13 @@ async fn mixed_vlp_denorm_start_non_id_where_resolves_own_table_934() {
     }
 }
 
-/// #934 Defect 1: the mixed-VLP fix must patch the RECURSIVE arm too. For an
-/// END-denormalized mixed VLP (the `to`-role is embedded), a non-id WHERE on the
-/// end node produced a correct base arm (`end_own.name`) but the recursive UNION
-/// arm still emitted `rel.name` → Code 47 for any `*n..m`, m ≥ 2. Both arms must
-/// now resolve the non-id end property against the `end_own` join, while the end
-/// id property maps to the edge's `to` column.
+/// #934 + #1003: for an END-denormalized mixed VLP (the `to`-role is embedded),
+/// a non-id WHERE on the end node must (a) resolve the carried endpoint column via
+/// the `end_own` own-table join — NEVER the nonexistent `rel.name` (#934) — and
+/// (b) apply the terminal-endpoint predicate in the OUTER wrapper on the carried
+/// `end_name` column, NOT in the base/recursive inner arms (which would constrain
+/// every hop's endpoint and drop valid paths — #1003). The end id property maps to
+/// the edge's `to` column, also deferred to the wrapper.
 #[tokio::test]
 async fn mixed_vlp_denorm_end_non_id_where_resolves_own_table_both_arms_934() {
     let schema = load_schema("schemas/test/foreign_selfloop_end.yaml");
@@ -18122,25 +18123,31 @@ async fn mixed_vlp_denorm_end_non_id_where_resolves_own_table_both_arms_934() {
             dialect,
         )
         .await;
-        // The non-id end property must resolve to `end_own.name` and NEVER to the
-        // nonexistent `rel.name` — in BOTH the base and recursive UNION arms.
+        // #934: the non-id end property is resolved via the `end_own` join (its
+        // carried `end_name` column) and NEVER via the nonexistent `rel.name`.
         assert!(
-            sql.contains("end_own.name = 'Bob'"),
-            "#934 ({dialect:?}): non-id end WHERE must resolve against the own-table join:\n{sql}"
+            sql.contains("end_own.name as end_name"),
+            "#934 ({dialect:?}): non-id end property must project via the own-table join:\n{sql}"
         );
         assert!(
             !sql.contains("rel.name"),
-            "#934 ({dialect:?}): non-id end WHERE must NOT target the edge alias in EITHER arm (Code 47):\n{sql}"
+            "#934 ({dialect:?}): non-id end property must NOT target the edge alias (Code 47):\n{sql}"
         );
-        // The base and recursive arms are the two halves of the UNION ALL; the
-        // filter must appear at least twice (once per arm) — proving the recursive
-        // arm was patched, not just the base.
+        // #1003: the terminal-endpoint predicate lives in the OUTER wrapper on the
+        // carried `end_name` column — NOT in the inner base/recursive arms (which
+        // would over-constrain every hop). The inner arms must carry no
+        // `end_own.name = 'Bob'` / `end_node.name = 'Bob'` predicate.
         assert!(
-            sql.matches("end_own.name = 'Bob'").count() >= 2,
-            "#934 ({dialect:?}): the end filter must be resolved in BOTH the base and recursive arms:\n{sql}"
+            sql.contains("end_name = 'Bob'"),
+            "#1003 ({dialect:?}): the end predicate must be applied in the outer wrapper:\n{sql}"
+        );
+        assert!(
+            !sql.contains("end_own.name = 'Bob'") && !sql.contains("end_node.name = 'Bob'"),
+            "#1003 ({dialect:?}): the end predicate must NOT be injected into the inner base/recursive arms:\n{sql}"
         );
 
-        // id-property end WHERE → stays on the edge FK column `rel.emp_id`.
+        // id-property end WHERE → deferred to the wrapper as `end_id`, and never
+        // injected into the inner arms as `rel.emp_id = ...`.
         let id = render(
             &schema,
             "MATCH (a:Person)-[:REPORTS_TO*2..3]->(b:Person) WHERE b.pid = 2 RETURN a.name",
@@ -18148,8 +18155,63 @@ async fn mixed_vlp_denorm_end_non_id_where_resolves_own_table_both_arms_934() {
         )
         .await;
         assert!(
-            id.contains("rel.emp_id = 2") && !id.contains("end_own.emp_id"),
-            "#934 ({dialect:?}): id-property end WHERE must map to the edge FK column:\n{id}"
+            id.contains("end_id = 2") && !id.contains("rel.emp_id = 2"),
+            "#934/#1003 ({dialect:?}): id-property end WHERE must defer to the wrapper as `end_id`:\n{id}"
         );
+    }
+}
+
+/// #1003: on the mixed-access VLP arm, an end-node WHERE was injected into the
+/// base AND every recursive inner arm of the CTE — constraining the endpoint at
+/// EVERY hop (an intermediate node on any longer path) rather than only the
+/// terminal endpoint, silently dropping valid paths. The terminal predicate
+/// belongs ONLY in the outer wrapper (on the carried `end_name`/`end_id` column),
+/// which already exists. The two mixed generators now consult the same
+/// `end_filter_in_base_recursive_case()` #607 gate the standard generators use.
+/// START-node filters are unaffected (the start is fixed across the recursion).
+#[tokio::test]
+async fn mixed_vlp_end_filter_deferred_to_wrapper_not_per_hop_1003() {
+    for (schema_path, label) in [
+        ("schemas/test/foreign_selfloop.yaml", "start-denorm"),
+        ("schemas/test/foreign_selfloop_end.yaml", "end-denorm"),
+    ] {
+        let schema = load_schema(schema_path);
+        for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+            // End filter on a multi-hop mixed VLP → only in the wrapper.
+            let sql = render(
+                &schema,
+                "MATCH (a:Person)-[:REPORTS_TO*2..3]->(b:Person) WHERE b.name = 'Alice' RETURN a.name",
+                dialect,
+            )
+            .await;
+            // Wrapper carries the terminal predicate on the carried column.
+            assert!(
+                sql.contains("end_name = 'Alice'"),
+                "#1003 ({label}/{dialect:?}): terminal end predicate must be in the outer wrapper:\n{sql}"
+            );
+            // The inner arms must NOT carry the raw-endpoint predicate (any alias).
+            assert!(
+                !sql.contains("end_node.name = 'Alice'")
+                    && !sql.contains("end_own.name = 'Alice'"),
+                "#1003 ({label}/{dialect:?}): the end predicate must not be injected per-hop into the inner arms:\n{sql}"
+            );
+
+            // START filter stays in the base arm (start is fixed across recursion)
+            // and is NOT swept into the wrapper — regression guard for #1003's
+            // scope. (Only meaningful on the start-denorm schema, where the start
+            // is the embedded side.)
+            if label == "start-denorm" {
+                let start_sql = render(
+                    &schema,
+                    "MATCH (a:Person)-[:REPORTS_TO*2..3]->(b:Person) WHERE a.name = 'Alice' RETURN b.name",
+                    dialect,
+                )
+                .await;
+                assert!(
+                    start_sql.contains("start_own.name = 'Alice'"),
+                    "#1003 ({label}/{dialect:?}): start filter must remain in the base arm:\n{start_sql}"
+                );
+            }
+        }
     }
 }

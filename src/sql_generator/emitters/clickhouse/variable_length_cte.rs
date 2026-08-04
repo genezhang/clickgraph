@@ -3927,7 +3927,22 @@ impl<'a> VariableLengthCteGenerator<'a> {
             where_conditions.push(rewritten);
         }
 
-        if self.shortest_path_mode.is_none() {
+        // #1003: only inject the end-node filter into the base arm when it is
+        // NOT deferred to the outer wrapper. The mixed generators previously
+        // injected unconditionally, so the end predicate constrained the
+        // endpoint at EVERY hop (an intermediate node on any longer path) rather
+        // than only the terminal endpoint — silently dropping valid paths (0 rows
+        // where matches exist). `end_filter_in_base_recursive_case()` (the #607
+        // gate the standard generators already consult at the analogous sites)
+        // returns false for a multi-hop mixed VLP, because a mixed pattern has
+        // exactly one embedded endpoint (not both), and
+        // `end_filter_applied_in_wrapper()` emits the terminal-endpoint predicate
+        // on the carried `end_name` column in the outer `vlp_* AS (SELECT * FROM
+        // ..._inner WHERE end_name = ... AND hop_count >= min)` CTE. A pure
+        // single-hop mixed `*1..1` renders a flat self-join (no CTE) and never
+        // reaches this generator, so no wrapper-less shape loses the filter. Start
+        // filters are untouched (the start is fixed across the recursion).
+        if self.shortest_path_mode.is_none() && self.end_filter_in_base_recursive_case() {
             if let Some(ref filters) = self.end_node_filters {
                 // Rewrite for denorm end if needed. #934: symmetric to the start
                 // side — a non-id property of a denormalized END node resolves
@@ -4067,7 +4082,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_check];
 
-        if self.shortest_path_mode.is_none() {
+        // #1003: gate the recursive-arm end filter on the same #607 wrapper
+        // decision as the base arm above. Without it the end predicate is
+        // re-applied on every recursive hop's (intermediate) endpoint, dropping
+        // valid longer paths; the terminal-endpoint filter lives in the outer
+        // wrapper. Mixed-only (fully-denorm is handled by DenormalizedCteStrategy
+        // and never constructs this struct).
+        if self.shortest_path_mode.is_none() && self.end_filter_in_base_recursive_case() {
             if let Some(ref filters) = self.end_node_filters {
                 // #934: mirror the base-case rewrite on the recursive arm. A
                 // non-id property of a denormalized END node must resolve via the

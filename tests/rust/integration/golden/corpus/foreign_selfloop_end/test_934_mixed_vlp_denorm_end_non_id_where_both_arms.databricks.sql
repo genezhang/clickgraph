@@ -11,7 +11,6 @@ WITH RECURSIVE vlp_a_b_inner AS (
     FROM testdb.people start_node
     JOIN testdb.reports rel ON start_node.pid = rel.mgr_id
     LEFT JOIN (SELECT pid, any_value(name) as name FROM testdb.people GROUP BY pid) end_own ON end_own.pid = rel.emp_id
-    WHERE end_own.name = 'Bob'
     UNION ALL
     SELECT
         vp.start_id,
@@ -27,7 +26,6 @@ WITH RECURSIVE vlp_a_b_inner AS (
     LEFT JOIN (SELECT pid, any_value(name) as name FROM testdb.people GROUP BY pid) end_own ON end_own.pid = rel.emp_id
     WHERE vp.hop_count < 3
       AND NOT array_contains(vp.path_edges, struct(rel.mgr_id, rel.emp_id))
-      AND end_own.name = 'Bob'
 ),
 vlp_a_b AS (
     SELECT * FROM vlp_a_b_inner WHERE (end_name = 'Bob') AND hop_count >= 2
