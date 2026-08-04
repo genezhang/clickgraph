@@ -5307,6 +5307,19 @@ fn short_circuit_reduce_over_empty_list(plan: &mut RenderPlan, empty_cols: &Hash
     if let Some(filter) = plan.filters.0.as_mut() {
         *filter = map_render_expr(filter, &mut |e| rewrite_empty_reduce_list(e, empty_cols));
     }
+    for group_expr in &mut plan.group_by.0 {
+        *group_expr = map_render_expr(group_expr, &mut |e| {
+            rewrite_empty_reduce_list(e, empty_cols)
+        });
+    }
+    if let Some(having) = plan.having_clause.as_mut() {
+        *having = map_render_expr(having, &mut |e| rewrite_empty_reduce_list(e, empty_cols));
+    }
+    for order_item in &mut plan.order_by.0 {
+        order_item.expression = map_render_expr(&order_item.expression, &mut |e| {
+            rewrite_empty_reduce_list(e, empty_cols)
+        });
+    }
     // Recurse into CTE bodies (a reduce can live inside a WITH CTE's SELECT).
     for cte in &mut plan.ctes.0 {
         if let CteContent::Structured(cte_plan) = &mut cte.content {

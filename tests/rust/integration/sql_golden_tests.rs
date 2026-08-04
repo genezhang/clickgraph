@@ -11734,6 +11734,21 @@ mod walker_drift_family_484_490_495_476_483 {
             "#957: a name rebound to a NON-empty list must still fold (no silent \
              short-circuit to init):\n{rebind}"
         );
+
+        // Coverage in a non-SELECT position: a reduce-over-WITH-empty in ORDER BY
+        // is also short-circuited (the walk covers ORDER BY / GROUP BY / HAVING,
+        // not just the SELECT list).
+        let order_by = render(
+            &schema,
+            "MATCH (u:User) WITH u, [] AS xs \
+             RETURN u.user_id AS id ORDER BY reduce(acc = 0, y IN xs | acc + y)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !order_by.contains("arrayFold") && order_by.contains("toInt64(0)"),
+            "#957: a reduce-over-WITH-empty in ORDER BY must also short-circuit:\n{order_by}"
+        );
     }
 
     /// The ClickHouse dialect must route the string-only functions to their
