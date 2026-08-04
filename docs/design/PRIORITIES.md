@@ -524,6 +524,42 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — closed single-hop preserves an inline node-property
+  map on the start node** (branch `fix/995-closed-single-hop-inline-node-property`,
+  PR #999, closes #995). A CLOSED single hop with an inline node-property map on the
+  START node — `MATCH (a:TestUser {name:'Alice'})-[:TEST_FOLLOWS]->(a) RETURN
+  a.user_id` — silently DROPPED the `{name:'Alice'}` filter, returning ALL
+  self-loops instead of just Alice's (ground-rule-1 silent-wrong; filed from the
+  #987 facet-1 review). Root cause is in the PLANNER TRAVERSAL, not the recent
+  closed-hop JOIN collapse: a closed hop names the same alias `a` at both endpoints,
+  and the "not-connected" branch of `traverse_connected_pattern_with_mode` registers
+  `a`'s `TableCtx` twice — the second (end-node) `register_node_in_context` did a
+  blind `HashMap::insert` of a fresh empty-prop `TableCtx` OVER the first, discarding
+  the start node's inline map BEFORE `convert_properties_to_operator_application`
+  could lower it to an `a.name = 'Alice'` equality. Empirically last-write-wins: the
+  map on the start node was dropped, the same map on the end node survived. The
+  WHERE-clause form and the OPEN hop `(a)->(b)` were always correct — WHERE
+  predicates aren't keyed to node registration, and open endpoints have distinct
+  aliases. Fix: the end-node registration now APPENDS to the existing ctx when the
+  alias is already present, a verbatim mirror of the sibling "start already in ctx"
+  branch (whose identical end-node guard already preserves multi-pattern filters like
+  `(p1 {id:$a}), (p2 {id:$b}), path=shortestPath(...)`); the open case stays a plain
+  register — byte-identical to before. This converges the inline-map and WHERE
+  collection paths for the closed hop, removing a latent "one placement works, the
+  other silently drops" divergence. **Live oracle-verified** (Alice `1→1` + Bob
+  `2→2` self-loops inserted, then table restored): fixed query returns only Alice;
+  the unfiltered closed hop still returns both — the fix is selective, not
+  over-filtering. **Adversarial review APPROVE, zero defects** (all placements
+  reproduced; label-clobber guarded by `end_node_label.is_some()`; same-prop double
+  is idempotent; dropped `is_explicitly_named` inconsequential for the same-variable
+  closed hop — `RETURN *` alias set byte-identical to main; guard proven
+  closed-hop-only in this branch; 24-query fix-vs-main differential = exactly 6
+  intended hunks, rest byte-identical). New golden
+  `closed_single_hop_inline_node_property_preserved_995` (start/end/both/open × 2
+  dialects) + 3 corpus entries; lib 1689 + integration 581 + corpus + ratchet +
+  clippy + fmt green. Ratchet clean (routes through existing `PlanCtx` APIs, no
+  axis-branch). Standard schema, bounded silent-wrong.
+
 - 2026-08-03: **Correctness — self-ref FK-edge closed single-hop emits the
   self-loop constraint** (branch `fix/987-fk-edge-selfloop`, PR #997, refs #987
   FK-edge facet). A self-referencing FK-edge closed single-hop
