@@ -522,6 +522,18 @@ impl FilterBuilder for LogicalPlan {
                     // this one, and a self-loop equality in the outer WHERE would
                     // drop NULL-extended anchor rows — leave it on its current path.
                     //
+                    // The `variable_length.is_none()` / `shortest_path_mode.is_none()`
+                    // conjuncts are defensive: a fully-unlabeled relationship collapses
+                    // to this single-hop `pattern_union` with `variable_length` hard-set
+                    // to `None` (traversal.rs), DROPPING the original spec — so a
+                    // CLOSED unlabeled VLP `(a)-[r*..]->(a)` would otherwise reach here
+                    // looking like a single hop and get a self-loop count that is NOT
+                    // the multi-hop cycle count. That shape is now rejected LOUDLY at
+                    // the collapse site (traversal.rs, #987), so it never arrives here;
+                    // these two conjuncts stay as belt-and-suspenders. shortestPath
+                    // keeps its `shortest_path_mode` through the collapse and is
+                    // excluded here too.
+                    //
                     // GATED on `is_pattern_union_in_scope`: a `pattern_combinations`
                     // GraphRel does NOT always render a `pattern_union_{alias}` CTE
                     // as its FROM — some schema shapes (e.g. polymorphic) collapse
