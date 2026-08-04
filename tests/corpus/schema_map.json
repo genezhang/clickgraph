@@ -15,6 +15,10 @@
     "subschema": null,
     "yaml": "schemas/examples/composite_node_id_test.yaml"
   },
+  "composite_traditional_misordered": {
+    "subschema": null,
+    "yaml": "schemas/test/composite_traditional_misordered.yaml"
+  },
   "composite_self_ref_fk": {
     "subschema": null,
     "yaml": "schemas/test/composite_self_ref_fk.yaml"

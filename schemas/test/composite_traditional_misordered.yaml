@@ -1,0 +1,52 @@
+# Traditional-strategy composite crossed-pairing fixture (#1010).
+#
+# The #672 loud guard originally covered only the composite FkEdgeJoin branches.
+# The SAME positional-zip crossing is reachable through the Traditional strategy
+# (a SEPARATE edge table, the common shape): `add_identifier_condition` zips the
+# node_id columns against the edge from/to_id columns positionally.
+#
+# Here the MEMBER_OF edge lives on its OWN table `memberships_trad` (Traditional
+# strategy — NOT an FK-edge). Forum's composite node_id is [region, forum_id];
+# the edge's from_id is declared [forum_id, region] — the SAME names in REVERSED
+# order. The positional zip would emit `t1.forum_id = f.region AND t1.region =
+# f.forum_id` (crosses region <-> forum_id) → silently wrong. #1010 extends the
+# #672 guard to fail loud here too.
+#
+# Contrast with composite_node_ids.yaml / cs_composite_id.yaml, whose composite
+# Traditional edges use DIFFERENT names on the edge side (from_bank_id vs
+# bank_id; follower_id vs user_id) → guard no-op, still render.
+
+name: composite_traditional_misordered
+version: "1.0"
+description: "Traditional-strategy composite join whose edge from_id is the same name-set as node_id in different order (#1010 loud-guard fixture)"
+
+graph_schema:
+  nodes:
+    - label: Forum
+      database: db_trad
+      table: forums_trad
+      node_id: [region, forum_id]
+      property_mappings:
+        region: region
+        forum_id: forum_id
+        title: title
+
+    - label: User
+      database: db_trad
+      table: users_trad
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: name
+
+  edges:
+    # Separate edge table (Traditional strategy). from_id [forum_id, region]
+    # shares NAMES with Forum node_id [region, forum_id] but is REVERSED →
+    # provably crossed positional pairing → #1010 loud guard fires.
+    - type: MEMBER_OF
+      database: db_trad
+      table: memberships_trad
+      from_id: [forum_id, region]
+      to_id: user_id
+      from_node: Forum
+      to_node: User
