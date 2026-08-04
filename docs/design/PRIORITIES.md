@@ -526,6 +526,33 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-04: **Correctness — carry role-independent non-node WITH projections
+  into denorm-union branches** (branch `fix/1021-denorm-with-sibling-projection`,
+  PR #1022 `6a471c77`, closes #1021). On a denormalized schema, a WITH clause
+  projecting a node expands into a UNION of role branches (origin/dest), each
+  projecting only the node's own denorm columns; a sibling non-node projection
+  (`['x'] AS xs`, `5 AS n`) was dropped from every branch → the outer `<cte>.xs`
+  reference was unresolved (Code 47). Root cause: `apply_with_items_projection`'s
+  `is_denorm_union` branch (with_to_cte) discards the rendered `select_items`
+  (which contain the sibling) in favour of the per-branch node SELECTs. Fix:
+  append each ROLE-INDEPENDENT sibling to every branch, gated by
+  `is_role_independent_carryable` — a POSITIVE allowlist, EXHAUSTIVE over
+  `RenderExpr` (no `_` catch-all): carry only literals/params/pure-combinators
+  thereof, with NO column/alias ref, NO aggregate, NO correlated
+  subquery/pattern-count. A role-DEPENDENT scalar (`toUpper(a.code)`), a
+  `PatternCount` (`size((a)-...)`), or a `count(*)` aggregate is NOT copied — one
+  rendered form binds one role's column / correlates to the outer node and would
+  be silent-wrong (or dangling) in the other branch; it stays dropped → LOUD
+  (ground rule 1). Adversarial review caught that the first cut's
+  `!references_alias(...)` blacklist was non-exhaustive (missed
+  `PatternCount`/`ExistsSubquery`/`CteEntityRef`) → replaced with the positive
+  allowlist, which the review confirmed needs no re-review (strictly more
+  conservative). Live-verified: literals/scalars carried, node/aggregate/pattern
+  siblings stay loud. Golden `denorm_with_carries_role_independent_sibling_
+  projection_1021` (+ PatternCount + aggregate assertions). Note: the issue's
+  `denormalized_flights.yaml` fixture has a separate broken column mapping
+  (`OriginCityName`). Full suite green.
+
 - 2026-08-04: **Correctness — resolve reduce()/map/list outer-column refs across a
   WITH barrier** (branch `fix/1018-reduce-outer-col-across-with-barrier`, PR
   #1019 `de8529cb`, closes #1018). A `reduce()` (or map/array literal) whose
