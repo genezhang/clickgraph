@@ -524,6 +524,32 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — self-ref FK-edge closed single-hop emits the
+  self-loop constraint** (branch `fix/987-fk-edge-selfloop`, PR #997, refs #987
+  FK-edge facet). A self-referencing FK-edge closed single-hop
+  `(a)-[:PARENT]->(a)` (the "edge" IS the node table — FK columns on the node row)
+  was broken two ways: the count(*) form (SingleTableScan strategy) silently
+  counted ALL rows (live: 5 where 1 correct), and the property form (FkEdgeJoin
+  strategy) had a duplicate alias → Code 179. The two forms take DIFFERENT analyzer
+  strategies, so each got its own fix. Self-loop = "node is its own parent" =
+  `fk_cols == node_id_cols`. Both analyzer-side, both composite-safe via a new
+  `helpers::self_loop_filter` (per-column AND, never a bare `format!`): FkEdgeJoin
+  `(false, false)` arm emits ONE FROM-marker with the self-loop as `pre_filter`
+  (promoted to WHERE); SingleTableScan arm ANDs the self-loop into the edge scan's
+  pre_filter (survives count(*) elision). Live-verified on both single-id
+  (`a.parent_id = a.object_id`) and composite (`a.parent_region = a.region AND
+  a.parent_id = a.object_id`) fixtures: count → 1, property → the self-parent's
+  name, both = oracle. No double-add with denorm (denorm closed self-hops use the
+  render-side #983 filter and are structurally not FK-edges —
+  `is_self_referencing_fk_edge()` requires no node_properties). OPEN self-ref +
+  non-self-ref FK untouched. Rule #7: routes through `is_self_referencing_fk_edge()`
+  (ratchet clean). **Adversarial review APPROVE, zero defects** (both bugs confirmed
+  on main; composite pairing positionally correct; 32-query differential sweep
+  byte-identical except the intended family; denorm structurally isolated). 1689
+  lib + 580 integration + corpus + ratchet + clippy + fmt green; no golden churn.
+  **This completes the silent-wrong facets of #987**; only the unlabeled
+  `(a)-[r]->(a)` facet (pattern_combinations early-return) remains.
+
 - 2026-08-03: **Correctness — closed single-hop property form binds the node
   once (Code 179 fixed)** (branch `fix/987-facet1-dup-alias`, PR #994, refs #987
   facet 1). A closed single-hop `(a)-[:R]->(a)` in PROPERTY-projection form bound
