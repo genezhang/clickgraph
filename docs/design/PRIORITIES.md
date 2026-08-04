@@ -524,6 +524,30 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — scalar `exists(v.prop)` lowers to `IS NOT NULL`**
+  (branch `fix/995b-scalar-exists-is-not-null`, PR #1000). The Cypher
+  property-existence FUNCTION `exists(v.prop)` (semantically `v.prop IS NOT NULL`,
+  distinct from the `EXISTS { pattern }` subquery) passed through UNMAPPED: Path A
+  (`to_sql_query.rs`) emitted the invalid literal `exists(u.full_name)` → ClickHouse
+  Code 46; Path C (`cte_extraction.rs`, VLP/pattern-comp) emitted `WHERE false` →
+  SILENTLY dropped every row (ground-rule-1). Fixed at the single canonical
+  AST→LogicalExpr conversion site (`query_planner/logical_expr/ast_conversion.rs`,
+  `FunctionCallExp` `TryFrom`): lower `exists(<PropertyAccess>)` to the existing
+  `combinators::is_not_null()` — covers BOTH render paths at the source,
+  dialect-agnostic (pre-dialect-pinning; `IS NOT NULL` is standard SQL). Gated
+  STRICTLY to a single `PropertyAccess` arg — every other shape (0/2+ args, bare
+  var, computed expr, the Databricks HOF `exists(array, lambda)` 2-arg form) stays
+  a `ScalarFnCall` on the unmapped-function path, no guessing. No registry/HOF
+  collision (Cypher list predicates are any/all/none → `arrayExists`; there is no
+  scalar `exists`). Property mapping preserved (inner PropertyAccess survives → the
+  analyzer still maps `u.name → u.full_name`). Adversarial review APPROVE (5 attack
+  vectors, zero findings). Tests: `scalar_exists_property_lowers_to_is_not_null` +
+  `scalar_exists_non_property_arg_is_not_lowered`; corpus `test_995b_*` (6 goldens).
+  Fail-when-reverted confirmed; 1689 lib + 580 int + corpus 0-churn + ratchet
+  net-zero. KNOWN RESIDUAL (out of scope): Path C renders `WHERE false` for ANY
+  unsupported scalar predicate (e.g. `exists(f.age+1)`) — a separate broad
+  Path-C-silently-drops-unsupported-predicates issue, not introduced here.
+
 - 2026-08-03: **Correctness — closed single-hop preserves an inline node-property
   map on the start node** (branch `fix/995-closed-single-hop-inline-node-property`,
   PR #999, closes #995). A CLOSED single hop with an inline node-property map on the
