@@ -524,6 +524,41 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — mixed-access VLP resolves a denorm endpoint's
+  non-id WHERE against its own table (Code 47 fixed, both arms)** (branch
+  `fix/934-mixed-vlp-denorm-start-non-id-where`, PR #1002, closes #934). On the
+  mixed-access VLP strategy, a `WHERE` on a DENORMALIZED endpoint's NON-id
+  property was blindly rewritten to the edge alias (`start_node.<col>`/`end_node.
+  <col>` -> `rel.<col>`) for a column that lives on the node's OWN table, not the
+  edge → ClickHouse Code 47 (e.g. `MATCH (a:Person)-[:REPORTS_TO*2..3]->(b:Person)
+  WHERE a.name='Alice'` → `rel.name` which the `reports` edge lacks). Pre-existing;
+  the id-property WHERE (`a.pid` -> `rel.mgr_id`) was correct and unaffected. The
+  `*_own` own-table LEFT JOIN #908 already emits (`SELECT pid, any(name) ... GROUP
+  BY pid`) is where the non-id columns resolve — but only the PROJECTION path used
+  it. New `rewrite_denorm_endpoint_filter` does an ordered rewrite: pin each id
+  column (`relationship_from/to_column`) to `rel.`, then route remaining non-id
+  `*_node.` to `*_own.`, mirroring `mixed_denorm_endpoint_property_items`'s
+  id-vs-non-id branch. Applied to the base AND recursive arms (the recursive arm
+  was the round-1 review's Defect 1: an end-denorm `*n..m` m>=2 still emitted
+  `rel.name` on the UNION arm → Code 47). Hardened two ways from review:
+  `replace_column_token` is word-boundary-aware (an id column `mgr_id` must not
+  over-match a non-id `mgr_id_extra`), and both steps run only OUTSIDE
+  single-quoted literals (`rewrite_outside_string_literals`, `''`-escape aware) so
+  a value literal containing the prefix text isn't corrupted. Added committed
+  fixture `schemas/test/foreign_selfloop_end.yaml` (to-role embedded) to exercise
+  the end-denorm mixed arm. Live-verified: `WHERE a.name='Alice'` now executes
+  (was Code 47) and returns `{Alice, Carol}` matching a hand oracle over the
+  3-cycle. **Adversarial review: 2 rounds — round 1 CHANGES NEEDED (3 defects:
+  recursive-arm Code 47, prefix-collision, literal corruption), all fixed; round 2
+  APPROVE, zero new defects** (differential sweep byte-identical except intended
+  moves; live results correct; boundary/literal/collision all confirmed). Scoped
+  strictly to the Code-47 column RESOLUTION. A SEPARATE pre-existing bug surfaced
+  while verifying live — the mixed-VLP end-node WHERE is applied at every hop
+  inside the CTE, not just the terminal endpoint (silent-wrong, drops valid paths;
+  reproduces on standard-end too) — filed as **#1003**, deliberately NOT conflated.
+  lib 1691 + integration 583 + corpus + ratchet + clippy + fmt green; 2 unit + 2
+  golden tests. Ratchet clean (no axis-branch).
+
 - 2026-08-03: **Correctness — scalar `exists(v.prop)` lowers to `IS NOT NULL`**
   (branch `fix/995b-scalar-exists-is-not-null`, PR #1000). The Cypher
   property-existence FUNCTION `exists(v.prop)` (semantically `v.prop IS NOT NULL`,
