@@ -12879,9 +12879,12 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
             .await,
         );
         assert!(
-            optional.contains("ORDER BY `a.code`"),
-            "#503 (OPTIONAL variant): ORDER BY must reference the \
-             backtick-quoted outer alias:\n{optional}"
+            optional.contains("ORDER BY `a.code`") || optional.contains("ORDER BY a.code"),
+            "#503 (OPTIONAL variant): ORDER BY must reference a resolvable \
+             outer alias/column. #583: the denormalized single-hop undirected \
+             OPTIONAL no longer renders through the two-arm `__union` wrapper \
+             (it is a single doubled-edge anchor LEFT JOIN), so the ORDER BY \
+             binds the anchor column directly rather than a union-outer alias:\n{optional}"
         );
 
         // Determinism.
@@ -13390,21 +13393,28 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
         );
 
         // Exactly ONE denorm-scan CTE for the anchor — no "_2" duplicate
-        // (which would indicate the two UnionDistribution branches produced
-        // inconsistent CTE bodies again).
+        // (which would indicate inconsistent CTE bodies again).
         assert!(
             sql.contains("__denorm_scan_a") && !sql.contains("__denorm_scan_a_2"),
-            "B1: exactly one __denorm_scan_a CTE must be shared by both \
-             direction branches — a `__denorm_scan_a_2` duplicate indicates \
-             the branches disagreed on node-grain wrapping again:\n{sql}"
+            "B1: exactly one __denorm_scan_a CTE:\n{sql}"
         );
-        // Both branches must reference the SAME (wrapped, node-grain) CTE.
+        // #583: the undirected OPTIONAL hop is no longer split into two
+        // direction branches — it renders as ONE anchor LEFT JOIN against a
+        // doubled-edge subquery (a single inner UNION ALL). The node-grain wrap
+        // (#507) that keeps `count(r)` at node grain is preserved. Live-verified
+        // (unchanged): 192.168.1.10 -> exactly one row with c = 4, matching the
+        // raw ground truth `count() WHERE id.orig_h='192.168.1.10' OR
+        // id.resp_h='192.168.1.10'`.
         assert_eq!(
-            sql.matches("LEFT JOIN zeek.conn_log AS r ON a.ip =")
-                .count(),
-            2,
-            "B1: expected both direction branches to LEFT JOIN against the \
-             anchor CTE:\n{sql}"
+            sql.matches("LEFT JOIN (SELECT").count(),
+            1,
+            "B1/#583: the anchor must LEFT JOIN a single doubled-edge subquery, \
+             not two per-direction branches:\n{sql}"
+        );
+        assert!(
+            sql.matches("UNION ALL").count() == 1 && !sql.contains(") AS __union"),
+            "B1/#583: one doubled-edge inner UNION ALL, no two-arm outer \
+             `__union` split:\n{sql}"
         );
         // The CTE itself must carry the node-grain wrap (GROUP BY the id
         // property, `min()` for the non-identity `port` column) — this is
@@ -14217,35 +14227,44 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
                      WITH a, count(r) AS c RETURN a.ip, c";
         let sql = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
 
+        // #583: this coupled/denormalized single-hop undirected OPTIONAL is no
+        // longer split into a two-arm `__union` — the BidirectionalUnion
+        // analyzer keeps ONE `was_undirected` GraphRel and the render targets a
+        // doubled-edge subquery under the single anchor LEFT JOIN. So there is
+        // no outer `__union` wrapper and no `p1_a_ip` inner-union column here;
+        // the GROUP BY binds the anchor CTE column directly. (Live-verified: the
+        // undirected `count(r)` grain is unchanged — 4/2/2/1/1 on the zeek
+        // fixture — and the non-aggregate form drops the two spurious
+        // `(ip, NULL)` rows main produced, 12 -> 10.)
         assert!(
             !sql.contains(r#"GROUP BY a."id.orig_h""#),
-            "#529 shape 2: GROUP BY must not reference the raw physical \
-             column — the __union derived table only exposes the CTE \
-             column:\n{sql}"
+            "#529/#583: GROUP BY must not reference the raw physical column:\n{sql}"
         );
         assert!(
-            sql.contains("GROUP BY `p1_a_ip`") || sql.contains("GROUP BY \"p1_a_ip\""),
-            "#529 shape 2: GROUP BY must reference the properly-quoted CTE \
-             column exposed by the inner UNION:\n{sql}"
+            sql.matches("UNION ALL").count() == 1 && !sql.contains(") AS __union"),
+            "#583: the coupled undirected OPTIONAL renders as ONE doubled-edge \
+             subquery (a single inner UNION ALL), not a two-arm outer \
+             `__union` split:\n{sql}"
         );
 
-        // Sibling B1 path (top-level OPTIONAL-denorm-Union detection) must be
-        // unaffected: still renders its own full two-branch union, not a
-        // single-branch delegation (the risk the narrow fix scoping avoids).
+        // The anchor scan must still collapse to NODE grain (#507): one row per
+        // distinct id, `min()` over the non-identity `port` column. This is what
+        // keeps the LEFT-JOIN count at node grain rather than table grain.
         let b1_repro = "MATCH (a:IP) OPTIONAL MATCH (a)-[r:ACCESSED]-(b:IP) \
                          RETURN a.ip, a.port, count(r) AS c";
         let b1_sql = normalize(&render(&schema, b1_repro, SqlDialect::ClickHouse).await);
         assert!(
             b1_sql.contains("__denorm_scan_a") && !b1_sql.contains("__denorm_scan_a_2"),
-            "#529 shape 2 fix must not regress B1 (single shared anchor CTE):\n{b1_sql}"
+            "#529/#583: exactly one shared node-grain anchor CTE:\n{b1_sql}"
         );
-        assert_eq!(
-            b1_sql
-                .matches("LEFT JOIN zeek.conn_log AS r ON a.ip =")
-                .count(),
-            2,
-            "#529 shape 2 fix must not regress B1 (both direction branches \
-             LEFT JOIN against the anchor CTE):\n{b1_sql}"
+        assert!(
+            b1_sql.contains("GROUP BY \"ip\"") && b1_sql.contains("min(\"port\")"),
+            "#507: the anchor CTE must still carry the node-grain wrap:\n{b1_sql}"
+        );
+        assert!(
+            b1_sql.matches("UNION ALL").count() == 1 && !b1_sql.contains(") AS __union"),
+            "#583: the B1 aggregate form also renders as ONE doubled-edge \
+             subquery, not a two-arm split:\n{b1_sql}"
         );
 
         // Determinism.
@@ -14253,6 +14272,52 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
             let again = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
             assert_eq!(sql, again, "#529 shape 2: nondeterministic render");
         }
+    }
+
+    /// #583 (adversarial-review regression): the doubled-edge subquery for a
+    /// denorm undirected OPTIONAL must project the edge's IDENTITY column even
+    /// when it is declared only under `edge_id:` and NOT in `property_mappings:`.
+    /// `count(r)` lowers to `count(r.<edge_id>)`, so if the subquery omits that
+    /// column the outer query references a column the subquery never exposes →
+    /// ClickHouse Code 47 (`Identifier 'r.flight_id' cannot be resolved`). This
+    /// exact shape shipped broken in a render-only golden (corpus goldens render
+    /// without executing) and regressed a query that works on `main`; the fix
+    /// sources the passthrough columns from the schema-catalog
+    /// `all_valid_physical_columns()` (which includes `edge_id`) rather than
+    /// from `property_mappings` alone. `schemas/test/denormalized_flights.yaml`'s
+    /// FLIGHT edge has `edge_id: [flight_id, flight_number]` with `flight_id`
+    /// unmapped — the precise trigger.
+    #[tokio::test]
+    async fn denorm_undirected_optional_count_rel_projects_unmapped_edge_id_583() {
+        let schema = load_schema("schemas/test/denormalized_flights.yaml");
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (a:Airport) OPTIONAL MATCH (a)-[r:FLIGHT]-(b:Airport) \
+                 RETURN a.code, count(r) AS c",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+
+        // The outer aggregate references the edge-id column…
+        assert!(
+            sql.contains("count(r.flight_id)"),
+            "#583: count(r) should lower to count(r.flight_id):\n{sql}"
+        );
+        // …so BOTH doubled-edge arms must project it (once per arm). Total 3
+        // occurrences: the outer count + one per UNION ALL arm.
+        assert_eq!(
+            sql.matches("flight_id").count(),
+            3,
+            "#583: the unmapped edge-id column must be projected in both \
+             doubled-edge arms so `count(r.flight_id)` resolves (else Code 47):\n{sql}"
+        );
+        // Single doubled-edge subquery (one inner UNION ALL), no two-arm split.
+        assert!(
+            sql.matches("UNION ALL").count() == 1 && !sql.contains(") AS __union"),
+            "#583: one doubled-edge subquery, not a two-arm outer split:\n{sql}"
+        );
     }
 
     /// #529 shape 1 — R4/R5: bugs 1+2 of the 3-bug package FIXED; bug 3
