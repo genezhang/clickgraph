@@ -18038,3 +18038,118 @@ async fn mixed_vlp_denorm_endpoint_property_column_order_matches_across_arms_908
         );
     }
 }
+
+/// #934: on the mixed-access VLP arm, a `WHERE` on a DENORMALIZED start node's
+/// NON-id property was blindly rewritten to the edge alias (`rel.<col>`) for a
+/// column that lives on the node's OWN table, not the edge → ClickHouse Code 47.
+/// The id-property WHERE correctly maps to the edge's FK column and must be
+/// unaffected. The `start_own` own-table LEFT JOIN (#908) already resolves the
+/// non-id columns, so the fix routes non-id start props there while keeping the
+/// id prop on `rel.`.
+#[tokio::test]
+async fn mixed_vlp_denorm_start_non_id_where_resolves_own_table_934() {
+    let schema = load_schema("schemas/test/foreign_selfloop.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // (a) NON-id start property in WHERE → must resolve against `start_own`,
+        // NOT `rel.name` (which does not exist on the `reports` edge → Code 47).
+        let non_id = render(
+            &schema,
+            "MATCH (a:Person)-[:REPORTS_TO*2..3]->(b:Person) WHERE a.name = 'Alice' RETURN b.name",
+            dialect,
+        )
+        .await;
+        assert!(
+            non_id.contains("start_own.name = 'Alice'"),
+            "#934 ({dialect:?}): non-id start WHERE must resolve against the own-table join:\n{non_id}"
+        );
+        assert!(
+            !non_id.contains("rel.name"),
+            "#934 ({dialect:?}): non-id start WHERE must NOT target the edge alias (Code 47):\n{non_id}"
+        );
+
+        // (b) id-property start WHERE → stays on the edge FK column `rel.mgr_id`.
+        let id = render(
+            &schema,
+            "MATCH (a:Person)-[:REPORTS_TO*2..3]->(b:Person) WHERE a.pid = 1 RETURN b.name",
+            dialect,
+        )
+        .await;
+        assert!(
+            id.contains("rel.mgr_id = 1") && !id.contains("start_own.mgr_id"),
+            "#934 ({dialect:?}): id-property start WHERE must map to the edge FK column:\n{id}"
+        );
+
+        // (c) COMBINED id + non-id in one predicate → must split correctly.
+        let combined = render(
+            &schema,
+            "MATCH (a:Person)-[:REPORTS_TO*2..3]->(b:Person) WHERE a.pid = 1 AND a.name = 'Alice' RETURN b.name",
+            dialect,
+        )
+        .await;
+        assert!(
+            combined.contains("rel.mgr_id = 1") && combined.contains("start_own.name = 'Alice'"),
+            "#934 ({dialect:?}): combined id + non-id start WHERE must split (id→rel, non-id→start_own):\n{combined}"
+        );
+
+        // (d) #934 Defect 3: a value literal containing the `start_node.` prefix
+        // text must NOT be corrupted by the column-prefix rewrite.
+        let literal = render(
+            &schema,
+            "MATCH (a:Person)-[:REPORTS_TO*2..3]->(b:Person) WHERE a.name = 'start_node.x' RETURN b.name",
+            dialect,
+        )
+        .await;
+        assert!(
+            literal.contains("start_own.name = 'start_node.x'"),
+            "#934 ({dialect:?}): a string literal containing the prefix text must be left intact:\n{literal}"
+        );
+    }
+}
+
+/// #934 Defect 1: the mixed-VLP fix must patch the RECURSIVE arm too. For an
+/// END-denormalized mixed VLP (the `to`-role is embedded), a non-id WHERE on the
+/// end node produced a correct base arm (`end_own.name`) but the recursive UNION
+/// arm still emitted `rel.name` → Code 47 for any `*n..m`, m ≥ 2. Both arms must
+/// now resolve the non-id end property against the `end_own` join, while the end
+/// id property maps to the edge's `to` column.
+#[tokio::test]
+async fn mixed_vlp_denorm_end_non_id_where_resolves_own_table_both_arms_934() {
+    let schema = load_schema("schemas/test/foreign_selfloop_end.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(
+            &schema,
+            "MATCH (a:Person)-[:REPORTS_TO*2..3]->(b:Person) WHERE b.name = 'Bob' RETURN a.name",
+            dialect,
+        )
+        .await;
+        // The non-id end property must resolve to `end_own.name` and NEVER to the
+        // nonexistent `rel.name` — in BOTH the base and recursive UNION arms.
+        assert!(
+            sql.contains("end_own.name = 'Bob'"),
+            "#934 ({dialect:?}): non-id end WHERE must resolve against the own-table join:\n{sql}"
+        );
+        assert!(
+            !sql.contains("rel.name"),
+            "#934 ({dialect:?}): non-id end WHERE must NOT target the edge alias in EITHER arm (Code 47):\n{sql}"
+        );
+        // The base and recursive arms are the two halves of the UNION ALL; the
+        // filter must appear at least twice (once per arm) — proving the recursive
+        // arm was patched, not just the base.
+        assert!(
+            sql.matches("end_own.name = 'Bob'").count() >= 2,
+            "#934 ({dialect:?}): the end filter must be resolved in BOTH the base and recursive arms:\n{sql}"
+        );
+
+        // id-property end WHERE → stays on the edge FK column `rel.emp_id`.
+        let id = render(
+            &schema,
+            "MATCH (a:Person)-[:REPORTS_TO*2..3]->(b:Person) WHERE b.pid = 2 RETURN a.name",
+            dialect,
+        )
+        .await;
+        assert!(
+            id.contains("rel.emp_id = 2") && !id.contains("end_own.emp_id"),
+            "#934 ({dialect:?}): id-property end WHERE must map to the edge FK column:\n{id}"
+        );
+    }
+}

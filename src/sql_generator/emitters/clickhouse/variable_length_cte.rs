@@ -3635,6 +3635,144 @@ impl<'a> VariableLengthCteGenerator<'a> {
         }
     }
 
+    /// Rewrite a denormalized-endpoint filter string (#934). The incoming
+    /// `filters` string is already property-mapped to CH columns and prefixed
+    /// with `node_prefix` (`start_node.` / `end_node.`). The endpoint's id
+    /// property maps to the edge's own FK column (`id_col`, e.g. `mgr_id`), so
+    /// it stays on the relationship alias (`rel.`); every OTHER (non-id) column
+    /// lives on the node's own table and must resolve via the `*_own` LEFT JOIN
+    /// (`own_prefix`, `start_own.` / `end_own.`) that #908 already emits.
+    ///
+    /// Order matters: the specific id-column replace runs first, then the
+    /// general fallback maps any remaining `node_prefix.` to `own_prefix.`, so a
+    /// combined predicate like `(start_node.mgr_id = 1 AND start_node.name =
+    /// 'Alice')` splits correctly to `(rel.mgr_id = 1 AND start_own.name =
+    /// 'Alice')`. Composite ids are handled by replacing each id column in turn.
+    ///
+    /// Step 1 uses a WORD-BOUNDARY-aware replace (`replace_column_token`) so an
+    /// id column `mgr_id` does not corrupt a non-id column `mgr_id_extra` whose
+    /// name has the id column as a prefix (`start_node.mgr_id_extra` must stay a
+    /// non-id column, routed to `*_own` in step 2, not become `rel.mgr_id_extra`).
+    /// Both steps run only OUTSIDE single-quoted string literals
+    /// (`rewrite_outside_string_literals`) so a value literal containing the
+    /// prefix text (e.g. `= 'end_node.x'`) is left intact.
+    ///
+    /// `own_join_present` guards the non-id fallback: the `*_own` join is only
+    /// emitted when a denorm-endpoint non-id property is in `self.properties`
+    /// (which the planner populates from WHERE predicates too). If it is somehow
+    /// absent, fall back to the old whole-string `rel.` rewrite rather than
+    /// emitting a dangling `*_own.` reference — preserves prior behavior for any
+    /// path that only carried the id filter.
+    fn rewrite_denorm_endpoint_filter(
+        &self,
+        filters: &str,
+        node_prefix: &str,
+        own_prefix: &str,
+        id_col: &str,
+        own_join_present: bool,
+    ) -> String {
+        if !own_join_present {
+            // No own-table join in scope — nothing to resolve non-id columns
+            // against. Keep the historical behavior (id-only filters still map
+            // correctly onto the edge alias). Still literal-safe.
+            let rel_prefix = format!("{}.", self.relationship_alias);
+            return Self::rewrite_outside_string_literals(filters, |seg| {
+                seg.replace(node_prefix, &rel_prefix)
+            });
+        }
+        // Both rewrite steps run only on the NON-string-literal spans of the
+        // predicate (#934 Defect 3): a value literal like `'end_node.x'` must not
+        // be mangled by the column-prefix rewrites.
+        let rel_alias = self.relationship_alias.clone();
+        Self::rewrite_outside_string_literals(filters, |seg| {
+            // Step 1: pin each id column to the relationship alias. `id_col` may
+            // be a comma-separated composite (mirroring
+            // `relationship_from/to_column`). Word-boundary aware so an id column
+            // does not over-match a longer non-id column that has it as a prefix.
+            let mut out = seg.to_string();
+            for col in id_col.split(',') {
+                let col = col.trim();
+                if col.is_empty() {
+                    continue;
+                }
+                out = Self::replace_column_token(
+                    &out,
+                    &format!("{}{}", node_prefix, col),
+                    &format!("{}.{}", rel_alias, col),
+                );
+            }
+            // Step 2: every remaining non-id column resolves via the own-table join.
+            out.replace(node_prefix, own_prefix)
+        })
+    }
+
+    /// Apply `rewrite` to every span of `s` that is OUTSIDE a single-quoted
+    /// string literal, leaving literal contents untouched (#934 Defect 3). SQL
+    /// string literals escape an embedded quote by doubling it (`''`); this
+    /// scanner treats `''` inside a literal as an escaped quote, not a close.
+    /// Column-prefix rewrites must not corrupt a value literal that happens to
+    /// contain the prefix text (e.g. `WHERE b.name = 'end_node.x'`).
+    fn rewrite_outside_string_literals(s: &str, rewrite: impl Fn(&str) -> String) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut buf = String::new();
+        let mut in_literal = false;
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if in_literal {
+                out.push(c);
+                if c == '\'' {
+                    if chars.peek() == Some(&'\'') {
+                        // Escaped quote ('') — consume the pair, stay in literal.
+                        out.push(chars.next().unwrap());
+                    } else {
+                        in_literal = false;
+                    }
+                }
+            } else if c == '\'' {
+                // Flush the accumulated non-literal span through the rewrite.
+                out.push_str(&rewrite(&buf));
+                buf.clear();
+                out.push(c);
+                in_literal = true;
+            } else {
+                buf.push(c);
+            }
+        }
+        out.push_str(&rewrite(&buf));
+        out
+    }
+
+    /// Replace occurrences of `needle` (a `prefix.column` token) with
+    /// `replacement`, but ONLY when the character immediately following `needle`
+    /// is not an identifier character (`[A-Za-z0-9_]`) — i.e. `needle` is a whole
+    /// column token, not a prefix of a longer column name. This prevents the id
+    /// column `start_node.mgr_id` from matching inside `start_node.mgr_id_extra`
+    /// (which is a distinct non-id column). A plain `str::replace` would over-match.
+    fn replace_column_token(haystack: &str, needle: &str, replacement: &str) -> String {
+        if needle.is_empty() {
+            return haystack.to_string();
+        }
+        let mut out = String::with_capacity(haystack.len());
+        let mut rest = haystack;
+        while let Some(pos) = rest.find(needle) {
+            out.push_str(&rest[..pos]);
+            let after = &rest[pos + needle.len()..];
+            let boundary_ok = after
+                .chars()
+                .next()
+                .map(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(true); // end-of-string is a boundary
+            if boundary_ok {
+                out.push_str(replacement);
+            } else {
+                out.push_str(needle);
+            }
+            rest = after;
+        }
+        out.push_str(rest);
+        out
+    }
+
     /// Generate base case for mixed patterns
     fn generate_mixed_base_case(&self, hop_count: u32) -> String {
         if hop_count != 1 {
@@ -3751,6 +3889,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // #908: append the denorm endpoint's own-table join (foreign-embedded
         // shape) so its non-id properties resolve. Only one of the two can be set
         // in a mixed pattern (exactly one endpoint is denormalized).
+        // #934: capture presence BEFORE the `.or()` move — the WHERE rewrite below
+        // routes non-id endpoint props to `*_own` only when its join is emitted.
+        let start_own_join_present = denorm_start_join.is_some();
+        let end_own_join_present = denorm_end_join.is_some();
         if let Some(join) = denorm_start_join.or(denorm_end_join) {
             query.push_str(&format!("\n    {}", join));
         }
@@ -3758,9 +3900,27 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Add WHERE conditions
         let mut where_conditions = Vec::new();
         if let Some(ref filters) = self.start_node_filters {
-            // Rewrite for denorm start if needed
+            // Rewrite for denorm start if needed.
+            //
+            // #934: the start filter string arrives already property-mapped to
+            // CH columns and prefixed `start_node.<col>`. The old blanket
+            // `start_node.` -> `rel.` rewrite was correct ONLY for the start
+            // node's id property (which maps to the edge's own FK column,
+            // `relationship_from_column`, e.g. `mgr_id`) — a NON-id property
+            // (e.g. `name`) lives on the node's OWN table, not the edge, so
+            // `rel.name` is an unknown identifier (Code 47). The `start_own`
+            // LEFT JOIN (#908, `denorm_start_join`) already resolves those own
+            // columns; route non-id start props to `start_own.` and keep the id
+            // prop on `rel.`, mirroring the id-vs-non-id branch in
+            // `mixed_denorm_endpoint_property_items`.
             let rewritten = if self.start_is_denormalized {
-                filters.replace("start_node.", &format!("{}.", self.relationship_alias))
+                self.rewrite_denorm_endpoint_filter(
+                    filters,
+                    "start_node.",
+                    "start_own.",
+                    &self.relationship_from_column,
+                    start_own_join_present,
+                )
             } else {
                 filters.clone()
             };
@@ -3769,9 +3929,18 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         if self.shortest_path_mode.is_none() {
             if let Some(ref filters) = self.end_node_filters {
-                // Rewrite for denorm end if needed
+                // Rewrite for denorm end if needed. #934: symmetric to the start
+                // side — a non-id property of a denormalized END node resolves
+                // via the `end_own` join (`denorm_end_join`), while the end id
+                // maps to the edge's `relationship_to_column`.
                 let rewritten = if self.end_is_denormalized {
-                    filters.replace("end_node.", &format!("{}.", self.relationship_alias))
+                    self.rewrite_denorm_endpoint_filter(
+                        filters,
+                        "end_node.",
+                        "end_own.",
+                        &self.relationship_to_column,
+                        end_own_join_present,
+                    )
                 } else {
                     filters.clone()
                 };
@@ -3900,8 +4069,21 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         if self.shortest_path_mode.is_none() {
             if let Some(ref filters) = self.end_node_filters {
+                // #934: mirror the base-case rewrite on the recursive arm. A
+                // non-id property of a denormalized END node must resolve via the
+                // `end_own` join (`denorm_end_recursive_join`, emitted just below
+                // in the FROM clause) — the old blanket `end_node.` -> `rel.`
+                // rewrite pointed a non-id column at the edge table (which lacks
+                // it) → Code 47 on the recursive UNION arm for any `*n..m`, m >= 2.
+                // The end id property still maps to the edge's `to` column.
                 let rewritten = if self.end_is_denormalized {
-                    filters.replace("end_node.", &format!("{}.", self.relationship_alias))
+                    self.rewrite_denorm_endpoint_filter(
+                        filters,
+                        "end_node.",
+                        "end_own.",
+                        &self.relationship_to_column,
+                        denorm_end_recursive_join.is_some(),
+                    )
                 } else {
                     filters.clone()
                 };
@@ -3944,6 +4126,94 @@ mod tests {
     /// Helper to create a minimal test schema for VLC tests
     fn create_test_schema() -> GraphSchema {
         GraphSchema::build(1, "test_db".to_string(), HashMap::new(), HashMap::new())
+    }
+
+    /// #934: `replace_column_token` must be word-boundary aware so an id column
+    /// does not corrupt a longer non-id column that has it as a prefix.
+    #[test]
+    fn replace_column_token_respects_word_boundary_934() {
+        let rep = VariableLengthCteGenerator::replace_column_token;
+        // Whole-token match at end-of-string and before an operator/space.
+        assert_eq!(
+            rep("start_node.mgr_id = 1", "start_node.mgr_id", "rel.mgr_id"),
+            "rel.mgr_id = 1"
+        );
+        assert_eq!(
+            rep("x = start_node.mgr_id", "start_node.mgr_id", "rel.mgr_id"),
+            "x = rel.mgr_id"
+        );
+        // PREFIX COLLISION: `mgr_id` must NOT match inside `mgr_id_extra`.
+        assert_eq!(
+            rep(
+                "start_node.mgr_id_extra = 1",
+                "start_node.mgr_id",
+                "rel.mgr_id"
+            ),
+            "start_node.mgr_id_extra = 1",
+            "id column must not over-match a longer non-id column with the same prefix"
+        );
+        // Mixed: the real id token is rewritten, the colliding prefix is left alone.
+        assert_eq!(
+            rep(
+                "(start_node.mgr_id = 1 AND start_node.mgr_id_extra = 2)",
+                "start_node.mgr_id",
+                "rel.mgr_id"
+            ),
+            "(rel.mgr_id = 1 AND start_node.mgr_id_extra = 2)"
+        );
+        // Trailing underscore/alnum are identifier chars → no match.
+        assert_eq!(
+            rep("start_node.mgr_id9", "start_node.mgr_id", "rel.mgr_id"),
+            "start_node.mgr_id9"
+        );
+        assert_eq!(
+            rep("start_node.mgr_id_", "start_node.mgr_id", "rel.mgr_id"),
+            "start_node.mgr_id_"
+        );
+        // Closing paren / comparison operators are boundaries.
+        assert_eq!(
+            rep("(start_node.mgr_id)", "start_node.mgr_id", "rel.mgr_id"),
+            "(rel.mgr_id)"
+        );
+        assert_eq!(
+            rep("start_node.mgr_id>5", "start_node.mgr_id", "rel.mgr_id"),
+            "rel.mgr_id>5"
+        );
+    }
+
+    /// #934 Defect 3: `rewrite_outside_string_literals` must skip single-quoted
+    /// literals so a value containing the column-prefix text is not corrupted.
+    #[test]
+    fn rewrite_outside_string_literals_skips_literals_934() {
+        use VariableLengthCteGenerator as G;
+        // Each call takes a distinct closure type, so call the method directly
+        // rather than binding it to a single monomorphized `let`.
+        // The prefix inside a literal is untouched; outside it is rewritten.
+        assert_eq!(
+            G::rewrite_outside_string_literals("start_node.name = 'start_node.x'", |s| s
+                .replace("start_node.", "start_own.")),
+            "start_own.name = 'start_node.x'"
+        );
+        // Escaped quote ('') inside a literal keeps the literal open.
+        assert_eq!(
+            G::rewrite_outside_string_literals(
+                "a = 'it''s start_node.here' AND start_node.b = 1",
+                |s| s.replace("start_node.", "X.")
+            ),
+            "a = 'it''s start_node.here' AND X.b = 1"
+        );
+        // No literals → whole string rewritten.
+        assert_eq!(
+            G::rewrite_outside_string_literals("start_node.a = start_node.b", |s| s
+                .replace("start_node.", "X.")),
+            "X.a = X.b"
+        );
+        // Only a literal → untouched.
+        assert_eq!(
+            G::rewrite_outside_string_literals("'start_node.only'", |s| s
+                .replace("start_node.", "X.")),
+            "'start_node.only'"
+        );
     }
 
     #[test]
