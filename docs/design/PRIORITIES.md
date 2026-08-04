@@ -526,6 +526,46 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-04: **Correctness — self-loop constraint for closed unlabeled
+  single-hop over pattern_union + loud guard on the closed unlabeled VLP**
+  (branch `fix/987-unlabeled-closed-self-loop`, PR #1025, closes the last
+  silent-wrong facet of #987). A fully-unlabeled closed single-hop
+  `MATCH (a)-[r]->(a)` (same variable both endpoints, no node label, no rel
+  type) fans out to a `pattern_union_{alias}` CTE (UNION ALL over every edge
+  type) and NEVER applied the self-loop constraint → counted ALL edges
+  (standard 26, fk_edge undirected 16) where 0 is correct. Same silent
+  over-count #983 fixed for the labeled/single-type path, but that injection
+  lives after the `pattern_combinations` early-return in filter_builder and
+  never ran for the fan-out. Fix: emit `start_id = end_id AND start_type =
+  end_type` on the CTE, gated on `is_pattern_union_in_scope`. BOTH conjuncts
+  load-bearing — `start_id = end_id` alone false-matches a cross-type id
+  collision (proved live: User#1 authored Post#1, so an AUTHORED branch
+  self-matches); `start_type = end_type` pins both endpoints to the same node
+  type (necessarily true for a closed same-variable pattern). The scope gate is
+  essential: polymorphic `count(*)` collapses the closed pattern to a bare
+  `SELECT count(*)` with no FROM/no CTE (pre-existing #1024), where a
+  CTE-column reference would be a loud Code 47 — the gate keeps the change
+  strictly additive (poly `count(*)` byte-identical to main). **Adversarial
+  review (worktree-isolated) APPROVE / not-a-blocker**, but caught that a
+  fully-unlabeled VLP `(a)-[r*1..2]->(a)` collapses to this same single-hop
+  pattern_union with `variable_length` hard-set to `None` (traversal.rs),
+  dropping the multi-hop spec — so the self-loop filter would turn main's wrong
+  `26` into a different wrong `0` (true cycle count 4, via the labeled
+  recursive path). Fixed properly (not just the comment): a LOUD guard at the
+  collapse site (traversal.rs, `rel.variable_length.is_some() &&
+  shortest_path_mode.is_none() && left_conn == right_conn`) rejects the closed
+  unlabeled VLP with an actionable message (label the pattern → recursive path).
+  Scope held tight — only the CLOSED case is made loud; the OPEN unlabeled VLP
+  collapse is equally pre-existing-wrong but left unchanged (tracked #1024);
+  shortestPath and labeled/typed closed VLP untouched (→4). Live-verified
+  across all 5 schema variations (standard/denorm/fk_edge/polymorphic/composite,
+  including inserted real self-loops → correct membership, deleted after).
+  Corpus: 4 self-loop goldens (directed/undirected/open-control/fk-cross-type) +
+  1 `.err` golden (closed-unlabeled-VLP-fails-loud), both dialects. Filed
+  orthogonal #1024 (pattern_union projection defects: blank node-property
+  projection, ORDER BY Code 47, poly no-FROM collapse, open unlabeled VLP
+  collapse). fmt/clippy/2328 tests/ratchet/corpus_sweep all green.
+
 - 2026-08-04: **Correctness — carry role-independent non-node WITH projections
   into denorm-union branches** (branch `fix/1021-denorm-with-sibling-projection`,
   PR #1022 `6a471c77`, closes #1021). On a denormalized schema, a WITH clause
