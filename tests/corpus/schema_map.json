@@ -1,4 +1,12 @@
 {
+  "composite_fk_edge_misordered": {
+    "subschema": null,
+    "yaml": "schemas/test/composite_fk_edge_misordered.yaml"
+  },
+  "composite_fk_edge_misordered_left": {
+    "subschema": null,
+    "yaml": "schemas/test/composite_fk_edge_misordered_left.yaml"
+  },
   "composite_fk_edge_nonselfref": {
     "subschema": null,
     "yaml": "schemas/test/composite_fk_edge_nonselfref.yaml"

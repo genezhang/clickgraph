@@ -2578,6 +2578,81 @@ async fn composite_non_self_ref_fk_edge_emits_multi_column_join_672() {
     }
 }
 
+/// #672 (part 1): a composite FK-edge whose FK columns are the SAME set of names
+/// as the target node_id in a DIFFERENT order is a provably-crossed positional
+/// zip → must fail LOUD (ground-rule-1), not silently emit
+/// `f.region = c.forum_id AND f.forum_id = c.region`. The guard is scoped to
+/// exactly this detectable case: it is a NO-OP for single-column FK-edges and
+/// for the normal cross-table pairing where FK and node_id column names DIFFER
+/// (that mis-order is undetectable from the schema alone), which the sibling
+/// `composite_non_self_ref_fk_edge_emits_multi_column_join_672` test still
+/// renders correctly.
+///
+/// Both composite `FkEdgeJoin` guard call sites are exercised. Branch selection
+/// depends on which node table equals the edge table, NOT the Cypher writing
+/// direction: the `_misordered` fixture puts the FK on the from_node table →
+/// `FkEdgeJoin Right`; the `_misordered_left` fixture puts it on the to_node
+/// table → `FkEdgeJoin Left`.
+#[tokio::test]
+async fn composite_fk_edge_misordered_same_nameset_fails_loud_672() {
+    // (fixture, cypher, expected branch label in the loud message).
+    let loud_cases = [
+        (
+            "schemas/test/composite_fk_edge_misordered.yaml",
+            "MATCH (c:Comment)-[:IN_FORUM]->(f:Forum) RETURN c.comment_id, f.forum_id",
+            "FkEdgeJoin Right",
+        ),
+        (
+            "schemas/test/composite_fk_edge_misordered.yaml",
+            "MATCH (f:Forum)<-[:IN_FORUM]-(c:Comment) RETURN c.comment_id, f.forum_id",
+            "FkEdgeJoin Right",
+        ),
+        (
+            "schemas/test/composite_fk_edge_misordered_left.yaml",
+            "MATCH (p:Person)-[:MEMBER]->(t:Team) RETURN p.name, t.title",
+            "FkEdgeJoin Left",
+        ),
+        (
+            "schemas/test/composite_fk_edge_misordered_left.yaml",
+            "MATCH (t:Team)<-[:MEMBER]-(p:Person) RETURN p.name, t.title",
+            "FkEdgeJoin Left",
+        ),
+    ];
+    for (schema_path, cypher, branch) in loud_cases {
+        let schema = load_schema(schema_path);
+        for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+            let err = try_render(&schema, cypher, dialect)
+                .await
+                .expect_err(&format!(
+                    "#672 ({dialect:?}): same-name-set/different-order composite \
+                     FK-edge pairing must fail loud:\n{cypher}"
+                ));
+            assert!(
+                err.contains("#672") && err.contains("DIFFERENT order") && err.contains(branch),
+                "#672 ({dialect:?}): error must name the crossed pairing and the \
+                 `{branch}` branch:\n{err}"
+            );
+        }
+    }
+
+    // Guard must be a NO-OP for the correct cross-table pairing (FK names differ
+    // from node_id names → undetectable mis-order, must still render).
+    let correct = load_schema("schemas/test/composite_fk_edge_nonselfref.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let ok = try_render(
+            &correct,
+            "MATCH (c:Comment)-[:IN_FORUM]->(f:Forum) RETURN c.content, f.title",
+            dialect,
+        )
+        .await;
+        assert!(
+            ok.is_ok(),
+            "#672 ({dialect:?}): correct different-name composite FK-edge must \
+             still render (guard is a no-op there):\n{ok:?}"
+        );
+    }
+}
+
 /// member's value). The whole-node GROUP BY optimization in `group_by_builder.rs`
 /// now expands to the full `node_id.columns()` set via the schema.
 #[tokio::test]

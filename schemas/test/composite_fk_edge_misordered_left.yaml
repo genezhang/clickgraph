@@ -1,0 +1,53 @@
+# Left-branch mirror of composite_fk_edge_misordered.yaml (#672 part 1).
+#
+# This fixture forces the DIFFERENT composite FkEdgeJoin branch. Branch
+# selection is decided by which node table equals the edge table (see
+# pattern_schema.rs `determine_join_strategy`):
+#   - edge_table == from_node table → FkEdgeJoin Right ("Left node IS the edge").
+#   - edge_table == to_node   table → FkEdgeJoin Left  ("Right node IS the edge").
+# `composite_fk_edge_misordered.yaml` puts the edge on the from_node (Comment)
+# table → Right branch. HERE the edge lives on the to_node (Team) table → LEFT
+# branch, so the #672 guard's Left-branch call site is exercised.
+#
+# The mis-order: Person's composite node_id is [region, person_id]; the MEMBER
+# edge (a FK column set on each Team row pointing at the Person) declares
+# from_id [person_id, region] — the SAME names as Person's node_id but in
+# REVERSED order. The Left branch pairs Person.node_id with the edge from_id
+# positionally, so the zip would cross `p.region = t.person_id AND
+# p.person_id = t.region` → #672 part-1 loud guard fires.
+
+name: composite_fk_edge_misordered_left
+version: "1.0"
+description: "Left-branch composite FK-edge whose FK columns are the same name-set as node_id in different order (#672 part 1 Left-branch coverage)"
+
+graph_schema:
+  nodes:
+    - label: Person
+      database: db_composite_fk
+      table: people_left
+      node_id: [region, person_id]
+      property_mappings:
+        region: region
+        person_id: person_id
+        name: name
+
+    - label: Team
+      database: db_composite_fk
+      table: teams_left
+      node_id: team_id
+      property_mappings:
+        team_id: team_id
+        title: title
+
+  edges:
+    # FK-edge: edge table == Team (to_node) table → FkEdgeJoin Left branch. The
+    # composite FK columns [person_id, region] on the Team row share NAMES with
+    # Person's node_id [region, person_id] but are declared in REVERSED order →
+    # provably crossed positional pairing → #672 part-1 loud guard fires.
+    - type: MEMBER
+      database: db_composite_fk
+      table: teams_left
+      from_id: [person_id, region]
+      to_id: team_id
+      from_node: Person
+      to_node: Team

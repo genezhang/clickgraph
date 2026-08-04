@@ -1,0 +1,57 @@
+# Mis-ordered composite FK-edge fixture (#672 part 1 — loud guard)
+#
+# The DETECTABLE mis-order case: the FK columns and the target node_id columns
+# are the SAME SET OF NAMES in a DIFFERENT ORDER. Here the Comment row carries
+# a composite FK whose columns are literally named [region, forum_id] (the same
+# names as Forum's node_id) but declared in REVERSED order relative to node_id.
+#
+# Forum node_id:            [region, forum_id]
+# IN_FORUM to_id (FK cols): [forum_id, region]   <- same names, reversed
+#
+# The positional zip in add_identifier_condition would pair:
+#   f.region   = c.forum_id     (crosses region <- forum_id)
+#   f.forum_id = c.region       (crosses forum_id <- region)
+# which is provably wrong (a column equated to a different-named column from the
+# same set). #672 part 1 makes this fail LOUD instead of silently returning
+# wrong rows (ground-rule-1).
+#
+# Contrast with composite_fk_edge_nonselfref.yaml, where the FK cols
+# [forum_region, forum_id] have DIFFERENT names from node_id [region, forum_id]
+# — that cross-table mis-order is undetectable from the schema and is NOT
+# guarded (the guard is a no-op there).
+
+name: composite_fk_edge_misordered
+version: "1.0"
+description: "Composite FK-edge whose FK columns are the same name-set as node_id in different order (#672 part 1 loud-guard fixture)"
+
+graph_schema:
+  nodes:
+    - label: Comment
+      database: db_composite_fk
+      table: comments_misordered
+      node_id: comment_id
+      property_mappings:
+        comment_id: comment_id
+        content: content
+
+    - label: Forum
+      database: db_composite_fk
+      table: forums_misordered
+      node_id: [region, forum_id]
+      property_mappings:
+        region: region
+        forum_id: forum_id
+        title: title
+
+  edges:
+    # FK-edge: edge table == Comment (from_node) table. The composite FK columns
+    # [forum_id, region] on the Comment row share NAMES with Forum's node_id
+    # [region, forum_id] but are declared in the REVERSED order → provably
+    # crossed positional pairing → #672 part-1 loud guard fires.
+    - type: IN_FORUM
+      database: db_composite_fk
+      table: comments_misordered
+      from_id: comment_id
+      to_id: [forum_id, region]
+      from_node: Comment
+      to_node: Forum
