@@ -184,8 +184,8 @@ Historical detail (individually-fixable, NOT reverse-mapping class):
 join, loud — **in flight**), ~~#646~~ **DONE (composite self-ref FK-edge; follow-up
 #672 part 2 ~~non-self-ref composite from_id/to_id malformed~~ DONE (#696,
 `03d61403`); ~~#672 part 1 loud order/arity guard~~ DONE (#1009, `b8b47cf1` —
-same-name-set/different-order composite FK-edge zip → loud; Traditional-strategy
-gap tracked #1010))**, ~~#641~~
+same-name-set/different-order composite FK-edge zip → loud; ~~Traditional-strategy
+gap~~ DONE #1010, `4e05753b` — guard extended to Traditional composite pairings))**, ~~#641~~
 **DONE (#680, `fe6de435` — #589 gate holes: swallowed-in-UNION + orientation-asymmetric,
 both silent→loud)**, #640 (EXISTS beyond single-hop — ~~shape 1 undirected~~
 **DONE (#694, `2fdf98f8`)** + ~~shape 3 both-endpoints-outer~~ **DONE (#704,
@@ -525,6 +525,30 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-08-03: **Correctness (ground-rule-1) — extend composite crossed-pairing
+  loud guard to the Traditional strategy** (branch
+  `fix/1010-traditional-composite-misorder-guard`, PR #1013 `4e05753b`, closes
+  #1010). #672 part 1 (#1009) guarded the composite `FkEdgeJoin` branches against
+  a same-name-set/different-order positional zip (`add_identifier_condition`
+  crosses `region = forum_id AND forum_id = region` → silent-wrong). The same
+  crossing was reachable, unguarded, through the `Traditional` strategy (separate
+  edge table — the common shape), which zips node_id columns against edge
+  from/to_id columns the same way. Fix: call the guard at both Traditional
+  composite pairings; rename `guard_composite_fk_pairing` →
+  `guard_composite_positional_pairing` (strategy-neutral) and reword its message
+  (`#672/#1010`). No-op unchanged for single-column ids, same-order pairings
+  (incl. real schemas like `cs_composite_id` LIVES_IN/AUTHORED whose edge
+  `from_id` equals the node_id in the same order — live-verified no false-fire),
+  and the undetectable different-NAME cross-table case; `MixedAccess` (single-col
+  join_col → length mismatch) and `EdgeToEdge`/`SingleTableScan`/`CoupledSameRow`
+  (single-column `add_condition`) are untouched. New fixture
+  `composite_traditional_misordered.yaml` + golden
+  `composite_traditional_misordered_same_nameset_fails_loud_1010` (both
+  directions fail loud + correct different-name Traditional renders) + corpus
+  `.err` goldens (both dialects); existing #672 `.err` goldens reworded to the
+  strategy-neutral message (message-only). Adversarial review APPROVE 0-defect.
+  Full suite green; fmt/clippy/ratchet clean.
 
 - 2026-08-03: **Correctness (ground-rule-1) — loud guard for crossed composite
   FK-edge column pairing** (branch `fix/672-composite-fk-misorder-loud-guard`,
