@@ -524,6 +524,37 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-03: **Correctness — mixed-access VLP end-node filter deferred to the
+  wrapper, not applied per-hop** (branch `fix/1003-mixed-vlp-end-filter-per-hop`,
+  PR #1005, closes #1003). On the mixed-access VLP strategy, an end-node `WHERE`
+  was injected into the base AND every recursive inner arm of the recursive CTE
+  (`generate_mixed_base_case`/`generate_mixed_recursive_case`), constraining the
+  endpoint at EVERY hop (an intermediate node on any longer path) instead of only
+  the terminal endpoint — silently dropping valid paths (`MATCH (a:Person)-[:
+  REPORTS_TO*2..3]->(b:Person) WHERE b.name='Alice' RETURN a.name` returned 0 rows
+  where {Alice, Bob} is correct; range forms silently UNDERcounted). Found while
+  live-verifying #934; filed separately, not conflated. Root cause: the two mixed
+  generators were the ONLY VLP arms injecting the end filter unconditionally; every
+  other generator already consults the #607 gate `end_filter_in_base_recursive_case
+  ()`, which returns false for a multi-hop mixed VLP so the terminal predicate is
+  applied ONLY in the outer `vlp_* AS (SELECT * FROM ..._inner WHERE end_name = ...
+  AND hop_count >= min)` wrapper (which already exists and carries it). Fix: gate
+  both mixed injection sites on that same helper — reuses existing #607 machinery,
+  no new predicate. Mixed-only (fully-denorm uses DenormalizedCteStrategy,
+  wrapper-only already; single-hop `*1..1` is a flat self-join, never reaches these
+  generators). Start filters untouched (start fixed across recursion). Live-verified
+  on both mixed schemas across `*2..3`/`*1..3`/`*1..2`/`*0..2`, all matching hand
+  oracles (fixes the reported silent-drop AND several silent-undercounts).
+  **Adversarial review APPROVE, zero defects** (structural complementarity
+  `needs_inner_cte` ⟺ `!end_filter_in_base_recursive_case` proven so no shape loses
+  its filter; combined start+end, rel-filter, 25-query differential sweep all clean;
+  #934 own-table resolution intact in the wrapper). Review flagged 3 pre-existing
+  Code-47 bugs (identical on main, NOT regressions) — filed #1006 (flat `*1..1`
+  `t1.name` projection) and #1007 (exact-bound `*N..N` outer-join + zero-hop
+  start-denorm `*0..N`). lib 1691 + integration 586 + corpus + ratchet + clippy +
+  fmt green; new `mixed_vlp_end_filter_deferred_to_wrapper_not_per_hop_1003` test +
+  updated #934 test + 2 corpus entries. Ratchet clean.
+
 - 2026-08-03: **Correctness — mixed-access VLP resolves a denorm endpoint's
   non-id WHERE against its own table (Code 47 fixed, both arms)** (branch
   `fix/934-mixed-vlp-denorm-start-non-id-where`, PR #1002, closes #934). On the
