@@ -1278,3 +1278,7 @@
 {"cypher": "MATCH (u:User) RETURN exists(u.name) AS has", "name": "test_995b_scalar_exists_property_return_is_not_null", "schema": "standard"}
 {"cypher": "MATCH (u:User) WHERE exists(u.name) RETURN u.user_id", "name": "test_995b_scalar_exists_property_where_is_not_null", "schema": "standard"}
 {"cypher": "MATCH (u:User)-[:FOLLOWS*1..2]->(f:User) WHERE exists(f.name) RETURN u.user_id", "name": "test_995b_scalar_exists_property_vlp_where_is_not_null", "schema": "standard"}
+{"cypher": "MATCH (a)-[r]->(a) RETURN count(*)", "name": "test_987_closed_unlabeled_single_hop_self_loop_directed", "schema": "standard"}
+{"cypher": "MATCH (a)-[r]-(a) RETURN count(*)", "name": "test_987_closed_unlabeled_single_hop_self_loop_undirected", "schema": "standard"}
+{"cypher": "MATCH (a)-[r]->(b) RETURN count(*)", "name": "test_987_open_unlabeled_single_hop_no_self_loop_control", "schema": "standard"}
+{"cypher": "MATCH (a)-[r]-(a) RETURN count(*)", "name": "test_987_closed_unlabeled_self_loop_fk_edge_cross_type", "schema": "fk_edge"}

@@ -480,8 +480,10 @@ impl FilterBuilder for LogicalPlan {
                 // (pattern_union_{alias}). The outer WHERE must reference CTE columns
                 // (start_id, start_type, end_id, end_type) instead of base table aliases.
                 if graph_rel.pattern_combinations.is_some() {
+                    let cte_alias = &graph_rel.alias;
+                    let mut conjuncts: Vec<String> = Vec::new();
+
                     if let Some(ref predicate) = graph_rel.where_predicate {
-                        let cte_alias = &graph_rel.alias;
                         let left = &graph_rel.left_connection;
                         let right = &graph_rel.right_connection;
                         let rewritten =
@@ -491,9 +493,68 @@ impl FilterBuilder for LogicalPlan {
                                 "🔀 PatternResolver 2.0: Rewritten {} WHERE predicate(s) for CTE columns",
                                 rewritten.len()
                             );
-                            let combined = rewritten.join(" AND ");
-                            return Ok(Some(RenderExpr::Raw(combined)));
                         }
+                        conjuncts.extend(rewritten);
+                    }
+
+                    // #987: a CLOSED unlabeled single-hop `(a)-[r]->(a)` (same
+                    // variable on both endpoints, no node label, no rel type) fans
+                    // out to a `pattern_union_{alias}` CTE (a UNION ALL over every
+                    // edge type). That CTE enumerates ALL edges of every type, so
+                    // without a self-loop constraint the outer query counts every
+                    // edge (returned 26 where 0 self-loops is correct) — the exact
+                    // silent over-count #983 fixed for the LABELED/single-type path,
+                    // but that fix lives after this early return and never runs here.
+                    // The CTE already projects `start_id`/`end_id` (stringified
+                    // endpoint ids) and `start_type`/`end_type` (label literals), so
+                    // a self-loop is `start_id = end_id AND start_type = end_type`.
+                    // BOTH conjuncts are required: `start_id = end_id` alone would
+                    // spuriously match a cross-type id collision (e.g. User#5 and
+                    // Post#5 in a `(a)-[:AUTHORED]->` branch); the type equality
+                    // pins both endpoints to the same node type, and for a closed
+                    // pattern `a` is ONE node so its type and id are necessarily
+                    // equal on both sides. The `left_connection == right_connection`
+                    // gate is exact and rename-safe (the planner never renames one
+                    // endpoint of a same-variable pattern — see #983/#625), so the
+                    // OPEN unlabeled hop `(a)-[r]->(b)` (distinct connections) is
+                    // untouched. OPTIONAL is excluded: an OPTIONAL `(a)-[r]->(a)`
+                    // takes the `vlp_multi_type_*` path (already-bound anchor), not
+                    // this one, and a self-loop equality in the outer WHERE would
+                    // drop NULL-extended anchor rows — leave it on its current path.
+                    //
+                    // GATED on `is_pattern_union_in_scope`: a `pattern_combinations`
+                    // GraphRel does NOT always render a `pattern_union_{alias}` CTE
+                    // as its FROM — some schema shapes (e.g. polymorphic) collapse
+                    // the closed pattern to a bare `SELECT count(*)` with no FROM /
+                    // no CTE at all (a separate pre-existing defect, #1024). Emitting
+                    // the `r.start_id = r.end_id` conjunct there would reference
+                    // columns of a CTE that isn't in scope → a loud Code 47. Only
+                    // inject when from_builder has registered the CTE as the FROM
+                    // (the same guard the node-property rewrite below uses), so this
+                    // is strictly additive on the exact plan shape that owns those
+                    // CTE columns.
+                    let pattern_cte_name = format!("pattern_union_{cte_alias}");
+                    if graph_rel.left_connection == graph_rel.right_connection
+                        && graph_rel.variable_length.is_none()
+                        && graph_rel.shortest_path_mode.is_none()
+                        && !graph_rel.is_optional.unwrap_or(false)
+                        && crate::server::query_context::is_pattern_union_in_scope(
+                            &pattern_cte_name,
+                        )
+                    {
+                        let self_loop = format!(
+                            "{a}.start_id = {a}.end_id AND {a}.start_type = {a}.end_type",
+                            a = cte_alias
+                        );
+                        log::info!(
+                            "🔧 #987: closed unlabeled single-hop over pattern_union — emitting {}",
+                            self_loop
+                        );
+                        conjuncts.push(self_loop);
+                    }
+
+                    if !conjuncts.is_empty() {
+                        return Ok(Some(RenderExpr::Raw(conjuncts.join(" AND "))));
                     }
                     log::info!(
                         "🔀 PatternResolver 2.0: No outer WHERE predicates for pattern_combinations"
