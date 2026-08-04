@@ -1258,3 +1258,6 @@
 {"cypher": "MATCH (a:User)\n            WITH a\n            RETURN a.user_id, size((a)-[:FOLLOWS]->()-[:FOLLOWS]->()) AS c", "name": "test_613__size_pattern_count_after_with_multi_hop", "schema": "social_integration"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS*2]->(b:User) RETURN count(*) AS c", "name": "test_897__flat_poly_vlp_type_discriminator_count", "schema": "social_polymorphic"}
 {"cypher": "MATCH (a:Airport)-[r:FLIGHT]-(b:Airport) RETURN CASE WHEN count(r) > 5 THEN a.code ELSE 'x' END AS m", "name": "test_906__denorm_undirected_case_buried_grouping_key", "schema": "denormalized_flights"}
+{"cypher": "MATCH (u:User) RETURN exists(u.name) AS has", "name": "test_995b_scalar_exists_property_return_is_not_null", "schema": "standard"}
+{"cypher": "MATCH (u:User) WHERE exists(u.name) RETURN u.user_id", "name": "test_995b_scalar_exists_property_where_is_not_null", "schema": "standard"}
+{"cypher": "MATCH (u:User)-[:FOLLOWS*1..2]->(f:User) WHERE exists(f.name) RETURN u.user_id", "name": "test_995b_scalar_exists_property_vlp_where_is_not_null", "schema": "standard"}

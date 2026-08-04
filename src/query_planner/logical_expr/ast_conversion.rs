@@ -257,6 +257,30 @@ impl<'a> TryFrom<open_cypher_parser::ast::FunctionCall<'a>> for LogicalExpr {
             .map(LogicalExpr::try_from)
             .collect::<Result<Vec<_>, _>>()?;
 
+        // Scalar `exists(v.prop)` is the PROPERTY-existence function (distinct from
+        // the `EXISTS { pattern }` subquery, which parses as `ExistsExpression`, not
+        // `FunctionCallExp`). Cypher semantics: `exists(v.prop)` ≡ `v.prop IS NOT
+        // NULL`. No SQL backend has a scalar `exists(x)` function, so left as a
+        // `ScalarFnCall` it renders the invalid literal `exists(...)` (Code 46 on
+        // Path A) or `WHERE false` (Path C VLP/pattern-comp — silently dropping
+        // every row). Lower it here, at the single canonical AST conversion site, so
+        // BOTH render paths get the correct `IS NOT NULL`. This is dialect-agnostic
+        // by construction: it runs before the dialect is pinned and `IS NOT NULL` is
+        // standard SQL, so no per-backend handling is needed.
+        //
+        // Gated STRICTLY to a single PropertyAccess argument — the only form with an
+        // unambiguous, render-correct lowering. Any other shape (bare variable, a
+        // computed expression, ≠1 args) stays a `ScalarFnCall` and hits the existing
+        // unmapped-function path rather than guessing a semantics we can't prove.
+        if name_lower == "exists"
+            && args.len() == 1
+            && matches!(args[0], LogicalExpr::PropertyAccessExp(_))
+        {
+            return Ok(super::combinators::is_not_null(
+                args.into_iter().next().expect("len checked == 1"),
+            ));
+        }
+
         if is_standard_agg || is_passthrough_agg {
             Ok(LogicalExpr::AggregateFnCall(AggregateFnCall {
                 name: value.name,
