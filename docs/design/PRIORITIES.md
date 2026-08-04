@@ -526,6 +526,32 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-04: **Correctness — resolve reduce()/map/list outer-column refs across a
+  WITH barrier** (branch `fix/1018-reduce-outer-col-across-with-barrier`, PR
+  #1019 `de8529cb`, closes #1018). A `reduce()` (or map/array literal) whose
+  init/list/body referenced an outer node column across a WITH barrier kept the
+  pre-barrier alias (`u.user_id` not the CTE column `u_xs.p1_u_user_id`) → Code
+  47. Two hand-rolled walkers both dropped `ReduceExpr` (#929/#946
+  non-exhaustive-walker bug class): (1) `remap_property_access_for_cte`
+  (with_to_cte, the column remap) had an `other => other` catch-all silently
+  skipping `ReduceExpr`/`MapLiteral`/`ArraySubscript`/`ArraySlicing`/`InSubquery`
+  — added descent arms mirroring the already-exhaustive sibling collector
+  `collect_property_accesses` (#529/#640); the wrapper arms are load-bearing (a
+  reduce NESTED in a map/array literal needs them to be reached, verified broken
+  on main). (2) `variable_scope::rewrite_render_expr` (alias/scope resolution)
+  lumped `ReduceExpr` in its leaf/no-op group — moved it out with a
+  binder-SHIELDED descent (`rewrite_render_expr_shielded`): outer-scope init/list
+  resolve normally, the body shields the lambda `accumulator`/`variable` so a
+  binder shadowing a WITH var isn't corrupted into a CTE column (#949; nested
+  reduces re-shield their own binders). Once the ref is correct the CTE
+  projection-carry exports the column automatically → the whole-node-carry form
+  is fixed too with no separate change (prior recon wrongly predicted a 3rd
+  independent gap). Live-verified: init ref, body ref, whole-node carry,
+  reduce-in-map-literal, binder-shadow, nested-reduce outer-binder — all correct.
+  Golden `reduce_referencing_outer_column_across_with_barrier_1018`. Adversarial
+  review APPROVE 0-defect (found 1 orthogonal pre-existing: denorm WITH-CTE
+  doesn't project a non-node literal-list column → filed). Full suite green.
+
 - 2026-08-03: **Correctness — short-circuit `reduce()` over a WITH-bound empty
   list** (branch `fix/957-reduce-with-bound-empty-list`, PR #1016 `5b7521e6`,
   closes #957). Follow-up to #955 (which only caught an INLINE `[]` at the reduce
