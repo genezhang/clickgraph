@@ -11665,9 +11665,92 @@ mod walker_drift_family_484_490_495_476_483 {
         );
     }
 
-    /// #960: Cypher string functions are codepoint-based; ClickHouse's plain
-    /// `substring`/`upper`/`lower` are byte-based (silently wrong on any
-    /// multi-byte UTF-8 char — `substring('héllo',0,3)` cuts `é` mid-sequence).
+    /// #957: follow-up to #955. #955 short-circuits an INLINE empty-list literal
+    /// at the `ReduceExpr` render site. But an empty `[]` bound through a WITH
+    /// clause (`WITH [] AS xs`) is projected into the CTE as an untyped
+    /// `Array(Nothing)` column, and the downstream `reduce(…, y IN xs | …)` sees
+    /// `xs` as a column REFERENCE (not a `List` literal), so #955's check does
+    /// not fire — it rendered `arrayFold(…, u_xs.xs, …)` → live Code 53. A
+    /// plan-level pre-pass (`short_circuit_reduce_over_empty_list` in
+    /// `render_plan_to_sql`) collects CTE columns defined as empty-list literals
+    /// and replaces any reduce over such a column with its init (fold over empty
+    /// = init). Must remain a NO-OP for a non-empty WITH-bound list.
+    #[tokio::test]
+    async fn reduce_over_with_bound_empty_list_returns_init_957() {
+        let schema = load_schema("benchmarks/social_network/schemas/social_benchmark.yaml");
+
+        // WITH-bound empty list → short-circuit to init, no fold, no leftover
+        // `xs` column reference in the reduce position.
+        for (dialect, init_cast) in [
+            (SqlDialect::ClickHouse, "toInt64(7)"),
+            (SqlDialect::Databricks, "bigint(7)"),
+        ] {
+            let sql = render(
+                &schema,
+                "MATCH (u:User) WITH u, [] AS xs \
+                 RETURN reduce(acc = 7, y IN xs | acc + y) AS r",
+                dialect,
+            )
+            .await;
+            assert!(
+                !sql.contains("arrayFold") && !sql.contains("aggregate("),
+                "#957 ({dialect:?}): WITH-bound empty-list reduce must NOT emit a \
+                 fold (Code 53 on the untyped `Array(Nothing)` column):\n{sql}"
+            );
+            assert!(
+                sql.contains(init_cast),
+                "#957 ({dialect:?}): must short-circuit to the (cast) init:\n{sql}"
+            );
+        }
+
+        // NO-OP guard: a NON-empty WITH-bound list must still fold (the fix keys
+        // strictly on statically-empty projections).
+        let nonempty = render(
+            &schema,
+            "MATCH (u:User) WITH u, [1, 2, 3] AS xs \
+             RETURN reduce(acc = 7, y IN xs | acc + y) AS r",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            nonempty.contains("arrayFold"),
+            "#957: a NON-empty WITH-bound list must still fold, not short-circuit:\n{nonempty}"
+        );
+
+        // SCOPE-SAFETY guard (adversarial-review catch): a WITH REBIND of the
+        // same name `xs` from `[]` to a NON-empty list must NOT short-circuit the
+        // reduce over the rebound non-empty `xs`. The collector disqualifies any
+        // name that is ever projected non-empty, so this still folds → correct
+        // (13), not the init (7). Was a silent-wrong before the disqualifier.
+        let rebind = render(
+            &schema,
+            "MATCH (u:User) WITH u, [] AS xs WITH u, [1, 2, 3] AS xs \
+             RETURN reduce(acc = 7, y IN xs | acc + y) AS r",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            rebind.contains("arrayFold"),
+            "#957: a name rebound to a NON-empty list must still fold (no silent \
+             short-circuit to init):\n{rebind}"
+        );
+
+        // Coverage in a non-SELECT position: a reduce-over-WITH-empty in ORDER BY
+        // is also short-circuited (the walk covers ORDER BY / GROUP BY / HAVING,
+        // not just the SELECT list).
+        let order_by = render(
+            &schema,
+            "MATCH (u:User) WITH u, [] AS xs \
+             RETURN u.user_id AS id ORDER BY reduce(acc = 0, y IN xs | acc + y)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !order_by.contains("arrayFold") && order_by.contains("toInt64(0)"),
+            "#957: a reduce-over-WITH-empty in ORDER BY must also short-circuit:\n{order_by}"
+        );
+    }
+
     /// The ClickHouse dialect must route the string-only functions to their
     /// `…UTF8` variants; Spark's are already Unicode-aware, so Databricks keeps
     /// the plain names.
