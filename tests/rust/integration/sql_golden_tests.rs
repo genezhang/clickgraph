@@ -4225,6 +4225,60 @@ async fn denorm_with_match_chain_filters_per_branch_column_456() {
     }
 }
 
+/// #1021: a WITH clause on a denormalized node expands into a UNION of role
+/// branches (origin/dest), each projecting only the node's own denorm columns.
+/// A SIBLING non-node projection (`['x'] AS xs`, `5 AS n`) was dropped from
+/// every branch → the outer `<cte>.xs` reference was unresolved (Code 47). A
+/// role-INDEPENDENT sibling item (does not reference the node) is now appended
+/// to every branch. A ROLE-DEPENDENT computed item (`toUpper(a.code)`) is NOT
+/// carried — a single rendered form binds one role's column and would be
+/// silently wrong in the other branch, so it stays LOUD (ground rule 1) until
+/// per-branch remapping is added.
+#[tokio::test]
+async fn denorm_with_carries_role_independent_sibling_projection_1021() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // Role-independent literal list → carried into EVERY branch.
+        let sql = render(
+            &schema,
+            "MATCH (a:Airport) WITH a, ['x'] AS xs RETURN xs",
+            dialect,
+        )
+        .await;
+        // The CTE is a UNION of >= 2 role branches; each must project `xs`.
+        let xs_count = sql.matches("AS \"xs\"").count() + sql.matches("AS `xs`").count();
+        assert!(
+            xs_count >= 2,
+            "#1021 ({dialect:?}): the sibling `xs` projection must be carried into \
+             every denorm-union branch (found {xs_count}):\n{sql}"
+        );
+
+        // Role-DEPENDENT computed sibling (references the node) is NOT carried —
+        // it must stay dropped (loud), never silently copied with one role's
+        // column into both branches. Check that the computed expression itself
+        // (`upper...(a.…code)`) never appears in the CTE body — the outer SELECT
+        // still aliases `label`, but the CTE never projects it, so the query is
+        // loud (Code 47), not silently wrong.
+        let role_dep = render(
+            &schema,
+            "MATCH (a:Airport) WITH a, toUpper(a.code) AS label RETURN a.code, label",
+            dialect,
+        )
+        .await;
+        let upper_fn = if dialect == SqlDialect::ClickHouse {
+            "upperUTF8("
+        } else {
+            "upper("
+        };
+        assert!(
+            !role_dep.contains(upper_fn),
+            "#1021 ({dialect:?}): a role-dependent computed sibling must NOT be \
+             blindly carried into the branches (would be silent-wrong); it stays \
+             dropped/loud:\n{role_dep}"
+        );
+    }
+}
+
 /// #456 regression (OPTIONAL, production path): `MATCH (a:Airport) OPTIONAL MATCH
 /// (a)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code` on the coupled-denormalized
 /// schema. The production render path (`to_render_plan_with_ctx`) restructures the

@@ -7794,6 +7794,67 @@ fn apply_with_items_projection(
                         union.input.insert(0, first_branch);
                     }
 
+                    // #1021: the denorm node's role-expansion built each UNION
+                    // branch with ONLY the node's denorm columns (Origin*/Dest*).
+                    // Any SIBLING non-node WITH projection (`['x'] AS xs`, `5 AS n`,
+                    // a computed scalar) lives in `select_items` but is otherwise
+                    // dropped here (this branch discards `select_items` in favour of
+                    // the per-branch node SELECTs) → the outer `<cte>.xs` reference
+                    // is unresolved (Code 47). A ROLE-INDEPENDENT non-node item (a
+                    // literal/scalar that does NOT reference the denorm node) is
+                    // identical in every branch, so append each such item to EVERY
+                    // branch. Two guards make this safe:
+                    //   (a) col_alias is NOT one of the node's branch columns
+                    //       (the `rename_alias`-prefixed `<alias>_<prop>` set) —
+                    //       i.e. it is a sibling projection, not a node column; and
+                    //   (b) the expression does NOT reference the node alias — a
+                    //       ROLE-DEPENDENT computed scalar (`toUpper(a.code)`) must
+                    //       NOT be blindly copied, because a single rendered form
+                    //       binds ONE role's column (e.g. `origin_code`) and would
+                    //       be WRONG in the other branch (silent-wrong). Leaving it
+                    //       dropped keeps that case LOUD (Code 47), which is correct
+                    //       until per-branch remapping (like the WHERE propagation
+                    //       above) is added — ground rule 1.
+                    if let UnionItems(Some(ref mut union)) = rendered.union {
+                        let branch_cols: std::collections::HashSet<String> = union
+                            .input
+                            .iter()
+                            .flat_map(|b| {
+                                b.select
+                                    .items
+                                    .iter()
+                                    .filter_map(|it| it.col_alias.as_ref().map(|a| a.0.clone()))
+                            })
+                            .collect();
+                        let sibling_items: Vec<crate::render_plan::SelectItem> = select_items
+                            .iter()
+                            .filter(|it| {
+                                let alias_ok = it
+                                    .col_alias
+                                    .as_ref()
+                                    .map(|a| !branch_cols.contains(&a.0))
+                                    .unwrap_or(false);
+                                // Role-independent only: must not reference the node.
+                                alias_ok
+                                    && !super::expression_utils::references_alias(
+                                        &it.expression,
+                                        &rename_alias,
+                                    )
+                            })
+                            .cloned()
+                            .collect();
+                        if !sibling_items.is_empty() {
+                            log::info!(
+                                "🔧 #1021: carrying {} role-independent non-node WITH projection(s) into {} denorm-union branch(es)",
+                                sibling_items.len(),
+                                union.input.len()
+                            );
+                            for branch in &mut union.input {
+                                branch.select.items.extend(sibling_items.iter().cloned());
+                            }
+                        }
+                    }
+
                     // Clear plan-level fields so CTE renders union directly
                     rendered.select = SelectItems {
                         items: vec![],
