@@ -24,6 +24,7 @@ pub mod types;
 pub mod utils;
 pub mod variable_scope;
 mod view_table_ref;
+pub mod vlp_endpoint_resolution;
 pub(crate) mod vlp_rewrite;
 pub(crate) mod with_to_cte;
 
