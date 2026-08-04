@@ -2052,8 +2052,68 @@ impl RenderPlanBuilder for LogicalPlan {
                                     anchor_edge_id, mapped_props, cte_name, cte_exposed_columns
                                 )));
                             };
+                            // #583: a denormalized single-hop undirected OPTIONAL
+                            // hop is kept as ONE directed `was_undirected` GraphRel
+                            // by the BidirectionalUnion analyzer (instead of the
+                            // spurious-NULL two-arm split). Target a doubled-edge
+                            // subquery (every physical edge in BOTH orientations) so
+                            // this single anchor LEFT JOIN NULL-extends only for
+                            // genuinely zero-neighbor anchors. The join key and the
+                            // neighbor projection are unchanged — only the join
+                            // target table becomes the doubled subquery.
+                            //
+                            // The analyzer only marks `was_undirected` for a
+                            // denorm edge whose schema has BOTH role-property maps
+                            // (`rel_has_both_nodes_denormalized`), so the builder
+                            // must succeed here. If it does NOT (the edge ViewScan
+                            // unexpectedly lacks the role maps the rel schema
+                            // promised), fall through to the raw edge table would
+                            // SILENTLY reintroduce #583 (single-direction join, no
+                            // split, no doubled edge) — a ground-rule-1 violation.
+                            // Fail LOUD instead.
+                            let edge_table_or_doubled = if gr.was_undirected == Some(true) {
+                                // Resolve the relationship schema so the builder can
+                                // project EVERY physical edge column (incl. the
+                                // edge-id column `count(r)` needs), not just the ones
+                                // on the ViewScan. Mirrors the analyzer gate's
+                                // label-resolution (composite key → plain type).
+                                let rel_schema = gr
+                                    .labels
+                                    .as_ref()
+                                    .and_then(|labels| labels.first())
+                                    .and_then(|rel_type| {
+                                        schema.get_relationships_schema_opt(rel_type).or_else(
+                                            || {
+                                                let plain =
+                                                    rel_type.split("::").next().unwrap_or(rel_type);
+                                                schema
+                                                    .rel_schemas_for_type(plain)
+                                                    .into_iter()
+                                                    .next()
+                                            },
+                                        )
+                                    });
+                                let doubled = rel_schema.and_then(|rs| {
+                                    super::plan_builder_helpers::build_denorm_doubled_edge_subquery(
+                                        edge_vs, rs,
+                                    )
+                                });
+                                doubled.ok_or_else(|| {
+                                    RenderBuildError::MissingTableInfo(format!(
+                                        "#583: denorm undirected OPTIONAL rel '{}' was marked \
+                                         was_undirected by the analyzer, but its edge ViewScan \
+                                         (table '{}') / relationship schema lacks the from/to \
+                                         role-property maps needed to build the doubled-edge \
+                                         subquery — refusing to emit a silently-single-direction \
+                                         join",
+                                        gr.alias, edge_vs.source_table,
+                                    ))
+                                })?
+                            } else {
+                                edge_vs.source_table.clone()
+                            };
                             (
-                                edge_vs.source_table.clone(),
+                                edge_table_or_doubled,
                                 gr.alias.clone(),
                                 anchor_edge_id,
                                 node_id,

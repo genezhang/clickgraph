@@ -526,6 +526,50 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-04: **Correctness — denorm/coupled single-hop undirected OPTIONAL
+  spurious NULL row** (branch `fix/583-denorm-undirected-optional-null`,
+  PR #1029, denorm stage of #583; standard/poly/composite stay OPEN). An
+  undirected single-hop `MATCH (a) OPTIONAL MATCH (a)-[:R]-(b)` over a
+  fully-denormalized (or coupled, e.g. zeek) edge table was split by
+  `BidirectionalUnion` into two per-direction branches, each independently
+  `LEFT JOIN`ing the `__denorm_scan_a` anchor CTE and NULL-extending blind to
+  the other. An anchor matching in only ONE physical role got a spurious
+  `(anchor, NULL)` row from the non-matching branch — silent wrong results
+  (ground-rule-1). Live: denorm 18 rows → 16; zeek 12 → 10; `count(b)` was
+  Code 53 (arms projected different column counts). Fix mirrors the #617
+  doubled-edge VLP strategy for the single hop: a new analyzer pre-pass
+  (`normalize_undirected_denorm_single_hop_optional_rels`) keeps the hop as ONE
+  `was_undirected` GraphRel instead of splitting, and the render targets a
+  doubled-edge subquery (every physical edge in both orientations, role columns
+  swapped) under the existing single anchor LEFT JOIN — so NULL-extension
+  happens once, only for genuinely zero-neighbor anchors. Passthrough columns
+  are sourced from the relationship schema's `all_valid_physical_columns()` so
+  the edge-identity column (`edge_id`, which `count(r)` lowers to and which is
+  NOT necessarily in `property_mappings`) is always projected — otherwise
+  `count(r)` referenced an unprojected column (Code 47). **Scoped denorm/coupled
+  only**: standard/polymorphic still two-arm split (unchanged) — a loud guard
+  there would regress standard `count(b)`, which SQL's NULL-skipping
+  `count(col)` renders accidentally correct today; composite excluded
+  (single-column-id requirement keeps gate and render helper in lockstep);
+  fk-edge (distinct from/to labels) prunes to a single branch and never had the
+  bug; #583 stays OPEN for the excluded layouts. Chained-optional patterns
+  defer to the #589 loud guard (the pre-pass skips when
+  `has_chained_optional_nested_undirected_edge` holds, so it can't silently
+  disarm #589 by normalizing the inner hop's direction away). **Two adversarial
+  review rounds (worktree-isolated)**: round 1 caught the `count(r)` Code-47
+  regression (doubled-edge dropped the unmapped edge-id column — masked because
+  corpus goldens render without executing); round 2 confirmed the fix live
+  (built a full-column table, executed `count(r)` and `RETURN r.flight_id`,
+  both correct) and confirmed all chained shapes back to #589-loud. If the
+  doubled-edge subquery cannot be built for a rel the analyzer marked
+  `was_undirected`, the render fails LOUD rather than silently reverting to a
+  single-direction join. 3 coupled-schema goldens rewritten to lock the new
+  single-doubled-edge shape (node-grain wrap + determinism preserved); a render
+  test asserts the unmapped edge-id column is projected in both arms; 4 corpus
+  regression entries added. fmt/clippy/1700 lib + 592 integration/ratchet/
+  corpus_sweep all green; differential sweep shows control queries
+  byte-identical to main.
+
 - 2026-08-04: **Correctness (ground-rule-1) — pattern_union node-property JSON key mismatch returned empty strings** (branch `fix/1024-pattern-union-json-key`, closes #1024 facet 1). On the fully-unlabeled `pattern_union` path (`MATCH (a)-[r]->(b) RETURN a.name`), node props are packed into `start_properties`/`end_properties` JSON blobs. The blobs used bare column expressions, so ClickHouse re-qualified the SECOND blob's keys on a User→User self-join (`to_node.full_name`), and the single-property extractor's bare-DB-column lookup missed → empty strings (silent-wrong). A bare `AS <col>` collides (Code 179 MULTIPLE_EXPRESSIONS_FOR_ALIAS on the self-join). Fix (3 sites): (1) `cte_extraction.rs` keys each blob column `AS _s_<db_col>`/`_e_<db_col>` — a role-unique SLOT prefix applied by the OUTPUT slot (swap-aware: the undirected reverse branch routes to-role cols into `start_properties` and keeps `_s_`); (2) `select_builder.rs` extractor asks the `_s_`/`_e_` prefixed key, gated on `has_pattern_combinations` (VLP-multitype path unchanged — separate producer, bare keys); (3) `result_transformer.rs` whole-node cleaner strips `_s_`/`_e_` BEFORE the `.`-qualifier split (byte-identical to prior behavior for unprefixed keys). Live-verified on ClickHouse 25.8: directed `a.name`=3×Alice, undirected adds reversed FOLLOWS b→a=Bob with Post-reverse branches correctly empty (no `name`), `a.user_id`/`id(a)`/`WHERE a.name=…`/dotted-col `a.ip` all correct, standalone `(a:User)` scan unaffected. 28 goldens regenerated + eyeballed (pattern_union + denorm_selfloop_multitype). Regression test `pattern_union_node_property_uses_slot_prefixed_json_keys_1024` fail-when-reverted on BOTH the extractor prefix and the swap slot-prefix. Adversarial review: fix correct + strict improvement, no HIGH holes; surfaced two PRE-EXISTING (baseline-identical) residuals — #1027 (undirected denorm self-loop cross-side prop → empty on reverse branches, filed) and a dotted-denorm whole-node strip quirk (addressed by the prefix-first ordering). Facets 2 (ORDER BY→Code 47) and 3 (polymorphic count no-FROM), plus a 4th sibling (end-side `b.name` on mixed-type unlabeled → `WHERE false`), remain separate follow-ups logged on #1024.
 
 - 2026-08-04: **Correctness — self-loop constraint for closed unlabeled

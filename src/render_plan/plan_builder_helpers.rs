@@ -254,6 +254,125 @@ pub(super) fn is_denormalized_union(plan: &LogicalPlan) -> bool {
     }
 }
 
+/// #583: build a doubled-edge subquery for a denormalized single-hop undirected
+/// OPTIONAL pattern, so the existing single anchor LEFT JOIN sees every physical
+/// edge in BOTH orientations.
+///
+/// The undirected split renders each direction as an independent
+/// `__denorm_scan_a LEFT JOIN <edge> ON a.code = <edge>.origin_code` (and the
+/// reverse arm on `dest_code`) under UNION ALL; each arm NULL-extends blind to
+/// the other, so a one-role-only anchor gets a spurious `(anchor, NULL)` (#583).
+/// Instead, the analyzer keeps ONE directed `was_undirected` GraphRel and this
+/// helper replaces the raw edge table with:
+///
+/// ```sql
+/// (SELECT e.<all cols> FROM <edge_table> AS e
+///  UNION ALL
+///  SELECT e.<to-role cols AS from-role names>, e.<from-role cols AS to-role names>,
+///         e.<edge-own cols> FROM <edge_table> AS e)
+/// ```
+///
+/// so the outer join (`a.code = t1.origin_code`) and the neighbor projection
+/// (`t1.dest_*`) are BYTE-IDENTICAL to the directed shape — only the join target
+/// changes. NULL-extension then happens once, for genuinely zero-neighbor
+/// anchors only (proven: 16 rows vs the buggy 18).
+///
+/// Column set is derived entirely from the edge `ViewScan` via the
+/// schema-catalog `edge_side_node_properties` dispatch point (the from/to
+/// role-property maps give the role-swap pairs by Cypher key; from_id/to_id
+/// are the id swap pair; `property_mapping` values are edge-own pass-throughs).
+/// Every reference is table-qualified (`e.<col>`) so the reverse arm's
+/// `e.dest_code AS origin_code` binds the RAW column, never the just-created
+/// alias (ClickHouse would otherwise silently flip the value — mirrors #617's
+/// doubled-edge qualification discipline).
+pub(super) fn build_denorm_doubled_edge_subquery(
+    edge_vs: &crate::query_planner::logical_plan::ViewScan,
+    rel_schema: &crate::graph_catalog::graph_schema::RelationshipSchema,
+) -> Option<String> {
+    let q = crate::clickhouse_query_generator::quote_identifier;
+
+    // Role id columns (single-column only — composite denorm ids are out of
+    // scope for #583's denorm stage; the analyzer gate resolves same-label
+    // endpoints but composite ids ride a different family).
+    let from_id = edge_vs.from_id.as_ref()?.first_column().to_string();
+    let to_id = edge_vs.to_id.as_ref()?.first_column().to_string();
+
+    // Role-property swap pairs, matched by Cypher property key present on BOTH
+    // sides (e.g. `code` → (origin_code, dest_code), `city` → (origin_city,
+    // dest_city)). Deterministic order. Routed through the schema-catalog
+    // dispatch point (CLAUDE.md rule 7) rather than reading the raw ViewScan
+    // role-property fields directly.
+    let from_props =
+        crate::graph_catalog::pattern_schema::edge_side_node_properties(edge_vs, true)?;
+    let to_props = crate::graph_catalog::pattern_schema::edge_side_node_properties(edge_vs, false)?;
+    let mut swap_pairs: Vec<(String, String)> = Vec::new(); // (from_col, to_col)
+    let mut keys: Vec<&String> = from_props.keys().collect();
+    keys.sort();
+    for key in keys {
+        let (Some(PropertyValue::Column(from_col)), Some(PropertyValue::Column(to_col))) =
+            (from_props.get(key), to_props.get(key))
+        else {
+            continue;
+        };
+        swap_pairs.push((from_col.clone(), to_col.clone()));
+    }
+    // The id columns are role-swap columns too (they may or may not also appear
+    // as a mapped property). Ensure they are present exactly once.
+    if !swap_pairs.iter().any(|(f, _)| f == &from_id) {
+        swap_pairs.push((from_id.clone(), to_id.clone()));
+    }
+
+    // Edge-own pass-through columns: EVERY physical column the relationship's
+    // own row can carry (property_mappings, the edge identity column(s) —
+    // `edge_id`, which `count(r)` lowers to and which is NOT necessarily in
+    // `property_mappings` — and any denormalized role-property columns), MINUS
+    // the role-swap columns handled above. Sourced from the schema-catalog
+    // `all_valid_physical_columns()` so an edge-id-only column (e.g. a FLIGHT
+    // edge's `flight_id` listed under `edge_id:` but not `property_mappings:`)
+    // is never dropped — dropping it would make `count(r)` reference a column
+    // the subquery doesn't project (ClickHouse Code 47). Deterministic order.
+    let role_cols: HashSet<String> = swap_pairs
+        .iter()
+        .flat_map(|(f, t)| [f.clone(), t.clone()])
+        .collect();
+    let mut passthrough: Vec<String> = rel_schema
+        .all_valid_physical_columns()
+        .into_iter()
+        .filter(|c| !role_cols.contains(c))
+        .collect();
+    passthrough.sort();
+    passthrough.dedup();
+
+    // Forward arm: every column verbatim.
+    let mut forward_cols: Vec<String> = Vec::new();
+    for (f, t) in &swap_pairs {
+        forward_cols.push(format!("e.{}", q(f)));
+        forward_cols.push(format!("e.{}", q(t)));
+    }
+    for c in &passthrough {
+        forward_cols.push(format!("e.{}", q(c)));
+    }
+
+    // Reverse arm: swap each role pair (to-col AS from-name, from-col AS
+    // to-name); edge-own columns unchanged. Table-qualified so the AS target
+    // never shadows the raw source column.
+    let mut reverse_cols: Vec<String> = Vec::new();
+    for (f, t) in &swap_pairs {
+        reverse_cols.push(format!("e.{} AS {}", q(t), q(f)));
+        reverse_cols.push(format!("e.{} AS {}", q(f), q(t)));
+    }
+    for c in &passthrough {
+        reverse_cols.push(format!("e.{}", q(c)));
+    }
+
+    let table = &edge_vs.source_table;
+    Some(format!(
+        "(SELECT {fwd} FROM {table} AS e UNION ALL SELECT {rev} FROM {table} AS e)",
+        fwd = forward_cols.join(", "),
+        rev = reverse_cols.join(", "),
+    ))
+}
+
 /// #611: true when a denormalized standalone-scan Union appears ANYWHERE in
 /// the subtree — not just as a direct child. A CHAINED optional clause over
 /// a denormalized schema (`MATCH (a) OPTIONAL MATCH (a)-[f]->(b) OPTIONAL

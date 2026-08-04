@@ -1283,3 +1283,7 @@
 {"cypher": "MATCH (a)-[r]->(b) RETURN count(*)", "name": "test_987_open_unlabeled_single_hop_no_self_loop_control", "schema": "standard"}
 {"cypher": "MATCH (a)-[r]-(a) RETURN count(*)", "name": "test_987_closed_unlabeled_self_loop_fk_edge_cross_type", "schema": "fk_edge"}
 {"cypher": "MATCH (a)-[r*1..2]->(a) RETURN count(*)", "name": "test_987_closed_unlabeled_vlp_fails_loud", "schema": "standard"}
+{"cypher": "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]-(b:Airport) RETURN a.code, b.code", "name": "test_583_denorm_undirected_optional_no_spurious_null", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]-(b:Airport) RETURN count(*) AS n", "name": "test_583_denorm_undirected_optional_count_star", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Airport) OPTIONAL MATCH (a)-[r:FLIGHT]-(b:Airport) RETURN a.code, count(r) AS c ORDER BY a.code", "name": "test_583_denorm_undirected_optional_count_rel", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code", "name": "test_583_denorm_directed_optional_control", "schema": "denormalized_flights"}
