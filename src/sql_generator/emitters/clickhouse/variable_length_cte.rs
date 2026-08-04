@@ -3649,6 +3649,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// 'Alice')` splits correctly to `(rel.mgr_id = 1 AND start_own.name =
     /// 'Alice')`. Composite ids are handled by replacing each id column in turn.
     ///
+    /// Step 1 uses a WORD-BOUNDARY-aware replace (`replace_column_token`) so an
+    /// id column `mgr_id` does not corrupt a non-id column `mgr_id_extra` whose
+    /// name has the id column as a prefix (`start_node.mgr_id_extra` must stay a
+    /// non-id column, routed to `*_own` in step 2, not become `rel.mgr_id_extra`).
+    ///
     /// `own_join_present` guards the non-id fallback: the `*_own` join is only
     /// emitted when a denorm-endpoint non-id property is in `self.properties`
     /// (which the planner populates from WHERE predicates too). If it is somehow
@@ -3677,13 +3682,45 @@ impl<'a> VariableLengthCteGenerator<'a> {
             if col.is_empty() {
                 continue;
             }
-            out = out.replace(
+            out = Self::replace_column_token(
+                &out,
                 &format!("{}{}", node_prefix, col),
                 &format!("{}.{}", self.relationship_alias, col),
             );
         }
         // Step 2: every remaining non-id column resolves via the own-table join.
         out.replace(node_prefix, own_prefix)
+    }
+
+    /// Replace occurrences of `needle` (a `prefix.column` token) with
+    /// `replacement`, but ONLY when the character immediately following `needle`
+    /// is not an identifier character (`[A-Za-z0-9_]`) — i.e. `needle` is a whole
+    /// column token, not a prefix of a longer column name. This prevents the id
+    /// column `start_node.mgr_id` from matching inside `start_node.mgr_id_extra`
+    /// (which is a distinct non-id column). A plain `str::replace` would over-match.
+    fn replace_column_token(haystack: &str, needle: &str, replacement: &str) -> String {
+        if needle.is_empty() {
+            return haystack.to_string();
+        }
+        let mut out = String::with_capacity(haystack.len());
+        let mut rest = haystack;
+        while let Some(pos) = rest.find(needle) {
+            out.push_str(&rest[..pos]);
+            let after = &rest[pos + needle.len()..];
+            let boundary_ok = after
+                .chars()
+                .next()
+                .map(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(true); // end-of-string is a boundary
+            if boundary_ok {
+                out.push_str(replacement);
+            } else {
+                out.push_str(needle);
+            }
+            rest = after;
+        }
+        out.push_str(rest);
+        out
     }
 
     /// Generate base case for mixed patterns
@@ -4026,6 +4063,59 @@ mod tests {
     /// Helper to create a minimal test schema for VLC tests
     fn create_test_schema() -> GraphSchema {
         GraphSchema::build(1, "test_db".to_string(), HashMap::new(), HashMap::new())
+    }
+
+    /// #934: `replace_column_token` must be word-boundary aware so an id column
+    /// does not corrupt a longer non-id column that has it as a prefix.
+    #[test]
+    fn replace_column_token_respects_word_boundary_934() {
+        let rep = VariableLengthCteGenerator::replace_column_token;
+        // Whole-token match at end-of-string and before an operator/space.
+        assert_eq!(
+            rep("start_node.mgr_id = 1", "start_node.mgr_id", "rel.mgr_id"),
+            "rel.mgr_id = 1"
+        );
+        assert_eq!(
+            rep("x = start_node.mgr_id", "start_node.mgr_id", "rel.mgr_id"),
+            "x = rel.mgr_id"
+        );
+        // PREFIX COLLISION: `mgr_id` must NOT match inside `mgr_id_extra`.
+        assert_eq!(
+            rep(
+                "start_node.mgr_id_extra = 1",
+                "start_node.mgr_id",
+                "rel.mgr_id"
+            ),
+            "start_node.mgr_id_extra = 1",
+            "id column must not over-match a longer non-id column with the same prefix"
+        );
+        // Mixed: the real id token is rewritten, the colliding prefix is left alone.
+        assert_eq!(
+            rep(
+                "(start_node.mgr_id = 1 AND start_node.mgr_id_extra = 2)",
+                "start_node.mgr_id",
+                "rel.mgr_id"
+            ),
+            "(rel.mgr_id = 1 AND start_node.mgr_id_extra = 2)"
+        );
+        // Trailing underscore/alnum are identifier chars → no match.
+        assert_eq!(
+            rep("start_node.mgr_id9", "start_node.mgr_id", "rel.mgr_id"),
+            "start_node.mgr_id9"
+        );
+        assert_eq!(
+            rep("start_node.mgr_id_", "start_node.mgr_id", "rel.mgr_id"),
+            "start_node.mgr_id_"
+        );
+        // Closing paren / comparison operators are boundaries.
+        assert_eq!(
+            rep("(start_node.mgr_id)", "start_node.mgr_id", "rel.mgr_id"),
+            "(rel.mgr_id)"
+        );
+        assert_eq!(
+            rep("start_node.mgr_id>5", "start_node.mgr_id", "rel.mgr_id"),
+            "rel.mgr_id>5"
+        );
     }
 
     #[test]
