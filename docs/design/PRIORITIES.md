@@ -183,7 +183,9 @@ Historical detail (individually-fixable, NOT reverse-mapping class):
 ~~#647~~ **DONE (#652, `91475be3`)**, #644 (denorm OPTIONAL-VLP anchor
 join, loud — **in flight**), ~~#646~~ **DONE (composite self-ref FK-edge; follow-up
 #672 part 2 ~~non-self-ref composite from_id/to_id malformed~~ DONE (#696,
-`03d61403`); #672 part 1 loud order/arity guard remains)**, ~~#641~~
+`03d61403`); ~~#672 part 1 loud order/arity guard~~ DONE (#1009, `b8b47cf1` —
+same-name-set/different-order composite FK-edge zip → loud; Traditional-strategy
+gap tracked #1010))**, ~~#641~~
 **DONE (#680, `fe6de435` — #589 gate holes: swallowed-in-UNION + orientation-asymmetric,
 both silent→loud)**, #640 (EXISTS beyond single-hop — ~~shape 1 undirected~~
 **DONE (#694, `2fdf98f8`)** + ~~shape 3 both-endpoints-outer~~ **DONE (#704,
@@ -523,6 +525,30 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-08-03: **Correctness (ground-rule-1) — loud guard for crossed composite
+  FK-edge column pairing** (branch `fix/672-composite-fk-misorder-loud-guard`,
+  PR #1009 `b8b47cf1`, closes #672). A composite FK-edge join zips the FK columns
+  with the target `node_id` columns POSITIONALLY (`add_identifier_condition`).
+  When the FK and `node_id` column-name vectors are the SAME SET of names in a
+  DIFFERENT order (e.g. FK `[forum_id, region]` vs `node_id [region, forum_id]`),
+  the zip pairs each column with a different-named column from the same set
+  (`region = forum_id AND forum_id = region`) → silently wrong rows. New
+  `guard_composite_fk_pairing()` at both composite `FkEdgeJoin` branches
+  (Left/self-ref, Right) fails loud (`UnsupportedPattern`, naming the crossed
+  columns + remedy) for exactly that case, and is a byte-identical no-op for
+  single-column FK-edges, same-order pairings, and the undetectable
+  different-NAME cross-table case (which still renders — fixed in part 2 / #696).
+  Axis-dispatch clean (pure column-name-vector comparison, no schema-flag
+  branching; ratchet unchanged). Two fixtures exercise BOTH branches:
+  `composite_fk_edge_misordered.yaml` (FK on from_node → Right) and
+  `composite_fk_edge_misordered_left.yaml` (FK on to_node → Left); golden
+  `composite_fk_edge_misordered_same_nameset_fails_loud_672` asserts the branch
+  label per case + that the correct different-name fixture still renders; 4 guard
+  unit tests + corpus `.err` goldens (both dialects, both directions). Completes
+  #672 (part 2 was #696); the same crossing through the `Traditional` strategy
+  (separate edge table) is a tracked follow-up (#1010). Full suite green;
+  fmt/clippy/ratchet clean.
 
 - 2026-08-03: **Correctness — mixed-access VLP end-node filter deferred to the
   wrapper, not applied per-hop** (branch `fix/1003-mixed-vlp-end-filter-per-hop`,
