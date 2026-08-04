@@ -3635,6 +3635,57 @@ impl<'a> VariableLengthCteGenerator<'a> {
         }
     }
 
+    /// Rewrite a denormalized-endpoint filter string (#934). The incoming
+    /// `filters` string is already property-mapped to CH columns and prefixed
+    /// with `node_prefix` (`start_node.` / `end_node.`). The endpoint's id
+    /// property maps to the edge's own FK column (`id_col`, e.g. `mgr_id`), so
+    /// it stays on the relationship alias (`rel.`); every OTHER (non-id) column
+    /// lives on the node's own table and must resolve via the `*_own` LEFT JOIN
+    /// (`own_prefix`, `start_own.` / `end_own.`) that #908 already emits.
+    ///
+    /// Order matters: the specific id-column replace runs first, then the
+    /// general fallback maps any remaining `node_prefix.` to `own_prefix.`, so a
+    /// combined predicate like `(start_node.mgr_id = 1 AND start_node.name =
+    /// 'Alice')` splits correctly to `(rel.mgr_id = 1 AND start_own.name =
+    /// 'Alice')`. Composite ids are handled by replacing each id column in turn.
+    ///
+    /// `own_join_present` guards the non-id fallback: the `*_own` join is only
+    /// emitted when a denorm-endpoint non-id property is in `self.properties`
+    /// (which the planner populates from WHERE predicates too). If it is somehow
+    /// absent, fall back to the old whole-string `rel.` rewrite rather than
+    /// emitting a dangling `*_own.` reference — preserves prior behavior for any
+    /// path that only carried the id filter.
+    fn rewrite_denorm_endpoint_filter(
+        &self,
+        filters: &str,
+        node_prefix: &str,
+        own_prefix: &str,
+        id_col: &str,
+        own_join_present: bool,
+    ) -> String {
+        if !own_join_present {
+            // No own-table join in scope — nothing to resolve non-id columns
+            // against. Keep the historical behavior (id-only filters still map
+            // correctly onto the edge alias).
+            return filters.replace(node_prefix, &format!("{}.", self.relationship_alias));
+        }
+        // Step 1: pin each id column to the relationship alias. `id_col` may be a
+        // comma-separated composite (mirroring `relationship_from/to_column`).
+        let mut out = filters.to_string();
+        for col in id_col.split(',') {
+            let col = col.trim();
+            if col.is_empty() {
+                continue;
+            }
+            out = out.replace(
+                &format!("{}{}", node_prefix, col),
+                &format!("{}.{}", self.relationship_alias, col),
+            );
+        }
+        // Step 2: every remaining non-id column resolves via the own-table join.
+        out.replace(node_prefix, own_prefix)
+    }
+
     /// Generate base case for mixed patterns
     fn generate_mixed_base_case(&self, hop_count: u32) -> String {
         if hop_count != 1 {
@@ -3751,6 +3802,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // #908: append the denorm endpoint's own-table join (foreign-embedded
         // shape) so its non-id properties resolve. Only one of the two can be set
         // in a mixed pattern (exactly one endpoint is denormalized).
+        // #934: capture presence BEFORE the `.or()` move — the WHERE rewrite below
+        // routes non-id endpoint props to `*_own` only when its join is emitted.
+        let start_own_join_present = denorm_start_join.is_some();
+        let end_own_join_present = denorm_end_join.is_some();
         if let Some(join) = denorm_start_join.or(denorm_end_join) {
             query.push_str(&format!("\n    {}", join));
         }
@@ -3758,9 +3813,27 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Add WHERE conditions
         let mut where_conditions = Vec::new();
         if let Some(ref filters) = self.start_node_filters {
-            // Rewrite for denorm start if needed
+            // Rewrite for denorm start if needed.
+            //
+            // #934: the start filter string arrives already property-mapped to
+            // CH columns and prefixed `start_node.<col>`. The old blanket
+            // `start_node.` -> `rel.` rewrite was correct ONLY for the start
+            // node's id property (which maps to the edge's own FK column,
+            // `relationship_from_column`, e.g. `mgr_id`) — a NON-id property
+            // (e.g. `name`) lives on the node's OWN table, not the edge, so
+            // `rel.name` is an unknown identifier (Code 47). The `start_own`
+            // LEFT JOIN (#908, `denorm_start_join`) already resolves those own
+            // columns; route non-id start props to `start_own.` and keep the id
+            // prop on `rel.`, mirroring the id-vs-non-id branch in
+            // `mixed_denorm_endpoint_property_items`.
             let rewritten = if self.start_is_denormalized {
-                filters.replace("start_node.", &format!("{}.", self.relationship_alias))
+                self.rewrite_denorm_endpoint_filter(
+                    filters,
+                    "start_node.",
+                    "start_own.",
+                    &self.relationship_from_column,
+                    start_own_join_present,
+                )
             } else {
                 filters.clone()
             };
@@ -3769,9 +3842,18 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         if self.shortest_path_mode.is_none() {
             if let Some(ref filters) = self.end_node_filters {
-                // Rewrite for denorm end if needed
+                // Rewrite for denorm end if needed. #934: symmetric to the start
+                // side — a non-id property of a denormalized END node resolves
+                // via the `end_own` join (`denorm_end_join`), while the end id
+                // maps to the edge's `relationship_to_column`.
                 let rewritten = if self.end_is_denormalized {
-                    filters.replace("end_node.", &format!("{}.", self.relationship_alias))
+                    self.rewrite_denorm_endpoint_filter(
+                        filters,
+                        "end_node.",
+                        "end_own.",
+                        &self.relationship_to_column,
+                        end_own_join_present,
+                    )
                 } else {
                     filters.clone()
                 };
