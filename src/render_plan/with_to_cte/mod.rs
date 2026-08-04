@@ -565,7 +565,102 @@ fn remap_property_access_for_cte(
             }
             LogicalExpr::Case(case_expr)
         }
-        // Other expressions don't contain PropertyAccess
+        // #1018: descend into the value-wrapper variants that can carry a
+        // PropertyAccess — the sibling collector `collect_property_accesses`
+        // already recurses into exactly these, but this rewriter historically
+        // dropped them via the `other => other` catch-all (the #929/#946
+        // hand-rolled-walker bug class). Without this, a `reduce()` whose init /
+        // list / body references an outer node column across a WITH barrier keeps
+        // the pre-barrier column name (`u.user_id` instead of the CTE column
+        // `u.p1_u_user_id`) → part of the #1018 Code 47. The lambda binders
+        // (`accumulator` / `variable`) are bare scalar identifiers, never a
+        // `PropertyAccessExp{table_alias: cte_alias}`, so remapping every
+        // sub-expression is binder-safe (mirrors the collector's unconditional
+        // descent).
+        LogicalExpr::ReduceExpr(mut reduce) => {
+            reduce.initial_value = Box::new(remap_property_access_for_cte(
+                *reduce.initial_value,
+                cte_alias,
+                property_mapping,
+                db_to_cypher,
+            ));
+            reduce.list = Box::new(remap_property_access_for_cte(
+                *reduce.list,
+                cte_alias,
+                property_mapping,
+                db_to_cypher,
+            ));
+            reduce.expression = Box::new(remap_property_access_for_cte(
+                *reduce.expression,
+                cte_alias,
+                property_mapping,
+                db_to_cypher,
+            ));
+            LogicalExpr::ReduceExpr(reduce)
+        }
+        LogicalExpr::MapLiteral(entries) => LogicalExpr::MapLiteral(
+            entries
+                .into_iter()
+                .map(|(k, v)| {
+                    (
+                        k,
+                        remap_property_access_for_cte(v, cte_alias, property_mapping, db_to_cypher),
+                    )
+                })
+                .collect(),
+        ),
+        LogicalExpr::ArraySubscript { array, index } => LogicalExpr::ArraySubscript {
+            array: Box::new(remap_property_access_for_cte(
+                *array,
+                cte_alias,
+                property_mapping,
+                db_to_cypher,
+            )),
+            index: Box::new(remap_property_access_for_cte(
+                *index,
+                cte_alias,
+                property_mapping,
+                db_to_cypher,
+            )),
+        },
+        LogicalExpr::ArraySlicing { array, from, to } => LogicalExpr::ArraySlicing {
+            array: Box::new(remap_property_access_for_cte(
+                *array,
+                cte_alias,
+                property_mapping,
+                db_to_cypher,
+            )),
+            from: from.map(|f| {
+                Box::new(remap_property_access_for_cte(
+                    *f,
+                    cte_alias,
+                    property_mapping,
+                    db_to_cypher,
+                ))
+            }),
+            to: to.map(|t| {
+                Box::new(remap_property_access_for_cte(
+                    *t,
+                    cte_alias,
+                    property_mapping,
+                    db_to_cypher,
+                ))
+            }),
+        },
+        LogicalExpr::InSubquery(mut in_sq) => {
+            // Only the outer-scope `expr` is remapped (the correlated `subplan`
+            // is a separate scope), mirroring `collect_property_accesses`.
+            in_sq.expr = Box::new(remap_property_access_for_cte(
+                *in_sq.expr,
+                cte_alias,
+                property_mapping,
+                db_to_cypher,
+            ));
+            LogicalExpr::InSubquery(in_sq)
+        }
+        // Remaining variants (literals, bare aliases, subqueries with their own
+        // scope, PatternCount, CteEntityRef, …) carry no outer PropertyAccess to
+        // remap.
         other => other,
     }
 }

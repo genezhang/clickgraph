@@ -11751,6 +11751,80 @@ mod walker_drift_family_484_490_495_476_483 {
         );
     }
 
+    /// #1018: a `reduce()` whose init / list / body references an outer node
+    /// column across a WITH barrier kept the pre-barrier alias (`u.user_id`
+    /// instead of the CTE column `u_xs.p1_u_user_id`) → Code 47. Two hand-rolled
+    /// walkers dropped `ReduceExpr`: `remap_property_access_for_cte` (the column
+    /// remap, `#929`-class `other => other` catch-all) and
+    /// `variable_scope::rewrite_render_expr` (the alias/scope resolution, which
+    /// lumped `ReduceExpr` into its leaf/no-op group). Both now descend into the
+    /// reduce (the alias-resolution descent SHIELDS the lambda binders so a
+    /// binder shadowing a WITH var is not corrupted, #949). Also covers a reduce
+    /// NESTED in a map/list (needs the value-wrapper descent to reach it).
+    #[tokio::test]
+    async fn reduce_referencing_outer_column_across_with_barrier_1018() {
+        let schema = load_schema("benchmarks/social_network/schemas/social_benchmark.yaml");
+
+        // Init references the outer column: must resolve to the CTE column, not
+        // the pre-barrier `u.user_id`, and NOT keep a bare `u.` alias.
+        let init_ref = render(
+            &schema,
+            "MATCH (u:User) WITH u, [1, 2, 3] AS xs \
+             RETURN reduce(acc = u.user_id, y IN xs | acc + y) AS r",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            init_ref.contains("arrayFold") && !init_ref.contains(", u.user_id)"),
+            "#1018: reduce init's outer-column ref must resolve to the CTE column, \
+             not keep the pre-barrier `u.user_id`:\n{init_ref}"
+        );
+
+        // Body references the outer column (not just the init).
+        let body_ref = render(
+            &schema,
+            "MATCH (u:User) WITH u, [1, 2, 3] AS xs \
+             RETURN reduce(acc = 0, y IN xs | acc + y + u.user_id) AS r",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !body_ref.contains("+ u.user_id"),
+            "#1018: reduce body's outer-column ref must be resolved across the \
+             barrier:\n{body_ref}"
+        );
+
+        // Binder-shadow safety: a lambda binder named like the WITH var must NOT
+        // be rewritten to a CTE column (only the outer-scope init ref is).
+        let shadow = render(
+            &schema,
+            "MATCH (u:User) WITH u, [1, 2, 3] AS xs \
+             RETURN reduce(u = u.user_id, y IN xs | u + y) AS r",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            shadow.contains("arrayFold(u, y -> u + y,"),
+            "#1018: a reduce binder shadowing the WITH var must stay the lambda \
+             binder (not resolved to a CTE column):\n{shadow}"
+        );
+
+        // Reduce nested in a map literal: the value-wrapper descent must reach
+        // the reduce to resolve its outer ref.
+        let nested = render(
+            &schema,
+            "MATCH (u:User) WITH u, [1, 2, 3] AS xs \
+             RETURN {r: reduce(acc = u.user_id, y IN xs | acc + y)} AS m",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !nested.contains(", u.user_id)"),
+            "#1018: a reduce nested in a map literal must still resolve its \
+             outer-column ref:\n{nested}"
+        );
+    }
+
     /// The ClickHouse dialect must route the string-only functions to their
     /// `…UTF8` variants; Spark's are already Unicode-aware, so Databricks keeps
     /// the plain names.

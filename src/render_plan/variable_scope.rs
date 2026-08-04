@@ -1220,15 +1220,166 @@ pub fn rewrite_render_expr(expr: &RenderExpr, scope: &VariableScope) -> RenderEx
                 expr.clone()
             }
         }
+        // #1018: a `reduce()`'s outer-scope sub-expressions (init, list) and its
+        // body can reference an outer node column across a WITH barrier; scope
+        // resolution must descend into them to rewrite `u.user_id` →
+        // `u_xs.p1_u_user_id` (previously `ReduceExpr` sat in the leaf/no-op
+        // group, so the ref kept its pre-barrier alias → Code 47). The lambda
+        // binders (`accumulator` / `variable`) are query-local and could shadow a
+        // WITH-exported alias of the same name (#949 concern); shield them so the
+        // body's binder references are never resolved as CTE columns. `init` and
+        // `list` evaluate in the OUTER scope (no binders in scope there), so they
+        // resolve normally.
+        RenderExpr::ReduceExpr(reduce) => {
+            let shield = [reduce.accumulator.clone(), reduce.variable.clone()];
+            RenderExpr::ReduceExpr(super::render_expr::ReduceExpr {
+                accumulator: reduce.accumulator.clone(),
+                initial_value: Box::new(rewrite_render_expr(&reduce.initial_value, scope)),
+                variable: reduce.variable.clone(),
+                list: Box::new(rewrite_render_expr(&reduce.list, scope)),
+                expression: Box::new(rewrite_render_expr_shielded(
+                    &reduce.expression,
+                    scope,
+                    &shield,
+                )),
+            })
+        }
         // Leaf nodes — no rewriting needed
         RenderExpr::Literal(_)
         | RenderExpr::Star
         | RenderExpr::Parameter(_)
         | RenderExpr::InSubquery(_)
         | RenderExpr::ExistsSubquery(_)
-        | RenderExpr::ReduceExpr(_)
         | RenderExpr::PatternCount(_)
         | RenderExpr::CteEntityRef(_) => expr.clone(),
+    }
+}
+
+/// #1018: scope-resolve an expression while SHIELDING a set of binder names
+/// (a `reduce()` lambda's `accumulator` / `variable`). A bare reference whose
+/// alias/name is a shielded binder is left untouched (it is a query-local lambda
+/// variable, not a WITH-exported column); everything else resolves as in
+/// `rewrite_render_expr`. Only the shape that can hold a shielded bare reference
+/// needs special handling — a `PropertyAccessExp` / `TableAlias` / `ColumnAlias`
+/// / `Column` whose name is shielded is returned verbatim; all other variants
+/// (and nested reduces, which re-shield their own binders) delegate through a
+/// small recursive descent that re-applies the shield.
+fn rewrite_render_expr_shielded(
+    expr: &RenderExpr,
+    scope: &VariableScope,
+    shield: &[String],
+) -> RenderExpr {
+    let is_shielded = |name: &str| shield.iter().any(|b| b == name);
+    match expr {
+        // A shielded bare reference is a lambda binder — never resolve it.
+        RenderExpr::PropertyAccessExp(pa) if is_shielded(&pa.table_alias.0) => expr.clone(),
+        RenderExpr::TableAlias(TableAlias(n)) if is_shielded(n) => expr.clone(),
+        RenderExpr::ColumnAlias(ColumnAlias(n)) if is_shielded(n) => expr.clone(),
+        RenderExpr::Column(col) if matches!(&col.0, PropertyValue::Column(n) if is_shielded(n)) => {
+            expr.clone()
+        }
+        // Recurse through the value-wrapper variants, re-applying the shield.
+        RenderExpr::OperatorApplicationExp(oa) => {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: oa.operator,
+                operands: oa
+                    .operands
+                    .iter()
+                    .map(|o| rewrite_render_expr_shielded(o, scope, shield))
+                    .collect(),
+            })
+        }
+        RenderExpr::ScalarFnCall(sf) => {
+            RenderExpr::ScalarFnCall(super::render_expr::ScalarFnCall {
+                name: sf.name.clone(),
+                args: sf
+                    .args
+                    .iter()
+                    .map(|a| rewrite_render_expr_shielded(a, scope, shield))
+                    .collect(),
+            })
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            RenderExpr::AggregateFnCall(super::render_expr::AggregateFnCall {
+                name: agg.name.clone(),
+                args: agg
+                    .args
+                    .iter()
+                    .map(|a| rewrite_render_expr_shielded(a, scope, shield))
+                    .collect(),
+            })
+        }
+        RenderExpr::List(items) => RenderExpr::List(
+            items
+                .iter()
+                .map(|i| rewrite_render_expr_shielded(i, scope, shield))
+                .collect(),
+        ),
+        RenderExpr::Case(case) => RenderExpr::Case(super::render_expr::RenderCase {
+            expr: case
+                .expr
+                .as_ref()
+                .map(|e| Box::new(rewrite_render_expr_shielded(e, scope, shield))),
+            when_then: case
+                .when_then
+                .iter()
+                .map(|(c, v)| {
+                    (
+                        rewrite_render_expr_shielded(c, scope, shield),
+                        rewrite_render_expr_shielded(v, scope, shield),
+                    )
+                })
+                .collect(),
+            else_expr: case
+                .else_expr
+                .as_ref()
+                .map(|e| Box::new(rewrite_render_expr_shielded(e, scope, shield))),
+        }),
+        RenderExpr::ArraySubscript { array, index } => RenderExpr::ArraySubscript {
+            array: Box::new(rewrite_render_expr_shielded(array, scope, shield)),
+            index: Box::new(rewrite_render_expr_shielded(index, scope, shield)),
+        },
+        RenderExpr::ArraySlicing { array, from, to } => RenderExpr::ArraySlicing {
+            array: Box::new(rewrite_render_expr_shielded(array, scope, shield)),
+            from: from
+                .as_ref()
+                .map(|f| Box::new(rewrite_render_expr_shielded(f, scope, shield))),
+            to: to
+                .as_ref()
+                .map(|t| Box::new(rewrite_render_expr_shielded(t, scope, shield))),
+        },
+        RenderExpr::MapLiteral(entries) => RenderExpr::MapLiteral(
+            entries
+                .iter()
+                .map(|(k, v)| (k.clone(), rewrite_render_expr_shielded(v, scope, shield)))
+                .collect(),
+        ),
+        RenderExpr::ReduceExpr(inner) => {
+            // A nested reduce re-shields its OWN binders on top of the inherited
+            // shield (both sets are query-local lambda vars).
+            let mut nested: Vec<String> = shield.to_vec();
+            nested.push(inner.accumulator.clone());
+            nested.push(inner.variable.clone());
+            RenderExpr::ReduceExpr(super::render_expr::ReduceExpr {
+                accumulator: inner.accumulator.clone(),
+                initial_value: Box::new(rewrite_render_expr_shielded(
+                    &inner.initial_value,
+                    scope,
+                    shield,
+                )),
+                variable: inner.variable.clone(),
+                list: Box::new(rewrite_render_expr_shielded(&inner.list, scope, shield)),
+                expression: Box::new(rewrite_render_expr_shielded(
+                    &inner.expression,
+                    scope,
+                    &nested,
+                )),
+            })
+        }
+        // Non-shielded leaves and everything else: resolve exactly as the
+        // unshielded walker would (a non-binder PropertyAccess/TableAlias/Column
+        // resolves normally; literals/subqueries/etc. are unchanged).
+        _ => rewrite_render_expr(expr, scope),
     }
 }
 
