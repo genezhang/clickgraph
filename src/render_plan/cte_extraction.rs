@@ -5257,20 +5257,30 @@ pub fn extract_ctes_with_context(
                                 .json_row_object(&rel_prop_cols.join(", "))
                         };
 
-                        // Collect node properties for start_properties and end_properties
-                        // This enables path queries: MATCH p=()-->() RETURN p
-                        // No AS aliases here — ClickHouse treats AS inside formatRowNoNewline
-                        // as SELECT-level aliases, which conflict when both start_properties and
-                        // end_properties reference same-named columns (User→User JOINs).
-                        // The result transformer's clean_property_keys() strips table alias prefixes.
-                        // For a denormalized endpoint the properties live in the
-                        // role-appropriate denorm map (from_properties / to_properties),
-                        // NOT property_mappings (which is empty for a virtual-id node).
-                        // Fall back to the other map for a partially-specified self-loop.
-                        // Sort by cypher-property key so the emitted column order
-                        // (and the runtime JSON blob key order) is deterministic —
-                        // both source maps are HashMaps (nondeterministic iteration).
-                        let start_prop_cols: Vec<String> = if from_denorm {
+                        // Collect node properties for start_properties and end_properties.
+                        // This enables path queries: MATCH p=()-->() RETURN p and the
+                        // single-property projection MATCH (a)-[r]->(b) RETURN a.<prop>.
+                        //
+                        // #1024: each column is aliased `AS _s_<db_column>` (start) /
+                        // `AS _e_<db_column>` (end). The JSON key MUST equal the key both
+                        // consumers ask for:
+                        //   - the pattern_union SELECT-path extractor
+                        //     (`select_builder.rs`) asks `JSONExtractString(blob,
+                        //     '_s_<db_column>')` — `db_column` is `prop_access.column.raw()`,
+                        //     the RESOLVED DB column, gated on `has_pattern_combinations`;
+                        //   - the Bolt path's `clean_property_keys()` strips a leading
+                        //     `_s_`/`_e_` (and any `table.` prefix), so whole-node
+                        // Raw (prefix-free) per-role property columns as
+                        // `(db_column, table_qualified_expr)` pairs. The `_s_`/`_e_`
+                        // JSON-key prefix is applied later, keyed on the OUTPUT slot
+                        // (start_properties vs end_properties), NOT on the source role —
+                        // because an undirected/reverse branch (`swap`) routes the to-role
+                        // columns into `start_properties` and vice-versa (see the
+                        // `s_props`/`e_props` swap below). Prefixing by role here would put
+                        // `_e_`-keyed data in `start_properties` on the reverse branch, and
+                        // the extractor (which asks `_s_<col>` for a start-position access)
+                        // would miss it → empty (the very silent-wrong failure this fixes).
+                        let from_prop_cols: Vec<(String, String)> = if from_denorm {
                             from_props
                                 .or(from_props_alt)
                                 .map(|m| {
@@ -5279,7 +5289,10 @@ pub fn extract_ctes_with_context(
                                     entries
                                         .into_iter()
                                         .map(|(_, col)| {
-                                            format!("{from_table}.{}", quote_identifier(col))
+                                            (
+                                                col.clone(),
+                                                format!("{from_table}.{}", quote_identifier(col)),
+                                            )
                                         })
                                         .collect()
                                 })
@@ -5292,14 +5305,16 @@ pub fn extract_ctes_with_context(
                                 .into_iter()
                                 .map(|(_, prop_val)| match prop_val {
                                     PropertyValue::Column(c) => {
-                                        format!("{from_table}.{}", quote_identifier(c))
+                                        (c.clone(), format!("{from_table}.{}", quote_identifier(c)))
                                     }
-                                    PropertyValue::Expression(e) => format!("{from_table}.{e}"),
+                                    PropertyValue::Expression(e) => {
+                                        (e.clone(), format!("{from_table}.{e}"))
+                                    }
                                 })
                                 .collect()
                         };
 
-                        let end_prop_cols: Vec<String> = if to_denorm {
+                        let to_prop_cols: Vec<(String, String)> = if to_denorm {
                             to_props
                                 .or(to_props_alt)
                                 .map(|m| {
@@ -5308,7 +5323,10 @@ pub fn extract_ctes_with_context(
                                     entries
                                         .into_iter()
                                         .map(|(_, col)| {
-                                            format!("{to_table}.{}", quote_identifier(col))
+                                            (
+                                                col.clone(),
+                                                format!("{to_table}.{}", quote_identifier(col)),
+                                            )
                                         })
                                         .collect()
                                 })
@@ -5321,26 +5339,49 @@ pub fn extract_ctes_with_context(
                                 .into_iter()
                                 .map(|(_, prop_val)| match prop_val {
                                     PropertyValue::Column(c) => {
-                                        format!("{to_table}.{}", quote_identifier(c))
+                                        (c.clone(), format!("{to_table}.{}", quote_identifier(c)))
                                     }
-                                    PropertyValue::Expression(e) => format!("{to_table}.{e}"),
+                                    PropertyValue::Expression(e) => {
+                                        (e.clone(), format!("{to_table}.{e}"))
+                                    }
                                 })
                                 .collect()
                         };
 
-                        let start_properties_json = if start_prop_cols.is_empty() {
-                            "'{}'".to_string()
-                        } else {
-                            crate::sql_generator::function_mapper::current_function_mapper()
-                                .json_row_object(&start_prop_cols.join(", "))
-                        };
+                        // #1024: build one node-property JSON blob, keying each column
+                        // `AS <slot_prefix><db_column>` (`_s_` for the start slot, `_e_`
+                        // for the end slot). The role-unique prefix keeps keys unambiguous
+                        // in scope (no Code 179 on a User→User self-join, no silent-empty
+                        // from ClickHouse re-qualifying the 2nd blob's keys) and matches
+                        // what the extractor (`select_builder.rs`, gated on
+                        // `has_pattern_combinations`) asks for; the Bolt path's
+                        // `clean_property_keys()` strips the prefix for whole-node returns.
+                        let node_props_json =
+                            |cols: &[(String, String)], slot_prefix: &str| -> String {
+                                if cols.is_empty() {
+                                    return "'{}'".to_string();
+                                }
+                                let aliased: Vec<String> = cols
+                                    .iter()
+                                    .map(|(db_col, expr)| {
+                                        format!(
+                                            "{expr} AS {}",
+                                            quote_identifier(&format!("{slot_prefix}{db_col}"))
+                                        )
+                                    })
+                                    .collect();
+                                crate::sql_generator::function_mapper::current_function_mapper()
+                                    .json_row_object(&aliased.join(", "))
+                            };
 
-                        let end_properties_json = if end_prop_cols.is_empty() {
-                            "'{}'".to_string()
-                        } else {
-                            crate::sql_generator::function_mapper::current_function_mapper()
-                                .json_row_object(&end_prop_cols.join(", "))
-                        };
+                        // Forward orientation: from→start (`_s_`), to→end (`_e_`).
+                        let start_properties_json = node_props_json(&from_prop_cols, "_s_");
+                        let end_properties_json = node_props_json(&to_prop_cols, "_e_");
+                        // Reverse orientation (undirected `swap`): the to-role columns land
+                        // in start_properties and must carry the `_s_` slot prefix (and
+                        // from-role columns → end_properties, `_e_`).
+                        let start_properties_json_swapped = node_props_json(&to_prop_cols, "_s_");
+                        let end_properties_json_swapped = node_props_json(&from_prop_cols, "_e_");
 
                         // Extract base relationship type (strip ::FromLabel::ToLabel suffix)
                         let base_rel_type =
@@ -5552,7 +5593,12 @@ pub fn extract_ctes_with_context(
                                     (&start_id_expr, &end_id_expr)
                                 };
                                 let (s_props, e_props) = if swap {
-                                    (&end_properties_json, &start_properties_json)
+                                    // Reverse branch: to-role → start slot (already keyed
+                                    // `_s_`), from-role → end slot (`_e_`). #1024: the
+                                    // prefix follows the OUTPUT slot, so we pick the
+                                    // pre-built swapped variants rather than exchanging the
+                                    // forward ones (which would mis-key the slots).
+                                    (&start_properties_json_swapped, &end_properties_json_swapped)
                                 } else {
                                     (&start_properties_json, &end_properties_json)
                                 };

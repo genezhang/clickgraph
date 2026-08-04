@@ -2369,6 +2369,95 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 // vlp_follows (24, recursive CTE with the discriminator in both base and step)
 // all carry the type filter correctly.
 
+/// #1024 facet 1: on the fully-unlabeled `pattern_union` path, a node-property
+/// projection (`MATCH (a)-[r]->(b) RETURN a.name`) packs node props into the
+/// `start_properties`/`end_properties` JSON blobs. Before the fix those blobs
+/// carried BARE column keys (`formatRowNoNewline('JSONEachRow', from_node.col)`),
+/// which ClickHouse silently re-qualifies to `to_node.col` on the SECOND blob of
+/// a User→User self-join — so the extractor's bare lookup missed and returned
+/// empty strings (silent-wrong). The fix keys each blob entry with a role-unique
+/// `_s_`/`_e_` SLOT prefix and makes the extractor ask for the prefixed key.
+///
+/// This test locks the producer/extractor coherence WITHOUT executing SQL:
+///   1. start_properties columns are aliased `AS _s_<col>`, end as `AS _e_<col>`;
+///   2. the single-property extractor asks the matching prefixed key;
+///   3. CRUCIAL swap case: on the UNDIRECTED reverse branch the to-role columns
+///      land in `start_properties` and MUST still carry `_s_` (the prefix follows
+///      the OUTPUT slot, not the source role) — a role-keyed prefix would put
+///      `_e_` data in `start_properties` and re-break the reverse rows.
+/// Live-verified on ClickHouse 25.8 (directed a.name = 3×Alice; undirected adds
+/// the reversed FOLLOWS b→a = Bob, with Post-reverse branches correctly empty for
+/// the absent `name`).
+#[tokio::test]
+async fn pattern_union_node_property_uses_slot_prefixed_json_keys_1024() {
+    let schema = load_schema("benchmarks/social_network/schemas/social_benchmark.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // (1)+(2): directed single-property projection.
+        let sql = render(&schema, "MATCH (a)-[r]->(b) RETURN a.name", dialect).await;
+        // start_properties columns carry the `_s_` slot alias; the User full_name
+        // column (u.name → full_name) is present as `_s_full_name`.
+        assert!(
+            sql.contains("AS _s_full_name"),
+            "#1024 ({dialect:?}): start_properties must alias node cols `AS _s_<col>` \
+             (found none for full_name):\n{sql}"
+        );
+        // The extractor asks for the prefixed key, not the bare `full_name`.
+        let asks_prefixed = sql.contains("'_s_full_name'") // ClickHouse JSONExtractString
+            || sql.contains("$._s_full_name"); // Databricks get_json_object JSONPath
+        assert!(
+            asks_prefixed,
+            "#1024 ({dialect:?}): the a.name extractor must ask the `_s_full_name` \
+             prefixed key (matching the producer), not the bare column:\n{sql}"
+        );
+        // The bare-key extractor form must NOT survive (that was the silent-empty bug).
+        assert!(
+            !sql.contains("start_properties, 'full_name')")
+                && !sql.contains("start_properties, '$.full_name')"),
+            "#1024 ({dialect:?}): the bare-key `full_name` extractor must be gone \
+             (it silently returned '' on the self-join):\n{sql}"
+        );
+
+        // (3): undirected reverse branch — to_node cols in start_properties keep `_s_`.
+        let undirected = render(&schema, "MATCH (a)-[r]-(b) RETURN a.name", dialect).await;
+        // The forward branch aliases from_node as `_s_`; the reverse branch aliases
+        // to_node into start_properties and MUST also use `_s_` (slot-, not role-keyed).
+        // Assert there is NO `_e_` prefix inside any `start_properties` blob and no
+        // `_s_` inside any `end_properties` blob — i.e. the slot prefix is consistent.
+        for line in undirected.lines() {
+            if let Some(start_blob) = extract_blob(line, "start_properties") {
+                assert!(
+                    !start_blob.contains("AS _e_"),
+                    "#1024 ({dialect:?}): a start_properties blob must only use the \
+                     `_s_` slot prefix (reverse-branch swap regression):\n{start_blob}"
+                );
+            }
+            if let Some(end_blob) = extract_blob(line, "end_properties") {
+                assert!(
+                    !end_blob.contains("AS _s_"),
+                    "#1024 ({dialect:?}): an end_properties blob must only use the \
+                     `_e_` slot prefix (reverse-branch swap regression):\n{end_blob}"
+                );
+            }
+        }
+    }
+}
+
+/// Helper for the #1024 test: return the substring of `line` that builds the JSON
+/// blob assigned `as <slot>` (the `formatRowNoNewline(...)` / `to_json(struct(...))`
+/// call just before ` as <slot>`), or None if this line has no such blob. Scoped
+/// to the region between the preceding `properties,` boundary and the ` as <slot>`.
+fn extract_blob<'a>(line: &'a str, slot: &str) -> Option<&'a str> {
+    let marker = format!(" as {slot}");
+    let end = line.find(&marker)?;
+    // Walk back to the start of this blob's column list — the first `JSONEachRow',`
+    // or `struct(` at or before `end`. Fall back to a bounded window.
+    let head = &line[..end];
+    let anchor = head
+        .rfind("JSONEachRow',")
+        .or_else(|| head.rfind("struct("))?;
+    Some(&line[anchor..end])
+}
+
 #[tokio::test]
 async fn sql_golden_snapshots() {
     let update = std::env::var("UPDATE_GOLDEN").as_deref() == Ok("1");

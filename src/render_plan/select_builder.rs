@@ -1203,6 +1203,36 @@ impl SelectBuilder for LogicalPlan {
                                     // CH:        JSONExtractString(json, 'name')
                                     // Databricks: get_json_object(json, '$.name')
                                     // See `json_extract_field_arg` for the argument rewrite.
+                                    //
+                                    // #1024: the pattern_union CTE builder
+                                    // (`cte_extraction.rs`) keys each node-property blob
+                                    // entry as `_s_<db_column>` / `_e_<db_column>` (a
+                                    // role-unique prefix that avoids the User→User
+                                    // self-loop key collision / silent-empty). Ask for the
+                                    // prefixed key on that path. The VLP multi-type path
+                                    // (`!has_pattern_combinations`) keeps its own bare-key
+                                    // convention (its native-column short-circuits above
+                                    // already handle id / non-id single-type props; only
+                                    // genuinely multi-type/polymorphic endpoints reach
+                                    // here, and their blob keys are unprefixed).
+                                    //
+                                    // KNOWN LIMITATION (#1027, pre-existing): `col_name` is a
+                                    // SINGLE plan-time-resolved DB column, so on an undirected
+                                    // DENORM self-loop whose two sides map the same property to
+                                    // DIFFERENT physical columns (e.g. `name`→`src_name`/
+                                    // `dst_name`), this asks one key (`_s_src_name`) for all
+                                    // branches while the reverse branch's blob carries the
+                                    // other (`_s_dst_name`) → empty on reverse rows. Needs
+                                    // per-branch cross-side resolution; tracked in #1027.
+                                    let extract_key = if has_pattern_combinations {
+                                        json_extract_field_arg(&format!(
+                                            "_{}_{}",
+                                            if position == "start" { "s" } else { "e" },
+                                            col_name
+                                        ))
+                                    } else {
+                                        json_extract_field_arg(col_name)
+                                    };
                                     select_items.push(SelectItem {
                                         expression: RenderExpr::ScalarFnCall(ScalarFnCall {
                                             name: current_function_mapper()
@@ -1219,7 +1249,7 @@ impl SelectBuilder for LogicalPlan {
                                                     )),
                                                 }),
                                                 RenderExpr::Literal(Literal::String(
-                                                    json_extract_field_arg(col_name),
+                                                    extract_key,
                                                 )),
                                             ],
                                         }),

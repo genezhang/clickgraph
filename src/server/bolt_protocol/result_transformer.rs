@@ -917,13 +917,30 @@ pub(crate) fn transform_to_node(
             Value::String(json_str) => {
                 if let Ok(parsed) = serde_json::from_str::<HashMap<String, Value>>(json_str) {
                     for (k, v) in parsed {
-                        // Strip table alias prefix from JSON keys (e.g., "a_1.user_id" → "user_id")
-                        // ClickHouse adds these prefixes when JOINs create ambiguous column names
-                        let clean_key = if k.contains('.') {
-                            k.split('.').next_back().unwrap_or(&k).to_string()
-                        } else {
-                            k
-                        };
+                        // #1024: the pattern_union CTE keys node-property blobs with a
+                        // role-unique `_s_`/`_e_` prefix (to dodge the User→User self-loop
+                        // key collision). Strip that prefix FIRST, then apply the existing
+                        // table-alias `.`-qualifier strip — this order is byte-identical to
+                        // the pre-#1024 behavior for every UNPREFIXED key (the prefix strip
+                        // is a no-op), and for a prefixed key it just removes `_s_`/`_e_`
+                        // before the same `.`-reduction runs. Mirrors `clean_property_keys()`.
+                        let mut clean_key = k;
+                        for prefix in &["_s_", "_e_", "_r_"] {
+                            if let Some(stripped) = clean_key.strip_prefix(prefix) {
+                                clean_key = stripped.to_string();
+                                break;
+                            }
+                        }
+                        // Strip table alias prefix from JSON keys (e.g., "a_1.user_id" →
+                        // "user_id"). ClickHouse adds these when JOINs create ambiguous
+                        // column names.
+                        if clean_key.contains('.') {
+                            clean_key = clean_key
+                                .split('.')
+                                .next_back()
+                                .unwrap_or(&clean_key)
+                                .to_string();
+                        }
                         properties.entry(clean_key).or_insert(v);
                     }
                 } else {
