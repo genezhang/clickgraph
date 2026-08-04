@@ -8514,6 +8514,76 @@ async fn closed_single_hop_property_binds_node_once_987() {
     }
 }
 
+/// #995: a CLOSED single hop with an INLINE node-property map on the START node
+/// (`(a:TestUser {name:'Alice'})-[:R]->(a)`) silently DROPPED that filter. The
+/// closed hop names the same alias `a` at both endpoints, and the planner's
+/// "not-connected" traversal branch registered `a`'s `TableCtx` twice — the second
+/// (end-node) `register_node_in_context` blindly `insert`ed a fresh empty-prop ctx
+/// OVER the first, discarding the start node's inline `{name:'Alice'}` before it
+/// could be lowered to a predicate. The end-node registration now APPENDS to the
+/// existing ctx (mirroring the sibling "start already in ctx" branch), so the
+/// inline map survives regardless of which endpoint carries it. The WHERE-clause
+/// form and the OPEN hop were always correct (WHERE predicates aren't keyed to node
+/// registration; the open hop's endpoints have distinct aliases).
+#[tokio::test]
+async fn closed_single_hop_inline_node_property_preserved_995() {
+    let schema = load_schema("schemas/test/test_fixtures.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // Inline map on the START node (the exact bug) — must survive.
+        let start_map = render(
+            &schema,
+            "MATCH (a:TestUser {name:'Alice'})-[:TEST_FOLLOWS]->(a) RETURN a.user_id",
+            dialect,
+        )
+        .await;
+        assert!(
+            start_map.contains("a.name = 'Alice'"),
+            "#995 ({dialect:?}): inline node-property map on the START node of a closed hop must be preserved:\n{start_map}"
+        );
+        // The self-loop constraint must ALSO still be present (both, AND'd).
+        assert!(
+            start_map.contains("follower_id = ") && start_map.contains("followed_id = "),
+            "#995 ({dialect:?}): the closed-hop self-loop constraint must coexist with the inline filter:\n{start_map}"
+        );
+
+        // Inline map on the END node — was already correct, must stay correct.
+        let end_map = render(
+            &schema,
+            "MATCH (a:TestUser)-[:TEST_FOLLOWS]->(a:TestUser {name:'Alice'}) RETURN a.user_id",
+            dialect,
+        )
+        .await;
+        assert!(
+            end_map.contains("a.name = 'Alice'"),
+            "#995 ({dialect:?}): inline node-property map on the END node of a closed hop must be preserved:\n{end_map}"
+        );
+
+        // Inline maps on BOTH endpoints — both conjuncts must appear (no clobber).
+        let both_maps = render(
+            &schema,
+            "MATCH (a:TestUser {name:'Alice'})-[:TEST_FOLLOWS]->(a:TestUser {user_id:1}) RETURN a.user_id",
+            dialect,
+        )
+        .await;
+        assert!(
+            both_maps.contains("a.name = 'Alice'") && both_maps.contains("a.user_id = 1"),
+            "#995 ({dialect:?}): inline maps on both endpoints of a closed hop must both survive:\n{both_maps}"
+        );
+
+        // OPEN hop with an inline map — untouched (single node filter, no self-loop).
+        let open = render(
+            &schema,
+            "MATCH (a:TestUser {name:'Alice'})-[:TEST_FOLLOWS]->(b:TestUser) RETURN a.user_id",
+            dialect,
+        )
+        .await;
+        assert!(
+            open.contains("a.name = 'Alice'"),
+            "#995 ({dialect:?}): OPEN hop inline map must be preserved (control):\n{open}"
+        );
+    }
+}
+
 /// #987 (FK-edge facet): a self-referencing FK-edge closed single-hop
 /// `(a)-[:PARENT]->(a)` (the "edge" IS the node table — FK columns live on the
 /// node row) was broken two ways: the `count(*)` form (SingleTableScan strategy)
