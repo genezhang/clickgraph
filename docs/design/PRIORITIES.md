@@ -138,12 +138,28 @@ Exit met: one fully green nightly run + xpass count 0.
   pre-existing on main, byte-identical, untouched by #839).
 
 ### P-1 — Keep a small silent-wrong bug lane open  (standing, ≤1 agent)
-**Lane state (2026-08-01): #523 closed as already-fixed (determinism-lock test
-added); #581 shipped — agg-arg NULL-padding validity now
-alias-qualified (was matching by bare physical column name, a latent
-name-coincidence false-positive).** Since
-the 07-19 reconcile this lane shipped ~23 fixes (all live- or SQL-gen-verified,
-newest first): **#523 (partial-ref undirected 2-hop golden flake, reported
+**Lane state (2026-08-06): #1027 shipped — undirected denorm self-loop
+cross-side property returned EMPTY on every reverse-orientation row
+(`pattern_union`). Root cause: the swap-branch node-property blobs keyed by the
+OTHER role's physical columns (`_s_dst_name`), while the SELECT extractor asks
+one plan-time canonical key per slot (`_s_src_name` for the start slot, from-map
+columns; `_e_dst_name` for the end, to-map) on ALL branches — so the canonical
+key was absent on swap branches → `JSONExtractString` = empty (silent-wrong; the
+#1024 slot-prefix fix was silent on it because the keys existed, just under the
+wrong role's name). Fix: the pattern_union CTE builder
+(`cte_extraction.rs`) now re-keys swap-branch blobs onto the opposite role's
+column names, matched by Cypher property name (self-loop-only guard
+`from_label == to_label`; non-self-loop / identical-map cases byte-identical).
+Corpus blast radius: exactly the 2 undirected goldens for the
+`denorm_selfloop_multitype` fixture (both dialects, 2 lines each); live-verified
+against ClickHouse — buggy SQL returned 8 empty rows on a 4-edge fixture, fixed
+SQL returns all 16 oracle rows. Locked by
+`denorm_self_loop_multitype_undirected_swap_rekey` (fails on revert) + the
+regenerated corpus goldens.** Since
+the 07-19 reconcile this lane shipped ~24 fixes (all live- or SQL-gen-verified,
+newest first): **#1027 (undirected denorm self-loop reverse-branch empty
+property, above)**,
+**#523 (partial-ref undirected 2-hop golden flake, reported
 2026-07-10 — root-caused as already-eliminated by the #480/#481 HashMap-order
 fixes + `normalize()` counter anonymization; verified byte-stable across 40
 fresh-process renders and 45 isolated test runs; locked by

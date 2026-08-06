@@ -396,3 +396,70 @@ fn denorm_self_loop_multitype_no_self_join() {
         "both edge types must expand into the multi-type UNION path; SQL:\n{sql}"
     );
 }
+
+/// #1027: on an undirected pattern over a DENORM self-loop whose from/to role
+/// maps key the same Cypher property to DIFFERENT physical columns (`name` →
+/// `src_name` on the from side, `dst_name` on the to side), the swap
+/// (reverse-orientation) UNION branches must expose each property under the
+/// slot's CANONICAL column key — from-map column names in `start_properties`,
+/// to-map column names in `end_properties` — with the branch's own (role-
+/// correct) value. Before the fix, the swap branches keyed by the OTHER role's
+/// column (`_s_dst_name`/`_e_src_name`), so the SELECT extractor's single
+/// plan-time key (`_s_src_name`/`_e_dst_name`) returned empty strings for every
+/// reverse-orientation row (silent-wrong). Live-verified against ClickHouse:
+/// buggy SQL returned 8 empty rows on a 4-edge fixture; fixed SQL returns all
+/// 16 oracle rows.
+#[test]
+fn denorm_self_loop_multitype_undirected_swap_rekey() {
+    let yaml = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/schemas/test/denorm_selfloop_multitype.yaml"
+    ))
+    .expect("read denorm_selfloop_multitype fixture");
+    let graph_schema = GraphSchemaConfig::from_yaml_str(&yaml)
+        .expect("parse fixture yaml")
+        .to_graph_schema()
+        .expect("build graph schema");
+
+    let ast = open_cypher_parser::parse_query("MATCH (a)-[r]-(b) RETURN a.name, b.name")
+        .expect("parse cypher");
+    let (logical_plan, mut plan_ctx) =
+        build_logical_plan(&ast, &graph_schema, None, None, None).expect("build logical plan");
+    use crate::query_planner::{analyzer, optimizer};
+    let logical_plan =
+        analyzer::initial_analyzing(logical_plan, &mut plan_ctx, &graph_schema).unwrap();
+    let logical_plan =
+        analyzer::intermediate_analyzing(logical_plan, &mut plan_ctx, &graph_schema).unwrap();
+    let logical_plan = optimizer::initial_optimization(logical_plan, &mut plan_ctx).unwrap();
+    let logical_plan = optimizer::final_optimization(logical_plan, &mut plan_ctx).unwrap();
+    let render_plan = logical_plan.to_render_plan(&graph_schema).expect("render");
+    let sql = clickhouse_query_generator::generate_sql(render_plan, 100);
+
+    // 4 branches: 2 edge types × 2 orientations. The swap branches must carry
+    // the canonical (from-role) key names in start_properties — with the
+    // to-role VALUES — and vice versa for end_properties. Fails on either a
+    // missing re-key (the #1027 regression) or a value/key mix-up.
+    assert!(
+        sql.contains("dst_actor AS _s_src_actor") && sql.contains("dst_name AS _s_src_name"),
+        "swap start_properties must be re-keyed to from-role column names; SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains("src_actor AS _e_dst_actor") && sql.contains("src_name AS _e_dst_name"),
+        "swap end_properties must be re-keyed to to-role column names; SQL:\n{sql}"
+    );
+    // The forward branches keep their own role's key names (unchanged).
+    assert!(
+        sql.contains("src_actor AS _s_src_actor") && sql.contains("src_name AS _s_src_name"),
+        "forward start_properties must keep from-role column names; SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains("dst_actor AS _e_dst_actor") && sql.contains("dst_name AS _e_dst_name"),
+        "forward end_properties must keep to-role column names; SQL:\n{sql}"
+    );
+    // The SELECT extractor asks exactly the canonical keys — present on all 4.
+    assert!(
+        sql.contains("JSONExtractString(r.start_properties, '_s_src_name')")
+            && sql.contains("JSONExtractString(r.end_properties, '_e_dst_name')"),
+        "extractor keys must be the canonical role keys; SQL:\n{sql}"
+    );
+}

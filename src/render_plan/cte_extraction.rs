@@ -5280,7 +5280,10 @@ pub fn extract_ctes_with_context(
                         // `_e_`-keyed data in `start_properties` on the reverse branch, and
                         // the extractor (which asks `_s_<col>` for a start-position access)
                         // would miss it → empty (the very silent-wrong failure this fixes).
-                        let from_prop_cols: Vec<(String, String)> = if from_denorm {
+                        // `(cypher_name, db_column, expr)` triples: the Cypher name is
+                        // carried so the swap-branch blobs can be re-keyed onto the
+                        // opposite role's column names (#1027, below).
+                        let from_prop_cols: Vec<(String, String, String)> = if from_denorm {
                             from_props
                                 .or(from_props_alt)
                                 .map(|m| {
@@ -5288,8 +5291,9 @@ pub fn extract_ctes_with_context(
                                     entries.sort_by_key(|(k, _)| k.as_str());
                                     entries
                                         .into_iter()
-                                        .map(|(_, col)| {
+                                        .map(|(cypher, col)| {
                                             (
+                                                cypher.clone(),
                                                 col.clone(),
                                                 format!("{from_table}.{}", quote_identifier(col)),
                                             )
@@ -5303,18 +5307,22 @@ pub fn extract_ctes_with_context(
                             entries.sort_by_key(|(k, _)| k.as_str());
                             entries
                                 .into_iter()
-                                .map(|(_, prop_val)| match prop_val {
-                                    PropertyValue::Column(c) => {
-                                        (c.clone(), format!("{from_table}.{}", quote_identifier(c)))
-                                    }
-                                    PropertyValue::Expression(e) => {
-                                        (e.clone(), format!("{from_table}.{e}"))
-                                    }
+                                .map(|(cypher, prop_val)| match prop_val {
+                                    PropertyValue::Column(c) => (
+                                        cypher.clone(),
+                                        c.clone(),
+                                        format!("{from_table}.{}", quote_identifier(c)),
+                                    ),
+                                    PropertyValue::Expression(e) => (
+                                        cypher.clone(),
+                                        e.clone(),
+                                        format!("{from_table}.{e}"),
+                                    ),
                                 })
                                 .collect()
                         };
 
-                        let to_prop_cols: Vec<(String, String)> = if to_denorm {
+                        let to_prop_cols: Vec<(String, String, String)> = if to_denorm {
                             to_props
                                 .or(to_props_alt)
                                 .map(|m| {
@@ -5322,8 +5330,9 @@ pub fn extract_ctes_with_context(
                                     entries.sort_by_key(|(k, _)| k.as_str());
                                     entries
                                         .into_iter()
-                                        .map(|(_, col)| {
+                                        .map(|(cypher, col)| {
                                             (
+                                                cypher.clone(),
                                                 col.clone(),
                                                 format!("{to_table}.{}", quote_identifier(col)),
                                             )
@@ -5337,13 +5346,17 @@ pub fn extract_ctes_with_context(
                             entries.sort_by_key(|(k, _)| k.as_str());
                             entries
                                 .into_iter()
-                                .map(|(_, prop_val)| match prop_val {
-                                    PropertyValue::Column(c) => {
-                                        (c.clone(), format!("{to_table}.{}", quote_identifier(c)))
-                                    }
-                                    PropertyValue::Expression(e) => {
-                                        (e.clone(), format!("{to_table}.{e}"))
-                                    }
+                                .map(|(cypher, prop_val)| match prop_val {
+                                    PropertyValue::Column(c) => (
+                                        cypher.clone(),
+                                        c.clone(),
+                                        format!("{to_table}.{}", quote_identifier(c)),
+                                    ),
+                                    PropertyValue::Expression(e) => (
+                                        cypher.clone(),
+                                        e.clone(),
+                                        format!("{to_table}.{e}"),
+                                    ),
                                 })
                                 .collect()
                         };
@@ -5357,13 +5370,13 @@ pub fn extract_ctes_with_context(
                         // `has_pattern_combinations`) asks for; the Bolt path's
                         // `clean_property_keys()` strips the prefix for whole-node returns.
                         let node_props_json =
-                            |cols: &[(String, String)], slot_prefix: &str| -> String {
+                            |cols: &[(String, String, String)], slot_prefix: &str| -> String {
                                 if cols.is_empty() {
                                     return "'{}'".to_string();
                                 }
                                 let aliased: Vec<String> = cols
                                     .iter()
-                                    .map(|(db_col, expr)| {
+                                    .map(|(_, db_col, expr)| {
                                         format!(
                                             "{expr} AS {}",
                                             quote_identifier(&format!("{slot_prefix}{db_col}"))
@@ -5377,11 +5390,89 @@ pub fn extract_ctes_with_context(
                         // Forward orientation: from→start (`_s_`), to→end (`_e_`).
                         let start_properties_json = node_props_json(&from_prop_cols, "_s_");
                         let end_properties_json = node_props_json(&to_prop_cols, "_e_");
-                        // Reverse orientation (undirected `swap`): the to-role columns land
-                        // in start_properties and must carry the `_s_` slot prefix (and
-                        // from-role columns → end_properties, `_e_`).
-                        let start_properties_json_swapped = node_props_json(&to_prop_cols, "_s_");
-                        let end_properties_json_swapped = node_props_json(&from_prop_cols, "_e_");
+
+                        // #1027: a SELF-LOOP endpoint (same label on both roles — e.g.
+                        // the denorm Actor→Actor edge above) renders BOTH role maps for
+                        // the SAME node, and an undirected pattern's swap branch routes
+                        // the to-role columns into the start slot and the from-role
+                        // columns into the end slot. The extractor (`select_builder.rs`,
+                        // gated on `has_pattern_combinations`) resolves each property to
+                        // ONE plan-time column per slot — from-map columns for the start
+                        // slot, to-map columns for the end — and asks for
+                        // `_s_<col>`/`_e_<col>` with that canonical key on ALL branches.
+                        // When the role maps key the same Cypher property to DIFFERENT
+                        // physical columns (e.g. `name` → `src_name` vs `dst_name`), the
+                        // un-re-keyed swap blob stores the value under the OTHER role's
+                        // column key, so the extractor's canonical key is absent on the
+                        // reverse branch → empty (silent-wrong) on every reverse-
+                        // orientation row. Re-key each swapped entry onto the OPPOSITE
+                        // role's column name, matched by Cypher property name; a
+                        // property absent from the opposite map keeps its own key
+                        // (byte-identical to the pre-existing one-sided behavior).
+                        // Non-self-loop endpoints (distinct labels) use a single
+                        // canonical map per node in both orientations, and identical
+                        // role maps re-key to themselves — both byte-identical, so the
+                        // guard is exactly the same-label case.
+                        let (start_properties_json_swapped, end_properties_json_swapped) =
+                            if combo.from_label == combo.to_label {
+                                let from_key_by_cypher: std::collections::HashMap<&str, &str> =
+                                    from_prop_cols
+                                        .iter()
+                                        .map(|(cypher, col, _)| {
+                                            (cypher.as_str(), col.as_str())
+                                        })
+                                        .collect();
+                                let to_key_by_cypher: std::collections::HashMap<&str, &str> =
+                                    to_prop_cols
+                                        .iter()
+                                        .map(|(cypher, col, _)| {
+                                            (cypher.as_str(), col.as_str())
+                                        })
+                                        .collect();
+                                let rekeyed = |cols: &[(String, String, String)],
+                                              key_by_cypher: &std::collections::HashMap<
+                                                  &str,
+                                                  &str,
+                                              >| {
+                                    cols.iter()
+                                        .map(|(cypher, col, expr)| {
+                                            let key = key_by_cypher
+                                                .get(cypher.as_str())
+                                                .copied()
+                                                .unwrap_or(col.as_str());
+                                            // `node_props_json` reads the MIDDLE element
+                                            // as the JSON key — the re-keyed column name
+                                            // goes there (the original column survives in
+                                            // the expr, element 2).
+                                            (cypher.clone(), key.to_string(), expr.clone())
+                                        })
+                                        .collect::<Vec<_>>()
+                                };
+                                // Reverse orientation (undirected `swap`): the to-role
+                                // columns land in start_properties and must carry the
+                                // `_s_` slot prefix (and from-role columns →
+                                // end_properties, `_e_`), re-keyed to the canonical
+                                // role's column names so the extractor's single key
+                                // matches every branch. #1024: the prefix follows the
+                                // OUTPUT slot, so we use these re-keyed variants rather
+                                // than exchanging the forward ones (which would mis-key
+                                // the slots).
+                                (
+                                    node_props_json(
+                                        &rekeyed(&to_prop_cols, &from_key_by_cypher),
+                                        "_s_",
+                                    ),
+                                    node_props_json(
+                                        &rekeyed(&from_prop_cols, &to_key_by_cypher),
+                                        "_e_",
+                                    ),
+                                )
+                            } else {
+                                (
+                                    node_props_json(&to_prop_cols, "_s_"),
+                                    node_props_json(&from_prop_cols, "_e_"),
+                                )
+                            };
 
                         // Extract base relationship type (strip ::FromLabel::ToLabel suffix)
                         let base_rel_type =
