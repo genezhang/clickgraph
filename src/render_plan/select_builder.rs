@@ -1216,14 +1216,18 @@ impl SelectBuilder for LogicalPlan {
                                     // genuinely multi-type/polymorphic endpoints reach
                                     // here, and their blob keys are unprefixed).
                                     //
-                                    // KNOWN LIMITATION (#1027, pre-existing): `col_name` is a
-                                    // SINGLE plan-time-resolved DB column, so on an undirected
-                                    // DENORM self-loop whose two sides map the same property to
-                                    // DIFFERENT physical columns (e.g. `name`→`src_name`/
-                                    // `dst_name`), this asks one key (`_s_src_name`) for all
-                                    // branches while the reverse branch's blob carries the
-                                    // other (`_s_dst_name`) → empty on reverse rows. Needs
-                                    // per-branch cross-side resolution; tracked in #1027.
+                                    // #1027 (fixed): `col_name` is a SINGLE plan-time-
+                                    // resolved DB column, which used to be a problem on an
+                                    // undirected DENORM self-loop whose two sides map the
+                                    // same property to DIFFERENT physical columns (e.g.
+                                    // `name`→`src_name`/`dst_name`): this asks one key
+                                    // (`_s_src_name`) for all branches while the reverse
+                                    // branch's blob carried the other (`_s_dst_name`) →
+                                    // empty on reverse rows. The pattern_union CTE builder
+                                    // (`cte_extraction.rs`) now re-keys the swap branches'
+                                    // blobs onto the canonical role's column names, so this
+                                    // single key is present on every branch with the
+                                    // branch-correct value.
                                     let extract_key = if has_pattern_combinations {
                                         json_extract_field_arg(&format!(
                                             "_{}_{}",
