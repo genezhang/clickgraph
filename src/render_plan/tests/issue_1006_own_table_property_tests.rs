@@ -260,3 +260,128 @@ fn virtual_node_id_never_resolves_through_own_table() {
         "no own-table join may be injected for virtual node_id properties; SQL:\n{sql}"
     );
 }
+
+#[test]
+fn where_filter_plain_arrow_resolves_from_side() {
+    // The live #1006 repro: plain arrow (non-VLP), WHERE on the FROM-side
+    // endpoint whose embedded map covers only its id. Before the filter-path
+    // fix the predicate fell through to the denormalized-alias remap and
+    // emitted `WHERE t1.name = 'Alice'` on the edge table (Code 47) — the
+    // registration must now come from the filter path (a.name is NOT in the
+    // SELECT).
+    let sql = translate(
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) WHERE a.name = 'Alice' RETURN a.pid, b.name",
+    );
+
+    assert!(
+        sql.contains(OWN_TABLE_JOIN),
+        "must inject the deduplicated own-table LEFT JOIN; SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains("WHERE a.name = 'Alice'"),
+        "the filter must reference the injected join alias a, not the edge alias; SQL:\n{sql}"
+    );
+    assert!(
+        !sql.contains("t1.name"),
+        "must not reference reports.name (edge table has no name column); SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains(r#"mgr_id AS "a.pid""#),
+        "the embedded id property a.pid must still resolve through the edge map; SQL:\n{sql}"
+    );
+}
+
+#[test]
+fn order_by_only_plain_arrow_uses_own_table() {
+    // ORDER BY referencing a foreign-embedded endpoint property that is not in
+    // the SELECT and not in any WHERE — the request must be registered by the
+    // order-by path so the own-table join is injected.
+    let sql = translate(
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) RETURN a.pid, b.name ORDER BY a.name",
+    );
+
+    assert!(sql.contains(OWN_TABLE_JOIN), "SQL:\n{sql}");
+    assert!(
+        sql.contains("ORDER BY a.name ASC"),
+        "ORDER BY must reference the injected join alias; SQL:\n{sql}"
+    );
+    assert!(
+        !sql.contains("t1.name"),
+        "must not reference reports.name; SQL:\n{sql}"
+    );
+}
+
+#[test]
+fn where_only_on_own_table_property_plain_arrow() {
+    // The foreign-embedded endpoint appears ONLY in the WHERE clause; the
+    // whole own-table request must come from the filter path (pre-registered
+    // before join injection).
+    let sql = translate(
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) WHERE a.name = 'Alice' RETURN b.name",
+    );
+
+    assert!(sql.contains(OWN_TABLE_JOIN), "SQL:\n{sql}");
+    assert!(sql.contains("WHERE a.name = 'Alice'"), "SQL:\n{sql}");
+    assert!(
+        !sql.contains("t1.name"),
+        "must not reference reports.name; SQL:\n{sql}"
+    );
+}
+
+#[test]
+fn unlabeled_where_on_own_table_property_plain_arrow() {
+    // The live #1006 repro without labels: `MATCH (a)-[r]->(b)` leaves
+    // GraphNode.label None and rel.labels empty, so both
+    // `get_node_label_for_alias` and the rel-type connection fallback
+    // (#551/#560) fail — the embedded-id-key schema match must kick in, or
+    // the predicate falls through to `r.name` on reports (Code 47).
+    let sql = translate("MATCH (a)-[r]->(b) WHERE a.name = 'Alice' RETURN a.pid, b.name");
+
+    assert!(sql.contains(OWN_TABLE_JOIN), "SQL:\n{sql}");
+    assert!(
+        sql.contains("WHERE a.name = 'Alice'"),
+        "the filter must reference the injected join alias a, not the edge alias; SQL:\n{sql}"
+    );
+    assert!(
+        !sql.contains("r.name"),
+        "must not reference reports.name; SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains(r#"mgr_id AS "a.pid""#),
+        "the embedded id property a.pid must still resolve through the edge map; SQL:\n{sql}"
+    );
+}
+
+#[test]
+fn unlabeled_select_own_table_property_plain_arrow() {
+    // Same unlabeled shape, property only in the SELECT (select-builder #1006
+    // branch): the label fallback must fire there too.
+    let sql = translate("MATCH (a)-[r]->(b) RETURN a.name, b.name");
+
+    assert!(sql.contains(OWN_TABLE_JOIN), "SQL:\n{sql}");
+    assert!(
+        sql.contains(r#"a.name AS "a.name""#),
+        "a.name must resolve through the node alias; SQL:\n{sql}"
+    );
+    assert!(
+        !sql.contains("r.name"),
+        "must not reference reports.name; SQL:\n{sql}"
+    );
+}
+
+#[test]
+fn unlabeled_order_by_own_table_property_plain_arrow() {
+    // Unlabeled + WHERE-less ORDER BY — both the order-by registration and the
+    // label fallback must fire (live repro variant).
+    let sql = translate("MATCH (a)-[r]->(b) RETURN a.pid, b.name ORDER BY a.name");
+
+    assert!(sql.contains(OWN_TABLE_JOIN), "SQL:\n{sql}");
+    assert!(
+        sql.contains("ORDER BY a.name ASC"),
+        "ORDER BY must reference the injected join alias; SQL:\n{sql}"
+    );
+    assert!(
+        !sql.contains("r.name"),
+        "must not reference reports.name; SQL:\n{sql}"
+    );
+}

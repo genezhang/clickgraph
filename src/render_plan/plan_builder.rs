@@ -2838,6 +2838,21 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
             }
             LogicalPlan::OrderBy(ob) => {
+                // #1006: register own-table join requests for ORDER BY
+                // expressions BEFORE rendering the input — the input's
+                // GraphJoins arm injects the own-table joins during the
+                // recursion below, so a WHERE/SELECT-less ORDER BY reference
+                // (`RETURN a.pid, b.name ORDER BY a.name`) would otherwise be
+                // property-mapped with an empty registry and fall through to
+                // the denormalized-alias remap (`t1.name` → Code 47).
+                for item in &ob.items {
+                    if let Ok(expr) = RenderExpr::try_from(item.expression.clone()) {
+                        crate::render_plan::plan_builder_helpers::register_own_table_property_requests(
+                            &expr,
+                            &ob.input,
+                        );
+                    }
+                }
                 // For OrderBy, convert the input plan and set order_by
                 let mut render_plan = ob.input.to_render_plan(schema)?;
 
@@ -5571,6 +5586,19 @@ impl RenderPlanBuilder for LogicalPlan {
                     items: <LogicalPlan as SelectBuilder>::extract_select_items(self, plan_ctx)?,
                     distinct: FilterBuilder::extract_distinct(self),
                 };
+                // #1006: register own-table join requests for filter/WHERE and
+                // ORDER BY / GROUP BY / HAVING expressions BEFORE the join
+                // extraction below (its GraphJoins arm injects the own-table
+                // joins; `extract_filters`/`extract_order_by` run after it). A
+                // WHERE/SELECT-less ORDER BY reference (`RETURN a.pid, b.name
+                // ORDER BY a.name`) would otherwise be property-mapped with an
+                // empty registry and fall through to the denormalized-alias
+                // remap (`t1.name` → Code 47). The plan walker descends
+                // wrapper nodes (OrderBy/GroupBy/Filter/Limit/Skip) above the
+                // GraphJoins, so wrapper-level references are covered here;
+                // references inside `graph_joins.input` are re-walked by the
+                // join builder's pre-injection pass (idempotent).
+                super::plan_builder_helpers::register_own_table_requests_in_plan(self);
                 let from = FromTableItem(self.extract_from()?.and_then(|ft| ft.table));
                 let joins = JoinItems::new(RenderPlanBuilder::extract_joins(self, schema)?);
                 let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);

@@ -1906,6 +1906,15 @@ impl JoinBuilder for LogicalPlan {
                 // node_id and never drops edge rows (LEFT JOIN; the id stays on
                 // the edge). Aliased by the NODE alias so downstream references
                 // (`a.name`) resolve without further rewrites.
+                //
+                // #1006 (WHERE path): register own-table requests for the plan's
+                // filter predicates FIRST — join injection runs before
+                // `extract_filters` in the GraphJoins arm, so a WHERE-only
+                // reference would otherwise miss the #1006 intercept and fall
+                // through to the denormalized-alias remap (`t1.name` → Code 47).
+                super::plan_builder_helpers::register_own_table_requests_in_plan(
+                    &graph_joins.input,
+                );
                 inject_own_table_joins(&mut joins, &graph_joins.input, schema);
 
                 // #474: Recover an OPTIONAL MATCH predicate that references only the

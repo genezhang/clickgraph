@@ -1402,8 +1402,11 @@ impl SelectBuilder for LogicalPlan {
                                         cypher_alias, self,
                                     ) {
                                         let task_schema = crate::server::query_context::get_current_schema_with_fallback();
-                                        let node_label = crate::render_plan::cte_extraction::get_node_label_for_alias(
-                                            cypher_alias, self,
+                                        let node_label = crate::render_plan::plan_builder_helpers::own_table_label_for_alias(
+                                            self,
+                                            cypher_alias,
+                                            &properties,
+                                            col_name,
                                         );
                                         let physical = task_schema
                                             .as_ref()
