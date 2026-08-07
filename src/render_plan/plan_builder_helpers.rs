@@ -3367,7 +3367,6 @@ pub(super) fn register_own_table_property_requests(expr: &RenderExpr, plan: &Log
                     }
                 }
             }
-            return;
         }
         RenderExpr::ScalarFnCall(sf) => {
             for arg in &sf.args {
