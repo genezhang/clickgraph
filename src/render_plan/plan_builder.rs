@@ -6102,6 +6102,21 @@ impl RenderPlanBuilder for LogicalPlan {
                     };
                 }
 
+                // #1007: a bare GraphRel CTE body renders WITHOUT a GraphJoins
+                // wrapper — the only place `inject_own_table_joins` runs — so a
+                // pre-registered own-table request (this WITH segment's select
+                // items / WHERE, registered by build_chained_with_match_cte_plan
+                // before the body render) would never become a join, leaving
+                // `a.name` dangling on an unbound alias → Code 47. Register the
+                // body's own references and inject here, mirroring the GraphJoins
+                // arm (idempotent: the walker + bound-alias dedup).
+                super::plan_builder_helpers::register_own_table_requests_in_plan(self);
+                crate::render_plan::join_builder::inject_own_table_joins(
+                    &mut render_plan.joins.0,
+                    self,
+                    schema,
+                );
+
                 return Ok(render_plan);
             }
 

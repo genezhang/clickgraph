@@ -2642,6 +2642,14 @@ fn get_property_from_viewscan(
             get_property_from_viewscan(alias, property, &group_by.input)
         }
         LogicalPlan::Cte(cte) => get_property_from_viewscan(alias, property, &cte.input),
+        // #1007: a second independent MATCH plans as a CartesianProduct; the
+        // property lookup must descend into both sides or a standalone
+        // foreign-embedded node (`MATCH (c:Person)` scanning its own table)
+        // falls through to the label-based mapping and picks up the
+        // edge-embedded position column (mgr_id) instead of its own table
+        // column (people.pid) → Code 47.
+        LogicalPlan::CartesianProduct(cp) => get_property_from_viewscan(alias, property, &cp.left)
+            .or_else(|| get_property_from_viewscan(alias, property, &cp.right)),
         LogicalPlan::ViewScan(_scan) => {
             // Bare ViewScan without wrapping GraphNode: skip.
             // Alias-based lookups should only match through GraphNode (line 2268)
@@ -3422,6 +3430,119 @@ pub(super) fn register_own_table_property_requests(expr: &RenderExpr, plan: &Log
     }
 }
 
+/// #1007 (M1/M2): own-table column resolution for a property access whose
+/// alias has a registered own-table join request (see
+/// `register_own_table_join_request`). Returns the node's OWN table physical
+/// column when the property is among the request's properties (matched by
+/// Cypher name or by physical column), else `None`. Mirrors the #1006
+/// filter-path intercept in `apply_property_mapping_to_expr_shielded`: the
+/// alias names the lazily-injected own-table LEFT JOIN, so the column must
+/// resolve against the node's own table — NOT the edge's embedded map
+/// (which lacks the property → Code 47 if redirected to the edge table).
+/// A `None` here means "no request registered" — callers must fall through
+/// to their pre-#1007 behavior, never register from here (registration is
+/// purely a pre-injection concern; a request registered after the join
+/// injection point would dangle and leak — see `OwnTableJoinGuard`).
+pub(super) fn own_table_property_resolution(table_alias: &str, col: &str) -> Option<String> {
+    let requests = crate::server::query_context::own_table_join_requests();
+    let own = requests.get(table_alias)?;
+    let task_schema = crate::server::query_context::get_current_schema_with_fallback();
+    let node_schema = task_schema
+        .as_ref()
+        .and_then(|s| s.node_schema_opt(&own.node_label))?;
+    let matched = own.properties.iter().find(|p| {
+        **p == col || own_table_property_column(node_schema, p).as_deref() == Some(col)
+    })?;
+    own_table_property_column(node_schema, matched)
+}
+
+/// #1007 (M2): walk `expr` and resolve every property access whose alias has
+/// a registered own-table join request against the node's OWN table physical
+/// column. Used for the post-WITH WHERE→HAVING clause, which renders AFTER
+/// the CTE body's join injection: the injected own-table LEFT JOIN binds the
+/// NODE alias, so a non-embedded reference (`a.name` when only `pid` is
+/// embedded) must point at the join's physical column, not dangle unbindable.
+/// Deliberately a MIRROR of `register_own_table_property_requests`'s
+/// traversal (same variant set) so registration and resolution can never
+/// disagree about which expressions are reachable. No-ops for aliases
+/// without a registered request — the pre-#1007 denorm remap path is
+/// untouched.
+pub(super) fn resolve_own_table_property_in_expr(expr: &mut RenderExpr) {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            let col = prop.column.raw().to_string();
+            if let Some(physical) = own_table_property_resolution(&prop.table_alias.0, &col) {
+                log::debug!(
+                    "🔍 #1007: '{}.{}' resolved against own table column '{}' (WITH WHERE/HAVING)",
+                    prop.table_alias.0,
+                    col,
+                    physical
+                );
+                prop.column =
+                    crate::graph_catalog::expression_parser::PropertyValue::Column(physical);
+            }
+        }
+        RenderExpr::ScalarFnCall(sf) => {
+            for arg in &mut sf.args {
+                resolve_own_table_property_in_expr(arg);
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in &mut agg.args {
+                resolve_own_table_property_in_expr(arg);
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in &mut op.operands {
+                resolve_own_table_property_in_expr(operand);
+            }
+        }
+        RenderExpr::Case(case) => {
+            if let Some(e) = &mut case.expr {
+                resolve_own_table_property_in_expr(e);
+            }
+            for (w, t) in &mut case.when_then {
+                resolve_own_table_property_in_expr(w);
+                resolve_own_table_property_in_expr(t);
+            }
+            if let Some(e) = &mut case.else_expr {
+                resolve_own_table_property_in_expr(e);
+            }
+        }
+        RenderExpr::ReduceExpr(reduce) => {
+            resolve_own_table_property_in_expr(&mut reduce.initial_value);
+            resolve_own_table_property_in_expr(&mut reduce.list);
+            resolve_own_table_property_in_expr(&mut reduce.expression);
+        }
+        RenderExpr::List(items) => {
+            for item in items {
+                resolve_own_table_property_in_expr(item);
+            }
+        }
+        RenderExpr::MapLiteral(entries) => {
+            for (_, v) in entries {
+                resolve_own_table_property_in_expr(v);
+            }
+        }
+        RenderExpr::ArraySubscript { array, index } => {
+            resolve_own_table_property_in_expr(array);
+            resolve_own_table_property_in_expr(index);
+        }
+        RenderExpr::ArraySlicing { array, from, to } => {
+            resolve_own_table_property_in_expr(array);
+            if let Some(f) = from {
+                resolve_own_table_property_in_expr(f);
+            }
+            if let Some(t) = to {
+                resolve_own_table_property_in_expr(t);
+            }
+        }
+        // Subqueries own a separate alias scope (InSubquery/ExistsSubquery/
+        // PatternCount) and leaves carry no property accesses.
+        _ => {}
+    }
+}
+
 /// Get the relationship alias and ID column for a denormalized node alias
 /// For example, if `b` is the "to" node of `r1` or the "from" node of `r2`,
 /// this returns (rel_alias, id_column_name).
@@ -3497,6 +3618,18 @@ pub(super) fn get_denormalized_node_id_reference(
             get_denormalized_node_id_reference(alias, &group_by.input)
         }
         LogicalPlan::Cte(cte) => get_denormalized_node_id_reference(alias, &cte.input),
+        // #1007: a multi-MATCH query (`MATCH (a)-[:R]->(b) MATCH (c) ...`) plans
+        // as a CartesianProduct; the injected own-table join must find the
+        // denormalized edge for an endpoint alias on either side. Without this
+        // arm the lookup fell into `_ => None`, so the join was never injected
+        // and `a.name` (non-embedded) dangled unbindable in the SELECT/WHERE
+        // → ClickHouse Code 47.
+        LogicalPlan::CartesianProduct(cp) => {
+            if let Some(result) = get_denormalized_node_id_reference(alias, &cp.left) {
+                return Some(result);
+            }
+            get_denormalized_node_id_reference(alias, &cp.right)
+        }
         _ => None,
     }
 }

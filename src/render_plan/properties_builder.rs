@@ -82,19 +82,29 @@ impl PropertiesBuilder for LogicalPlan {
                         scan.to_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()));
                     // For denormalized nodes with properties on the ViewScan (from standalone node query)
                     if crate::graph_catalog::pattern_schema::scan_denormalized_flag(scan) {
-                        if let Some(from_props) = &scan.from_node_properties {
-                            let properties = extract_sorted_properties(from_props);
-                            if !properties.is_empty() {
-                                log::debug!("get_properties_with_table_alias: Returning {} from_node_properties for '{}'", properties.len(), alias);
-                                return Ok((properties, None)); // Use original alias
+                        // #1007: foreign-embedded node — the ViewScan's OWN
+                        // property_mapping holds the real columns on the node's
+                        // table (people: pid→pid). It wins over the embedded
+                        // position maps, whose columns live on the EDGE table
+                        // (mgr_id) and only apply when the node is bound as an
+                        // edge endpoint. Same-table denormalized nodes (zeek,
+                        // denormalized_flights) declare an EMPTY
+                        // property_mapping and keep the embedded behavior.
+                        // Mirrors the FilterTagging priority fix.
+                        let mut properties = extract_sorted_properties(&scan.property_mapping);
+                        if properties.is_empty() {
+                            if let Some(from_props) = &scan.from_node_properties {
+                                properties = extract_sorted_properties(from_props);
+                            }
+                            if properties.is_empty() {
+                                if let Some(to_props) = &scan.to_node_properties {
+                                    properties = extract_sorted_properties(to_props);
+                                }
                             }
                         }
-                        if let Some(to_props) = &scan.to_node_properties {
-                            let properties = extract_sorted_properties(to_props);
-                            if !properties.is_empty() {
-                                log::debug!("get_properties_with_table_alias: Returning {} to_node_properties for '{}'", properties.len(), alias);
-                                return Ok((properties, None));
-                            }
+                        if !properties.is_empty() {
+                            log::debug!("get_properties_with_table_alias: Returning {} properties for denormalized '{}'", properties.len(), alias);
+                            return Ok((properties, None)); // Use original alias
                         }
                     } else {
                         // For non-denormalized nodes, properties come from the node table itself

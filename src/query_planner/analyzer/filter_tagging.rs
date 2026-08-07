@@ -2783,7 +2783,22 @@ impl FilterTagging {
             LogicalPlan::GraphNode(node) => {
                 if node.alias == alias {
                     if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
-                        // Check from_node_properties first
+                        // #1007: check the ViewScan's OWN property_mapping (the
+                        // node table's real columns) FIRST. For foreign-embedded
+                        // nodes (node.table != edge.table, e.g.
+                        // schemas/test/foreign_selfloop.yaml) a standalone scan
+                        // binds the NODE table, so the embedded position maps
+                        // (the columns on the EDGE table) must NOT win.
+                        // Same-table denormalized nodes (zeek,
+                        // denormalized_flights) have an EMPTY property_mapping,
+                        // so they still fall through to the embedded columns.
+                        // Mirrors
+                        // render_plan::plan_builder_helpers::get_property_from_viewscan,
+                        // which already prefers property_mapping.
+                        if let Some(prop_value) = scan.property_mapping.get(property) {
+                            return Some(prop_value.raw().to_string());
+                        }
+                        // Check from_node_properties next
                         if let Some(from_props) = &scan.from_node_properties {
                             if let Some(
                                 crate::graph_catalog::expression_parser::PropertyValue::Column(col),
@@ -2800,10 +2815,6 @@ impl FilterTagging {
                             {
                                 return Some(col.clone());
                             }
-                        }
-                        // Finally check regular property_mapping
-                        if let Some(prop_value) = scan.property_mapping.get(property) {
-                            return Some(prop_value.raw().to_string());
                         }
                     }
                 }

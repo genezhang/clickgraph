@@ -111,7 +111,11 @@ fn find_graph_rel(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_p
 /// select/group-by/order-by builders register a request when a property is
 /// absent from the edge's embedded property map but resolvable from the
 /// node's own table).
-fn inject_own_table_joins(joins: &mut Vec<Join>, plan: &LogicalPlan, schema: &GraphSchema) {
+pub(crate) fn inject_own_table_joins(
+    joins: &mut Vec<Join>,
+    plan: &LogicalPlan,
+    schema: &GraphSchema,
+) {
     use crate::sql_generator::function_mapper::current_function_mapper;
 
     let requests = crate::server::query_context::own_table_join_requests();

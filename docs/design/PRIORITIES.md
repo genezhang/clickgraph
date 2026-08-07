@@ -156,16 +156,35 @@ VIRTUAL ids — zeek_dns `ip_address` on `dns_log`; those keep the legacy
 edge-alias pass-through, byte-identical corpus goldens) and
 `__denorm_scan_{alias}` anchors keep their #582/#590 CTE path. 0 corpus churn
 besides lock-in; VLP `*1..2` CTE path byte-identical. Locked by
-`issue_1006_own_table_property_tests` (12 cases: flat/*1/*1..1 SELECT, WHERE,
-GROUP BY, ORDER BY, embedded-id stays on edge, virtual-id exclusion, VLP CTE
-unchanged, dedup, no-join-when-unused). Follow-up slice `9a297b4a`: filter-path
-registration (WHERE-only / ORDER BY-only references were mapped before join
-injection could register — own-table requests now pre-registered from the
-filter/order-by/group-by walkers ahead of `extract_joins`) and unlabeled-query
-support (`MATCH (a)-[r]->(b)` — `GraphNode.label` None + empty `rel.labels`
-defeat both label lookups, so `own_table_label_for_alias` adds a schema-wide
-embedded-id-key match, unique-required, ambiguity bails; live-verified on
-ClickHouse).** Since
+ `issue_1006_own_table_property_tests` (12 cases: flat/*1/*1..1 SELECT, WHERE,
+ GROUP BY, ORDER BY, embedded-id stays on edge, virtual-id exclusion, VLP CTE
+ unchanged, dedup, no-join-when-unused). Follow-up slice `9a297b4a`: filter-path
+ registration (WHERE-only / ORDER BY-only references were mapped before join
+ injection could register — own-table requests now pre-registered from the
+ filter/order-by/group-by walkers ahead of `extract_joins`) and unlabeled-query
+ support (`MATCH (a)-[r]->(b)` — `GraphNode.label` None + empty `rel.labels`
+ defeat both label lookups, so `own_table_label_for_alias` adds a schema-wide
+ embedded-id-key match, unique-required, ambiguity bails; live-verified on
+ ClickHouse). Slice `fix/1006-own-table-with-foreign-embedded` (2026-08-07):
+ own-table requests are now segment-scoped behind a `CteScopeGenerationGuard`-
+ style `OwnTableJoinGuard` (snapshot/restore of the request registry per WITH
+ segment — a re-bound alias after a WITH barrier gets its own join, no
+ cross-segment leakage) and pre-registered from the WITH segment's select/WHERE/
+ ORDER BY *before* the CTE body render; a bare-GraphRel CTE body (no GraphJoins
+ wrapper — the only prior `inject_own_table_joins` call site) now
+ registers+injects in `plan_builder`'s GraphRel arm (M2/M4 shapes);
+ `get_denormalized_node_id_reference`/`get_property_from_viewscan` gained
+ CartesianProduct arms (M3 two-MATCH shapes). A live-CH sweep of the new shapes
+ surfaced a separate pre-existing defect fixed here: standalone foreign-embedded
+ nodes (`node.table` ≠ edge table, e.g. `Person`→`people`) keyed `id_column` and
+ property lookups to the edge-embedded position maps (`mgr_id`) — their ViewScan
+ now carries the node's OWN `property_mapping` (`people.pid`) and the
+ analyzer/render lookup priority prefers it over the position maps (same-table
+ denorm nodes with empty `property_mappings` — zeek/`denormalized_flights` —
+ unchanged, byte-identical corpus goldens). Locked by
+ `issue_1006_own_table_property_tests` now 22 cases; ratchet baseline
+ regenerated for the 2 real token decreases in `properties_builder.rs`; M1/M2/M3/M4
+ live-verified on ClickHouse.** Since
 the 07-19 reconcile this lane shipped ~24 fixes (all live- or SQL-gen-verified,
 newest first): **#1006 (flat mixed-access own-table property, above)**,
 **#523 (partial-ref undirected 2-hop golden flake, reported

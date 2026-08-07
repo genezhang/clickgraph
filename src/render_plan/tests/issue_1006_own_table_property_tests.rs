@@ -76,7 +76,7 @@ fn own_table_property_resolves_via_injected_join_flat_arrow() {
         "a.name must resolve through the node alias; SQL:\n{sql}"
     );
     assert!(
-        !sql.contains(r#"t1.name"#) && !sql.contains(r#"reports AS t1"#),
+        !sql.contains(r#"t1.name"#) && !sql.contains("reports AS t1 "),
         "must not reference reports.name (edge table has no name column); SQL:\n{sql}"
     );
 }
@@ -382,6 +382,151 @@ fn unlabeled_order_by_own_table_property_plain_arrow() {
     );
     assert!(
         !sql.contains("r.name"),
+        "must not reference reports.name; SQL:\n{sql}"
+    );
+}
+
+// ============================================================================
+// #1007 — own-table resolution across the WITH barrier (WITH segment scope)
+// ============================================================================
+//
+// The #1006 join injection happens when the CTE body's GraphJoins arm renders,
+// but a WITH segment's SELECT items / ORDER BY / WHERE clause are NOT part of
+// the body plan — they render AFTER the body (items projection, WHERE→HAVING).
+// Non-embedded property references there (a.name when only pid is embedded)
+// therefore need their join requests PRE-REGISTERED before the body render,
+// and the resolved column must point at the injected own-table join — not the
+// edge table (t1.name → Code 47) and not an unbound node alias.
+//
+// #1007 also scopes the request registry per WITH segment (OwnTableJoinGuard):
+// a request registered by one segment must never leak into a later segment /
+// sibling arm that reuses the same Cypher alias for a different node.
+
+#[test]
+fn with_aggregate_select_item_resolves_own_table_in_cte_body() {
+    // M1: `WITH a.name AS n, count(*) AS c WHERE a.name = ...` — the select
+    // item and the WHERE (→ HAVING) render inside the CTE body AFTER the
+    // body's join injection; the request must be pre-registered so the body
+    // binds `a` via its own table, and BOTH the group key and the HAVING
+    // must resolve against the injected join (previously GROUP BY t1.name
+    // + an unbound HAVING a.name → Code 47).
+    let sql = translate(
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) \
+         WITH a.name AS n, count(*) AS c WHERE a.name = 'Alice' RETURN n, c",
+    );
+
+    assert!(
+        sql.contains("GROUP BY pid) AS a ON a.pid"),
+        "the CTE body must bind a via its own table; SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains(r#"a.name AS "n""#),
+        "the CTE select item must resolve through the own-table join; SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains("GROUP BY a.name"),
+        "the group key must resolve through the own-table join; SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains("HAVING a.name = 'Alice'"),
+        "the WITH WHERE (→ HAVING) must resolve through the own-table join; SQL:\n{sql}"
+    );
+    assert!(
+        !sql.contains("t1.name"),
+        "must not reference reports.name (edge table has no name column); SQL:\n{sql}"
+    );
+}
+
+#[test]
+fn with_aggregate_where_only_resolves_own_table_in_cte_body() {
+    // M2: `WITH count(*) AS c WHERE a.name = ...` — the own-table reference
+    // exists ONLY in the WITH WHERE clause, so the pre-registration must come
+    // from the WHERE expression itself (the CTE body's SELECT has no own-table
+    // property to register).
+    let sql = translate(
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) \
+         WITH count(*) AS c WHERE a.name = 'Alice' RETURN c",
+    );
+
+    assert!(
+        sql.contains("GROUP BY pid) AS a ON a.pid"),
+        "the CTE body must bind a via its own table; SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains("WHERE a.name = 'Alice'"),
+        "the WITH WHERE must resolve through the own-table join; SQL:\n{sql}"
+    );
+    assert!(
+        !sql.contains("t1.name"),
+        "must not reference reports.name; SQL:\n{sql}"
+    );
+}
+
+#[test]
+fn multi_match_cartesian_product_injects_own_table_join() {
+    // M3: a second independent MATCH plans the first pattern as a
+    // CartesianProduct side; the join injection's edge lookup must descend
+    // into the CartesianProduct (previously `_ => None`, so `a` was never
+    // bound and `SELECT a.name` / `WHERE a.name` dangled unbindable → Code 47).
+    let sql = translate(
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) WHERE a.name = 'Alice' \
+         MATCH (c:Person) RETURN a.name, c.pid",
+    );
+
+    assert!(
+        sql.contains("LEFT JOIN (SELECT pid, any(name) as name FROM testdb.people GROUP BY pid) AS a ON a.pid"),
+        "the own-table LEFT JOIN must be injected for the first pattern's endpoint; SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains("WHERE a.name = 'Alice'"),
+        "the WHERE must reference the injected join alias a; SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains(r#"a.name AS "a.name""#),
+        "a.name must resolve through the node alias; SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains(r#"c.pid AS "c.pid""#),
+        "the standalone second-MATCH node must map pid through its OWN table \
+         (people.pid), not the edge-embedded from_node_properties (mgr_id) \
+         that only apply when the node is bound as an edge endpoint; SQL:\n{sql}"
+    );
+    assert!(
+        !sql.contains("t1.name") && !sql.contains("c.mgr_id"),
+        "must not reference reports.name nor the edge-embedded c.mgr_id; SQL:\n{sql}"
+    );
+}
+
+#[test]
+fn cross_segment_same_alias_keeps_segment_scoped_registry() {
+    // M4: the second MATCH re-binds `a` as a FRESH denorm endpoint after a
+    // WITH barrier. Each segment must get its own own-table join from its OWN
+    // references — segment 1's request (a.name AS n) must be consumed inside
+    // its own CTE body, and the final segment's `a.name` must produce a
+    // SEPARATE join bound to the second MATCH's edge. The registry is scoped
+    // per segment by OwnTableJoinGuard; the CTE body here is a BARE GraphRel
+    // (no GraphJoins wrapper), so this also locks the #1007 bare-GraphRel
+    // injection in plan_builder's GraphRel arm.
+    let sql = translate(
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) WITH a.name AS n \
+         MATCH (a:Person)-[:REPORTS_TO]->(b:Person) RETURN n, a.name",
+    );
+
+    assert_eq!(
+        sql.matches("GROUP BY pid) AS a ON a.pid").count(),
+        2,
+        "each segment must inject its own own-table join; SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains(r#"a.name AS "n""#),
+        "the first segment's CTE select item must resolve through its own-table join; SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains(r#"a.name AS "a.name""#),
+        "the final segment's select must resolve through its own-table join; SQL:\n{sql}"
+    );
+    assert!(
+        !sql.contains("t1.name") && !sql.contains("t2.name"),
         "must not reference reports.name; SQL:\n{sql}"
     );
 }

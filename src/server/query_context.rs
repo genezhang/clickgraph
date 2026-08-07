@@ -536,6 +536,53 @@ pub fn own_table_join_requests() -> HashMap<String, OwnTableJoinRequest> {
         .unwrap_or_default()
 }
 
+/// #1007 (M4): snapshot the own-table join request registry. Paired with
+/// [`restore_own_table_join_requests`] by [`OwnTableJoinGuard`] to scope
+/// requests to the WITH segment that produced them, so a later independent
+/// plan arm reusing the same Cypher alias name for a DIFFERENT node (a
+/// sibling UNION arm, a cartesian side, the next WITH segment) can never
+/// have a stale request from this segment inject a join bound to its edge.
+/// The registry is per-query and never otherwise cleared.
+pub fn snapshot_own_table_join_requests() -> HashMap<String, OwnTableJoinRequest> {
+    own_table_join_requests()
+}
+
+/// Restore the own-table join request registry to a `snapshot` taken by
+/// [`snapshot_own_table_join_requests`]. See that function's doc.
+pub fn restore_own_table_join_requests(snapshot: HashMap<String, OwnTableJoinRequest>) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().own_table_joins = snapshot;
+    });
+}
+
+/// #1007 (M4): RAII guard scoping [`own_table_joins`](QueryContext::own_table_joins)
+/// registrations to one WITH segment. Constructed in
+/// `build_chained_with_match_cte_plan` per rendered `with_plan` — after the
+/// segment's select-items/WHERE pre-registration and through the CTE body
+/// render, items projection and WHERE→HAVING application. Dropping the guard
+/// restores the pre-segment snapshot, so requests never leak into a later
+/// segment / sibling arm whose render could misinterpret them (a registered
+/// request is keyed only on the alias + property name — not on which plan
+/// arm produced it). Mirrors `CteScopeGenerationGuard`'s discipline.
+#[must_use]
+pub struct OwnTableJoinGuard {
+    snapshot: HashMap<String, OwnTableJoinRequest>,
+}
+
+impl OwnTableJoinGuard {
+    pub fn enter() -> Self {
+        Self {
+            snapshot: snapshot_own_table_join_requests(),
+        }
+    }
+}
+
+impl Drop for OwnTableJoinGuard {
+    fn drop(&mut self) {
+        restore_own_table_join_requests(std::mem::take(&mut self.snapshot));
+    }
+}
+
 // ============================================================================
 // RELATIONSHIP COLUMNS ACCESSORS
 // ============================================================================

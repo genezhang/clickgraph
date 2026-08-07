@@ -4514,15 +4514,45 @@ pub(crate) fn resolve_denormalized_property_in_expr_impl(
                                 );
                         }
                     } else if edge_alias != prop.table_alias.0 {
-                        // Property not in any mapping but alias needs rewriting
-                        log::info!(
-                            "🔧 Denormalized alias rewrite in WITH: '{}.{}' → '{}.{}'",
-                            prop.table_alias.0,
-                            current_col,
-                            edge_alias,
-                            current_col
-                        );
-                        prop.table_alias = crate::render_plan::render_expr::TableAlias(edge_alias);
+                        // #1007 (M1): own-table resolution for a WITH-select
+                        // item. When the property is NOT in the edge's embedded
+                        // map but an own-table join request was registered for
+                        // this alias (the WITH segment's select items / WHERE
+                        // are pre-registered BEFORE the CTE body's join
+                        // injection — see build_chained_with_match_cte_plan),
+                        // keep the NODE alias — it names the injected own-table
+                        // LEFT JOIN — and resolve the column against the node's
+                        // own table. Falling through to the edge-alias rewrite
+                        // below would emit `t1.<prop>` against the edge table,
+                        // which lacks the column → Code 47.
+                        if let Some(physical) =
+                            super::plan_builder_helpers::own_table_property_resolution(
+                                &prop.table_alias.0,
+                                &current_col,
+                            )
+                        {
+                            log::info!(
+                                "🔧 #1007: Own-table property resolve in WITH: '{}.{}' → '{}.{}'",
+                                prop.table_alias.0,
+                                current_col,
+                                prop.table_alias.0,
+                                physical
+                            );
+                            prop.column =
+                                crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                    physical,
+                                );
+                        } else {
+                            log::info!(
+                                "🔧 Denormalized alias rewrite in WITH: '{}.{}' → '{}.{}'",
+                                prop.table_alias.0,
+                                current_col,
+                                edge_alias,
+                                current_col
+                            );
+                            prop.table_alias =
+                                crate::render_plan::render_expr::TableAlias(edge_alias);
+                        }
                     }
                 }
             }
