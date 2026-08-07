@@ -273,7 +273,7 @@ shared helper. Once the identity spellings are consolidated, the policy type
   callers already pass exactly that), so the merge is byte-identical by
   substitution — verified arm-by-arm and against 374 `path_edges` goldens incl.
   the #617 doubled-edge branch. 6 spellings → 5. Review APPROVE-0.
-- **Slice 2 — DONE (PR #TBD)**: the two single-alias tuple spellings now share
+- **Slice 2 — DONE (#1032)**: the two single-alias tuple spellings now share
   ONE helper. Introduced `pub fn spell_edge_identity(tuple_ctor, edge_id,
   rel_alias, from_col, to_col, map_col)` in `variable_length_cte.rs`; both
   `build_edge_tuple_recursive` and `DenormalizedCteStrategy::edge_tuple`

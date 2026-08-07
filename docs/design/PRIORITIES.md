@@ -512,7 +512,7 @@ fixed stats fixture.
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
-- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slices 1 #893 + 2 #TBD, **behavior cluster COMPLETE: #806 + #628 + #710 + #808/#606 fixed**; only the Phase 1–2 refactor remains)
+- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slices 1 #893 + 2 #1032, **behavior cluster COMPLETE: #806 + #628 + #710 + #808/#606 fixed**; only the Phase 1–2 refactor remains)
   (`docs/design/VLP_EDGE_IDENTITY_UNIFICATION.md`). Bug-driven refactor of the
   VLP relationship-uniqueness axis: one canonical `EdgeUniquenessPolicy`
   (`PatternSchemaContext`-derived, rule-#7 clean) replaces ~14 inline sites / 3
@@ -554,7 +554,7 @@ fixed stats fixture.
   #710, #806, #808 all fixed.
   Remaining #887:
   Phase 1–2 (`EdgeUniquenessPolicy` + transition-assert + switch, byte-identical
-  design-cycle refactor). Phase 1 slice 2 (#TBD) SHIPPED: shared
+  design-cycle refactor). Phase 1 slice 2 (#1032) SHIPPED: shared
   `spell_edge_identity` tuple helper (in `variable_length_cte.rs`) — the
   recursive generator's `build_edge_tuple_recursive` and the denormalized
   strategy's `edge_tuple` (cte_manager) now spell the one-hop edge identity
