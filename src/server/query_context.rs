@@ -38,6 +38,16 @@ use std::sync::Arc;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::sql_generator::SqlDialect;
 
+/// Lazy own-table join request for a denormalized-edge endpoint (see
+/// [`QueryContext::own_table_joins`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OwnTableJoinRequest {
+    /// Node label — schema lookup key for the own table and id column.
+    pub node_label: String,
+    /// Requested non-embedded Cypher property names.
+    pub properties: HashSet<String>,
+}
+
 /// Per-query context holding all query-scoped state
 /// This replaces multiple scattered task_local!/thread_local! declarations
 #[derive(Debug, Clone, Default)]
@@ -211,6 +221,17 @@ pub struct QueryContext {
     /// carried-forward collection column whose type the variable registry does
     /// not track (e.g. `WITH collect(post) AS posts`).
     pub array_cte_columns: HashSet<String>,
+
+    /// #1006: own-table join requests for a MixedAccess/denormalized-edge
+    /// endpoint whose non-id property is NOT in the edge's embedded property
+    /// map (e.g. `foreign_selfloop`: `a` embeds only `pid → mgr_id`, so
+    /// `RETURN a.name` must resolve `name` against the node's own table).
+    /// Populated lazily by property-resolution sites (select/group-by/
+    /// order-by builders) the moment such a property is referenced; consumed
+    /// by join_builder's GraphJoins arm, which injects one deduplicated
+    /// own-table LEFT JOIN per requested alias. Per-query lifecycle — the
+    /// context is constructed fresh per request.
+    pub own_table_joins: HashMap<String, OwnTableJoinRequest>,
 
     /// S1 stats-informed planning: per-table row-count snapshot for this query
     /// (`docs/design/STATS_PLANNING.md`). Attached at query entry by the server
@@ -483,6 +504,83 @@ pub fn clear_denormalized_aliases() {
     let _ = QUERY_CONTEXT.try_with(|ctx| {
         ctx.borrow_mut().denormalized_aliases.clear();
     });
+}
+
+// ============================================================================
+// OWN-TABLE JOIN REQUEST ACCESSORS (#1006)
+// ============================================================================
+
+/// Register a lazy own-table join request for `node_alias`: its non-embedded
+/// property `prop` must resolve against the node's own table (`node_label`).
+/// Called by property-resolution sites (select/group-by/order-by builders)
+/// when the edge's embedded property map does not cover the property.
+pub fn register_own_table_join_request(node_alias: &str, node_label: &str, prop: &str) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        let mut ctx = ctx.borrow_mut();
+        let entry = ctx
+            .own_table_joins
+            .entry(node_alias.to_string())
+            .or_default();
+        entry.node_label = node_label.to_string();
+        entry.properties.insert(prop.to_string());
+    });
+}
+
+/// Snapshot of all own-table join requests registered so far in this query.
+/// Consumed by join_builder's GraphJoins arm to inject the deduplicated
+/// own-table LEFT JOINs; entries whose alias is already bound to a scan are
+/// skipped there.
+pub fn own_table_join_requests() -> HashMap<String, OwnTableJoinRequest> {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().own_table_joins.clone())
+        .unwrap_or_default()
+}
+
+/// #1007 (M4): snapshot the own-table join request registry. Paired with
+/// [`restore_own_table_join_requests`] by [`OwnTableJoinGuard`] to scope
+/// requests to the WITH segment that produced them, so a later independent
+/// plan arm reusing the same Cypher alias name for a DIFFERENT node (a
+/// sibling UNION arm, a cartesian side, the next WITH segment) can never
+/// have a stale request from this segment inject a join bound to its edge.
+/// The registry is per-query and never otherwise cleared.
+pub fn snapshot_own_table_join_requests() -> HashMap<String, OwnTableJoinRequest> {
+    own_table_join_requests()
+}
+
+/// Restore the own-table join request registry to a `snapshot` taken by
+/// [`snapshot_own_table_join_requests`]. See that function's doc.
+pub fn restore_own_table_join_requests(snapshot: HashMap<String, OwnTableJoinRequest>) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().own_table_joins = snapshot;
+    });
+}
+
+/// #1007 (M4): RAII guard scoping [`own_table_joins`](QueryContext::own_table_joins)
+/// registrations to one WITH segment. Constructed in
+/// `build_chained_with_match_cte_plan` per rendered `with_plan` — after the
+/// segment's select-items/WHERE pre-registration and through the CTE body
+/// render, items projection and WHERE→HAVING application. Dropping the guard
+/// restores the pre-segment snapshot, so requests never leak into a later
+/// segment / sibling arm whose render could misinterpret them (a registered
+/// request is keyed only on the alias + property name — not on which plan
+/// arm produced it). Mirrors `CteScopeGenerationGuard`'s discipline.
+#[must_use]
+pub struct OwnTableJoinGuard {
+    snapshot: HashMap<String, OwnTableJoinRequest>,
+}
+
+impl OwnTableJoinGuard {
+    pub fn enter() -> Self {
+        Self {
+            snapshot: snapshot_own_table_join_requests(),
+        }
+    }
+}
+
+impl Drop for OwnTableJoinGuard {
+    fn drop(&mut self) {
+        restore_own_table_join_requests(std::mem::take(&mut self.snapshot));
+    }
 }
 
 // ============================================================================

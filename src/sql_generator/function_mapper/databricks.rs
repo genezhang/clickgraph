@@ -64,6 +64,10 @@ impl FunctionMapper for DatabricksFunctionMapper {
         "count_if"
     }
 
+    fn any(&self) -> &'static str {
+        "any_value"
+    }
+
     fn min_if(&self, val: &str, cond: &str) -> String {
         // Spark has no `minIf`. `min` ignores NULLs in ANSI SQL, so a
         // `CASE WHEN cond THEN val END` (no ELSE → NULL) reproduces

@@ -921,6 +921,20 @@ impl FilterBuilder for LogicalPlan {
                     }
                 }
 
+                // #1006: register own-table join requests for WHERE-only
+                // property references on mixed-access (foreign-embedded)
+                // endpoints. Must run BEFORE the denorm property mapping
+                // below — the intercept in `apply_property_mapping_to_expr`
+                // needs the registry populated to keep the node alias and
+                // resolve against the node's own table instead of remapping
+                // the alias to the edge table (`t1.name` → Code 47).
+                for pred in &all_predicates {
+                    crate::render_plan::plan_builder_helpers::register_own_table_property_requests(
+                        pred,
+                        &LogicalPlan::GraphRel(graph_rel.clone()),
+                    );
+                }
+
                 if all_predicates.is_empty() {
                     None
                 } else if all_predicates.len() == 1 {
@@ -1082,6 +1096,14 @@ impl FilterBuilder for LogicalPlan {
                 // For VLP: Start node filters are pushed into CTE base case during CTE generation,
                 // but end node filters MUST be in outer WHERE clause (after CTE join)
                 let mut expr: RenderExpr = filter.predicate.clone().try_into()?;
+                // #1006: register own-table join requests BEFORE property
+                // mapping (see the GraphRel arm above — same rationale for
+                // standalone Filter nodes whose predicate was not embedded
+                // into a GraphRel's where_predicate).
+                crate::render_plan::plan_builder_helpers::register_own_table_property_requests(
+                    &expr,
+                    &filter.input,
+                );
                 // Apply property mapping to the filter expression
                 apply_property_mapping_to_expr(&mut expr, &filter.input);
 

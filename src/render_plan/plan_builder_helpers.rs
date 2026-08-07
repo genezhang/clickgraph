@@ -23,7 +23,6 @@ use crate::render_plan::cte_extraction::{
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::sql_generator::function_mapper::current_function_mapper;
 use std::collections::HashSet;
-
 #[cfg(test)] // test-only-live: exercised solely by unit tests (P2.10 dead_code sweep)
 /// Recursively rewrite TableAlias references that are in `with_aliases` to reference the CTE.
 /// This handles the case where `AVG(follows)` needs to become `AVG(grouped_data.follows)`.
@@ -2643,6 +2642,14 @@ fn get_property_from_viewscan(
             get_property_from_viewscan(alias, property, &group_by.input)
         }
         LogicalPlan::Cte(cte) => get_property_from_viewscan(alias, property, &cte.input),
+        // #1007: a second independent MATCH plans as a CartesianProduct; the
+        // property lookup must descend into both sides or a standalone
+        // foreign-embedded node (`MATCH (c:Person)` scanning its own table)
+        // falls through to the label-based mapping and picks up the
+        // edge-embedded position column (mgr_id) instead of its own table
+        // column (people.pid) → Code 47.
+        LogicalPlan::CartesianProduct(cp) => get_property_from_viewscan(alias, property, &cp.left)
+            .or_else(|| get_property_from_viewscan(alias, property, &cp.right)),
         LogicalPlan::ViewScan(_scan) => {
             // Bare ViewScan without wrapping GraphNode: skip.
             // Alias-based lookups should only match through GraphNode (line 2268)
@@ -2757,6 +2764,47 @@ fn apply_property_mapping_to_expr_shielded(
                     ) {
                         prop.column = PropertyValue::Column(cypher_name);
                         return;
+                    }
+                }
+            }
+            // #1006: own-table resolution — mirror of select_builder's #1006
+            // branch. When the alias has a lazily-injected own-table LEFT JOIN
+            // (select/group-by/order-by registered a request for a property
+            // absent from the edge's embedded map), keep the NODE alias (it
+            // names the injected join) and resolve the column against the
+            // node's OWN table — skipping the structural edge mapping and the
+            // denormalized-alias remap below, which would redirect to the edge
+            // table (a Code-47 "unknown identifier" for non-edge properties).
+            // Denorm-scan anchors are never registered (select_builder guard),
+            // so this cannot race the `is_denorm_scan_anchor_alias` branch.
+            if !matches!(&prop.column, PropertyValue::Expression(_)) {
+                if let Some(own) =
+                    crate::server::query_context::own_table_join_requests().get(&prop.table_alias.0)
+                {
+                    let raw = prop.column.raw().to_string();
+                    let task_schema =
+                        crate::server::query_context::get_current_schema_with_fallback();
+                    let node_schema = task_schema
+                        .as_ref()
+                        .and_then(|s| s.node_schema_opt(&own.node_label));
+                    let matched = own.properties.iter().find(|p| {
+                        **p == raw
+                            || node_schema
+                                .and_then(|ns| own_table_property_column(ns, p))
+                                .as_deref()
+                                == Some(raw.as_str())
+                    });
+                    if let Some(prop_key) = matched {
+                        if let Some(ns) = node_schema {
+                            if let Some(physical) = own_table_property_column(ns, prop_key) {
+                                log::debug!(
+                                    "🔍 #1006: '{}.{}' resolved against own table column '{}' (not in edge's embedded map)",
+                                    prop.table_alias.0, prop.column.raw(), physical
+                                );
+                                prop.column = PropertyValue::Column(physical);
+                                return;
+                            }
+                        }
                     }
                 }
             }
@@ -3127,15 +3175,384 @@ pub(super) fn is_denorm_scan_anchor_alias(alias: &str, plan: &LogicalPlan) -> bo
     }
 }
 
+/// #1006: the physical own-table column for `prop` on `node_schema`, or
+/// `None` when the node's own table cannot resolve it. `prop` may arrive as
+/// either the Cypher property name (`name` → `full_name` via
+/// `property_mappings`) or an already-mapped physical column name (matched
+/// against the mapping's values — e.g. a pre-rewritten `full_name`).
+///
+/// Node-ID names NEVER resolve here: `node_id` identity mappings are
+/// auto-generated (config.rs) even for VIRTUAL ids whose own table has no
+/// such column (e.g. zeek_dns `node_id: ip_address` — no `ip_address`
+/// column on `dns_log`; the property exists only through the edge's
+/// embedded endpoint property map). The node id always resolves via
+/// the edge's embedded map, so own-table resolution is restricted to
+/// explicitly-declared properties.
+pub(super) fn own_table_property_column(
+    node_schema: &crate::graph_catalog::graph_schema::NodeSchema,
+    prop: &str,
+) -> Option<String> {
+    if node_schema.node_id.columns().contains(&prop) {
+        return None;
+    }
+    if let Some(pv) = node_schema.property_mappings.get(prop) {
+        return Some(pv.raw().to_string());
+    }
+    node_schema
+        .property_mappings
+        .values()
+        .find(|v| v.raw() == prop)
+        .map(|v| v.raw().to_string())
+}
+
+/// #1006: register own-table join requests for every filter predicate in the
+/// plan tree (standalone `Filter` nodes, `GraphRel.where_predicate`s) and
+/// every ORDER BY / GROUP BY / HAVING expression. Called by join_builder's
+/// GraphJoins arm IMMEDIATELY BEFORE `inject_own_table_joins` — the registry
+/// must be populated before the join injection reads it, and before
+/// `extract_filters` / `extract_order_by` (which run after join extraction in
+/// the GraphJoins arm) hit the #1006 intercept.
+///
+/// Descends the same wrapper chain the clause extractors walk
+/// (GraphJoins/Projection/GroupBy/OrderBy/Skip/Limit/GraphNode/Union/
+/// CartesianProduct + nested GraphRels), but STOPS at `WithClause`/`Cte`:
+/// WITH-body scopes register during their own render (their own GraphJoins
+/// arm or the flat WITH-CTE path), and a request leaked from a CTE body could
+/// otherwise materialize a spurious outer LEFT JOIN.
+pub(super) fn register_own_table_requests_in_plan(plan: &LogicalPlan) {
+    match plan {
+        LogicalPlan::Filter(filter) => {
+            if let Ok(pred) = RenderExpr::try_from(filter.predicate.clone()) {
+                register_own_table_property_requests(&pred, plan);
+            }
+            register_own_table_requests_in_plan(&filter.input);
+        }
+        LogicalPlan::GraphRel(rel) => {
+            if let Some(wp) = &rel.where_predicate {
+                if let Ok(pred) = RenderExpr::try_from(wp.clone()) {
+                    register_own_table_property_requests(&pred, plan);
+                }
+            }
+            register_own_table_requests_in_plan(&rel.left);
+            register_own_table_requests_in_plan(&rel.right);
+        }
+        LogicalPlan::OrderBy(order_by) => {
+            for item in &order_by.items {
+                if let Ok(expr) = RenderExpr::try_from(item.expression.clone()) {
+                    register_own_table_property_requests(&expr, plan);
+                }
+            }
+            register_own_table_requests_in_plan(&order_by.input);
+        }
+        LogicalPlan::GroupBy(group_by) => {
+            for expr in &group_by.expressions {
+                if let Ok(rendered) = RenderExpr::try_from(expr.clone()) {
+                    register_own_table_property_requests(&rendered, plan);
+                }
+            }
+            if let Some(having) = &group_by.having_clause {
+                if let Ok(rendered) = RenderExpr::try_from(having.clone()) {
+                    register_own_table_property_requests(&rendered, plan);
+                }
+            }
+            register_own_table_requests_in_plan(&group_by.input);
+        }
+        LogicalPlan::GraphJoins(gj) => register_own_table_requests_in_plan(&gj.input),
+        LogicalPlan::Projection(p) => register_own_table_requests_in_plan(&p.input),
+        LogicalPlan::Skip(s) => register_own_table_requests_in_plan(&s.input),
+        LogicalPlan::Limit(l) => register_own_table_requests_in_plan(&l.input),
+        LogicalPlan::GraphNode(n) => register_own_table_requests_in_plan(&n.input),
+        LogicalPlan::Union(u) => {
+            for input in &u.inputs {
+                register_own_table_requests_in_plan(input);
+            }
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            register_own_table_requests_in_plan(&cp.left);
+            register_own_table_requests_in_plan(&cp.right);
+        }
+        // Scope barriers: WITH/CTE bodies register during their own render.
+        LogicalPlan::WithClause(_) | LogicalPlan::Cte(_) => {}
+        _ => {}
+    }
+}
+
+/// #1006: resolve the node label behind an own-table join request. Tries, in
+/// order:
+///   1. the plan's own `GraphNode` label (labeled queries);
+///   2. the canonical connection-node fallback (#551/#560/#562) for unlabeled
+///      denormalized chain nodes, which works when the relationship TYPE is
+///      declared (`rel.labels`);
+///   3. a schema-wide match of the endpoint's embedded id key: the embedded
+///      map's cypher KEY is the node's own-table id property (e.g. `pid` in
+///      `pid: mgr_id`), so any node schema whose single-column id equals that
+///      key AND whose own table resolves `col` is a candidate. Covers
+///      `MATCH (a)-[r]->(b)` where NO relationship type is declared (case 2's
+///      rel-type lookup cannot fire). A unique match is required — ambiguity
+///      bails to `None` so callers keep their pre-#1006 fall-through.
+pub(super) fn own_table_label_for_alias(
+    plan: &LogicalPlan,
+    alias: &str,
+    embedded: &[(String, String)],
+    col: &str,
+) -> Option<String> {
+    if let Some(label) = get_node_label_for_alias(alias, plan) {
+        return Some(label);
+    }
+    let schema = crate::server::query_context::get_current_schema_with_fallback();
+    if let Some(schema) = schema.as_ref() {
+        if let Some(label) =
+            super::plan_builder_utils::find_denorm_connection_node_label(plan, alias, schema)
+        {
+            return Some(label);
+        }
+    }
+    let schema = schema.as_ref()?;
+    let mut matches: Vec<&str> = Vec::new();
+    for (label, ns) in schema.all_node_schemas() {
+        let id_cols = ns.node_id.columns();
+        if id_cols.len() != 1 {
+            continue;
+        }
+        if embedded.iter().any(|(p, _)| p == id_cols[0])
+            && own_table_property_column(ns, col).is_some()
+        {
+            matches.push(label);
+        }
+    }
+    if matches.len() == 1 {
+        Some(matches[0].to_string())
+    } else {
+        None
+    }
+}
+
+/// #1006: register own-table join requests for every property access in
+/// `expr` whose alias is a denormalized-edge endpoint whose property is
+/// ABSENT from the edge's embedded property map but resolvable from the
+/// node's own table. Called at filter/where-predicate build time — BEFORE
+/// join injection — so the filter path reaches the #1006 intercept in
+/// `apply_property_mapping_to_expr` with a populated registry. Without this,
+/// a WHERE-only reference on a mixed-access (foreign-embedded) endpoint was
+/// unmapped and fell through to the denormalized-alias remap → `t1.name` on
+/// the edge table → ClickHouse Code 47 (the select/group-by/order-by
+/// builders register eagerly, so only the filter path was broken).
+///
+/// The guard mirrors select_builder's #1006 branch exactly:
+/// `get_properties_with_table_alias` must bind the alias to an edge (Some
+/// override). That binding is only produced for NON-VLP denormalized roles —
+/// variable-length / shortest-path endpoints return a `None` override (the
+/// VLP rewriter owns their columns), so no request is ever registered for
+/// them. Properties present in the embedded map (by cypher name OR physical
+/// column) are left alone, as is everything the own table cannot resolve.
+pub(super) fn register_own_table_property_requests(expr: &RenderExpr, plan: &LogicalPlan) {
+    use crate::render_plan::properties_builder::PropertiesBuilder;
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            let alias = &prop.table_alias.0;
+            let col = prop.column.raw();
+            if let Ok((embedded, Some(_edge_alias))) = plan.get_properties_with_table_alias(alias) {
+                let embedded_hit = embedded.iter().any(|(p, c)| p == col || c == col);
+                if !embedded_hit && !is_denorm_scan_anchor_alias(alias, plan) {
+                    if let Some(label) = own_table_label_for_alias(plan, alias, &embedded, col) {
+                        let schema =
+                            crate::server::query_context::get_current_schema_with_fallback();
+                        if let Some(ns) = schema.as_ref().and_then(|s| s.node_schema_opt(&label)) {
+                            if own_table_property_column(ns, col).is_some() {
+                                crate::server::query_context::register_own_table_join_request(
+                                    alias, &label, col,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        RenderExpr::ScalarFnCall(sf) => {
+            for arg in &sf.args {
+                register_own_table_property_requests(arg, plan);
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in &agg.args {
+                register_own_table_property_requests(arg, plan);
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in &op.operands {
+                register_own_table_property_requests(operand, plan);
+            }
+        }
+        RenderExpr::Case(case) => {
+            if let Some(e) = &case.expr {
+                register_own_table_property_requests(e, plan);
+            }
+            for (w, t) in &case.when_then {
+                register_own_table_property_requests(w, plan);
+                register_own_table_property_requests(t, plan);
+            }
+            if let Some(e) = &case.else_expr {
+                register_own_table_property_requests(e, plan);
+            }
+        }
+        RenderExpr::ReduceExpr(reduce) => {
+            register_own_table_property_requests(&reduce.initial_value, plan);
+            register_own_table_property_requests(&reduce.list, plan);
+            register_own_table_property_requests(&reduce.expression, plan);
+        }
+        RenderExpr::List(items) => {
+            for item in items {
+                register_own_table_property_requests(item, plan);
+            }
+        }
+        RenderExpr::MapLiteral(entries) => {
+            for (_, v) in entries {
+                register_own_table_property_requests(v, plan);
+            }
+        }
+        RenderExpr::ArraySubscript { array, index } => {
+            register_own_table_property_requests(array, plan);
+            register_own_table_property_requests(index, plan);
+        }
+        RenderExpr::ArraySlicing { array, from, to } => {
+            register_own_table_property_requests(array, plan);
+            if let Some(f) = from {
+                register_own_table_property_requests(f, plan);
+            }
+            if let Some(t) = to {
+                register_own_table_property_requests(t, plan);
+            }
+        }
+        // Subqueries own a separate alias scope (InSubquery/ExistsSubquery/
+        // PatternCount) and leaves carry no property accesses.
+        _ => {}
+    }
+}
+
+/// #1007 (M1/M2): own-table column resolution for a property access whose
+/// alias has a registered own-table join request (see
+/// `register_own_table_join_request`). Returns the node's OWN table physical
+/// column when the property is among the request's properties (matched by
+/// Cypher name or by physical column), else `None`. Mirrors the #1006
+/// filter-path intercept in `apply_property_mapping_to_expr_shielded`: the
+/// alias names the lazily-injected own-table LEFT JOIN, so the column must
+/// resolve against the node's own table — NOT the edge's embedded map
+/// (which lacks the property → Code 47 if redirected to the edge table).
+/// A `None` here means "no request registered" — callers must fall through
+/// to their pre-#1007 behavior, never register from here (registration is
+/// purely a pre-injection concern; a request registered after the join
+/// injection point would dangle and leak — see `OwnTableJoinGuard`).
+pub(super) fn own_table_property_resolution(table_alias: &str, col: &str) -> Option<String> {
+    let requests = crate::server::query_context::own_table_join_requests();
+    let own = requests.get(table_alias)?;
+    let task_schema = crate::server::query_context::get_current_schema_with_fallback();
+    let node_schema = task_schema
+        .as_ref()
+        .and_then(|s| s.node_schema_opt(&own.node_label))?;
+    let matched = own.properties.iter().find(|p| {
+        **p == col || own_table_property_column(node_schema, p).as_deref() == Some(col)
+    })?;
+    own_table_property_column(node_schema, matched)
+}
+
+/// #1007 (M2): walk `expr` and resolve every property access whose alias has
+/// a registered own-table join request against the node's OWN table physical
+/// column. Used for the post-WITH WHERE→HAVING clause, which renders AFTER
+/// the CTE body's join injection: the injected own-table LEFT JOIN binds the
+/// NODE alias, so a non-embedded reference (`a.name` when only `pid` is
+/// embedded) must point at the join's physical column, not dangle unbindable.
+/// Deliberately a MIRROR of `register_own_table_property_requests`'s
+/// traversal (same variant set) so registration and resolution can never
+/// disagree about which expressions are reachable. No-ops for aliases
+/// without a registered request — the pre-#1007 denorm remap path is
+/// untouched.
+pub(super) fn resolve_own_table_property_in_expr(expr: &mut RenderExpr) {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            let col = prop.column.raw().to_string();
+            if let Some(physical) = own_table_property_resolution(&prop.table_alias.0, &col) {
+                log::debug!(
+                    "🔍 #1007: '{}.{}' resolved against own table column '{}' (WITH WHERE/HAVING)",
+                    prop.table_alias.0,
+                    col,
+                    physical
+                );
+                prop.column =
+                    crate::graph_catalog::expression_parser::PropertyValue::Column(physical);
+            }
+        }
+        RenderExpr::ScalarFnCall(sf) => {
+            for arg in &mut sf.args {
+                resolve_own_table_property_in_expr(arg);
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in &mut agg.args {
+                resolve_own_table_property_in_expr(arg);
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in &mut op.operands {
+                resolve_own_table_property_in_expr(operand);
+            }
+        }
+        RenderExpr::Case(case) => {
+            if let Some(e) = &mut case.expr {
+                resolve_own_table_property_in_expr(e);
+            }
+            for (w, t) in &mut case.when_then {
+                resolve_own_table_property_in_expr(w);
+                resolve_own_table_property_in_expr(t);
+            }
+            if let Some(e) = &mut case.else_expr {
+                resolve_own_table_property_in_expr(e);
+            }
+        }
+        RenderExpr::ReduceExpr(reduce) => {
+            resolve_own_table_property_in_expr(&mut reduce.initial_value);
+            resolve_own_table_property_in_expr(&mut reduce.list);
+            resolve_own_table_property_in_expr(&mut reduce.expression);
+        }
+        RenderExpr::List(items) => {
+            for item in items {
+                resolve_own_table_property_in_expr(item);
+            }
+        }
+        RenderExpr::MapLiteral(entries) => {
+            for (_, v) in entries {
+                resolve_own_table_property_in_expr(v);
+            }
+        }
+        RenderExpr::ArraySubscript { array, index } => {
+            resolve_own_table_property_in_expr(array);
+            resolve_own_table_property_in_expr(index);
+        }
+        RenderExpr::ArraySlicing { array, from, to } => {
+            resolve_own_table_property_in_expr(array);
+            if let Some(f) = from {
+                resolve_own_table_property_in_expr(f);
+            }
+            if let Some(t) = to {
+                resolve_own_table_property_in_expr(t);
+            }
+        }
+        // Subqueries own a separate alias scope (InSubquery/ExistsSubquery/
+        // PatternCount) and leaves carry no property accesses.
+        _ => {}
+    }
+}
+
 /// Get the relationship alias and ID column for a denormalized node alias
 /// For example, if `b` is the "to" node of `r1` or the "from" node of `r2`,
 /// this returns (rel_alias, id_column_name).
-///
 /// IMPORTANT: This function should ONLY return a result for truly denormalized nodes
 /// (where node properties are stored on the edge table, indicated by from_node_properties/to_node_properties).
 /// For standard schemas where nodes have their own tables, this should return None so
 /// the node alias stays pointing to the node table.
-fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option<(String, String)> {
+pub(super) fn get_denormalized_node_id_reference(
+    alias: &str,
+    plan: &LogicalPlan,
+) -> Option<(String, String)> {
     match plan {
         LogicalPlan::GraphRel(rel) => {
             // Check if this node alias matches left or right connection
@@ -3200,6 +3617,18 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
             get_denormalized_node_id_reference(alias, &group_by.input)
         }
         LogicalPlan::Cte(cte) => get_denormalized_node_id_reference(alias, &cte.input),
+        // #1007: a multi-MATCH query (`MATCH (a)-[:R]->(b) MATCH (c) ...`) plans
+        // as a CartesianProduct; the injected own-table join must find the
+        // denormalized edge for an endpoint alias on either side. Without this
+        // arm the lookup fell into `_ => None`, so the join was never injected
+        // and `a.name` (non-embedded) dangled unbindable in the SELECT/WHERE
+        // → ClickHouse Code 47.
+        LogicalPlan::CartesianProduct(cp) => {
+            if let Some(result) = get_denormalized_node_id_reference(alias, &cp.left) {
+                return Some(result);
+            }
+            get_denormalized_node_id_reference(alias, &cp.right)
+        }
         _ => None,
     }
 }

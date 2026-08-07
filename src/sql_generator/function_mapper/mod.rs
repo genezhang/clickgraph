@@ -71,6 +71,12 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// Conditional count. CH: `countIf`. Spark: `count_if` (DBR 13.1+).
     fn count_if(&self) -> &'static str;
 
+    /// Any-value aggregate for deduplicated own-table joins: CH `any`,
+    /// Spark `any_value`. Used by the denormalized-endpoint own-table LEFT
+    /// JOIN (`GROUP BY node_id, any(col)`) so a node table with duplicated
+    /// node_ids still yields exactly one row per id.
+    fn any(&self) -> &'static str;
+
     /// Conditional minimum: minimum of `val` over rows where `cond` is true.
     /// CH: `minIf(val, cond)`. Spark has no `minIf`, so we rewrite to
     /// `min(CASE WHEN cond THEN val END)` — `min` ignores NULLs, so rows

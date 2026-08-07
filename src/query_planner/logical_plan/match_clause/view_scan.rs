@@ -475,22 +475,48 @@ pub fn try_generate_view_scan(
             .first()
             .map(|s| s.to_string())
             .unwrap_or_else(|| "id".to_string());
-        let single_id_column = node_schema
-            .from_properties
-            .as_ref()
-            .and_then(|props| props.get(&id_prop_name))
-            .or_else(|| {
-                node_schema
-                    .to_properties
-                    .as_ref()
-                    .and_then(|props| props.get(&id_prop_name))
-            })
-            .cloned()
-            .unwrap_or_else(|| id_prop_name.clone());
+        // #1007: foreign-embedded node — the node has an OWN table (its
+        // `property_mappings` are real columns on `node.table`, which differs
+        // from the edge table). A STANDALONE scan binds the node's own table,
+        // so the property_mapping and id_column must come from the node's OWN
+        // mappings, NOT from the edge-embedded position maps (those columns
+        // live on the EDGE table and only apply when the node is bound as an
+        // edge endpoint — the embedded map fields below are still kept for
+        // that edge-bound path). Same-table denormalized nodes (zeek,
+        // denormalized_flights) declare `property_mappings: {}`, so they keep
+        // the embedded behavior.
+        let own_property_mapping: HashMap<String, PropertyValue> = node_schema
+            .property_mappings
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let (property_mapping, single_id_column) = if !own_property_mapping.is_empty() {
+            let mut mapping = own_property_mapping;
+            let own_id_column = match mapping.get(&id_prop_name) {
+                Some(PropertyValue::Column(col)) => col.clone(),
+                _ => id_prop_name.clone(),
+            };
+            ensure_node_id_property(&mut mapping, &id_prop_name, &own_id_column);
+            (mapping, own_id_column)
+        } else {
+            let embedded_id_column = node_schema
+                .from_properties
+                .as_ref()
+                .and_then(|props| props.get(&id_prop_name))
+                .or_else(|| {
+                    node_schema
+                        .to_properties
+                        .as_ref()
+                        .and_then(|props| props.get(&id_prop_name))
+                })
+                .cloned()
+                .unwrap_or_else(|| id_prop_name.clone());
+            (HashMap::new(), embedded_id_column)
+        };
         let mut view_scan = ViewScan::new(
             full_table_name,
             None,
-            HashMap::new(),
+            property_mapping,
             single_id_column.clone(),
             vec![],
             vec![],

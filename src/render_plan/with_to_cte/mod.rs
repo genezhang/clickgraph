@@ -7182,6 +7182,14 @@ fn apply_with_order_by_skip_limit_where(
             cte_from_alias.as_deref(),
         );
 
+        // #1007 (M2): resolve non-embedded property references against the
+        // own-table LEFT JOIN the CTE body injected for this segment (the
+        // WITH items / WHERE were pre-registered before the body render).
+        // Without this a WHERE/HAVING reference like `a.name` (when only
+        // `pid` is embedded on the edge) stays pointing at the unbound node
+        // alias → ClickHouse Code 47. No-op when no request is registered.
+        super::plan_builder_helpers::resolve_own_table_property_in_expr(&mut where_render_expr);
+
         if !rendered.group_by.0.is_empty() {
             // We have GROUP BY - WHERE becomes HAVING
             log::debug!("🔧 build_chained_with_match_cte_plan: Converting WHERE to HAVING (GROUP BY present)");
@@ -8884,6 +8892,59 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                 // Save plan_to_render for ID column computation (used after loop)
                 inner_plans_for_id.push(plan_to_render.clone());
+
+                // #1007 (M4): scope this segment's own-table join registrations
+                // (the pre-registration below + the CTE-body walker) so they
+                // cannot leak into a later WITH segment / sibling arm that
+                // reuses the same Cypher alias for a different node. See
+                // `OwnTableJoinGuard`.
+                let _own_table_join_guard =
+                    crate::server::query_context::OwnTableJoinGuard::enter();
+
+                // #1007 (M1/M2): pre-register own-table join requests for THIS
+                // WITH segment's select items, ORDER BY and WHERE clause. The
+                // CTE body's own references register inline (join_builder's
+                // GraphJoins arm walks the body plan), but the WITH modifiers
+                // are NOT part of `plan_to_render` — they render AFTER the
+                // body's join injection (apply_with_items_projection /
+                // apply_with_order_by_skip_limit_where), so without this their
+                // non-embedded property references (`a.name` when only `pid`
+                // is embedded on the edge) would dangle — either rewritten to
+                // the edge table (`t1.name` → Code 47) or left unbindable.
+                for item in with_items.iter().flatten() {
+                    if let Ok(rendered_expr) = crate::render_plan::render_expr::RenderExpr::try_from(
+                        item.expression.clone(),
+                    ) {
+                        super::plan_builder_helpers::register_own_table_property_requests(
+                            &rendered_expr,
+                            plan_to_render,
+                        );
+                    }
+                }
+                if let Some(w) = &with_where_clause {
+                    if let Ok(rendered_expr) =
+                        crate::render_plan::render_expr::RenderExpr::try_from(w.clone())
+                    {
+                        super::plan_builder_helpers::register_own_table_property_requests(
+                            &rendered_expr,
+                            plan_to_render,
+                        );
+                    }
+                }
+                if let Some(order_by_items) = &with_order_by {
+                    for item in order_by_items {
+                        if let Ok(rendered_expr) =
+                            crate::render_plan::render_expr::RenderExpr::try_from(
+                                item.expression.clone(),
+                            )
+                        {
+                            super::plan_builder_helpers::register_own_table_property_requests(
+                                &rendered_expr,
+                                plan_to_render,
+                            );
+                        }
+                    }
+                }
 
                 // Track whether this WITH clause's input contains an OPTIONAL MATCH.
                 // This is used later for deterministic CTE body restructuring.

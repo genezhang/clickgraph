@@ -26,6 +26,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         "countIf"
     }
 
+    fn any(&self) -> &'static str {
+        "any"
+    }
+
     fn min_if(&self, val: &str, cond: &str) -> String {
         format!("minIf({val}, {cond})")
     }
