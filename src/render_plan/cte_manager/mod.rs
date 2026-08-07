@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use crate::clickhouse_query_generator::variable_length_cte::{
-    NodeProperty, VariableLengthCteGenerator,
+    spell_edge_identity, NodeProperty, VariableLengthCteGenerator,
 };
 use crate::graph_catalog::{
     config::Identifier, graph_schema::GraphSchema, EdgeAccessStrategy, JoinStrategy,
@@ -460,8 +460,9 @@ impl DenormalizedCteStrategy {
     /// IS the edge identity — this distinguishes parallel edges that share the
     /// same `(from, to)` node pair (e.g. two flights on one route keyed by
     /// `flight_id`), which the `(from, to)` pair alone would collapse into a
-    /// single edge and under-count. Spelled identically to the standard
-    /// emitter's [`VariableLengthCteGenerator::build_edge_tuple_recursive`]:
+    /// single edge and under-count. Spelled via the shared
+    /// [`spell_edge_identity`] helper — the same spelling the standard emitter
+    /// uses in [`VariableLengthCteGenerator::build_edge_tuple_recursive`]:
     ///
     /// - `Single(col)` → bare `rel_alias.col` (scalar element),
     /// - `Composite(cols)` → `tuple(rel_alias.c1, rel_alias.c2, …)`,
@@ -470,24 +471,16 @@ impl DenormalizedCteStrategy {
     ///
     /// A denormalized VLP is a single directional recursive self-join over the
     /// edge table (no #617 doubled-edge CTE), so no from/to orientation swap is
-    /// needed — the identity columns are read verbatim.
+    /// needed — the identity columns are read verbatim (identity `map_col`).
     fn edge_tuple(&self, rel_alias: &str) -> String {
-        let tuple_ctor =
-            crate::sql_generator::function_mapper::current_function_mapper().tuple_constructor();
-        match &self.edge_id {
-            Some(Identifier::Single(col)) => format!("{}.{}", rel_alias, col),
-            Some(Identifier::Composite(cols)) => {
-                let elems: Vec<String> = cols
-                    .iter()
-                    .map(|col| format!("{}.{}", rel_alias, col))
-                    .collect();
-                format!("{}({})", tuple_ctor, elems.join(", "))
-            }
-            None => format!(
-                "{}({}.{}, {}.{})",
-                tuple_ctor, rel_alias, self.from_col, rel_alias, self.to_col
-            ),
-        }
+        spell_edge_identity(
+            crate::sql_generator::function_mapper::current_function_mapper().tuple_constructor(),
+            &self.edge_id,
+            rel_alias,
+            &self.from_col,
+            &self.to_col,
+            |col| col,
+        )
     }
 
     pub fn generate_sql(

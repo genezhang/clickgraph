@@ -273,8 +273,21 @@ shared helper. Once the identity spellings are consolidated, the policy type
   callers already pass exactly that), so the merge is byte-identical by
   substitution — verified arm-by-arm and against 374 `path_edges` goldens incl.
   the #617 doubled-edge branch. 6 spellings → 5. Review APPROVE-0.
-- **Next candidate slices** (unstarted): fold `build_fk_edge_tuple` and the flat
-  pairwise identity onto one `EdgeIdentity::spell(...)`.
+- **Slice 2 — DONE (#1032)**: the two single-alias tuple spellings now share
+  ONE helper. Introduced `pub fn spell_edge_identity(tuple_ctor, edge_id,
+  rel_alias, from_col, to_col, map_col)` in `variable_length_cte.rs`; both
+  `build_edge_tuple_recursive` and `DenormalizedCteStrategy::edge_tuple`
+  delegate to it. The only difference between the two callers is the per-column
+  mapping: VLC passes `edge_identity_column` (the #617 doubled-edge
+  orientation correction — provably identical to the old `None` arm's inline
+  `DOUBLED_EDGES_ORIG_FROM/TO` selection), CM passes identity (denorm has no
+  doubled-edge CTE). Byte-identity proven per caller arm + zero corpus/golden
+  churn (full 1723-unit + 593-integration sweep green, ratchet green).
+  5 spellings → 4. Review APPROVE-0.
+- **Next candidate slices** (unstarted): fold `build_fk_edge_tuple` (two aliases,
+  `quote_identifier`, comma-separated composite parse — a genuinely different
+  shape needing its own byte-identity proof) and the flat pairwise identity onto
+  the same helper family toward `EdgeIdentity::spell(...)`.
 
   **CORRECTION (2026-08-02, post-#628):** the previously-listed slice "unify the
   two `uses_edge_uniqueness` copies" is **NOT a byte-identical refactor** and is

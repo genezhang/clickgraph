@@ -68,10 +68,56 @@ fn emit_cycle_check(id_expr: &str) -> String {
 /// Enforces Cypher's default relationship-uniqueness (a path MAY revisit a node
 /// but must not reuse the same edge), unlike [`emit_cycle_check`] which enforces
 /// the stronger node-uniqueness. `edge_expr` is the edge-identity expression for
-/// the hop being added this step (typically from [`VariableLengthCteGenerator::build_edge_tuple_recursive`]).
+/// the hop being added this step (typically from [`spell_edge_identity`]).
 fn emit_edge_cycle_check(edge_expr: &str) -> String {
     let array_contains = current_function_mapper().array_contains();
     format!("NOT {array_contains}(vp.path_edges, {edge_expr})")
+}
+
+/// Spell the edge-identity value for one hop, reading the edge columns off
+/// `rel_alias`. The single shared spelling for "what makes one edge the same
+/// edge" — used by the recursive generator's
+/// [`VariableLengthCteGenerator::build_edge_tuple_recursive`] and the
+/// denormalized strategy's `edge_tuple` (`cte_manager/mod.rs`) so both spell
+/// the identity identically (#710: parallel edges sharing one `(from, to)`
+/// node pair must not collapse).
+///
+/// Returns SQL like `tuple(r.from_id, r.to_id)` or `tuple(r.date, r.num, …)`.
+/// Shape depends on `edge_id`: a `Single` column emits a bare `rel.col`; a
+/// `Composite` key builds a `tuple(...)`; `None` defaults to the `(from, to)`
+/// node pair. `map_col` is applied to EVERY referenced column, letting callers
+/// inject per-walk orientation corrections — the #617 doubled-edge walk maps
+/// the from/to id columns to their original-orientation names via
+/// [`VariableLengthCteGenerator::edge_identity_column`], while the
+/// single-directional denormalized walk passes the identity mapping.
+pub fn spell_edge_identity(
+    tuple_ctor: &str,
+    edge_id: &Option<Identifier>,
+    rel_alias: &str,
+    from_col: &str,
+    to_col: &str,
+    map_col: impl Fn(&str) -> &str,
+) -> String {
+    match edge_id {
+        Some(Identifier::Single(col)) => format!("{}.{}", rel_alias, map_col(col)),
+        Some(Identifier::Composite(cols)) => {
+            let tuple_elements: Vec<String> = cols
+                .iter()
+                .map(|col| format!("{}.{}", rel_alias, map_col(col)))
+                .collect();
+            format!("{}({})", tuple_ctor, tuple_elements.join(", "))
+        }
+        None => {
+            format!(
+                "{}({}.{}, {}.{})",
+                tuple_ctor,
+                rel_alias,
+                map_col(from_col),
+                rel_alias,
+                map_col(to_col)
+            )
+        }
+    }
 }
 
 /// Original-orientation edge-identity column names projected by the
@@ -1151,46 +1197,18 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// reverse-orientation rows, so the `None` identity comes from the
     /// original-orientation columns — otherwise the same physical edge traversed
     /// the other way would look like a different relationship and
-    /// trail-uniqueness would not hold.
+    /// trail-uniqueness would not hold. Delegates to the shared
+    /// [`spell_edge_identity`] (the denormalized strategy spells via the same
+    /// helper, #710).
     fn build_edge_tuple_recursive(&self, rel_alias: &str) -> String {
-        match &self.edge_id {
-            Some(Identifier::Single(col)) => {
-                format!("{}.{}", rel_alias, self.edge_identity_column(col))
-            }
-            Some(Identifier::Composite(cols)) => {
-                let tuple_elements: Vec<String> = cols
-                    .iter()
-                    .map(|col| format!("{}.{}", rel_alias, self.edge_identity_column(col)))
-                    .collect();
-                format!(
-                    "{}({})",
-                    crate::sql_generator::function_mapper::current_function_mapper()
-                        .tuple_constructor(),
-                    tuple_elements.join(", ")
-                )
-            }
-            None => {
-                // #617: original-orientation identity on the doubled-edge walk
-                // (see this fn's doc comment).
-                let (from_c, to_c) = if self.uses_doubled_edges() {
-                    (DOUBLED_EDGES_ORIG_FROM, DOUBLED_EDGES_ORIG_TO)
-                } else {
-                    (
-                        self.relationship_from_column.as_str(),
-                        self.relationship_to_column.as_str(),
-                    )
-                };
-                format!(
-                    "{}({}.{}, {}.{})",
-                    crate::sql_generator::function_mapper::current_function_mapper()
-                        .tuple_constructor(),
-                    rel_alias,
-                    from_c,
-                    rel_alias,
-                    to_c
-                )
-            }
-        }
+        spell_edge_identity(
+            current_function_mapper().tuple_constructor(),
+            &self.edge_id,
+            rel_alias,
+            &self.relationship_from_column,
+            &self.relationship_to_column,
+            |col| self.edge_identity_column(col),
+        )
     }
 
     /// Build the `(from_id, to_id)` edge-identity tuple for ONE FK-edge hop,
