@@ -3614,10 +3614,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             // uniqueness, join a DEDUPLICATED subquery that yields exactly one row
             // per node_id (`GROUP BY node_id`, `any()`/`any_value()` on the property
             // columns) instead of the raw table.
-            let any_fn = match crate::server::query_context::get_current_dialect() {
-                crate::sql_generator::SqlDialect::Databricks => "any_value",
-                _ => "any",
-            };
+            let any_fn = current_function_mapper().any();
             let projected: Vec<String> = own_cols
                 .iter()
                 .map(|c| format!("{any_fn}({c}) as {c}"))

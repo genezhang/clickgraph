@@ -5,6 +5,7 @@ mod denormalized_property_tests;
 mod denormalized_unlabeled_node_tests;
 mod denormalized_virtual_id_viz_tests;
 mod fixed_path_denormalized_edge_tests;
+mod issue_1006_own_table_property_tests;
 mod issue_411_generic_id_tests;
 mod multiple_relationship_tests;
 mod pattern_union_dotted_column_tests;

@@ -138,27 +138,29 @@ Exit met: one fully green nightly run + xpass count 0.
   pre-existing on main, byte-identical, untouched by #839).
 
 ### P-1 — Keep a small silent-wrong bug lane open  (standing, ≤1 agent)
-**Lane state (2026-08-06): #1027 shipped — undirected denorm self-loop
-cross-side property returned EMPTY on every reverse-orientation row
-(`pattern_union`). Root cause: the swap-branch node-property blobs keyed by the
-OTHER role's physical columns (`_s_dst_name`), while the SELECT extractor asks
-one plan-time canonical key per slot (`_s_src_name` for the start slot, from-map
-columns; `_e_dst_name` for the end, to-map) on ALL branches — so the canonical
-key was absent on swap branches → `JSONExtractString` = empty (silent-wrong; the
-#1024 slot-prefix fix was silent on it because the keys existed, just under the
-wrong role's name). Fix: the pattern_union CTE builder
-(`cte_extraction.rs`) now re-keys swap-branch blobs onto the opposite role's
-column names, matched by Cypher property name (self-loop-only guard
-`from_label == to_label`; non-self-loop / identical-map cases byte-identical).
-Corpus blast radius: exactly the 2 undirected goldens for the
-`denorm_selfloop_multitype` fixture (both dialects, 2 lines each); live-verified
-against ClickHouse — buggy SQL returned 8 empty rows on a 4-edge fixture, fixed
-SQL returns all 16 oracle rows. Locked by
-`denorm_self_loop_multitype_undirected_swap_rekey` (fails on revert) + the
-regenerated corpus goldens.** Since
+ **Lane state (2026-08-06): #1006 shipped — flat mixed-access (foreign-embedded)
+non-edge property → ClickHouse Code 47. Shape `(a:Person)-[:REPORTS_TO*1..1|
+*1|]->(b)` where the FROM endpoint's edge-embedded map is a strict subset of its
+property set (`from_node_properties: {pid: mgr_id}` only): `RETURN a.name`
+resolved through the edge table (`tN.name` on `reports`, no such column).
+Fix: select/group-by/order-by builders now register a lazy own-table join
+request when a property is absent from the edge's embedded map but resolvable
+from the node's OWN table, and `join_builder` injects a DEDUPLICATED,
+row-preserving `LEFT JOIN (SELECT <id>, any(<prop>) AS <prop> FROM <own>
+GROUP BY <id>) AS <node_alias>` (the #908 `*_own` recipe, aliased by the node
+alias so SELECT/WHERE/GROUP BY/ORDER BY resolve without rewrites); the filter
+path mirrors it in `apply_property_mapping_to_expr` (WHERE/HAVING/ORDER BY/
+GROUP BY no longer redirect to the edge alias). Exclusions: `node_id` names
+never resolve through the own table (auto-generated identity mappings exist for
+VIRTUAL ids — zeek_dns `ip_address` on `dns_log`; those keep the legacy
+edge-alias pass-through, byte-identical corpus goldens) and
+`__denorm_scan_{alias}` anchors keep their #582/#590 CTE path. 0 corpus churn
+besides lock-in; VLP `*1..2` CTE path byte-identical. Locked by
+`issue_1006_own_table_property_tests` (12 cases: flat/*1/*1..1 SELECT, WHERE,
+GROUP BY, ORDER BY, embedded-id stays on edge, virtual-id exclusion, VLP CTE
+unchanged, dedup, no-join-when-unused).** Since
 the 07-19 reconcile this lane shipped ~24 fixes (all live- or SQL-gen-verified,
-newest first): **#1027 (undirected denorm self-loop reverse-branch empty
-property, above)**,
+newest first): **#1006 (flat mixed-access own-table property, above)**,
 **#523 (partial-ref undirected 2-hop golden flake, reported
 2026-07-10 — root-caused as already-eliminated by the #480/#481 HashMap-order
 fixes + `normalize()` counter anonymization; verified byte-stable across 40

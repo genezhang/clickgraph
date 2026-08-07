@@ -105,6 +105,114 @@ fn find_graph_rel(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_p
     }
 }
 
+/// #1006: inject lazy own-table LEFT JOINs for denormalized-edge endpoints
+/// whose non-embedded properties were referenced (see
+/// [`crate::server::query_context::register_own_table_join_request`]; the
+/// select/group-by/order-by builders register a request when a property is
+/// absent from the edge's embedded property map but resolvable from the
+/// node's own table).
+fn inject_own_table_joins(joins: &mut Vec<Join>, plan: &LogicalPlan, schema: &GraphSchema) {
+    use crate::sql_generator::function_mapper::current_function_mapper;
+
+    let requests = crate::server::query_context::own_table_join_requests();
+    if requests.is_empty() {
+        return;
+    }
+    let mut bound_aliases: std::collections::HashSet<String> =
+        joins.iter().map(|j| j.table_alias.clone()).collect();
+    let mut added: Vec<(String, String)> = Vec::new();
+
+    for (node_alias, request) in requests {
+        if bound_aliases.contains(&node_alias) {
+            continue;
+        }
+        // Embedded id column + owning edge alias (only for truly denormalized
+        // endpoints — embedded endpoint property maps present).
+        let Some((edge_alias, edge_id_col)) =
+            super::plan_builder_helpers::get_denormalized_node_id_reference(&node_alias, plan)
+        else {
+            continue;
+        };
+        if edge_id_col.contains(',') {
+            // Composite edge-side id — bails like the VLP arm.
+            continue;
+        }
+        let Some(node_schema) = schema.node_schema_opt(&request.node_label) else {
+            continue;
+        };
+        // Single-column node id only (composite bails, mirroring the VLP arm).
+        let own_id_cols = node_schema.node_id.columns();
+        if own_id_cols.len() != 1 {
+            continue;
+        }
+        // Physical column for the own id: property_mappings maps the cypher id
+        // property to the real table column; fall back to the name itself.
+        let own_id_col = node_schema
+            .property_mappings
+            .get(own_id_cols[0])
+            .map(|pv| pv.raw().to_string())
+            .unwrap_or_else(|| own_id_cols[0].to_string());
+        // Physical property columns (cypher name or already-mapped physical).
+        let mut props: Vec<String> = request
+            .properties
+            .iter()
+            .filter_map(|p| super::plan_builder_helpers::own_table_property_column(node_schema, p))
+            .collect();
+        if props.is_empty() {
+            continue;
+        }
+        props.sort();
+        props.dedup();
+        let any_fn = current_function_mapper().any();
+        let projected: Vec<String> = props
+            .iter()
+            .map(|c| format!("{any_fn}({c}) as {c}"))
+            .collect();
+        let own_table = if node_schema.database.is_empty() {
+            node_schema.table_name.clone()
+        } else {
+            format!("{}.{}", node_schema.database, node_schema.table_name)
+        };
+        let subquery = format!(
+            "(SELECT {own_id_col}, {cols} FROM {own_table} GROUP BY {own_id_col})",
+            cols = projected.join(", ")
+        );
+        joins.push(Join {
+            join_type: JoinType::Left,
+            table_name: subquery,
+            table_alias: node_alias.clone(),
+            joining_on: vec![OperatorApplication {
+                operator: Operator::Equal,
+                operands: vec![
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(node_alias.clone()),
+                        column: PropertyValue::Column(own_id_col),
+                    }),
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(edge_alias.clone()),
+                        column: PropertyValue::Column(edge_id_col),
+                    }),
+                ],
+            }],
+            pre_filter: None,
+            from_id_column: None,
+            to_id_column: None,
+            graph_rel: None,
+            is_cartesian: false,
+        });
+        bound_aliases.insert(node_alias.clone());
+        added.push((node_alias.clone(), request.node_label.clone()));
+    }
+
+    for (alias, label) in added {
+        log::info!(
+            "🔧 #1006: injected own-table LEFT JOIN for '{}' (label '{}')",
+            alias,
+            label
+        );
+    }
+}
+
 /// #474: Attach the OPTIONAL-side node predicate to its LEFT JOIN's `pre_filter`.
 ///
 /// For a plain `OPTIONAL MATCH` (no WITH barrier), a WHERE predicate that
@@ -1787,6 +1895,18 @@ impl JoinBuilder for LogicalPlan {
                         }
                     }
                 }
+
+                // #1006: lazily inject own-table LEFT JOINs for MixedAccess /
+                // denormalized-edge endpoints whose NON-embedded properties were
+                // referenced (registered by select/group-by/order-by builders).
+                // Each request joins the node's own table through a DEDUPLICATED
+                // subquery (`GROUP BY node_id`, `any()` on the property columns —
+                // the same row-preserving shape #908 established for the VLP
+                // arm's `*_own` join) so the join never fans out on a duplicated
+                // node_id and never drops edge rows (LEFT JOIN; the id stays on
+                // the edge). Aliased by the NODE alias so downstream references
+                // (`a.name`) resolve without further rewrites.
+                inject_own_table_joins(&mut joins, &graph_joins.input, schema);
 
                 // #474: Recover an OPTIONAL MATCH predicate that references only the
                 // optional NODE. It must filter the LEFT JOIN subquery (pre_filter) so

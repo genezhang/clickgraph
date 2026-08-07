@@ -23,7 +23,6 @@ use crate::render_plan::cte_extraction::{
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::sql_generator::function_mapper::current_function_mapper;
 use std::collections::HashSet;
-
 #[cfg(test)] // test-only-live: exercised solely by unit tests (P2.10 dead_code sweep)
 /// Recursively rewrite TableAlias references that are in `with_aliases` to reference the CTE.
 /// This handles the case where `AVG(follows)` needs to become `AVG(grouped_data.follows)`.
@@ -2760,6 +2759,47 @@ fn apply_property_mapping_to_expr_shielded(
                     }
                 }
             }
+            // #1006: own-table resolution — mirror of select_builder's #1006
+            // branch. When the alias has a lazily-injected own-table LEFT JOIN
+            // (select/group-by/order-by registered a request for a property
+            // absent from the edge's embedded map), keep the NODE alias (it
+            // names the injected join) and resolve the column against the
+            // node's OWN table — skipping the structural edge mapping and the
+            // denormalized-alias remap below, which would redirect to the edge
+            // table (a Code-47 "unknown identifier" for non-edge properties).
+            // Denorm-scan anchors are never registered (select_builder guard),
+            // so this cannot race the `is_denorm_scan_anchor_alias` branch.
+            if !matches!(&prop.column, PropertyValue::Expression(_)) {
+                if let Some(own) =
+                    crate::server::query_context::own_table_join_requests().get(&prop.table_alias.0)
+                {
+                    let raw = prop.column.raw().to_string();
+                    let task_schema =
+                        crate::server::query_context::get_current_schema_with_fallback();
+                    let node_schema = task_schema
+                        .as_ref()
+                        .and_then(|s| s.node_schema_opt(&own.node_label));
+                    let matched = own.properties.iter().find(|p| {
+                        **p == raw
+                            || node_schema
+                                .and_then(|ns| own_table_property_column(ns, p))
+                                .as_deref()
+                                == Some(raw.as_str())
+                    });
+                    if let Some(prop_key) = matched {
+                        if let Some(ns) = node_schema {
+                            if let Some(physical) = own_table_property_column(ns, prop_key) {
+                                log::debug!(
+                                    "🔍 #1006: '{}.{}' resolved against own table column '{}' (not in edge's embedded map)",
+                                    prop.table_alias.0, prop.column.raw(), physical
+                                );
+                                prop.column = PropertyValue::Column(physical);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
             // If the column is already an Expression (resolved by FilterTagging analyzer),
             // skip property-name re-mapping — it's already the correct ClickHouse expression.
             // Still fall through to the denormalized alias remap below (table alias may
@@ -3127,15 +3167,47 @@ pub(super) fn is_denorm_scan_anchor_alias(alias: &str, plan: &LogicalPlan) -> bo
     }
 }
 
+/// #1006: the physical own-table column for `prop` on `node_schema`, or
+/// `None` when the node's own table cannot resolve it. `prop` may arrive as
+/// either the Cypher property name (`name` → `full_name` via
+/// `property_mappings`) or an already-mapped physical column name (matched
+/// against the mapping's values — e.g. a pre-rewritten `full_name`).
+///
+/// Node-ID names NEVER resolve here: `node_id` identity mappings are
+/// auto-generated (config.rs) even for VIRTUAL ids whose own table has no
+/// such column (e.g. zeek_dns `node_id: ip_address` — no `ip_address`
+/// column on `dns_log`; the property exists only through the edge's
+/// embedded endpoint property map). The node id always resolves via
+/// the edge's embedded map, so own-table resolution is restricted to
+/// explicitly-declared properties.
+pub(super) fn own_table_property_column(
+    node_schema: &crate::graph_catalog::graph_schema::NodeSchema,
+    prop: &str,
+) -> Option<String> {
+    if node_schema.node_id.columns().contains(&prop) {
+        return None;
+    }
+    if let Some(pv) = node_schema.property_mappings.get(prop) {
+        return Some(pv.raw().to_string());
+    }
+    node_schema
+        .property_mappings
+        .values()
+        .find(|v| v.raw() == prop)
+        .map(|v| v.raw().to_string())
+}
+
 /// Get the relationship alias and ID column for a denormalized node alias
 /// For example, if `b` is the "to" node of `r1` or the "from" node of `r2`,
 /// this returns (rel_alias, id_column_name).
-///
 /// IMPORTANT: This function should ONLY return a result for truly denormalized nodes
 /// (where node properties are stored on the edge table, indicated by from_node_properties/to_node_properties).
 /// For standard schemas where nodes have their own tables, this should return None so
 /// the node alias stays pointing to the node table.
-fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option<(String, String)> {
+pub(super) fn get_denormalized_node_id_reference(
+    alias: &str,
+    plan: &LogicalPlan,
+) -> Option<(String, String)> {
     match plan {
         LogicalPlan::GraphRel(rel) => {
             // Check if this node alias matches left or right connection

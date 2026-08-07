@@ -1383,6 +1383,64 @@ impl SelectBuilder for LogicalPlan {
                                     });
                                     continue;
                                 } else if let Some(actual_table_alias) = table_alias_override {
+                                    // #1006: property NOT in the edge's embedded property map.
+                                    // For a MixedAccess edge (embedded map ⊊ the node's own
+                                    // property set) the property lives on the node's OWN table
+                                    // (e.g. `foreign_selfloop`: `a` embeds only `pid → mgr_id`,
+                                    // so `RETURN a.name` must resolve `name` against `people`).
+                                    // Register a lazy own-table join request (join_builder
+                                    // injects a deduplicated LEFT JOIN aliased by the NODE
+                                    // alias) and reference the node alias with the own table's
+                                    // physical column. SingleTableScan nodes keep the legacy
+                                    // edge-alias pass-through (their embedded map covers the
+                                    // full property set, so the own table is not authoritative).
+                                    // `__denorm_scan_{alias}` anchors (#582/#590) are ALSO
+                                    // excluded: their properties resolve through the anchor
+                                    // CTE (aliased by the node alias in FROM), never through
+                                    // a lazy own-table join.
+                                    if !crate::render_plan::plan_builder_helpers::is_denorm_scan_anchor_alias(
+                                        cypher_alias, self,
+                                    ) {
+                                        let task_schema = crate::server::query_context::get_current_schema_with_fallback();
+                                        let node_label = crate::render_plan::cte_extraction::get_node_label_for_alias(
+                                            cypher_alias, self,
+                                        );
+                                        let physical = task_schema
+                                            .as_ref()
+                                            .zip(node_label.as_ref())
+                                            .and_then(|(schema, label)| {
+                                                schema.node_schema_opt(label)
+                                            })
+                                            .and_then(|node_schema| {
+                                                crate::render_plan::plan_builder_helpers::own_table_property_column(
+                                                    node_schema, col_name,
+                                                )
+                                            });
+                                        if let Some(physical) = physical {
+                                            crate::server::query_context::register_own_table_join_request(
+                                                cypher_alias,
+                                                &node_label.unwrap_or_default(),
+                                                col_name,
+                                            );
+                                            log::info!(
+                                                "🔍 #1006: resolving '{}.{}' against own table (not in embedded map; edge alias '{}' skipped)",
+                                                cypher_alias, col_name, actual_table_alias
+                                            );
+                                            select_items.push(SelectItem {
+                                                expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                    table_alias: RenderTableAlias(
+                                                        cypher_alias.to_string(),
+                                                    ),
+                                                    column: PropertyValue::Column(physical),
+                                                }),
+                                                col_alias: item
+                                                    .col_alias
+                                                    .as_ref()
+                                                    .map(|ca| ColumnAlias(ca.0.clone())),
+                                            });
+                                            continue;
+                                        }
+                                    }
                                     // Has actual_table_alias but property not found in mapping
                                     // Use original column name with the overridden alias
                                     log::debug!(
