@@ -158,7 +158,14 @@ edge-alias pass-through, byte-identical corpus goldens) and
 besides lock-in; VLP `*1..2` CTE path byte-identical. Locked by
 `issue_1006_own_table_property_tests` (12 cases: flat/*1/*1..1 SELECT, WHERE,
 GROUP BY, ORDER BY, embedded-id stays on edge, virtual-id exclusion, VLP CTE
-unchanged, dedup, no-join-when-unused).** Since
+unchanged, dedup, no-join-when-unused). Follow-up slice `9a297b4a`: filter-path
+registration (WHERE-only / ORDER BY-only references were mapped before join
+injection could register — own-table requests now pre-registered from the
+filter/order-by/group-by walkers ahead of `extract_joins`) and unlabeled-query
+support (`MATCH (a)-[r]->(b)` — `GraphNode.label` None + empty `rel.labels`
+defeat both label lookups, so `own_table_label_for_alias` adds a schema-wide
+embedded-id-key match, unique-required, ambiguity bails; live-verified on
+ClickHouse).** Since
 the 07-19 reconcile this lane shipped ~24 fixes (all live- or SQL-gen-verified,
 newest first): **#1006 (flat mixed-access own-table property, above)**,
 **#523 (partial-ref undirected 2-hop golden flake, reported
