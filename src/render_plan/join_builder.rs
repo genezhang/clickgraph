@@ -727,96 +727,6 @@ fn consensus_endpoint_label(
     }
 }
 
-/// #583 (standard stage): build the single `LEFT JOIN (two-arm match-union
-/// subquery) AS <neighbor>` that replaces the spurious-NULL two-arm split for a
-/// STANDARD plain-edge single-hop undirected OPTIONAL hop.
-///
-/// The caller has already verified (via `was_undirected == Some(true)` + the
-/// shared analyzer core `undirected_standard_single_hop_optional_core`) that
-/// `graph_rel` is exactly this shape. This helper resolves the anchor id, the
-/// edge ViewScan (`center`) and the neighbor ViewScan (`right`), builds the
-/// doubled-neighbor subquery, and returns the outer join keyed on the synthetic
-/// `__cg_combined_anchor_key`. Fails LOUD if any required column info is missing
-/// — the caller must NOT fall through to the single-direction chain.
-fn build_standard_undirected_optional_join(
-    graph_rel: &crate::query_planner::logical_plan::GraphRel,
-    _schema: &GraphSchema,
-) -> RenderPlanBuilderResult<Join> {
-    let anchor_alias = graph_rel.left_connection.clone();
-    let anchor_id = crate::render_plan::plan_builder_helpers::extract_id_column(&graph_rel.left)
-        .ok_or_else(|| {
-            RenderBuildError::MissingTableInfo(format!(
-                "#583 standard: anchor node id column for undirected OPTIONAL rel '{}'",
-                graph_rel.alias
-            ))
-        })?;
-    let neighbor_alias = graph_rel.right_connection.clone();
-
-    let LogicalPlan::ViewScan(edge_vs) = graph_rel.center.as_ref() else {
-        return Err(RenderBuildError::MissingTableInfo(format!(
-            "#583 standard: edge ViewScan for undirected OPTIONAL rel '{}'",
-            graph_rel.alias
-        )));
-    };
-    let neighbor_vs = match graph_rel.right.as_ref() {
-        LogicalPlan::GraphNode(gn) => match gn.input.as_ref() {
-            LogicalPlan::ViewScan(vs) => vs,
-            _ => {
-                return Err(RenderBuildError::MissingTableInfo(format!(
-                    "#583 standard: neighbor ViewScan for undirected OPTIONAL rel '{}'",
-                    graph_rel.alias
-                )))
-            }
-        },
-        _ => {
-            return Err(RenderBuildError::MissingTableInfo(format!(
-                "#583 standard: neighbor GraphNode for undirected OPTIONAL rel '{}'",
-                graph_rel.alias
-            )))
-        }
-    };
-
-    let subquery =
-        crate::render_plan::plan_builder_helpers::build_standard_doubled_neighbor_subquery(
-            edge_vs,
-            neighbor_vs,
-            &neighbor_alias,
-        )
-        .ok_or_else(|| {
-            RenderBuildError::MissingTableInfo(format!(
-                "#583 standard: undirected OPTIONAL rel '{}' was marked was_undirected by the \
-             analyzer, but the edge (table '{}') / neighbor (table '{}') ViewScans lack the \
-             from/to id or node columns needed to build the match-union subquery — refusing to \
-             emit a silently-single-direction join",
-                graph_rel.alias, edge_vs.source_table, neighbor_vs.source_table,
-            ))
-        })?;
-
-    Ok(Join {
-        join_type: JoinType::Left,
-        table_name: subquery,
-        table_alias: neighbor_alias.clone(),
-        joining_on: vec![OperatorApplication {
-            operator: Operator::Equal,
-            operands: vec![
-                RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: TableAlias(neighbor_alias.clone()),
-                    column: PropertyValue::Column("__cg_combined_anchor_key".to_string()),
-                }),
-                RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: TableAlias(anchor_alias.clone()),
-                    column: PropertyValue::Column(anchor_id.clone()),
-                }),
-            ],
-        }],
-        pre_filter: None,
-        from_id_column: None,
-        to_id_column: None,
-        graph_rel: None,
-        is_cartesian: false,
-    })
-}
-
 fn condition_references_alias(cond: &super::render_expr::OperatorApplication, alias: &str) -> bool {
     use super::render_expr::RenderExpr;
     for operand in &cond.operands {
@@ -1443,41 +1353,79 @@ impl JoinBuilder for LogicalPlan {
                 // #583 (standard stage): a STANDARD plain-edge single-hop
                 // undirected OPTIONAL hop is kept as ONE directed
                 // `was_undirected` GraphRel by the BidirectionalUnion analyzer
-                // (instead of the spurious-NULL two-arm Union split). For this
-                // shape the joins come from GraphJoinInference's pre-computed
-                // `graph_joins.joins` (a directed edge LEFT JOIN + neighbor LEFT
-                // JOIN chain that renders only the FORWARD orientation — proven
-                // live: undercounts 11 vs the correct 23), NOT from re-deriving
-                // via the GraphRel arm. So intercept HERE, before those
-                // pre-inferred joins are converted, and replace the whole chain
-                // with ONE `LEFT JOIN (two-arm match-union subquery) AS
-                // <neighbor>` keyed on a synthetic anchor key. The anchor FROM
-                // is built by extract_from and is unchanged. Re-derive from
-                // `was_undirected == Some(true)` + the shared analyzer core
-                // (CLAUDE.md rule 7 — no raw schema-flag branching). Fail LOUD
-                // if the subquery cannot be built rather than fall through to
-                // the single-direction chain (ground-rule-1).
-                if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
+                // (instead of the spurious-NULL two-arm Union split). Mirroring
+                // the merged denorm stage, we do NOT rebuild the join chain —
+                // we let the normal conversion below produce the directed
+                // `FROM anchor LEFT JOIN <edge> LEFT JOIN neighbor` chain (plus
+                // any sibling joins from other patterns), then SWAP just the
+                // edge join's target table for a doubled-edge subquery (each
+                // edge row in BOTH orientations, from/to swapped under their
+                // original names). The surrounding join conditions
+                // (`<rel>.from_id = anchor.id`, `neighbor.id = <rel>.to_id`) are
+                // written for the raw edge table and work UNCHANGED against the
+                // doubled subquery, now matching both orientations — so a single
+                // anchor LEFT JOIN NULL-extends once, only for zero-neighbor
+                // anchors. Exposing the edge alias + all its columns keeps
+                // `count(r)` / `r.<prop>` resolvable, and swapping only ONE join
+                // preserves sibling-pattern joins (the #1039 review's
+                // BLOCKING-1 and -3). Computed here (needs the rel schema); the
+                // actual table swap happens after the join vector is built.
+                let standard_undirected_doubled_edge: Option<(String, String)> = 'doubled: {
+                    let Some(graph_rel) = find_graph_rel(&graph_joins.input) else {
+                        break 'doubled None;
+                    };
                     // The shared analyzer core is intentionally optional-AND-
-                    // direction-agnostic (it is re-used by the analyzer scope
+                    // direction-agnostic (re-used by the analyzer scope
                     // predicate, which adds `is_optional` + `Direction::Either`).
-                    // The LEGACY two-arm split ALSO stamps `was_undirected` on
-                    // its branches — including for NON-optional undirected hops
-                    // and for polymorphic edges it splits per-type — so the
-                    // marker + core alone would also match a legacy split arm.
-                    // Require `is_optional` here so this restructure fires ONLY
-                    // for the exact shape the #583 analyzer pass produces (a
-                    // single normalized OPTIONAL hop), never a split arm.
-                    if graph_rel.was_undirected == Some(true)
+                    // The LEGACY split ALSO stamps `was_undirected` on its
+                    // branches (incl. non-optional and per-type polymorphic), so
+                    // the marker + core alone would also match a split arm —
+                    // require `is_optional` so this fires ONLY for the shape the
+                    // #583 analyzer pass produces (one normalized OPTIONAL hop).
+                    if !(graph_rel.was_undirected == Some(true)
                         && graph_rel.is_optional.unwrap_or(false)
                         && crate::query_planner::analyzer::bidirectional_union::undirected_standard_single_hop_optional_core(
                             graph_rel, schema,
-                        )
+                        ))
                     {
-                        return build_standard_undirected_optional_join(graph_rel, schema)
-                            .map(|j| vec![j]);
+                        break 'doubled None;
                     }
-                }
+                    let LogicalPlan::ViewScan(edge_vs) = graph_rel.center.as_ref() else {
+                        break 'doubled None;
+                    };
+                    // Resolve the rel schema (label → plain type) so the subquery
+                    // projects EVERY physical edge column (incl. the edge-id
+                    // column `count(r)` needs). Mirrors the analyzer gate.
+                    let rel_schema = graph_rel.labels.as_ref().and_then(|labels| {
+                        labels.first().and_then(|rel_type| {
+                            schema.get_relationships_schema_opt(rel_type).or_else(|| {
+                                let plain = rel_type.split("::").next().unwrap_or(rel_type);
+                                schema.rel_schemas_for_type(plain).into_iter().next()
+                            })
+                        })
+                    });
+                    let subquery = rel_schema.and_then(|rs| {
+                        crate::render_plan::plan_builder_helpers::build_standard_doubled_edge_subquery(
+                            edge_vs, rs,
+                        )
+                    });
+                    match subquery {
+                        Some(sql) => Some((graph_rel.alias.clone(), sql)),
+                        // Marked by the analyzer but the subquery could not be
+                        // built — fail LOUD rather than emit a single-direction
+                        // join (ground-rule-1). Surface via the outer function.
+                        None => {
+                            return Err(RenderBuildError::MissingTableInfo(format!(
+                                "#583 standard: undirected OPTIONAL rel '{}' was marked \
+                                 was_undirected by the analyzer, but its edge ViewScan (table \
+                                 '{}') / relationship schema lacks the from/to id columns needed \
+                                 to build the doubled-edge subquery — refusing to emit a \
+                                 silently-single-direction join",
+                                graph_rel.alias, edge_vs.source_table,
+                            )));
+                        }
+                    }
+                };
 
                 // Convert joins
                 // FROM markers (joins with empty joining_on and Inner type) are used by extract_from(), not extract_joins()
@@ -2067,6 +2015,36 @@ impl JoinBuilder for LogicalPlan {
                 // so this pass touches only the optional node's join. It is idempotent:
                 // it skips a predicate already present in the join's pre_filter.
                 apply_optional_node_pre_filters(&graph_joins.input, &mut joins)?;
+
+                // #583 (standard stage): swap the edge join's target table for
+                // the doubled-edge subquery computed above. Only the ONE join
+                // whose alias is the relationship alias is rewritten; the
+                // neighbor join and any sibling-pattern joins are untouched
+                // (preserving the #1039 review's BLOCKING-3 fix). The join
+                // condition (`<rel>.from_id = anchor.id`) is unchanged and now
+                // matches both orientations because the reverse arm swaps
+                // from/to under their original names.
+                if let Some((edge_alias, subquery)) = standard_undirected_doubled_edge {
+                    let mut swapped = false;
+                    for j in joins.iter_mut() {
+                        if j.table_alias == edge_alias {
+                            j.table_name = subquery.clone();
+                            swapped = true;
+                            break;
+                        }
+                    }
+                    if !swapped {
+                        // The analyzer marked this hop but the expected edge join
+                        // is not in the built set — fail LOUD rather than silently
+                        // leave the single-direction join (ground-rule-1).
+                        return Err(RenderBuildError::MissingTableInfo(format!(
+                            "#583 standard: doubled-edge subquery built for rel '{}' but no join \
+                             with that alias was found to swap — refusing to emit a \
+                             single-direction join",
+                            edge_alias
+                        )));
+                    }
+                }
 
                 joins
             }

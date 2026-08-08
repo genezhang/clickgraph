@@ -14321,56 +14321,65 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
     }
 
     /// #583 STANDARD stage: a standard plain-edge single-hop undirected OPTIONAL
-    /// (`MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]-(b:User)`) is rendered as
-    /// ONE anchor `LEFT JOIN (two-arm match-union subquery) AS b` keyed on the
-    /// synthetic `__cg_combined_anchor_key`, NOT the spurious-NULL two-arm outer
-    /// UNION split. Live-verified on db_standard: 22 rows / 0 spurious (broken =
-    /// 24 with a spurious `(anchor, NULL)` AND a phantom `(NULL, neighbor)`
-    /// row); an isolated node gets exactly one `(anchor, NULL)`. This test locks
-    /// the render shape (rows are proven live, not re-executed here).
+    /// hop is rendered by swapping the edge join's target table for a
+    /// doubled-edge subquery (each edge row in BOTH orientations, from/to
+    /// swapped under their original names), aliased AS the EDGE — the neighbor
+    /// and any sibling joins are left untouched. This mirrors the merged denorm
+    /// stage and (unlike an AS-neighbor subquery) keeps the edge alias +
+    /// columns exposed, so `count(r)` / `r.<prop>` resolve. Live-verified on
+    /// db_standard: plain 23 rows / one `(anchor, NULL)` for an isolated node
+    /// (broken = 24 with a spurious `(anchor, NULL)` AND a phantom
+    /// `(NULL, neighbor)`); `count(*)` correct (was `1,1,…`); `count(r)`
+    /// resolves (was Code 47). This test locks the render shape.
     #[tokio::test]
-    async fn standard_undirected_optional_renders_single_match_union_583() {
+    async fn standard_undirected_optional_renders_doubled_edge_583() {
         let schema = load_schema("schemas/dev/social_standard.yaml");
+        // Use the edge-variable form so the assertions also prove the edge alias
+        // is exposed (the #1039 review's BLOCKING-1 regression).
         let sql = normalize(
             &render(
                 &schema,
-                "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]-(b:User) \
-                 RETURN a.name, b.name",
+                "MATCH (a:User) OPTIONAL MATCH (a)-[r:FOLLOWS]-(b:User) \
+                 RETURN a.name, b.name, r.follow_date",
                 SqlDialect::ClickHouse,
             )
             .await,
         );
 
-        // The neighbor match-union subquery is aliased AS the neighbor (`b`) and
-        // keyed on the synthetic anchor key, so the outer `b.name` resolves
-        // against it directly.
-        assert!(
-            sql.contains("__cg_combined_anchor_key"),
-            "#583 standard: expected the synthetic anchor key in the match-union join:\n{sql}"
-        );
-        assert!(
-            sql.contains("AS b ON b.__cg_combined_anchor_key = a.user_id"),
-            "#583 standard: expected `... AS b ON b.__cg_combined_anchor_key = a.user_id`:\n{sql}"
-        );
-        // Exactly one inner UNION ALL (the two orientation arms) and NO two-arm
-        // outer split wrapper — the whole point of the fix.
+        // The edge join targets a doubled-edge subquery aliased AS the edge `r`,
+        // NOT a two-arm outer split.
         assert_eq!(
             sql.matches("UNION ALL").count(),
             1,
-            "#583 standard: one match-union subquery (two orientation arms), not a split:\n{sql}"
+            "#583 standard: one doubled-edge subquery (two orientation arms), not a split:\n{sql}"
         );
         assert!(
             !sql.contains(") AS __union"),
             "#583 standard: must NOT be the spurious-NULL two-arm outer UNION split:\n{sql}"
         );
-        // Both orientation arms present (forward exports follower_id, reverse
-        // exports followed_id as the anchor key), so every undirected neighbor
-        // is reachable exactly once. Alias-agnostic (the edge alias may be
-        // t0/t1 depending on the counter).
+        // The reverse arm swaps from/to under their ORIGINAL names, so the raw
+        // join condition matches both orientations. Both directions present:
         assert!(
-            sql.contains(".follower_id AS __cg_combined_anchor_key")
-                && sql.contains(".followed_id AS __cg_combined_anchor_key"),
-            "#583 standard: both orientation arms must export the anchor key:\n{sql}"
+            sql.contains("e.follower_id, e.followed_id")
+                && sql.contains("e.followed_id AS follower_id, e.follower_id AS followed_id"),
+            "#583 standard: both orientation arms (forward + swapped reverse) must be present:\n{sql}"
+        );
+        // The subquery is aliased AS the edge `r` and the neighbor `b` stays a
+        // SEPARATE join keyed on the (now-doubled) edge — so `r.<prop>` and
+        // `b.<prop>` both resolve.
+        assert!(
+            sql.contains(") AS r ON r.follower_id = a.user_id"),
+            "#583 standard: doubled-edge subquery must be aliased AS the edge and keyed on the anchor:\n{sql}"
+        );
+        assert!(
+            sql.contains("db_standard.users AS b ON b.user_id = r.followed_id"),
+            "#583 standard: the neighbor `b` must remain a separate join off the doubled edge:\n{sql}"
+        );
+        // The edge-own column referenced by `r.follow_date` must be projected in
+        // the subquery (else Code 47) — the BLOCKING-1 invariant.
+        assert!(
+            sql.matches("follow_date").count() >= 3,
+            "#583 standard: the edge-own column must be projected in both arms so `r.follow_date` resolves:\n{sql}"
         );
     }
 
