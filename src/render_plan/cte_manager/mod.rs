@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use crate::clickhouse_query_generator::variable_length_cte::{
-    spell_edge_identity, NodeProperty, VariableLengthCteGenerator,
+    EdgeIdentity, NodeProperty, VariableLengthCteGenerator,
 };
 use crate::graph_catalog::{
     config::Identifier, graph_schema::GraphSchema, EdgeAccessStrategy, JoinStrategy,
@@ -342,14 +342,17 @@ pub struct DenormalizedCteStrategy {
     from_col: String,
     to_col: String,
     schema: Arc<GraphSchema>,
-    /// Schema-declared composite edge identity (`edge_id:` in YAML), if any.
-    /// When present it uniquely distinguishes parallel edges that share the
-    /// same `(from, to)` node pair (e.g. two flights on the same route keyed by
-    /// `flight_id`); when `None` the edge identity degrades to the `(from, to)`
-    /// pair. Resolved once at construction from the relationship's schema so
-    /// [`Self::edge_tuple`] can spell the correct trail-uniqueness key (#710,
-    /// the denormalized counterpart of #806/#606's flat/recursive paths).
-    edge_id: Option<Identifier>,
+    /// The policy value spelling this walk's edge identity (the #887
+    /// [`EdgeIdentity`]). A denormalized VLP is a single directional recursive
+    /// self-join over the edge table (no #617 doubled-edge CTE), so the
+    /// identity is always the plain [`EdgeIdentity::EdgeIdColumns`]: the
+    /// schema-declared `edge_id` (resolved once at construction) when present
+    /// — distinguishing parallel edges that share one `(from, to)` node pair,
+    /// e.g. two flights on one route keyed by `flight_id` (#710) — else the
+    /// `(from, to)` pair. Consumed by [`Self::edge_tuple`] to spell the
+    /// trail-uniqueness key (the denormalized counterpart of #806/#606's
+    /// flat/recursive paths).
+    identity: EdgeIdentity,
 }
 
 // ===== DenormalizedCteStrategy =====
@@ -377,14 +380,22 @@ impl DenormalizedCteStrategy {
     ) -> Result<Self, CteError> {
         // Validate that this is a denormalized schema
         match &pattern_ctx.join_strategy {
-            JoinStrategy::SingleTableScan { table } => Ok(Self {
-                pattern_ctx: pattern_ctx.clone(),
-                table: table.clone(),
-                from_col: Self::get_from_column(pattern_ctx)?,
-                to_col: Self::get_to_column(pattern_ctx)?,
-                edge_id: Self::resolve_edge_id(pattern_ctx, &schema),
-                schema,
-            }),
+            JoinStrategy::SingleTableScan { table } => {
+                let from_col = Self::get_from_column(pattern_ctx)?;
+                let to_col = Self::get_to_column(pattern_ctx)?;
+                Ok(Self {
+                    pattern_ctx: pattern_ctx.clone(),
+                    table: table.clone(),
+                    from_col: from_col.clone(),
+                    to_col: to_col.clone(),
+                    identity: EdgeIdentity::EdgeIdColumns {
+                        edge_id: Self::resolve_edge_id(pattern_ctx, &schema),
+                        from_col,
+                        to_col,
+                    },
+                    schema,
+                })
+            }
             _ => Err(CteError::InvalidStrategy(
                 "DenormalizedCteStrategy requires JoinStrategy::SingleTableScan".into(),
             )),
@@ -455,14 +466,9 @@ impl DenormalizedCteStrategy {
     /// `next` (recursive case), seeded into / matched against `path_edges` for
     /// trail-uniqueness.
     ///
-    /// When the relationship schema declares an `edge_id` (#710, the
-    /// denormalized counterpart of #806/#606), that column (or composite tuple)
-    /// IS the edge identity — this distinguishes parallel edges that share the
-    /// same `(from, to)` node pair (e.g. two flights on one route keyed by
-    /// `flight_id`), which the `(from, to)` pair alone would collapse into a
-    /// single edge and under-count. Spelled via the shared
-    /// [`spell_edge_identity`] helper — the same spelling the standard emitter
-    /// uses in [`VariableLengthCteGenerator::build_edge_tuple_recursive`]:
+    /// Spelled via the shared policy value [`Self::identity`] (the #887
+    /// [`EdgeIdentity`]) — the same spelling the standard emitter uses in
+    /// [`VariableLengthCteGenerator::build_edge_tuple_recursive`] (#710):
     ///
     /// - `Single(col)` → bare `rel_alias.col` (scalar element),
     /// - `Composite(cols)` → `tuple(rel_alias.c1, rel_alias.c2, …)`,
@@ -471,15 +477,11 @@ impl DenormalizedCteStrategy {
     ///
     /// A denormalized VLP is a single directional recursive self-join over the
     /// edge table (no #617 doubled-edge CTE), so no from/to orientation swap is
-    /// needed — the identity columns are read verbatim (identity `map_col`).
+    /// needed — the identity is the plain [`EdgeIdentity::EdgeIdColumns`].
     fn edge_tuple(&self, rel_alias: &str) -> String {
-        spell_edge_identity(
+        self.identity.spell(
             crate::sql_generator::function_mapper::current_function_mapper().tuple_constructor(),
-            &self.edge_id,
             rel_alias,
-            &self.from_col,
-            &self.to_col,
-            |col| col,
         )
     }
 
@@ -1485,12 +1487,17 @@ impl VariableLengthCteStrategy {
 
         // ✅ REFACTORING COMPLETE: Use refactored DenormalizedCteStrategy directly
         if self.is_denormalized {
+            let (rel_from_col, rel_to_col) = (self.rel_from_col.clone(), self.rel_to_col.clone());
             let strategy = DenormalizedCteStrategy {
                 pattern_ctx: self.pattern_ctx.clone(),
                 table: self.rel_table.clone(),
-                from_col: self.rel_from_col.clone(),
-                to_col: self.rel_to_col.clone(),
-                edge_id: DenormalizedCteStrategy::resolve_edge_id(&self.pattern_ctx, schema),
+                from_col: rel_from_col.clone(),
+                to_col: rel_to_col.clone(),
+                identity: EdgeIdentity::EdgeIdColumns {
+                    edge_id: DenormalizedCteStrategy::resolve_edge_id(&self.pattern_ctx, schema),
+                    from_col: rel_from_col,
+                    to_col: rel_to_col,
+                },
                 schema: Arc::new(schema.clone()),
             };
 
@@ -1823,7 +1830,11 @@ mod tests {
             table: "flights".to_string(),
             from_col: "Origin".to_string(),
             to_col: "Dest".to_string(),
-            edge_id,
+            identity: EdgeIdentity::EdgeIdColumns {
+                edge_id,
+                from_col: "Origin".to_string(),
+                to_col: "Dest".to_string(),
+            },
             schema,
         }
     }
