@@ -284,10 +284,19 @@ shared helper. Once the identity spellings are consolidated, the policy type
   doubled-edge CTE). Byte-identity proven per caller arm + zero corpus/golden
   churn (full 1723-unit + 593-integration sweep green, ratchet green).
   5 spellings → 4. Review APPROVE-0.
-- **Next candidate slices** (unstarted): fold `build_fk_edge_tuple` (two aliases,
-  `quote_identifier`, comma-separated composite parse — a genuinely different
-  shape needing its own byte-identity proof) and the flat pairwise identity onto
-  the same helper family toward `EdgeIdentity::spell(...)`.
+- **Slice 3 — DONE (#1033)**: the FK-edge node-pair tuple now routes through the
+  same tuple wrapper. Extracted `spell_tuple_parts(tuple_ctor, parts)` — the
+  `tuple(e1, …)` spelling — as the shared core of the `Composite`/`None` arms
+  of `spell_edge_identity` AND of `build_fk_edge_tuple` (whose `quote_identifier`
+  column qualification and comma-separated composite parse stay per-shape, per
+  the CORRECTION below). Byte-identity: the old `None` arm's
+  `format!("{}({}.{}, {}.{})", …)` is exactly the two-part `join(", ")` of the
+  new wrapper; the FK tuple's `format!("{}({})", tuple_ctor, parts.join(", "))`
+  is the wrapper verbatim. Zero corpus/golden churn, full suite + ratchet
+  green. 4 spellings → 3. Review APPROVE-0.
+- **Next candidate slices** (unstarted): the flat pairwise identity
+  (`generate_cycle_prevention_filters_composite`, cte_extraction.rs) onto the
+  same helper family toward `EdgeIdentity::spell(...)`.
 
   **CORRECTION (2026-08-02, post-#628):** the previously-listed slice "unify the
   two `uses_edge_uniqueness` copies" is **NOT a byte-identical refactor** and is

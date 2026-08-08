@@ -74,6 +74,16 @@ fn emit_edge_cycle_check(edge_expr: &str) -> String {
     format!("NOT {array_contains}(vp.path_edges, {edge_expr})")
 }
 
+/// Spell `tuple(e1, e2, …)` from pre-qualified `<alias>.<col>` parts. The
+/// single spelling for "an edge identity that is a tuple" — shared by the
+/// edge_id `Composite`/`None` arms of [`spell_edge_identity`] and the FK-edge
+/// node pair ([`VariableLengthCteGenerator::build_fk_edge_tuple`]) so the
+/// wrapper is spelled in exactly one place. `parts` are already-qualified
+/// column references; each caller decides its own quoting/column mapping.
+fn spell_tuple_parts(tuple_ctor: &str, parts: Vec<String>) -> String {
+    format!("{}({})", tuple_ctor, parts.join(", "))
+}
+
 /// Spell the edge-identity value for one hop, reading the edge columns off
 /// `rel_alias`. The single shared spelling for "what makes one edge the same
 /// edge" — used by the recursive generator's
@@ -105,18 +115,15 @@ pub fn spell_edge_identity(
                 .iter()
                 .map(|col| format!("{}.{}", rel_alias, map_col(col)))
                 .collect();
-            format!("{}({})", tuple_ctor, tuple_elements.join(", "))
+            spell_tuple_parts(tuple_ctor, tuple_elements)
         }
-        None => {
-            format!(
-                "{}({}.{}, {}.{})",
-                tuple_ctor,
-                rel_alias,
-                map_col(from_col),
-                rel_alias,
-                map_col(to_col)
-            )
-        }
+        None => spell_tuple_parts(
+            tuple_ctor,
+            vec![
+                format!("{}.{}", rel_alias, map_col(from_col)),
+                format!("{}.{}", rel_alias, map_col(to_col)),
+            ],
+        ),
     }
 }
 
@@ -1291,7 +1298,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 crate::clickhouse_query_generator::quote_identifier(c)
             ));
         }
-        format!("{}({})", tuple_ctor, parts.join(", "))
+        spell_tuple_parts(tuple_ctor, parts)
     }
 
     /// Get the ClickHouse array type for path_edges
