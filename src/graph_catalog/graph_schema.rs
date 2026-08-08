@@ -528,6 +528,17 @@ impl RelationshipSchema {
         !self.is_fk_edge && self.from_node_properties.is_none() && self.to_node_properties.is_none()
     }
 
+    /// True when the relationship is a **polymorphic** edge: all edge types
+    /// share one physical table, discriminated by a type column. Schema-pattern
+    /// classification belongs here (axis-dispatch rule); callers outside
+    /// `graph_catalog` should use this instead of testing the raw discriminator
+    /// field. Note `is_plain_edge_table()` is ALSO true for a polymorphic edge
+    /// (it has no denormalized node properties), so a caller that needs "plain
+    /// AND monomorphic" must combine `is_plain_edge_table() && !is_polymorphic()`.
+    pub fn is_polymorphic(&self) -> bool {
+        self.type_column.is_some()
+    }
+
     /// True for a **self-referencing FK-edge** — an FK-edge whose from- and
     /// to-node are the same table with no denormalized node properties (e.g.
     /// `(child:Object)-[:PARENT]->(parent:Object)` on one `fs_objects` table, or

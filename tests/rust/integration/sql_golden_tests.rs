@@ -14320,6 +14320,60 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
         );
     }
 
+    /// #583 STANDARD stage: a standard plain-edge single-hop undirected OPTIONAL
+    /// (`MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]-(b:User)`) is rendered as
+    /// ONE anchor `LEFT JOIN (two-arm match-union subquery) AS b` keyed on the
+    /// synthetic `__cg_combined_anchor_key`, NOT the spurious-NULL two-arm outer
+    /// UNION split. Live-verified on db_standard: 22 rows / 0 spurious (broken =
+    /// 24 with a spurious `(anchor, NULL)` AND a phantom `(NULL, neighbor)`
+    /// row); an isolated node gets exactly one `(anchor, NULL)`. This test locks
+    /// the render shape (rows are proven live, not re-executed here).
+    #[tokio::test]
+    async fn standard_undirected_optional_renders_single_match_union_583() {
+        let schema = load_schema("schemas/dev/social_standard.yaml");
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]-(b:User) \
+                 RETURN a.name, b.name",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+
+        // The neighbor match-union subquery is aliased AS the neighbor (`b`) and
+        // keyed on the synthetic anchor key, so the outer `b.name` resolves
+        // against it directly.
+        assert!(
+            sql.contains("__cg_combined_anchor_key"),
+            "#583 standard: expected the synthetic anchor key in the match-union join:\n{sql}"
+        );
+        assert!(
+            sql.contains("AS b ON b.__cg_combined_anchor_key = a.user_id"),
+            "#583 standard: expected `... AS b ON b.__cg_combined_anchor_key = a.user_id`:\n{sql}"
+        );
+        // Exactly one inner UNION ALL (the two orientation arms) and NO two-arm
+        // outer split wrapper — the whole point of the fix.
+        assert_eq!(
+            sql.matches("UNION ALL").count(),
+            1,
+            "#583 standard: one match-union subquery (two orientation arms), not a split:\n{sql}"
+        );
+        assert!(
+            !sql.contains(") AS __union"),
+            "#583 standard: must NOT be the spurious-NULL two-arm outer UNION split:\n{sql}"
+        );
+        // Both orientation arms present (forward exports follower_id, reverse
+        // exports followed_id as the anchor key), so every undirected neighbor
+        // is reachable exactly once. Alias-agnostic (the edge alias may be
+        // t0/t1 depending on the counter).
+        assert!(
+            sql.contains(".follower_id AS __cg_combined_anchor_key")
+                && sql.contains(".followed_id AS __cg_combined_anchor_key"),
+            "#583 standard: both orientation arms must export the anchor key:\n{sql}"
+        );
+    }
+
     /// #529 shape 1 — R4/R5: bugs 1+2 of the 3-bug package FIXED; bug 3
     /// deliberately left unfixed but now fails LOUDLY (a clean
     /// `RenderBuildError::UnsupportedFeature`) instead of silently returning
