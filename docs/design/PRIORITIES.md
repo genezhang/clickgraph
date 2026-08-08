@@ -584,6 +584,34 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-08: **Correctness — polymorphic single-hop undirected OPTIONAL
+  spurious NULL row** (branch `fix/583-polymorphic-undirected-optional-null`,
+  PR #1043, poly stage of #583; composite stays OPEN). The polymorphic analog
+  of the standard stage below: an undirected single-hop `MATCH (a) OPTIONAL
+  MATCH (a)-[:R]-(b)` over a polymorphic edge (all types in one shared table
+  discriminated by a type column + per-endpoint label columns) split into two
+  independent NULL-extending branches → spurious `(anchor, NULL)` + phantom
+  `(NULL, neighbor)`. Live: plain 24 rows → 25 (one NULL, isolated anchor);
+  `count(r)` shed a spurious `NULL` group. Fix mirrors the standard stage
+  (analyzer keeps ONE `was_undirected` GraphRel; render swaps the edge join for
+  a doubled subquery via `collect_graph_rels` + loud-if-unswapped) with two
+  poly-specific adaptations: (1) the type/label discriminator lives in the edge
+  join's `pre_filter` (which the SQL generator wraps as `(SELECT * FROM <table>
+  WHERE …)`), so the swap folds it into BOTH orientation arms and CLEARS
+  `pre_filter` to avoid a double-wrap; passthrough columns come from
+  `doubled_edge_passthrough_columns()` (includes the discriminator columns). (2)
+  Same-label is checked on the QUERY endpoints, not the rel schema — a poly
+  edge's `from_node`/`to_node` are the `$any` sentinel, so
+  `rel_schema.from_node == to_node` is vacuously true for every poly edge
+  including a cross-label one (AUTHORED User→Post), where a symmetric filter
+  would be wrong on the reverse arm; the gate requires the two query GraphNodes
+  to carry the same concrete label. Live-verified: discriminator preserved
+  (undirected FOLLOWS = 24 incidences, not inflated by the other types sharing
+  the table); cross-label AUTHORED correctly keeps the legacy split. Same
+  bounded **#1041**-class loud residual (anchor-less projections). **Composite**
+  is the last remaining #583 layout. Full suite (1723 lib + 596 integration +
+  ratchet) green; zero golden changes (render regression test added).
+
 - 2026-08-08: **Correctness — standard single-hop undirected OPTIONAL spurious
   NULL row** (branch `fix/583-standard-undirected-optional-null`, PR #1039,
   standard stage of #583; polymorphic/composite stay OPEN). The standard
