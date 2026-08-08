@@ -360,7 +360,7 @@ shared helper. Once the identity spellings are consolidated, the policy type
 before deleting the inline copies. Intentional divergences surface as assert
 failures, not production bugs.
 
-### Phase 2 — switch the recursive generator to the policy → **DONE (PR #TBD)** — refactor, byte-identical
+### Phase 2 — switch the recursive generator to the policy → **DONE (#1035)** — refactor, byte-identical
 **Shipped.** Introduced the `EdgeIdentity` policy VALUE
 (`variable_length_cte.rs`, §3's `EdgeIdentity` spine, spelling-only per the
 NOTE below): `EdgeIdColumns { edge_id, from_col, to_col }` (schema `edge_id`:
