@@ -294,9 +294,37 @@ shared helper. Once the identity spellings are consolidated, the policy type
   new wrapper; the FK tuple's `format!("{}({})", tuple_ctor, parts.join(", "))`
   is the wrapper verbatim. Zero corpus/golden churn, full suite + ratchet
   green. 4 spellings → 3. Review APPROVE-0.
+- **Slice 4 — DONE (#1034)**: the #617 orientation correction is now spelled
+  ONCE. Extracted `pub fn doubled_edge_identity_col(col, from_keys, to_keys)`
+  in `variable_length_cte.rs` — the single canonical mapping from an
+  edge-identity column to its original-orientation spelling on a doubled-edge
+  walk (`from_keys` membership → `__cg_orig_from`, `to_keys` → `__cg_orig_to`,
+  anything else passes through unchanged). Both spellers delegate:
+  `VariableLengthCteGenerator::edge_identity_column` (single-column keys,
+  gated by `uses_doubled_edges()`) and the flat exact-bound path's inline
+  #806 copy in `filter_builder.rs` (composite-capable key sets, gated by
+  `undirected_doubled`) — which was the *seventh* spelling instance, added by
+  #806 as a duplicate of `edge_identity_column`. Byte-identity: single-element
+  `contains` == the old equality tests; the same membership tests on the
+  composite path. Zero corpus/golden churn, full suite + ratchet green.
+  3 spellings → 3 spellings of the *tuple value* but the #617 correction is
+  now one helper (the flat pairwise guard remains predicate-shaped — see
+  below).
 - **Next candidate slices** (unstarted): the flat pairwise identity
   (`generate_cycle_prevention_filters_composite`, cte_extraction.rs) onto the
   same helper family toward `EdgeIdentity::spell(...)`.
+
+  **CORRECTION (2026-08-07):** the flat pairwise guard is **predicate-shaped,
+  not tuple-shaped** — it emits `NOT (r_i.c1 = r_j.c1 AND r_i.c2 = r_j.c2 …)`
+  RenderExprs pairwise across TWO hop aliases, i.e. an inequality test, not an
+  edge-identity *value*. Folding it onto `spell_tuple_parts` /
+  `spell_edge_identity` would change the SQL shape (and per-issue #617
+  semantics) — NOT byte-identical, so it is **removed from the Phase-1
+  spelling-fold list**. Its shareable piece was already the #617 orientation
+  mapping (Slice 4 above). The guard itself stays in predicate form until the
+  Phase-2 `EdgeUniquenessPolicy` — at which point the *choice* of identity
+  columns is policy-driven but the predicate emission remains distinct by
+  construction.
 
   **CORRECTION (2026-08-02, post-#628):** the previously-listed slice "unify the
   two `uses_edge_uniqueness` copies" is **NOT a byte-identical refactor** and is
