@@ -512,7 +512,7 @@ fixed stats fixture.
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
-- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slices 1 #893 + 2 #1032 + 3 #1033 + 4 #1034, Phase 2 #1035, **behavior cluster COMPLETE: #806 + #628 + #710 + #808/#606 + #978/#980 fixed**; only the Phase 1–2 refactor remains)
+- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slices 1 #893 + 2 #1032 + 3 #1033 + 4 #1034, Phase 2 #1035, Phase 2b #1040, **behavior cluster COMPLETE: #806 + #628 + #710 + #808/#606 + #978/#980 fixed**; only the Phase 1–2 refactor remains)
   (`docs/design/VLP_EDGE_IDENTITY_UNIFICATION.md`). Bug-driven refactor of the
   VLP relationship-uniqueness axis: one canonical `EdgeUniquenessPolicy`
   (`PatternSchemaContext`-derived, rule-#7 clean) replaces ~14 inline sites / 3
@@ -575,7 +575,7 @@ fixed stats fixture.
   bug (`vt0.<prop>`, #899), FK-edge self-ref VLP degenerate recursive join (#902),
   and the mixed-arm denormalized-start-node non-id-property projection gap (#908,
   surfaced while adding #808 coverage).
-  **Phase 2b (denorm closed `*0..N`, branch `refactor/887-edge-identity-phase2b`)**
+  **Phase 2b (denorm closed `*0..N`, PR #1040)**
   COMPLETE 2026-08-07: the #978/#980 fail-louds are lifted. The denorm strategy
   was still NODE-unique for closed zero-hop patterns (`uses_edge_uniqueness`
   required `min_hops >= 1`), so `(a)-[:FLIGHT*0..]->(a)` silently dropped every
@@ -607,7 +607,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 ## 4. Merge log (newest first — append on merge)
 
 - 2026-08-07: **Correctness — denorm closed `*0..N` VLP drops every cycle
-  (#978/#980, #887 Phase 2b; branch `refactor/887-edge-identity-phase2b`)**.
+  (#978/#980, #887 Phase 2b; PR #1040)**.
   `DenormalizedCteStrategy` stayed NODE-unique for closed zero-hop patterns
   (`uses_edge_uniqueness` required `min_hops >= 1`), so `(a)-[:R*0..]->(a)`
   silently returned only zero-length self rows (the #605/#625 guard premise).

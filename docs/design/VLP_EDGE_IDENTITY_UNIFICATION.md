@@ -475,7 +475,7 @@ exposes a pre-existing OPTIONAL-MATCH projection bug (`vt0.<prop>` — anchor
 property wrongly bound to the VLP CTE alias). Reproduces on `*1..` on the old
 binary, so it is independent of #628.
 
-### Phase 2b — denorm closed `*0..N` (#978/#980) → **DONE (branch `refactor/887-edge-identity-phase2b`)** — behavior change, goldens regenerated
+### Phase 2b — denorm closed `*0..N` (#978/#980) → **DONE (PR #1040)** — behavior change, goldens regenerated
 **Shipped 2026-08-07.** The denorm strategy was the last reachable
 node-unique-where-edge-unique divergence: `DenormalizedCteStrategy::uses_edge_uniqueness`
 required `effective_min_hops() >= 1`, so a closed `*0..N` denorm VLP fell back to
