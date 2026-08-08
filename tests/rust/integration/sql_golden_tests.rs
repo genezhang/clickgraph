@@ -14320,10 +14320,104 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
         );
     }
 
-    /// #529 shape 1 — R4/R5: bugs 1+2 of the 3-bug package FIXED; bug 3
-    /// deliberately left unfixed but now fails LOUDLY (a clean
-    /// `RenderBuildError::UnsupportedFeature`) instead of silently returning
-    /// wrong data. Full history below for context on what changed and why.
+    /// #583 STANDARD stage: a standard plain-edge single-hop undirected OPTIONAL
+    /// hop is rendered by swapping the edge join's target table for a
+    /// doubled-edge subquery (each edge row in BOTH orientations, from/to
+    /// swapped under their original names), aliased AS the EDGE — the neighbor
+    /// and any sibling joins are left untouched. This mirrors the merged denorm
+    /// stage and (unlike an AS-neighbor subquery) keeps the edge alias +
+    /// columns exposed, so `count(r)` / `r.<prop>` resolve. Live-verified on
+    /// db_standard: plain 23 rows / one `(anchor, NULL)` for an isolated node
+    /// (broken = 24 with a spurious `(anchor, NULL)` AND a phantom
+    /// `(NULL, neighbor)`); `count(*)` correct (was `1,1,…`); `count(r)`
+    /// resolves (was Code 47). This test locks the render shape.
+    #[tokio::test]
+    async fn standard_undirected_optional_renders_doubled_edge_583() {
+        let schema = load_schema("schemas/dev/social_standard.yaml");
+        // Use the edge-variable form so the assertions also prove the edge alias
+        // is exposed (the #1039 review's BLOCKING-1 regression).
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (a:User) OPTIONAL MATCH (a)-[r:FOLLOWS]-(b:User) \
+                 RETURN a.name, b.name, r.follow_date",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+
+        // The edge join targets a doubled-edge subquery aliased AS the edge `r`,
+        // NOT a two-arm outer split.
+        assert_eq!(
+            sql.matches("UNION ALL").count(),
+            1,
+            "#583 standard: one doubled-edge subquery (two orientation arms), not a split:\n{sql}"
+        );
+        assert!(
+            !sql.contains(") AS __union"),
+            "#583 standard: must NOT be the spurious-NULL two-arm outer UNION split:\n{sql}"
+        );
+        // The reverse arm swaps from/to under their ORIGINAL names, so the raw
+        // join condition matches both orientations. Both directions present:
+        assert!(
+            sql.contains("e.follower_id, e.followed_id")
+                && sql.contains("e.followed_id AS follower_id, e.follower_id AS followed_id"),
+            "#583 standard: both orientation arms (forward + swapped reverse) must be present:\n{sql}"
+        );
+        // The subquery is aliased AS the edge `r` and the neighbor `b` stays a
+        // SEPARATE join keyed on the (now-doubled) edge — so `r.<prop>` and
+        // `b.<prop>` both resolve.
+        assert!(
+            sql.contains(") AS r ON r.follower_id = a.user_id"),
+            "#583 standard: doubled-edge subquery must be aliased AS the edge and keyed on the anchor:\n{sql}"
+        );
+        assert!(
+            sql.contains("db_standard.users AS b ON b.user_id = r.followed_id"),
+            "#583 standard: the neighbor `b` must remain a separate join off the doubled edge:\n{sql}"
+        );
+        // The edge-own column referenced by `r.follow_date` must be projected in
+        // the subquery (else Code 47) — the BLOCKING-1 invariant.
+        assert!(
+            sql.matches("follow_date").count() >= 3,
+            "#583 standard: the edge-own column must be projected in both arms so `r.follow_date` resolves:\n{sql}"
+        );
+    }
+
+    /// #583 STANDARD stage, round-2 review Finding 1: a DISCONNECTED
+    /// multi-clause pattern where the standard undirected-optional hop sits in
+    /// the RIGHT branch of the CartesianProduct (`MATCH (c)-[:AUTHORED]->(p)
+    /// OPTIONAL MATCH (a)-[:FOLLOWS]-(b)`). The left-biased `find_graph_rel`
+    /// missed it, silently leaving the FOLLOWS hop single-direction; the
+    /// tree-walking `collect_graph_rels` sees both CartesianProduct branches, so
+    /// the FOLLOWS edge is doubled correctly. Live-verified: an anchor that is
+    /// both a follower and followed (e.g. David) returns BOTH undirected
+    /// neighbors, not just the outgoing one.
+    #[tokio::test]
+    async fn standard_undirected_optional_doubled_in_disconnected_clause_583() {
+        let schema = load_schema("schemas/dev/social_standard.yaml");
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (c:User)-[:AUTHORED]->(p:Post) \
+                 OPTIONAL MATCH (a:User)-[:FOLLOWS]-(b:User) \
+                 RETURN a.name, b.name, c.name",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        // The FOLLOWS hop is doubled (reverse arm present) EVEN THOUGH it is in
+        // the disconnected right branch — no silent single-direction render.
+        assert!(
+            sql.contains("e.followed_id AS follower_id, e.follower_id AS followed_id"),
+            "#583 standard: the undirected hop in a disconnected clause must still be doubled:\n{sql}"
+        );
+        // The sibling AUTHORED join survives untouched.
+        assert!(
+            sql.contains("AS c ON c.user_id") || sql.contains("posts"),
+            "#583 standard: the disconnected sibling AUTHORED join must survive:\n{sql}"
+        );
+    }
+
     ///
     /// CORRECTION (R5, adversarial review): earlier text here (and this
     /// round's own CHANGELOG entry) described pre-fix `main` as producing a
