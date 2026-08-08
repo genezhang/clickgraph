@@ -14418,6 +14418,57 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
         );
     }
 
+    /// #583 POLYMORPHIC stage: an undirected single-hop OPTIONAL over a
+    /// polymorphic edge (all types in one `interactions` table, discriminated by
+    /// a type column + per-endpoint label columns) is rendered by doubling the
+    /// DISCRIMINATOR-FILTERED edge set — the type/label predicate is folded into
+    /// BOTH orientation arms and the join's `pre_filter` is cleared (so
+    /// `Join::to_sql` does not double-wrap). Live-verified on db_polymorphic:
+    /// plain 25 rows / one `(anchor, NULL)` for an isolated node (broken = 24
+    /// with a spurious `(anchor, NULL)` + phantom `(NULL, neighbor)`); `count(r)`
+    /// correct with no spurious NULL group; discriminator preserved (only
+    /// FOLLOWS counted, not the other interaction types sharing the table).
+    #[tokio::test]
+    async fn polymorphic_undirected_optional_renders_doubled_filtered_edge_583() {
+        let schema = load_schema("schemas/dev/social_polymorphic.yaml");
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]-(b:User) \
+                 RETURN a.name, b.name",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        // Doubled edge (one inner UNION ALL), not a two-arm outer split.
+        assert_eq!(
+            sql.matches("UNION ALL").count(),
+            1,
+            "#583 poly: one doubled-edge subquery (two orientation arms), not a split:\n{sql}"
+        );
+        assert!(
+            !sql.contains(") AS __union"),
+            "#583 poly: must NOT be the spurious-NULL two-arm outer UNION split:\n{sql}"
+        );
+        // The discriminator is folded into BOTH arms' WHERE (type + label
+        // predicate present twice, once per orientation arm) — NOT left in an
+        // outer pre_filter wrapper (which would double-wrap).
+        assert_eq!(
+            sql.matches("interaction_type = 'FOLLOWS'").count(),
+            2,
+            "#583 poly: the type discriminator must be folded into BOTH arms:\n{sql}"
+        );
+        assert!(
+            !sql.contains("(SELECT * FROM"),
+            "#583 poly: pre_filter must be cleared (no `(SELECT * FROM ... WHERE)` double-wrap):\n{sql}"
+        );
+        // The from/to swap under original names (both orientations reachable).
+        assert!(
+            sql.contains("e.to_id AS from_id, e.from_id AS to_id"),
+            "#583 poly: the reverse arm must swap from/to under their original names:\n{sql}"
+        );
+    }
+
     ///
     /// CORRECTION (R5, adversarial review): earlier text here (and this
     /// round's own CHANGELOG entry) described pre-fix `main` as producing a

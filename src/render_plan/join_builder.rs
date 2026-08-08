@@ -1475,6 +1475,31 @@ impl JoinBuilder for LogicalPlan {
                     }
                 }
 
+                // #583 (polymorphic stage): collect the aliases of polymorphic
+                // undirected-optional hops. Unlike the standard case, the poly
+                // doubled-edge subquery folds the type/label discriminator (which
+                // lives in the edge join's `pre_filter`) into both arms — and
+                // `pre_filter` only exists after the joins are built below — so we
+                // record just the aliases here and build+swap in the swap loop.
+                // Same `collect_graph_rels` (both CartesianProduct branches) so a
+                // disconnected poly hop is not silently missed.
+                let mut polymorphic_undirected_aliases: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                {
+                    let mut rels = Vec::new();
+                    collect_graph_rels(&graph_joins.input, &mut rels);
+                    for graph_rel in rels {
+                        if graph_rel.was_undirected == Some(true)
+                            && graph_rel.is_optional.unwrap_or(false)
+                            && crate::query_planner::analyzer::bidirectional_union::undirected_polymorphic_single_hop_optional_core(
+                                graph_rel, schema,
+                            )
+                        {
+                            polymorphic_undirected_aliases.insert(graph_rel.alias.clone());
+                        }
+                    }
+                }
+
                 // Convert joins
                 // FROM markers (joins with empty joining_on and Inner type) are used by extract_from(), not extract_joins()
                 // But optional entry points (joins with empty joining_on and Left type) need to be rendered as LEFT JOIN ... ON 1=1
@@ -2099,6 +2124,87 @@ impl JoinBuilder for LogicalPlan {
                              or split the query).",
                             edge_alias
                         )));
+                    }
+                }
+
+                // #583 (polymorphic stage): swap the poly edge join's target for
+                // a doubled discriminator-filtered subquery. The type/label
+                // discriminator lives in the join's `pre_filter` (the SQL
+                // generator would otherwise wrap it as `(SELECT * FROM <table>
+                // WHERE <pre_filter>)`); we fold it into BOTH arms of the doubled
+                // subquery and CLEAR `pre_filter` so it is not double-wrapped.
+                // The rel's edge ViewScan + schema are re-resolved by alias from
+                // the plan. Same loud-if-unswapped discipline as standard.
+                if !polymorphic_undirected_aliases.is_empty() {
+                    let mut rels = Vec::new();
+                    collect_graph_rels(&graph_joins.input, &mut rels);
+                    for edge_alias in &polymorphic_undirected_aliases {
+                        // Resolve this hop's edge ViewScan + rel schema.
+                        let graph_rel = rels.iter().find(|gr| &gr.alias == edge_alias);
+                        let (edge_vs, rel_schema) = match graph_rel.and_then(|gr| {
+                            let LogicalPlan::ViewScan(evs) = gr.center.as_ref() else {
+                                return None;
+                            };
+                            let rs = gr.labels.as_ref().and_then(|labels| {
+                                labels.first().and_then(|rel_type| {
+                                    schema.get_relationships_schema_opt(rel_type).or_else(|| {
+                                        let plain = rel_type.split("::").next().unwrap_or(rel_type);
+                                        schema.rel_schemas_for_type(plain).into_iter().next()
+                                    })
+                                })
+                            })?;
+                            Some((evs, rs))
+                        }) {
+                            Some(pair) => pair,
+                            None => {
+                                return Err(RenderBuildError::MissingTableInfo(format!(
+                                    "#583 poly: undirected OPTIONAL rel '{}' normalized by the \
+                                     analyzer, but its edge ViewScan / relationship schema could \
+                                     not be resolved — refusing to emit a single-direction join",
+                                    edge_alias
+                                )));
+                            }
+                        };
+
+                        // Find the edge join and lift its discriminator pre_filter.
+                        let Some(j) = joins.iter_mut().find(|j| &j.table_alias == edge_alias)
+                        else {
+                            return Err(RenderBuildError::MissingTableInfo(format!(
+                                "#583 poly: undirected OPTIONAL rel '{}' normalized by the \
+                                 analyzer, but no LEFT JOIN carrying its alias was found to swap \
+                                 — the reverse-direction matches would be silently dropped. \
+                                 Refusing to emit a single-direction join.",
+                                edge_alias
+                            )));
+                        };
+                        let Some(pre_filter) = j.pre_filter.as_ref() else {
+                            return Err(RenderBuildError::MissingTableInfo(format!(
+                                "#583 poly: undirected OPTIONAL rel '{}' has no discriminator \
+                                 pre_filter on its edge join — a polymorphic edge must carry its \
+                                 type/label filter; refusing to emit an untyped doubled edge \
+                                 (would match every edge type)",
+                                edge_alias
+                            )));
+                        };
+                        // Render the discriminator without a table alias — bare
+                        // column names resolve inside the `e`-aliased arm scans.
+                        let filter_sql = pre_filter.to_sql_without_table_alias();
+                        let Some(subquery) =
+                            crate::render_plan::plan_builder_helpers::build_polymorphic_doubled_edge_subquery(
+                                edge_vs, rel_schema, &filter_sql,
+                            )
+                        else {
+                            return Err(RenderBuildError::MissingTableInfo(format!(
+                                "#583 poly: undirected OPTIONAL rel '{}' (table '{}') lacks the \
+                                 from/to id columns needed to build the doubled-edge subquery — \
+                                 refusing to emit a silently-single-direction join",
+                                edge_alias, edge_vs.source_table,
+                            )));
+                        };
+                        j.table_name = subquery;
+                        // Discriminator is now folded into both arms — clear the
+                        // pre_filter so `Join::to_sql` does not double-wrap it.
+                        j.pre_filter = None;
                     }
                 }
 

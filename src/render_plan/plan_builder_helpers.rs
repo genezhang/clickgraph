@@ -366,6 +366,93 @@ pub(super) fn build_standard_doubled_edge_subquery(
 /// to the subquery; `e` matches the denorm helper's convention.
 const EDGE_ARM_ALIAS: &str = "e";
 
+/// #583 (polymorphic stage): build a doubled-edge subquery for a POLYMORPHIC
+/// single-hop undirected OPTIONAL pattern. Same shape as
+/// [`build_standard_doubled_edge_subquery`] (each edge row in both
+/// orientations, from/to swapped under their original names, aliased AS the
+/// edge), with TWO poly-specific differences:
+///
+///  1. **The type/label discriminator is folded into BOTH arms' WHERE.** A
+///     polymorphic edge stores all types in one shared table
+///     (`interactions`) discriminated by a type column plus per-endpoint label
+///     columns. In the two-arm split path that predicate lives in the edge
+///     join's `pre_filter`, which the SQL generator wraps as
+///     `(SELECT * FROM <table> WHERE <pre_filter>)`. Here we fold it directly
+///     into each arm and the caller CLEARS the join's `pre_filter` (otherwise
+///     `Join::to_sql` would double-wrap). The filter string is the already-
+///     dispatch-built `pre_filter` rendered without a table alias (bare column
+///     names resolve inside the subquery), so no filter is reconstructed here
+///     (CLAUDE.md rule 7 — the predicate came through the schema-catalog
+///     `EdgeAccessStrategy` type/label filter APIs). The analyzer gate scopes
+///     this to same-QUERY-LABEL endpoints, so the same symmetric filter is
+///     correct on both arms (a cross-label poly edge would need different
+///     endpoint-label predicates per arm and is excluded).
+///  2. **Passthrough columns come from `doubled_edge_passthrough_columns()`**
+///     (not `all_valid_physical_columns()`), because the former includes the
+///     poly discriminator/label columns — needed so `RETURN r` / any
+///     discriminator reference resolves, and harmless otherwise.
+pub(super) fn build_polymorphic_doubled_edge_subquery(
+    edge_vs: &crate::query_planner::logical_plan::ViewScan,
+    rel_schema: &crate::graph_catalog::graph_schema::RelationshipSchema,
+    discriminator_filter: &str,
+) -> Option<String> {
+    let q = crate::clickhouse_query_generator::quote_identifier;
+
+    let from_id = edge_vs.from_id.as_ref()?.first_column().to_string();
+    let to_id = edge_vs.to_id.as_ref()?.first_column().to_string();
+    let edge_table = &edge_vs.source_table;
+
+    // Poly discriminator columns MUST be in the passthrough set (unlike the
+    // standard helper) so downstream references and the arms stay column-aligned.
+    let role_cols: std::collections::HashSet<String> =
+        [from_id.clone(), to_id.clone()].into_iter().collect();
+    let mut passthrough: Vec<String> = rel_schema
+        .doubled_edge_passthrough_columns()
+        .into_iter()
+        .filter(|c| !role_cols.contains(c))
+        .collect();
+    passthrough.sort();
+    passthrough.dedup();
+
+    let mut forward_cols: Vec<String> = vec![
+        format!("{e}.{}", q(&from_id), e = q(EDGE_ARM_ALIAS)),
+        format!("{e}.{}", q(&to_id), e = q(EDGE_ARM_ALIAS)),
+    ];
+    for c in &passthrough {
+        forward_cols.push(format!("{}.{}", q(EDGE_ARM_ALIAS), q(c)));
+    }
+
+    let mut reverse_cols: Vec<String> = vec![
+        format!(
+            "{e}.{} AS {}",
+            q(&to_id),
+            q(&from_id),
+            e = q(EDGE_ARM_ALIAS)
+        ),
+        format!(
+            "{e}.{} AS {}",
+            q(&from_id),
+            q(&to_id),
+            e = q(EDGE_ARM_ALIAS)
+        ),
+    ];
+    for c in &passthrough {
+        reverse_cols.push(format!("{}.{}", q(EDGE_ARM_ALIAS), q(c)));
+    }
+
+    // The discriminator filter is rendered without a table alias, so it applies
+    // to the `e`-aliased scan inside each arm via bare column names.
+    Some(format!(
+        "(SELECT {fwd} FROM {table} AS {e} WHERE {filter} \
+         UNION ALL SELECT {rev} FROM {table} AS {e} WHERE {filter})",
+        fwd = forward_cols.join(", "),
+        rev = reverse_cols.join(", "),
+        table = edge_table,
+        e = q(EDGE_ARM_ALIAS),
+        filter = discriminator_filter,
+    ))
+}
+
 /// #583: build a doubled-edge subquery for a denormalized single-hop undirected
 /// OPTIONAL pattern, so the existing single anchor LEFT JOIN sees every physical
 /// edge in BOTH orientations.
