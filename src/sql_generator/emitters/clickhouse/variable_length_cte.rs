@@ -135,6 +135,31 @@ pub fn spell_edge_identity(
 /// Canonically defined in the schema catalog (which rejects colliding tables).
 pub use crate::graph_catalog::graph_schema::{DOUBLED_EDGES_ORIG_FROM, DOUBLED_EDGES_ORIG_TO};
 
+/// #617: map ONE edge-identity column to its original-orientation spelling on
+/// a doubled-edge walk. If `col` is one of the relationship's `from_keys` (the
+/// from-side id columns), the reverse-orientation rows swap it, so the identity
+/// must read `__cg_orig_from`; likewise for `to_keys` → `__cg_orig_to`. Any
+/// other column (e.g. an `edge_id` extension column like `timestamp`) is
+/// orientation-independent and passes through unchanged. The single shared
+/// spelling of this correction — used by the recursive generator's
+/// [`VariableLengthCteGenerator::edge_identity_column`] and by the flat
+/// exact-bound path (`filter_builder.rs`, #806), so both walks resolve the
+/// identity identically. `from_keys`/`to_keys` may be single- or
+/// composite-column sets; the caller decides whether this walk is doubled.
+pub fn doubled_edge_identity_col<'c>(
+    col: &'c str,
+    from_keys: &[&str],
+    to_keys: &[&str],
+) -> &'c str {
+    if from_keys.contains(&col) {
+        return DOUBLED_EDGES_ORIG_FROM;
+    }
+    if to_keys.contains(&col) {
+        return DOUBLED_EDGES_ORIG_TO;
+    }
+    col
+}
+
 /// Name of the doubled-edge CTE for the pattern's endpoint cypher aliases +
 /// edge table (#617). Deliberately NOT `vlp_`-prefixed: several render passes
 /// special-case `vlp_`-named CTEs (column pruning, outer-alias mapping) and
@@ -1183,12 +1208,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// passes through unchanged.
     fn edge_identity_column<'c>(&self, col: &'c str) -> &'c str {
         if self.uses_doubled_edges() {
-            if col == self.relationship_from_column {
-                return DOUBLED_EDGES_ORIG_FROM;
-            }
-            if col == self.relationship_to_column {
-                return DOUBLED_EDGES_ORIG_TO;
-            }
+            return doubled_edge_identity_col(
+                col,
+                &[self.relationship_from_column.as_str()],
+                &[self.relationship_to_column.as_str()],
+            );
         }
         col
     }

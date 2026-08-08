@@ -886,16 +886,15 @@ impl FilterBuilder for LogicalPlan {
                                             .iter()
                                             .map(|c| {
                                                 if undirected_doubled {
-                                                    if from_key.iter().any(|k| k == c) {
-                                                        return vlc::DOUBLED_EDGES_ORIG_FROM
-                                                            .to_string();
-                                                    }
-                                                    if to_key.iter().any(|k| k == c) {
-                                                        return vlc::DOUBLED_EDGES_ORIG_TO
-                                                            .to_string();
-                                                    }
+                                                    vlc::doubled_edge_identity_col(
+                                                        c,
+                                                        &from_key,
+                                                        &to_key,
+                                                    )
+                                                    .to_string()
+                                                } else {
+                                                    c.to_string()
                                                 }
-                                                c.to_string()
                                             })
                                             .collect::<Vec<String>>()
                                     });
