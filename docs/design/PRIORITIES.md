@@ -584,6 +584,39 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-08: **Correctness — standard single-hop undirected OPTIONAL spurious
+  NULL row** (branch `fix/583-standard-undirected-optional-null`, PR #1039,
+  standard stage of #583; polymorphic/composite stay OPEN). The standard
+  (separate-edge-table) analog of the denorm stage above: an undirected
+  single-hop `MATCH (a) OPTIONAL MATCH (a)-[:R]-(b)` split into two independent
+  `LEFT JOIN` branches under `UNION ALL`, each NULL-extending blind to the
+  other — producing a spurious `(anchor, NULL)` AND (worse than denorm) a
+  phantom `(NULL, neighbor)` row from the neighbor-driven second branch. Live:
+  plain 24 rows → 23 (one NULL, for a genuinely isolated anchor); `count(b)`
+  shed a spurious `NULL` group. Fix mirrors the denorm stage exactly: an
+  analyzer pre-pass (`normalize_undirected_standard_single_hop_optional_rels`,
+  gated on `is_plain_edge_table() && !is_polymorphic() && same-label && scalar
+  from/to ids`) keeps the hop as ONE `was_undirected` GraphRel, and the render
+  SWAPS just the edge join's target table for a doubled-edge subquery (each edge
+  row in both orientations, from/to swapped under their original names, aliased
+  AS the EDGE via `build_standard_doubled_edge_subquery`) — the neighbor and any
+  sibling joins are left untouched, and the edge alias + all its physical
+  columns stay exposed so `count(r)` / `r.<prop>` resolve. Every matching hop in
+  the tree is collected (`collect_graph_rels`, both `CartesianProduct` branches)
+  and swapped; any un-swappable normalized hop fails LOUD (never a silent
+  single-direction render). Three adversarial review rounds hardened this: round
+  1 caught 3 blockers from an initial AS-neighbor approach (edge-var Code 47,
+  `count(*)` silent-wrong, dropped sibling joins) → reworked to the AS-edge swap;
+  round 2 caught a loud→silent regression on disconnected multi-clause patterns
+  (left-biased `find_graph_rel` missed the right-branch hop) → fixed with the
+  tree-walking collector; round 3 confirmed clean. `is_polymorphic()` dispatch
+  predicate added to the schema catalog (rule 7). **Scoped standard-only**:
+  polymorphic keeps the discriminator via the legacy path; composite excluded
+  (scalar-id gate); fk-edge never had the bug; #583 stays OPEN for those.
+  Follow-up **#1041** filed (anchor-less projections like bare `RETURN count(*)`
+  fail loud where the edge is promoted to FROM — bounded, loud-over-silent).
+  Full suite (1723 lib + 595 integration + ratchet) green.
+
 - 2026-08-04: **Correctness — denorm/coupled single-hop undirected OPTIONAL
   spurious NULL row** (branch `fix/583-denorm-undirected-optional-null`,
   PR #1029, denorm stage of #583; standard/poly/composite stay OPEN). An
