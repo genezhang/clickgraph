@@ -564,15 +564,26 @@ impl RelationshipSchema {
     /// read the orientation-swapped value in reverse rows) or when the table
     /// itself uses the reserved original-identity column names. Such schemas
     /// stay on the legacy two-arm path.
+    ///
+    /// Single- AND composite-id edges are both accepted (#583 composite stage):
+    /// the doubled subquery swaps from/to POSITIONALLY (`to_id[i] AS from_id[i]`,
+    /// `from_id[i] AS to_id[i]`), so the from/to keys must have EQUAL arity — a
+    /// mismatched-arity edge (which could not be a same-label self-ref anyway,
+    /// the only shape the #583 cores scope) stays on the legacy two-arm path.
     pub fn doubled_edge_walk_compatible(&self) -> bool {
-        let endpoint_cols: Vec<&String> = match (&self.from_id, &self.to_id) {
-            (Identifier::Single(f), Identifier::Single(t)) => vec![f, t],
-            _ => return false,
-        };
-        let maps_onto_endpoint = self
-            .property_mappings
-            .values()
-            .any(|pv| matches!(pv, PropertyValue::Column(c) if endpoint_cols.contains(&c)));
+        // Positional from↔to swap requires equal-arity keys.
+        if self.from_id.columns().len() != self.to_id.columns().len() {
+            return false;
+        }
+        let endpoint_cols: Vec<&str> = self
+            .from_id
+            .columns()
+            .into_iter()
+            .chain(self.to_id.columns())
+            .collect();
+        let maps_onto_endpoint = self.property_mappings.values().any(
+            |pv| matches!(pv, PropertyValue::Column(c) if endpoint_cols.contains(&c.as_str())),
+        );
         let reserved = [DOUBLED_EDGES_ORIG_FROM, DOUBLED_EDGES_ORIG_TO];
         let reserved_collision =
             self.column_names
