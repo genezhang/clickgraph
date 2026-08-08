@@ -57,6 +57,18 @@ impl AnalyzerPass for BidirectionalUnion {
             normalize_undirected_denorm_single_hop_optional_rels(&base, graph_schema)
                 .or_else(|| (!Arc::ptr_eq(&base, &logical_plan)).then_some(base))
         };
+        // #583 (standard stage): standard plain-edge single-hop undirected
+        // OPTIONAL hops get the SAME single-anchor-LEFT-JOIN-over-match-union
+        // treatment as the denorm stage — the two-arm split's independent
+        // per-arm NULL-extension manufactures a spurious `(anchor, NULL)` row
+        // (and, worse than denorm, a phantom `(NULL, neighbor)` row from the
+        // neighbor-driven second arm) for one-role-only anchors. Compose after
+        // the denorm pass: run on whichever plan the prior passes produced.
+        let normalized = {
+            let base = normalized.unwrap_or_else(|| logical_plan.clone());
+            normalize_undirected_standard_single_hop_optional_rels(&base, graph_schema)
+                .or_else(|| (!Arc::ptr_eq(&base, &logical_plan)).then_some(base))
+        };
         match normalized {
             Some(plan) => {
                 let inner = transform_bidirectional(&plan, plan_ctx, graph_schema)?;
@@ -295,6 +307,112 @@ pub(crate) fn undirected_denorm_single_hop_optional_core(
         && matches!(rel_schema.to_id, Identifier::Single(_))
 }
 
+/// #583 (standard stage): scope predicate for the STANDARD single-hop undirected
+/// OPTIONAL rewrite — the direct analog of
+/// [`undirected_denorm_single_hop_optional_scope`] for a *separate* edge table
+/// (plain edge table + separate node table) rather than a denormalized
+/// embedded-node edge. In scope → the GraphRel is NOT split into a two-arm
+/// Union; instead the render layer targets a single anchor
+/// `LEFT JOIN (match-union subquery) AS <neighbor>` keyed on a synthetic anchor
+/// key, so NULL-extension happens ONCE (only for genuinely neighborless
+/// anchors) instead of independently per direction arm.
+pub(crate) fn undirected_standard_single_hop_optional_scope(
+    graph_rel: &GraphRel,
+    graph_schema: &GraphSchema,
+) -> bool {
+    graph_rel.direction == Direction::Either
+        && graph_rel.is_optional.unwrap_or(false)
+        && undirected_standard_single_hop_optional_core(graph_rel, graph_schema)
+}
+
+/// #583 (standard stage): direction-agnostic core of
+/// [`undirected_standard_single_hop_optional_scope`]. Shared with the RENDER
+/// layer, which re-derives the decision from `was_undirected == Some(true)` +
+/// this core (the analyzer has normalized direction to Outgoing by then). Like
+/// the denorm core, the `was_undirected` flag alone cannot distinguish "one
+/// normalized single hop" from "one monotone arm of a legacy split" — but this
+/// core predicate can: whenever it is true the analyzer normalized instead of
+/// splitting.
+///
+/// Differs from the denorm core in exactly two places: the endpoint-shape check
+/// (standard anchors are bare `GraphNode`s, never the denorm role-Union) and
+/// the final gate (`is_plain_edge_table()` instead of
+/// `rel_has_both_nodes_denormalized`). Everything else — single hop, one known
+/// rel type, same-label endpoints, scalar from/to ids — is identical.
+pub(crate) fn undirected_standard_single_hop_optional_core(
+    graph_rel: &GraphRel,
+    graph_schema: &GraphSchema,
+) -> bool {
+    // Plain single hop only: no VLP, no shortestPath, no deferred multi-type
+    // (pattern_combinations) union.
+    if graph_rel.variable_length.is_some()
+        || graph_rel.shortest_path_mode.is_some()
+        || graph_rel.pattern_combinations.is_some()
+    {
+        return false;
+    }
+    // Endpoints must be plain single-node scans. Unlike denorm, standard anchors
+    // are always bare `GraphNode`s (there is no denormalized standalone-scan
+    // Union), so a `GraphNode` on both sides is the whole shape; a nested
+    // `GraphRel` / `CartesianProduct` is chained / disconnected and handled by
+    // the #589 / #590 gates, not here.
+    if !matches!(graph_rel.left.as_ref(), LogicalPlan::GraphNode(_))
+        || !matches!(graph_rel.right.as_ref(), LogicalPlan::GraphNode(_))
+    {
+        return false;
+    }
+    // Exactly one known relationship type. Labels at this stage may be composite
+    // schema keys ("FOLLOWS::User::User"); resolve those directly, falling back
+    // to the plain-type index (mirrors `undirected_vlp_single_walk_core`).
+    let Some(labels) = graph_rel.labels.as_ref() else {
+        return false;
+    };
+    let [rel_type] = labels.as_slice() else {
+        return false;
+    };
+    let rel_schema = if let Some(rs) = graph_schema.get_relationships_schema_opt(rel_type) {
+        rs
+    } else {
+        let plain_type = rel_type.split("::").next().unwrap_or(rel_type);
+        let rel_schemas = graph_schema.rel_schemas_for_type(plain_type);
+        if rel_schemas.len() != 1 {
+            return false;
+        }
+        rel_schemas[0]
+    };
+    // Plain (separate) edge table with same-label endpoints and SINGLE-column
+    // from/to ids. `is_plain_edge_table()` consumes the schema-catalog
+    // classification (not FK-edge, neither role-property map present), never a
+    // raw plan-level flag (CLAUDE.md rule 7) — the exact gate
+    // `undirected_vlp_single_walk_core` (#617) uses for the standard VLP walk.
+    // Same-label endpoints keep the match-union role swap type-consistent; the
+    // single-column-id requirement keeps the gate in lockstep with the render
+    // helper, which builds the anchor key from `from_id.first_column()` only.
+    // Composite-id standard edges keep the legacy two-arm behavior (#583 stays
+    // open for them). `doubled_edge_walk_compatible()` rejects property mappings
+    // that target the from/to columns (a reverse-arm row would read the swapped
+    // value) — the same hazard the #617 doubled-edge walk guards against, and
+    // this match-union performs the identical orientation swap.
+    //
+    // POLYMORPHIC exclusion (`!is_polymorphic()`): a polymorphic edge stores
+    // ALL edge types in one shared table discriminated by a type column (e.g.
+    // `interactions` with a discriminator IN {FOLLOWS, AUTHORED, …}).
+    // `is_plain_edge_table()` is TRUE for it (it has no denormalized role-
+    // property maps), but the match-union subquery this stage builds does NOT
+    // carry the per-type discriminator predicate — so a polymorphic edge would
+    // silently match EVERY type, not just the requested one. Polymorphic
+    // undirected single hops therefore keep the legacy two-arm path (which does
+    // inject the discriminator per branch); #583 stays open for them. Routed
+    // through the schema-catalog `is_polymorphic()` dispatch API (CLAUDE.md
+    // rule 7), never the raw discriminator field.
+    rel_schema.is_plain_edge_table()
+        && !rel_schema.is_polymorphic()
+        && rel_schema.from_node == rel_schema.to_node
+        && matches!(rel_schema.from_id, Identifier::Single(_))
+        && matches!(rel_schema.to_id, Identifier::Single(_))
+        && rel_schema.doubled_edge_walk_compatible()
+}
+
 /// #583: rewrite every in-scope denormalized single-hop undirected OPTIONAL
 /// GraphRel (see [`undirected_denorm_single_hop_optional_scope`]) to
 /// `direction: Outgoing` + `was_undirected: Some(true)`. Returns `None` when
@@ -326,6 +444,55 @@ fn normalize_undirected_denorm_single_hop_optional_rels(
             if undirected_denorm_single_hop_optional_scope(graph_rel, graph_schema) {
                 crate::debug_print!(
                     "🔄 BidirectionalUnion(#583): denorm single-hop undirected OPTIONAL '{}' → doubled-edge single anchor LEFT JOIN (no Union split)",
+                    graph_rel.alias
+                );
+                *changed = true;
+                return LogicalPlan::GraphRel(GraphRel {
+                    direction: Direction::Outgoing,
+                    was_undirected: Some(true),
+                    ..graph_rel.clone()
+                });
+            }
+        }
+        mapped
+    }
+    let mut changed = false;
+    let new_plan = walk(plan, graph_schema, &mut changed);
+    changed.then(|| Arc::new(new_plan))
+}
+
+/// #583 (standard stage): rewrite every in-scope STANDARD single-hop undirected
+/// OPTIONAL GraphRel (see [`undirected_standard_single_hop_optional_scope`]) to
+/// `direction: Outgoing` + `was_undirected: Some(true)`. Returns `None` when
+/// nothing changed. The render layer recognizes the marker on a standard
+/// plain-edge single hop and targets a single anchor
+/// `LEFT JOIN (match-union subquery) AS <neighbor>` instead of the two-arm
+/// split. Mirrors [`normalize_undirected_denorm_single_hop_optional_rels`]; the
+/// only differences are in the shared scope core (endpoint shape + the
+/// `is_plain_edge_table()` gate).
+///
+/// #583 scope discipline (identical to the denorm stage): this pass must NOT
+/// fire inside a chained-optional structure. `OPTIONAL (a)-[:R]-(b) OPTIONAL
+/// (b)-[:R]->(c)` is #589 territory, and #589's loud guard keys on the inner
+/// hop still being `Direction::Either` when the Projection arm inspects it. If
+/// this pre-pass normalized that inner hop to `Outgoing` first it would
+/// silently neutralize the #589 guard and render a shape #583 was never scoped
+/// for. So when the tree contains a chained-optional-undirected structure, skip
+/// normalization entirely and let #589 fire.
+fn normalize_undirected_standard_single_hop_optional_rels(
+    plan: &Arc<LogicalPlan>,
+    graph_schema: &GraphSchema,
+) -> Option<Arc<LogicalPlan>> {
+    // Defer to #589 for chained-optional-undirected patterns (see doc above).
+    if has_chained_optional_nested_undirected_edge(plan) {
+        return None;
+    }
+    fn walk(plan: &LogicalPlan, graph_schema: &GraphSchema, changed: &mut bool) -> LogicalPlan {
+        let mapped = plan.map_children(|child| walk(child, graph_schema, changed));
+        if let LogicalPlan::GraphRel(graph_rel) = &mapped {
+            if undirected_standard_single_hop_optional_scope(graph_rel, graph_schema) {
+                crate::debug_print!(
+                    "🔄 BidirectionalUnion(#583 standard): standard single-hop undirected OPTIONAL '{}' → match-union single anchor LEFT JOIN (no Union split)",
                     graph_rel.alias
                 );
                 *changed = true;

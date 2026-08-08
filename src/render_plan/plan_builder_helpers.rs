@@ -253,6 +253,116 @@ pub(super) fn is_denormalized_union(plan: &LogicalPlan) -> bool {
     }
 }
 
+/// #583 (standard stage): build a two-arm match-union subquery for a STANDARD
+/// single-hop undirected OPTIONAL pattern, aliased AS the neighbor node so the
+/// existing single anchor LEFT JOIN sees every neighbor reachable in EITHER
+/// orientation, keyed on a synthetic anchor-key column.
+///
+/// The undirected split renders each direction as an independent chain
+/// (`users AS a LEFT JOIN follows t1 LEFT JOIN users b`, then a second arm
+/// driven by `users AS b`) stapled with UNION ALL; each arm NULL-extends blind
+/// to the other, so a one-role-only anchor gets a spurious `(anchor, NULL)` AND
+/// the neighbor-driven second arm manufactures a phantom `(NULL, neighbor)` row
+/// (#583, worse than denorm). Instead the analyzer keeps ONE directed
+/// `was_undirected` GraphRel and this helper builds:
+///
+/// ```sql
+/// (SELECT t1.<from_id> AS __cg_combined_anchor_key, b.<node cols>
+///  FROM <edge_table> AS t1 JOIN <node_table> AS b ON b.<node_id> = t1.<to_id>
+///  UNION ALL
+///  SELECT t1.<to_id> AS __cg_combined_anchor_key, b.<node cols>
+///  FROM <edge_table> AS t1 JOIN <node_table> AS b ON b.<node_id> = t1.<from_id>)
+/// ```
+///
+/// aliased `AS b` (the neighbor alias). Because the neighbor's own physical
+/// columns are projected under their RAW names, the outer query's `b.<prop>`
+/// references resolve directly against this subquery — no endpoint-reference
+/// rewriting is needed (that keeps this stage clear of the VLP endpoint
+/// resolution machinery). The outer join `b.__cg_combined_anchor_key =
+/// a.<anchor_id>` then NULL-extends exactly once, for genuinely zero-neighbor
+/// anchors only (proven live: 22 rows / 0 spurious vs the buggy 24, and an
+/// isolated node gets exactly one `(anchor, NULL)`).
+///
+/// The synthetic key name (`__cg_combined_anchor_key`) is the same one the
+/// #479/#597 optimizer fold exports, for consistency. Every column reference is
+/// table-qualified so the projection is unambiguous across the two arms.
+///
+/// Returns `None` when required column info is missing (edge from/to id, or the
+/// neighbor's node-id / properties) — the caller fails LOUD rather than emit a
+/// silently-single-direction join.
+pub(super) fn build_standard_doubled_neighbor_subquery(
+    edge_vs: &crate::query_planner::logical_plan::ViewScan,
+    neighbor_vs: &crate::query_planner::logical_plan::ViewScan,
+    neighbor_alias: &str,
+) -> Option<String> {
+    let q = crate::clickhouse_query_generator::quote_identifier;
+
+    // Edge role id columns (single-column only; composite standard ids keep the
+    // legacy two-arm path per the analyzer gate).
+    let from_id = edge_vs.from_id.as_ref()?.first_column().to_string();
+    let to_id = edge_vs.to_id.as_ref()?.first_column().to_string();
+    let edge_table = &edge_vs.source_table;
+
+    // Neighbor node table + id column.
+    let node_table = &neighbor_vs.source_table;
+    let node_id = &neighbor_vs.id_column;
+
+    // Neighbor's physical columns, projected under their RAW names so outer
+    // `b.<prop>` references resolve directly. Deterministic sorted order (shared
+    // helper) so the two UNION arms align column-for-column. Always include the
+    // node-id column even if it is not a mapped property (some references — and
+    // the join key exposure — need it).
+    let mut node_cols: Vec<String> =
+        super::clause_extractors::extract_sorted_properties(&neighbor_vs.property_mapping)
+            .into_iter()
+            .map(|(_, physical)| physical)
+            .collect();
+    if !node_cols.iter().any(|c| c == node_id) {
+        node_cols.push(node_id.clone());
+    }
+    node_cols.sort();
+    node_cols.dedup();
+    let node_proj = node_cols
+        .iter()
+        .map(|c| format!("{}.{}", q(neighbor_alias), q(c)))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let key = "__cg_combined_anchor_key";
+    // Forward arm: anchor key = edge.from_id, neighbor joined on edge.to_id.
+    // Reverse arm: anchor key = edge.to_id, neighbor joined on edge.from_id.
+    let forward = format!(
+        "SELECT {t1}.{fk} AS {key}, {proj} FROM {edge} AS {t1} JOIN {node} AS {b} ON {b}.{nid} = {t1}.{tk}",
+        t1 = q(EDGE_ARM_ALIAS),
+        fk = q(&from_id),
+        key = key,
+        proj = node_proj,
+        edge = edge_table,
+        node = node_table,
+        b = q(neighbor_alias),
+        nid = q(node_id),
+        tk = q(&to_id),
+    );
+    let reverse = format!(
+        "SELECT {t1}.{tk} AS {key}, {proj} FROM {edge} AS {t1} JOIN {node} AS {b} ON {b}.{nid} = {t1}.{fk}",
+        t1 = q(EDGE_ARM_ALIAS),
+        tk = q(&to_id),
+        key = key,
+        proj = node_proj,
+        edge = edge_table,
+        node = node_table,
+        b = q(neighbor_alias),
+        nid = q(node_id),
+        fk = q(&from_id),
+    );
+    Some(format!("({forward} UNION ALL {reverse})"))
+}
+
+/// Inner edge alias used inside [`build_standard_doubled_neighbor_subquery`].
+/// Local to the subquery, so any short name is safe; kept distinct from the
+/// outer anchor/neighbor aliases.
+const EDGE_ARM_ALIAS: &str = "t1";
+
 /// #583: build a doubled-edge subquery for a denormalized single-hop undirected
 /// OPTIONAL pattern, so the existing single anchor LEFT JOIN sees every physical
 /// edge in BOTH orientations.
