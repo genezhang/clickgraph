@@ -14469,6 +14469,70 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
         );
     }
 
+    /// #583 COMPOSITE stage: an undirected single-hop OPTIONAL over a COMPOSITE-
+    /// key self-ref edge (`(a:Account)-[:TRANSFERRED]-(b:Account)`, both
+    /// endpoints keyed by the TWO-column `[bank_id, account_number]`) is folded
+    /// into the SAME standard doubled-edge path — composite is "standard with
+    /// N-column keys", not a fourth parallel stage. The doubled subquery swaps
+    /// EVERY from/to column POSITIONALLY (`to[i] AS from[i]`), and the
+    /// surrounding per-column composite join equality works unchanged against it.
+    /// Live-verified on db_composite_id: plain 16 rows / 0 NULL (broken = 20 with
+    /// 2 spurious `(anchor, NULL)` + 2 phantom `(NULL, neighbor)`); an isolated
+    /// account gets exactly one `(anchor, NULL)`; a pure sink does NOT;
+    /// `count(r)` correct (isolated = 0, no spurious NULL group).
+    #[tokio::test]
+    async fn composite_undirected_optional_renders_doubled_edge_583() {
+        let schema = load_schema(SchemaId::CompositeId.yaml_path());
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (a:Account) OPTIONAL MATCH (a)-[:TRANSFERRED]-(b:Account) \
+                 RETURN a.account_number, b.account_number",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        // One doubled-edge subquery (two orientation arms), not a two-arm split.
+        assert_eq!(
+            sql.matches("UNION ALL").count(),
+            1,
+            "#583 composite: one doubled-edge subquery (two orientation arms), not a split:\n{sql}"
+        );
+        assert!(
+            !sql.contains(") AS __union"),
+            "#583 composite: must NOT be the spurious-NULL two-arm outer UNION split:\n{sql}"
+        );
+        // The reverse arm swaps BOTH composite key columns POSITIONALLY under
+        // their ORIGINAL names — this is the composite-specific invariant: a
+        // single-column swap here would silently drop one key component and fan
+        // rows out across accounts sharing a bank.
+        assert!(
+            sql.contains(
+                "e.to_bank_id AS from_bank_id, e.to_account_number AS from_account_number"
+            ) && sql.contains(
+                "e.from_bank_id AS to_bank_id, e.from_account_number AS to_account_number"
+            ),
+            "#583 composite: the reverse arm must swap BOTH composite key columns positionally:\n{sql}"
+        );
+        // The forward arm carries both key columns verbatim.
+        assert!(
+            sql.contains("e.from_bank_id, e.from_account_number, e.to_bank_id, e.to_account_number"),
+            "#583 composite: the forward arm must project both composite key columns verbatim:\n{sql}"
+        );
+        // The surrounding join condition is the per-column composite equality,
+        // unchanged and now matching both orientations.
+        assert!(
+            sql.contains(
+                "t0.from_bank_id = a.bank_id AND t0.from_account_number = a.account_number"
+            ),
+            "#583 composite: the anchor join must be the per-column composite equality:\n{sql}"
+        );
+        assert!(
+            sql.contains("b.bank_id = t0.to_bank_id AND b.account_number = t0.to_account_number"),
+            "#583 composite: the neighbor must remain a separate composite-key join off the doubled edge:\n{sql}"
+        );
+    }
+
     ///
     /// CORRECTION (R5, adversarial review): earlier text here (and this
     /// round's own CHANGELOG entry) described pre-fix `main` as producing a
