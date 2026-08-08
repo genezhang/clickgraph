@@ -5,7 +5,13 @@ WITH RECURSIVE vlp_a_a AS (
         0 as hop_count,
         CAST(array() AS ARRAY<STRING>) as path_relationships,
         array(start_node.user_id) as path_nodes,
-        array() as path_edges
+        (
+            SELECT slice(array(struct(__seed_edge.follower_id, __seed_edge.followed_id)), 1, 0)
+            FROM test_integration.follows AS __seed_edge
+            LIMIT 1
+        ) as path_edges,
+        start_node.name as start_name,
+        start_node.name as end_name
     FROM test_integration.users AS start_node
     UNION ALL
     SELECT
@@ -14,7 +20,9 @@ WITH RECURSIVE vlp_a_a AS (
         vp.hop_count + 1 as hop_count,
         CAST(array() AS ARRAY<STRING>) as path_relationships,
         concat(vp.path_nodes, array(end_node.user_id)) as path_nodes,
-        concat(vp.path_edges, array(struct(rel.follower_id, rel.followed_id))) as path_edges
+        concat(vp.path_edges, array(struct(rel.follower_id, rel.followed_id))) as path_edges,
+        vp.start_name as start_name,
+        end_node.name as end_name
     FROM vlp_a_a vp
     JOIN test_integration.follows AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users AS end_node ON rel.followed_id = end_node.user_id

@@ -381,8 +381,9 @@ column reads its original-orientation name). Both live arms spell through it:
   hop), per the Phase-1 CORRECTION. It already routes through
   `spell_tuple_parts`, the shared tuple wrapper.
 The `EdgeUniquenessPolicy { kind, identity }` wrapper struct +
-`from_pattern(PatternSchemaContext, shape)` land with the PREDICATE fold
-(Phase 2b) — `kind` is exactly the axis the NOTE below defers. Zero
+`from_pattern(PatternSchemaContext, shape)` land with the PREDICATE fold (the
+pending Phase 1–2 refactor — NOT the behavior Phase 2b below) — `kind` is
+exactly the axis the NOTE below defers. Zero
 corpus/golden churn, full 1723-unit + 593-integration suite + ratchet green.
 Review APPROVE-0.
 
@@ -393,6 +394,10 @@ zero-hop `*0..N` case post-#628 (see the Phase-1 CORRECTION above). Making CM
 consume the VLC predicate would be a denorm behavior change, gated on first
 landing the denorm zero-hop `path_edges` seed. Phase 2 is therefore scoped to the
 edge-identity SPELLING (the tuple helpers), not the uniqueness PREDICATE.
+**GATE SATISFIED (2026-08-07, Phase 2b below):** the denorm zero-hop seed is
+landed (typed-empty, shared with the standard arm), so the predicate fold can
+proceed when the Phase 1–2 refactor lands — byte-identity-checked per §2.5, not
+a blind replace.
 
 ### Phase 3 — fix #806 (flat-path identity) → **DONE (PR #TBD)** — behavior change, goldens regenerated
 **Shipped ahead of the full policy landing** (the fix is small and self-contained,
@@ -438,6 +443,12 @@ start, so every real cycle was dropped. Fix, three parts:
   concrete `Array(Tuple(...))` on `arrayConcat`; a CAST to a *guessed* element
   type would instead risk `NO_COMMON_TYPE` against the real column types — proven
   live). Hops ≥ 1 accumulate and dedupe via `NOT has(path_edges, …)` as usual.
+  ⚠️ **CORRECTED by Phase 2b (#887, 2026-08-07):** the "`Array(Nothing)` unifies"
+  premise is FALSE for recursive-CTE column unification — a bare `[]` seed fails
+  LIVE with CANNOT_CONVERT_TYPE once the base arm has rows (Phase 2b below
+  replaces both the standard and denorm zero-hop seeds with a typed-empty array;
+  the standard path had never been live-executed with non-empty tables, which is
+  why this survived Phase 4).
 - `filter_builder.rs` drops the loud `*0..N` closed error for the STANDARD case
   and falls through to emit the outer `start_id = end_id` closed constraint. Two
   shapes stay loud (ground rule 1 — fail loud over silent-wrong): DENORMALIZED
@@ -463,6 +474,67 @@ closed-`*0..` entry now RENDERS (previously failed loud), and reaching execution
 exposes a pre-existing OPTIONAL-MATCH projection bug (`vt0.<prop>` — anchor
 property wrongly bound to the VLP CTE alias). Reproduces on `*1..` on the old
 binary, so it is independent of #628.
+
+### Phase 2b — denorm closed `*0..N` (#978/#980) → **DONE (branch `refactor/887-edge-identity-phase2b`)** — behavior change, goldens regenerated
+**Shipped 2026-08-07.** The denorm strategy was the last reachable
+node-unique-where-edge-unique divergence: `DenormalizedCteStrategy::uses_edge_uniqueness`
+required `effective_min_hops() >= 1`, so a closed `*0..N` denorm VLP fell back to
+NODE-uniqueness → structurally cannot return to the start → every real cycle
+dropped (the #978/#980 fail-louds, guard premise refuted by the #628 mirror).
+Fix, three parts:
+- `uses_edge_uniqueness(context)` now returns `true` when
+  `effective_min_hops() == 0 && is_closed_pattern()` (new
+  `DenormalizedCteStrategy::is_closed_pattern` — the same alias-equality
+  invariant the standard emitter's `is_closed_pattern` uses:
+  `left_node_alias == right_node_alias`). Scoped to the closed case so an OPEN
+  denorm `*0..N` (node-uniqueness is a separate, non-cyclic concern) and
+  shortestPath are byte-unchanged.
+- The zero-hop base seeds an empty `path_edges` and the recursive cycle check
+  switches to `NOT has(vp.path_edges, edge_tuple("next"))` — the standard #628
+  shape (filter_builder's shared `start_id = end_id` outer constraint is
+  unchanged).
+- The #978 analyzer guard (`inference.rs`) and #980 render guard
+  (`filter_builder.rs`) are DELETED (historical comments kept; the shared
+  `start_id = end_id` / #922 `vt0.end_id` constraints stay).
+
+**The typed-empty seed (live fix, SHARED with standard #628).** Live execution
+exposed that a bare `[]` (`Array(Nothing)`) does NOT unify with the recursive
+arm's `Array(Tuple(...))` in ClickHouse's recursive CTE engine: `Code: 70.
+DB::Exception: Conversion from Tuple(UInt32, String) to Nothing is not
+supported ... While executing RecursiveCTESource (CANNOT_CONVERT_TYPE)` —
+proven against a set of raw-SQL variants (bare `[]` fails; `CAST([] AS
+Array(Tuple(UInt64,UInt64)))`, `arraySlice([tuple(cols)], 1, 0)`, and
+`arrayFilter(x -> 0, [tuple(cols)])` all work; String-vs-numeric element mixes
+fail with NO_COMMON_TYPE; numeric promotion is allowed). The element type is
+only knowable from the EDGE table (the schema has no edge-id dtypes and
+`SchemaType` is too coarse), so both zero-hop bases now seed via the new shared
+`typed_empty_edges_seed` (`variable_length_cte.rs`): a scalar subquery
+`(SELECT arraySlice([tuple(__seed_edge.f1, …)], 1, 0) FROM <edge source> AS
+__seed_edge LIMIT 1)` — one-element identity tuple, empty slice, uncorrelated
+subquery ClickHouse hoists. Dialect-routed through `FunctionMapper`
+(`arraySlice`/`slice`, `tuple`/`struct`, `[…]`/`array(…)`) so the Databricks
+variant is identically typed. Identity spelled via the same `EdgeIdentity` the
+arms already share (denorm: `edge_tuple("__seed_edge")`; standard:
+`edge_identity().spell(ctor, "__seed_edge")` over `rel_source()`, so a #617
+doubled-edge walk reads `__cg_orig_*` off the doubled-edge CTE). The standard
+#628 path had the identical latent defect (never live-hit — `users`/`follows`
+were empty) and is fixed in the same change.
+
+**Live-verified** (hand-computed trail oracles):
+- Denorm (`schemas/test/denormalized_flights.yaml`, 6 flights):
+  `*1..` closed = **12** (LAX 4, others 2); `*0..` closed = **17** (LAX 5,
+  SFO/JFK/ORD/ATL 3). Pre-fix: `*0..` errored live; `*1..` already correct.
+- Standard (`schemas/test/test_fixtures.yaml`, 3-cycle fixture
+  A→B→C→A inserted, then reverted): `*1..` = **3**, `*0..` = **6** (each node
+  2 = 1 cycle + self). Pre-fix binary with the same fixture: `*0..` errors with
+  CANNOT_CONVERT_TYPE.
+
+Golden churn: 2 corpus entries renamed (`…_fails_loud` → `…_renders_edge_unique`),
+4 old `.err` goldens removed, 4 regenerated (978/980, CH+DB), 4 churned
+(`test_628_closed_vlp_lower_bound_zero_counts_cycles`, `optional_match_self_reference`).
+Unit regressions: `denorm_closed_zero_hop_vlp_uses_edge_uniqueness_628_mirror`
+(CM) + updated `closed_zero_hop_vlp_uses_edge_uniqueness_628` (VLC — asserts the
+typed seed, no bare `[]`). Full suite (2354) + ratchet green.
 
 ### Phase 5 — #710 parallel-edge denorm → **DONE (PR #TBD)** — behavior change, goldens regenerated
 `DenormalizedCteStrategy::edge_tuple` (CM) now consults the relationship's

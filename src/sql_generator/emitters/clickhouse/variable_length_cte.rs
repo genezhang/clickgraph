@@ -136,6 +136,46 @@ pub fn spell_edge_identity(
 /// Canonically defined in the schema catalog (which rejects colliding tables).
 pub use crate::graph_catalog::graph_schema::{DOUBLED_EDGES_ORIG_FROM, DOUBLED_EDGES_ORIG_TO};
 
+/// Empty-but-correctly-typed `path_edges` seed for a CLOSED `*0..N` zero-hop
+/// base case (#628; #887 Phase 2b live fix).
+///
+/// A bare `[]` renders as ClickHouse `Array(Nothing)`, and the recursive CTE
+/// engine REJECTS a base arm carrying it when the recursive arm's
+/// `arrayConcat` produces `Array(Tuple(...))` for the same column — "Conversion
+/// from Tuple(...) to Nothing is not supported" (CANNOT_CONVERT_TYPE), proven
+/// live on #887. The old "`Array(Nothing)` is the bottom type, it unifies"
+/// premise does NOT hold for recursive-CTE column unification: the zero-hop
+/// seed must carry the recursive arm's REAL element type, which is only known
+/// to the edge table. So spell a ONE-element identity tuple and take an EMPTY
+/// slice of it, via an uncorrelated scalar subquery over the edge source
+/// (ClickHouse hoists it — evaluated once, proven live):
+///
+/// ```sql
+/// (SELECT arraySlice([tuple(__seed_edge.f1, __seed_edge.f2)], 1, 0)
+///  FROM <edge source> AS __seed_edge LIMIT 1)
+/// ```
+///
+/// All spellings are dialect-routed through the current `FunctionMapper`
+/// (`arraySlice`/`slice`, `[...]`/`array(...)`, `tuple`/`struct`), so the
+/// Databricks variant stays identically typed. `identity_expr` must be spelled
+/// against the `__seed_edge` alias and carry exactly the recursive arm's
+/// element shape (via `EdgeIdentity::spell` — the same spelling both arms
+/// already share). `edge_source_sql` is the edge table or doubled-edge CTE the
+/// identity columns live on (`rel_source()`).
+///
+/// On an EMPTY edge source the `LIMIT 1` subquery yields NULL rather than an
+/// empty typed array — harmless by construction: with no edges there are no
+/// cycles, the recursive arm produces no rows, and the outer query reads only
+/// `start_id`/`end_id` (never `path_edges`) off the zero-length self rows.
+pub fn typed_empty_edges_seed(edge_source_sql: &str, identity_expr: &str) -> String {
+    let mapper = current_function_mapper();
+    format!(
+        "(\n            SELECT {}\n            FROM {} AS __seed_edge\n            LIMIT 1\n        )",
+        mapper.array_slice(&mapper.array_literal(identity_expr), "1", Some("0")),
+        edge_source_sql
+    )
+}
+
 /// #617: map ONE edge-identity column to its original-orientation spelling on
 /// a doubled-edge walk. If `col` is one of the relationship's `from_keys` (the
 /// from-side id columns), the reverse-orientation rows swap it, so the identity
@@ -1133,12 +1173,14 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 // structurally forbids returning to the start, so every real
                 // cycle is dropped and only the zero-length self rows survive
                 // (documented in filter_builder.rs, #625). The zero-hop base has
-                // no edge, but it CAN seed an empty `path_edges` array (`[] as
-                // path_edges`, ClickHouse `Array(Nothing)` which unifies with the
-                // recursive arm's real tuple type on `arrayConcat`); hops ≥ 1
-                // accumulate and dedupe normally. Scoped to the closed case so an
-                // OPEN `*0..N` (whose node-uniqueness is a separate, non-cyclic
-                // concern) is unchanged.
+                // no edge, but it CAN seed an empty `path_edges` array — a
+                // typed-empty one via [`typed_empty_edges_seed`] (a bare `[]`
+                // = `Array(Nothing)` fails ClickHouse recursive-CTE column
+                // unification against the recursive arm's `Array(Tuple(...))`,
+                // proven live on #887); hops ≥ 1 accumulate and dedupe
+                // normally. Scoped to the closed case so an OPEN `*0..N` (whose
+                // node-uniqueness is a separate, non-cyclic concern) is
+                // unchanged.
                 || (self.spec.effective_min_hops() == 0 && self.is_closed_pattern()))
     }
 
@@ -2404,16 +2446,24 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         // #628: a CLOSED `*0..N` walk enforces EDGE-uniqueness (so real cycles
         // survive — see `uses_edge_uniqueness`). The zero-hop base has no edge,
-        // so it seeds an EMPTY `path_edges` array. A bare `[]` is ClickHouse's
-        // `Array(Nothing)`, the bottom type, which unifies with the recursive
-        // arm's concrete `Array(Tuple(...))` on `arrayConcat` (a CAST to a
-        // guessed element type would instead risk a NO_COMMON_TYPE error against
-        // the real column types). The recursive arm's `NOT has(path_edges, …)`
+        // so it seeds an EMPTY-but-typed `path_edges` array. A bare `[]` is
+        // ClickHouse's `Array(Nothing)` and the recursive engine REJECTS the
+        // base arm against the recursive arm's concrete `Array(Tuple(...))`
+        // ("Conversion from Tuple(...) to Nothing is not supported" —
+        // `typed_empty_edges_seed` documents the live #887 proof), so the seed
+        // must be an empty slice of a real edge-identity tuple, pulled from the
+        // edge source itself. The recursive arm's `NOT has(path_edges, …)`
         // then dedupes edges from hop 1 onward. Gated identically to the base /
         // recursive arms via `uses_edge_uniqueness()`, so a pattern that stays
         // node-unique (open `*0..N`, shortestPath) is byte-unchanged.
         if self.uses_edge_uniqueness() {
-            select_items.push(format!("{} as path_edges", arr("")));
+            let seed_identity = self
+                .edge_identity()
+                .spell(current_function_mapper().tuple_constructor(), "__seed_edge");
+            select_items.push(format!(
+                "{} as path_edges",
+                typed_empty_edges_seed(&self.rel_source(), &seed_identity)
+            ));
         }
 
         // Add properties for start node (which is also the end node)
@@ -4490,10 +4540,19 @@ mod tests {
             "closed *0..N must use edge-uniqueness"
         );
         let closed_sql = closed.generate_recursive_sql();
-        // Zero-hop base seeds an empty path_edges array...
+        // Zero-hop base seeds an empty-but-typed path_edges array: a typed-empty
+        // slice of a real edge-identity tuple pulled from the edge source via a
+        // scalar subquery (a bare `[]` = Array(Nothing) fails ClickHouse
+        // recursive-CTE unification — `typed_empty_edges_seed`, #887).
         assert!(
-            closed_sql.contains("[] as path_edges"),
-            "closed *0..N zero-hop base must seed empty path_edges; got:\n{closed_sql}"
+            closed_sql.contains("as path_edges")
+                && closed_sql.contains("__seed_edge")
+                && closed_sql.contains("LIMIT 1"),
+            "closed *0..N zero-hop base must seed typed-empty path_edges; got:\n{closed_sql}"
+        );
+        assert!(
+            !closed_sql.contains("[] as path_edges"),
+            "closed *0..N zero-hop base must not seed bare `[]`; got:\n{closed_sql}"
         );
         // ...and the recursive arm enforces EDGE-uniqueness (not node).
         assert!(

@@ -1144,8 +1144,8 @@
 {"cypher": "MATCH (a:User)-[:FOLLOWS*2..2]->(b:User) RETURN count(*)", "name": "test_605_open_exact_vlp_stays_flat_sentinel", "schema": "social_integration"}
 {"cypher": "MATCH (a:Airport)-[:FLIGHT*2..2]->(a) RETURN count(*)", "name": "test_980_denorm_closed_exact_vlp_renders_edge_unique", "schema": "denormalized_flights"}
 {"cypher": "MATCH (a:Airport)-[:FLIGHT*2..3]->(a) RETURN count(*)", "name": "test_980_denorm_closed_range_vlp_renders_edge_unique", "schema": "denormalized_flights"}
-{"cypher": "MATCH (a:Airport)-[:FLIGHT*0..]->(a) RETURN count(*)", "name": "test_980_denorm_closed_zero_hop_vlp_fails_loud", "schema": "denormalized_flights"}
-{"cypher": "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*0..]->(a) RETURN a.code, count(*)", "name": "test_978_denorm_closed_optional_vlp_zero_hop_fails_loud", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Airport)-[:FLIGHT*0..]->(a) RETURN count(*)", "name": "test_980_denorm_closed_zero_hop_vlp_renders_edge_unique", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*0..]->(a) RETURN a.code, count(*)", "name": "test_978_denorm_closed_optional_vlp_zero_hop_renders_edge_unique", "schema": "denormalized_flights"}
 {"cypher": "MATCH (a:Airport)-[:FLIGHT]->(a) RETURN count(*)", "name": "test_987_denorm_closed_single_hop_self_loop", "schema": "denormalized_flights"}
 {"cypher": "MATCH (a:Airport)-[:FLIGHT]->(a) RETURN a.city", "name": "test_987_denorm_closed_single_hop_self_loop_property", "schema": "denormalized_flights"}
 {"cypher": "MATCH (a:TestUser {name:'Alice'})-[:TEST_FOLLOWS]->(a) RETURN a.user_id", "name": "test_995_closed_single_hop_inline_map_start_node", "schema": "test_fixtures"}
