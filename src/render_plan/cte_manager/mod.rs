@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use crate::clickhouse_query_generator::variable_length_cte::{
-    EdgeIdentity, NodeProperty, VariableLengthCteGenerator,
+    EdgeIdentity, EdgeUniquenessPolicy, NodeProperty, VariableLengthCteGenerator,
 };
 use crate::graph_catalog::{
     config::Identifier, graph_schema::GraphSchema, EdgeAccessStrategy, JoinStrategy,
@@ -511,6 +511,23 @@ impl DenormalizedCteStrategy {
         self.identity.spell(
             crate::sql_generator::function_mapper::current_function_mapper().tuple_constructor(),
             rel_alias,
+        )
+    }
+
+    /// Build the [`EdgeUniquenessPolicy`] for this denormalized VLP (#887
+    /// Phase 1–2), from the same terms `uses_edge_uniqueness` reads plus the
+    /// [`Self::identity`] value `edge_tuple` already spells through. A denorm
+    /// VLP is never heterogeneous-polymorphic (both endpoints are embedded in
+    /// the edge), so `is_hetero_poly` is `false` — byte-identical to the inline
+    /// CM predicate. During the spike phase the resulting decision is asserted
+    /// equal to the inline `uses_edge_uniqueness(context)` at the gate site.
+    fn edge_uniqueness_policy(&self, context: &CteGenerationContext) -> EdgeUniquenessPolicy {
+        EdgeUniquenessPolicy::new(
+            context.shortest_path_mode.is_some(),
+            false,
+            context.spec.effective_min_hops(),
+            self.is_closed_pattern(),
+            self.identity.clone(),
         )
     }
 
@@ -1145,6 +1162,27 @@ impl DenormalizedCteStrategy {
 
         // Build WHERE clause for recursion
         let cycle_mapper = crate::sql_generator::function_mapper::current_function_mapper();
+        // #887 Phase 1–2 spike: prove the policy is byte-identical here before
+        // the inline gate below is deleted (denorm single-alias arm; identity
+        // spelled off "next", node fallback on `next.<to_col>`).
+        debug_assert_eq!(
+            self.edge_uniqueness_policy(context)
+                .recursive_cycle_predicate("next", &format!("next.{}", self.to_col)),
+            if self.uses_edge_uniqueness(context) {
+                format!(
+                    "NOT {}(vp.path_edges, {})",
+                    cycle_mapper.array_contains(),
+                    self.edge_tuple("next")
+                )
+            } else {
+                format!(
+                    "NOT {}(vp.path_nodes, next.{})",
+                    cycle_mapper.array_contains(),
+                    self.to_col
+                )
+            },
+            "EdgeUniquenessPolicy diverged from inline gate (denorm recursive arm)"
+        );
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", context.spec.max_hops.unwrap_or(10)),
             // ⚠️ ClickHouse limitation: NOT IN with array doesn't work in recursive CTEs.
