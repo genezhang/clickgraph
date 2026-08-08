@@ -512,7 +512,7 @@ fixed stats fixture.
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
-- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slices 1 #893 + 2 #1032, **behavior cluster COMPLETE: #806 + #628 + #710 + #808/#606 fixed**; only the Phase 1–2 refactor remains)
+- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slices 1 #893 + 2 #1032 + 3 #TBD, **behavior cluster COMPLETE: #806 + #628 + #710 + #808/#606 fixed**; only the Phase 1–2 refactor remains)
   (`docs/design/VLP_EDGE_IDENTITY_UNIFICATION.md`). Bug-driven refactor of the
   VLP relationship-uniqueness axis: one canonical `EdgeUniquenessPolicy`
   (`PatternSchemaContext`-derived, rule-#7 clean) replaces ~14 inline sites / 3
@@ -560,7 +560,15 @@ fixed stats fixture.
   strategy's `edge_tuple` (cte_manager) now spell the one-hop edge identity
   through ONE function (6 → 5 → 4 spellings; #617 doubled-edge orientation via
   `map_col` closure, denorm passes identity). Byte-identical: zero corpus/golden
-  churn, full suite + ratchet green. Explicitly NOT this cluster:
+  churn, full suite + ratchet green.
+  Phase 1 slice 3 (#TBD) SHIPPED: extracted `spell_tuple_parts` — the
+  `tuple(e1, …)` wrapper — as the shared core of the `Composite`/`None` arms of
+  `spell_edge_identity` AND of `build_fk_edge_tuple` (FK-edge node pair keeps
+  its per-shape `quote_identifier` qualification + comma-separated composite
+  parse). Byte-identical (the old None-arm `format!("{}({}.{}, {}.{})", …)` is
+  exactly the two-part join of the new wrapper; FK's `parts.join(", ")` is the
+  wrapper verbatim): zero golden churn, full suite + ratchet green.
+  4 spellings → 3. Explicitly NOT this cluster:
   #643/#840/#627/#683 (different subsystems). Adjacent bugs found during Phase 3/4/5
   and filed separately (NOT folded in): flat exact-bound polymorphic VLP drops the
   `interaction_type` discriminator (#897), an OPTIONAL-MATCH closed-VLP projection
