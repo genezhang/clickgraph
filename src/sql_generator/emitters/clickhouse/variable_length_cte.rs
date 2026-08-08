@@ -85,12 +85,13 @@ fn spell_tuple_parts(tuple_ctor: &str, parts: Vec<String>) -> String {
 }
 
 /// Spell the edge-identity value for one hop, reading the edge columns off
-/// `rel_alias`. The single shared spelling for "what makes one edge the same
-/// edge" — used by the recursive generator's
-/// [`VariableLengthCteGenerator::build_edge_tuple_recursive`] and the
-/// denormalized strategy's `edge_tuple` (`cte_manager/mod.rs`) so both spell
-/// the identity identically (#710: parallel edges sharing one `(from, to)`
-/// node pair must not collapse).
+/// `rel_alias`. The single shared spelling primitive for "what makes one edge
+/// the same edge" — consumed by the policy value [`EdgeIdentity`] (which
+/// resolves the per-walk orientation) and, through it, by the recursive
+/// generator's [`VariableLengthCteGenerator::build_edge_tuple_recursive`] and
+/// the denormalized strategy's `edge_tuple` (`cte_manager/mod.rs`), so both
+/// spell the identity identically (#710: parallel edges sharing one `(from,
+/// to)` node pair must not collapse).
 ///
 /// Returns SQL like `tuple(r.from_id, r.to_id)` or `tuple(r.date, r.num, …)`.
 /// Shape depends on `edge_id`: a `Single` column emits a bare `rel.col`; a
@@ -98,8 +99,8 @@ fn spell_tuple_parts(tuple_ctor: &str, parts: Vec<String>) -> String {
 /// node pair. `map_col` is applied to EVERY referenced column, letting callers
 /// inject per-walk orientation corrections — the #617 doubled-edge walk maps
 /// the from/to id columns to their original-orientation names via
-/// [`VariableLengthCteGenerator::edge_identity_column`], while the
-/// single-directional denormalized walk passes the identity mapping.
+/// [`doubled_edge_identity_col`] (the [`EdgeIdentity::OrigOrientation`] arm),
+/// while the single-directional denormalized walk passes the identity mapping.
 pub fn spell_edge_identity(
     tuple_ctor: &str,
     edge_id: &Option<Identifier>,
@@ -141,8 +142,9 @@ pub use crate::graph_catalog::graph_schema::{DOUBLED_EDGES_ORIG_FROM, DOUBLED_ED
 /// must read `__cg_orig_from`; likewise for `to_keys` → `__cg_orig_to`. Any
 /// other column (e.g. an `edge_id` extension column like `timestamp`) is
 /// orientation-independent and passes through unchanged. The single shared
-/// spelling of this correction — used by the recursive generator's
-/// [`VariableLengthCteGenerator::edge_identity_column`] and by the flat
+/// spelling of this correction — used by the policy value's
+/// [`EdgeIdentity::OrigOrientation`] arm (recursive generator's
+/// [`VariableLengthCteGenerator::edge_identity`]) and by the flat
 /// exact-bound path (`filter_builder.rs`, #806), so both walks resolve the
 /// identity identically. `from_keys`/`to_keys` may be single- or
 /// composite-column sets; the caller decides whether this walk is doubled.
@@ -158,6 +160,66 @@ pub fn doubled_edge_identity_col<'c>(
         return DOUBLED_EDGES_ORIG_TO;
     }
     col
+}
+
+/// The edge-identity VALUE for one schema shape + walk: "what makes one edge
+/// the same edge" on this VLP — the single authority the recursive generator
+/// and the denormalized strategy spell [`path_edges`] membership from (the
+/// `EdgeIdentity` spine of the #887 unification; Phase 2 of
+/// `docs/design/VLP_EDGE_IDENTITY_UNIFICATION.md`).
+///
+/// Two axes compose:
+/// - **Shape**: [`EdgeIdentity::EdgeIdColumns`] — the schema `edge_id` (a
+///   `Single` column spells a bare `rel.col`; a `Composite` key a
+///   `tuple(...)`; `None` the `(from, to)` node pair).
+/// - **Walk**: [`EdgeIdentity::OrigOrientation`] — the #617 doubled-edge
+///   orientation correction applied to the same columns: every identity column
+///   reads its ORIGINAL-orientation name, so the reverse-orientation rows of
+///   one physical edge share one identity.
+///
+/// The FK-edge node pair (`build_fk_edge_tuple`) is deliberately NOT folded
+/// in: it spells across TWO aliases with per-site node-id column sets (base
+/// vs recursive hop) — a per-shape spelling, per the Phase-1 CORRECTION.
+#[derive(Debug, Clone)]
+pub enum EdgeIdentity {
+    /// Schema-declared `edge_id` (Single → bare column; Composite → tuple),
+    /// else the `(from, to)` node pair — read off one hop alias.
+    EdgeIdColumns {
+        edge_id: Option<Identifier>,
+        from_col: String,
+        to_col: String,
+    },
+    /// #617: the same columns read through the original-orientation names of a
+    /// doubled-edge walk (`__cg_orig_from` / `__cg_orig_to`).
+    OrigOrientation {
+        edge_id: Option<Identifier>,
+        from_col: String,
+        to_col: String,
+    },
+}
+
+impl EdgeIdentity {
+    /// Spell the identity value for ONE hop, reading the edge columns off
+    /// `rel_alias`. Byte-identical to the pre-policy spellings:
+    /// [`spell_edge_identity`] with an identity `map_col`, or — under
+    /// [`EdgeIdentity::OrigOrientation`] — with the `doubled_edge_identity_col`
+    /// mapping of the shape's from/to columns.
+    pub fn spell(&self, tuple_ctor: &str, rel_alias: &str) -> String {
+        match self {
+            EdgeIdentity::EdgeIdColumns {
+                edge_id,
+                from_col,
+                to_col,
+            } => spell_edge_identity(tuple_ctor, edge_id, rel_alias, from_col, to_col, |c| c),
+            EdgeIdentity::OrigOrientation {
+                edge_id,
+                from_col,
+                to_col,
+            } => spell_edge_identity(tuple_ctor, edge_id, rel_alias, from_col, to_col, |c| {
+                doubled_edge_identity_col(c, &[from_col.as_str()], &[to_col.as_str()])
+            }),
+        }
+    }
 }
 
 /// Name of the doubled-edge CTE for the pattern's endpoint cypher aliases +
@@ -1200,46 +1262,51 @@ impl<'a> VariableLengthCteGenerator<'a> {
         Some(format!("vp.end_id != {}", value_part))
     }
 
-    /// #617: on the doubled-edge walk, an edge-identity column reference must
-    /// resolve to the ORIGINAL-orientation value: the from/to id columns are
-    /// swapped in reverse-orientation rows, so referencing them directly would
-    /// give one physical edge two distinct identities (breaking
-    /// trail-uniqueness). Any other column is orientation-independent and
-    /// passes through unchanged.
-    fn edge_identity_column<'c>(&self, col: &'c str) -> &'c str {
+    /// The edge identity for THIS walk as a policy value (the #887
+    /// [`EdgeIdentity`]). The #617 doubled-edge orientation decision
+    /// ([`Self::uses_doubled_edges`]) is made HERE — once, at the policy
+    /// boundary — instead of per column: an undirected doubled walk wraps the
+    /// shape in [`EdgeIdentity::OrigOrientation`] so every identity column
+    /// reads its original-orientation name (from/to → `__cg_orig_from/to`,
+    /// any other column passes through unchanged); every other walk spells the
+    /// shape verbatim. Same evaluation time as the pre-policy per-column gate
+    /// (spell time, all fields final), so output is byte-identical.
+    fn edge_identity(&self) -> EdgeIdentity {
+        let (edge_id, from_col, to_col) = (
+            self.edge_id.clone(),
+            self.relationship_from_column.clone(),
+            self.relationship_to_column.clone(),
+        );
         if self.uses_doubled_edges() {
-            return doubled_edge_identity_col(
-                col,
-                &[self.relationship_from_column.as_str()],
-                &[self.relationship_to_column.as_str()],
-            );
+            EdgeIdentity::OrigOrientation {
+                edge_id,
+                from_col,
+                to_col,
+            }
+        } else {
+            EdgeIdentity::EdgeIdColumns {
+                edge_id,
+                from_col,
+                to_col,
+            }
         }
-        col
     }
 
-    /// Build the edge-identity tuple for one hop, reading the edge columns off
+    /// Build the edge-identity value for one hop, reading the edge columns off
     /// `rel_alias`. Used by both the base case (`rel_alias` =
     /// `self.relationship_alias`) and the recursive case.
     ///
     /// Returns SQL like `tuple(r.from_id, r.to_id)` or `tuple(r.date, r.num, …)`.
-    /// Shape depends on `self.edge_id`: a `Single` column emits a bare
-    /// `rel.col`; a `Composite` key builds a `tuple(...)`; `None` defaults to the
-    /// `(from, to)` node pair. #617 doubled-edge walk: from/to are SWAPPED in
-    /// reverse-orientation rows, so the `None` identity comes from the
-    /// original-orientation columns — otherwise the same physical edge traversed
-    /// the other way would look like a different relationship and
-    /// trail-uniqueness would not hold. Delegates to the shared
-    /// [`spell_edge_identity`] (the denormalized strategy spells via the same
-    /// helper, #710).
+    /// The shape is the walk's policy value ([`Self::edge_identity`],
+    /// [`EdgeIdentity`]): schema `edge_id` (Single → bare `rel.col`;
+    /// Composite → `tuple(...)`), else the `(from, to)` node pair — and, on
+    /// the #617 doubled-edge walk, every column reads its original-orientation
+    /// name, so the same physical edge traversed the other way does not look
+    /// like a different relationship and trail-uniqueness holds. The
+    /// denormalized strategy spells via the same policy value (#710).
     fn build_edge_tuple_recursive(&self, rel_alias: &str) -> String {
-        spell_edge_identity(
-            current_function_mapper().tuple_constructor(),
-            &self.edge_id,
-            rel_alias,
-            &self.relationship_from_column,
-            &self.relationship_to_column,
-            |col| self.edge_identity_column(col),
-        )
+        self.edge_identity()
+            .spell(current_function_mapper().tuple_constructor(), rel_alias)
     }
 
     /// Build the `(from_id, to_id)` edge-identity tuple for ONE FK-edge hop,

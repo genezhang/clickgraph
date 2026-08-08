@@ -360,9 +360,31 @@ shared helper. Once the identity spellings are consolidated, the policy type
 before deleting the inline copies. Intentional divergences surface as assert
 failures, not production bugs.
 
-### Phase 2 — switch the recursive generator to the policy → refactor, byte-identical
-Replace the VLC inline switches (2805/3183/3315) and the identity helpers with
-policy calls. Goldens byte-identical (asserts from Phase 1 guarantee it).
+### Phase 2 — switch the recursive generator to the policy → **DONE (PR #TBD)** — refactor, byte-identical
+**Shipped.** Introduced the `EdgeIdentity` policy VALUE
+(`variable_length_cte.rs`, §3's `EdgeIdentity` spine, spelling-only per the
+NOTE below): `EdgeIdColumns { edge_id, from_col, to_col }` (schema `edge_id`:
+`Single` → bare `rel.col`, `Composite` → `tuple(...)`, `None` → the `(from,to)`
+pair) and `OrigOrientation` (the #617 doubled-edge wrap — every identity
+column reads its original-orientation name). Both live arms spell through it:
+- `VariableLengthCteGenerator::build_edge_tuple_recursive` →
+  `self.edge_identity().spell(ctor, rel_alias)`. The `uses_doubled_edges()`
+  gate moved from the per-column `edge_identity_column` (DELETED) into the
+  policy boundary `edge_identity()`, evaluated at the same spell time (all
+  fields final — `undirected_single_walk` is set post-construction at
+  `cte_manager`), so output is byte-identical by substitution per arm.
+- `DenormalizedCteStrategy::edge_tuple` (CM) → `self.identity.spell(...)`,
+  a plain `EdgeIdColumns` value built at both construction sites from the
+  already-resolved `resolve_edge_id` (denorm has no #617 doubled-edge CTE).
+- The FK-edge node pair (`build_fk_edge_tuple`) stays per-shape — it spells
+  across TWO aliases with per-site node-id column sets (base vs recursive
+  hop), per the Phase-1 CORRECTION. It already routes through
+  `spell_tuple_parts`, the shared tuple wrapper.
+The `EdgeUniquenessPolicy { kind, identity }` wrapper struct +
+`from_pattern(PatternSchemaContext, shape)` land with the PREDICATE fold
+(Phase 2b) — `kind` is exactly the axis the NOTE below defers. Zero
+corpus/golden churn, full 1723-unit + 593-integration suite + ratchet green.
+Review APPROVE-0.
 
 NOTE (2026-08-02): this phase can NO LONGER "retire the second
 `uses_edge_uniqueness` copy by making CM Denormalized consume the same policy" as
