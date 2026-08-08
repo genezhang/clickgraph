@@ -14383,10 +14383,41 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
         );
     }
 
-    /// #529 shape 1 — R4/R5: bugs 1+2 of the 3-bug package FIXED; bug 3
-    /// deliberately left unfixed but now fails LOUDLY (a clean
-    /// `RenderBuildError::UnsupportedFeature`) instead of silently returning
-    /// wrong data. Full history below for context on what changed and why.
+    /// #583 STANDARD stage, round-2 review Finding 1: a DISCONNECTED
+    /// multi-clause pattern where the standard undirected-optional hop sits in
+    /// the RIGHT branch of the CartesianProduct (`MATCH (c)-[:AUTHORED]->(p)
+    /// OPTIONAL MATCH (a)-[:FOLLOWS]-(b)`). The left-biased `find_graph_rel`
+    /// missed it, silently leaving the FOLLOWS hop single-direction; the
+    /// tree-walking `collect_graph_rels` sees both CartesianProduct branches, so
+    /// the FOLLOWS edge is doubled correctly. Live-verified: an anchor that is
+    /// both a follower and followed (e.g. David) returns BOTH undirected
+    /// neighbors, not just the outgoing one.
+    #[tokio::test]
+    async fn standard_undirected_optional_doubled_in_disconnected_clause_583() {
+        let schema = load_schema("schemas/dev/social_standard.yaml");
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (c:User)-[:AUTHORED]->(p:Post) \
+                 OPTIONAL MATCH (a:User)-[:FOLLOWS]-(b:User) \
+                 RETURN a.name, b.name, c.name",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        // The FOLLOWS hop is doubled (reverse arm present) EVEN THOUGH it is in
+        // the disconnected right branch — no silent single-direction render.
+        assert!(
+            sql.contains("e.followed_id AS follower_id, e.follower_id AS followed_id"),
+            "#583 standard: the undirected hop in a disconnected clause must still be doubled:\n{sql}"
+        );
+        // The sibling AUTHORED join survives untouched.
+        assert!(
+            sql.contains("AS c ON c.user_id") || sql.contains("posts"),
+            "#583 standard: the disconnected sibling AUTHORED join must survive:\n{sql}"
+        );
+    }
+
     ///
     /// CORRECTION (R5, adversarial review): earlier text here (and this
     /// round's own CHANGELOG entry) described pre-fix `main` as producing a
