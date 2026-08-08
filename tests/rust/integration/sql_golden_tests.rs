@@ -8734,9 +8734,16 @@ async fn closed_single_hop_emits_self_loop_filter_983() {
             "#983 ({dialect:?}): anchor WHERE must be preserved alongside the self-loop filter:\n{with_where}"
         );
 
-        // OPTIONAL closed single-hop is EXCLUDED (a self-loop equality in the
-        // outer WHERE would drop the NULL-extended anchor rows) — it must NOT get
-        // the self-loop filter, staying byte-identical to its current behavior.
+        // OPTIONAL closed single-hop (#1041): the anchor is now preserved (the
+        // SingleTableScan collapse is disabled for optional hops), so the
+        // self-loop constraint renders in the edge's LEFT JOIN ON clause
+        // (`t.follower_id = a.user_id AND t.followed_id = a.user_id`), NOT an
+        // outer WHERE — so it matches only self-loop edges per anchor WITHOUT
+        // dropping the NULL-extended rows of anchors that have no self-loop.
+        // (Before #1041 this collapsed to `FROM follows` and silently counted
+        // ALL edges: live db_standard returned 10, true = 5.) The self-loop
+        // equality on BOTH endpoints against the SAME anchor alias is present,
+        // now in the JOIN condition.
         let optional = render(
             &schema,
             "MATCH (a:TestUser) OPTIONAL MATCH (a)-[:TEST_FOLLOWS]->(a) RETURN count(*)",
@@ -8744,8 +8751,16 @@ async fn closed_single_hop_emits_self_loop_filter_983() {
         )
         .await;
         assert!(
-            !(optional.contains(".follower_id = ") && optional.contains(".followed_id")),
-            "#983 ({dialect:?}): OPTIONAL closed single-hop must be excluded from the self-loop fix:\n{optional}"
+            optional.contains(".follower_id = a.user_id")
+                && optional.contains(".followed_id = a.user_id"),
+            "#1041/#983 ({dialect:?}): OPTIONAL closed single-hop must preserve the anchor \
+             and put the self-loop constraint in the edge LEFT JOIN ON clause (both endpoints \
+             equal the anchor id), not collapse to a bare edge scan:\n{optional}"
+        );
+        assert!(
+            optional.contains("LEFT JOIN"),
+            "#1041 ({dialect:?}): OPTIONAL closed single-hop must keep the anchor as FROM with \
+             the edge as a LEFT JOIN (so NULL-extended no-self-loop anchors survive):\n{optional}"
         );
     }
 }
@@ -14365,6 +14380,76 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
         assert!(
             sql.matches("UNION ALL").count() == 1 && !sql.contains(") AS __union"),
             "#583: one doubled-edge subquery, not a two-arm outer split:\n{sql}"
+        );
+    }
+
+    /// #1041: an anchor-less OPTIONAL single hop (RETURN projects no node
+    /// column — only a bare aggregate or the edge) must PRESERVE the required
+    /// anchor so zero-degree anchors still contribute their NULL-extended row.
+    /// The SingleTableScan optimization (collapse to a bare edge scan when
+    /// neither node is referenced) is cardinality-preserving ONLY for a
+    /// MANDATORY hop; for an OPTIONAL hop it silently drops every isolated
+    /// anchor's row. Fix: skip the collapse when the rel/an endpoint is optional
+    /// → anchor renders as FROM, edge as a LEFT JOIN. This also makes the #583
+    /// undirected doubled-edge swap reachable for anchor-less counts (there was
+    /// no LEFT JOIN to swap before, so it loud-errored). Live-verified
+    /// db_standard (+isolated Zoe): directed `count(*)` 9→10; undirected
+    /// `count(*)` LOUD→19 (=9 edges×2 + Zoe); `count(r)` 18 (skips the NULL edge,
+    /// correct Cypher semantics). Mandatory hops keep the optimization.
+    #[tokio::test]
+    async fn anchorless_optional_count_preserves_anchor_1041() {
+        let schema = load_schema("schemas/dev/social_standard.yaml");
+        // Directed anchor-less optional count: anchor `a` must be FROM with the
+        // edge a LEFT JOIN (was `FROM user_follows` — dropped isolated anchors).
+        let directed = normalize(
+            &render(
+                &schema,
+                "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) RETURN count(*)",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert!(
+            directed.contains("FROM db_standard.users AS a")
+                && directed.contains("LEFT JOIN db_standard.user_follows"),
+            "#1041: directed anchor-less optional count must keep the anchor as FROM \
+             and the edge as a LEFT JOIN (not collapse to a bare edge scan):\n{directed}"
+        );
+
+        // Undirected anchor-less optional count: the anchor is preserved AND the
+        // #583 doubled-edge swap fires (was loud — no LEFT JOIN to swap).
+        let undirected = normalize(
+            &render(
+                &schema,
+                "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]-(b:User) RETURN count(*)",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert!(
+            undirected.contains("FROM db_standard.users AS a"),
+            "#1041: undirected anchor-less optional count must keep the anchor as FROM:\n{undirected}"
+        );
+        assert_eq!(
+            undirected.matches("UNION ALL").count(),
+            1,
+            "#1041/#583: the undirected anchor-less hop must render the doubled-edge subquery:\n{undirected}"
+        );
+
+        // Mandatory hop is UNCHANGED: still collapses to the bare edge scan
+        // (the optimization is only unsafe for optional hops).
+        let mandatory = normalize(
+            &render(
+                &schema,
+                "MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN count(*)",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert!(
+            mandatory.contains("FROM db_standard.user_follows") && !mandatory.contains("LEFT JOIN"),
+            "#1041: a MANDATORY anchor-less hop must still collapse to the bare edge scan \
+             (optimization preserved for non-optional):\n{mandatory}"
         );
     }
 

@@ -3274,10 +3274,25 @@ impl GraphJoinInference {
         let neither_node_referenced = !left_is_referenced && !right_is_referenced;
         let has_path_variable = graph_rel.path_variable.is_some();
 
+        // #1041: the SingleTableScan collapse (drop BOTH node scans, scan only the
+        // edge table) is a cardinality-preserving optimization ONLY for a
+        // MANDATORY hop — there the result row count equals the edge row count.
+        // For an OPTIONAL hop it is silently WRONG: `MATCH (a) OPTIONAL MATCH
+        // (a)-[:R]->(b) RETURN count(*)` must keep the required anchor `a` so a
+        // zero-degree anchor still contributes its NULL-extended row (correct
+        // count = edges + isolated anchors). Collapsing to `FROM <edge>` drops
+        // every isolated-anchor row (live db_standard: returned 9, true 10). So
+        // an optional endpoint/rel keeps the node JOINs; the anchor then renders
+        // as the FROM table (not prunable by `remove_unreferenced_joins`) and the
+        // edge stays a LEFT JOIN → NULL-extension is preserved. Mandatory hops
+        // (`is_optional` false on rel and both endpoints) keep the optimization.
+        let any_endpoint_or_rel_optional = rel_is_optional || left_is_optional || right_is_optional;
+
         let apply_optimization = (both_nodes_anonymous || neither_node_referenced)
             && !is_vlp
             && !is_shortest_path
             && !has_path_variable  // CRITICAL: Path queries need node properties!
+            && !any_endpoint_or_rel_optional // #1041: OPTIONAL must preserve anchor rows
             && is_first_relationship
             && !is_multi_hop_pattern; // CRITICAL: Multi-hop patterns need node JOINs for chaining!
 
