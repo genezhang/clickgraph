@@ -212,7 +212,9 @@ collision, #698), #672 part 2 (#696), #678 (#692), #636 (#674), #683 r1 (#685),
 #646 (#671), #648 (#670), #649 (#669), #595 (closed via #702), #647 (#652).
 Every remaining open issue is either **design-cycle-sized** (#604/#627/#643/
 #673/#628, #640 shapes 2/4/5, #683 residual-2) or in the **reverse-mapping / systemic class** owned by P-4
-(#592/#583/#613/#615). **#504 (coupled OPTIONAL collapse) triaged as design-cycle,
+(#592/#613/#615). **#583 (single-hop undirected OPTIONAL spurious NULL) is now
+CLOSED** across all four schema layouts — denorm #1029 / standard #1039 / poly
+#1043 / composite #1045, all on one doubled-edge mechanism. **#504 (coupled OPTIONAL collapse) triaged as design-cycle,
 NOT a P-1 pick**: root cause is an array-valued `node_id` never ARRAY-JOIN-flattened
 (not CoupledSameRow — scalar coupled OPTIONAL renders a correct LEFT JOIN), which
 prior work (`f741fcb1`) already concluded "needs a schema-level array flag + ARRAY
@@ -605,6 +607,44 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-08-08: **Correctness — composite single-hop undirected OPTIONAL
+  spurious NULL row (FINAL #583 layout — cluster CLOSED)** (branch
+  `fix/583-composite-undirected-optional-null`, PR #1045, composite stage of
+  #583). The last remaining layout: an undirected single-hop `MATCH (a)
+  OPTIONAL MATCH (a)-[:R]-(b)` over a COMPOSITE-key self-ref edge (both
+  endpoints keyed by a multi-column node id, e.g.
+  `(a:Account)-[:TRANSFERRED]-(b:Account)` on `[bank_id, account_number]`)
+  split into two independent NULL-extending arms → spurious `(anchor, NULL)`
+  for pure sinks + phantom `(NULL, neighbor)` (live db_composite_id: 20 rows,
+  4 wrong; correct = 16, 0 NULL). Rather than a fourth parallel stage,
+  composite FOLDS into the merged **standard** doubled-edge path — it is
+  "standard with N-column keys" (a composite plain-edge self-ref is
+  `is_plain_edge_table()`, non-polymorphic, same-label; the per-column
+  composite join equality the builder already emits works UNCHANGED against a
+  doubled subquery). Three surgical edits: (1) `doubled_edge_walk_compatible()`
+  accepts composite endpoints (was `Identifier::Single`-only), requiring EQUAL
+  from/to arity for the positional swap; (2) the standard analyzer core drops
+  its two `Identifier::Single` gates (arity now enforced by the helper) — the
+  #617-VLP and #583-poly cores KEEP their `Single` gates, so composite does
+  not leak into them; (3) `build_standard_doubled_edge_subquery` swaps EVERY
+  from/to column POSITIONALLY (`to[i] AS from[i]`, `from[i] AS to[i]`) and
+  fails LOUD (`None` → caller errors) on arity mismatch. The join-swap seam is
+  unchanged. Positional-swap soundness: both the swap and the join conditions
+  derive from the SAME `rel_schema.from_id`/`to_id`, so column ordering cannot
+  diverge (adversarially verified, incl. a cross-bank fanout probe: CHASE's 4
+  accounts → exactly the 4 real transfers, not the 16 a bank-only join would
+  fan out). Live-verified: 16/0-NULL exact match to a hand-derived oracle;
+  isolated account → exactly one `(anchor, NULL)`, pure sinks → none;
+  `count(r)` correct (no spurious NULL group); `r.<prop>` resolves; directed
+  control unchanged. Full suite (1723 lib + 597 integration incl. new golden
+  `composite_undirected_optional_renders_doubled_edge_583` + ratchet + clippy)
+  green; no axis-token bump (routes through `columns()` /
+  `doubled_edge_walk_compatible()`). **#583 is now fully closed** — denorm
+  (#1029) + standard (#1039) + poly (#1043) + composite (#1045) all converge
+  on one doubled-edge-AS-edge mechanism. Bounded residuals: **#1041**
+  (anchor-less projections, all layouts) + a newly-filed bare-disconnected-
+  clause NIT (legacy two-arm fallback, pre-existing, identical across layouts).
 
 - 2026-08-08: **Correctness — polymorphic single-hop undirected OPTIONAL
   spurious NULL row** (branch `fix/583-polymorphic-undirected-optional-null`,
