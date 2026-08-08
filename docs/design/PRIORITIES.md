@@ -512,7 +512,7 @@ fixed stats fixture.
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
-- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slices 1 #893 + 2 #1032 + 3 #1033 + 4 #TBD, **behavior cluster COMPLETE: #806 + #628 + #710 + #808/#606 fixed**; only the Phase 1–2 refactor remains)
+- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slices 1 #893 + 2 #1032 + 3 #1033 + 4 #1034, **behavior cluster COMPLETE: #806 + #628 + #710 + #808/#606 fixed**; only the Phase 1–2 refactor remains)
   (`docs/design/VLP_EDGE_IDENTITY_UNIFICATION.md`). Bug-driven refactor of the
   VLP relationship-uniqueness axis: one canonical `EdgeUniquenessPolicy`
   (`PatternSchemaContext`-derived, rule-#7 clean) replaces ~14 inline sites / 3
@@ -540,7 +540,7 @@ fixed stats fixture.
   byte-identical); live-verified length-3 parallel-edge trail = buggy 0 vs fixed 2
   (oracle 2), end-to-end through `cg`. Ratchet-clean (`edge_id` not a tracked
   token); adversarial review APPROVE-2.
-  **#808 = #606 FIXED (PR #TBD)**: the mixed-access VLP arm
+  **#808 = #606 FIXED (PR #909)**: the mixed-access VLP arm
   (`generate_mixed_{base,recursive}_case`, `new_mixed`) was proven **reachable**
   (not dead) via a foreign-embedded self-loop with a one-sided role map — the
   earlier "mixed ⊥ transitive" assumption was refuted. It emitted NODE-uniqueness
