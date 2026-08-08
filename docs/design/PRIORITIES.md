@@ -606,6 +606,67 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-08: **Correctness — polymorphic single-hop undirected OPTIONAL
+  spurious NULL row** (branch `fix/583-polymorphic-undirected-optional-null`,
+  PR #1043, poly stage of #583; composite stays OPEN). The polymorphic analog
+  of the standard stage below: an undirected single-hop `MATCH (a) OPTIONAL
+  MATCH (a)-[:R]-(b)` over a polymorphic edge (all types in one shared table
+  discriminated by a type column + per-endpoint label columns) split into two
+  independent NULL-extending branches → spurious `(anchor, NULL)` + phantom
+  `(NULL, neighbor)`. Live: plain 24 rows → 25 (one NULL, isolated anchor);
+  `count(r)` shed a spurious `NULL` group. Fix mirrors the standard stage
+  (analyzer keeps ONE `was_undirected` GraphRel; render swaps the edge join for
+  a doubled subquery via `collect_graph_rels` + loud-if-unswapped) with two
+  poly-specific adaptations: (1) the type/label discriminator lives in the edge
+  join's `pre_filter` (which the SQL generator wraps as `(SELECT * FROM <table>
+  WHERE …)`), so the swap folds it into BOTH orientation arms and CLEARS
+  `pre_filter` to avoid a double-wrap; passthrough columns come from
+  `doubled_edge_passthrough_columns()` (includes the discriminator columns). (2)
+  Same-label is checked on the QUERY endpoints, not the rel schema — a poly
+  edge's `from_node`/`to_node` are the `$any` sentinel, so
+  `rel_schema.from_node == to_node` is vacuously true for every poly edge
+  including a cross-label one (AUTHORED User→Post), where a symmetric filter
+  would be wrong on the reverse arm; the gate requires the two query GraphNodes
+  to carry the same concrete label. Live-verified: discriminator preserved
+  (undirected FOLLOWS = 24 incidences, not inflated by the other types sharing
+  the table); cross-label AUTHORED correctly keeps the legacy split. Same
+  bounded **#1041**-class loud residual (anchor-less projections). **Composite**
+  is the last remaining #583 layout. Full suite (1723 lib + 596 integration +
+  ratchet) green; zero golden changes (render regression test added).
+
+- 2026-08-08: **Correctness — standard single-hop undirected OPTIONAL spurious
+  NULL row** (branch `fix/583-standard-undirected-optional-null`, PR #1039,
+  standard stage of #583; polymorphic/composite stay OPEN). The standard
+  (separate-edge-table) analog of the denorm stage above: an undirected
+  single-hop `MATCH (a) OPTIONAL MATCH (a)-[:R]-(b)` split into two independent
+  `LEFT JOIN` branches under `UNION ALL`, each NULL-extending blind to the
+  other — producing a spurious `(anchor, NULL)` AND (worse than denorm) a
+  phantom `(NULL, neighbor)` row from the neighbor-driven second branch. Live:
+  plain 24 rows → 23 (one NULL, for a genuinely isolated anchor); `count(b)`
+  shed a spurious `NULL` group. Fix mirrors the denorm stage exactly: an
+  analyzer pre-pass (`normalize_undirected_standard_single_hop_optional_rels`,
+  gated on `is_plain_edge_table() && !is_polymorphic() && same-label && scalar
+  from/to ids`) keeps the hop as ONE `was_undirected` GraphRel, and the render
+  SWAPS just the edge join's target table for a doubled-edge subquery (each edge
+  row in both orientations, from/to swapped under their original names, aliased
+  AS the EDGE via `build_standard_doubled_edge_subquery`) — the neighbor and any
+  sibling joins are left untouched, and the edge alias + all its physical
+  columns stay exposed so `count(r)` / `r.<prop>` resolve. Every matching hop in
+  the tree is collected (`collect_graph_rels`, both `CartesianProduct` branches)
+  and swapped; any un-swappable normalized hop fails LOUD (never a silent
+  single-direction render). Three adversarial review rounds hardened this: round
+  1 caught 3 blockers from an initial AS-neighbor approach (edge-var Code 47,
+  `count(*)` silent-wrong, dropped sibling joins) → reworked to the AS-edge swap;
+  round 2 caught a loud→silent regression on disconnected multi-clause patterns
+  (left-biased `find_graph_rel` missed the right-branch hop) → fixed with the
+  tree-walking collector; round 3 confirmed clean. `is_polymorphic()` dispatch
+  predicate added to the schema catalog (rule 7). **Scoped standard-only**:
+  polymorphic keeps the discriminator via the legacy path; composite excluded
+  (scalar-id gate); fk-edge never had the bug; #583 stays OPEN for those.
+  Follow-up **#1041** filed (anchor-less projections like bare `RETURN count(*)`
+  fail loud where the edge is promoted to FROM — bounded, loud-over-silent).
+  Full suite (1723 lib + 595 integration + ratchet) green.
+
 - 2026-08-07: **Correctness — denorm closed `*0..N` VLP drops every cycle
   (#978/#980, #887 Phase 2b; PR #1040)**.
   `DenormalizedCteStrategy` stayed NODE-unique for closed zero-hop patterns
