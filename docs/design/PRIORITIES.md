@@ -512,7 +512,7 @@ fixed stats fixture.
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
-- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slices 1 #893 + 2 #1032 + 3 #TBD, **behavior cluster COMPLETE: #806 + #628 + #710 + #808/#606 fixed**; only the Phase 1–2 refactor remains)
+- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slices 1 #893 + 2 #1032 + 3 #1033, **behavior cluster COMPLETE: #806 + #628 + #710 + #808/#606 fixed**; only the Phase 1–2 refactor remains)
   (`docs/design/VLP_EDGE_IDENTITY_UNIFICATION.md`). Bug-driven refactor of the
   VLP relationship-uniqueness axis: one canonical `EdgeUniquenessPolicy`
   (`PatternSchemaContext`-derived, rule-#7 clean) replaces ~14 inline sites / 3
@@ -561,7 +561,7 @@ fixed stats fixture.
   through ONE function (6 → 5 → 4 spellings; #617 doubled-edge orientation via
   `map_col` closure, denorm passes identity). Byte-identical: zero corpus/golden
   churn, full suite + ratchet green.
-  Phase 1 slice 3 (#TBD) SHIPPED: extracted `spell_tuple_parts` — the
+  Phase 1 slice 3 (#1033) SHIPPED: extracted `spell_tuple_parts` — the
   `tuple(e1, …)` wrapper — as the shared core of the `Composite`/`None` arms of
   `spell_edge_identity` AND of `build_fk_edge_tuple` (FK-edge node pair keeps
   its per-shape `quote_identifier` qualification + comma-separated composite

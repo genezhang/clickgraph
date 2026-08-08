@@ -284,7 +284,7 @@ shared helper. Once the identity spellings are consolidated, the policy type
   doubled-edge CTE). Byte-identity proven per caller arm + zero corpus/golden
   churn (full 1723-unit + 593-integration sweep green, ratchet green).
   5 spellings → 4. Review APPROVE-0.
-- **Slice 3 — DONE (#TBD)**: the FK-edge node-pair tuple now routes through the
+- **Slice 3 — DONE (#1033)**: the FK-edge node-pair tuple now routes through the
   same tuple wrapper. Extracted `spell_tuple_parts(tuple_ctor, parts)` — the
   `tuple(e1, …)` spelling — as the shared core of the `Composite`/`None` arms
   of `spell_edge_identity` AND of `build_fk_edge_tuple` (whose `quote_identifier`
