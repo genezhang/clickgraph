@@ -69,6 +69,15 @@ impl AnalyzerPass for BidirectionalUnion {
             normalize_undirected_standard_single_hop_optional_rels(&base, graph_schema)
                 .or_else(|| (!Arc::ptr_eq(&base, &logical_plan)).then_some(base))
         };
+        // #583 (polymorphic stage): polymorphic single-hop undirected OPTIONAL
+        // hops get the same treatment — the render doubles the discriminator-
+        // FILTERED edge set (both orientations) so NULL-extension happens once.
+        // Compose after the standard pass.
+        let normalized = {
+            let base = normalized.unwrap_or_else(|| logical_plan.clone());
+            normalize_undirected_polymorphic_single_hop_optional_rels(&base, graph_schema)
+                .or_else(|| (!Arc::ptr_eq(&base, &logical_plan)).then_some(base))
+        };
         match normalized {
             Some(plan) => {
                 let inner = transform_bidirectional(&plan, plan_ctx, graph_schema)?;
@@ -413,6 +422,92 @@ pub(crate) fn undirected_standard_single_hop_optional_core(
         && rel_schema.doubled_edge_walk_compatible()
 }
 
+/// #583 (polymorphic stage): scope predicate for a POLYMORPHIC single-hop
+/// undirected OPTIONAL rewrite — the analog of
+/// [`undirected_standard_single_hop_optional_scope`] for an edge whose types
+/// all share one table discriminated by a type column. In scope → the render
+/// layer doubles the discriminator-FILTERED edge set (both orientations) under
+/// one anchor LEFT JOIN, folding the type/label predicate into each arm.
+pub(crate) fn undirected_polymorphic_single_hop_optional_scope(
+    graph_rel: &GraphRel,
+    graph_schema: &GraphSchema,
+) -> bool {
+    graph_rel.direction == Direction::Either
+        && graph_rel.is_optional.unwrap_or(false)
+        && undirected_polymorphic_single_hop_optional_core(graph_rel, graph_schema)
+}
+
+/// #583 (polymorphic stage): direction-agnostic core, shared with the RENDER
+/// layer (re-derived from `was_undirected == Some(true)` + this core). Mirrors
+/// [`undirected_standard_single_hop_optional_core`] with two poly-specific
+/// changes:
+///
+///  1. Gate on `is_polymorphic()` (TRUE) instead of `!is_polymorphic()`.
+///     `is_plain_edge_table()` is ALSO true for a poly edge (no denorm role
+///     maps), so it stays in the conjunction as the "not FK-edge, not denorm"
+///     guard.
+///  2. **Same-label is checked on the QUERY endpoints, not the rel schema.** A
+///     polymorphic edge's `from_node`/`to_node` are the `$any` sentinel
+///     (`build_polymorphic_edge_schemas`), so `rel_schema.from_node ==
+///     rel_schema.to_node` is VACUOUSLY true for every poly edge — including a
+///     genuinely cross-label one like `AUTHORED` (User→Post). Doubling a
+///     cross-label edge with a symmetric `from_type = X AND to_type = X` filter
+///     would be wrong (the reverse arm needs the swapped labels). So instead we
+///     require the two query GraphNodes to carry the SAME concrete label — then
+///     the discriminator filter is symmetric across both arms and the swap is
+///     sound. A `MATCH (a:User) OPTIONAL MATCH (a)-[:AUTHORED]-(b:Post)` (mixed
+///     query labels) fails this and keeps the legacy two-arm path.
+pub(crate) fn undirected_polymorphic_single_hop_optional_core(
+    graph_rel: &GraphRel,
+    graph_schema: &GraphSchema,
+) -> bool {
+    if graph_rel.variable_length.is_some()
+        || graph_rel.shortest_path_mode.is_some()
+        || graph_rel.pattern_combinations.is_some()
+    {
+        return false;
+    }
+    // Endpoints must be plain single-node scans (bare GraphNodes), as for standard.
+    let (LogicalPlan::GraphNode(left_node), LogicalPlan::GraphNode(right_node)) =
+        (graph_rel.left.as_ref(), graph_rel.right.as_ref())
+    else {
+        return false;
+    };
+    // Poly same-label check on the QUERY endpoints (see doc): both GraphNodes
+    // must carry the SAME concrete label. A missing label on either side is not
+    // provably same-label → out of scope (keep legacy path).
+    match (left_node.label.as_deref(), right_node.label.as_deref()) {
+        (Some(l), Some(r)) if l == r => {}
+        _ => return false,
+    }
+    let Some(labels) = graph_rel.labels.as_ref() else {
+        return false;
+    };
+    let [rel_type] = labels.as_slice() else {
+        return false;
+    };
+    let rel_schema = if let Some(rs) = graph_schema.get_relationships_schema_opt(rel_type) {
+        rs
+    } else {
+        let plain_type = rel_type.split("::").next().unwrap_or(rel_type);
+        let rel_schemas = graph_schema.rel_schemas_for_type(plain_type);
+        if rel_schemas.len() != 1 {
+            return false;
+        }
+        rel_schemas[0]
+    };
+    // Polymorphic edge (shared table + type discriminator) with scalar from/to
+    // id columns. `is_polymorphic()` and `is_plain_edge_table()` are both
+    // schema-catalog dispatch predicates (CLAUDE.md rule 7). The query-endpoint
+    // same-label check above (NOT the vacuous rel_schema.from_node ==
+    // rel_schema.to_node) keeps the doubled discriminator filter symmetric.
+    rel_schema.is_plain_edge_table()
+        && rel_schema.is_polymorphic()
+        && matches!(rel_schema.from_id, Identifier::Single(_))
+        && matches!(rel_schema.to_id, Identifier::Single(_))
+        && rel_schema.doubled_edge_walk_compatible()
+}
+
 /// #583: rewrite every in-scope denormalized single-hop undirected OPTIONAL
 /// GraphRel (see [`undirected_denorm_single_hop_optional_scope`]) to
 /// `direction: Outgoing` + `was_undirected: Some(true)`. Returns `None` when
@@ -493,6 +588,42 @@ fn normalize_undirected_standard_single_hop_optional_rels(
             if undirected_standard_single_hop_optional_scope(graph_rel, graph_schema) {
                 crate::debug_print!(
                     "🔄 BidirectionalUnion(#583 standard): standard single-hop undirected OPTIONAL '{}' → match-union single anchor LEFT JOIN (no Union split)",
+                    graph_rel.alias
+                );
+                *changed = true;
+                return LogicalPlan::GraphRel(GraphRel {
+                    direction: Direction::Outgoing,
+                    was_undirected: Some(true),
+                    ..graph_rel.clone()
+                });
+            }
+        }
+        mapped
+    }
+    let mut changed = false;
+    let new_plan = walk(plan, graph_schema, &mut changed);
+    changed.then(|| Arc::new(new_plan))
+}
+
+/// #583 (polymorphic stage): rewrite every in-scope POLYMORPHIC single-hop
+/// undirected OPTIONAL GraphRel (see
+/// [`undirected_polymorphic_single_hop_optional_scope`]) to `direction:
+/// Outgoing` + `was_undirected: Some(true)`. Identical structure to the
+/// standard pass; only the scope predicate differs (poly gate + query-endpoint
+/// same-label). Same chained-optional #589 deferral.
+fn normalize_undirected_polymorphic_single_hop_optional_rels(
+    plan: &Arc<LogicalPlan>,
+    graph_schema: &GraphSchema,
+) -> Option<Arc<LogicalPlan>> {
+    if has_chained_optional_nested_undirected_edge(plan) {
+        return None;
+    }
+    fn walk(plan: &LogicalPlan, graph_schema: &GraphSchema, changed: &mut bool) -> LogicalPlan {
+        let mapped = plan.map_children(|child| walk(child, graph_schema, changed));
+        if let LogicalPlan::GraphRel(graph_rel) = &mapped {
+            if undirected_polymorphic_single_hop_optional_scope(graph_rel, graph_schema) {
+                crate::debug_print!(
+                    "🔄 BidirectionalUnion(#583 poly): polymorphic single-hop undirected OPTIONAL '{}' → doubled discriminator-filtered edge single anchor LEFT JOIN (no Union split)",
                     graph_rel.alias
                 );
                 *changed = true;
