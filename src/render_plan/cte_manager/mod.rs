@@ -450,16 +450,45 @@ impl DenormalizedCteStrategy {
     ///
     /// - **shortestPath** stays node-unique: revisiting a node can never
     ///   shorten a path, and the shortest-path arms have their own base shape.
-    /// - **zero-hop `*0..N`** (`effective_min_hops() == 0`) stays node-unique:
-    ///   its base row is a node paired with itself and carries no edge, so it
-    ///   cannot seed a 1-hop `path_edges` tuple; seeding it only in the
-    ///   ordinary base would diverge from the zero-hop base's column shape.
+    /// - **open zero-hop `*0..N`** (`effective_min_hops() == 0` and NOT a
+    ///   closed pattern) stays node-unique: its base row is a node paired
+    ///   with itself and carries no edge, so it cannot seed a 1-hop
+    ///   `path_edges` tuple; seeding it only in the ordinary base would
+    ///   diverge from the zero-hop base's column shape.
+    /// - **closed zero-hop `*0..N`** (`(a)-[*0..N]->(a)`) IS edge-unique
+    ///   (#628 mirror): counting real cycles requires edge-uniqueness —
+    ///   node-uniqueness structurally forbids returning to the start, so
+    ///   every cycle is dropped and only the zero-length self rows survive
+    ///   (the #605/#625/#980 fail-loud, now lifted). The zero-hop base has no
+    ///   edge, but it CAN seed an empty `path_edges` array — a TYPED-empty
+    ///   one via [`typed_empty_edges_seed`]
+    ///   (`(SELECT arraySlice([tuple(__seed_edge.f1, …)], 1, 0) FROM <edge
+    ///   table> AS __seed_edge LIMIT 1)`; a bare `[]` = `Array(Nothing)`
+    ///   fails ClickHouse recursive-CTE column unification against the
+    ///   recursive arm's `Array(Tuple(...))`, proven live on #887 — see the
+    ///   zero-hop base for the full story); hops >= 1 accumulate and dedupe
+    ///   normally. Scoped to the closed case so an open `*0..N` (whose
+    ///   node-uniqueness is a separate, non-cyclic concern) is unchanged.
     ///
     /// A denormalized edge's identity is its schema-declared `edge_id` when one
     /// is present, else the `(from_col, to_col)` node pair — see
     /// [`Self::edge_tuple`] (#710).
     fn uses_edge_uniqueness(&self, context: &CteGenerationContext) -> bool {
-        context.shortest_path_mode.is_none() && context.spec.effective_min_hops() >= 1
+        context.shortest_path_mode.is_none()
+            && (context.spec.effective_min_hops() >= 1
+                || (context.spec.effective_min_hops() == 0 && self.is_closed_pattern()))
+    }
+
+    /// Whether this VLP is a CLOSED pattern — the same Cypher variable on both
+    /// endpoints (`(a)-[*..]->(a)`). The planner leaves the two connection
+    /// aliases equal for a same-variable pattern (never renaming one), so the
+    /// strategy sees `left_node_alias == right_node_alias` — the same
+    /// alias-equality invariant the standard emitter's
+    /// [`VariableLengthCteGenerator::is_closed_pattern`] relies on (#625/#628).
+    /// A closed pattern counts cycles (the outer query adds `start_id =
+    /// end_id`); see #625/#628/#980.
+    fn is_closed_pattern(&self) -> bool {
+        self.pattern_ctx.left_node_alias == self.pattern_ctx.right_node_alias
     }
 
     /// The edge-identity value for one hop, read off `rel_alias` (base case) or
@@ -752,7 +781,7 @@ impl DenormalizedCteStrategy {
         // 1-hop row.
         let is_zero_hop = min_hops == 0;
         let base_case = if is_zero_hop {
-            self.generate_zero_hop_base_case_sql(properties)?
+            self.generate_zero_hop_base_case_sql(context, properties)?
         } else {
             self.generate_base_case_sql(context, properties, filters)?
         };
@@ -943,6 +972,7 @@ impl DenormalizedCteStrategy {
     /// emitting a NULL-filled or mistyped column.
     fn generate_zero_hop_base_case_sql(
         &self,
+        context: &CteGenerationContext,
         properties: &[NodeProperty],
     ) -> Result<String, CteError> {
         let mut from_role_cols = vec![format!("{} AS __node_id", self.from_col)];
@@ -992,13 +1022,44 @@ impl DenormalizedCteStrategy {
         // String to Nothing is not supported"). Goes through FunctionMapper
         // per the dialect-dispatch rule rather than an inline literal, so
         // every supported SQL dialect gets its own correctly-typed cast.
+        //
+        // #628 (denorm mirror, #887 Phase 2b): a CLOSED `*0..N` walk is
+        // edge-unique (see `uses_edge_uniqueness`), whose recursive arm
+        // appends a real `(from, to)` EDGE TUPLE to `path_edges` — the
+        // string-typed cast above would NOT unify with that. A bare `[]`
+        // (`Array(Nothing)`) fails LIVE too: ClickHouse's recursive CTE
+        // engine rejects the base arm's `Array(Nothing)` against the
+        // recursive arm's `Array(Tuple(...))` with CANNOT_CONVERT_TYPE
+        // (proven on #887 — the old "bottom type unifies" premise is false
+        // for recursive-CTE column unification). The seed must instead be an
+        // EMPTY but correctly-typed array, which is only knowable from the
+        // EDGE table: `typed_empty_edges_seed` pulls a one-element identity
+        // tuple out of the edge source and takes an empty slice of it
+        // (`(SELECT arraySlice([tuple(__seed_edge.f1, …)], 1, 0) FROM
+        // <edge table> AS __seed_edge LIMIT 1)`) — a scalar subquery
+        // ClickHouse hoists, evaluated once. The recursive arm's
+        // `NOT has(path_edges, …)` then dedupes edges from hop 1 onward.
+        // Gated identically to the base/recursive arms via
+        // `uses_edge_uniqueness(context)`, so a pattern that stays
+        // node-unique (open `*0..N`, shortestPath) is byte-unchanged.
         let empty_string_array = crate::sql_generator::function_mapper::current_function_mapper()
             .empty_string_array_cast();
+        let path_edges_seed = if self.uses_edge_uniqueness(context) {
+            format!(
+                "{} as path_edges",
+                crate::clickhouse_query_generator::variable_length_cte::typed_empty_edges_seed(
+                    &self.table,
+                    &self.edge_tuple("__seed_edge")
+                )
+            )
+        } else {
+            format!("{} as path_edges", empty_string_array)
+        };
         let mut select_items = vec![
             "node_universe.__node_id as start_id".to_string(),
             "node_universe.__node_id as end_id".to_string(),
             "0 as hop_count".to_string(),
-            format!("{} as path_edges", empty_string_array),
+            path_edges_seed,
             format!("{} as path_nodes", arr("node_universe.__node_id")),
             format!("{} as path_relationships", empty_string_array),
         ];
@@ -1918,6 +1979,94 @@ mod tests {
         assert!(
             !sql.contains("tuple(next.Origin, next.Dest)"),
             "node-pair (Origin, Dest) must not key path_edges once edge_id exists; got:\n{sql}"
+        );
+    }
+
+    /// #887 Phase 2b: the denorm mirror of the standard #628 fix — a CLOSED
+    /// `*0..N` VLP on a denormalized schema must enforce EDGE-uniqueness (a
+    /// path MAY revisit a node but must not reuse an edge), so real cycles
+    /// survive the outer `start_id = end_id` closed constraint. This is what
+    /// the lifted #605/#625/#980 (render-side) and #978 (analyzer-side)
+    /// fail-louds were protecting: under node-uniqueness a walk can never
+    /// return to its start, so every cycle is dropped and the count silently
+    /// collapses to the zero-length self rows. The zero-hop base has no edge,
+    /// so it seeds an EMPTY-but-typed `path_edges` array via
+    /// [`typed_empty_edges_seed`] — a bare `[]` (ClickHouse `Array(Nothing)`)
+    /// FAILS the recursive-CTE column unification against the recursive arm's
+    /// concrete `Array(Tuple(...))` (CANNOT_CONVERT_TYPE, proven live on
+    /// #887), so the seed is instead a typed-empty slice of a real
+    /// edge-identity tuple pulled from the edge table; the recursive arm's
+    /// `NOT has(path_edges, …)` then dedupes edges from hop 1 onward.
+    /// An OPEN `*0..N` stays node-unique and byte-unchanged.
+    #[test]
+    fn denorm_closed_zero_hop_vlp_uses_edge_uniqueness_628_mirror() {
+        let schema = Arc::new(GraphSchema::build(
+            1,
+            "test".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+        ));
+
+        // CLOSED: same alias on both endpoints → edge-uniqueness.
+        let mut closed_ctx = denormalized_flights_pattern_ctx();
+        closed_ctx.left_node_alias = "a".to_string();
+        closed_ctx.right_node_alias = "a".to_string();
+        let strategy = DenormalizedCteStrategy::new(&closed_ctx, schema.clone()).unwrap();
+        let context = CteGenerationContext::new().with_spec(VariableLengthSpec {
+            min_hops: Some(0),
+            max_hops: Some(3),
+        });
+        assert!(strategy.is_closed_pattern());
+        assert!(
+            strategy.uses_edge_uniqueness(&context),
+            "closed *0..N must use edge-uniqueness (#628 mirror)"
+        );
+        let closed_sql = strategy
+            .generate_sql(&context, &[], &empty_filters())
+            .unwrap()
+            .sql;
+        // Zero-hop base seeds an empty-but-typed path_edges array: a
+        // typed-empty slice of a real edge-identity tuple pulled from the
+        // edge table via a scalar subquery (a bare `[]` = Array(Nothing)
+        // fails ClickHouse recursive-CTE unification — #887 live proof).
+        assert!(
+            closed_sql.contains("as path_edges")
+                && closed_sql.contains("__seed_edge")
+                && closed_sql.contains("LIMIT 1"),
+            "closed *0..N zero-hop base must seed typed-empty path_edges; got:\n{closed_sql}"
+        );
+        assert!(
+            !closed_sql.contains("[] as path_edges"),
+            "closed *0..N zero-hop base must not seed bare `[]`; got:\n{closed_sql}"
+        );
+        // ...and the recursive arm enforces EDGE-uniqueness (not node).
+        assert!(
+            closed_sql.contains("NOT has(vp.path_edges,"),
+            "closed *0..N recursive arm must dedupe on path_edges; got:\n{closed_sql}"
+        );
+        assert!(
+            !closed_sql.contains("NOT has(vp.path_nodes,"),
+            "closed *0..N must NOT use node-uniqueness; got:\n{closed_sql}"
+        );
+
+        // OPEN: distinct aliases → stays node-unique, typed empty-string seed.
+        let open_strategy =
+            DenormalizedCteStrategy::new(&denormalized_flights_pattern_ctx(), schema).unwrap();
+        assert!(
+            !open_strategy.uses_edge_uniqueness(&context),
+            "open *0..N must stay node-unique"
+        );
+        let open_sql = open_strategy
+            .generate_sql(&context, &[], &empty_filters())
+            .unwrap()
+            .sql;
+        assert!(
+            !open_sql.contains("[] as path_edges"),
+            "open *0..N must not seed `[] as path_edges`; got:\n{open_sql}"
+        );
+        assert!(
+            open_sql.contains("NOT has(vp.path_nodes,"),
+            "open *0..N must use node-uniqueness; got:\n{open_sql}"
         );
     }
 

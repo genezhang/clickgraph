@@ -335,64 +335,62 @@ impl FilterBuilder for LogicalPlan {
                                 //     one. FK-edge `*1..N` closed is untouched (it
                                 //     already rendered pre-#628, with the same #902
                                 //     bug — not this fix's concern).
-                                // #605/#625/#980 denormalized closed guard: a
-                                // DENORMALIZED closed VLP with LOWER BOUND 0 and a
-                                // traversable upper bound (`*0..N`, N >= 1)
-                                // silently undercounts. Its zero-hop recursive CTE
-                                // enforces NODE-uniqueness (`NOT has(vp.path_nodes,
-                                // …)`) because the zero-length base has no edge to
-                                // seed edge-uniqueness; node-uniqueness forbids a
-                                // walk from returning to its start, so real cycles
-                                // are dropped and the closed `start_id = end_id`
-                                // count collapses to the zero-length self rows.
-                                // Fail loud (ground rule 1).
+                                // #605/#625/#980 denormalized closed guard:
+                                // HISTORICALLY a DENORMALIZED closed VLP with
+                                // LOWER BOUND 0 and a traversable upper bound
+                                // (`*0..N`, N >= 1) silently undercounted — its
+                                // zero-hop recursive CTE enforced
+                                // NODE-uniqueness because the zero-length base
+                                // had no edge to seed edge-uniqueness, and
+                                // node-uniqueness forbids a walk from returning
+                                // to its start, so real cycles were dropped and
+                                // the closed `start_id = end_id` count collapsed
+                                // to the zero-length self rows. It failed loud
+                                // (ground rule 1).
                                 //
-                                // #980 CORRECTION: this guard formerly fired for
-                                // ALL lower bounds, on the (once-true) premise that
-                                // the denorm CTE is node-unique everywhere. That
-                                // premise went STALE with #606/#710, which switched
-                                // `DenormalizedCteStrategy` to EDGE-uniqueness for
-                                // `effective_min_hops() >= 1` (`NOT
-                                // has(vp.path_edges, edge_id)`) — a walk CAN then
-                                // revisit nodes and return to its start, so a closed
-                                // denorm `*1..`/`*2..2` counts cycles CORRECTLY and
-                                // MUST render (live-verified: `*2..2` → 2, `*1..` →
-                                // 5, both matching a hand oracle). Only `*0..N` with
-                                // N >= 1 stays node-unique and broken. `*0..0` is
-                                // exempt too: it can only be the zero-length self
-                                // path (no edge traversable), correctly 1/node.
-                                // Mirrors the analyzer-side optional-VLP guard
-                                // (#978, graph_join/inference.rs). The sibling
-                                // FK-edge guard just below already uses the same
-                                // `closed_min_hops == 0` gate.
+                                // #980 CORRECTION (superseded by #887 Phase 2b):
+                                // this guard formerly fired for ALL lower bounds
+                                // on the (once-true) premise that the denorm CTE
+                                // is node-unique everywhere. That premise went
+                                // STALE with #606/#710, which switched
+                                // `DenormalizedCteStrategy` to EDGE-uniqueness
+                                // for `effective_min_hops() >= 1` — a walk CAN
+                                // then revisit nodes and return to its start, so
+                                // a closed denorm `*1..`/`*2..2` counts cycles
+                                // CORRECTLY and MUST render (live-verified:
+                                // `*2..2` → 2, `*1..` → 5, both matching a hand
+                                // oracle). Only `*0..N` with N >= 1 stayed
+                                // node-unique and broken. `*0..0` was exempt
+                                // too: it can only be the zero-length self path
+                                // (no edge traversable), correctly 1/node.
+                                //
+                                // #887 Phase 2b RESOLUTION: `*0..N` now counts
+                                // cycles too — `DenormalizedCteStrategy::uses_edge_uniqueness`
+                                // returns true for a closed zero-hop pattern
+                                // (mirror of the standard #628 fix), the zero-hop
+                                // base seeds a TYPED-empty `path_edges` (a bare
+                                // `[]` = Array(Nothing) FAILS ClickHouse
+                                // recursive-CTE column unification against the
+                                // recursive arm's Array(Tuple(...)) — #887 live
+                                // proof — so the seed is a typed-empty slice of a
+                                // real edge-identity tuple, `typed_empty_edges_seed`),
+                                // and the recursive cycle check switches to
+                                // `NOT has(vp.path_edges, edge_tuple("next"))`.
+                                // The guard below is DELETED (both guards — the
+                                // analyzer-side optional sibling #978 in
+                                // graph_join/inference.rs and this render-side
+                                // non-optional one — are lifted in the same
+                                // change); a closed denorm `*0..N` now renders
+                                // with edge-uniqueness and the shared
+                                // `start_id = end_id` emission below. The FK-edge
+                                // guard just below keeps its own `closed_min_hops
+                                // == 0` gate (#902 — a separate degenerate-join
+                                // defect, untouched).
                                 let closed_min_hops = graph_rel
                                     .variable_length
                                     .as_ref()
                                     .map(|s| s.effective_min_hops())
                                     .unwrap_or(1);
-                                let closed_max_is_zero =
-                                    graph_rel.variable_length.as_ref().and_then(|s| s.max_hops)
-                                        == Some(0);
-                                let is_denorm_closed = is_node_denormalized(&graph_rel.left)
-                                    || is_node_denormalized(&graph_rel.right);
-                                if is_denorm_closed
-                                    && closed_min_hops == 0
-                                    && !closed_max_is_zero
-                                    && graph_rel.shortest_path_mode.is_none()
-                                {
-                                    return Err(RenderBuildError::UnsupportedFeature(format!(
-                                        "closed variable-length path with lower bound 0 on a \
-                                         denormalized schema (`({a})-[*0..N]-({a})`): the \
-                                         zero-hop recursive CTE enforces node-uniqueness (the \
-                                         zero-length base has no edge to seed edge-uniqueness), \
-                                         which structurally cannot return to the start node, so \
-                                         real cycles are dropped and the count silently collapses \
-                                         to the zero-length self rows. Use a lower bound >= 1 \
-                                         (which uses edge-uniqueness and counts cycles correctly). \
-                                         (#605/#625/#980)",
-                                        a = graph_rel.left_connection
-                                    )));
-                                }
                                 // #628/#902 FK-edge closed `*0..N` guard: the
                                 // zero-hop-enabled closed path must NOT render for a
                                 // self-referencing FK-edge — its VLP recursive arm has

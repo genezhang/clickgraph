@@ -512,7 +512,7 @@ fixed stats fixture.
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
-- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slices 1 #893 + 2 #1032 + 3 #1033 + 4 #1034, Phase 2 #1035, **behavior cluster COMPLETE: #806 + #628 + #710 + #808/#606 fixed**; only the Phase 1–2 refactor remains)
+- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slices 1 #893 + 2 #1032 + 3 #1033 + 4 #1034, Phase 2 #1035, Phase 2b #1040, **behavior cluster COMPLETE: #806 + #628 + #710 + #808/#606 + #978/#980 fixed**; only the Phase 1–2 refactor remains)
   (`docs/design/VLP_EDGE_IDENTITY_UNIFICATION.md`). Bug-driven refactor of the
   VLP relationship-uniqueness axis: one canonical `EdgeUniquenessPolicy`
   (`PatternSchemaContext`-derived, rule-#7 clean) replaces ~14 inline sites / 3
@@ -575,6 +575,28 @@ fixed stats fixture.
   bug (`vt0.<prop>`, #899), FK-edge self-ref VLP degenerate recursive join (#902),
   and the mixed-arm denormalized-start-node non-id-property projection gap (#908,
   surfaced while adding #808 coverage).
+  **Phase 2b (denorm closed `*0..N`, PR #1040)**
+  COMPLETE 2026-08-07: the #978/#980 fail-louds are lifted. The denorm strategy
+  was still NODE-unique for closed zero-hop patterns (`uses_edge_uniqueness`
+  required `min_hops >= 1`), so `(a)-[:FLIGHT*0..]->(a)` silently dropped every
+  real cycle (only zero-length self rows survived). Fix mirrors the standard
+  #628: closed zero-hop (`is_closed_pattern`, alias equality) is now edge-unique,
+  with the zero-hop base seeding an empty `path_edges`. Live verification exposed
+  a LATENT SHARED BUG: a bare `[]` = ClickHouse `Array(Nothing)` and the
+  recursive engine REJECTS it against the recursive arm's `Array(Tuple(...))`
+  (CANNOT_CONVERT_TYPE — the old "bottom type unifies" premise is false for
+  recursive-CTE column unification); the standard #628 path had the same latent
+  defect (never live-hit: users/follows were empty). Both zero-hop bases now seed
+  a TYPED-empty array via `typed_empty_edges_seed` (`variable_length_cte.rs`): a
+  scalar subquery `(SELECT arraySlice([tuple(__seed_edge.f1, …)], 1, 0) FROM
+  <edge source> AS __seed_edge LIMIT 1)` pulled from the edge table, dialect-
+  routed (CH `arraySlice`/`tuple`/`[…]`, Spark `slice`/`struct`/`array(…)`) — the
+  one way to know the real element type at render time (schema has no
+  edge-id dtypes). Denorm live: `*1..` = 12, `*0..` = 17 (LAX 5, others 3) —
+  exact hand-oracle match; standard live (3-cycle fixture, then reverted):
+  `*1..` = 3, `*0..` = 6 — exact oracle match. Corpus: 2 renamed entries +
+  4 regenerated goldens; +4 goldens churned (628 + optional self-ref); full
+  suite (2354) + ratchet green.
 
 ## 3. Capacity split (guideline)
 
@@ -644,6 +666,30 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   Follow-up **#1041** filed (anchor-less projections like bare `RETURN count(*)`
   fail loud where the edge is promoted to FROM — bounded, loud-over-silent).
   Full suite (1723 lib + 595 integration + ratchet) green.
+
+- 2026-08-07: **Correctness — denorm closed `*0..N` VLP drops every cycle
+  (#978/#980, #887 Phase 2b; PR #1040)**.
+  `DenormalizedCteStrategy` stayed NODE-unique for closed zero-hop patterns
+  (`uses_edge_uniqueness` required `min_hops >= 1`), so `(a)-[:R*0..]->(a)`
+  silently returned only zero-length self rows (the #605/#625 guard premise).
+  Fix mirrors standard #628: closed zero-hop (`is_closed_pattern` = alias
+  equality) is edge-unique; the #978 (inference.rs) + #980 (filter_builder.rs)
+  fail-louds are deleted. The zero-hop base's empty `path_edges` seed exposed a
+  LATENT SHARED defect on live run: bare `[]` = `Array(Nothing)` is rejected by
+  the ClickHouse recursive-CTE engine against the recursive arm's
+  `Array(Tuple(...))` (CANNOT_CONVERT_TYPE) — the standard #628 path had the
+  identical latent bug (users/follows were empty, so never live-hit). Both
+  standard + denorm zero-hop bases now seed a TYPED-empty array via the new
+  `typed_empty_edges_seed` (`variable_length_cte.rs`): `(SELECT
+  arraySlice([tuple(__seed_edge.<identity>)], 1, 0) FROM <edge source> AS
+  __seed_edge LIMIT 1)` — an uncorrelated scalar subquery over the edge table,
+  the only source of the real element dtypes (schema has no edge-id type
+  info); dialect-routed (`arraySlice`/`slice`, `tuple`/`struct`, `[…]`/
+  `array(…)`). Live-verified both paths with hand-computed oracles: denorm
+  `*1..`=12, `*0..`=17 (LAX 5, SFO/JFK/ORD/ATL 3); standard 3-cycle fixture
+  `*1..`=3, `*0..`=6 (then reverted). Corpus: 2 renamed entries, 4 old `.err`
+  goldens removed, 4 regenerated + 4 churned (628 + optional self-ref). Full
+  suite (2354) + ratchet green.
 
 - 2026-08-04: **Correctness — denorm/coupled single-hop undirected OPTIONAL
   spurious NULL row** (branch `fix/583-denorm-undirected-optional-null`,

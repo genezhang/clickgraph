@@ -8474,33 +8474,73 @@ async fn closed_optional_vlp_keeps_anchor_where_and_closed_constraint_922() {
 /// Scoped precisely: must NOT reject denorm closed `*1..`, denorm NON-closed
 /// optional, or standard closed optional (#922); only `*0..` denorm closed is
 /// loud.
+/// #978 (RESOLVED by #887 Phase 2b): a CLOSED OPTIONAL VLP on a DENORMALIZED
+/// schema with LOWER BOUND 0 (`(a:Airport)-[:FLIGHT*0..N]->(a)`) used to FAIL
+/// LOUD: the denorm recursive CTE's zero-hop base had no edge to seed
+/// edge-uniqueness, so it fell back to NODE-uniqueness, which structurally
+/// cannot return to the start — every real cycle was dropped and the count
+/// silently collapsed to the zero-length self rows. The #887 Phase 2b fix
+/// mirrors the standard #628 fix: `DenormalizedCteStrategy::uses_edge_uniqueness`
+/// now returns true for a closed zero-hop pattern, the zero-hop base seeds an
+/// empty `path_edges` (a TYPED-empty `arraySlice`/`slice` of a real
+/// edge-identity tuple pulled from the edge table via a `__seed_edge` scalar
+/// subquery — a bare `[]` = `Array(Nothing)` fails ClickHouse recursive-CTE
+/// column unification, proven live on #887), and the recursive cycle check
+/// switches to `NOT has(vp.path_edges, edge_tuple("next"))`. A closed denorm
+/// optional `*0..` now renders with edge-uniqueness and the #922 closed
+/// constraint (`vt0.end_id`) in the JOIN ON. This test now asserts the
+/// rendering (directed + undirected), not the lifted error.
 #[tokio::test]
-async fn denorm_closed_optional_vlp_zero_hop_fails_loud_978() {
+async fn denorm_closed_optional_vlp_zero_hop_renders_edge_unique_978() {
     let denorm = load_schema("schemas/test/denormalized_flights.yaml");
     for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
-        // Lower-bound-0 closed optional denorm VLP → loud (node-uniqueness drops
-        // cycles). Directed + undirected.
+        // Lower-bound-0 closed optional denorm VLP → renders edge-unique.
+        // Directed + undirected.
         for cypher in [
             "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*0..]->(a) RETURN a.code, count(*)",
             "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*0..]-(a) RETURN a.code, count(*)",
         ] {
-            let err = try_render(&denorm, cypher, dialect)
+            let sql = try_render(&denorm, cypher, dialect)
                 .await
-                .expect_err(&format!(
-                "#978 ({dialect:?}): `*0..` closed optional denorm VLP must fail loud:\n{cypher}"
-            ));
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "#978 ({dialect:?}): `*0..` closed optional denorm VLP must render now:\n{cypher}\n{err}"
+                    )
+                });
+            // #922 closed constraint must be in the JOIN ON (`vt0.end_id`).
             assert!(
-                err.contains("lower bound 0") && err.contains("#978"),
-                "#978 ({dialect:?}): error must name the zero-hop node-uniqueness limitation:\n{err}"
+                sql.contains("vt0.end_id"),
+                "#978 ({dialect:?}): closed optional must carry the #922 `vt0.end_id` conjunct:\n{sql}"
+            );
+            // The denorm recursive CTE must use edge-uniqueness (path_edges),
+            // never the cycle-dropping node-uniqueness (path_nodes). The
+            // markers are dialect-specific: ClickHouse `has(vp.path_nodes, …)`
+            // and `arraySlice([tuple(__seed_edge.…)], 1, 0) as path_edges`;
+            // Databricks `array_contains(vp.path_nodes, …)` and
+            // `slice(array(struct(__seed_edge.…)), 1, 0) as path_edges` — the
+            // zero-hop seed is a TYPED-empty slice pulled from the edge table
+            // (`__seed_edge` scalar subquery, #887: bare `[]` = Array(Nothing)
+            // fails ClickHouse recursive-CTE unification).
+            let (node_unique_marker, typed_seed_marker) = match dialect {
+                SqlDialect::Databricks => (
+                    "array_contains(vp.path_nodes",
+                    "slice(array(struct(__seed_edge.",
+                ),
+                _ => ("has(vp.path_nodes", "arraySlice([tuple(__seed_edge."),
+            };
+            assert!(
+                sql.contains(typed_seed_marker)
+                    && sql.contains("LIMIT 1")
+                    && !sql.contains("[] as path_edges")
+                    && !sql.contains("array() as path_edges")
+                    && !sql.contains(node_unique_marker),
+                "#978 ({dialect:?}): closed optional `*0..` must render edge-uniqueness \
+                 (typed-empty path_edges seed), not node-uniqueness:\n{sql}"
             );
         }
 
-        // Must NOT reject: denorm closed optional with lower bound >= 1 (edge-
-        // uniqueness counts cycles correctly). This is the review-caught
-        // false-loud — `*1..`, `*1..3`, `*2..2` all render. Plus `*0..0`, the
-        // degenerate zero-length-only pattern (no edge traversable → node-
-        // uniqueness drops nothing → correct count 1/node; rejecting it would be
-        // a false-loud with an unsatisfiable `*1..0` remedy).
+        // Denorm closed optional with lower bound >= 1 (edge-uniqueness, the
+        // pre-existing working shape) must still render.
         for cypher in [
             "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*1..]->(a) RETURN a.code, count(*)",
             "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT*2..2]->(a) RETURN a.code, count(*)",
@@ -8550,40 +8590,64 @@ async fn denorm_closed_optional_vlp_zero_hop_fails_loud_978() {
     .await;
     assert!(
         std_zero.is_ok(),
-        "#978: standard `*0..` closed optional VLP must still render (the guard is denorm-only):\n{std_zero:?}"
+        "#978: standard `*0..` closed optional VLP must still render (the guard was denorm-only):\n{std_zero:?}"
     );
 }
 
-/// #980: the NON-optional sibling of #978. The render-side `is_denorm_closed`
-/// guard (`filter_builder.rs`, #605/#625) formerly rejected ALL denorm closed
-/// non-optional VLPs on a stale node-uniqueness premise. Since #606/#710 the
-/// denorm CTE uses EDGE-uniqueness for `min_hops >= 1` and counts cycles
-/// correctly (live: `*2..2` → 2, `*1..` → 5), so those MUST render; only `*0..N`
-/// (N >= 1, node-uniqueness fallback) fails loud, and `*0..0` (degenerate
-/// zero-length only) renders. Mirrors the analyzer-side #978 fix.
+/// #980 (RESOLVED by #887 Phase 2b): the NON-optional sibling of #978. The
+/// render-side `is_denorm_closed` guard (`filter_builder.rs`, #605/#625)
+/// formerly rejected denorm closed `*0..N` (N >= 1) on a stale node-uniqueness
+/// premise; the #887 Phase 2b fix (mirror of the standard #628 fix) switched
+/// `DenormalizedCteStrategy` to EDGE-uniqueness for closed zero-hop patterns —
+/// the zero-hop base seeds an empty `path_edges` (a TYPED-empty
+/// `arraySlice`/`slice` of a real edge-identity tuple pulled from the edge
+/// table via a `__seed_edge` scalar subquery, #887) and the recursive cycle
+/// check dedupes on `path_edges` — so the guard is DELETED and the closed
+/// `*0..N` now renders with the shared `start_id = end_id` outer constraint.
+/// This test asserts the rendering (and the edge-uniqueness markers), not the
+/// lifted error.
 #[tokio::test]
-async fn denorm_closed_non_optional_vlp_zero_hop_fails_loud_980() {
+async fn denorm_closed_non_optional_vlp_zero_hop_renders_edge_unique_980() {
     let denorm = load_schema("schemas/test/denormalized_flights.yaml");
     for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
-        // Lower-bound-0 (traversable) closed non-optional denorm VLP → loud.
+        // Lower-bound-0 (traversable) closed non-optional denorm VLP → renders
+        // edge-unique, with the closed `start_id = end_id` outer constraint.
         for cypher in [
             "MATCH (a:Airport)-[:FLIGHT*0..]->(a) RETURN count(*)",
             "MATCH (a:Airport)-[:FLIGHT*0..3]->(a) RETURN count(*)",
         ] {
-            let err = try_render(&denorm, cypher, dialect)
+            let sql = try_render(&denorm, cypher, dialect)
                 .await
-                .expect_err(&format!(
-                    "#980 ({dialect:?}): `*0..N` closed non-optional denorm VLP must fail loud:\n{cypher}"
-                ));
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "#980 ({dialect:?}): `*0..N` closed non-optional denorm VLP must render now:\n{cypher}\n{err}"
+                    )
+                });
             assert!(
-                err.contains("lower bound 0") && err.contains("#980"),
-                "#980 ({dialect:?}): error must name the zero-hop node-uniqueness limitation:\n{err}"
+                sql.contains("start_id = t.end_id"),
+                "#980 ({dialect:?}): closed non-optional must carry the shared `start_id = t.end_id` constraint:\n{sql}"
+            );
+            let node_unique_marker = match dialect {
+                SqlDialect::Databricks => "array_contains(vp.path_nodes",
+                _ => "has(vp.path_nodes",
+            };
+            let typed_seed_marker = match dialect {
+                SqlDialect::Databricks => "slice(array(struct(__seed_edge.",
+                _ => "arraySlice([tuple(__seed_edge.",
+            };
+            assert!(
+                sql.contains(typed_seed_marker)
+                    && sql.contains("LIMIT 1")
+                    && !sql.contains("[] as path_edges")
+                    && !sql.contains("array() as path_edges")
+                    && !sql.contains(node_unique_marker),
+                "#980 ({dialect:?}): denorm closed `*0..N` must render edge-uniqueness \
+                 (typed-empty path_edges seed), not node-uniqueness:\n{sql}"
             );
         }
 
-        // Must NOT reject (the review-caught stale-premise false-loud): denorm
-        // closed non-optional with lower bound >= 1 renders via edge-uniqueness,
-        // and `*0..0` (degenerate) renders too.
+        // Denorm closed non-optional with lower bound >= 1 (the pre-existing
+        // working shape) and `*0..0` (degenerate) must still render.
         for cypher in [
             "MATCH (a:Airport)-[:FLIGHT*1..]->(a) RETURN count(*)",
             "MATCH (a:Airport)-[:FLIGHT*2..2]->(a) RETURN count(*)",
@@ -8595,22 +8659,6 @@ async fn denorm_closed_non_optional_vlp_zero_hop_fails_loud_980() {
                 ok.is_ok(),
                 "#980 ({dialect:?}): denorm closed non-optional `>=1`/`*0..0` must render, not fail loud:\n{cypher}\n{ok:?}"
             );
-            // The rendered CTE must use edge-uniqueness (path_edges), never the
-            // cycle-dropping node-uniqueness (path_nodes), for the `>=1` cases.
-            // The node-uniqueness marker is dialect-specific: ClickHouse
-            // `has(vp.path_nodes, …)`, Databricks `array_contains(vp.path_nodes,
-            // …)`.
-            if !cypher.contains("*0..0") {
-                let sql = ok.unwrap();
-                let node_unique_marker = match dialect {
-                    SqlDialect::Databricks => "array_contains(vp.path_nodes",
-                    _ => "has(vp.path_nodes",
-                };
-                assert!(
-                    sql.contains("path_edges") && !sql.contains(node_unique_marker),
-                    "#980 ({dialect:?}): denorm closed `>=1` must render edge-uniqueness (path_edges), not node-uniqueness:\n{sql}"
-                );
-            }
         }
     }
 }
