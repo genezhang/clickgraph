@@ -299,6 +299,28 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// normalization pass — see #556.
     fn id_order_key_nulls_clause(&self) -> &'static str;
 
+    /// Explicit `NULLS …` suffix (including its leading space) to append to a
+    /// user-facing `ORDER BY <expr> ASC|DESC` term so the row ordering matches
+    /// Neo4j (#1065 — the general normalization pass #556 deferred).
+    ///
+    /// Cypher fixes NULL placement by sort direction: **NULLs sort last on
+    /// `ASC`, first on `DESC`** (no `NULLS FIRST/LAST` keyword exists in
+    /// Cypher — it is implicit). A bare emitted `ORDER BY … ASC|DESC` instead
+    /// inherits each backend's own default, which diverges from Neo4j on 3 of
+    /// the 4 (dialect × direction) cells:
+    ///
+    /// | dir  | Neo4j       | ClickHouse | Spark/Databricks |
+    /// |------|-------------|------------|------------------|
+    /// | ASC  | nulls last  | last ✓     | first ✗          |
+    /// | DESC | nulls first | last ✗     | last ✗           |
+    ///
+    /// Each dialect returns the MINIMAL suffix needed to reach Neo4j semantics
+    /// from its own default, so a direction already correct stays bare (no
+    /// golden churn): ClickHouse `ASC` → `""`, everything else explicit. Both
+    /// dialects support the `NULLS FIRST/LAST` syntax (CH `DESC NULLS FIRST`
+    /// verified live). `descending` is `true` for `DESC`, `false` for `ASC`.
+    fn order_by_nulls_clause(&self, descending: bool) -> &'static str;
+
     /// Render an openCypher percentile aggregate — `percentileCont(expr, p)` or
     /// `percentileDisc(expr, p)` — honoring the percentile argument `p` (#639).
     ///

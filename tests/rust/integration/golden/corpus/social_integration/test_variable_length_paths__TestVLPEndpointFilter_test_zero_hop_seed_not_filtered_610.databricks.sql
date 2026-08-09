@@ -26,4 +26,4 @@ SELECT
       t.start_id AS `a.user_id`, 
       t.end_id AS `b.user_id`
 FROM vlp_a_b AS t
-ORDER BY t.start_id ASC, t.end_id ASC
+ORDER BY t.start_id ASC NULLS LAST, t.end_id ASC NULLS LAST

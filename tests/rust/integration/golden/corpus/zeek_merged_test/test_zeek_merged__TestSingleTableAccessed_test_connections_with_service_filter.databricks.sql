@@ -5,4 +5,4 @@ SELECT
       r.duration AS `r.duration`
 FROM zeek.conn_log AS r
 WHERE r.service = 'ssl'
-ORDER BY r.ts ASC
+ORDER BY r.ts ASC NULLS LAST

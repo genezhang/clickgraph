@@ -260,6 +260,18 @@ impl FunctionMapper for DatabricksFunctionMapper {
         " NULLS LAST"
     }
 
+    fn order_by_nulls_clause(&self, descending: bool) -> &'static str {
+        // Spark/Databricks defaults to NULLS FIRST for ASC and NULLS LAST for
+        // DESC (ANSI). Neo4j is the opposite on BOTH: nulls-last on ASC,
+        // nulls-first on DESC — so each direction needs an explicit override
+        // (neither Spark default matches). #1065.
+        if descending {
+            " NULLS FIRST"
+        } else {
+            " NULLS LAST"
+        }
+    }
+
     fn percentile_aggregate(&self, expr: &str, percentile: &str, continuous: bool) -> String {
         if continuous {
             // Spark `percentile(expr, p)` does linear interpolation, matching
@@ -315,6 +327,10 @@ mod tests {
         assert_eq!(m.cast_float64(), "double");
         assert_eq!(m.cast_string(), "string");
         assert_eq!(m.cast_bool("x > 2"), "CAST(x > 2 AS BOOLEAN)");
+        // #1065: Spark defaults NULLS FIRST/ASC + NULLS LAST/DESC (ANSI) —
+        // Neo4j is the opposite on both, so each direction is explicit.
+        assert_eq!(m.order_by_nulls_clause(false), " NULLS LAST");
+        assert_eq!(m.order_by_nulls_clause(true), " NULLS FIRST");
         assert_eq!(m.array_concat(), "concat");
         assert_eq!(m.array_contains(), "array_contains");
         assert_eq!(m.integer_division(), "div");

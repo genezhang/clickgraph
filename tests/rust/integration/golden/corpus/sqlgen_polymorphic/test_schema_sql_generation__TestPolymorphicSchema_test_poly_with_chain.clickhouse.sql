@@ -9,4 +9,4 @@ SELECT
       posts_u.p1_u_name AS "u.name", 
       posts_u.posts AS "posts"
 FROM with_posts_u_cte_0 AS posts_u
-ORDER BY posts_u.posts DESC
+ORDER BY posts_u.posts DESC NULLS FIRST

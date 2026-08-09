@@ -1,7 +1,7 @@
 WITH with_n_cte_0 AS (SELECT 
       u.full_name AS `n`
 FROM brahmand.users_bench AS u
-ORDER BY n ASC
+ORDER BY n ASC NULLS LAST
 LIMIT 2 OFFSET 1
 )
 SELECT 

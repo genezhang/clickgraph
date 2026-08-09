@@ -50,4 +50,4 @@ SELECT
       hops_path_count_u1.hops AS `hops`, 
       hops_path_count_u1.path_count AS `path_count`
 FROM with_hops_path_count_u1_cte_0 AS hops_path_count_u1
-ORDER BY hops_path_count_u1.hops ASC
+ORDER BY hops_path_count_u1.hops ASC NULLS LAST

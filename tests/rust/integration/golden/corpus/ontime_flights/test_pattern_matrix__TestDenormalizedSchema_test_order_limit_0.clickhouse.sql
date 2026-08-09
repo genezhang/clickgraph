@@ -11,5 +11,5 @@ SELECT
 FROM default.flights AS n
 WHERE n.Dest IS NOT NULL
 ) AS __union
-ORDER BY __union.`__order_col_0` DESC
+ORDER BY __union.`__order_col_0` DESC NULLS FIRST
 LIMIT 5, 10

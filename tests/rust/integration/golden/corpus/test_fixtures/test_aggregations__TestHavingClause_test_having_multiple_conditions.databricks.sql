@@ -13,4 +13,4 @@ SELECT
       a_avg_age_follows.follows AS `follows`, 
       a_avg_age_follows.avg_age AS `avg_age`
 FROM with_a_avg_age_follows_cte_0 AS a_avg_age_follows
-ORDER BY a_avg_age_follows.p1_a_name ASC
+ORDER BY a_avg_age_follows.p1_a_name ASC NULLS LAST

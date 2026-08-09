@@ -32,5 +32,5 @@ SELECT
       t.end_name AS `x.name`, 
       t.end_email AS `x.email`
 FROM vlp_u_x AS t
-ORDER BY t.end_name ASC
+ORDER BY t.end_name ASC NULLS LAST
 LIMIT 5

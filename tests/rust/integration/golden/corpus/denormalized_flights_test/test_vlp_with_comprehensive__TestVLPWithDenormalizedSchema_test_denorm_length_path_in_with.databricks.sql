@@ -32,5 +32,5 @@ SELECT
       a_b_hops.p1_b_city AS `b.city`, 
       a_b_hops.hops AS `hops`
 FROM with_a_b_hops_cte_0 AS a_b_hops
-ORDER BY a_b_hops.p1_b_city ASC
+ORDER BY a_b_hops.p1_b_city ASC NULLS LAST
 LIMIT 5

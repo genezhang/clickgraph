@@ -33,4 +33,4 @@ SELECT
       t.end_name AS `item.name`, 
       t.end_path AS `item.path`
 FROM vlp_root_item AS t
-ORDER BY t.end_path ASC
+ORDER BY t.end_path ASC NULLS LAST

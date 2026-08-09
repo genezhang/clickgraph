@@ -10,4 +10,4 @@ SELECT
       file_access_count_user_name.user_name AS `user_name`, 
       file_access_count_user_name.file_access_count AS `file_access_count`
 FROM with_file_access_count_user_name_cte_0 AS file_access_count_user_name
-ORDER BY file_access_count_user_name.file_access_count DESC
+ORDER BY file_access_count_user_name.file_access_count DESC NULLS FIRST

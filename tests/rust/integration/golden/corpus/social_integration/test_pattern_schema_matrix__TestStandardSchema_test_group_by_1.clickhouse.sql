@@ -3,5 +3,5 @@ SELECT
       count(n.user_id) AS "cnt"
 FROM test_integration.users_test AS n
 GROUP BY n.user_id
-ORDER BY cnt DESC
+ORDER BY cnt DESC NULLS FIRST
 LIMIT 10

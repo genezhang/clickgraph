@@ -4,4 +4,4 @@ SELECT
 FROM data_security.ds_users AS u
 INNER JOIN data_security.ds_permissions AS a ON a.subject_id = u.user_id AND a.subject_type = 'User' AND a.object_type = 'File'
 GROUP BY a.privilege
-ORDER BY a.privilege ASC
+ORDER BY a.privilege ASC NULLS LAST

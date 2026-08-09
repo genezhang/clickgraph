@@ -3,5 +3,5 @@ SELECT
       count(*) AS "requests"
 FROM zeek.dns_log AS t0
 GROUP BY t0.query
-ORDER BY requests DESC
+ORDER BY requests DESC NULLS FIRST
 LIMIT 10

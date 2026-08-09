@@ -29,4 +29,4 @@ SELECT DISTINCT
       length(t.path_nodes) AS `node_count`, 
       length(t.path_relationships) AS `rel_count`
 FROM vlp_a_b AS t
-ORDER BY path_length ASC
+ORDER BY path_length ASC NULLS LAST

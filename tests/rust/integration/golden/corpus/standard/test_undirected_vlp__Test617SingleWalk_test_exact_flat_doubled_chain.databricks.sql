@@ -11,4 +11,4 @@ INNER JOIN undir_edges_a_b_test_integration_user_follows_test AS r1 ON a.user_id
 INNER JOIN undir_edges_a_b_test_integration_user_follows_test AS r2 ON r1.followed_id = r2.follower_id
 INNER JOIN test_integration.users_test AS b ON r2.followed_id = b.user_id
 WHERE r1.follow_id <> r2.follow_id
-ORDER BY a.full_name ASC, b.full_name ASC
+ORDER BY a.full_name ASC NULLS LAST, b.full_name ASC NULLS LAST

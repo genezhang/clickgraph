@@ -1,7 +1,7 @@
 WITH with_a_cte_0 AS (SELECT 
       o.total_amount AS `a`
 FROM db_fk_edge.orders_fk AS o
-ORDER BY a ASC
+ORDER BY a ASC NULLS LAST
 LIMIT 2 OFFSET 1
 )
 SELECT 

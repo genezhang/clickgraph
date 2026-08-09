@@ -29,4 +29,4 @@ SELECT
 FROM test_integration.users AS a
 LEFT JOIN vlp_a_b AS vt0 ON a.user_id = vt0.start_id
 GROUP BY a.name
-ORDER BY reachable_count DESC, a.name ASC
+ORDER BY reachable_count DESC NULLS FIRST, a.name ASC NULLS LAST

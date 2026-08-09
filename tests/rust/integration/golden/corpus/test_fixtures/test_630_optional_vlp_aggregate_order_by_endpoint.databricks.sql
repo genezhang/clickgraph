@@ -34,4 +34,4 @@ SELECT
 FROM test_integration.users AS a
 LEFT JOIN vlp_a_b AS vt0 ON a.user_id = vt0.start_id
 GROUP BY vt0.end_name
-ORDER BY vt0.end_name ASC
+ORDER BY vt0.end_name ASC NULLS LAST

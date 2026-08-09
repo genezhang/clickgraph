@@ -32,4 +32,4 @@ SELECT
       count(DISTINCT t.end_id) AS "groups_reached"
 FROM vlp_u_g AS t
 GROUP BY t.start_name
-ORDER BY groups_reached DESC
+ORDER BY groups_reached DESC NULLS FIRST

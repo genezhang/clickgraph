@@ -3,5 +3,5 @@ SELECT
       count(n.post_id) AS `cnt`
 FROM test_integration.posts_test AS n
 GROUP BY n.post_id
-ORDER BY cnt DESC
+ORDER BY cnt DESC NULLS FIRST
 LIMIT 10

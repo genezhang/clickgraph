@@ -11,4 +11,4 @@ SELECT
       group_name_member_count.group_name AS "group_name", 
       group_name_member_count.member_count AS "member_count"
 FROM with_group_name_member_count_cte_0 AS group_name_member_count
-ORDER BY group_name_member_count.member_count DESC
+ORDER BY group_name_member_count.member_count DESC NULLS FIRST

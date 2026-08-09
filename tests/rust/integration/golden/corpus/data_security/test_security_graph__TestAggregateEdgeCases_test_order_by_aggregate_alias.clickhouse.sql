@@ -5,4 +5,4 @@ FROM data_security.ds_users AS u
 INNER JOIN data_security.ds_memberships AS t0 ON t0.member_id = u.user_id AND t0.member_type = 'User'
 INNER JOIN data_security.ds_groups AS g ON g.group_id = t0.group_id
 GROUP BY g.name
-ORDER BY member_count DESC, g.name ASC
+ORDER BY member_count DESC NULLS FIRST, g.name ASC

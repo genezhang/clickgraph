@@ -4,4 +4,4 @@ SELECT
       r.service AS `r.service`
 FROM zeek.conn_log AS r
 WHERE r.`id.orig_h` = '192.168.1.10'
-ORDER BY r.ts ASC
+ORDER BY r.ts ASC NULLS LAST

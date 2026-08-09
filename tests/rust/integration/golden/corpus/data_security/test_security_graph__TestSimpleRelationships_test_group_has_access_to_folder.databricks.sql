@@ -5,4 +5,4 @@ SELECT
 FROM data_security.ds_groups AS g
 INNER JOIN data_security.ds_permissions AS r ON r.subject_id = g.group_id AND r.subject_type = 'Group' AND r.object_type = 'Folder'
 INNER JOIN data_security.ds_fs_objects AS f ON f.fs_id = r.object_id
-ORDER BY g.name ASC
+ORDER BY g.name ASC NULLS LAST

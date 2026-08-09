@@ -38,5 +38,5 @@ SELECT
       count(DISTINCT p.post_id) AS "postCount"
 FROM with_u2_cte_0 AS u2
 GROUP BY u2.p2_u2_user_id
-ORDER BY postCount DESC
+ORDER BY postCount DESC NULLS FIRST
 LIMIT 5

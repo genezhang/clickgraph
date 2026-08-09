@@ -9,4 +9,4 @@ SELECT
       a_follows.p1_a_name AS `a.name`, 
       CASE WHEN a_follows.follows = 0 THEN 'No follows' WHEN a_follows.follows = 1 THEN 'One follow' ELSE 'Multiple follows' END AS `follow_status`
 FROM with_a_follows_cte_0 AS a_follows
-ORDER BY a_follows.p1_a_name ASC
+ORDER BY a_follows.p1_a_name ASC NULLS LAST

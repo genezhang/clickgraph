@@ -7,5 +7,5 @@ SELECT
       count(*) AS "user_count"
 FROM with_u_cte_1 AS u
 GROUP BY u.p1_u_country
-ORDER BY user_count DESC
+ORDER BY user_count DESC NULLS FIRST
 LIMIT 3

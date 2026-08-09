@@ -31,4 +31,4 @@ SELECT
       count(*) AS `path_count`
 FROM vlp_a_b AS t
 GROUP BY t.end_name
-ORDER BY path_count DESC, t.end_name ASC
+ORDER BY path_count DESC NULLS FIRST, t.end_name ASC NULLS LAST

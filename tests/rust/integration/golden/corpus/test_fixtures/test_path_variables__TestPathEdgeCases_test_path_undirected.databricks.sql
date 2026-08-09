@@ -25,4 +25,4 @@ INNER JOIN test_integration.follows AS t0 ON a.user_id = t0.followed_id
 INNER JOIN test_integration.users AS b ON t0.follower_id = b.user_id
 WHERE a.name = 'Alice'
 ) AS __union
-ORDER BY __union.`__order_col_0` ASC
+ORDER BY __union.`__order_col_0` ASC NULLS LAST

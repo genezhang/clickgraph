@@ -9,4 +9,4 @@ SELECT DISTINCT
       ip.resp_h AS `__order_col_0`
 FROM test_zeek.conn_log AS ip
 ) AS __union
-ORDER BY __union.`__order_col_0` ASC
+ORDER BY __union.`__order_col_0` ASC NULLS LAST

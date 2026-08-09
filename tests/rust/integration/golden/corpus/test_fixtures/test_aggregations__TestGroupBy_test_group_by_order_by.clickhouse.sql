@@ -4,4 +4,4 @@ SELECT
 FROM test_integration.users AS a
 INNER JOIN test_integration.follows AS t0 ON t0.follower_id = a.user_id
 GROUP BY a.name
-ORDER BY follows DESC, a.name ASC
+ORDER BY follows DESC NULLS FIRST, a.name ASC

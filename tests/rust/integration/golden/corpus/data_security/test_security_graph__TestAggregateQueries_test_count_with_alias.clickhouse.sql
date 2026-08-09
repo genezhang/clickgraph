@@ -24,4 +24,4 @@ INNER JOIN data_security.ds_fs_objects AS t0 ON t0.parent_id = f.fs_id AND t0.fs
 INNER JOIN data_security.ds_fs_objects AS child ON child.fs_id = t0.fs_id
 ) AS __union
 GROUP BY `f.name`
-ORDER BY `children_count` DESC
+ORDER BY `children_count` DESC NULLS FIRST

@@ -5,4 +5,4 @@ SELECT
 FROM test_integration.follows_expressions_test AS f
 INNER JOIN test_integration.users_expressions_test AS u1 ON f.follower_id = u1.user_id
 WHERE dateDiff('day', f.follow_date, today()) < 10
-ORDER BY dateDiff('day', f.follow_date, today()) ASC
+ORDER BY dateDiff('day', f.follow_date, today()) ASC NULLS LAST

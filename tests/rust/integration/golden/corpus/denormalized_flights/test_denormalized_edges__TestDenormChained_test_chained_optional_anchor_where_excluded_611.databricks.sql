@@ -29,4 +29,4 @@ SELECT
 FROM __denorm_scan_a AS a
 LEFT JOIN test_integration.flights AS f ON a.code = f.Origin
 LEFT JOIN test_integration.flights AS g ON g.Origin = f.Dest
-ORDER BY a.code ASC, f.Dest ASC, g.Dest ASC
+ORDER BY a.code ASC NULLS LAST, f.Dest ASC NULLS LAST, g.Dest ASC NULLS LAST

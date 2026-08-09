@@ -3,4 +3,4 @@ SELECT
       u.email AS `u.email`
 FROM data_security.ds_users AS u
 WHERE u.exposure = 'external'
-ORDER BY u.name ASC
+ORDER BY u.name ASC NULLS LAST

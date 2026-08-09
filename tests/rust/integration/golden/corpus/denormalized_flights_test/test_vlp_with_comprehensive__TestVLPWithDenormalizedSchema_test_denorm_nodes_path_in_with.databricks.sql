@@ -33,5 +33,5 @@ SELECT
       a_b_hops_path_nodes.p1_b_city AS `b.city`, 
       length(a_b_hops_path_nodes.path_nodes) AS `node_count`
 FROM with_a_b_hops_path_nodes_cte_0 AS a_b_hops_path_nodes
-ORDER BY a_b_hops_path_nodes.p1_b_city ASC
+ORDER BY a_b_hops_path_nodes.p1_b_city ASC NULLS LAST
 LIMIT 5

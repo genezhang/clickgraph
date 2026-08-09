@@ -837,6 +837,17 @@ const CORPUS: &[(&str, &str)] = &[
         "bool_projection_agg_union_1057",
         "MATCH (u:User)-[:FOLLOWS]-(v:User) RETURN v.user_id > 2 AS gt, count(*) AS c ORDER BY gt",
     ),
+    // #1065: NULL placement in ORDER BY must match Neo4j (nulls last on ASC,
+    // first on DESC) rather than each backend's divergent default. A mixed
+    // `DESC, ASC` order key renders BOTH directions so the dialect asymmetry is
+    // locked: ClickHouse → `uid DESC NULLS FIRST, n ASC` (ASC stays bare — CH
+    // ASC default is already nulls-last); Databricks → `uid DESC NULLS FIRST,
+    // n ASC NULLS LAST` (Spark ASC default is nulls-first, so it needs the
+    // explicit LAST). The WITH barrier forces a real projected order key.
+    (
+        "order_by_nulls_placement_1065",
+        "MATCH (u:User) WITH u.user_id AS uid, u.name AS n RETURN uid, n ORDER BY uid DESC, n ASC",
+    ),
 ];
 
 /// Browser-shaped patterns (Phase 0 slice P0.5): the fully/partially
@@ -13045,9 +13056,10 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
             .await,
         );
         assert!(
-            sql.contains("ORDER BY `connections` DESC, `a.name` ASC"),
+            sql.contains("ORDER BY `connections` DESC NULLS FIRST, `a.name` ASC"),
             "#503: both ORDER BY keys (aggregate alias and anchor property) \
-             must be backtick-quoted outer-alias references:\n{sql}"
+             must be backtick-quoted outer-alias references (with #1065 \
+             DESC-nulls-first placement):\n{sql}"
         );
         assert!(
             !sql.contains("GROUP BY `__order_col"),

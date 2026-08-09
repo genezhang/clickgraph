@@ -33,4 +33,4 @@ SELECT
       t.end_name AS `f.name`, 
       t.end_path AS `f.path`
 FROM vlp_root_f AS t
-ORDER BY t.end_path ASC
+ORDER BY t.end_path ASC NULLS LAST

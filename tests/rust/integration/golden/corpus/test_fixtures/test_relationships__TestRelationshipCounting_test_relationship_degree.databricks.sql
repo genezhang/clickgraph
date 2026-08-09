@@ -14,4 +14,4 @@ INNER JOIN test_integration.follows AS t0 ON t0.follower_id = b.user_id
 INNER JOIN test_integration.users AS a ON a.user_id = t0.followed_id
 ) AS __union
 GROUP BY `a.name`
-ORDER BY `connections` DESC, `a.name` ASC
+ORDER BY `connections` DESC NULLS FIRST, `a.name` ASC NULLS LAST

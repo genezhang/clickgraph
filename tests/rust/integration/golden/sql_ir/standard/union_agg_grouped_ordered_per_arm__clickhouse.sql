@@ -6,7 +6,7 @@ FROM social.users_bench AS u
 INNER JOIN social.authored_bench AS t0 ON t0.user_id = u.user_id
 GROUP BY u.full_name
 )
-ORDER BY c DESC
+ORDER BY c DESC NULLS FIRST
 LIMIT 2
 UNION ALL 
 SELECT * FROM (
@@ -17,5 +17,5 @@ FROM social.users_bench AS u2
 INNER JOIN social.post_likes_bench AS t1 ON t1.user_id = u2.user_id
 GROUP BY u2.full_name
 )
-ORDER BY c DESC
+ORDER BY c DESC NULLS FIRST
 LIMIT 2

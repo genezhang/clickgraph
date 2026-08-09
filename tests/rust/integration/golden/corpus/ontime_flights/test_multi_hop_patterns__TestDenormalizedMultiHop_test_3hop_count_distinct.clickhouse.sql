@@ -12,5 +12,5 @@ SELECT
       destinations_hub_origins.origins AS "origins", 
       destinations_hub_origins.destinations AS "destinations"
 FROM with_destinations_hub_origins_cte_0 AS destinations_hub_origins
-ORDER BY destinations_hub_origins.origins DESC
+ORDER BY destinations_hub_origins.origins DESC NULLS FIRST
 LIMIT 5

@@ -30,4 +30,4 @@ SELECT
       count(DISTINCT t.end_id) AS `unique_reachable`
 FROM vlp_a_b AS t
 GROUP BY t.start_name
-ORDER BY t.start_name ASC
+ORDER BY t.start_name ASC NULLS LAST

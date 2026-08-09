@@ -3,5 +3,5 @@ SELECT
       count(*) AS "cnt"
 FROM db_denormalized.flights_denorm AS t0
 GROUP BY t0.origin_city
-ORDER BY cnt DESC
+ORDER BY cnt DESC NULLS FIRST
 LIMIT 5

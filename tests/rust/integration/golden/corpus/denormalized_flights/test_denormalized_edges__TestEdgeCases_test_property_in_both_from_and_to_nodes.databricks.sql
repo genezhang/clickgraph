@@ -4,4 +4,4 @@ SELECT
       f.OriginState AS `state`
 FROM test_integration.flights AS f
 WHERE f.OriginState = f.DestState
-ORDER BY f.OriginCityName ASC
+ORDER BY f.OriginCityName ASC NULLS LAST

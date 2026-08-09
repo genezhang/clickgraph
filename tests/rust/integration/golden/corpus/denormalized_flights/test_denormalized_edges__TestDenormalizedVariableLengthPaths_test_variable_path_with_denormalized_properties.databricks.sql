@@ -34,5 +34,5 @@ SELECT
       t.end_DestCityName AS `dest.city`, 
       t.hop_count AS `hops`
 FROM vlp_origin_dest AS t
-ORDER BY hops ASC
+ORDER BY hops ASC NULLS LAST
 LIMIT 1

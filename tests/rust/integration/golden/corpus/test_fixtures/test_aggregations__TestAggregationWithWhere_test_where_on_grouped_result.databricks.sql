@@ -10,4 +10,4 @@ SELECT
       a_follow_count.p1_a_name AS `a.name`, 
       a_follow_count.follow_count AS `follow_count`
 FROM with_a_follow_count_cte_0 AS a_follow_count
-ORDER BY a_follow_count.p1_a_name ASC
+ORDER BY a_follow_count.p1_a_name ASC NULLS LAST

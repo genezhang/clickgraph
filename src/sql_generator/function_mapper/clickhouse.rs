@@ -162,6 +162,17 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         " NULLS LAST"
     }
 
+    fn order_by_nulls_clause(&self, descending: bool) -> &'static str {
+        // CH sorts NULL last for BOTH ASC and DESC by default. Neo4j wants
+        // nulls-last on ASC (already matches → stay bare) and nulls-first on
+        // DESC (needs an explicit override). #1065.
+        if descending {
+            " NULLS FIRST"
+        } else {
+            ""
+        }
+    }
+
     fn percentile_aggregate(&self, expr: &str, percentile: &str, continuous: bool) -> String {
         if continuous {
             // percentileCont = linear interpolation. ClickHouse quantiles are
@@ -226,6 +237,15 @@ mod tests {
             m.cast_bool("u.user_id > 2"),
             "CAST(u.user_id > 2 AS Nullable(Bool))"
         );
+    }
+
+    #[test]
+    fn order_by_nulls_clause_only_overrides_desc() {
+        // #1065: CH default is nulls-last for both directions. Neo4j wants
+        // nulls-last on ASC (already matches → bare) and nulls-first on DESC.
+        let m = ClickhouseFunctionMapper;
+        assert_eq!(m.order_by_nulls_clause(false), "");
+        assert_eq!(m.order_by_nulls_clause(true), " NULLS FIRST");
     }
 
     #[test]

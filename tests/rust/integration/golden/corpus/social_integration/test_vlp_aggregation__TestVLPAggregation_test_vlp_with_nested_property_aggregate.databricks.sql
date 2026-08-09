@@ -35,5 +35,5 @@ SELECT
 FROM vlp_u1_u2 AS t
 INNER JOIN test_integration.posts_test AS p ON p.author_id = t.end_id
 GROUP BY t.end_id
-ORDER BY totalPosts DESC
+ORDER BY totalPosts DESC NULLS FIRST
 LIMIT 5

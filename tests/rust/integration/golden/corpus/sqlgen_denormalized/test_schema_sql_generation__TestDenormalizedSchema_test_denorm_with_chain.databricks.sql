@@ -8,4 +8,4 @@ SELECT
       flights_origin.origin AS `origin`, 
       flights_origin.flights AS `flights`
 FROM with_flights_origin_cte_0 AS flights_origin
-ORDER BY flights_origin.flights DESC
+ORDER BY flights_origin.flights DESC NULLS FIRST

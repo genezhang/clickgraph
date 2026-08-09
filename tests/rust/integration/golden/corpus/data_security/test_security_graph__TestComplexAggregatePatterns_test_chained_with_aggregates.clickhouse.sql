@@ -11,4 +11,4 @@ SELECT
       g_user_count.p1_g_name AS "g.name", 
       g_user_count.user_count AS "user_count"
 FROM with_g_user_count_cte_0 AS g_user_count
-ORDER BY g_user_count.user_count DESC
+ORDER BY g_user_count.user_count DESC NULLS FIRST

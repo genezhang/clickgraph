@@ -30,4 +30,4 @@ WITH RECURSIVE vlp_u_g AS (
 SELECT DISTINCT 
       t.end_name AS `group_name`
 FROM vlp_u_g AS t
-ORDER BY t.end_name ASC
+ORDER BY t.end_name ASC NULLS LAST
