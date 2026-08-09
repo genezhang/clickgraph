@@ -10,4 +10,4 @@ SELECT DISTINCT
 FROM zeek.conn_log AS conn
 INNER JOIN with_domain_source_ip_cte_1 AS domain_source_ip ON conn.`id.orig_h` = domain_source_ip.source_ip
 WHERE conn.`id.orig_h` = domain_source_ip.source_ip
-ORDER BY `source_ip` ASC, `domain` ASC
+ORDER BY `source_ip` ASC NULLS LAST, `domain` ASC NULLS LAST

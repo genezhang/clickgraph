@@ -32,4 +32,4 @@ SELECT
       t.start_name AS `a.name`, 
       t.end_name AS `b.name`
 FROM vlp_a_b AS t
-ORDER BY t.end_name ASC
+ORDER BY t.end_name ASC NULLS LAST

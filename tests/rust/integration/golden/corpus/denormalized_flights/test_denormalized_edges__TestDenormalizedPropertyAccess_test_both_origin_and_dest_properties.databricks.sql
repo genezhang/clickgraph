@@ -4,4 +4,4 @@ SELECT
       f.flight_number AS `f.flight_num`
 FROM test_integration.flights AS f
 WHERE (f.OriginState = 'CA' AND f.DestState = 'NY')
-ORDER BY f.flight_number ASC
+ORDER BY f.flight_number ASC NULLS LAST

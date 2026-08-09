@@ -40,5 +40,5 @@ SELECT
       postCount_u2.p2_u2_user_id AS "userId", 
       postCount_u2.postCount AS "postCount"
 FROM with_postCount_u2_cte_0 AS postCount_u2
-ORDER BY postCount_u2.postCount DESC
+ORDER BY postCount_u2.postCount DESC NULLS FIRST
 LIMIT 5

@@ -4,4 +4,4 @@ SELECT
       t0.answers AS `rip.ip`
 FROM zeek.dns_log AS t0
 WHERE t0.`id.orig_h` = '192.168.1.10'
-ORDER BY t0.query ASC
+ORDER BY t0.query ASC NULLS LAST

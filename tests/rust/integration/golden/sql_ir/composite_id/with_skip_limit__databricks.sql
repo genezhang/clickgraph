@@ -1,7 +1,7 @@
 WITH with_b_cte_0 AS (SELECT 
       a.balance AS `b`
 FROM db_composite_id.accounts AS a
-ORDER BY b ASC
+ORDER BY b ASC NULLS LAST
 LIMIT 2 OFFSET 1
 )
 SELECT 

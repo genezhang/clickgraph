@@ -34,4 +34,4 @@ SELECT
       count(DISTINCT t.end_id) AS `reachable`
 FROM vlp_a_b AS t
 GROUP BY t.start_name
-ORDER BY reachable DESC, t.start_name ASC
+ORDER BY reachable DESC NULLS FIRST, t.start_name ASC NULLS LAST

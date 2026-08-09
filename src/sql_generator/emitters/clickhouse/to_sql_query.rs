@@ -6132,6 +6132,11 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                             OrderByOrder::Asc => "ASC",
                             OrderByOrder::Desc => "DESC",
                         };
+                        // #1065: Neo4j NULL placement (nulls last on ASC, first
+                        // on DESC); dialect-minimal via the FunctionMapper.
+                        let nulls =
+                            crate::sql_generator::function_mapper::current_function_mapper()
+                                .order_by_nulls_clause(matches!(item.order, OrderByOrder::Desc));
                         let rendered = item.expression.to_sql();
                         let matched_alias = non_order_items
                             .iter()
@@ -6153,11 +6158,11 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                             })
                             .and_then(|sel| sel.col_alias.as_ref());
                         if let Some(alias) = matched_alias {
-                            format!("`{}` {}", alias.0, order_str)
+                            format!("`{}` {}{}", alias.0, order_str, nulls)
                         } else {
                             // No surviving column to reference — unchanged
                             // prior (pre-#503) behavior for this corner case.
-                            format!("{} {}", rendered, order_str)
+                            format!("{} {}{}", rendered, order_str, nulls)
                         }
                     })
                     .collect();
@@ -6194,11 +6199,16 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                         // tuple component — pin the NULL-ordering explicitly
                         // so ClickHouse and Databricks agree (dialects
                         // disagree on the ASC/DESC NULL-ordering default).
+                        // For an ordinary (non-id) column, #1065 applies the
+                        // direction-based Neo4j placement instead (id() is
+                        // never NULL in Neo4j, so the id key keeps its own
+                        // union-merge-stable `NULLS LAST`).
                         let nulls_clause = if id_order_item_alias(&item.expression).is_some() {
                             crate::sql_generator::function_mapper::current_function_mapper()
                                 .id_order_key_nulls_clause()
                         } else {
-                            ""
+                            crate::sql_generator::function_mapper::current_function_mapper()
+                                .order_by_nulls_clause(matches!(item.order, OrderByOrder::Desc))
                         };
                         Some(format!(
                             "__union.`{}` {}{}",
@@ -6640,6 +6650,8 @@ fn render_order_by_with_select_aliases(order_by: &OrderByItems, select: &SelectI
         sql.push_str(&term);
         sql.push(' ');
         sql.push_str(&item.order.to_sql());
+        // #1065: Neo4j NULL placement (see impl ToSql for OrderByItems).
+        sql.push_str(mapper.order_by_nulls_clause(matches!(item.order, OrderByOrder::Desc)));
         if i + 1 < order_by.0.len() {
             sql.push_str(", ");
         }
@@ -6659,6 +6671,13 @@ impl ToSql for OrderByItems {
             sql.push_str(&item.expression.to_sql());
             sql.push(' ');
             sql.push_str(&item.order.to_sql());
+            // #1065: pin NULL placement to Neo4j semantics (nulls last on ASC,
+            // first on DESC) — a bare ASC/DESC inherits each backend's own
+            // divergent default. Dialect-minimal via the FunctionMapper.
+            sql.push_str(
+                crate::sql_generator::function_mapper::current_function_mapper()
+                    .order_by_nulls_clause(matches!(item.order, OrderByOrder::Desc)),
+            );
             if i + 1 < self.0.len() {
                 sql.push_str(", ");
             }

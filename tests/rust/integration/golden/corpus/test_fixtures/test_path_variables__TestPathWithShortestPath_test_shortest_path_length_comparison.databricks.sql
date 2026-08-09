@@ -34,4 +34,4 @@ SELECT
       t.end_name AS `b.name`, 
       t.hop_count AS `distance`
 FROM vlp_a_b AS t
-ORDER BY distance ASC, t.end_name ASC
+ORDER BY distance ASC NULLS LAST, t.end_name ASC NULLS LAST

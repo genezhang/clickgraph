@@ -1,5 +1,5 @@
 SELECT 
       u.name AS "u.name"
 FROM test_integration.users AS u
-ORDER BY u.age DESC
+ORDER BY u.age DESC NULLS FIRST
 LIMIT 2

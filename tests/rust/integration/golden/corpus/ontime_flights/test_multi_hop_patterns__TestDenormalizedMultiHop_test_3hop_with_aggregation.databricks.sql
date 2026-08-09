@@ -10,5 +10,5 @@ SELECT
       connections_hub.hub AS `hub`, 
       connections_hub.connections AS `connections`
 FROM with_connections_hub_cte_0 AS connections_hub
-ORDER BY connections_hub.connections DESC
+ORDER BY connections_hub.connections DESC NULLS FIRST
 LIMIT 5

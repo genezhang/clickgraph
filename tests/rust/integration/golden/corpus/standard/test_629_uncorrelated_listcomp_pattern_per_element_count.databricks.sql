@@ -14,4 +14,4 @@ SELECT
       a_c.p1_a_user_id AS `id`, 
       a_c.c AS `c`
 FROM with_a_c_cte_1 AS a_c
-ORDER BY id ASC
+ORDER BY id ASC NULLS LAST

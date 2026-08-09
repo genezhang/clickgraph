@@ -9,4 +9,4 @@ SELECT
       o_rc.p1_o_order_id AS `o.order_id`, 
       o_rc.rc AS `rc`
 FROM with_o_rc_cte_0 AS o_rc
-ORDER BY o_rc.p1_o_order_id ASC
+ORDER BY o_rc.p1_o_order_id ASC NULLS LAST

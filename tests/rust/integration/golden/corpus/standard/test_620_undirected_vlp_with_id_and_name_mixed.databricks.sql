@@ -37,4 +37,4 @@ FROM vlp_a_b AS t
 SELECT 
       id_nm.nm AS `nm`
 FROM with_id_nm_cte_0 AS id_nm
-ORDER BY id_nm.nm ASC
+ORDER BY id_nm.nm ASC NULLS LAST

@@ -38,5 +38,5 @@ SELECT
       end_name_start_name.start_name AS `start_name`, 
       end_name_start_name.end_name AS `end_name`
 FROM with_end_name_start_name_cte_0 AS end_name_start_name
-ORDER BY end_name_start_name.end_name ASC
+ORDER BY end_name_start_name.end_name ASC NULLS LAST
 LIMIT 5

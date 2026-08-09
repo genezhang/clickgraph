@@ -2,5 +2,5 @@ SELECT
       a.account_number AS "a.account_number", 
       a.balance AS "a.balance"
 FROM db_composite_id.accounts AS a
-ORDER BY a.balance DESC
+ORDER BY a.balance DESC NULLS FIRST
 LIMIT 1, 3

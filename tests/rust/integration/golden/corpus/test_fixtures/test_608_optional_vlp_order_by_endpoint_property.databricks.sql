@@ -33,4 +33,4 @@ SELECT
       vt0.end_name AS `b.name`
 FROM test_integration.users AS a
 LEFT JOIN vlp_a_b AS vt0 ON a.user_id = vt0.start_id
-ORDER BY a.name ASC, vt0.end_name ASC
+ORDER BY a.name ASC NULLS LAST, vt0.end_name ASC NULLS LAST

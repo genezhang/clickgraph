@@ -35,5 +35,5 @@ SELECT
 FROM vlp_u1_u2 AS t
 INNER JOIN test_integration.posts_test AS p ON p.author_id = t.end_id
 GROUP BY t.end_id
-ORDER BY postCount DESC, userId ASC
+ORDER BY postCount DESC NULLS FIRST, userId ASC
 LIMIT 10

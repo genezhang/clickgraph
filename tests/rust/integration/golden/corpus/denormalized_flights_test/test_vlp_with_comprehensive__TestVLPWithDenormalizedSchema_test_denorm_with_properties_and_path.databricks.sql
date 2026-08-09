@@ -34,5 +34,5 @@ SELECT
       dest_dest_state_hops_origin.dest_state AS `dest_state`, 
       dest_dest_state_hops_origin.hops AS `hops`
 FROM with_dest_dest_state_hops_origin_cte_0 AS dest_dest_state_hops_origin
-ORDER BY dest_dest_state_hops_origin.dest ASC
+ORDER BY dest_dest_state_hops_origin.dest ASC NULLS LAST
 LIMIT 5

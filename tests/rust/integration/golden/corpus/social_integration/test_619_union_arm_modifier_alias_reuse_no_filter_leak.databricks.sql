@@ -30,7 +30,7 @@ SELECT
       t.end_id AS `id`
 FROM vlp_a_b AS t
 )
-ORDER BY id ASC
+ORDER BY id ASC NULLS LAST
 LIMIT 2
 )
 UNION ALL 

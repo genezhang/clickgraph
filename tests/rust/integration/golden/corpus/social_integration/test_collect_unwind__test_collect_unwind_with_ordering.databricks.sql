@@ -7,5 +7,5 @@ SELECT
       u.p1_u_name AS `user.name`, 
       u.p1_u_city AS `user.city`
 FROM with_u_cte_1 AS u
-ORDER BY u.p1_u_city ASC
+ORDER BY u.p1_u_city ASC NULLS LAST
 LIMIT 3

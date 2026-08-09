@@ -4,5 +4,5 @@ SELECT
 FROM db_fk_edge.orders_fk AS o
 INNER JOIN db_fk_edge.customers_fk AS c ON c.customer_id = o.customer_id
 GROUP BY c.name
-ORDER BY cnt DESC
+ORDER BY cnt DESC NULLS FIRST
 LIMIT 5

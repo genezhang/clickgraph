@@ -13,4 +13,4 @@ FROM social.users_bench AS v
 INNER JOIN social.user_follows_bench AS t0 ON t0.follower_id = v.user_id
 ) AS __union
 GROUP BY `gt`
-ORDER BY `gt` ASC
+ORDER BY `gt` ASC NULLS LAST

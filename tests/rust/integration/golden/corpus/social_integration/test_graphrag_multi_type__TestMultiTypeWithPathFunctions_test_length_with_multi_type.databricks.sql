@@ -38,4 +38,4 @@ SELECT
 FROM vlp_multi_type_u_x_2 AS t
 ) AS __union
 GROUP BY `path_length`
-ORDER BY `path_length` ASC
+ORDER BY `path_length` ASC NULLS LAST

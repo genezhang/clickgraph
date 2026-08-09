@@ -33,4 +33,4 @@ SELECT
       t.end_name AS `b.name`, 
       t.hop_count AS `path_length`
 FROM vlp_a_b AS t
-ORDER BY t.end_name ASC
+ORDER BY t.end_name ASC NULLS LAST

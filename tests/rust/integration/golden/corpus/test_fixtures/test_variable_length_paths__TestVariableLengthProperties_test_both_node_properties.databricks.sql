@@ -38,5 +38,5 @@ SELECT
       t.end_name AS `b.name`, 
       t.end_age AS `b.age`
 FROM vlp_a_b AS t
-ORDER BY t.end_name ASC
+ORDER BY t.end_name ASC NULLS LAST
 LIMIT 3

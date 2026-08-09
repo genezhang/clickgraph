@@ -26,4 +26,4 @@ SELECT
 FROM __denorm_scan_a AS a
 LEFT JOIN (SELECT e.OriginCityName, e.DestCityName, e.Origin, e.Dest, e.OriginState, e.DestState, e.airline, e.arr_time, e.dep_time, e.distance_miles, e.flight_id, e.flight_number FROM test_integration.flights AS e UNION ALL SELECT e.DestCityName AS OriginCityName, e.OriginCityName AS DestCityName, e.Dest AS Origin, e.Origin AS Dest, e.DestState AS OriginState, e.OriginState AS DestState, e.airline, e.arr_time, e.dep_time, e.distance_miles, e.flight_id, e.flight_number FROM test_integration.flights AS e) AS r ON a.code = r.Origin
 GROUP BY a.code
-ORDER BY a.code ASC
+ORDER BY a.code ASC NULLS LAST

@@ -21,4 +21,4 @@ SELECT
       a_friends.p1_a_name AS "a.name", 
       a_friends.friends AS "friends"
 FROM with_a_friends_cte_0 AS a_friends
-ORDER BY a_friends.friends DESC
+ORDER BY a_friends.friends DESC NULLS FIRST

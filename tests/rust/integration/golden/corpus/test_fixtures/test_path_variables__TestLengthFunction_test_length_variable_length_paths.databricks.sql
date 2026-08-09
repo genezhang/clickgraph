@@ -27,4 +27,4 @@ WITH RECURSIVE vlp_a_b AS (
 SELECT DISTINCT 
       t.hop_count AS `path_length`
 FROM vlp_a_b AS t
-ORDER BY path_length ASC
+ORDER BY path_length ASC NULLS LAST

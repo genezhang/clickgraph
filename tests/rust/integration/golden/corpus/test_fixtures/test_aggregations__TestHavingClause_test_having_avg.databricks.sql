@@ -11,4 +11,4 @@ SELECT
       a_avg_age.p1_a_name AS `a.name`, 
       a_avg_age.avg_age AS `avg_age`
 FROM with_a_avg_age_cte_0 AS a_avg_age
-ORDER BY a_avg_age.p1_a_name ASC
+ORDER BY a_avg_age.p1_a_name ASC NULLS LAST
