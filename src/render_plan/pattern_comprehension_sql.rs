@@ -2457,6 +2457,14 @@ pub(crate) fn build_pattern_comprehension_sql(
                 format!("{collect}(1)")
             }
         }
+        // INTERIM (#1062): this whole match models "aggregate the comprehension's
+        // inner rows, GROUP BY node_id". The Neo4j-correct model is "aggregate the
+        // per-outer-row LIST VALUE, cross-row": `min`/`max` return the whole list,
+        // `collect` nests to a list-of-lists, `sum`/`avg` over lists ERROR, `count`
+        // is 1 per outer row. The scalar forms below are a documented stepping-stone
+        // (strictly better than the prior constant-`1` fold) — NOT verified-correct
+        // output; the `*_1053` goldens lock interim behavior. Fix under #1062.
+        //
         // #1053: numeric aggregates must fold over the projected target value
         // (`target_prop`) when a target JOIN was emitted — mirroring the
         // `GroupArray` arm above. Without this they folded over the constant `1`
