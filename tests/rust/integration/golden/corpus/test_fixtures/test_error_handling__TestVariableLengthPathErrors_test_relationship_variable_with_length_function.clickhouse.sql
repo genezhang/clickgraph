@@ -32,7 +32,7 @@ vlp_a_b AS (
 ), 
 with_b_distance_cte_0 AS (SELECT 
       anyLast(end_name) AS "p1_b_name", 
-      min(length(path)) AS "distance"
+      minOrNull(length(path)) AS "distance"
 FROM vlp_a_b AS t
 GROUP BY t.end_id
 )

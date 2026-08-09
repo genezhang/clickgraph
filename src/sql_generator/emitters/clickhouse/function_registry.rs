@@ -1192,19 +1192,30 @@ lazy_static::lazy_static! {
             arg_transform: None,
         });
 
-        // min() -> min() [1:1]
+        // min() -> minOrNull() on ClickHouse; min() on Spark.
+        // Neo4j `min` over an EMPTY input set returns NULL. ClickHouse's bare
+        // `min` returns the type default (0 / '' / epoch) instead — silent-wrong
+        // (a user reading "min = 0" believes a real 0 exists). `minOrNull`
+        // returns NULL on empty input, matching Neo4j. Non-empty groups are
+        // byte-identical (`min` == `minOrNull` when ≥1 row), and an all-NULL
+        // input already returns NULL under bare `min`, so ONLY the zero-row case
+        // changes. Spark/ANSI `min` already returns NULL on empty, so Databricks
+        // keeps plain `min` (byte-identical output). Same silent-wrong class as
+        // #851 (head([])/last([]) type-default → NULL).
         m.insert("min", FunctionMapping {
             neo4j_name: "min",
-            clickhouse_name: "min",
-            databricks_name: None,
+            clickhouse_name: "minOrNull",
+            databricks_name: Some("min"),
             arg_transform: None,
         });
 
-        // max() -> max() [1:1]
+        // max() -> maxOrNull() on ClickHouse; max() on Spark. See `min` above:
+        // Neo4j `max` over an empty set is NULL; CH bare `max` returns the type
+        // default. `maxOrNull` matches Neo4j; Databricks `max` already does.
         m.insert("max", FunctionMapping {
             neo4j_name: "max",
-            clickhouse_name: "max",
-            databricks_name: None,
+            clickhouse_name: "maxOrNull",
+            databricks_name: Some("max"),
             arg_transform: None,
         });
 

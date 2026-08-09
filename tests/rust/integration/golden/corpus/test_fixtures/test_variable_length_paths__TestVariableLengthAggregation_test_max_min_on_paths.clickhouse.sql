@@ -27,6 +27,6 @@ WITH RECURSIVE vlp_a_b AS (
       AND NOT has(vp.path_edges, tuple(rel.follower_id, rel.followed_id))
 )
 SELECT 
-      min(t.end_age) AS "min_age", 
-      max(t.end_age) AS "max_age"
+      minOrNull(t.end_age) AS "min_age", 
+      maxOrNull(t.end_age) AS "max_age"
 FROM vlp_a_b AS t
