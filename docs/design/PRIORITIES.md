@@ -628,6 +628,50 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-08: **Correctness (ground-rule-1) — comparison/predicate results
+  rendered as ClickHouse `UInt8` `1`/`0` instead of Neo4j boolean `true`/`false`
+  in RETURN/WITH projections** (branch
+  `fix/comparison-boolean-projection-1057`, PR #1059 `57b0eb9f`, closes #1057).
+  A boolean-valued PROJECTION item — comparison (`>`/`<`/`=`/`<>`/…), `IN`,
+  `STARTS WITH`/`CONTAINS`/`ENDS WITH`, `=~`, `IS NULL`/`IS NOT NULL`, boolean
+  scalar fns (`toBoolean`/`isEmpty`/…), `EXISTS`, and schema-declared Boolean
+  columns — was emitted as a bare CH expression whose result type is `UInt8`, so
+  the wire value was `1`/`0` rather than Neo4j's `true`/`false` (silent
+  type-fidelity divergence; a client reading `n.age > 30 = 1` gets the wrong
+  type). Oracle: Neo4j `RETURN n.x > 2 AS b` yields boolean true/false;
+  NULL-propagation preserved (`null > 2` → null). Same class as #851
+  (head/last) and #1051 (max/min-empty). ROOT: the render-site classifier
+  (`type_inference.rs::infer_operator_type`) already proves these
+  `RenderType::Boolean`; that type just wasn't applied at projection emit. FIX
+  (Rule #7 dispatch, no baseline bump): wrap a SELECT item in the dialect's
+  native boolean cast when `infer_render_type` proves it Boolean, routed through
+  a new `FunctionMapper::cast_bool` (CH `CAST(expr AS Nullable(Bool))`;
+  Databricks `CAST(expr AS BOOLEAN)`). Applied at the TWO projection emitters:
+  `SelectItems::to_sql` (main path — also renders inner CTE / non-aggregate
+  UNION-branch projections, covering WITH-barrier + UNION) and
+  `build_union_inner_select` (the aggregate-over-UNION pre-aggregation rows for
+  undirected/bidirectional + aggregation and polymorphic/multi-source schemas —
+  a SEPARATE emitter that `SelectItems::to_sql` does not reach; the outer
+  aggregate SELECT inherits `Nullable(Bool)` by alias reference). The
+  aggregate-over-UNION emitter was a coverage gap caught in adversarial review
+  and closed before merge. Correctness boundary: CH `Bool` is physically
+  `UInt8`, so the wrap is transparent to every downstream op (`= 1`, arithmetic,
+  `sum`, `AND`, GROUP/ORDER/DISTINCT) — only the wire display changes (GROUP BY
+  on a wrapped boolean key preserves counts + the NULL group); `Nullable(Bool)`
+  is NULL-safe (bare `CAST(NULL>2 AS Bool)` throws Code 70);
+  conservative-None means a comparison nested inside `if()`/`CASE`/a lambda
+  condition stays `UInt8` and WHERE-position predicates are untouched; a Boolean
+  column needs a schema `property_types` declaration to be typed (an undeclared
+  `UInt8` column is left as-is — honest under-specified-schema outcome).
+  Live-verified on db_standard + polymorphic (comparisons/IN/STARTS WITH/
+  CONTAINS/ENDS WITH/=~/IS NULL/NOT → true/false in direct, WITH-barrier, UNION,
+  VLP, and undirected+aggregate positions; NULL preserved; WHERE unaffected).
+  Full suite green (1727 lib + 603 integration incl. new discriminating
+  `bool_projection_1057` + `bool_projection_agg_union_1057` both dialects +
+  `cast_bool` unit tests + ratchet no-bump + clippy + fmt); 4 pre-existing
+  goldens regenerated (`IS NOT NULL`/`toBoolean` projections — pure bool-wrap).
+  Adversarial review (2 rounds): APPROVE.
+
 - 2026-08-08: **Correctness (ground-rule-1) — `max()`/`min()` over an empty
   input set returned the ClickHouse type default instead of Neo4j `null`**
   (branch `fix/max-min-empty-set-null`, PR #1052 `402fc953`, closes #1051).
