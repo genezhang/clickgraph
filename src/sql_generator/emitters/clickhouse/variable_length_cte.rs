@@ -262,6 +262,96 @@ impl EdgeIdentity {
     }
 }
 
+/// Whether a VLP recursive walk dedupes on the EDGES it has traversed or the
+/// NODES it has visited — the uniqueness *decision* axis of the #887
+/// unification (Phase 1–2 of `docs/design/VLP_EDGE_IDENTITY_UNIFICATION.md`).
+///
+/// EDGE-uniqueness (`NOT has(vp.path_edges, <identity>)`) lets a walk revisit a
+/// node and return to its start, so real cycles / parallel edges are counted;
+/// NODE-uniqueness (`NOT has(vp.path_nodes, <id>)`) structurally forbids
+/// returning to a visited node (correct only for shortestPath / weighted / the
+/// OPEN zero-hop base, where a walk must not cycle).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UniquenessKind {
+    Edge,
+    Node,
+}
+
+/// The single authority for a VLP recursive arm's relationship-uniqueness: the
+/// [`UniquenessKind`] decision plus the [`EdgeIdentity`] spelling used when the
+/// decision is `Edge`. Replaces the inline `uses_edge_uniqueness` copies (VLC
+/// `&self` and CM `&CteGenerationContext`) that kept drifting apart
+/// (#806/#628/#710/#808/#606/#978/#980 were each "one site disagreed").
+///
+/// Constructed from already-resolved PRIMITIVE inputs rather than a
+/// `PatternSchemaContext`, because the two historical call sites read
+/// `min_hops` / `shortest_path` from different owners (the VLC generator's own
+/// fields vs `CteGenerationContext`); each caller passes its own values.
+#[derive(Debug, Clone)]
+pub struct EdgeUniquenessPolicy {
+    kind: UniquenessKind,
+    identity: EdgeIdentity,
+}
+
+impl EdgeUniquenessPolicy {
+    /// Compute the uniqueness decision from the same terms the inline copies
+    /// used: EDGE iff not shortestPath, not a heterogeneous-polymorphic path,
+    /// and either a `>= 1` lower bound OR a CLOSED zero-hop pattern.
+    ///
+    /// Node-uniqueness is kept (EDGE `false`) for shortestPath (revisiting a
+    /// node can never shorten a path), for heterogeneous-polymorphic paths
+    /// (which never reach the standard/denorm arms — a separate two-CTE builder
+    /// that does not project `path_edges`; cf. #469), and for an OPEN zero-hop
+    /// `*0..N` (its base row has no edge to seed a 1-hop `path_edges` literal).
+    /// The one zero-hop exception is the CLOSED `*0..N` pattern
+    /// (`(a)-[*0..N]->(a)`): counting real cycles REQUIRES edge-uniqueness —
+    /// node-uniqueness structurally forbids returning to the start, so every
+    /// cycle is dropped and only the zero-length self rows survive (#628; the
+    /// zero-hop base seeds a typed-empty `path_edges` via `typed_empty_edges_seed`,
+    /// #887). `is_hetero_poly` is always `false` on the denorm path (a denorm
+    /// VLP requires both endpoints embedded-in-edge, never hetero) — passing it
+    /// keeps the CM predicate byte-identical.
+    pub fn new(
+        shortest_path: bool,
+        is_hetero_poly: bool,
+        min_hops: u32,
+        is_closed: bool,
+        identity: EdgeIdentity,
+    ) -> Self {
+        let is_edge =
+            !shortest_path && !is_hetero_poly && (min_hops >= 1 || (min_hops == 0 && is_closed));
+        Self {
+            kind: if is_edge {
+                UniquenessKind::Edge
+            } else {
+                UniquenessKind::Node
+            },
+            identity,
+        }
+    }
+
+    /// Whether this arm threads/dedupes a `path_edges` column (EDGE-uniqueness).
+    pub fn uses_edge_uniqueness(&self) -> bool {
+        matches!(self.kind, UniquenessKind::Edge)
+    }
+
+    /// The recursive-CTE cycle-check predicate for a SINGLE-alias arm
+    /// (standard / mixed / denorm): the edge-identity spelled off `rel_alias`
+    /// under EDGE-uniqueness, else the node-id fallback `node_id_expr`. The
+    /// FK-edge arms spell across two aliases and keep their own
+    /// [`Self::uses_edge_uniqueness`] + `build_fk_edge_tuple` call.
+    pub fn recursive_cycle_predicate(&self, rel_alias: &str, node_id_expr: &str) -> String {
+        match self.kind {
+            UniquenessKind::Edge => emit_edge_cycle_check(
+                &self
+                    .identity
+                    .spell(current_function_mapper().tuple_constructor(), rel_alias),
+            ),
+            UniquenessKind::Node => emit_cycle_check(node_id_expr),
+        }
+    }
+}
+
 /// Name of the doubled-edge CTE for the pattern's endpoint cypher aliases +
 /// edge table (#617). Deliberately NOT `vlp_`-prefixed: several render passes
 /// special-case `vlp_`-named CTEs (column pruning, outer-alias mapping) and
@@ -1164,24 +1254,29 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// When `true`, `path_edges` is threaded consistently through the base and
     /// recursive arms (and carried by `SELECT *` in the min-hops `_inner` wrapper),
     /// and the recursive cycle predicate switches to [`emit_edge_cycle_check`].
+    ///
+    /// #887 Phase 1–2: the decision now lives in [`EdgeUniquenessPolicy`]
+    /// ([`Self::edge_uniqueness_policy`]) — the single authority shared with the
+    /// denormalized strategy. This delegates so the many base-case `path_edges`
+    /// seed sites that also consult it stay byte-identical.
     fn uses_edge_uniqueness(&self) -> bool {
-        self.shortest_path_mode.is_none()
-            && !self.is_heterogeneous_polymorphic_path()
-            && (self.spec.effective_min_hops() >= 1
-                // #628: a CLOSED `*0..N` pattern (`(a)-[*0..N]->(a)`) must count
-                // real cycles, which requires EDGE-uniqueness — node-uniqueness
-                // structurally forbids returning to the start, so every real
-                // cycle is dropped and only the zero-length self rows survive
-                // (documented in filter_builder.rs, #625). The zero-hop base has
-                // no edge, but it CAN seed an empty `path_edges` array — a
-                // typed-empty one via [`typed_empty_edges_seed`] (a bare `[]`
-                // = `Array(Nothing)` fails ClickHouse recursive-CTE column
-                // unification against the recursive arm's `Array(Tuple(...))`,
-                // proven live on #887); hops ≥ 1 accumulate and dedupe
-                // normally. Scoped to the closed case so an OPEN `*0..N` (whose
-                // node-uniqueness is a separate, non-cyclic concern) is
-                // unchanged.
-                || (self.spec.effective_min_hops() == 0 && self.is_closed_pattern()))
+        self.edge_uniqueness_policy().uses_edge_uniqueness()
+    }
+
+    /// Build the [`EdgeUniquenessPolicy`] for this arm from the generator's own
+    /// fields (#887 Phase 1–2). The `identity` is [`Self::edge_identity`] — the
+    /// same value `build_edge_tuple_recursive` already spells through — so a
+    /// single-alias arm's cycle predicate is byte-identical whether taken from
+    /// the (former) inline gate or `policy.recursive_cycle_predicate(...)`; the
+    /// unit tests assert this equivalence.
+    fn edge_uniqueness_policy(&self) -> EdgeUniquenessPolicy {
+        EdgeUniquenessPolicy::new(
+            self.shortest_path_mode.is_some(),
+            self.is_heterogeneous_polymorphic_path(),
+            self.spec.effective_min_hops(),
+            self.is_closed_pattern(),
+            self.edge_identity(),
+        )
     }
 
     /// Whether this VLP is a CLOSED pattern — the same Cypher variable on both
@@ -2994,11 +3089,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Node-uniqueness (`NOT has(path_nodes, end_id)`) is retained for shortestPath
         // (revisiting a node can never yield a shorter path) and for the non-standard
         // strategies, gated via uses_edge_uniqueness().
-        let cycle_pred = if self.uses_edge_uniqueness() {
-            emit_edge_cycle_check(&self.build_edge_tuple_recursive(&self.relationship_alias))
-        } else {
-            emit_cycle_check(&self.build_end_node_id_expr())
-        };
+        // #887 Phase 1–2: the edge-vs-node decision + identity spelling is the
+        // shared EdgeUniquenessPolicy (byte-identical to the old inline gate,
+        // proven by the spike in commit 1).
+        let cycle_pred = self
+            .edge_uniqueness_policy()
+            .recursive_cycle_predicate(&self.relationship_alias, &self.build_end_node_id_expr());
 
         let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_pred];
 
@@ -3373,6 +3469,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let select_clause = select_items.join(",\n        ");
 
+        // #887 Phase 1–2: fk-edge arms keep their two-alias `build_fk_edge_tuple`
+        // spelling; the edge-vs-node DECISION flows through the shared
+        // EdgeUniquenessPolicy via `uses_edge_uniqueness()` (which now delegates
+        // to it). fk-tuple folding onto the policy is a later slice.
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
             // #606: edge-unique when uses_edge_uniqueness(), else legacy node-unique.
@@ -4237,11 +4337,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // edge-identity tuple against `path_edges`, matching every sibling arm.
         // Node-uniqueness (`NOT has(path_nodes, end_id)`) is retained only for
         // shortestPath / zero-hop via `uses_edge_uniqueness`, byte-unchanged.
-        let cycle_check = if self.uses_edge_uniqueness() {
-            emit_edge_cycle_check(&self.build_edge_tuple_recursive(&self.relationship_alias))
-        } else {
-            emit_cycle_check(&end_id_expr)
-        };
+        // #887 Phase 1–2: routed through the shared EdgeUniquenessPolicy.
+        let cycle_check = self
+            .edge_uniqueness_policy()
+            .recursive_cycle_predicate(&self.relationship_alias, &end_id_expr);
 
         let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_check];
 
@@ -4310,6 +4409,58 @@ mod tests {
     /// Helper to create a minimal test schema for VLC tests
     fn create_test_schema() -> GraphSchema {
         GraphSchema::build(1, "test_db".to_string(), HashMap::new(), HashMap::new())
+    }
+
+    /// #887 Phase 1–2: the `EdgeUniquenessPolicy` decision truth-table — the
+    /// single authority both `uses_edge_uniqueness` copies delegate to. EDGE iff
+    /// not shortestPath, not hetero-poly, and (min>=1 OR closed zero-hop).
+    #[test]
+    fn edge_uniqueness_policy_decision_table_887() {
+        let id = || EdgeIdentity::EdgeIdColumns {
+            edge_id: None,
+            from_col: "from_id".to_string(),
+            to_col: "to_id".to_string(),
+        };
+        let uses = |sp: bool, hp: bool, min: u32, closed: bool| {
+            EdgeUniquenessPolicy::new(sp, hp, min, closed, id()).uses_edge_uniqueness()
+        };
+        // min>=1 → EDGE, unless shortestPath or hetero-poly.
+        assert!(uses(false, false, 1, false), "*1.. open → edge");
+        assert!(uses(false, false, 2, true), "*2.. closed → edge");
+        assert!(!uses(true, false, 1, false), "shortestPath → node");
+        assert!(!uses(false, true, 1, false), "hetero-poly → node");
+        // zero-hop: EDGE only when closed (#628), else NODE.
+        assert!(uses(false, false, 0, true), "*0.. closed → edge (#628)");
+        assert!(!uses(false, false, 0, false), "*0.. open → node");
+        assert!(
+            !uses(true, false, 0, true),
+            "shortestPath wins over closed zero-hop"
+        );
+    }
+
+    /// #887 Phase 1–2: `recursive_cycle_predicate` spells the Edge branch via
+    /// the identity off `rel_alias` and the Node branch via the given id expr —
+    /// byte-identical to the former inline `emit_edge_cycle_check` /
+    /// `emit_cycle_check` gates.
+    #[test]
+    fn edge_uniqueness_policy_recursive_predicate_spelling_887() {
+        let id = EdgeIdentity::EdgeIdColumns {
+            edge_id: Some(Identifier::from_comma_separated("follow_id")),
+            from_col: "from_id".to_string(),
+            to_col: "to_id".to_string(),
+        };
+        // Edge kind (min>=1): NOT has(vp.path_edges, rel.follow_id).
+        let edge = EdgeUniquenessPolicy::new(false, false, 1, false, id.clone());
+        assert_eq!(
+            edge.recursive_cycle_predicate("rel", "next.node_id"),
+            "NOT has(vp.path_edges, rel.follow_id)"
+        );
+        // Node kind (open zero-hop): NOT has(vp.path_nodes, <id expr>).
+        let node = EdgeUniquenessPolicy::new(false, false, 0, false, id);
+        assert_eq!(
+            node.recursive_cycle_predicate("rel", "next.node_id"),
+            "NOT has(vp.path_nodes, next.node_id)"
+        );
     }
 
     /// #934: `replace_column_token` must be word-boundary aware so an id column

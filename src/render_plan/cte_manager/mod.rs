@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use crate::clickhouse_query_generator::variable_length_cte::{
-    EdgeIdentity, NodeProperty, VariableLengthCteGenerator,
+    EdgeIdentity, EdgeUniquenessPolicy, NodeProperty, VariableLengthCteGenerator,
 };
 use crate::graph_catalog::{
     config::Identifier, graph_schema::GraphSchema, EdgeAccessStrategy, JoinStrategy,
@@ -473,10 +473,12 @@ impl DenormalizedCteStrategy {
     /// A denormalized edge's identity is its schema-declared `edge_id` when one
     /// is present, else the `(from_col, to_col)` node pair — see
     /// [`Self::edge_tuple`] (#710).
+    ///
+    /// #887 Phase 1–2: the decision now lives in the shared
+    /// [`EdgeUniquenessPolicy`] ([`Self::edge_uniqueness_policy`]); this
+    /// delegates so the base-case `path_edges` seed sites stay byte-identical.
     fn uses_edge_uniqueness(&self, context: &CteGenerationContext) -> bool {
-        context.shortest_path_mode.is_none()
-            && (context.spec.effective_min_hops() >= 1
-                || (context.spec.effective_min_hops() == 0 && self.is_closed_pattern()))
+        self.edge_uniqueness_policy(context).uses_edge_uniqueness()
     }
 
     /// Whether this VLP is a CLOSED pattern — the same Cypher variable on both
@@ -511,6 +513,22 @@ impl DenormalizedCteStrategy {
         self.identity.spell(
             crate::sql_generator::function_mapper::current_function_mapper().tuple_constructor(),
             rel_alias,
+        )
+    }
+
+    /// Build the [`EdgeUniquenessPolicy`] for this denormalized VLP (#887
+    /// Phase 1–2), from the same terms `uses_edge_uniqueness` reads plus the
+    /// [`Self::identity`] value `edge_tuple` already spells through. A denorm
+    /// VLP is never heterogeneous-polymorphic (both endpoints are embedded in
+    /// the edge), so `is_hetero_poly` is `false` — byte-identical to the
+    /// (former) inline CM predicate; the unit tests assert this equivalence.
+    fn edge_uniqueness_policy(&self, context: &CteGenerationContext) -> EdgeUniquenessPolicy {
+        EdgeUniquenessPolicy::new(
+            context.shortest_path_mode.is_some(),
+            false,
+            context.spec.effective_min_hops(),
+            self.is_closed_pattern(),
+            self.identity.clone(),
         )
     }
 
@@ -1144,7 +1162,6 @@ impl DenormalizedCteStrategy {
         );
 
         // Build WHERE clause for recursion
-        let cycle_mapper = crate::sql_generator::function_mapper::current_function_mapper();
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", context.spec.max_hops.unwrap_or(10)),
             // ⚠️ ClickHouse limitation: NOT IN with array doesn't work in recursive CTEs.
@@ -1156,19 +1173,11 @@ impl DenormalizedCteStrategy {
             // not repeat, but a node MAY be revisited (Cypher's default
             // relationship-uniqueness). Otherwise fall back to node-uniqueness
             // (reject any revisited node) via path_nodes.
-            if self.uses_edge_uniqueness(context) {
-                format!(
-                    "NOT {}(vp.path_edges, {})",
-                    cycle_mapper.array_contains(),
-                    self.edge_tuple("next")
-                )
-            } else {
-                format!(
-                    "NOT {}(vp.path_nodes, next.{})",
-                    cycle_mapper.array_contains(),
-                    self.to_col
-                )
-            }, // Cycle prevention
+            // #887 Phase 1–2: routed through the shared EdgeUniquenessPolicy
+            // (identity spelled off "next", node fallback on `next.<to_col>`) —
+            // byte-identical to the old inline gate, proven by the spike.
+            self.edge_uniqueness_policy(context)
+                .recursive_cycle_predicate("next", &format!("next.{}", self.to_col)), // Cycle prevention
         ];
 
         // Add additional filters if present

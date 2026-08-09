@@ -310,6 +310,24 @@ shared helper. Once the identity spellings are consolidated, the policy type
   3 spellings → 3 spellings of the *tuple value* but the #617 correction is
   now one helper (the flat pairwise guard remains predicate-shaped — see
   below).
+- **Slice 5 — DONE (PR #1049)**: the uniqueness DECISION (`kind`) fold — the
+  predicate half of the policy (the identity/spelling half landed in Phase 2).
+  Introduced `EdgeUniquenessPolicy { kind: UniquenessKind, identity: EdgeIdentity }`
+  (`variable_length_cte.rs`), constructed from resolved PRIMITIVE inputs
+  (`shortest_path`, `is_hetero_poly`, `min_hops`, `is_closed`, `EdgeIdentity`) so
+  the two historical callers — which read `min_hops`/`shortest_path` from
+  DIFFERENT owners (the VLC generator's own fields vs `CteGenerationContext`) —
+  each feed their own values. Both `uses_edge_uniqueness` copies now delegate to
+  `policy.uses_edge_uniqueness()` (keeping the base-case `path_edges` seed sites
+  byte-identical), and the 3 single-alias recursive cycle-check gates
+  (standard/mixed/denorm) route through `policy.recursive_cycle_predicate()`. The
+  2 fk-edge arms keep their two-alias `build_fk_edge_tuple` spelling (fk-tuple
+  fold deferred), routing only the decision. Landed via the §5 debug_assert spike
+  (commit 1 asserts the policy byte-identical to each inline gate under the debug
+  corpus sweep; commit 2 deletes the inline copies). Zero corpus/golden churn,
+  full suite (2357) + ratchet + clippy green, net −56 lines. This completes the
+  Phase 1–2 refactor; the flat pairwise guard stays predicate-shaped (out of
+  scope, below).
 - **Next candidate slices** (unstarted): the flat pairwise identity
   (`generate_cycle_prevention_filters_composite`, cte_extraction.rs) onto the
   same helper family toward `EdgeIdentity::spell(...)`.
@@ -353,6 +371,17 @@ shared helper. Once the identity spellings are consolidated, the policy type
   `to_sql_tuple`'s `(...)`/`struct(...)`, verbatim vs `quote_identifier`'d columns,
   and the #617 doubled-edge orientation), so each fold needs per-caller
   byte-identity proof, not a blanket replace.
+
+  **SUPERSEDED (2026-08-08, PR #1049 — the predicate fold LANDED):** the "open
+  behavior question" above was resolved by Phase 2b (#1040): the denorm closed
+  `*0..N` case IS edge-unique (CM `uses_edge_uniqueness` returns `true` there,
+  its zero-hop base seeding a typed-empty `path_edges` — the denorm-#628 analog).
+  With that behavior aligned, the two `uses_edge_uniqueness` copies became
+  byte-identical modulo the (vacuous-for-denorm) hetero-poly term, and the
+  predicate (`kind`) fold shipped: both now delegate to one
+  `EdgeUniquenessPolicy` (see Phase 1 Slice 5 / Phase 2 below). Byte-identity was
+  proven by the doc §5 debug_assert spike (asserts live in the debug corpus
+  sweep) before the inline copies were deleted.
 
 **Original heavyweight framing** (still the end state): introduce
 `EdgeUniquenessPolicy` + `from_pattern`, compute the policy's predicate
