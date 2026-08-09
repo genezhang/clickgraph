@@ -2457,6 +2457,17 @@ pub(crate) fn build_pattern_comprehension_sql(
                 format!("{collect}(1)")
             }
         }
+        // #1053: numeric aggregates must fold over the projected target value
+        // (`target_prop`) when a target JOIN was emitted — mirroring the
+        // `GroupArray` arm above. Without this they folded over the constant `1`
+        // (`MIN(1)` etc.), returning a meaningless data-independent result. The
+        // `(1)` cardinality form is kept ONLY when no target value is resolvable
+        // (unlabeled target → `target_join_info == None`; see #1053 residual note
+        // in the doc), where it is the pre-existing behavior and never invalid SQL.
+        AggregationType::Sum if target_join_info.is_some() => "SUM(target_prop)".to_string(),
+        AggregationType::Avg if target_join_info.is_some() => "AVG(target_prop)".to_string(),
+        AggregationType::Min if target_join_info.is_some() => "MIN(target_prop)".to_string(),
+        AggregationType::Max if target_join_info.is_some() => "MAX(target_prop)".to_string(),
         AggregationType::Sum => "SUM(1)".to_string(),
         AggregationType::Avg => "AVG(1)".to_string(),
         AggregationType::Min => "MIN(1)".to_string(),

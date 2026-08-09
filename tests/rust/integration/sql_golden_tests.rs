@@ -729,6 +729,40 @@ const CORPUS: &[(&str, &str)] = &[
         "pattern_comp_projection_corrvar_fallback_863",
         "MATCH (u:User) RETURN [(u)-[:FOLLOWS]->(v:User) | u.age + v.age] AS x",
     ),
+    // #1053: a NUMERIC aggregate over a pattern comprehension must fold over the
+    // projected target value (`target_prop`), not the constant `1`. Previously
+    // `min`/`max`/`sum`/`avg` all emitted `<AGG>(1)` — a data-independent,
+    // silent-wrong result (e.g. `min` always returned 1) — while the sibling
+    // `collect` arm already used `target_prop`. The fix mirrors that arm at the
+    // 4 numeric arms, gated on `target_join_info.is_some()` (a resolvable target).
+    // Locks `MIN(target_prop)` etc. + the INNER JOIN carrying `__tgt.user_id`.
+    (
+        "pattern_comp_agg_min_target_prop_1053",
+        "MATCH (u:User) RETURN u.name AS n, min([(u)-[:FOLLOWS]->(f:User) | f.user_id]) AS m",
+    ),
+    (
+        "pattern_comp_agg_max_target_prop_1053",
+        "MATCH (u:User) RETURN u.name AS n, max([(u)-[:FOLLOWS]->(f:User) | f.user_id]) AS m",
+    ),
+    (
+        "pattern_comp_agg_sum_target_prop_1053",
+        "MATCH (u:User) RETURN u.name AS n, sum([(u)-[:FOLLOWS]->(f:User) | f.user_id]) AS m",
+    ),
+    (
+        "pattern_comp_agg_avg_target_prop_1053",
+        "MATCH (u:User) RETURN u.name AS n, avg([(u)-[:FOLLOWS]->(f:User) | f.user_id]) AS m",
+    ),
+    // #1053 residual guard: an UNLABELED target (`(f)` with no `:User`) has no
+    // resolvable target node → `target_join_info == None` → the aggregate keeps
+    // the `MIN(1)` cardinality form (no INNER JOIN, no `target_prop`). This is a
+    // DOCUMENTED design-cycle residual (per-branch label inference, #989/#927
+    // territory), NOT closed by #1053. The golden locks that the unlabeled form
+    // is byte-unchanged (still `MIN(1)`), so the numeric fix stays scoped to the
+    // labeled/resolvable case.
+    (
+        "pattern_comp_agg_min_unlabeled_stays_one_1053",
+        "MATCH (u:User) RETURN u.name AS n, min([(u)-[:FOLLOWS]->(f) | f.user_id]) AS m",
+    ),
     // #866: plain list comprehension in projection position lowers to nested
     // ClickHouse `arrayMap`/`arrayFilter` (Spark `transform`/`filter` with the
     // args swapped, since Spark HOFs take (collection, lambda) and CH takes

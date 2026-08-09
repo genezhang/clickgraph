@@ -186,7 +186,18 @@ besides lock-in; VLP `*1..2` CTE path byte-identical. Locked by
  regenerated for the 2 real token decreases in `properties_builder.rs`; M1/M2/M3/M4
  live-verified on ClickHouse.** Since
 the 07-19 reconcile this lane shipped ~24 fixes (all live- or SQL-gen-verified,
-newest first): **#1006 (flat mixed-access own-table property, above)**,
+newest first): **#1053 (numeric aggregate over a pattern comprehension folded
+over the constant `1` — `min([(u)-[:R]->(f:User) | f.user_id])` rendered
+`MIN(1)` instead of `MIN(target_prop)`, a data-independent silent-wrong result;
+the sibling `collect` arm already used `target_prop`, the 4 numeric arms did not.
+Fix mirrors that arm, gated on `target_join_info.is_some()`; ANSI-standard aggs,
+byte-identical across CH/DBX, ratchet-neutral; 0 corpus churn, 10 new goldens.
+Live: `min` `2` over `{2,3}` vs buggy `1`. Two documented residuals filed on
+#1053, NOT closed: unlabeled-target `(f)` keeps `MIN(1)` (per-branch label
+inference, #989/#927 territory) and empty-set `min`/`max`/`avg`→`0` not `null`
+(dialect-coupled `join_use_nulls=0` — needs dialect-aware LEFT-JOIN null
+handling))**,
+**#1006 (flat mixed-access own-table property, above)**,
 **#523 (partial-ref undirected 2-hop golden flake, reported
 2026-07-10 — root-caused as already-eliminated by the #480/#481 HashMap-order
 fixes + `normalize()` counter anonymization; verified byte-stable across 40
