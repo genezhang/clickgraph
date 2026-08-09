@@ -25,7 +25,7 @@ WITH RECURSIVE vlp_a_b AS (
       AND NOT has(vp.path_edges, tuple(rel.follower_id, rel.followed_id))
 )
 SELECT 
-      min(t.hop_count) AS "min_length", 
-      max(t.hop_count) AS "max_length", 
+      minOrNull(t.hop_count) AS "min_length", 
+      maxOrNull(t.hop_count) AS "max_length", 
       avg(t.hop_count) AS "avg_length"
 FROM vlp_a_b AS t

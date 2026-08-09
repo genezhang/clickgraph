@@ -18860,14 +18860,65 @@ async fn chained_with_rename_of_property_non_count_aggregate_914() {
         );
         // The outer aggregate resolves against the renamed CTE column `b.b`,
         // NOT the node-id form (`b.p{N}_b_user_id`) — this is a scalar, not a node.
-        let rendered_fn = if func == "collect" {
-            "groupArray"
-        } else {
-            func
+        // On ClickHouse, collect→groupArray and min/max→minOrNull/maxOrNull
+        // (the latter so an empty input set yields NULL, matching Neo4j).
+        let rendered_fn = match func {
+            "collect" => "groupArray",
+            "min" => "minOrNull",
+            "max" => "maxOrNull",
+            other => other,
         };
         assert!(
             sql.contains(&format!("{rendered_fn}(b.b)")),
             "{func}: outer aggregate must resolve to the scalar CTE column b.b, got:\n{sql}"
+        );
+    }
+}
+
+/// Regression: Cypher `max()`/`min()` over an EMPTY input set must return NULL
+/// (Neo4j semantics — per the Neo4j KB, on zero rows sum→0 but min/max/avg→null),
+/// NOT ClickHouse's bare-`max` type default (0 / '' / epoch), which is silently
+/// wrong. On ClickHouse the fix routes both through the FunctionMapper registry to
+/// `maxOrNull`/`minOrNull`; on Databricks/Spark the ANSI `min`/`max` already
+/// return NULL on empty, so those stay byte-identical as plain `min`/`max`.
+///
+/// This is a pure structural check on the emitted SQL — it discriminates the fix
+/// (pre-fix SQL contained `max(`/`min(`; post-fix ClickHouse contains
+/// `maxOrNull(`/`minOrNull(`). Covers the direct SELECT and the WITH-barrier CTE
+/// path (both render through the canonical Path-A registry arm), plus the
+/// dialect split. See the `min`/`max` entries in `function_registry.rs`.
+#[tokio::test]
+async fn max_min_empty_set_returns_null_via_or_null_1051() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // Direct (pure aggregation) and WITH-barrier (CTE aggregation) both route
+    // through the registry-backed Path-A aggregate renderer.
+    let cyphers = [
+        "MATCH (u:User) RETURN max(u.user_id) AS mx, min(u.user_id) AS mn",
+        "MATCH (u:User) WITH max(u.user_id) AS mx, min(u.user_id) AS mn RETURN mx, mn",
+    ];
+
+    for cypher in cyphers {
+        // ClickHouse: the NULL-on-empty combinator, never the bare form.
+        let ch = render(&schema, cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            ch.contains("maxOrNull(") && ch.contains("minOrNull("),
+            "ClickHouse must emit maxOrNull/minOrNull for `{cypher}`, got:\n{ch}"
+        );
+        assert!(
+            !ch.contains("max(u") && !ch.contains("min(u"),
+            "ClickHouse must NOT emit bare max(/min( over the node column for `{cypher}`, got:\n{ch}"
+        );
+
+        // Databricks/Spark: plain min/max (ANSI already NULL-on-empty), never OrNull.
+        let dbx = render(&schema, cypher, SqlDialect::Databricks).await;
+        assert!(
+            !dbx.contains("maxOrNull(") && !dbx.contains("minOrNull("),
+            "Databricks must keep plain max/min (Spark is NULL-on-empty) for `{cypher}`, got:\n{dbx}"
+        );
+        assert!(
+            dbx.contains("max(") && dbx.contains("min("),
+            "Databricks must emit plain max(/min( for `{cypher}`, got:\n{dbx}"
         );
     }
 }

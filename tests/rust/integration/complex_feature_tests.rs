@@ -745,18 +745,20 @@ async fn test_complex_aggregations_with_group_by() {
     let sql = render_plan.to_sql();
     println!("Generated SQL:\n{}", sql);
 
-    // Verify the query contains expected elements
+    // Verify the query contains expected elements. On ClickHouse, MAX/MIN
+    // render as `maxOrNull`/`minOrNull` so an empty input set yields NULL
+    // (Neo4j semantics) rather than CH's bare-`max` type default of 0.
     assert!(
         sql.to_lowercase().contains("count("),
         "Should contain COUNT functions"
     );
     assert!(
-        sql.to_lowercase().contains("max("),
-        "Should contain MAX function"
+        sql.to_lowercase().contains("maxornull("),
+        "Should contain MAX function (as maxOrNull on ClickHouse)"
     );
     assert!(
-        sql.to_lowercase().contains("min("),
-        "Should contain MIN function"
+        sql.to_lowercase().contains("minornull("),
+        "Should contain MIN function (as minOrNull on ClickHouse)"
     );
     assert!(
         sql.to_lowercase().contains("distinct"),

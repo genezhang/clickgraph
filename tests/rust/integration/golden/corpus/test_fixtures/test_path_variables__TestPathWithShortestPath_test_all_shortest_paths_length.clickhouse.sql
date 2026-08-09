@@ -35,5 +35,5 @@ vlp_a_b AS (
 )
 SELECT 
       count(*) AS "path_count", 
-      min(t.hop_count) AS "min_length"
+      minOrNull(t.hop_count) AS "min_length"
 FROM vlp_a_b AS t

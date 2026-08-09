@@ -26,6 +26,6 @@ WITH RECURSIVE vlp_a_b AS (
 )
 SELECT 
       avg(t.hop_count) AS "avg_path_length", 
-      min(t.hop_count) AS "min_path_length", 
-      max(t.hop_count) AS "max_path_length"
+      minOrNull(t.hop_count) AS "min_path_length", 
+      maxOrNull(t.hop_count) AS "max_path_length"
 FROM vlp_a_b AS t
