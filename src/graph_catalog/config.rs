@@ -2073,6 +2073,50 @@ impl GraphSchemaConfig {
                     }
                     // FK-edge pattern is valid without denormalized properties
                 }
+
+                // #1038: For a denormalized SELF-LOOP node (from_node == to_node
+                // sharing the edge table), the from_node_properties and
+                // to_node_properties key sets must be identical. The swap-branch
+                // re-key logic (cte_extraction.rs) maps each role's property to
+                // the opposite role's canonical key; a property present in only
+                // ONE direction's map has no opposite-role key, so on reverse
+                // (swapped-orientation) rows it silently resolves to empty
+                // (ground rule #1: fail loud, not silent-wrong). Reject the
+                // asymmetric key set at schema-load instead.
+                if !is_fk_edge && std_edge.from_node == std_edge.to_node {
+                    if let Some(node_def) = from_node_def {
+                        let from_keys: std::collections::BTreeSet<&str> = node_def
+                            .from_node_properties
+                            .iter()
+                            .flat_map(|m| m.keys().map(String::as_str))
+                            .collect();
+                        let to_keys: std::collections::BTreeSet<&str> = node_def
+                            .to_node_properties
+                            .iter()
+                            .flat_map(|m| m.keys().map(String::as_str))
+                            .collect();
+                        if from_keys != to_keys {
+                            let only_from: Vec<&str> =
+                                from_keys.difference(&to_keys).copied().collect();
+                            let only_to: Vec<&str> =
+                                to_keys.difference(&from_keys).copied().collect();
+                            return Err(GraphSchemaError::InvalidConfig {
+                                message: format!(
+                                    "Denormalized self-loop node '{}' in edge '{}' (shares table '{}') has asymmetric \
+                                     from_node_properties/to_node_properties key sets \
+                                     (only in from: {:?}, only in to: {:?}); the two role maps must expose the \
+                                     same property keys or reverse-orientation rows would silently resolve those \
+                                     properties to empty",
+                                    std_edge.from_node,
+                                    std_edge.type_name,
+                                    std_edge.table,
+                                    only_from,
+                                    only_to,
+                                ),
+                            });
+                        }
+                    }
+                }
             }
         }
 
@@ -2992,6 +3036,171 @@ graph_schema:
             let err_msg = format!("{:?}", e);
             assert!(err_msg.contains("missing from_node_properties"));
         }
+    }
+
+    /// #1038: a denormalized self-loop node whose from_node_properties and
+    /// to_node_properties expose DIFFERENT property key sets must be rejected at
+    /// schema-load. A property present in only one role's map has no
+    /// opposite-role canonical key, so on reverse (swapped-orientation) rows the
+    /// swap-branch re-key would silently resolve it to empty (ground rule #1).
+    #[test]
+    fn test_denormalized_selfloop_asymmetric_property_keys_rejected_1038() {
+        let config = GraphSchemaConfig {
+            name: Some("ontime_asymmetric".to_string()),
+            catalog: None,
+            graph_schema: GraphSchemaDefinition {
+                nodes: vec![NodeDefinition {
+                    label: "Airport".to_string(),
+                    database: "brahmand".to_string(),
+                    table: "ontime_flights".to_string(),
+                    node_id: Identifier::Single("airport_code".to_string()),
+                    label_column: None,
+                    label_value: None,
+                    properties: HashMap::new(),
+                    view_parameters: None,
+                    use_final: None,
+                    filter: None,
+                    auto_discover_columns: false,
+                    exclude_columns: vec![],
+                    naming_convention: "snake_case".to_string(),
+                    // `city` present in BOTH; `state` present ONLY as from → asymmetric.
+                    from_node_properties: Some({
+                        let mut props = HashMap::new();
+                        props.insert("city".to_string(), "OriginCityName".to_string());
+                        props.insert("state".to_string(), "OriginState".to_string());
+                        props
+                    }),
+                    to_node_properties: Some({
+                        let mut props = HashMap::new();
+                        props.insert("city".to_string(), "DestCityName".to_string());
+                        props
+                    }),
+                    r#type: None,
+                    types: None,
+                    source: None,
+                    property_types: HashMap::new(),
+                    id_generation: None,
+                }],
+                relationships: vec![],
+                edges: vec![EdgeDefinition::Standard(StandardEdgeDefinition {
+                    type_name: "FLIGHT".to_string(),
+                    database: "brahmand".to_string(),
+                    table: "ontime_flights".to_string(),
+                    from_id: Identifier::from("Origin"),
+                    to_id: Identifier::from("Dest"),
+                    from_node: "Airport".to_string(),
+                    to_node: "Airport".to_string(),
+                    edge_id: None,
+                    properties: HashMap::new(),
+                    view_parameters: None,
+                    use_final: None,
+                    filter: None,
+                    auto_discover_columns: false,
+                    exclude_columns: vec![],
+                    naming_convention: "snake_case".to_string(),
+                    constraints: None,
+                    id_type: None,
+                    id_types: None,
+                    source: None,
+                    property_types: HashMap::new(),
+                })],
+                vector_indexes: Vec::new(),
+                fulltext_indexes: Vec::new(),
+            },
+        };
+
+        let result = config.validate();
+        assert!(
+            result.is_err(),
+            "asymmetric self-loop from/to property key sets must be rejected at schema-load"
+        );
+        if let Err(e) = result {
+            let err_msg = format!("{:?}", e);
+            assert!(
+                err_msg.contains("asymmetric"),
+                "error should name the asymmetric key set, got: {err_msg}"
+            );
+            assert!(
+                err_msg.contains("state"),
+                "error should name the offending property, got: {err_msg}"
+            );
+        }
+    }
+
+    /// #1038: the symmetric case (from/to expose the same property keys, only
+    /// the mapped columns differ by role) is the legitimate denorm self-loop and
+    /// must continue to PASS validation — the guard must not over-reject.
+    #[test]
+    fn test_denormalized_selfloop_symmetric_property_keys_ok_1038() {
+        let config = GraphSchemaConfig {
+            name: Some("ontime_symmetric".to_string()),
+            catalog: None,
+            graph_schema: GraphSchemaDefinition {
+                nodes: vec![NodeDefinition {
+                    label: "Airport".to_string(),
+                    database: "brahmand".to_string(),
+                    table: "ontime_flights".to_string(),
+                    node_id: Identifier::Single("airport_code".to_string()),
+                    label_column: None,
+                    label_value: None,
+                    properties: HashMap::new(),
+                    view_parameters: None,
+                    use_final: None,
+                    filter: None,
+                    auto_discover_columns: false,
+                    exclude_columns: vec![],
+                    naming_convention: "snake_case".to_string(),
+                    // Same key set {code, city}; only the mapped columns differ by role.
+                    from_node_properties: Some({
+                        let mut props = HashMap::new();
+                        props.insert("code".to_string(), "Origin".to_string());
+                        props.insert("city".to_string(), "OriginCityName".to_string());
+                        props
+                    }),
+                    to_node_properties: Some({
+                        let mut props = HashMap::new();
+                        props.insert("code".to_string(), "Dest".to_string());
+                        props.insert("city".to_string(), "DestCityName".to_string());
+                        props
+                    }),
+                    r#type: None,
+                    types: None,
+                    source: None,
+                    property_types: HashMap::new(),
+                    id_generation: None,
+                }],
+                relationships: vec![],
+                edges: vec![EdgeDefinition::Standard(StandardEdgeDefinition {
+                    type_name: "FLIGHT".to_string(),
+                    database: "brahmand".to_string(),
+                    table: "ontime_flights".to_string(),
+                    from_id: Identifier::from("Origin"),
+                    to_id: Identifier::from("Dest"),
+                    from_node: "Airport".to_string(),
+                    to_node: "Airport".to_string(),
+                    edge_id: None,
+                    properties: HashMap::new(),
+                    view_parameters: None,
+                    use_final: None,
+                    filter: None,
+                    auto_discover_columns: false,
+                    exclude_columns: vec![],
+                    naming_convention: "snake_case".to_string(),
+                    constraints: None,
+                    id_type: None,
+                    id_types: None,
+                    source: None,
+                    property_types: HashMap::new(),
+                })],
+                vector_indexes: Vec::new(),
+                fulltext_indexes: Vec::new(),
+            },
+        };
+
+        assert!(
+            config.validate().is_ok(),
+            "symmetric self-loop from/to property key sets must pass validation"
+        );
     }
 
     #[test]
