@@ -608,6 +608,39 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-08: **Correctness (ground-rule-1) — `max()`/`min()` over an empty
+  input set returned the ClickHouse type default instead of Neo4j `null`**
+  (branch `fix/max-min-empty-set-null`, PR #1052 `402fc953`, closes #1051).
+  Cypher `max()`/`min()` over zero input rows returned CH's bare-aggregate type
+  default (`0` / `''` / epoch) rather than Neo4j's `null` — silent-wrong (a user
+  reading `max(age)=0` believes a real 0 exists). Per the Neo4j KB, on zero rows
+  `sum`→0/`stDev`→0.0 but `avg`/`min`/`max`/`percentile*`→null. Same
+  silent-wrong class as #851 (`head([])`/`last([])` type-default → null). ROOT:
+  the function registry mapped Cypher `min`/`max` → CH plain `min`/`max`; the
+  NULL-on-empty combinator (`FunctionMapper::min_or_null()`) existed but was
+  wired only into the VLP `length(path)` rewrite (#349), never the general
+  aggregate path. FIX (one seam, Rule #7): route the `min`/`max` registry
+  entries through the existing dialect dispatch (`name_for`) — `clickhouse_name =
+  minOrNull`/`maxOrNull`, `databricks_name = Some("min")`/`Some("max")`
+  (Spark/ANSI `min`/`max` already return NULL on empty, so Databricks stays
+  byte-identical). Both the direct SELECT and WITH-barrier CTE aggregate paths
+  render through the registry (Path A), so one change fixes both; Path C
+  (`render_expr_to_sql_string`) only renders WHERE/filter/IN-list positions
+  where Cypher disallows aggregates, so it is unaffected. Correctness boundary:
+  ONLY the zero-row case changes — non-empty groups are byte-identical
+  (`min`==`minOrNull` with ≥1 row), all-NULL input already returned NULL under
+  bare CH `min`, grouping-aggregation-over-empty correctly stays 0 rows.
+  Live-verified on db_standard (empty→null direct + WITH-barrier; non-empty /
+  GROUP BY / string-max unchanged; Databricks dialect emits plain `max`/`min`).
+  Full suite green (1726 lib + 599 integration incl. new discriminating
+  `max_min_empty_set_returns_null_via_or_null_1051` + ratchet no-bump + clippy);
+  11 goldens regenerated (pure `max(`→`maxOrNull(` / `min(`→`minOrNull(`
+  substitution). Adversarial review: APPROVE, no BLOCKING/MAJOR after extensive
+  live probing (dispatch completeness, Nullable ripple, semantics, dialect
+  split, test quality). Review surfaced a SEPARATE pre-existing bug filed as
+  a follow-up: pattern-comprehension `min([(u)-[:R]->(x) | x.prop])` aggregates
+  the constant `1` not the projected value.
+
 - 2026-08-08: **Correctness — OPTIONAL anchor-less count/aggregate dropped
   isolated-anchor rows** (branch `fix/1041-optional-anchorless-count-drops-null-row`,
   PR #1048, closes #1041). An OPTIONAL single hop projecting NO node column
