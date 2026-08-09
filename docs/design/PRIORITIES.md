@@ -657,6 +657,32 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-09: **Correctness (ground-rule-1) — `ORDER BY <expr> DESC` placed
+  NULLs last, but Neo4j places them first (and Databricks ASC diverged too)**
+  (branch `fix/order-by-null-placement-1065`, PR #1066 `44232ef2`, closes
+  #1065). A bare emitted `ORDER BY … ASC|DESC` inherited each backend's own
+  NULL-placement default, diverging from Neo4j on 3 of 4 (dialect × direction)
+  cells (Neo4j: nulls last on ASC, first on DESC; ClickHouse: last on both;
+  Spark/Databricks: first on ASC, last on DESC). Most visibly `ORDER BY x DESC`
+  returned NULLs last where Neo4j returns them first — an observable silent-wrong
+  ordering. This is the general normalization pass that closed **#556**
+  explicitly deferred (it handled only the narrow `id()`-union-salvage key).
+  Fix: new `FunctionMapper::order_by_nulls_clause(descending)` returning the
+  minimal `NULLS …` suffix each dialect needs from its own default (Rule #7 —
+  routed through the mapper, ratchet neutral): ClickHouse DESC→`" NULLS FIRST"` /
+  ASC→`""` (CH ASC default already correct → stays bare → zero CH-ASC golden
+  churn); Databricks DESC→`" NULLS FIRST"` / ASC→`" NULLS LAST"`. Applied at all
+  4 user-facing ORDER BY direction render sites in `to_sql_query.rs`; internal
+  window/VLP/pagerank orderings (format-string SQL) untouched; the id()-salvage
+  key keeps its own direction-independent `NULLS LAST` (id() is never NULL).
+  Live-verified (CH `DESC` → `NULL,3,2,1`; ASC unchanged); Databricks
+  inspection-verified vs the Spark oracle (not executable here, same as #556).
+  439 goldens regenerated — every changed line is exactly the appended NULLS
+  clause (no structural drift; no CH golden gained `ASC NULLS`; no
+  wrong-direction or doubled clause). 2 new discriminating goldens
+  (`order_by_nulls_placement_1065`), unit tests both dialects. Full suite green
+  (1731 lib + 603 integration), ratchet neutral. Adversarial review APPROVE.
+
 - 2026-08-09: **Doc — flag pattern-comprehension aggregate scalar forms as
   interim, not Neo4j-correct** (branch `docs/pattern-comp-agg-1062`, PR #1063
   `47fd2b1d`; tracking issue #1062 filed, #1053 cross-linked). Comment-only. On
