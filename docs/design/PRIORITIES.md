@@ -512,7 +512,7 @@ fixed stats fixture.
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
-- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slices 1 #893 + 2 #1032 + 3 #1033 + 4 #1034, Phase 2 #1035, Phase 2b #1040, **behavior cluster COMPLETE: #806 + #628 + #710 + #808/#606 + #978/#980 fixed**; only the Phase 1–2 refactor remains)
+- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slices 1 #893 + 2 #1032 + 3 #1033 + 4 #1034 + 5 #TBD, Phase 2 #1035, Phase 2b #1040, **behavior cluster COMPLETE: #806 + #628 + #710 + #808/#606 + #978/#980 fixed**; **Phase 1–2 predicate fold COMPLETE (#TBD)** — only the flat-pairwise-guard tail remains, deferred by design)
   (`docs/design/VLP_EDGE_IDENTITY_UNIFICATION.md`). Bug-driven refactor of the
   VLP relationship-uniqueness axis: one canonical `EdgeUniquenessPolicy`
   (`PatternSchemaContext`-derived, rule-#7 clean) replaces ~14 inline sites / 3
@@ -605,6 +605,23 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-08-08: **Refactor — #887 Phase 1–2 `EdgeUniquenessPolicy` predicate fold**
+  (branch `refactor/887-edge-uniqueness-policy`, PR #TBD). Byte-identical.
+  Introduced `EdgeUniquenessPolicy { kind, identity }` (`variable_length_cte.rs`)
+  as the single authority for a VLP recursive arm's edge-vs-node uniqueness
+  DECISION + cycle-check spelling, replacing the two inline `uses_edge_uniqueness`
+  copies (VLC `&self`, CM `&CteGenerationContext`) that kept drifting apart
+  (#806/#628/#710/#808/#606/#978/#980 were each "one site disagreed"). Built from
+  resolved PRIMITIVE inputs (the two callers read `min_hops`/`shortest_path` from
+  different owners); both copies now delegate to it, and the 3 single-alias gates
+  (standard/mixed/denorm) route through `recursive_cycle_predicate()`. The 2
+  fk-edge arms keep their two-alias `build_fk_edge_tuple` spelling (fk-tuple fold
+  deferred), routing only the decision. Landed via the doc §5 debug_assert spike
+  (commit 1 asserts byte-identity under the debug corpus sweep; commit 2 deletes
+  the inline copies). Zero golden churn, full suite (2357) + ratchet + clippy
+  green, net −56 lines. Completes the Phase 1–2 refactor; the flat pairwise guard
+  stays predicate-shaped (out of scope by design).
 
 - 2026-08-08: **Correctness — polymorphic single-hop undirected OPTIONAL
   spurious NULL row** (branch `fix/583-polymorphic-undirected-optional-null`,
