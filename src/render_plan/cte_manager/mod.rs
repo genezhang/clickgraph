@@ -520,9 +520,8 @@ impl DenormalizedCteStrategy {
     /// Phase 1–2), from the same terms `uses_edge_uniqueness` reads plus the
     /// [`Self::identity`] value `edge_tuple` already spells through. A denorm
     /// VLP is never heterogeneous-polymorphic (both endpoints are embedded in
-    /// the edge), so `is_hetero_poly` is `false` — byte-identical to the inline
-    /// CM predicate. During the spike phase the resulting decision is asserted
-    /// equal to the inline `uses_edge_uniqueness(context)` at the gate site.
+    /// the edge), so `is_hetero_poly` is `false` — byte-identical to the
+    /// (former) inline CM predicate; the unit tests assert this equivalence.
     fn edge_uniqueness_policy(&self, context: &CteGenerationContext) -> EdgeUniquenessPolicy {
         EdgeUniquenessPolicy::new(
             context.shortest_path_mode.is_some(),

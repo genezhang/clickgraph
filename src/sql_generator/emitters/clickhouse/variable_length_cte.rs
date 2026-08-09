@@ -1267,8 +1267,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// fields (#887 Phase 1–2). The `identity` is [`Self::edge_identity`] — the
     /// same value `build_edge_tuple_recursive` already spells through — so a
     /// single-alias arm's cycle predicate is byte-identical whether taken from
-    /// the inline gate or `policy.recursive_cycle_predicate(...)`. During the
-    /// spike phase this is asserted equal to the inline result at each site.
+    /// the (former) inline gate or `policy.recursive_cycle_predicate(...)`; the
+    /// unit tests assert this equivalence.
     fn edge_uniqueness_policy(&self) -> EdgeUniquenessPolicy {
         EdgeUniquenessPolicy::new(
             self.shortest_path_mode.is_some(),
@@ -4409,6 +4409,58 @@ mod tests {
     /// Helper to create a minimal test schema for VLC tests
     fn create_test_schema() -> GraphSchema {
         GraphSchema::build(1, "test_db".to_string(), HashMap::new(), HashMap::new())
+    }
+
+    /// #887 Phase 1–2: the `EdgeUniquenessPolicy` decision truth-table — the
+    /// single authority both `uses_edge_uniqueness` copies delegate to. EDGE iff
+    /// not shortestPath, not hetero-poly, and (min>=1 OR closed zero-hop).
+    #[test]
+    fn edge_uniqueness_policy_decision_table_887() {
+        let id = || EdgeIdentity::EdgeIdColumns {
+            edge_id: None,
+            from_col: "from_id".to_string(),
+            to_col: "to_id".to_string(),
+        };
+        let uses = |sp: bool, hp: bool, min: u32, closed: bool| {
+            EdgeUniquenessPolicy::new(sp, hp, min, closed, id()).uses_edge_uniqueness()
+        };
+        // min>=1 → EDGE, unless shortestPath or hetero-poly.
+        assert!(uses(false, false, 1, false), "*1.. open → edge");
+        assert!(uses(false, false, 2, true), "*2.. closed → edge");
+        assert!(!uses(true, false, 1, false), "shortestPath → node");
+        assert!(!uses(false, true, 1, false), "hetero-poly → node");
+        // zero-hop: EDGE only when closed (#628), else NODE.
+        assert!(uses(false, false, 0, true), "*0.. closed → edge (#628)");
+        assert!(!uses(false, false, 0, false), "*0.. open → node");
+        assert!(
+            !uses(true, false, 0, true),
+            "shortestPath wins over closed zero-hop"
+        );
+    }
+
+    /// #887 Phase 1–2: `recursive_cycle_predicate` spells the Edge branch via
+    /// the identity off `rel_alias` and the Node branch via the given id expr —
+    /// byte-identical to the former inline `emit_edge_cycle_check` /
+    /// `emit_cycle_check` gates.
+    #[test]
+    fn edge_uniqueness_policy_recursive_predicate_spelling_887() {
+        let id = EdgeIdentity::EdgeIdColumns {
+            edge_id: Some(Identifier::from_comma_separated("follow_id")),
+            from_col: "from_id".to_string(),
+            to_col: "to_id".to_string(),
+        };
+        // Edge kind (min>=1): NOT has(vp.path_edges, rel.follow_id).
+        let edge = EdgeUniquenessPolicy::new(false, false, 1, false, id.clone());
+        assert_eq!(
+            edge.recursive_cycle_predicate("rel", "next.node_id"),
+            "NOT has(vp.path_edges, rel.follow_id)"
+        );
+        // Node kind (open zero-hop): NOT has(vp.path_nodes, <id expr>).
+        let node = EdgeUniquenessPolicy::new(false, false, 0, false, id);
+        assert_eq!(
+            node.recursive_cycle_predicate("rel", "next.node_id"),
+            "NOT has(vp.path_nodes, next.node_id)"
+        );
     }
 
     /// #934: `replace_column_token` must be word-boundary aware so an id column
