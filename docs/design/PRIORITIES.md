@@ -608,6 +608,36 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-08: **Correctness — OPTIONAL anchor-less count/aggregate dropped
+  isolated-anchor rows** (branch `fix/1041-optional-anchorless-count-drops-null-row`,
+  PR #1048, closes #1041). An OPTIONAL single hop projecting NO node column
+  (bare `count(*)`/`count(r)`/`r.<prop>`) silently dropped every zero-degree
+  anchor's NULL-extended row (live db_standard directed: returned 9, true 10;
+  undirected loud-errored). ROOT: the `SingleTableScan` optimization in
+  `GraphJoinInference` (`inference.rs:~3277`) collapses to a bare edge scan
+  when `neither_node_referenced`, WITHOUT checking optional-ness — a
+  cardinality-preserving move only when result rows == edge rows (mandatory
+  hop, OR fully-optional hop with no required driver). FIX: disable the
+  collapse iff the hop is optional AND has a REQUIRED endpoint
+  (`hop_is_optional && (!left_is_optional || !right_is_optional)`) — the
+  required endpoint becomes the FROM driver whose rows must survive; the edge
+  stays a LEFT JOIN so NULL-extension is preserved. Mandatory hops and
+  fully-optional patterns (leading `OPTIONAL MATCH`, cartesian) keep the
+  collapse (byte-identical). This also (a) makes the #583 undirected
+  doubled-edge swap reachable for anchor-less counts (was loud — no LEFT JOIN
+  to swap), and (b) corrects a SECOND silent-wrong bug the #983 test had
+  frozen: OPTIONAL closed self-loop `count(*)` returned 10 (all edges) on
+  main, true 5 (constraint now in the LEFT JOIN ON, not an outer WHERE).
+  Two adversarial review rounds: R1 caught **B1** (mirror-direction
+  over-count when the ANCHOR ITSELF is optional — leading 9→10, cartesian
+  54→60), fixed by the required-endpoint refinement; R2 confirmed resolved +
+  found the refined gate fixes EXTRA silent-wrong bugs (required-endpoint on
+  the TO side: main 54→10; composite intended: main 8→10). Live-verified all
+  layouts; full suite (1724 lib + 598 integration incl. new
+  `anchorless_optional_count_preserves_anchor_1041` with both B1 shapes +
+  ratchet + clippy) green; no axis-token bump (uses existing is_optional
+  flags).
+
 - 2026-08-08: **Correctness — composite single-hop undirected OPTIONAL
   spurious NULL row (FINAL #583 layout — cluster CLOSED)** (branch
   `fix/583-composite-undirected-optional-null`, PR #1045, composite stage of
