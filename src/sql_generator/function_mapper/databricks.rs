@@ -147,6 +147,12 @@ impl FunctionMapper for DatabricksFunctionMapper {
         "string"
     }
 
+    fn cast_bool(&self, expr: &str) -> String {
+        // Spark BOOLEAN is already nullable and prints true/false, so a plain
+        // ANSI cast suffices — no OrNull dance needed. #1057.
+        format!("CAST({expr} AS BOOLEAN)")
+    }
+
     fn array_concat(&self) -> &'static str {
         // Spark's `concat` is overloaded for arrays — same call shape as CH's
         // `arrayConcat(a, b)`.
@@ -308,6 +314,7 @@ mod tests {
         assert_eq!(m.cast_uint16(), "int");
         assert_eq!(m.cast_float64(), "double");
         assert_eq!(m.cast_string(), "string");
+        assert_eq!(m.cast_bool("x > 2"), "CAST(x > 2 AS BOOLEAN)");
         assert_eq!(m.array_concat(), "concat");
         assert_eq!(m.array_contains(), "array_contains");
         assert_eq!(m.integer_division(), "div");

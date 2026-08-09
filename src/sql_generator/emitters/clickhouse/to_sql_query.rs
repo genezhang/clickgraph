@@ -4019,7 +4019,23 @@ fn build_union_inner_select(
 
     for item in &non_agg_items {
         sql.push_str("      ");
-        sql.push_str(&item.expression.to_sql());
+        // #1057: a boolean-typed projection must surface as true/false, not CH
+        // UInt8 1/0. This aggregate-over-UNION inner SELECT is a SECOND
+        // projection emitter (distinct from `SelectItems::to_sql`), so it needs
+        // the same wrap. Wrapping the INNER item is sufficient: the outer
+        // aggregate SELECT (`build_outer_aggregate_select`) only re-references
+        // this column by alias, so it inherits the Nullable(Bool) type — exactly
+        // as the WITH-barrier CTE case works. Conservative-None: only
+        // proven-Boolean top-level items wrap.
+        let rendered = item.expression.to_sql();
+        let rendered = if super::type_inference::infer_render_type(&item.expression)
+            == Some(super::type_inference::RenderType::Boolean)
+        {
+            crate::sql_generator::function_mapper::current_function_mapper().cast_bool(&rendered)
+        } else {
+            rendered
+        };
+        sql.push_str(&rendered);
         if let Some(alias) = &item.col_alias {
             sql.push_str(&format!(
                 " AS {}",
@@ -6430,6 +6446,24 @@ impl SelectItems {
                 }
             } else {
                 item.expression.to_sql()
+            };
+
+            // #1057: a projection item whose Cypher-semantic type is Boolean
+            // must surface on the wire as true/false, not ClickHouse's UInt8
+            // 1/0 (comparisons, IN, STARTS WITH, IS NULL, boolean fns, and
+            // schema-declared Boolean columns all render as UInt8). Wrap ONLY
+            // when the render-site classifier PROVES the top-level item is
+            // Boolean (conservative-None: unknown stays unchanged, so a
+            // comparison nested inside if()/CASE/a lambda condition — which is
+            // not itself the item's type — is untouched). The `.*`-expanded
+            // TableAlias forms never classify Boolean, so they are unaffected.
+            let rendered_expr = if super::type_inference::infer_render_type(&item.expression)
+                == Some(super::type_inference::RenderType::Boolean)
+            {
+                crate::sql_generator::function_mapper::current_function_mapper()
+                    .cast_bool(&rendered_expr)
+            } else {
+                rendered_expr
             };
 
             sql.push_str(&rendered_expr);

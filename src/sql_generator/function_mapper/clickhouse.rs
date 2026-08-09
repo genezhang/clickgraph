@@ -75,6 +75,13 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         "toString"
     }
 
+    fn cast_bool(&self, expr: &str) -> String {
+        // Nullable(Bool) preserves NULL (bare `CAST(NULL>2 AS Bool)` throws
+        // Code 70) and is physically UInt8, so this changes only the wire
+        // display (1/0 → true/false), never downstream semantics. #1057.
+        format!("CAST({expr} AS Nullable(Bool))")
+    }
+
     fn array_concat(&self) -> &'static str {
         "arrayConcat"
     }
@@ -207,6 +214,17 @@ mod tests {
         assert_eq!(
             m.cast_as("NULL", "Nullable(Int64)"),
             "CAST(NULL, 'Nullable(Int64)')"
+        );
+    }
+
+    #[test]
+    fn cast_bool_uses_nullable_bool_for_null_safety() {
+        // #1057: Nullable(Bool), not bare Bool — CAST(NULL>2 AS Bool) throws
+        // Code 70. Nullable preserves NULL and prints true/false.
+        let m = ClickhouseFunctionMapper;
+        assert_eq!(
+            m.cast_bool("u.user_id > 2"),
+            "CAST(u.user_id > 2 AS Nullable(Bool))"
         );
     }
 
