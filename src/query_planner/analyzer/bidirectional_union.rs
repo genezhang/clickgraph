@@ -360,14 +360,28 @@ pub(crate) fn undirected_standard_single_hop_optional_core(
     {
         return false;
     }
-    // Endpoints must be plain single-node scans. Unlike denorm, standard anchors
-    // are always bare `GraphNode`s (there is no denormalized standalone-scan
-    // Union), so a `GraphNode` on both sides is the whole shape; a nested
-    // `GraphRel` / `CartesianProduct` is chained / disconnected and handled by
-    // the #589 / #590 gates, not here.
-    if !matches!(graph_rel.left.as_ref(), LogicalPlan::GraphNode(_))
-        || !matches!(graph_rel.right.as_ref(), LogicalPlan::GraphNode(_))
-    {
+    // Endpoints must be plain single-node scans OR a `CartesianProduct` that
+    // binds a *pre-bound* disconnected anchor (#1046). The connected-clause
+    // #583 shape keeps both endpoints as bare `GraphNode`s (the disconnecting
+    // `CartesianProduct` sits ABOVE the hop); but when the OPTIONAL's anchor is
+    // a variable already bound by an earlier disconnected `MATCH`, the planner
+    // absorbs that anchor's `CartesianProduct` binding subtree into the hop's
+    // `left` (anchor first) or `right` (anchor is the far endpoint), producing a
+    // THIRD shape the original both-bare-`GraphNode` gate rejected. A nested
+    // `GraphRel` on either side is still a genuine chain — rejected here and
+    // handled by #589. Note this admits ONLY a single undirected OPTIONAL hop:
+    // when a SECOND optional hop is nested onto it over the same cartesian spine,
+    // `normalize_undirected_standard_single_hop_optional_rels` bails on the whole
+    // tree (its `has_cartesian_optional_nested_undirected_edge` guard) so this
+    // core is never consulted for that shape — a partial (hop-1-only) double
+    // would otherwise leave the trailing hop silently single-direction.
+    let endpoint_ok = |p: &LogicalPlan| {
+        matches!(
+            p,
+            LogicalPlan::GraphNode(_) | LogicalPlan::CartesianProduct(_)
+        )
+    };
+    if !endpoint_ok(graph_rel.left.as_ref()) || !endpoint_ok(graph_rel.right.as_ref()) {
         return false;
     }
     // Exactly one known relationship type. Labels at this stage may be composite
@@ -581,6 +595,21 @@ fn normalize_undirected_standard_single_hop_optional_rels(
 ) -> Option<Arc<LogicalPlan>> {
     // Defer to #589 for chained-optional-undirected patterns (see doc above).
     if has_chained_optional_nested_undirected_edge(plan) {
+        return None;
+    }
+    // #1046: also defer for a nested-optional-undirected structure whose junction
+    // is a `CartesianProduct` (a second OPTIONAL hop over a disconnected anchor,
+    // whether chained on a shared node or independent). The #1046 endpoint-gate
+    // loosening below accepts a `CartesianProduct` endpoint so a SINGLE
+    // bare-disconnected undirected OPTIONAL is doubled — but when a SECOND
+    // optional hop is nested onto it through that cartesian spine, stamping only
+    // the first hop would leave the second silently single-direction: the
+    // shared-node chain is #589 territory the cartesian-junction detector does
+    // not reach, and the independent case is the #590 pre-existing path. Skipping
+    // the whole tree keeps every such multi-optional shape exactly on its
+    // pre-existing render — #1046's fix is scoped to a single undirected OPTIONAL
+    // hop only.
+    if has_cartesian_optional_nested_undirected_edge(plan) {
         return None;
     }
     fn walk(plan: &LogicalPlan, graph_schema: &GraphSchema, changed: &mut bool) -> LogicalPlan {

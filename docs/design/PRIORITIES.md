@@ -214,7 +214,27 @@ Every remaining open issue is either **design-cycle-sized** (#604/#627/#643/
 #673/#628, #640 shapes 2/4/5, #683 residual-2) or in the **reverse-mapping / systemic class** owned by P-4
 (#592/#613/#615). **#583 (single-hop undirected OPTIONAL spurious NULL) is now
 CLOSED** across all four schema layouts — denorm #1029 / standard #1039 / poly
-#1043 / composite #1045, all on one doubled-edge mechanism. **#504 (coupled OPTIONAL collapse) triaged as design-cycle,
+#1043 / composite #1045, all on one doubled-edge mechanism. **#1046 (#583
+follow-up: BARE-disconnected multi-clause undirected OPTIONAL) is now FIXED**:
+two independent `MATCH` clauses with no shared variable + an undirected OPTIONAL
+whose anchor is the pre-bound variable put the anchor's `CartesianProduct`
+binding subtree on the OPTIONAL hop's `left` (near) or `right` (far) endpoint — a
+THIRD plan shape the #583 standard gate (both-endpoints-bare-`GraphNode`)
+rejected, so it fell back to the legacy two-arm split (spurious `(anchor, NULL)` +
+phantom `(NULL, neighbor)`; on `social_benchmark` a hard ClickHouse Code 179
+re-declared-alias crash). Fix loosens `undirected_standard_single_hop_optional_core`'s
+endpoint gate to accept a `CartesianProduct` on EITHER side (a nested `GraphRel`
+is still a genuine chain → #589 loud gate); the render swap seam already walked
+both cartesian branches. Scoped to a SINGLE hop — when a second optional hop is
+chained over the same cartesian spine the normalize pass bails on the whole tree
+(`has_cartesian_optional_nested_undirected_edge` guard), leaving that chained-
+disconnected shape (which slips past #589's shared-node detector) a documented
+pre-existing residual rather than a #1046 partial-double. Byte-additive (corpus
+sweep 0 churn; only the buggy single-hop shapes move), live-verified on `social`
+(correct 2 rows vs base Code 179), locked by 4 goldens
+(`standard_bare_disconnected_undirected_optional_{doubled,far_anchor_doubled,composite_edge_doubled}_1046`
++ `..._chained_undirected_optional_not_doubled_1046`).
+**#504 (coupled OPTIONAL collapse) triaged as design-cycle,
 NOT a P-1 pick**: root cause is an array-valued `node_id` never ARRAY-JOIN-flattened
 (not CoupledSameRow — scalar coupled OPTIONAL renders a correct LEFT JOIN), which
 prior work (`f741fcb1`) already concluded "needs a schema-level array flag + ARRAY
