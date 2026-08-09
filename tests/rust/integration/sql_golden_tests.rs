@@ -14595,6 +14595,156 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
         );
     }
 
+    /// #1046: a BARE-disconnected multi-clause pattern — two independent MATCH
+    /// clauses with NO shared variable (both plain node scans, no edge), then an
+    /// undirected single-hop OPTIONAL whose anchor is the pre-bound variable —
+    /// must ALSO get the #583 doubled-edge treatment, not the legacy two-arm
+    /// split. The pre-bound anchor's binding subtree lands as a
+    /// `CartesianProduct` on the OPTIONAL hop's `left` (anchor is the near
+    /// endpoint here), a THIRD plan shape the original #583 standard gate
+    /// (both-endpoints-bare-`GraphNode`) rejected — so it fell back to the
+    /// spurious-`(anchor, NULL)` / phantom-`(NULL, neighbor)` two-arm split (on
+    /// `social_benchmark` a hard ClickHouse Code 179 re-declared-alias crash).
+    /// Distinct from `standard_undirected_optional_doubled_in_disconnected_clause_583`,
+    /// whose first clause carries a directed EDGE (CartesianProduct sits ABOVE
+    /// the hop, endpoints stay bare). Pre-existing, layout-independent.
+    #[tokio::test]
+    async fn standard_bare_disconnected_undirected_optional_doubled_1046() {
+        let schema = load_schema("schemas/dev/social_standard.yaml");
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (c:User) MATCH (a:User) \
+                 OPTIONAL MATCH (a)-[:FOLLOWS]-(b:User) \
+                 RETURN a.name, b.name",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        // Single-arm doubled edge (one inner UNION ALL), NOT a two-arm outer
+        // split. The bug rendered TWO top-level SELECTs joined by `UNION ALL`
+        // with the second arm anchored on `b` (phantom `(NULL, neighbor)` rows).
+        assert_eq!(
+            sql.matches("UNION ALL").count(),
+            1,
+            "#1046: one doubled-edge subquery (two orientation arms), not a split:\n{sql}"
+        );
+        assert!(
+            sql.contains("e.followed_id AS follower_id, e.follower_id AS followed_id"),
+            "#1046: the undirected hop must be doubled (reverse arm present):\n{sql}"
+        );
+        // Near-anchor keying: the doubled subquery joins on the FROM column.
+        assert!(
+            sql.contains("AS t0 ON t0.follower_id = a.user_id"),
+            "#1046: near-anchor `a` must key the doubled edge on follower_id:\n{sql}"
+        );
+    }
+
+    /// #1046 (far-endpoint mirror): the same bare-disconnected shape but with the
+    /// pre-bound anchor as the FAR (right) endpoint of the undirected OPTIONAL
+    /// (`OPTIONAL MATCH (b)-[:R]-(a)` where `a` is pre-bound). The anchor's
+    /// `CartesianProduct` binding subtree lands on the hop's `right` instead of
+    /// `left`; the gate must accept a `CartesianProduct` on EITHER side. The
+    /// doubled subquery makes both orientations reachable, so keying the anchor
+    /// off `followed_id` is correct.
+    #[tokio::test]
+    async fn standard_bare_disconnected_undirected_optional_far_anchor_doubled_1046() {
+        let schema = load_schema("schemas/dev/social_standard.yaml");
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (c:User) MATCH (a:User) \
+                 OPTIONAL MATCH (b:User)-[:FOLLOWS]-(a) \
+                 RETURN a.name, b.name",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert_eq!(
+            sql.matches("UNION ALL").count(),
+            1,
+            "#1046 far-anchor: one doubled-edge subquery, not a two-arm split:\n{sql}"
+        );
+        assert!(
+            sql.contains("e.followed_id AS follower_id, e.follower_id AS followed_id"),
+            "#1046 far-anchor: the undirected hop must be doubled:\n{sql}"
+        );
+        // Far-anchor keying: `a` is the to-endpoint, so the doubled edge keys on
+        // followed_id.
+        assert!(
+            sql.contains("AS t0 ON t0.followed_id = a.user_id"),
+            "#1046 far-anchor: anchor `a` must key the doubled edge on followed_id:\n{sql}"
+        );
+    }
+
+    /// #1046 (composite-id): the bare-disconnected undirected OPTIONAL over a
+    /// COMPOSITE-key self-ref edge (`friendships` keyed by `[user_id_1,
+    /// user_id_2]`) folds into the same doubled path — every from/to column is
+    /// swapped POSITIONALLY. Guards the composite arity-N path for the new shape.
+    #[tokio::test]
+    async fn standard_bare_disconnected_undirected_optional_composite_edge_doubled_1046() {
+        let schema = load_schema("schemas/dev/social_standard.yaml");
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (c:User) MATCH (a:User) \
+                 OPTIONAL MATCH (a)-[:FRIENDS_WITH]-(b:User) \
+                 RETURN a.name, b.name",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert_eq!(
+            sql.matches("UNION ALL").count(),
+            1,
+            "#1046 composite: one doubled-edge subquery, not a two-arm split:\n{sql}"
+        );
+        // Positional swap of BOTH composite id columns in the reverse arm.
+        assert!(
+            sql.contains("e.user_id_2 AS user_id_1, e.user_id_1 AS user_id_2"),
+            "#1046 composite: the reverse arm must swap both key columns positionally:\n{sql}"
+        );
+    }
+
+    /// #1046 scope discipline (adversarial review Finding 1): when a SECOND
+    /// undirected OPTIONAL hop is chained onto the bare-disconnected hop over the
+    /// same `CartesianProduct` spine (`MATCH (c) MATCH (a) OPTIONAL (a)-[:R]-(b)
+    /// OPTIONAL (b)-[:R]-(d)`), the #1046 normalize pass must bail on the WHOLE
+    /// tree (its `has_cartesian_optional_nested_undirected_edge` guard) and leave
+    /// the shape exactly on its pre-existing render. Doubling ONLY the first hop
+    /// would leave the trailing hop silently single-direction — a partial state
+    /// worse than the uniform pre-existing one. The connected sibling
+    /// (`OPTIONAL (a)-[:R]-(b) OPTIONAL (b)-[:R]-(d)`) already fails loud via
+    /// #589; this disconnected variant stays a documented residual (the
+    /// cartesian-junction chain slips past #589's detector), NOT a #1046 partial.
+    #[tokio::test]
+    async fn standard_bare_disconnected_chained_undirected_optional_not_doubled_1046() {
+        let schema = load_schema("schemas/dev/social_standard.yaml");
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (c:User) MATCH (a:User) \
+                 OPTIONAL MATCH (a)-[:FOLLOWS]-(b:User) \
+                 OPTIONAL MATCH (b)-[:FOLLOWS]-(d:User) \
+                 RETURN a.name, b.name, d.name",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        // NO doubled-edge subquery anywhere — the #1046 pass must not fire when a
+        // second optional hop is chained over the cartesian spine.
+        assert!(
+            !sql.contains("e.followed_id AS follower_id, e.follower_id AS followed_id"),
+            "#1046 Finding 1: chained second optional must keep the whole tree on the \
+             pre-existing (undoubled) path, not partially double the first hop:\n{sql}"
+        );
+        assert_eq!(
+            sql.matches("UNION ALL").count(),
+            0,
+            "#1046 Finding 1: no doubled-edge subquery for the chained-disconnected shape:\n{sql}"
+        );
+    }
+
     /// #583 POLYMORPHIC stage: an undirected single-hop OPTIONAL over a
     /// polymorphic edge (all types in one `interactions` table, discriminated by
     /// a type column + per-endpoint label columns) is rendered by doubling the
