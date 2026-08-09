@@ -778,6 +778,31 @@ const CORPUS: &[(&str, &str)] = &[
     // (it is the path Phase 2 of the IR refactor unifies). Likewise composite
     // node-ID, denormalized, multi-label, and UNWIND/arrayJoin shapes need
     // additional schemas / not-yet-implemented Spark structural support.
+    //
+    // #1057: a boolean-typed PROJECTION item (comparison, IN, STARTS WITH, IS
+    // NULL) must render as the dialect's native boolean so it surfaces on the
+    // wire as true/false, not ClickHouse's UInt8 1/0. CH wraps in
+    // `CAST(... AS Nullable(Bool))` (NULL-safe: `n.x > 2` on a null stays null);
+    // Databricks wraps in `CAST(... AS BOOLEAN)`. The comparison INSIDE the
+    // WHERE clause (`u.user_id > 0`) is the position control — it stays a bare
+    // UInt8 predicate, NEVER wrapped, since only SELECT-position booleans are
+    // surfaced to a client. `u.user_id` (an integer projection) is the type
+    // control — untouched.
+    (
+        "bool_projection_1057",
+        "MATCH (u:User) WHERE u.user_id > 0 RETURN u.user_id, u.user_id > 2 AS gt, u.name STARTS WITH 'A' AS sw, u.email IS NULL AS isn",
+    ),
+    // #1057 (aggregate-over-UNION path): an undirected relationship + aggregation
+    // renders the pre-aggregation rows through a SEPARATE projection emitter
+    // (`build_union_inner_select`), not `SelectItems::to_sql`. A boolean grouping
+    // key there must ALSO wrap to the native boolean. Wrapping the INNER select
+    // is sufficient — the outer aggregate SELECT re-references the column by
+    // alias and inherits Nullable(Bool). Locks both UNION arms wrap and the
+    // outer `count(*)` stays integer.
+    (
+        "bool_projection_agg_union_1057",
+        "MATCH (u:User)-[:FOLLOWS]-(v:User) RETURN v.user_id > 2 AS gt, count(*) AS c ORDER BY gt",
+    ),
 ];
 
 /// Browser-shaped patterns (Phase 0 slice P0.5): the fully/partially

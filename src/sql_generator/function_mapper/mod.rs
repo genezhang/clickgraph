@@ -146,6 +146,24 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// Cast to string. CH: `toString`. Spark: `string` (function-call alias).
     fn cast_string(&self) -> &'static str;
 
+    /// Cast a boolean-typed expression to the dialect's native boolean so it
+    /// surfaces on the wire as `true`/`false` rather than `1`/`0` (#1057).
+    ///
+    /// Applied ONLY at projection emit to expressions the render-site classifier
+    /// proves `RenderType::Boolean` (comparisons, `IN`, `STARTS WITH`, `IS NULL`,
+    /// boolean scalar fns, `EXISTS`), whose ClickHouse result type is `UInt8`
+    /// (`3 > 2` → `1`). Cypher requires a boolean there; Neo4j returns
+    /// `true`/`false`.
+    ///
+    /// NULL-safety is mandatory: `x IS NULL`-adjacent comparisons like
+    /// `n.missing > 2` must stay `null`, and CH `CAST(NULL > 2 AS Bool)` THROWS
+    /// (Code 70, non-nullable). CH therefore uses `Nullable(Bool)`, which
+    /// preserves `null` and is otherwise physically `UInt8` — transparent to
+    /// every downstream op (`= 1`, arithmetic, `sum`, `AND`, GROUP/ORDER/DISTINCT
+    /// all identical), so only the wire display changes. Spark `BOOLEAN` is
+    /// already nullable. `expr` is a pre-rendered SQL fragment.
+    fn cast_bool(&self, expr: &str) -> String;
+
     /// Concatenate two arrays. CH: `arrayConcat`. Spark: `concat`
     /// (overloaded for arrays).
     fn array_concat(&self) -> &'static str;
