@@ -147,6 +147,19 @@ impl FunctionMapper for DatabricksFunctionMapper {
         "string"
     }
 
+    fn to_string_float(&self, expr: &str) -> String {
+        // Neo4j `toString(3.0)` = "3.0". Spark keeps a double's decimal in its
+        // string form (`string(3.0d)` = "3.0"), BUT a whole-valued float LITERAL
+        // has already rendered as an integer SQL literal (`3.0` → `3`), so a bare
+        // `string(3)` would drop the decimal. Force the double cast first so the
+        // value is unambiguously a double before stringifying: `string(double(3))`
+        // = "3.0", `string(double(3.5))` = "3.5"; identity on an already-double
+        // arg. The caller gates on `RenderType::Float`. (DeltaGraph is beta — the
+        // CH path is live-verified; this Spark form is verified by construction,
+        // pending live-warehouse confirmation.) #1055.
+        format!("string(double({}))", expr)
+    }
+
     fn cast_bool(&self, expr: &str) -> String {
         // Spark BOOLEAN is already nullable and prints true/false, so a plain
         // ANSI cast suffices — no OrNull dance needed. #1057.

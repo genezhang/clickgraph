@@ -166,6 +166,35 @@ const CORPUS: &[(&str, &str)] = &[
         "to_integer_column_unknown_plain_880",
         "MATCH (u:User) RETURN toInteger(u.name) AS s",
     ),
+    // #1055: `toString` on a PROVEN Float arg keeps a whole-valued float's
+    // trailing `.0` (Neo4j `toString(3.0)` = "3.0"). A whole-float literal has
+    // already rendered as integer SQL (`3.0` → `3`) and CH `toString(toFloat64(3))`
+    // itself returns "3", so both roots converge on the classifier gate: route a
+    // Float arg through `to_string_float` (append `.0` iff the string form is a
+    // bare integer). A Float literal and a `toFloat(...)` result are both Float.
+    ("to_string_float_literal_1055", "RETURN toString(3.0) AS s"),
+    ("to_string_tofloat_arg_1055", "RETURN toString(toFloat(3)) AS s"),
+    // #1055 numeric-promotion cases: a negative whole-float literal lowers to
+    // `0 - 2.0` (Subtraction), and Neo4j exponentiation is always Float — both
+    // must classify Float so `toString` keeps the `.0` (`toString(-2.0)`="-2.0",
+    // `toString(2^3)`="8.0"). A mixed int+float add promotes to Float too.
+    ("to_string_negative_whole_float_1055", "RETURN toString(-2.0) AS s"),
+    ("to_string_exponentiation_float_1055", "RETURN toString(2 ^ 3) AS s"),
+    // #1055 negative controls: a fractional float already carries a `.`, so the
+    // wrap is a no-op string-wise but still routes through the seam (locks the
+    // shape). An Integer literal stays plain `toString` ("3", never "3.0"); an
+    // `abs(...)` arg is Number (unresolved int/float subtype) and a `size(...)`
+    // arg is Integer — both keep the plain cast (conservative-None, no `.0`).
+    ("to_string_float_fractional_1055", "RETURN toString(3.5) AS s"),
+    ("to_string_integer_literal_plain_1055", "RETURN toString(3) AS s"),
+    (
+        "to_string_num_abs_plain_1055",
+        "RETURN toString(abs(-3)) AS s",
+    ),
+    (
+        "to_string_size_int_plain_1055",
+        "RETURN toString(size([1, 2, 3])) AS s",
+    ),
     (
         "case_expr",
         "MATCH (u:User) RETURN CASE WHEN u.is_active = true THEN 'active' ELSE 'inactive' END AS status",
@@ -230,6 +259,14 @@ const CORPUS: &[(&str, &str)] = &[
     (
         "vlp_where_to_integer_string_ornull_880",
         "MATCH (a:User)-[:FOLLOWS*1..3]->(b:User) WHERE toInteger('7') = a.user_id RETURN b.user_id",
+    ),
+    // #1055 (VLP-filter path): toString on a Float arg inside a VLP bound-node
+    // WHERE must keep the `.0` via `to_string_float`, same as the projection
+    // path. Renders through `cte_extraction::render_expr_to_sql_string` ("Path
+    // C") — the second renderer that the #880/#871 cuts each had to also patch.
+    (
+        "vlp_where_to_string_float_1055",
+        "MATCH (a:User)-[:FOLLOWS*1..3]->(b:User) WHERE toString(3.0) = 'x' RETURN b.user_id",
     ),
     ("whole_entity", "MATCH (u:User) RETURN u"),
     // List slicing -> arraySlice (CH) / slice (Spark). Both the 3-arg bounded

@@ -7496,6 +7496,27 @@ impl RenderExpr {
                     }
                 }
 
+                // #1055: Cypher `toString(<float>)` must keep a whole-valued
+                // float's trailing `.0` (`toString(3.0)` → "3.0", `toString(3)`
+                // → "3"). Two roots converge: whole-float LITERALS render as
+                // integer SQL (`3.0` → `3`), and CH `toString(toFloat64(3))`
+                // itself returns "3". Both are cured by gating on the classifier:
+                // when the arg is provably `Float` (a float literal, `toFloat`,
+                // a declared Float column), route to the dialect's float-aware
+                // stringifier. An Integer/Number/unknown arg falls through to the
+                // plain registry `toString` — so `toString(3)`, `toString(abs(x))`
+                // (Num), and `toString(size(...))` (Int) are byte-identical to
+                // today, and only a proven Float ever gains `.0`.
+                if fn_name_lower == "tostring"
+                    && fn_call.args.len() == 1
+                    && super::type_inference::infer_render_type(&fn_call.args[0])
+                        == Some(super::type_inference::RenderType::Float)
+                {
+                    let arg_sql = fn_call.args[0].to_sql();
+                    let mapper = crate::sql_generator::function_mapper::current_function_mapper();
+                    return mapper.to_string_float(&arg_sql);
+                }
+
                 // Check if we have a Neo4j -> ClickHouse mapping
                 match get_function_mapping(&fn_name_lower) {
                     Some(mapping) => {

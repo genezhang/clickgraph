@@ -146,6 +146,20 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// Cast to string. CH: `toString`. Spark: `string` (function-call alias).
     fn cast_string(&self) -> &'static str;
 
+    /// Render Cypher `toString(<float>)` so a whole-valued float keeps its
+    /// trailing `.0` (#1055). Neo4j preserves the Integer/Float distinction in
+    /// the string form: `toString(3.0)` → `"3.0"`, `toString(3)` → `"3"`.
+    ///
+    /// Applied ONLY when the render-site classifier proves the argument is
+    /// `RenderType::Float` (a float literal, `toFloat(...)`, or a declared Float
+    /// column). Two roots converge here: whole-valued float *literals* render as
+    /// integer SQL literals (`3.0` → `3`), and CH `toString(toFloat64(3))` itself
+    /// returns `"3"` — both drop the decimal. A `Num`/`Integer`/unknown arg never
+    /// reaches this (would wrongly turn `toString(abs(-3))` into `"3.0"`), so the
+    /// plain cast is unchanged for every non-Float case. `expr` is a pre-rendered
+    /// SQL fragment.
+    fn to_string_float(&self, expr: &str) -> String;
+
     /// Cast a boolean-typed expression to the dialect's native boolean so it
     /// surfaces on the wire as `true`/`false` rather than `1`/`0` (#1057).
     ///
