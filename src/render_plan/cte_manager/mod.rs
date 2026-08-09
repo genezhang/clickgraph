@@ -473,10 +473,12 @@ impl DenormalizedCteStrategy {
     /// A denormalized edge's identity is its schema-declared `edge_id` when one
     /// is present, else the `(from_col, to_col)` node pair — see
     /// [`Self::edge_tuple`] (#710).
+    ///
+    /// #887 Phase 1–2: the decision now lives in the shared
+    /// [`EdgeUniquenessPolicy`] ([`Self::edge_uniqueness_policy`]); this
+    /// delegates so the base-case `path_edges` seed sites stay byte-identical.
     fn uses_edge_uniqueness(&self, context: &CteGenerationContext) -> bool {
-        context.shortest_path_mode.is_none()
-            && (context.spec.effective_min_hops() >= 1
-                || (context.spec.effective_min_hops() == 0 && self.is_closed_pattern()))
+        self.edge_uniqueness_policy(context).uses_edge_uniqueness()
     }
 
     /// Whether this VLP is a CLOSED pattern — the same Cypher variable on both
@@ -1161,28 +1163,6 @@ impl DenormalizedCteStrategy {
         );
 
         // Build WHERE clause for recursion
-        let cycle_mapper = crate::sql_generator::function_mapper::current_function_mapper();
-        // #887 Phase 1–2 spike: prove the policy is byte-identical here before
-        // the inline gate below is deleted (denorm single-alias arm; identity
-        // spelled off "next", node fallback on `next.<to_col>`).
-        debug_assert_eq!(
-            self.edge_uniqueness_policy(context)
-                .recursive_cycle_predicate("next", &format!("next.{}", self.to_col)),
-            if self.uses_edge_uniqueness(context) {
-                format!(
-                    "NOT {}(vp.path_edges, {})",
-                    cycle_mapper.array_contains(),
-                    self.edge_tuple("next")
-                )
-            } else {
-                format!(
-                    "NOT {}(vp.path_nodes, next.{})",
-                    cycle_mapper.array_contains(),
-                    self.to_col
-                )
-            },
-            "EdgeUniquenessPolicy diverged from inline gate (denorm recursive arm)"
-        );
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", context.spec.max_hops.unwrap_or(10)),
             // ⚠️ ClickHouse limitation: NOT IN with array doesn't work in recursive CTEs.
@@ -1194,19 +1174,11 @@ impl DenormalizedCteStrategy {
             // not repeat, but a node MAY be revisited (Cypher's default
             // relationship-uniqueness). Otherwise fall back to node-uniqueness
             // (reject any revisited node) via path_nodes.
-            if self.uses_edge_uniqueness(context) {
-                format!(
-                    "NOT {}(vp.path_edges, {})",
-                    cycle_mapper.array_contains(),
-                    self.edge_tuple("next")
-                )
-            } else {
-                format!(
-                    "NOT {}(vp.path_nodes, next.{})",
-                    cycle_mapper.array_contains(),
-                    self.to_col
-                )
-            }, // Cycle prevention
+            // #887 Phase 1–2: routed through the shared EdgeUniquenessPolicy
+            // (identity spelled off "next", node fallback on `next.<to_col>`) —
+            // byte-identical to the old inline gate, proven by the spike.
+            self.edge_uniqueness_policy(context)
+                .recursive_cycle_predicate("next", &format!("next.{}", self.to_col)), // Cycle prevention
         ];
 
         // Add additional filters if present

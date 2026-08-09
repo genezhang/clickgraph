@@ -296,10 +296,21 @@ pub struct EdgeUniquenessPolicy {
 impl EdgeUniquenessPolicy {
     /// Compute the uniqueness decision from the same terms the inline copies
     /// used: EDGE iff not shortestPath, not a heterogeneous-polymorphic path,
-    /// and either a `>= 1` lower bound OR a CLOSED zero-hop pattern (the #628
-    /// cycle-counting case). `is_hetero_poly` is always `false` on the denorm
-    /// path (a denorm VLP requires both endpoints embedded-in-edge, never
-    /// hetero) — passing it keeps the CM predicate byte-identical.
+    /// and either a `>= 1` lower bound OR a CLOSED zero-hop pattern.
+    ///
+    /// Node-uniqueness is kept (EDGE `false`) for shortestPath (revisiting a
+    /// node can never shorten a path), for heterogeneous-polymorphic paths
+    /// (which never reach the standard/denorm arms — a separate two-CTE builder
+    /// that does not project `path_edges`; cf. #469), and for an OPEN zero-hop
+    /// `*0..N` (its base row has no edge to seed a 1-hop `path_edges` literal).
+    /// The one zero-hop exception is the CLOSED `*0..N` pattern
+    /// (`(a)-[*0..N]->(a)`): counting real cycles REQUIRES edge-uniqueness —
+    /// node-uniqueness structurally forbids returning to the start, so every
+    /// cycle is dropped and only the zero-length self rows survive (#628; the
+    /// zero-hop base seeds a typed-empty `path_edges` via `typed_empty_edges_seed`,
+    /// #887). `is_hetero_poly` is always `false` on the denorm path (a denorm
+    /// VLP requires both endpoints embedded-in-edge, never hetero) — passing it
+    /// keeps the CM predicate byte-identical.
     pub fn new(
         shortest_path: bool,
         is_hetero_poly: bool,
@@ -1243,24 +1254,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// When `true`, `path_edges` is threaded consistently through the base and
     /// recursive arms (and carried by `SELECT *` in the min-hops `_inner` wrapper),
     /// and the recursive cycle predicate switches to [`emit_edge_cycle_check`].
+    ///
+    /// #887 Phase 1–2: the decision now lives in [`EdgeUniquenessPolicy`]
+    /// ([`Self::edge_uniqueness_policy`]) — the single authority shared with the
+    /// denormalized strategy. This delegates so the many base-case `path_edges`
+    /// seed sites that also consult it stay byte-identical.
     fn uses_edge_uniqueness(&self) -> bool {
-        self.shortest_path_mode.is_none()
-            && !self.is_heterogeneous_polymorphic_path()
-            && (self.spec.effective_min_hops() >= 1
-                // #628: a CLOSED `*0..N` pattern (`(a)-[*0..N]->(a)`) must count
-                // real cycles, which requires EDGE-uniqueness — node-uniqueness
-                // structurally forbids returning to the start, so every real
-                // cycle is dropped and only the zero-length self rows survive
-                // (documented in filter_builder.rs, #625). The zero-hop base has
-                // no edge, but it CAN seed an empty `path_edges` array — a
-                // typed-empty one via [`typed_empty_edges_seed`] (a bare `[]`
-                // = `Array(Nothing)` fails ClickHouse recursive-CTE column
-                // unification against the recursive arm's `Array(Tuple(...))`,
-                // proven live on #887); hops ≥ 1 accumulate and dedupe
-                // normally. Scoped to the closed case so an OPEN `*0..N` (whose
-                // node-uniqueness is a separate, non-cyclic concern) is
-                // unchanged.
-                || (self.spec.effective_min_hops() == 0 && self.is_closed_pattern()))
+        self.edge_uniqueness_policy().uses_edge_uniqueness()
     }
 
     /// Build the [`EdgeUniquenessPolicy`] for this arm from the generator's own
@@ -3089,21 +3089,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Node-uniqueness (`NOT has(path_nodes, end_id)`) is retained for shortestPath
         // (revisiting a node can never yield a shorter path) and for the non-standard
         // strategies, gated via uses_edge_uniqueness().
-        let cycle_pred = if self.uses_edge_uniqueness() {
-            emit_edge_cycle_check(&self.build_edge_tuple_recursive(&self.relationship_alias))
-        } else {
-            emit_cycle_check(&self.build_end_node_id_expr())
-        };
-        // #887 Phase 1–2 spike: prove the policy is byte-identical here before
-        // the inline gate above is deleted (standard single-alias arm).
-        debug_assert_eq!(
-            self.edge_uniqueness_policy().recursive_cycle_predicate(
-                &self.relationship_alias,
-                &self.build_end_node_id_expr()
-            ),
-            cycle_pred,
-            "EdgeUniquenessPolicy diverged from inline gate (standard recursive arm)"
-        );
+        // #887 Phase 1–2: the edge-vs-node decision + identity spelling is the
+        // shared EdgeUniquenessPolicy (byte-identical to the old inline gate,
+        // proven by the spike in commit 1).
+        let cycle_pred = self
+            .edge_uniqueness_policy()
+            .recursive_cycle_predicate(&self.relationship_alias, &self.build_end_node_id_expr());
 
         let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_pred];
 
@@ -3478,14 +3469,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let select_clause = select_items.join(",\n        ");
 
-        // #887 Phase 1–2 spike: fk-edge arms keep their two-alias
-        // `build_fk_edge_tuple` spelling; only the DECISION routes through the
-        // policy. Assert the decision matches before the inline gate is deleted.
-        debug_assert_eq!(
-            self.edge_uniqueness_policy().uses_edge_uniqueness(),
-            self.uses_edge_uniqueness(),
-            "EdgeUniquenessPolicy decision diverged (fk-edge append arm)"
-        );
+        // #887 Phase 1–2: fk-edge arms keep their two-alias `build_fk_edge_tuple`
+        // spelling; the edge-vs-node DECISION flows through the shared
+        // EdgeUniquenessPolicy via `uses_edge_uniqueness()` (which now delegates
+        // to it). fk-tuple folding onto the policy is a later slice.
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
             // #606: edge-unique when uses_edge_uniqueness(), else legacy node-unique.
@@ -3619,12 +3606,6 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let select_clause = select_items.join(",\n        ");
 
-        // #887 Phase 1–2 spike: fk-edge prepend arm — decision-only via policy.
-        debug_assert_eq!(
-            self.edge_uniqueness_policy().uses_edge_uniqueness(),
-            self.uses_edge_uniqueness(),
-            "EdgeUniquenessPolicy decision diverged (fk-edge prepend arm)"
-        );
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
             // #606: edge-unique when uses_edge_uniqueness(), else legacy node-unique.
@@ -4356,19 +4337,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // edge-identity tuple against `path_edges`, matching every sibling arm.
         // Node-uniqueness (`NOT has(path_nodes, end_id)`) is retained only for
         // shortestPath / zero-hop via `uses_edge_uniqueness`, byte-unchanged.
-        let cycle_check = if self.uses_edge_uniqueness() {
-            emit_edge_cycle_check(&self.build_edge_tuple_recursive(&self.relationship_alias))
-        } else {
-            emit_cycle_check(&end_id_expr)
-        };
-        // #887 Phase 1–2 spike: prove the policy is byte-identical here before
-        // the inline gate above is deleted (mixed-access single-alias arm).
-        debug_assert_eq!(
-            self.edge_uniqueness_policy()
-                .recursive_cycle_predicate(&self.relationship_alias, &end_id_expr),
-            cycle_check,
-            "EdgeUniquenessPolicy diverged from inline gate (mixed recursive arm)"
-        );
+        // #887 Phase 1–2: routed through the shared EdgeUniquenessPolicy.
+        let cycle_check = self
+            .edge_uniqueness_policy()
+            .recursive_cycle_predicate(&self.relationship_alias, &end_id_expr);
 
         let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_check];
 
