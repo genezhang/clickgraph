@@ -389,19 +389,21 @@ pub(crate) fn undirected_standard_single_hop_optional_core(
         }
         rel_schemas[0]
     };
-    // Plain (separate) edge table with same-label endpoints and SINGLE-column
-    // from/to ids. `is_plain_edge_table()` consumes the schema-catalog
-    // classification (not FK-edge, neither role-property map present), never a
-    // raw plan-level flag (CLAUDE.md rule 7) — the exact gate
+    // Plain (separate) edge table with same-label endpoints and single- OR
+    // composite-column from/to ids. `is_plain_edge_table()` consumes the
+    // schema-catalog classification (not FK-edge, neither role-property map
+    // present), never a raw plan-level flag (CLAUDE.md rule 7) — the exact gate
     // `undirected_vlp_single_walk_core` (#617) uses for the standard VLP walk.
-    // Same-label endpoints keep the match-union role swap type-consistent; the
-    // single-column-id requirement keeps the gate in lockstep with the render
-    // helper, which builds the anchor key from `from_id.first_column()` only.
-    // Composite-id standard edges keep the legacy two-arm behavior (#583 stays
-    // open for them). `doubled_edge_walk_compatible()` rejects property mappings
-    // that target the from/to columns (a reverse-arm row would read the swapped
-    // value) — the same hazard the #617 doubled-edge walk guards against, and
-    // this match-union performs the identical orientation swap.
+    // Same-label endpoints keep the match-union role swap type-consistent.
+    // Composite-id standard edges (#583 composite stage) are IN scope: the
+    // render helper swaps every from/to column POSITIONALLY and the surrounding
+    // per-column composite join equality works unchanged against the doubled
+    // subquery (single-column is the arity-1 special case, byte-identical SQL).
+    // `doubled_edge_walk_compatible()` enforces the equal-arity requirement the
+    // positional swap needs and rejects property mappings that target the
+    // from/to columns (a reverse-arm row would read the swapped value) — the
+    // same hazard the #617 doubled-edge walk guards against, and this
+    // match-union performs the identical orientation swap.
     //
     // POLYMORPHIC exclusion (`!is_polymorphic()`): a polymorphic edge stores
     // ALL edge types in one shared table discriminated by a type column (e.g.
@@ -417,8 +419,7 @@ pub(crate) fn undirected_standard_single_hop_optional_core(
     rel_schema.is_plain_edge_table()
         && !rel_schema.is_polymorphic()
         && rel_schema.from_node == rel_schema.to_node
-        && matches!(rel_schema.from_id, Identifier::Single(_))
-        && matches!(rel_schema.to_id, Identifier::Single(_))
+        // Single- OR composite-id (arity enforced by doubled_edge_walk_compatible).
         && rel_schema.doubled_edge_walk_compatible()
 }
 

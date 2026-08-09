@@ -301,10 +301,28 @@ pub(super) fn build_standard_doubled_edge_subquery(
 ) -> Option<String> {
     let q = crate::clickhouse_query_generator::quote_identifier;
 
-    // Edge role id columns (single-column only; composite standard ids keep the
-    // legacy two-arm path per the analyzer gate).
-    let from_id = edge_vs.from_id.as_ref()?.first_column().to_string();
-    let to_id = edge_vs.to_id.as_ref()?.first_column().to_string();
+    // Edge role id columns — single- OR composite-column (#583 composite stage).
+    // The reverse arm swaps from↔to POSITIONALLY (`to[i] AS from[i]`), so the
+    // two key vectors must have EQUAL arity (the analyzer's
+    // `doubled_edge_walk_compatible()` gate already enforces this; re-check here
+    // so the helper fails LOUD via `None` rather than emit a misaligned swap).
+    let from_cols: Vec<String> = edge_vs
+        .from_id
+        .as_ref()?
+        .columns()
+        .into_iter()
+        .map(|c| c.to_string())
+        .collect();
+    let to_cols: Vec<String> = edge_vs
+        .to_id
+        .as_ref()?
+        .columns()
+        .into_iter()
+        .map(|c| c.to_string())
+        .collect();
+    if from_cols.is_empty() || from_cols.len() != to_cols.len() {
+        return None;
+    }
     let edge_table = &edge_vs.source_table;
 
     // Edge-own pass-through columns: EVERY physical column the relationship row
@@ -315,7 +333,7 @@ pub(super) fn build_standard_doubled_edge_subquery(
     // never dropped (dropping it would make `count(r)` reference a column the
     // subquery doesn't project → ClickHouse Code 47). Deterministic order.
     let role_cols: std::collections::HashSet<String> =
-        [from_id.clone(), to_id.clone()].into_iter().collect();
+        from_cols.iter().chain(&to_cols).cloned().collect();
     let mut passthrough: Vec<String> = rel_schema
         .all_valid_physical_columns()
         .into_iter()
@@ -324,31 +342,29 @@ pub(super) fn build_standard_doubled_edge_subquery(
     passthrough.sort();
     passthrough.dedup();
 
-    // Forward arm: from/to verbatim, then every edge-own column.
-    let mut forward_cols: Vec<String> = vec![
-        format!("{e}.{}", q(&from_id), e = q(EDGE_ARM_ALIAS)),
-        format!("{e}.{}", q(&to_id), e = q(EDGE_ARM_ALIAS)),
-    ];
+    // Forward arm: from/to columns verbatim (all N of each), then every edge-own
+    // column.
+    let mut forward_cols: Vec<String> = Vec::new();
+    for c in from_cols.iter().chain(&to_cols) {
+        forward_cols.push(format!("{}.{}", q(EDGE_ARM_ALIAS), q(c)));
+    }
     for c in &passthrough {
         forward_cols.push(format!("{}.{}", q(EDGE_ARM_ALIAS), q(c)));
     }
 
-    // Reverse arm: swap from/to under their ORIGINAL names; edge-own columns
-    // unchanged. Table-qualified so the AS target never shadows the raw source.
-    let mut reverse_cols: Vec<String> = vec![
-        format!(
-            "{e}.{} AS {}",
-            q(&to_id),
-            q(&from_id),
-            e = q(EDGE_ARM_ALIAS)
-        ),
-        format!(
-            "{e}.{} AS {}",
-            q(&from_id),
-            q(&to_id),
-            e = q(EDGE_ARM_ALIAS)
-        ),
-    ];
+    // Reverse arm: swap from↔to POSITIONALLY under their ORIGINAL names
+    // (`to[i] AS from[i]`, `from[i] AS to[i]`); edge-own columns unchanged.
+    // Table-qualified so the AS target never shadows the raw source (ClickHouse
+    // would otherwise silently flip the value).
+    let mut reverse_cols: Vec<String> = Vec::new();
+    for (f, t) in from_cols.iter().zip(&to_cols) {
+        // The from[i] slot now carries the row's to[i] value.
+        reverse_cols.push(format!("{e}.{} AS {}", q(t), q(f), e = q(EDGE_ARM_ALIAS)));
+    }
+    for (f, t) in from_cols.iter().zip(&to_cols) {
+        // The to[i] slot now carries the row's from[i] value.
+        reverse_cols.push(format!("{e}.{} AS {}", q(f), q(t), e = q(EDGE_ARM_ALIAS)));
+    }
     for c in &passthrough {
         reverse_cols.push(format!("{}.{}", q(EDGE_ARM_ALIAS), q(c)));
     }
