@@ -1,6 +1,23 @@
-# OnTime Flight Data - Denormalized Edge Table Example
-# Test version with MISMATCHED from_node_properties and to_node_properties
-# to verify UNION ALL normalization works correctly.
+# OnTime Flight Data - Denormalized Edge Table ANTI-PATTERN (#1038)
+#
+# NEGATIVE FIXTURE — this schema is intentionally INVALID and is REJECTED at
+# schema-load by validate_denormalized_nodes (graph_catalog/config.rs). Do NOT
+# copy it as a working example.
+#
+# The Airport node is a denormalized SELF-LOOP (from_node == to_node == Airport,
+# sharing the `flights` edge table). Its from_node_properties (origin role) and
+# to_node_properties (destination role) expose DIFFERENT property key sets:
+# `state` is present only in the destination role (`DestState`; the table has no
+# `OriginState` column). On an UNDIRECTED match the swap-branch re-key attributes
+# the destination's state to the origin node — e.g.
+#   MATCH (a:Airport)-[:FLIGHT]-(b:Airport) RETURN a.code, a.state
+# rendered `a.state` from `DestState` in BOTH union arms, silently reporting the
+# wrong airport's state (live-verified). Per ground rule #1 (fail loud over
+# silent-wrong) the asymmetric key set is now rejected at load instead.
+#
+# Locked by config.rs::tests::test_ontime_mismatched_example_selfloop_rejected_1038.
+# Historical note: originally authored (mislabeled) as a positive
+# "UNION ALL normalization works correctly" example — it never did.
 
 name: ontime_flights_mismatched
 version: "1.0"

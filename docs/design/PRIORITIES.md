@@ -194,10 +194,15 @@ re-key silently resolved it to empty on reverse rows, the same silent-empty clas
 rejected only an entirely-missing direction, not an asymmetric key SET; it now
 compares the two role maps' key sets for a self-loop denorm node and fails loud at
 schema-load naming the offending properties, per ground rule #1. Schema-load only,
-no SQL-emitting code — ratchet-neutral, 0 golden churn; swept all in-repo denorm
-schemas to confirm none is asymmetric so no legitimate schema is newly rejected.
+no SQL-emitting code — ratchet-neutral, 0 golden churn. Full-repo sweep found ONE
+asymmetric self-loop schema (`ontime_denormalized_mismatched.yaml`, `state`
+only on the dest role) — live-proven silently-wrong (undirected renders
+`a.state` from `DestState` in both arms), now correctly rejected + relabeled a
+negative fixture; the one other asymmetric node (`zeek_merged.yaml` Domain) is a
+distinct-label `IP → Domain` edge the self-loop-only guard correctly ignores.
 Locked by `test_denormalized_selfloop_asymmetric_property_keys_rejected_1038` +
-`_symmetric_property_keys_ok_1038`. The #1006 UNION-arm/schema_filter follow-ups
+`_symmetric_property_keys_ok_1038` + `test_ontime_mismatched_example_selfloop_rejected_1038`
+(real on-disk fixture). The #1006 UNION-arm/schema_filter follow-ups
 #1036/#1037 remain unreachable-without-a-new-fixture, correctly design-cycle)**,
 **#1053 (numeric aggregate over a pattern comprehension folded
 over the constant `1` — `min([(u)-[:R]->(f:User) | f.user_id])` rendered

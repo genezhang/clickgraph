@@ -3203,6 +3203,32 @@ graph_schema:
         );
     }
 
+    /// #1038: the real repo example `ontime_denormalized_mismatched.yaml` is a
+    /// denormalized SELF-LOOP whose from/to role maps expose different key sets
+    /// (`state` only on the destination role). It was historically mislabeled as
+    /// a working "UNION ALL normalization" example but renders silently-wrong on
+    /// undirected matches (the swap-branch re-key attributes `DestState` to the
+    /// origin node). It must now be rejected at schema-load. This locks the
+    /// actual on-disk fixture, not just the synthetic case above.
+    #[test]
+    fn test_ontime_mismatched_example_selfloop_rejected_1038() {
+        let path = "schemas/examples/ontime_denormalized_mismatched.yaml";
+        let config = GraphSchemaConfig::from_yaml_file(path)
+            .unwrap_or_else(|e| panic!("fixture {path} should parse: {e:?}"));
+        let result = config.validate();
+        assert!(
+            result.is_err(),
+            "the mismatched self-loop example must be rejected at schema-load"
+        );
+        if let Err(e) = result {
+            let err_msg = format!("{e:?}");
+            assert!(
+                err_msg.contains("asymmetric") && err_msg.contains("state"),
+                "error should name the asymmetric `state` key, got: {err_msg}"
+            );
+        }
+    }
+
     #[test]
     fn test_polymorphic_schema_validation_success() {
         let config = GraphSchemaConfig {
