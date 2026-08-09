@@ -3274,10 +3274,37 @@ impl GraphJoinInference {
         let neither_node_referenced = !left_is_referenced && !right_is_referenced;
         let has_path_variable = graph_rel.path_variable.is_some();
 
+        // #1041: the SingleTableScan collapse (drop BOTH node scans, scan only the
+        // edge table) is a cardinality-preserving optimization ONLY when the
+        // result row count equals the edge row count. That holds for a MANDATORY
+        // hop, and ALSO for an all-optional hop with no required driver (a leading
+        // `OPTIONAL MATCH (a)-[:R]->(b)` runs against one empty driving row, so
+        // `count(*)` = number of pattern matches and an isolated node must NOT
+        // appear). It is silently WRONG only when the optional hop has a REQUIRED
+        // endpoint that must be preserved as the driver: `MATCH (a) OPTIONAL MATCH
+        // (a)-[:R]->(b) RETURN count(*)` must keep the required anchor `a` so a
+        // zero-degree anchor still contributes its NULL-extended row (correct
+        // count = edges + isolated anchors). Collapsing to `FROM <edge>` drops
+        // every isolated-anchor row (live db_standard: returned 9, true 10).
+        //
+        // So the collapse is unsafe iff the hop is optional AND at least one
+        // endpoint is a REQUIRED node (which then renders as the FROM driver, not
+        // prunable by `remove_unreferenced_joins`, with the edge a LEFT JOIN →
+        // NULL-extension preserved). When BOTH endpoints are optional (leading /
+        // cartesian all-optional pattern, no required driver) the collapse stays
+        // correct and must be kept, else we over-count by one row per isolated
+        // node (the mirror-direction regression the #1048 review's B1 caught:
+        // leading `count(*)` 9→10, cartesian 54→60). The relationship's own
+        // `is_optional` without a required endpoint is likewise safe to collapse.
+        let hop_is_optional = rel_is_optional || left_is_optional || right_is_optional;
+        let has_required_endpoint = !left_is_optional || !right_is_optional;
+        let optional_with_required_anchor = hop_is_optional && has_required_endpoint;
+
         let apply_optimization = (both_nodes_anonymous || neither_node_referenced)
             && !is_vlp
             && !is_shortest_path
             && !has_path_variable  // CRITICAL: Path queries need node properties!
+            && !optional_with_required_anchor // #1041: keep the required anchor's NULL-extended rows
             && is_first_relationship
             && !is_multi_hop_pattern; // CRITICAL: Multi-hop patterns need node JOINs for chaining!
 
