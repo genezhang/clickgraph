@@ -512,7 +512,7 @@ fixed stats fixture.
 - #411 (generic `.id`) — only after P-4, per the plan.
 - Denorm foreign-edge union-dimension design (perf-staged, memory notes).
 - DeltaGraph live-workspace validation items (`GA_READINESS.md`).
-- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slices 1 #893 + 2 #1032 + 3 #1033 + 4 #1034 + 5 #TBD, Phase 2 #1035, Phase 2b #1040, **behavior cluster COMPLETE: #806 + #628 + #710 + #808/#606 + #978/#980 fixed**; **Phase 1–2 predicate fold COMPLETE (#TBD)** — only the flat-pairwise-guard tail remains, deferred by design)
+- **VLP edge-identity & uniqueness unification — #887**  ◐ (Phase 0 #890, Phase 1 slices 1 #893 + 2 #1032 + 3 #1033 + 4 #1034 + 5 #1049, Phase 2 #1035, Phase 2b #1040, **behavior cluster COMPLETE: #806 + #628 + #710 + #808/#606 + #978/#980 fixed**; **Phase 1–2 predicate fold COMPLETE (#1049)** — only the flat-pairwise-guard tail remains, deferred by design)
   (`docs/design/VLP_EDGE_IDENTITY_UNIFICATION.md`). Bug-driven refactor of the
   VLP relationship-uniqueness axis: one canonical `EdgeUniquenessPolicy`
   (`PatternSchemaContext`-derived, rule-#7 clean) replaces ~14 inline sites / 3
@@ -607,7 +607,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 ## 4. Merge log (newest first — append on merge)
 
 - 2026-08-08: **Refactor — #887 Phase 1–2 `EdgeUniquenessPolicy` predicate fold**
-  (branch `refactor/887-edge-uniqueness-policy`, PR #TBD). Byte-identical.
+  (branch `refactor/887-edge-uniqueness-policy`, PR #1049). Byte-identical.
   Introduced `EdgeUniquenessPolicy { kind, identity }` (`variable_length_cte.rs`)
   as the single authority for a VLP recursive arm's edge-vs-node uniqueness
   DECISION + cycle-check spelling, replacing the two inline `uses_edge_uniqueness`

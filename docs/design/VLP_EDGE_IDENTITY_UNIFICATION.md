@@ -310,7 +310,7 @@ shared helper. Once the identity spellings are consolidated, the policy type
   3 spellings → 3 spellings of the *tuple value* but the #617 correction is
   now one helper (the flat pairwise guard remains predicate-shaped — see
   below).
-- **Slice 5 — DONE (PR #TBD)**: the uniqueness DECISION (`kind`) fold — the
+- **Slice 5 — DONE (PR #1049)**: the uniqueness DECISION (`kind`) fold — the
   predicate half of the policy (the identity/spelling half landed in Phase 2).
   Introduced `EdgeUniquenessPolicy { kind: UniquenessKind, identity: EdgeIdentity }`
   (`variable_length_cte.rs`), constructed from resolved PRIMITIVE inputs
@@ -372,7 +372,7 @@ shared helper. Once the identity spellings are consolidated, the policy type
   and the #617 doubled-edge orientation), so each fold needs per-caller
   byte-identity proof, not a blanket replace.
 
-  **SUPERSEDED (2026-08-08, PR #TBD — the predicate fold LANDED):** the "open
+  **SUPERSEDED (2026-08-08, PR #1049 — the predicate fold LANDED):** the "open
   behavior question" above was resolved by Phase 2b (#1040): the denorm closed
   `*0..N` case IS edge-unique (CM `uses_edge_uniqueness` returns `true` there,
   its zero-hop base seeding a typed-empty `path_edges` — the denorm-#628 analog).
