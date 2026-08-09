@@ -657,6 +657,23 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-08-09: **Doc — flag pattern-comprehension aggregate scalar forms as
+  interim, not Neo4j-correct** (branch `docs/pattern-comp-agg-1062`, PR #1063
+  `47fd2b1d`; tracking issue #1062 filed, #1053 cross-linked). Comment-only. On
+  loop restart, the tip of main was PR #1058 (`2121fa0b`), which fixed the
+  constant-`1` fold (`MIN(1)`→`MIN(target_prop)`) for numeric aggregates over a
+  pattern comprehension — a real improvement, but it settled on a **scalar**
+  answer that is **not** Neo4j-correct and locked it into 8 goldens. Oracle
+  ([Neo4j aggregating functions](https://neo4j.com/docs/cypher-manual/current/functions/aggregating/)):
+  `min()`/`max()` over a set of lists returns the **whole list**; a pattern
+  comprehension is one list per outer row, so `min`/`max`→whole list,
+  `collect`→list-of-lists, `sum`/`avg`→**error**, `count`→1 per outer row,
+  empty→`null`. Live-verified on `db_standard` @ `2121fa0b`. Full fix is
+  design-cycle-shaped (list-value modelling + dialect-aware loud-error/null),
+  tracked on #1062; maintainer chose to keep #1058's scalar as a documented
+  stepping-stone and add an `INTERIM (#1062)` caveat at the emit site so the
+  code + goldens are not mistaken for verified output. No functional change.
+
 - 2026-08-08: **Correctness (ground-rule-1) — comparison/predicate results
   rendered as ClickHouse `UInt8` `1`/`0` instead of Neo4j boolean `true`/`false`
   in RETURN/WITH projections** (branch
