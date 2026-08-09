@@ -1939,6 +1939,23 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                     mapper.cast_float64_or_null(&args[0])
                 };
             }
+            // #1055: toString on a PROVEN Float arg keeps a whole-valued float's
+            // trailing `.0` (`toString(3.0)` → "3.0"). Mirrors the Path-A renderer
+            // (to_sql_query.rs); this Path-C renderer backs VLP bound-node /
+            // pattern-comprehension WHERE filters. Gated on the classifier so an
+            // Integer/Number/unknown arg keeps the plain cast (conservative-None).
+            if fn_lower == "tostring"
+                && func.args.len() == 1
+                && args.len() == 1
+                && crate::sql_generator::emitters::clickhouse::type_inference::infer_render_type(
+                    &func.args[0],
+                ) == Some(
+                    crate::sql_generator::emitters::clickhouse::type_inference::RenderType::Float,
+                )
+            {
+                let mapper = crate::sql_generator::function_mapper::current_function_mapper();
+                return mapper.to_string_float(&args[0]);
+            }
             // #866: arrayFilter/arrayMap (list-comprehension lowering) need the
             // dialect name + arg swap on this Path-C renderer too. Spark's
             // filter/transform take (collection, lambda); CH's arrayFilter/

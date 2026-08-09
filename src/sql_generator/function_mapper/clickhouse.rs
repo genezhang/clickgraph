@@ -75,6 +75,21 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         "toString"
     }
 
+    fn to_string_float(&self, expr: &str) -> String {
+        // CH `toString(toFloat64(3))` returns "3" (drops the decimal), and a
+        // whole-valued float literal has already rendered as the integer SQL
+        // literal `3`. Append `.0` iff the string form is a bare integer with no
+        // `.`/`e`/`inf`/`nan` — matched by `^-?[0-9]+$`. Fractional, scientific,
+        // NULL, and inf/nan forms pass through `toString` untouched. The caller
+        // gates this on `RenderType::Float`, so an integer-valued *float* is the
+        // only thing that reaches the `concat` arm. `expr` is pre-rendered SQL.
+        // #1055.
+        format!(
+            "if(match(toString({e}), '^-?[0-9]+$'), concat(toString({e}), '.0'), toString({e}))",
+            e = expr
+        )
+    }
+
     fn cast_bool(&self, expr: &str) -> String {
         // Nullable(Bool) preserves NULL (bare `CAST(NULL>2 AS Bool)` throws
         // Code 70) and is physically UInt8, so this changes only the wire
@@ -236,6 +251,24 @@ mod tests {
         assert_eq!(
             m.cast_bool("u.user_id > 2"),
             "CAST(u.user_id > 2 AS Nullable(Bool))"
+        );
+    }
+
+    #[test]
+    fn to_string_float_appends_dot_zero_only_for_integer_valued_forms() {
+        // #1055: a whole-valued float keeps `.0` (Neo4j toString(3.0)="3.0"); the
+        // `match ^-?[0-9]+$` guard adds `.0` only when the string form is a bare
+        // integer, so fractional/scientific/NULL/inf/nan pass through untouched.
+        // The caller gates this on RenderType::Float, so only floats reach here.
+        let m = ClickhouseFunctionMapper;
+        assert_eq!(
+            m.to_string_float("3"),
+            "if(match(toString(3), '^-?[0-9]+$'), concat(toString(3), '.0'), toString(3))"
+        );
+        assert_eq!(
+            m.to_string_float("toFloat64(x)"),
+            "if(match(toString(toFloat64(x)), '^-?[0-9]+$'), \
+             concat(toString(toFloat64(x)), '.0'), toString(toFloat64(x)))"
         );
     }
 

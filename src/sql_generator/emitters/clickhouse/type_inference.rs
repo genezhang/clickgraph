@@ -264,22 +264,39 @@ fn infer_operator_type(op: Operator, operands: &[RenderExpr]) -> Option<RenderTy
         | Operator::IsNull
         | Operator::IsNotNull => Some(RenderType::Boolean),
 
-        // Arithmetic → Number, but only when every operand is provably numeric.
-        // Otherwise unknown (never assume; string `+` is handled by its own gate).
+        // Arithmetic. Requires every operand provably numeric; otherwise unknown
+        // (never assume — string `+` is handled by its own gate). Cypher numeric
+        // promotion then fixes the subtype: any Float operand makes the result
+        // Float (`1 + 2.0` = 3.0, and a negative float literal `-2.0` lowers to
+        // `0 - 2.0`), and exponentiation is always Float in Neo4j (`2^3` = 8.0).
+        // Otherwise the int/float subtype stays unresolved (`Number`) — e.g.
+        // `abs(x) + 1`. This subtype refinement is consumed by #1055 (toString
+        // keeps a whole float's `.0`); every other classifier consumer keys on
+        // String/Boolean/Date or the `is_numeric()` umbrella (Float ⊆ numeric),
+        // so promoting Number→Float here is transparent to them.
         Operator::Addition
         | Operator::Subtraction
         | Operator::Multiplication
         | Operator::Division
         | Operator::ModuloDivision
         | Operator::Exponentiation => {
-            if !operands.is_empty()
-                && operands
-                    .iter()
-                    .all(|o| infer_render_type(o).is_some_and(|t| t.is_numeric()))
+            if operands.is_empty() {
+                return None;
+            }
+            let operand_types: Vec<Option<RenderType>> =
+                operands.iter().map(infer_render_type).collect();
+            if !operand_types
+                .iter()
+                .all(|t| t.is_some_and(|t| t.is_numeric()))
             {
-                Some(RenderType::Number)
+                return None;
+            }
+            if op == Operator::Exponentiation
+                || operand_types.iter().any(|t| t == &Some(RenderType::Float))
+            {
+                Some(RenderType::Float)
             } else {
-                None
+                Some(RenderType::Number)
             }
         }
 
@@ -306,6 +323,9 @@ mod tests {
     }
     fn lit_int(n: i64) -> RenderExpr {
         RenderExpr::Literal(Literal::Integer(n))
+    }
+    fn lit_float(f: f64) -> RenderExpr {
+        RenderExpr::Literal(Literal::Float(f))
     }
 
     #[test]
@@ -456,6 +476,40 @@ mod tests {
             operands: vec![lit_str("a"), lit_str("b")],
         });
         assert_eq!(infer_render_type(&strings), None);
+    }
+
+    #[test]
+    fn arithmetic_promotes_to_float_when_any_operand_is_float() {
+        // #1055: Cypher numeric promotion. Any Float operand → Float result, so
+        // `toString` keeps the `.0`. Covers the common negative-whole-float case:
+        // `-2.0` lowers to `0 - 2.0` (Subtraction), which must classify Float so
+        // `toString(-2.0)` = "-2.0", not "-2".
+        let neg_float = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Subtraction,
+            operands: vec![lit_int(0), lit_float(2.0)],
+        });
+        assert_eq!(infer_render_type(&neg_float), Some(RenderType::Float));
+
+        let mixed = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![lit_int(1), lit_float(2.0)],
+        });
+        assert_eq!(infer_render_type(&mixed), Some(RenderType::Float));
+
+        // Exponentiation is always Float in Neo4j (`2^3` = 8.0), even int^int.
+        let pow = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Exponentiation,
+            operands: vec![lit_int(2), lit_int(3)],
+        });
+        assert_eq!(infer_render_type(&pow), Some(RenderType::Float));
+
+        // int - int (non-exponent) stays unresolved Number — subtype unknown but
+        // numeric, and `toString` must NOT add `.0` (`toString(5-2)` = "3").
+        let int_sub = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Subtraction,
+            operands: vec![lit_int(5), lit_int(2)],
+        });
+        assert_eq!(infer_render_type(&int_sub), Some(RenderType::Number));
     }
 
     #[test]
