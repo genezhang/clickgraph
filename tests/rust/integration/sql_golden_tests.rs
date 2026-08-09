@@ -14451,6 +14451,50 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
             "#1041: a MANDATORY anchor-less hop must still collapse to the bare edge scan \
              (optimization preserved for non-optional):\n{mandatory}"
         );
+
+        // #1048 review B1 (mirror-direction regression guard): when the hop is
+        // optional but has NO required endpoint (leading / all-optional pattern,
+        // no required driver), the collapse is STILL correct and must be kept —
+        // else an isolated node is wrongly NULL-extended and the count is one too
+        // high per isolated node (live: leading count(*) would go 9→10). A
+        // leading `OPTIONAL MATCH (a)-[:R]->(b)` runs against one empty driving
+        // row, so `count(*)` = number of matches; the anchor must NOT be
+        // preserved. It must collapse to the bare edge scan, same as mandatory.
+        let leading_optional = normalize(
+            &render(
+                &schema,
+                "OPTIONAL MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN count(*)",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert!(
+            leading_optional.contains("FROM db_standard.user_follows")
+                && !leading_optional.contains("LEFT JOIN"),
+            "#1041/B1: a LEADING all-optional anchor-less hop (no required driver) must still \
+             collapse to the bare edge scan, NOT preserve an anchor (which would over-count \
+             isolated nodes):\n{leading_optional}"
+        );
+
+        // #1048 review B1 (cartesian): a required `x` with a SEPARATE all-optional
+        // pattern — the optional pattern's own endpoints are both optional, so it
+        // collapses to the bare edge (cross-joined to the required `x`). `x` is
+        // the FROM driver (required), the edge is the collapsed optional side.
+        let cartesian_optional = normalize(
+            &render(
+                &schema,
+                "MATCH (x:User) OPTIONAL MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN count(*)",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert!(
+            cartesian_optional.contains("FROM db_standard.users AS x")
+                && cartesian_optional.contains("db_standard.user_follows"),
+            "#1041/B1: a cartesian required-x + all-optional pattern must keep x as FROM and \
+             collapse the optional pattern to its bare edge (not preserve a/b anchors, which \
+             would over-count by |x| per isolated node):\n{cartesian_optional}"
+        );
     }
 
     /// #583 STANDARD stage: a standard plain-edge single-hop undirected OPTIONAL
