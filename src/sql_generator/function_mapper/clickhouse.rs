@@ -84,6 +84,16 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         // gates this on `RenderType::Float`, so an integer-valued *float* is the
         // only thing that reaches the `concat` arm. `expr` is pre-rendered SQL.
         // #1055.
+        //
+        // `expr` is textually repeated 3× (match + concat + else). This is safe
+        // for a nondeterministic arg (e.g. `toString(2 ^ rand())`) ONLY because
+        // ClickHouse applies common-subexpression elimination to identical
+        // nondeterministic subexpressions (`randCanonical() = randCanonical()` →
+        // 1) under both the old and new analyzer — so all three copies observe
+        // the SAME draw. Were that to change, the `match` could test one draw
+        // while `concat` appends `.0` to a different, fractional draw (malformed
+        // `X.5.0`). If a future CH drops that CSE, wrap the arg in a CTE/subquery
+        // column and reference it here instead of re-emitting the fragment.
         format!(
             "if(match(toString({e}), '^-?[0-9]+$'), concat(toString({e}), '.0'), toString({e}))",
             e = expr
