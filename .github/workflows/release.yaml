@@ -43,6 +43,9 @@ jobs:
     needs: create_release
     runs-on: ${{ matrix.runner }}
     strategy:
+      # Don't let one platform's failure cancel the others — each produces
+      # independent release assets, and a partial upload is better than none.
+      fail-fast: false
       matrix:
         include:
           - name: linux-amd64
@@ -59,6 +62,13 @@ jobs:
             target: aarch64-apple-darwin
 
     steps:
+      # Windows checkout of this repo fails without long-path support: some
+      # golden corpus filenames exceed the legacy 260-char MAX_PATH limit.
+      # Must run BEFORE actions/checkout, which does its own clone.
+      - name: Enable Git long paths (Windows)
+        if: runner.os == 'Windows'
+        run: git config --system core.longpaths true
+
       - name: Checkout tag
         uses: actions/checkout@v4
         with:
