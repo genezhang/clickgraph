@@ -343,9 +343,9 @@
       <div class="col other">
         <header>Native graph wins <span class="badge b-warn">a real carve-out</span></header>
         <ul>
-          <li><b>Iterative whole-graph algorithms</b> — PageRank, community detection, betweenness. These are <em>batch</em>, run on a snapshot.</li>
+          <li><b>Heavy, repeated whole-graph algorithms</b> at small-to-mid scale — community detection (Louvain), betweenness — over a graph resident in memory, run as batch on a snapshot.</li>
           <li><b>Unbounded deep traversal</b> — arbitrary-depth transitive closure, at a scale that fits in memory.</li>
-          <li>Use a dedicated GDS/cuGraph tool for these. We don't pretend to be one — and at your data scale, the snapshot has to be sampled down to fit anyway.</li>
+          <li>For these, a dedicated GDS/cuGraph engine on a snapshot is often the better tool. <em>(ClickGraph does ship PageRank and shortest-path as in-warehouse SQL — see the note below — but tight-loop iterative algorithms at small scale are where in-memory adjacency wins.)</em></li>
         </ul>
       </div>
     </div>
@@ -412,7 +412,7 @@
         <div>
           <h3>Use a native graph DB / GDS when</h3>
           <ul>
-            <li><b>Iterative whole-graph algorithms</b> are the job — PageRank, Louvain, betweenness — and the graph fits in memory.</li>
+            <li><b>Heavy, repeated whole-graph algorithms</b> at small-to-mid scale — community detection, betweenness — over a graph that fits in memory.</li>
             <li><b>Deep OLTP traversal</b> — 10-hop, millisecond, per-request — is the core workload.</li>
             <li>Your data is small enough (GB–low TB) that in-memory adjacency is a clean win.</li>
           </ul>
@@ -426,7 +426,7 @@
           </ul>
         </div>
       </div>
-      <p style="font-size:.9rem;color:var(--muted);margin-top:22px;border-top:1px dashed var(--line);padding-top:16px"><span class="kicker">And the ceiling is ours to raise.</span> A large family of graph algorithms — PageRank, connected components, shortest paths, label propagation — is <em>iterated <code>JOIN</code>&nbsp;+&nbsp;<code>GROUP&nbsp;BY</code> over a semiring</em>, exactly what a vectorized warehouse does best. Nothing prevents pushing further: semiring aggregate functions, keyed/settled-set recursion, and iterated-fixpoint execution can bring more of the graph-algorithm family inside the warehouse — at a scale the in-memory engines can't reach. The direction is open; the primitives already exist.</p>
+      <p style="font-size:.9rem;color:var(--muted);margin-top:22px;border-top:1px dashed var(--line);padding-top:16px"><span class="kicker">Algorithms already run in-warehouse — and the ceiling is ours to raise.</span> ClickGraph ships <b>PageRank</b> (<code>CALL pagerank(...)</code>) and <b>shortest&nbsp;path</b> (<code>shortestPath</code>&nbsp;/&nbsp;<code>allShortestPaths</code>) today, generated as SQL / BFS recursive CTEs over your tables. A whole family of graph algorithms is <em>iterated <code>JOIN</code>&nbsp;+&nbsp;<code>GROUP&nbsp;BY</code> over a semiring</em> — exactly what a vectorized warehouse does best — so pushing further is open road: semiring aggregate functions, keyed/settled-set recursion, and iterated-fixpoint execution can bring more of the family inside the warehouse, at a scale the in-memory engines can't reach.</p>
     </div>
   </div>
 </section>
