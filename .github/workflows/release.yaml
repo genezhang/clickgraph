@@ -83,7 +83,7 @@ jobs:
         with:
           command: build
           target: ${{ matrix.target }}
-          args: "--locked --release -p clickgraph -p clickgraph-client"
+          args: "--locked --release -p clickgraph -p clickgraph-client -p clickgraph-tool"
           strip: true
 
       - name: Build & cross-compile deltagraph (Databricks)
@@ -104,6 +104,8 @@ jobs:
           tar -C target/${{ matrix.target }}/release -czf \
             dist/${{ matrix.name }}/clickgraph-client-${{ matrix.name }}.tar.gz clickgraph-client
           tar -C target/${{ matrix.target }}/release -czf \
+            dist/${{ matrix.name }}/cg-${{ matrix.name }}.tar.gz cg
+          tar -C target/${{ matrix.target }}/release -czf \
             dist/${{ matrix.name }}/deltagraph-${{ matrix.name }}.tar.gz deltagraph
 
       - name: Package artifacts (Windows)
@@ -115,6 +117,7 @@ jobs:
           # Use PowerShell Compress-Archive to create ZIPs
           Compress-Archive -Path target/${{ matrix.target }}/release/clickgraph.exe -DestinationPath dist/${{ matrix.name }}/clickgraph-${{ matrix.name }}.zip -Force
           Compress-Archive -Path target/${{ matrix.target }}/release/clickgraph-client.exe -DestinationPath dist/${{ matrix.name }}/clickgraph-client-${{ matrix.name }}.zip -Force
+          Compress-Archive -Path target/${{ matrix.target }}/release/cg.exe -DestinationPath dist/${{ matrix.name }}/cg-${{ matrix.name }}.zip -Force
           Compress-Archive -Path target/${{ matrix.target }}/release/deltagraph.exe -DestinationPath dist/${{ matrix.name }}/deltagraph-${{ matrix.name }}.zip -Force
 
       - name: Upload clickgraph binary
@@ -130,6 +133,13 @@ jobs:
         with:
           # upload_url: ${{ needs.create_release.outputs.upload_url }}
           files: dist/${{ matrix.name }}/clickgraph-client-${{ matrix.name }}.*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload cg binary
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.name }}/cg-${{ matrix.name }}.*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

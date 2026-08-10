@@ -125,20 +125,20 @@ flowchart LR
 
 ### Option 0: Pre-built Binaries
 
-Download the latest release from [GitHub Releases](https://github.com/genezhang/clickgraph/releases/latest):
+Download the latest release from [GitHub Releases](https://github.com/genezhang/clickgraph/releases/latest). Assets are gzipped tarballs (`.tar.gz` on Linux/macOS, `.zip` on Windows) named `<binary>-<platform>`, where `<platform>` is one of `linux-amd64`, `macos-amd64`, `macos-arm64`, `win-amd64`:
 
 ```bash
 # ClickGraph server (ClickHouse backend)
-curl -L https://github.com/genezhang/clickgraph/releases/latest/download/clickgraph-linux-x86_64 \
-  -o clickgraph && chmod +x clickgraph
+curl -L https://github.com/genezhang/clickgraph/releases/latest/download/clickgraph-linux-amd64.tar.gz \
+  | tar -xz && chmod +x clickgraph
 
 # DeltaGraph server (Databricks backend) — same Cypher/Bolt, Spark SQL dialect
-curl -L https://github.com/genezhang/clickgraph/releases/latest/download/deltagraph-linux-x86_64 \
-  -o deltagraph && chmod +x deltagraph
+curl -L https://github.com/genezhang/clickgraph/releases/latest/download/deltagraph-linux-amd64.tar.gz \
+  | tar -xz && chmod +x deltagraph
 
 # cg CLI tool (agent/scripting use)
-curl -L https://github.com/genezhang/clickgraph/releases/latest/download/cg-linux-x86_64 \
-  -o cg && chmod +x cg
+curl -L https://github.com/genezhang/clickgraph/releases/latest/download/cg-linux-amd64.tar.gz \
+  | tar -xz && chmod +x cg
 ```
 
 ### Option 1: Docker (Recommended)
