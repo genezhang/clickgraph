@@ -8,6 +8,8 @@
 
 > **Note: ClickGraph dev release is at beta quality for view-based graph analytics applications. Kindly raise an issue if you encounter any problem.**
 
+> 🧊 **Meet DeltaGraph — ClickGraph's sibling for Databricks.** The same engine, the same Cypher, the same Bolt/Neo4j-Browser compatibility — but translating to Spark SQL and executing against a **Databricks SQL Warehouse** instead of ClickHouse. One codebase, two server binaries (`clickgraph` for ClickHouse, `deltagraph` for Databricks); pick the backend at runtime. See the [Docker quickstart](docs/deltagraph/DOCKER_QUICKSTART.md), the [build-from-source quickstart](docs/deltagraph/QUICKSTART.md), or [how the two are packaged](docs/deltagraph/PACKAGING.md).
+
 `ClickGraph` provides three modes now:
 - Stateless service
 - Embedded mode with embedded `chDB`
@@ -16,9 +18,17 @@
 See [motivation and rationale](docs/motivation.md).
 
 ---
-## What's New under development
+## What's New in v0.6.8-dev — DeltaGraph preview 🧊
 
-- **DeltaGraph — Cypher over Databricks SQL Warehouse** (opt-in `--features databricks`). A second SQL dialect alongside ClickHouse: Cypher is translated to Spark SQL locally and executed against a Databricks SQL Warehouse over the Statement Execution API. Dialect routing through `FunctionMapper` (`groupArray`→`collect_list`, `toInt64`→`bigint`, `Array(Int64)`→`ARRAY<BIGINT>`, etc.), including variable-length paths and BFS shortestPath. PAT auth with `Debug` redaction. Surfaces: `Database::new_databricks(schema, DatabricksConfig)` in `clickgraph-embedded`, `Database::open_databricks` over the FFI for Go/Python, `cg --dialect databricks` for SQL emission *and* execution (env-only PAT), `cg schema discover --dialect databricks` for LLM-assisted YAML drafts off a live warehouse, optional top-level `catalog:` YAML field for schemas permanently tied to one Unity Catalog (env still wins), and a dedicated **`deltagraph` server binary** (HTTP + Bolt, defaults to Databricks). Manual walkthrough: [docs/deltagraph/QUICKSTART.md](docs/deltagraph/QUICKSTART.md). Docker quickstart: [docs/deltagraph/DOCKER_QUICKSTART.md](docs/deltagraph/DOCKER_QUICKSTART.md). Packaging & binary selection: [docs/deltagraph/PACKAGING.md](docs/deltagraph/PACKAGING.md). Plan: [docs/design/DELTAGRAPH_PLAN.md](docs/design/DELTAGRAPH_PLAN.md). Still pending: `MERGE`, OAuth M2M auth, full LDBC validation against a live warehouse, external-link result chunks.
+- **DeltaGraph is now packaged for preview.** The `deltagraph` server (Cypher → Spark SQL → Databricks SQL Warehouse) ships alongside `clickgraph` in the same Docker image (`genezhang/clickgraph`, selected via `--entrypoint /usr/local/bin/deltagraph`) and as its own `deltagraph-<platform>` release tarball on every platform. A user chooses the backend at **runtime** — run `clickgraph` (ClickHouse), run `deltagraph` (Databricks), run both side-by-side on different ports, or `clickgraph --databricks`. The Neo4j Browser demo is verified live end-to-end on **both** backends at full result parity, including a live Databricks free-tier warehouse. Start here: [Docker quickstart](docs/deltagraph/DOCKER_QUICKSTART.md) · [packaging & binary selection](docs/deltagraph/PACKAGING.md).
+- **`toString()` float fidelity (#1055)** — `toString(3.0)` now returns `"3.0"` (Neo4j semantics), not `"3"`, on both the ClickHouse and Databricks dialects. See [CHANGELOG.md](CHANGELOG.md).
+
+<details>
+<summary><b>DeltaGraph — full capability detail</b> (dialect routing, surfaces, auth, what's pending)</summary>
+
+- **Cypher over Databricks SQL Warehouse** (opt-in `--features databricks`). A second SQL dialect alongside ClickHouse: Cypher is translated to Spark SQL locally and executed against a Databricks SQL Warehouse over the Statement Execution API. Dialect routing through `FunctionMapper` (`groupArray`→`collect_list`, `toInt64`→`bigint`, `Array(Int64)`→`ARRAY<BIGINT>`, etc.), including variable-length paths and BFS shortestPath. PAT auth with `Debug` redaction. Surfaces: `Database::new_databricks(schema, DatabricksConfig)` in `clickgraph-embedded`, `Database::open_databricks` over the FFI for Go/Python, `cg --dialect databricks` for SQL emission *and* execution (env-only PAT), `cg schema discover --dialect databricks` for LLM-assisted YAML drafts off a live warehouse, optional top-level `catalog:` YAML field for schemas permanently tied to one Unity Catalog (env still wins), and a dedicated **`deltagraph` server binary** (HTTP + Bolt, defaults to Databricks). Manual walkthrough: [docs/deltagraph/QUICKSTART.md](docs/deltagraph/QUICKSTART.md). Docker quickstart: [docs/deltagraph/DOCKER_QUICKSTART.md](docs/deltagraph/DOCKER_QUICKSTART.md). Packaging & binary selection: [docs/deltagraph/PACKAGING.md](docs/deltagraph/PACKAGING.md). Plan: [docs/design/DELTAGRAPH_PLAN.md](docs/design/DELTAGRAPH_PLAN.md). Still pending: `MERGE`, OAuth M2M auth, full LDBC validation against a live warehouse, external-link result chunks.
+
+</details>
 
 ## What's New in v0.6.7-dev
 
@@ -118,9 +128,13 @@ flowchart LR
 Download the latest release from [GitHub Releases](https://github.com/genezhang/clickgraph/releases/latest):
 
 ```bash
-# ClickGraph server
+# ClickGraph server (ClickHouse backend)
 curl -L https://github.com/genezhang/clickgraph/releases/latest/download/clickgraph-linux-x86_64 \
   -o clickgraph && chmod +x clickgraph
+
+# DeltaGraph server (Databricks backend) — same Cypher/Bolt, Spark SQL dialect
+curl -L https://github.com/genezhang/clickgraph/releases/latest/download/deltagraph-linux-x86_64 \
+  -o deltagraph && chmod +x deltagraph
 
 # cg CLI tool (agent/scripting use)
 curl -L https://github.com/genezhang/clickgraph/releases/latest/download/cg-linux-x86_64 \
