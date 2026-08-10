@@ -10,6 +10,8 @@
 
 > 🧊 **Meet DeltaGraph — ClickGraph's sibling for Databricks.** The same engine, the same Cypher, the same Bolt/Neo4j-Browser compatibility — but translating to Spark SQL and executing against a **Databricks SQL Warehouse** instead of ClickHouse. One codebase, two server binaries (`clickgraph` for ClickHouse, `deltagraph` for Databricks); pick the backend at runtime. See the [Docker quickstart](docs/deltagraph/DOCKER_QUICKSTART.md), the [build-from-source quickstart](docs/deltagraph/QUICKSTART.md), or [how the two are packaged](docs/deltagraph/PACKAGING.md).
 
+> 📊 **Why warehouse- & lakehouse-native graph?** [**Read the positioning brief →**](https://genezhang.github.io/clickgraph/) — how ClickGraph & DeltaGraph compare to Neptune, Neo4j GDS, and lakehouse graph engines on scale, GraphRAG, and security graph at petabyte scale.
+
 `ClickGraph` provides three modes now:
 - Stateless service
 - Embedded mode with embedded `chDB`
