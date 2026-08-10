@@ -216,4 +216,4 @@ docker rm -f deltagraph            # remove
 DeltaGraph is a **read-only** query engine — `CREATE`/`SET`/`DELETE`/`MERGE` are
 out of scope. It translates and executes `MATCH`/`RETURN`/`WITH`/`WHERE`, VLPs,
 aggregations, and the supported function set. See the
-[Cypher Language Reference](../wiki/cypher-language-reference.md) for coverage.
+[Cypher Language Reference](../wiki/Cypher-Language-Reference.md) for coverage.
