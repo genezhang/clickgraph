@@ -95,6 +95,31 @@ See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 
 ---
 
+## How ClickGraph compares
+
+ClickGraph and DeltaGraph are **warehouse- and lakehouse-native** graph query engines: they translate Cypher to SQL and execute it **inside** ClickHouse or Databricks. They are stateless translators — they store nothing and add no compute of their own. This is a deliberately different point in the design space from a graph database, and it wins in some places and loses in others. Here is the honest map.
+
+**Where warehouse-native pushdown wins**
+
+- **No data movement.** Your existing tables — including FK-edge and denormalized layouts — *are* the graph, mapped via YAML. Nothing is imported, copied, or flattened, so relationships already encoded in your schema are preserved rather than collapsed to primitive node/edge pairs.
+- **No second compute engine.** 100% of execution is pushed down to the warehouse you already run, secure, and pay for. There is no separate graph engine to size, scale, or bill — unlike engines that deploy their own distributed compute layer beside your data.
+- **No in-memory scale ceiling.** The graph-analytics engines are in-memory by design: Neo4j GDS runs algorithms in heap (≈90% of one machine's RAM), and Amazon Neptune Analytics holds the whole graph in memory (~1 TiB at its max capacity). ClickGraph's ceiling is the warehouse's — petabyte-native. At 100s of TB–PB, the data often physically cannot be loaded into the engine that would analyze it.
+- **Freshness.** Query where fresh data already lands (ClickHouse ingests millions of rows/sec) — zero ingestion lag, because there is no ingestion step.
+- **Graph algorithms in-place.** PageRank (`CALL pagerank(...)`) and shortest path (`shortestPath` / `allShortestPaths`) run as generated SQL over your warehouse tables — no export to a separate engine.
+- **Inspectable.** `sql_only` mode returns the exact generated SQL, so you can see precisely what runs on your warehouse — no black box.
+
+**Where a native graph database still wins — use one when:**
+
+- You need **very deep, tight-loop iterative graph algorithms** at small scale where an in-memory adjacency representation is decisively faster. ClickGraph *does* support graph algorithms — **PageRank** (`CALL pagerank(...)`, translated to iterated SQL) and **shortest path** (`shortestPath` / `allShortestPaths`, compiled to BFS recursive CTEs) ship today — but like any warehouse feature they carry a scale profile: iterative execution over very large graphs is bounded by the warehouse's recursive/iterative performance, not vectorized scans. For heavy, repeated whole-graph analytics (e.g. community detection over a resident in-memory graph), a dedicated GDS/cuGraph/TigerGraph engine on a snapshot can be the better tool. (Pushing more of the iterated-`JOIN`+`GROUP BY`-over-a-semiring family further inside SQL is an active optimization direction.)
+- You need **deep OLTP-style traversal** (10-hop, millisecond, per request). The columnar scan model isn't that shape.
+- Your data is small enough (GB–low TB) that in-memory adjacency is a clean win with no scale concern.
+
+**Query-shape note.** Pattern-matching + filtering + aggregation and *bounded* traversal push down and scale with the warehouse — this is the shape of most real "graph analytics" (fraud rings, lineage, recommendations, security graph). Exact fixed-hop paths already compile to MPP-parallel joins; unbounded transitive closure uses recursive CTEs (row-iterative on ClickHouse today, and expensive for any engine at PB scale).
+
+For the full breakdown with sources, GraphRAG, and security-graph-at-scale: **[the positioning brief →](https://genezhang.github.io/clickgraph/)**
+
+---
+
 ## Architecture
 
 ClickGraph service runs as a lightweight stateless query translator alongside ClickHouse:
