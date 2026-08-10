@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="ClickGraph & DeltaGraph — warehouse- and lakehouse-native graph. Cypher translated to SQL, pushed down to ClickHouse or Databricks. No graph database, no data movement, no second compute engine.">
+<meta property="og:title" content="Warehouse- & Lakehouse-Native Graph — ClickGraph & DeltaGraph">
+<meta property="og:description" content="Your warehouse — or lakehouse — is the graph engine. Cypher to SQL pushdown on ClickHouse & Databricks. GraphRAG and security graph at scale.">
+<meta property="og:type" content="website">
+<meta name="color-scheme" content="light dark">
+<style>*{box-sizing:border-box}html,body{margin:0;padding:0}</style>
+<title>Warehouse- & Lakehouse-Native Graph — ClickGraph & DeltaGraph Positioning</title>
+</head>
+<body>
+
+<style>
+  :root{
+    --paper:#f7f8fa; --panel:#ffffff; --panel-2:#f0f3f7;
+    --ink:#161c28; --muted:#556074; --faint:#818da0;
+    --line:#e2e7ee; --line-strong:#cdd5e0;
+    --accent:#0c9c90; --accent-ink:#0a7d73; --accent-soft:#dff5f2;
+    --win:#15803d; --win-soft:#e3f5ea;
+    --warn:#b45c09; --warn-soft:#fbeed9;
+    --stop:#c02626; --stop-soft:#fbe4e4;
+    --mono:"SF Mono","JetBrains Mono","Fira Code",ui-monospace,"Cascadia Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,"Helvetica Neue",Arial,sans-serif;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --paper:#0b1220; --panel:#121b2c; --panel-2:#0f1726;
+      --ink:#e7ecf4; --muted:#9aa7bd; --faint:#6b7a92;
+      --line:#20293a; --line-strong:#2c384c;
+      --accent:#2dd4bf; --accent-ink:#5eead4; --accent-soft:#0f2b2a;
+      --win:#4ade80; --win-soft:#0f2a1c;
+      --warn:#fbbf24; --warn-soft:#2c2110;
+      --stop:#f87171; --stop-soft:#2c1414;
+    }
+  }
+  :root[data-theme="light"]{
+    --paper:#f7f8fa; --panel:#ffffff; --panel-2:#f0f3f7;
+    --ink:#161c28; --muted:#556074; --faint:#818da0;
+    --line:#e2e7ee; --line-strong:#cdd5e0;
+    --accent:#0c9c90; --accent-ink:#0a7d73; --accent-soft:#dff5f2;
+    --win:#15803d; --win-soft:#e3f5ea;
+    --warn:#b45c09; --warn-soft:#fbeed9;
+    --stop:#c02626; --stop-soft:#fbe4e4;
+  }
+  :root[data-theme="dark"]{
+    --paper:#0b1220; --panel:#121b2c; --panel-2:#0f1726;
+    --ink:#e7ecf4; --muted:#9aa7bd; --faint:#6b7a92;
+    --line:#20293a; --line-strong:#2c384c;
+    --accent:#2dd4bf; --accent-ink:#5eead4; --accent-soft:#0f2b2a;
+    --win:#4ade80; --win-soft:#0f2a1c;
+    --warn:#fbbf24; --warn-soft:#2c2110;
+    --stop:#f87171; --stop-soft:#2c1414;
+  }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+    line-height:1.6;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  .wrap{max-width:900px;margin:0 auto;padding:0 24px}
+  section{padding:clamp(40px,6vw,72px) 0;border-top:1px solid var(--line)}
+  h2{font-size:clamp(1.4rem,3vw,1.9rem);font-weight:800;letter-spacing:-.02em;
+    margin:0 0 .3em;text-wrap:balance;line-height:1.15}
+  h3{font-size:1.05rem;font-weight:700;margin:0 0 .35em;letter-spacing:-.01em}
+  p{margin:0 0 1em;color:var(--ink)}
+  .lead{color:var(--muted)}
+  a{color:var(--accent-ink);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--accent) 40%,transparent)}
+  a:hover{border-bottom-color:var(--accent)}
+  :where(:root[data-theme="dark"],:root:not([data-theme])) a{color:var(--accent)}
+  @media (prefers-color-scheme:dark){:root:not([data-theme]) a{color:var(--accent)}}
+
+  .eyebrow{font-family:var(--mono);font-size:.72rem;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--accent-ink);margin:0 0 1.1em;font-weight:600}
+  :where(:root[data-theme="dark"]) .eyebrow{color:var(--accent)}
+  @media (prefers-color-scheme:dark){:root:not([data-theme]) .eyebrow{color:var(--accent)}}
+
+  /* ---- Header ---- */
+  header.hero{position:relative;overflow:hidden;border-top:none;
+    padding:clamp(56px,9vw,104px) 0 clamp(40px,6vw,64px)}
+  header.hero .net{position:absolute;inset:0;width:100%;height:100%;
+    opacity:.5;pointer-events:none;z-index:0}
+  header.hero .wrap{position:relative;z-index:1}
+  .brandline{font-family:var(--mono);font-size:.72rem;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--faint);margin-bottom:1.6em;font-weight:600}
+  .brandline b{color:var(--accent-ink);font-weight:700}
+  :where(:root[data-theme="dark"]) .brandline b{color:var(--accent)}
+  @media (prefers-color-scheme:dark){:root:not([data-theme]) .brandline b{color:var(--accent)}}
+  h1{font-size:clamp(2.1rem,6.2vw,3.6rem);font-weight:800;letter-spacing:-.033em;
+    line-height:1.04;margin:0 0 .5em;text-wrap:balance}
+  h1 .hl{color:var(--accent-ink)}
+  :where(:root[data-theme="dark"]) h1 .hl{color:var(--accent)}
+  @media (prefers-color-scheme:dark){:root:not([data-theme]) h1 .hl{color:var(--accent)}}
+  .hero-sub{font-size:clamp(1.02rem,2.2vw,1.22rem);color:var(--muted);
+    max-width:60ch;margin:0}
+
+  /* ---- Pillars ---- */
+  .pillars{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:8px}
+  .pillar{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:22px 20px;position:relative}
+  .pillar .k{font-family:var(--mono);font-size:.7rem;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--accent-ink);font-weight:700;margin-bottom:.9em;
+    display:flex;align-items:center;gap:.5em}
+  :where(:root[data-theme="dark"]) .pillar .k{color:var(--accent)}
+  @media (prefers-color-scheme:dark){:root:not([data-theme]) .pillar .k{color:var(--accent)}}
+  .pillar .zero{font-size:2rem;font-weight:800;letter-spacing:-.03em;line-height:1;margin-bottom:.35em}
+  .pillar p{font-size:.92rem;color:var(--muted);margin:0}
+  @media (max-width:680px){.pillars{grid-template-columns:1fr}}
+
+  /* ---- Callout / thesis ---- */
+  .thesis{border-left:3px solid var(--accent);background:var(--accent-soft);
+    padding:20px 24px;border-radius:0 12px 12px 0;margin:8px 0 0}
+  .thesis p{margin:0;font-size:1.06rem;font-weight:500}
+  .thesis strong{font-weight:750}
+
+  /* ---- Tables ---- */
+  .tscroll{overflow-x:auto;margin:24px 0 10px;border:1px solid var(--line);
+    border-radius:12px;background:var(--panel)}
+  table{border-collapse:collapse;width:100%;min-width:640px;font-size:.9rem}
+  caption{caption-side:top;text-align:left;font-family:var(--mono);font-size:.72rem;
+    letter-spacing:.08em;text-transform:uppercase;color:var(--faint);padding:14px 18px 0}
+  th,td{text-align:left;padding:13px 18px;vertical-align:top;border-top:1px solid var(--line)}
+  thead th{border-top:none;font-family:var(--mono);font-size:.72rem;letter-spacing:.06em;
+    text-transform:uppercase;color:var(--muted);font-weight:600;background:var(--panel-2)}
+  tbody tr:first-child td{border-top:none}
+  td .eng{font-weight:700;letter-spacing:-.01em}
+  td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .rowus{background:var(--accent-soft)}
+  .rowus td:first-child .eng{color:var(--accent-ink)}
+  :where(:root[data-theme="dark"]) .rowus td:first-child .eng{color:var(--accent)}
+  @media (prefers-color-scheme:dark){:root:not([data-theme]) .rowus td:first-child .eng{color:var(--accent)}}
+
+  .badge{display:inline-flex;align-items:center;gap:.42em;font-family:var(--mono);
+    font-size:.74rem;font-weight:600;padding:.2em .6em;border-radius:20px;white-space:nowrap;letter-spacing:.02em}
+  .badge::before{content:"";width:7px;height:7px;border-radius:50%}
+  .b-win{background:var(--win-soft);color:var(--win)} .b-win::before{background:var(--win)}
+  .b-warn{background:var(--warn-soft);color:var(--warn)} .b-warn::before{background:var(--warn)}
+  .b-stop{background:var(--stop-soft);color:var(--stop)} .b-stop::before{background:var(--stop)}
+
+  code,.mono{font-family:var(--mono);font-size:.86em;
+    background:var(--panel-2);padding:.08em .4em;border-radius:5px;border:1px solid var(--line)}
+
+  /* ---- Two-col map ---- */
+  .map{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:8px}
+  .map .col{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--panel)}
+  .map .col header{padding:16px 20px;border-bottom:1px solid var(--line);border-top:none;font-weight:700;
+    display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .map .col.win header{background:var(--win-soft)}
+  .map .col.other header{background:var(--panel-2)}
+  .map .col ul{list-style:none;margin:0;padding:14px 20px 20px}
+  .map .col li{padding:8px 0;border-bottom:1px dashed var(--line);font-size:.93rem;color:var(--muted)}
+  .map .col li:last-child{border-bottom:none}
+  .map .col li b{color:var(--ink);font-weight:650}
+  @media (max-width:680px){.map{grid-template-columns:1fr}}
+
+  /* ---- SQL proof block ---- */
+  .sqlproof{background:var(--panel-2);border:1px solid var(--line);border-radius:12px;
+    padding:18px 20px;margin:8px 0 0;font-family:var(--mono);font-size:.82rem;overflow-x:auto}
+  .sqlproof .cy{color:var(--accent-ink)} .sqlproof .cm{color:var(--faint)}
+  :where(:root[data-theme="dark"]) .sqlproof .cy{color:var(--accent)}
+  @media (prefers-color-scheme:dark){:root:not([data-theme]) .sqlproof .cy{color:var(--accent)}}
+
+  /* ---- Boundary panel ---- */
+  .boundary{border:1.5px solid var(--line-strong);border-radius:14px;padding:24px 26px;background:var(--panel)}
+  .boundary h2{margin-top:0}
+  .boundary .grid{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:6px}
+  .boundary .grid h3{font-family:var(--mono);font-size:.76rem;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--faint)}
+  .boundary ul{margin:.2em 0 0;padding-left:1.1em}
+  .boundary li{margin-bottom:.5em;color:var(--muted)}
+  .boundary li b{color:var(--ink)}
+  @media (max-width:680px){.boundary .grid{grid-template-columns:1fr}}
+
+  /* ---- Sources ---- */
+  .sources{font-size:.83rem}
+  .sources ol{font-family:var(--mono);font-size:.78rem;color:var(--muted);
+    padding-left:1.6em;line-height:1.9}
+  .sources li{margin-bottom:.15em}
+  .foot{color:var(--faint);font-size:.8rem;margin-top:28px;border-top:1px solid var(--line);padding-top:20px}
+
+  .kicker{font-weight:650;color:var(--ink)}
+
+  /* ---- GraphRAG reinforcement cards ---- */
+  .quad{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:8px}
+  .rcard{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+  .rcard .rk{font-family:var(--mono);font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--accent-ink);font-weight:700;margin-bottom:.5em}
+  :where(:root[data-theme="dark"]) .rcard .rk{color:var(--accent)}
+  @media (prefers-color-scheme:dark){:root:not([data-theme]) .rcard .rk{color:var(--accent)}}
+  .rcard p{font-size:.9rem;color:var(--muted);margin:0}
+  @media (max-width:680px){.quad{grid-template-columns:1fr}}
+</style>
+
+<header class="hero">
+  <svg class="net" viewBox="0 0 900 460" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <g stroke="var(--line-strong)" stroke-width="1" fill="none" opacity="0.9">
+      <path d="M120,90 L300,180 M300,180 L210,320 M300,180 L520,120 M520,120 L720,210 M520,120 L560,300 M560,300 L760,360 M210,320 L430,400 M430,400 L560,300 M720,210 L820,120 M300,180 L430,400"/>
+    </g>
+    <g fill="var(--accent)">
+      <circle cx="120" cy="90" r="4"/><circle cx="300" cy="180" r="6"/><circle cx="210" cy="320" r="4"/>
+      <circle cx="520" cy="120" r="5"/><circle cx="720" cy="210" r="4"/><circle cx="560" cy="300" r="5"/>
+      <circle cx="760" cy="360" r="4"/><circle cx="430" cy="400" r="5"/><circle cx="820" cy="120" r="4"/>
+    </g>
+  </svg>
+  <div class="wrap">
+    <div class="brandline"><b>ClickGraph</b> · ClickHouse &nbsp;&nbsp;/&nbsp;&nbsp; <b>DeltaGraph</b> · Databricks &nbsp;·&nbsp; Positioning Brief</div>
+    <h1>Your warehouse <span class="hl">&mdash;</span> or lakehouse <span class="hl">&mdash;</span> is the graph engine.</h1>
+    <p class="hero-sub">We translate Cypher to SQL and push it down to ClickHouse or Databricks. No graph database. No data movement. No second compute engine. The graph question, answered where the data already lives &mdash; at a scale the graph engines can't reach.</p>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The wedge — three things we add</p>
+    <div class="pillars">
+      <div class="pillar">
+        <div class="k">Compute</div>
+        <div class="zero">Zero</div>
+        <p>A pure translator. 100% of execution runs inside the warehouse you already operate, secure, and pay for. There is no engine to size, scale, or bill.</p>
+      </div>
+      <div class="pillar">
+        <div class="k">Data movement</div>
+        <div class="zero">Zero</div>
+        <p>Nothing is imported, copied, or flattened. Your existing tables &mdash; warehouse or open lakehouse formats (Iceberg, Delta, Parquet) &mdash; <em>are</em> the graph, with their real relationships intact. Data never leaves the platform boundary.</p>
+      </div>
+      <div class="pillar">
+        <div class="k">In-memory ceiling</div>
+        <div class="zero">Zero</div>
+        <p>We store nothing. Our scale ceiling is the warehouse's — petabyte-native. The graph engines cap at what fits in RAM.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Where this matters most — GraphRAG</p>
+    <h2>Your warehouse already does vector search. We add the graph half.</h2>
+    <p class="lead">GraphRAG needs two retrievals over your knowledge: <b>semantic</b> (&ldquo;chunks similar to this query&rdquo; &rarr; vector search) and <b>structural</b> (&ldquo;traverse from these entities to related facts&rdquo; &rarr; graph). ClickHouse and Databricks already ship native vector search.<a href="#s10">¹⁰</a><a href="#s11">¹¹</a> Today, teams do the semantic half in the warehouse and export to Neo4j/Neptune for the structural half — a second store, an ETL pipeline, a sync lag, a governance gap. The vectors are already home; the graph traversal can live there too.</p>
+    <div class="sqlproof" style="margin-bottom:22px">
+      <div class="cm"># one hybrid retrieval, one warehouse — vector seed + graph expansion</div>
+      <div><span class="cy">CALL</span> vector_search(chunks, $q, 10) <span class="cy">YIELD</span> node <span class="cm">// native ANN, in-warehouse</span></div>
+      <div><span class="cy">MATCH</span> (node)-[:MENTIONS|RELATED_TO*1..2]->(ctx) <span class="cm">// graph-expand real relationships</span></div>
+      <div><span class="cy">RETURN</span> ctx <span class="cm">// enriched, governed context &rarr; LLM</span></div>
+    </div>
+    <div class="quad">
+      <div class="rcard"><div class="rk">Freshness</div><p>RAG data is a live knowledge base. Exporting to a graph DB makes answers stale by the ETL lag. We query where fresh data lands — no ingestion, no lag.</p></div>
+      <div class="rcard"><div class="rk">No retrieval sprawl</div><p>Collapse graph into the store that already holds the vectors. One system to run and secure, not vector&nbsp;DB&nbsp;+&nbsp;graph&nbsp;DB&nbsp;+&nbsp;sync&nbsp;glue.</p></div>
+      <div class="rcard"><div class="rk">Governance</div><p>The context sent to the LLM must contain only what the user is authorized to see. A separate graph store is a second RBAC surface to get right. We inherit the warehouse's access controls.</p></div>
+      <div class="rcard"><div class="rk">Scale</div><p>Enterprise knowledge bases outgrow a ~1&nbsp;TiB in-memory graph engine. Your GraphRAG graph is as large as your warehouse — the same tables you already trust.</p></div>
+    </div>
+    <p style="font-size:.9rem;color:var(--muted);margin-top:18px"><span class="kicker">Honest scope:</span> the warehouse does the embeddings and the ANN index — we're the graph half that completes the pair, not a vector database. Retrieval + bounded graph expansion is the ready path; heavier graph-algorithm summarization (e.g. community-based GraphRAG) is where the roadmap goes next — see below.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">A flagship vertical — security graph at scale</p>
+    <h2>Your security telemetry is already in the warehouse. It's already a graph.</h2>
+    <p class="lead">Network flows, DNS, auth logs, cloud audit trails &mdash; petabytes of it, already landing in ClickHouse or the lakehouse, ingested at millions of events per second. The questions security teams ask are inherently graph questions: <b>lateral movement</b> (which host reached which host reached which), <b>blast radius</b> (what can this compromised identity touch), <b>attack paths</b>, <b>threat propagation</b>. Today they want graph queries on this data but can't &mdash; you cannot move a petabyte of flow logs into a graph database. So the graph question goes unasked, or gets asked on a stale, sampled export.</p>
+    <div class="sqlproof" style="margin-bottom:20px">
+      <div class="cm"># lateral-movement / blast-radius query — Cypher over the live log tables</div>
+      <div><span class="cy">MATCH</span> (src:Host {compromised: true})-[:CONNECTED_TO*1..4]->(reachable:Host)</div>
+      <div><span class="cy">WHERE</span> reachable.segment = <span class="cy">'crown-jewels'</span></div>
+      <div><span class="cy">RETURN</span> reachable.id, <span class="cy">count</span>(*) <span class="cm">// what an intrusion can reach, right now</span></div>
+    </div>
+    <div class="quad">
+      <div class="rcard"><div class="rk">Scale is the whole point</div><p>PB of telemetry can't fit a ~1&nbsp;TiB in-memory graph engine. Pushdown queries it in place, at the warehouse's scale &mdash; the only place the query can actually run.</p></div>
+      <div class="rcard"><div class="rk">Freshness = detection</div><p>A stale security graph misses an <em>active</em> intrusion. Export-then-query adds ETL lag exactly when minutes matter. We query where events land &mdash; zero ingestion lag.</p></div>
+      <div class="rcard"><div class="rk">No second copy of sensitive logs</div><p>Standing up a graph store means a second, separately-governed copy of your most sensitive data. Querying in place keeps one governed source under existing controls.</p></div>
+      <div class="rcard"><div class="rk">The shapes fit</div><p>Lateral movement, blast radius, entity resolution &mdash; bounded traversal + pattern-match + aggregate. Exactly the query shapes pushdown wins.</p></div>
+    </div>
+    <p style="font-size:.9rem;color:var(--muted);margin-top:18px"><span class="kicker">Not a slide &mdash; already modeled.</span> ClickGraph ships Zeek network-security schemas out of the box: <code>IP</code>, <code>Domain</code>, <code>ExternalIP</code> entities over connection, DNS, and resolution logs (<code>REQUESTED</code>, <code>RESOLVED_TO</code>, <code>ACCESS</code> edges) &mdash; graph queries over raw security telemetry, no import step.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The wedge that's actually ours</p>
+    <h2>&ldquo;Zero ETL&rdquo; isn't the differentiator. Zero&nbsp;compute is.</h2>
+    <p class="lead">Query-in-place is a crowded claim — others make it too. The difference is one level deeper: other engines are zero-ETL but still deploy <em>their own distributed graph compute engine</em> beside your data. You run it, scale it, pay for it. We deploy nothing that executes: Cypher becomes SQL, and your warehouse does the work.</p>
+    <div class="thesis">
+      <p><strong>The graph queries where native engines beat SQL are precisely the queries that can't reach your data scale.</strong> Deep traversal and graph algorithms need the working graph resident in memory — so it must fit in one engine's RAM. At hundreds of TB to petabytes, it physically can't.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The scale ceiling — the analytics engines are in-memory by design</p>
+    <h2>In-memory is the source of their speed <em>and</em> the source of their ceiling.</h2>
+    <p class="lead">The two engines purpose-built for graph <em>analytics</em> both hold the whole graph in RAM. That's not incidental — iterative algorithms need it. It's also why they stop long before warehouse scale.</p>
+    <div class="tscroll">
+      <table>
+        <caption>Documented capacity ceilings · vendor sources cited below</caption>
+        <thead><tr><th>Engine</th><th>Architecture</th><th>Ceiling</th><th>At 100s&nbsp;TB&nbsp;–&nbsp;PB</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="eng">Neptune Analytics</span><br><span style="color:var(--faint);font-size:.85em">what <span class="mono" style="font-size:.9em">nx-neptune</span> imports into</span></td>
+            <td>Entire graph in-memory, provisioned in <code>m-NCU</code> (~1&nbsp;GiB each)</td>
+            <td class="num">~1 TiB<br><span style="color:var(--faint)">1024 m-NCU max</span></td>
+            <td><span class="badge b-stop">100–1000× short</span></td>
+          </tr>
+          <tr>
+            <td><span class="eng">Neo4j GDS</span></td>
+            <td>Algorithms run entirely in heap; heap ≈ 90% of one machine's RAM</td>
+            <td class="num">Single-box RAM<br><span style="color:var(--faint)">estimate-and-abort</span></td>
+            <td><span class="badge b-stop">can't hold it</span></td>
+          </tr>
+          <tr>
+            <td><span class="eng">Neptune Database</span></td>
+            <td>Distributed storage — but OLTP, not analytics</td>
+            <td class="num">128 TiB<br><span style="color:var(--faint)">incl. indices + logs</span></td>
+            <td><span class="badge b-warn">&lt; 1 PB, wrong shape</span></td>
+          </tr>
+          <tr class="rowus">
+            <td><span class="eng">ClickGraph / DeltaGraph</span></td>
+            <td>Pushdown to the warehouse — <b>stores nothing</b></td>
+            <td class="num">Warehouse ceiling<br><span style="color:var(--faint)">PB-native</span></td>
+            <td><span class="badge b-win">scales with the warehouse</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="font-size:.9rem;color:var(--muted);margin-top:14px">On Neptune Analytics, even <code>MATCH (n) RETURN count(n)</code> can run out of memory — counting all vertices &ldquo;is not memory bounded.&rdquo;<a href="#s4">⁴</a> A system where counting your nodes can OOM is not a system for petabyte data. AWS truthfully markets it as analyzing <em>tens of billions</em> of connections — that's ~1 TiB of RAM. Your data is 100–1000× that. Their number is real at their scale; your scale is where their scale ends.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">The honest map — it's not graph vs SQL, it's query shape</p>
+    <h2>Where pushdown wins, where native graph wins.</h2>
+    <p class="lead">We don't claim to be faster at everything. We claim the right tool per query shape — and that most real &ldquo;graph analytics&rdquo; is the top row.</p>
+    <div class="map">
+      <div class="col win">
+        <header>SQL pushdown wins <span class="badge b-win">our home turf</span></header>
+        <ul>
+          <li><b>Pattern match + filter + aggregate</b> — fraud rings, recommendations, lineage, 1–3 hop. Set-oriented, vectorized, at scale.</li>
+          <li><b>Bounded traversal</b> — known finite depth compiles to MPP-parallel joins.</li>
+          <li><b>Real-time</b> — query where fresh data already lands (ClickHouse ingests millions of rows/sec). Zero ingestion lag, because there's no ingestion.</li>
+        </ul>
+      </div>
+      <div class="col other">
+        <header>Native graph wins <span class="badge b-warn">a real carve-out</span></header>
+        <ul>
+          <li><b>Iterative whole-graph algorithms</b> — PageRank, community detection, betweenness. These are <em>batch</em>, run on a snapshot.</li>
+          <li><b>Unbounded deep traversal</b> — arbitrary-depth transitive closure, at a scale that fits in memory.</li>
+          <li>Use a dedicated GDS/cuGraph tool for these. We don't pretend to be one — and at your data scale, the snapshot has to be sampled down to fit anyway.</li>
+        </ul>
+      </div>
+    </div>
+    <p style="font-size:.9rem;color:var(--muted);margin-top:16px">The reframe: &ldquo;graph algorithms&rdquo; and &ldquo;real-time&rdquo; are in tension. The heavy algorithms are offline batch. The real-time graph workloads are pattern-matching + aggregation — exactly the shape pushdown wins, on data too fresh and too large to have been imported anywhere.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Traversal — we can do what they do, plus what they can't</p>
+    <h2>Two strategies available. Some engines have only one.</h2>
+    <p class="lead">Variable-length paths compile differently by shape. We already emit MPP-parallel join chains for exact hops; bounded ranges are a join-expansion optimization on the roadmap; unbounded traversal is a capability some SQL backends structurally lack.</p>
+    <div class="tscroll">
+      <table>
+        <caption>Variable-length path strategy by query shape</caption>
+        <thead><tr><th>Traversal</th><th>ClickGraph / DeltaGraph</th><th>Engines on StarRocks-class SQL backends</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="num">Exact <code>*N..N</code></td>
+            <td><span class="badge b-win">chained joins today</span> MPP-parallel, no recursion</td>
+            <td>Join expansion</td>
+          </tr>
+          <tr>
+            <td class="num">Bounded <code>*1..3</code></td>
+            <td><span class="badge b-warn">roadmap</span> compile to <code>UNION&nbsp;ALL</code> of fixed-hop joins</td>
+            <td>Join expansion — the only option available</td>
+          </tr>
+          <tr>
+            <td class="num">Unbounded <code>*1..</code></td>
+            <td><span class="badge b-win">native</span> recursive CTE on ClickHouse &amp; Databricks</td>
+            <td><span class="badge b-stop">not expressible in-engine</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="font-size:.92rem;color:var(--muted);margin-top:16px"><span class="kicker">The honest boundary:</span> recursive CTEs are row-iterative on ClickHouse — slower than vectorized scans, and best replaced by join expansion for bounded ranges (our roadmap).<a href="#s7">⁷</a> But <em>unbounded</em> arbitrary-depth traversal is something StarRocks-class backends can't express at all: StarRocks has no <code>WITH RECURSIVE</code> — the feature was requested and left unimplemented.<a href="#s9">⁹</a> We have both strategies; that class of engine has one. And unbounded transitive closure over a petabyte is expensive for <em>everyone</em> — which is why it belongs to a dedicated engine on a snapshot, not to any warehouse.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">Openness — ask what runs on your data, and whether you can read the answer</p>
+    <h2>We show our work. A black box can't.</h2>
+    <p class="lead">Graph engines are usually opaque — you trust that a plan is good and that your data is handled well. We're a translator, and every query we generate is inspectable before it runs.</p>
+    <div class="sqlproof">
+      <div class="cm"># Cypher in —</div>
+      <div><span class="cy">MATCH</span> (a:User)-[:FOLLOWS*2..2]->(b:User) <span class="cy">RETURN</span> b.name</div>
+      <div class="cm" style="margin-top:.7em"># exact SQL out (<span style="color:var(--accent-ink)">sql_only</span> mode) — no recursion, MPP-parallel joins:</div>
+      <div>&nbsp;&nbsp;<span class="cy">FROM</span> users a</div>
+      <div>&nbsp;&nbsp;<span class="cy">JOIN</span> user_follows r1 <span class="cy">ON</span> a.user_id = r1.follower_id</div>
+      <div>&nbsp;&nbsp;<span class="cy">JOIN</span> user_follows r2 <span class="cy">ON</span> r1.followed_id = r2.follower_id</div>
+      <div>&nbsp;&nbsp;<span class="cy">JOIN</span> users b <span class="cy">ON</span> r2.followed_id = b.user_id</div>
+    </div>
+    <p style="margin-top:18px">Point a skeptic at <code>sql_only</code> and they see exactly what will run on their ClickHouse or Databricks — the joins, the predicates, the pushdown. A closed-source engine asks you to trust a box you can't open: what its engine does, and where your data is processed. When you evaluate any graph engine, ask what it's built on and whether you're allowed to know. We're open source; the SQL is yours to read.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="boundary">
+      <h2>When <em>not</em> to reach for us</h2>
+      <p style="color:var(--muted);margin-bottom:6px">The honesty that makes the rest credible. Warehouse-native graph is an identity, not just an upside — you inherit the warehouse's scale and governance <em>and</em> its traversal-performance profile.</p>
+      <div class="grid">
+        <div>
+          <h3>Use a native graph DB / GDS when</h3>
+          <ul>
+            <li><b>Iterative whole-graph algorithms</b> are the job — PageRank, Louvain, betweenness — and the graph fits in memory.</li>
+            <li><b>Deep OLTP traversal</b> — 10-hop, millisecond, per-request — is the core workload.</li>
+            <li>Your data is small enough (GB–low TB) that in-memory adjacency is a clean win.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Reach for us when</h3>
+          <ul>
+            <li>Your data <b>already lives</b> in a warehouse or lakehouse &mdash; ClickHouse, Databricks, Iceberg, Delta &mdash; and is <b>too large to move</b> into a graph store.</li>
+            <li>The questions are <b>pattern-matching, filtering, aggregation, bounded traversal</b> — most real graph analytics.</li>
+            <li>You want <b>one source of truth</b>, no second datastore to sync, and <b>graph on fresh data</b> with zero ingestion lag.</li>
+          </ul>
+        </div>
+      </div>
+      <p style="font-size:.9rem;color:var(--muted);margin-top:22px;border-top:1px dashed var(--line);padding-top:16px"><span class="kicker">And the ceiling is ours to raise.</span> A large family of graph algorithms — PageRank, connected components, shortest paths, label propagation — is <em>iterated <code>JOIN</code>&nbsp;+&nbsp;<code>GROUP&nbsp;BY</code> over a semiring</em>, exactly what a vectorized warehouse does best. Nothing prevents pushing further: semiring aggregate functions, keyed/settled-set recursion, and iterated-fixpoint execution can bring more of the graph-algorithm family inside the warehouse — at a scale the in-memory engines can't reach. The direction is open; the primitives already exist.</p>
+    </div>
+  </div>
+</section>
+
+<section class="sources">
+  <div class="wrap">
+    <p class="eyebrow">Sources — every competitive claim is first-party or the vendor's own public docs</p>
+    <ol>
+      <li id="s1">Amazon Neptune — 128 TiB storage per cluster. aws.amazon.com/about-aws/whats-new/2022/02/amazon-neptune-128tib-storage-cluster</li>
+      <li id="s2">Amazon Neptune Limits (cluster volume, incl. indices &amp; logs). docs.aws.amazon.com/neptune/latest/userguide/limits.html</li>
+      <li id="s3">Neptune Analytics capacity units (m-NCU ≈ 1 GiB; 32–1024 range). aws.amazon.com/about-aws/whats-new/2024/07/amazon-neptune-analytics-smaller-capacity-units</li>
+      <li id="s4">Neptune Analytics Limits (unbounded vertex count / OOM). docs.aws.amazon.com/neptune-analytics/latest/userguide/analytics-limits.html</li>
+      <li id="s5">Neo4j GDS — System Requirements (heap ≈ 90% RAM; CE concurrency 4). neo4j.com/docs/graph-data-science/current/installation/System-requirements/</li>
+      <li id="s6">Neo4j GDS — Memory Estimation (estimate-and-abort; in-heap projection). neo4j.com/docs/graph-data-science/current/common-usage/memory-estimation/</li>
+      <li id="s7">ClickHouse — recursive CTE no index pushdown per step. github.com/ClickHouse/ClickHouse/issues/75026</li>
+      <li id="s8">ClickHouse — recursive CTE distributed fix. github.com/ClickHouse/ClickHouse/pull/63939</li>
+      <li id="s9">StarRocks — <code>WITH RECURSIVE</code> feature request, unimplemented. github.com/StarRocks/starrocks/issues/34616</li>
+      <li id="s10">ClickHouse — native vector similarity index (HNSW, cosine/L2). clickhouse.com/docs/engines/table-engines/mergetree-family/annindexes</li>
+      <li id="s11">Databricks AI Search (Vector Search) — native, Delta-integrated, to ~1B vectors. learn.microsoft.com/azure/databricks/vector-search/vector-search</li>
+    </ol>
+    <p class="foot">ClickGraph &amp; DeltaGraph — read-only Cypher-to-SQL graph query engines · v0.6.8 (DeltaGraph preview). Figures current as of publication; vendor ceilings change over time — verify against the linked docs. Comparative claims describe publicly documented behavior of named technologies, not any vendor's non-public internals.</p>
+  </div>
+</section>
+
+</body>
+</html>
