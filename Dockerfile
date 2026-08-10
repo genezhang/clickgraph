@@ -23,12 +23,20 @@ RUN cargo chef cook --release --recipe-path recipe.json
 # Copy source code
 COPY . .
 
-# Build the application binaries
-RUN cargo build --release --bin clickgraph && \
+# Build the application binaries.
+#
+# `--features databricks` compiles in the DeltaGraph (Databricks SQL Warehouse)
+# executor and Spark-SQL dialect, and lets us build the `deltagraph` server bin
+# alongside `clickgraph` in a single pass. The feature is chdb-free (adds no
+# heavy deps — `reqwest` is already non-optional), so the `clickgraph` binary is
+# unchanged in behavior: its Databricks code is inert unless `--databricks` is
+# passed. See docs/deltagraph/PACKAGING.md.
+RUN cargo build --release --features databricks --bin clickgraph --bin deltagraph && \
     cargo build --release -p clickgraph-client --bin clickgraph-client
 
 # Strip debug symbols to reduce binary size
 RUN strip /app/target/release/clickgraph && \
+    strip /app/target/release/deltagraph && \
     strip /app/target/release/clickgraph-client
 
 # ============================================================================
@@ -49,13 +57,18 @@ RUN useradd -m -u 1000 -s /bin/bash clickgraph
 # Set working directory
 WORKDIR /app
 
-# Copy binaries from builder
+# Copy binaries from builder.
+# Both server binaries ship in one image: `clickgraph` (ClickHouse, the default
+# entrypoint) and `deltagraph` (Databricks). Select DeltaGraph at runtime with
+#   docker run --entrypoint /usr/local/bin/deltagraph ...
+# See docs/deltagraph/DOCKER_QUICKSTART.md.
 COPY --from=builder /app/target/release/clickgraph /usr/local/bin/clickgraph
+COPY --from=builder /app/target/release/deltagraph /usr/local/bin/deltagraph
 COPY --from=builder /app/target/release/clickgraph-client /usr/local/bin/clickgraph-client
 
 # Set proper permissions
 RUN chown -R clickgraph:clickgraph /app && \
-    chmod +x /usr/local/bin/clickgraph /usr/local/bin/clickgraph-client
+    chmod +x /usr/local/bin/clickgraph /usr/local/bin/deltagraph /usr/local/bin/clickgraph-client
 
 # Switch to non-root user
 USER clickgraph

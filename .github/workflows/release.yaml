@@ -64,19 +64,34 @@ jobs:
         with:
           fetch-depth: 0
 
-      # We ship only the `clickgraph` server and `clickgraph-client` REPL as
-      # release artifacts. Building `--workspace` would pull in `clickgraph-ffi`
-      # and `clickgraph-tck`, which both enable the `embedded` feature on
-      # `clickgraph-embedded` → pulls in `chdb-rust` → requires `libchdb`, which
-      # has no Windows binary. Cargo feature unification means any single
-      # workspace crate enabling `embedded` infects the whole graph, so we use
-      # explicit `-p` flags to scope the build to just the shipped binaries.
-      - name: Build & cross-compile binaries
+      # We ship the `clickgraph` server + `clickgraph-client` REPL (ClickHouse)
+      # and the `deltagraph` server (Databricks) as release artifacts. Building
+      # `--workspace` would pull in `clickgraph-ffi` and `clickgraph-tck`, which
+      # both enable the `embedded` feature on `clickgraph-embedded` → pulls in
+      # `chdb-rust` → requires `libchdb`, which has no Windows binary. Cargo
+      # feature unification means any single workspace crate enabling `embedded`
+      # infects the whole graph, so we use explicit `-p` flags to scope the
+      # build to just the shipped binaries.
+      #
+      # The `clickgraph` tarball is built WITHOUT any extra feature, so a
+      # ClickHouse user's download stays byte-for-byte identical and carries no
+      # Databricks code. `deltagraph` is a separate pass with
+      # `--features databricks` (chdb-free — cross-compiles to all four targets;
+      # see docs/deltagraph/PACKAGING.md).
+      - name: Build & cross-compile clickgraph + client (ClickHouse)
         uses: houseabsolute/actions-rust-cross@v1
         with:
           command: build
           target: ${{ matrix.target }}
-          args: "--locked --release -p clickgraph -p clickgraph-client"
+          args: "--locked --release -p clickgraph -p clickgraph-client -p clickgraph-tool"
+          strip: true
+
+      - name: Build & cross-compile deltagraph (Databricks)
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          args: "--locked --release --features databricks --bin deltagraph"
           strip: true
 
       - name: Package artifacts (Unix)
@@ -88,6 +103,10 @@ jobs:
             dist/${{ matrix.name }}/clickgraph-${{ matrix.name }}.tar.gz clickgraph
           tar -C target/${{ matrix.target }}/release -czf \
             dist/${{ matrix.name }}/clickgraph-client-${{ matrix.name }}.tar.gz clickgraph-client
+          tar -C target/${{ matrix.target }}/release -czf \
+            dist/${{ matrix.name }}/cg-${{ matrix.name }}.tar.gz cg
+          tar -C target/${{ matrix.target }}/release -czf \
+            dist/${{ matrix.name }}/deltagraph-${{ matrix.name }}.tar.gz deltagraph
 
       - name: Package artifacts (Windows)
         if: runner.os == 'Windows'
@@ -98,6 +117,8 @@ jobs:
           # Use PowerShell Compress-Archive to create ZIPs
           Compress-Archive -Path target/${{ matrix.target }}/release/clickgraph.exe -DestinationPath dist/${{ matrix.name }}/clickgraph-${{ matrix.name }}.zip -Force
           Compress-Archive -Path target/${{ matrix.target }}/release/clickgraph-client.exe -DestinationPath dist/${{ matrix.name }}/clickgraph-client-${{ matrix.name }}.zip -Force
+          Compress-Archive -Path target/${{ matrix.target }}/release/cg.exe -DestinationPath dist/${{ matrix.name }}/cg-${{ matrix.name }}.zip -Force
+          Compress-Archive -Path target/${{ matrix.target }}/release/deltagraph.exe -DestinationPath dist/${{ matrix.name }}/deltagraph-${{ matrix.name }}.zip -Force
 
       - name: Upload clickgraph binary
         uses: softprops/action-gh-release@v2
@@ -112,5 +133,19 @@ jobs:
         with:
           # upload_url: ${{ needs.create_release.outputs.upload_url }}
           files: dist/${{ matrix.name }}/clickgraph-client-${{ matrix.name }}.*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload cg binary
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.name }}/cg-${{ matrix.name }}.*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload deltagraph binary
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.name }}/deltagraph-${{ matrix.name }}.*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

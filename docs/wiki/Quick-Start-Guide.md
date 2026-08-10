@@ -13,13 +13,17 @@ Get ClickGraph running in 5 minutes and execute your first graph query.
 The fastest way to get the server and `cg` CLI without building from source:
 
 ```bash
-# ClickGraph server
-curl -L https://github.com/genezhang/clickgraph/releases/latest/download/clickgraph-linux-x86_64 \
-  -o clickgraph && chmod +x clickgraph
+# ClickGraph server (ClickHouse backend)
+curl -L https://github.com/genezhang/clickgraph/releases/latest/download/clickgraph-linux-amd64.tar.gz \
+  | tar -xz && chmod +x clickgraph
+
+# DeltaGraph server (Databricks backend)
+curl -L https://github.com/genezhang/clickgraph/releases/latest/download/deltagraph-linux-amd64.tar.gz \
+  | tar -xz && chmod +x deltagraph
 
 # cg CLI tool (agent/scripting use — no server needed)
-curl -L https://github.com/genezhang/clickgraph/releases/latest/download/cg-linux-x86_64 \
-  -o cg && chmod +x cg
+curl -L https://github.com/genezhang/clickgraph/releases/latest/download/cg-linux-amd64.tar.gz \
+  | tar -xz && chmod +x cg
 ```
 
 Then run the server:

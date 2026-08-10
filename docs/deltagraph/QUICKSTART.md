@@ -25,8 +25,13 @@ Neo4j Browser at the server, run sample Cypher.
 - A **schema YAML** describing how your tables map to a graph
   (`benchmarks/social_network/schemas/social_benchmark.yaml` is the
   smallest example in the repo).
-- Rust 1.85+ to build from source. We do not yet ship pre-built
-  `deltagraph` release artifacts.
+- Rust 1.85+ to build from source.
+
+> 🐳 **Prefer Docker?** The published `genezhang/clickgraph` image ships the
+> `deltagraph` binary too, and pre-built `deltagraph` tarballs are attached to
+> each release. See [DOCKER_QUICKSTART.md](./DOCKER_QUICKSTART.md) for the
+> no-build path, and [PACKAGING.md](./PACKAGING.md) for how the binaries are
+> packaged and selected.
 
 ## 1. Build
 
