@@ -1,0 +1,724 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="An AI agent queries your data warehouse as a live graph through MCP. Five GraphRAG use cases — recommendation, content grounding, connection paths — each verified live on Databricks. No graph database, no ETL.">
+<meta name="color-scheme" content="light dark">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Warehouse GraphRAG — what traversal does that similarity can't">
+<meta property="og:description" content="An AI agent queries your warehouse as a live graph through MCP. Five GraphRAG use cases, each verified live on Databricks. No graph database, no ETL.">
+<meta property="og:url" content="https://genezhang.github.io/clickgraph/graphrag/">
+<meta property="og:image" content="https://genezhang.github.io/clickgraph/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="A live graph rendered from a Cypher query executed on Databricks — no graph database.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Warehouse GraphRAG — what traversal does that similarity can't">
+<meta name="twitter:description" content="An AI agent queries your warehouse as a live graph through MCP. Five GraphRAG use cases, verified live on Databricks.">
+<meta name="twitter:image" content="https://genezhang.github.io/clickgraph/og-image.png">
+<title>Warehouse GraphRAG — ClickGraph &amp; DeltaGraph</title>
+<style>
+  :root {
+    --bg: #f6f8fb;
+    --surface: #ffffff;
+    --surface-2: #eef2f7;
+    --border: #d9e0ea;
+    --text: #16202e;
+    --muted: #56667e;
+    --accent: #2f6fdb;
+    --accent-soft: rgba(47, 111, 219, 0.12);
+    --node: #c8781f;
+    --node-soft: rgba(200, 120, 31, 0.14);
+    --good: #178a57;
+    --good-soft: rgba(23, 138, 87, 0.12);
+    --cant: #6f7a8c;
+    --cant-soft: rgba(111, 122, 140, 0.12);
+    --code-bg: #0e1520;
+    --code-text: #d7e2f0;
+    --code-dim: #7d8ea6;
+    --shadow: 0 1px 2px rgba(16,32,46,.04), 0 8px 28px rgba(16,32,46,.06);
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  :root:not([data-theme="light"]) {
+    @media (prefers-color-scheme: dark) {
+      --bg: #0a0f17;
+      --surface: #121a26;
+      --surface-2: #182231;
+      --border: #26333f;
+      --text: #e7eef7;
+      --muted: #93a2b8;
+      --accent: #63a0ff;
+      --accent-soft: rgba(99, 160, 255, 0.14);
+      --node: #f0a45a;
+      --node-soft: rgba(240, 164, 90, 0.15);
+      --good: #4cce8a;
+      --good-soft: rgba(76, 206, 138, 0.14);
+      --cant: #8896a8;
+      --cant-soft: rgba(136, 150, 168, 0.13);
+      --code-bg: #060a11;
+      --code-text: #d7e2f0;
+      --code-dim: #6f8098;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 34px rgba(0,0,0,.4);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0a0f17;
+    --surface: #121a26;
+    --surface-2: #182231;
+    --border: #26333f;
+    --text: #e7eef7;
+    --muted: #93a2b8;
+    --accent: #63a0ff;
+    --accent-soft: rgba(99, 160, 255, 0.14);
+    --node: #f0a45a;
+    --node-soft: rgba(240, 164, 90, 0.15);
+    --good: #4cce8a;
+    --good-soft: rgba(76, 206, 138, 0.14);
+    --cant: #8896a8;
+    --cant-soft: rgba(136, 150, 168, 0.13);
+    --code-bg: #060a11;
+    --code-text: #d7e2f0;
+    --code-dim: #6f8098;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 34px rgba(0,0,0,.4);
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.6;
+    font-size: 17px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
+  h1, h2, h3 { text-wrap: balance; line-height: 1.15; letter-spacing: -0.02em; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--mono); font-size: 0.86em; }
+
+  /* ---- eyebrow / labels ---- */
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  /* ---- hero ---- */
+  header {
+    border-bottom: 1px solid var(--border);
+    background:
+      radial-gradient(120% 90% at 50% -10%, var(--accent-soft), transparent 60%);
+  }
+  .hero { padding: 68px 0 54px; }
+  .hero h1 {
+    font-size: clamp(34px, 6vw, 56px);
+    margin: 18px 0 0;
+    font-weight: 700;
+  }
+  .hero .lede {
+    font-size: clamp(18px, 2.4vw, 21px);
+    color: var(--muted);
+    max-width: 40ch;
+    margin: 20px 0 0;
+  }
+  .hero .lede strong { color: var(--text); font-weight: 600; }
+  .canvas-frame {
+    margin-top: 40px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .canvas-cap {
+    display: flex; align-items: center; gap: 10px;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--muted);
+    background: var(--surface-2);
+  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .dot.e { background: var(--accent); }
+  .dot.n { background: var(--node); }
+  canvas { display: block; width: 100%; height: 260px; }
+
+  /* ---- section rhythm ---- */
+  section { padding: 56px 0; border-bottom: 1px solid var(--border); }
+  section h2 { font-size: clamp(24px, 3.4vw, 32px); margin: 10px 0 0; }
+  .section-intro { color: var(--muted); margin: 14px 0 0; max-width: 62ch; }
+
+  /* ---- loop diagram ---- */
+  .loop {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-top: 34px;
+  }
+  .loop .step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 16px;
+    position: relative;
+    box-shadow: var(--shadow);
+  }
+  .loop .num {
+    font-family: var(--mono); font-size: 12px; font-weight: 700;
+    color: var(--accent); letter-spacing: .1em;
+  }
+  .loop .step h4 { margin: 8px 0 6px; font-size: 15.5px; }
+  .loop .step p { margin: 0; font-size: 13.5px; color: var(--muted); line-height: 1.5; }
+  .loop .step .tool { font-family: var(--mono); font-size: 12px; color: var(--node); }
+  @media (max-width: 720px) { .loop { grid-template-columns: 1fr 1fr; } }
+
+  /* ---- scenario cards ---- */
+  .scenario { margin-top: 34px; }
+  .scenario:first-of-type { margin-top: 30px; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .card-head {
+    padding: 20px 22px 18px;
+    display: flex; flex-wrap: wrap; gap: 14px; align-items: baseline;
+    justify-content: space-between;
+  }
+  .card-head .idx {
+    font-family: var(--mono); font-size: 13px; color: var(--accent);
+    font-weight: 700; letter-spacing: .1em;
+  }
+  .card-head h3 { margin: 6px 0 0; font-size: 20px; }
+  .ask {
+    font-size: 16px; color: var(--text); margin: 4px 0 0;
+    max-width: 52ch;
+  }
+  .ask::before {
+    content: "You";
+    font-family: var(--mono); font-size: 11px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--muted);
+    display: inline-block; margin-right: 10px;
+    padding: 2px 7px; border: 1px solid var(--border); border-radius: 5px;
+    vertical-align: 1px;
+  }
+  .badges { display: flex; flex-direction: column; gap: 7px; align-items: flex-end; flex: none; }
+  .badge {
+    font-family: var(--mono); font-size: 11.5px; font-weight: 600;
+    padding: 4px 10px; border-radius: 999px; white-space: nowrap;
+    letter-spacing: .01em;
+  }
+  .badge.hops { background: var(--accent-soft); color: var(--accent); }
+  .badge.can  { background: var(--good-soft); color: var(--good); }
+  .badge.cant { background: var(--cant-soft); color: var(--cant); }
+
+  .toolcall {
+    font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+    padding: 0 22px 14px;
+    display: flex; align-items: center; gap: 9px;
+  }
+  .toolcall .pill {
+    color: var(--node); border: 1px solid var(--border);
+    background: var(--node-soft);
+    padding: 2px 8px; border-radius: 6px;
+  }
+  .toolcall .arrow { color: var(--border); }
+
+  pre {
+    margin: 0; background: var(--code-bg); color: var(--code-text);
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.65;
+    padding: 18px 22px; overflow-x: auto;
+  }
+  pre .k { color: #7cb0ff; }
+  pre .s { color: #e6a672; }
+  pre .c { color: var(--code-dim); }
+  pre .f { color: #9ad9c4; }
+
+  .result { padding: 6px 22px 22px; }
+  .result-label {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--good);
+    margin: 16px 0 10px; display: flex; align-items: center; gap: 7px;
+  }
+  .result-label::before {
+    content: ""; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--good);
+  }
+  .tbl-scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th, td { text-align: left; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+  th {
+    font-family: var(--mono); font-size: 11.5px; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--muted); font-weight: 600;
+    border-bottom: 1px solid var(--border);
+  }
+  td { color: var(--text); }
+  td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--accent); }
+  tr:last-child td { border-bottom: none; }
+  .chain {
+    font-family: var(--mono); font-size: 15px; padding: 4px 0 2px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  .chain .n { background: var(--node-soft); color: var(--node); padding: 3px 11px; border-radius: 7px; font-weight: 600; }
+  .chain .e { color: var(--muted); }
+
+  .note {
+    margin: 0 22px 22px; padding: 14px 16px;
+    border: 1px solid var(--border); border-left: 3px solid var(--node);
+    border-radius: 8px; background: var(--node-soft);
+    font-size: 13.5px; color: var(--text);
+  }
+  .note b { color: var(--node); }
+  .note.limit { border-left-color: var(--cant); background: var(--cant-soft); }
+  .note.limit b { color: var(--cant); }
+
+  /* ---- verdict table ---- */
+  .verdict { margin-top: 30px; border-radius: 14px; overflow: hidden;
+             border: 1px solid var(--border); box-shadow: var(--shadow); }
+  .verdict table { font-size: 14.5px; }
+  .verdict th, .verdict td { padding: 12px 16px; }
+  .verdict thead th { background: var(--surface-2); }
+  .verdict tbody tr { background: var(--surface); }
+  .v-yes { color: var(--cant); font-family: var(--mono); font-size: 13px; }
+  .v-no  { color: var(--good); font-weight: 600; font-family: var(--mono); font-size: 13px; }
+
+  /* ---- kicker / footer ---- */
+  .kicker { padding: 60px 0; text-align: center; border-bottom: 1px solid var(--border); }
+  .kicker h2 { font-size: clamp(22px, 3vw, 30px); }
+  .kicker p { color: var(--muted); max-width: 54ch; margin: 16px auto 0; }
+  .swap {
+    display: inline-flex; flex-wrap: wrap; gap: 10px; margin-top: 26px;
+    font-family: var(--mono); font-size: 14px;
+    background: var(--code-bg); color: var(--code-text);
+    padding: 14px 20px; border-radius: 12px; text-align: left;
+    box-shadow: var(--shadow); max-width: 100%; overflow-x: auto;
+  }
+  .swap .port { color: #9ad9c4; }
+  .swap .cm { color: var(--code-dim); }
+  footer { padding: 34px 0 60px; color: var(--muted); font-size: 13.5px; }
+  footer .meta { font-family: var(--mono); font-size: 12.5px; }
+  footer a { color: var(--accent); }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+  .reveal { opacity: 0; transform: translateY(14px); transition: opacity .6s ease, transform .6s ease; }
+  .reveal.in { opacity: 1; transform: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap hero">
+    <div class="eyebrow">GraphRAG · Model Context Protocol · zero ETL</div>
+    <h1>An AI agent queries your warehouse as a graph.</h1>
+    <p class="lede">No graph database. No pipeline. The agent speaks Bolt to
+      ClickGraph / DeltaGraph, which translates Cypher to <strong>ClickHouse</strong>
+      or <strong>Spark SQL</strong> and runs it where the data already lives.</p>
+
+    <div class="canvas-frame">
+      <div class="canvas-cap">
+        <span class="dot n"></span> user &nbsp;
+        <span class="dot e"></span> FOLLOWS &nbsp;·&nbsp;
+        <span style="color:var(--accent)">watch the 2-hop traversal light up</span>
+      </div>
+      <canvas id="graph" width="1600" height="520" aria-label="Animated social graph showing a two-hop traversal from Alice through David to Ben"></canvas>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <div class="eyebrow">The loop</div>
+    <h2>Two tools are all it takes</h2>
+    <p class="section-intro">Point any MCP-capable assistant at the Bolt endpoint.
+      It gets <code>get_neo4j_schema</code> and <code>read_neo4j_cypher</code> — enough
+      to discover the graph and answer questions grounded in live warehouse rows.</p>
+    <div class="loop">
+      <div class="step reveal">
+        <div class="num">01</div>
+        <h4>Discover</h4>
+        <p>Agent calls <span class="tool">get_neo4j_schema</span> — learns the labels, properties, and relationships.</p>
+      </div>
+      <div class="step reveal">
+        <div class="num">02</div>
+        <h4>Translate</h4>
+        <p>Plain-English question → Cypher, written from the discovered schema.</p>
+      </div>
+      <div class="step reveal">
+        <div class="num">03</div>
+        <h4>Traverse</h4>
+        <p>Agent calls <span class="tool">read_neo4j_cypher</span>; Cypher is compiled to warehouse SQL.</p>
+      </div>
+      <div class="step reveal">
+        <div class="num">04</div>
+        <h4>Ground</h4>
+        <p>Real rows return; the answer is grounded in the warehouse, not a guess.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="eyebrow">Five scenarios · verified live on Databricks</div>
+    <h2>What traversal does that similarity can't</h2>
+    <p class="section-intro">The first is ordinary retrieval. Everything after it
+      depends on following edges across the warehouse — which a vector store cannot
+      do. Every result below is the actual rows returned from the DeltaGraph
+      Databricks social graph.</p>
+
+    <!-- 1 -->
+    <div class="scenario reveal">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <div class="idx">01 · BASELINE</div>
+            <h3>Who are the most influential users?</h3>
+            <p class="ask">Rank users by how many people follow them.</p>
+          </div>
+          <div class="badges">
+            <span class="badge hops">1 hop · aggregate</span>
+            <span class="badge cant">vector store: roughly</span>
+          </div>
+        </div>
+        <div class="toolcall"><span class="pill">read_neo4j_cypher</span><span class="arrow">→</span> warehouse</div>
+<pre><span class="k">MATCH</span> (u:User)&lt;-[:FOLLOWS]-(f:User)
+<span class="k">RETURN</span> u.name <span class="k">AS</span> influencer, <span class="f">count</span>(f) <span class="k">AS</span> followers
+<span class="k">ORDER BY</span> followers <span class="k">DESC</span>, influencer <span class="k">LIMIT</span> 5</pre>
+        <div class="result">
+          <div class="result-label">5 rows</div>
+          <div class="tbl-scroll"><table>
+            <thead><tr><th>influencer</th><th>followers</th></tr></thead>
+            <tbody>
+              <tr><td>Rachel</td><td class="num">5</td></tr>
+              <tr><td>Tina</td><td class="num">5</td></tr>
+              <tr><td>Xander</td><td class="num">5</td></tr>
+              <tr><td>Alice</td><td class="num">3</td></tr>
+              <tr><td>Jack</td><td class="num">3</td></tr>
+            </tbody>
+          </table></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2 -->
+    <div class="scenario reveal">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <div class="idx">02 · RECOMMENDATION</div>
+            <h3>Who should Alice follow?</h3>
+            <p class="ask">Friends of friends she doesn't already follow — ranked by mutual connections.</p>
+          </div>
+          <div class="badges">
+            <span class="badge hops">2 hops · anti-join</span>
+            <span class="badge can">vector store: no</span>
+          </div>
+        </div>
+        <div class="toolcall"><span class="pill">read_neo4j_cypher</span><span class="arrow">→</span> warehouse</div>
+<pre><span class="k">MATCH</span> (me:User {name:<span class="s">'Alice'</span>})-[:FOLLOWS]-&gt;(f:User)-[:FOLLOWS]-&gt;(fof:User)
+<span class="k">WHERE</span> fof &lt;&gt; me <span class="k">AND NOT</span> (me)-[:FOLLOWS]-&gt;(fof)
+<span class="k">RETURN</span> fof.name <span class="k">AS</span> suggested, <span class="f">count</span>(<span class="k">DISTINCT</span> f) <span class="k">AS</span> mutual_connections
+<span class="k">ORDER BY</span> mutual_connections <span class="k">DESC</span>, suggested <span class="k">LIMIT</span> 5</pre>
+        <div class="result">
+          <div class="result-label">3 rows</div>
+          <div class="tbl-scroll"><table>
+            <thead><tr><th>suggested</th><th>mutual_connections</th></tr></thead>
+            <tbody>
+              <tr><td>Ben</td><td class="num">1</td></tr>
+              <tr><td>Henry</td><td class="num">1</td></tr>
+              <tr><td>Victor</td><td class="num">1</td></tr>
+            </tbody>
+          </table></div>
+        </div>
+        <div class="note"><b>fof &lt;&gt; me</b> is node-identity comparison — it resolves
+          to the schema's <code>user_id</code> column, not a literal <code>.id</code>,
+          so it runs unchanged on ClickHouse and Databricks
+          (fix <a href="https://github.com/genezhang/clickgraph/pull/1076">#1076</a>).</div>
+      </div>
+    </div>
+
+    <!-- 3 -->
+    <div class="scenario reveal">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <div class="idx">03 · CONTENT GROUNDING</div>
+            <h3>What is Alice's network talking about?</h3>
+            <p class="ask">Pull the posts authored by the people Alice follows.</p>
+          </div>
+          <div class="badges">
+            <span class="badge hops">2 hops · scoped</span>
+            <span class="badge can">vector store: no</span>
+          </div>
+        </div>
+        <div class="toolcall"><span class="pill">read_neo4j_cypher</span><span class="arrow">→</span> warehouse</div>
+<pre><span class="k">MATCH</span> (me:User {name:<span class="s">'Alice'</span>})-[:FOLLOWS]-&gt;(f:User)-[:AUTHORED]-&gt;(p:Post)
+<span class="k">RETURN</span> f.name <span class="k">AS</span> author, p.content <span class="k">AS</span> post
+<span class="k">ORDER BY</span> p.created_at <span class="k">DESC</span> <span class="k">LIMIT</span> 5</pre>
+        <div class="result">
+          <div class="result-label">5 rows</div>
+          <div class="tbl-scroll"><table>
+            <thead><tr><th>author</th><th>post</th></tr></thead>
+            <tbody>
+              <tr><td>Xander</td><td>Graph neural networks</td></tr>
+              <tr><td>Tina</td><td>Subqueries and comprehensions</td></tr>
+              <tr><td>Tina</td><td>UNION queries in Cypher</td></tr>
+              <tr><td>David</td><td>ClickHouse integration patterns</td></tr>
+              <tr><td>David</td><td>Building social networks with graphs</td></tr>
+            </tbody>
+          </table></div>
+        </div>
+        <div class="note"><b>This is GraphRAG, literally.</b> The answer is grounded in
+          warehouse rows reached by traversal, scoped to Alice's neighborhood — not a
+          fuzzy top-k over the whole corpus.</div>
+      </div>
+    </div>
+
+    <!-- 4 -->
+    <div class="scenario reveal">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <div class="idx">04 · CONNECTION PATH</div>
+            <h3>How is Alice connected to Rachel? To Ben?</h3>
+            <p class="ask">Find the shortest chain of relationships between two specific people.</p>
+          </div>
+          <div class="badges">
+            <span class="badge hops">variable-length</span>
+            <span class="badge can">vector store: no</span>
+          </div>
+        </div>
+        <div class="toolcall"><span class="pill">read_neo4j_cypher</span><span class="arrow">→</span> warehouse</div>
+<pre><span class="c">// how far apart?</span>
+<span class="k">MATCH</span> path = <span class="f">shortestPath</span>((a:User {name:<span class="s">'Alice'</span>})-[:FOLLOWS*1..5]-&gt;(b:User {name:<span class="s">'Rachel'</span>}))
+<span class="k">RETURN</span> <span class="f">length</span>(path) <span class="k">AS</span> hops</pre>
+        <div class="result">
+          <div class="result-label">1 row</div>
+          <div class="chain"><span class="n">Alice</span><span class="e">→ 4 follow-hops →</span><span class="n">Rachel</span></div>
+          <p style="margin:12px 0 0;color:var(--muted);font-size:14px">…and not within three: the bounded <code>*1..3</code> traversal returns empty, confirming it.</p>
+        </div>
+<pre><span class="c">// the actual chain to a nearer user</span>
+<span class="k">MATCH</span> (a:User {name:<span class="s">'Alice'</span>})-[:FOLLOWS]-&gt;(via:User)-[:FOLLOWS]-&gt;(b:User {name:<span class="s">'Ben'</span>})
+<span class="k">RETURN</span> a.name, via.name, b.name</pre>
+        <div class="result">
+          <div class="result-label">1 row</div>
+          <div class="chain"><span class="n">Alice</span><span class="e">─FOLLOWS→</span><span class="n">David</span><span class="e">─FOLLOWS→</span><span class="n">Ben</span></div>
+        </div>
+        <div class="note limit"><b>Honest limitation
+          (<a href="https://github.com/genezhang/clickgraph/issues/1077">#1077</a>):</b>
+          reading the node names along a path via
+          <code>[n IN nodes(path) | n.name]</code> currently fails at planning on both
+          backends. <code>length(path)</code> and explicit-hop chains work today; full
+          path readout is tracked and open. Surfaced by building this very demo.</div>
+      </div>
+    </div>
+
+    <!-- 5 -->
+    <div class="scenario reveal">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <div class="idx">05 · ENGAGEMENT</div>
+            <h3>Which posts are resonating, and who wrote them?</h3>
+            <p class="ask">Rank posts by distinct likers, joined back to their authors.</p>
+          </div>
+          <div class="badges">
+            <span class="badge hops">3-way join</span>
+            <span class="badge can">vector store: no</span>
+          </div>
+        </div>
+        <div class="toolcall"><span class="pill">read_neo4j_cypher</span><span class="arrow">→</span> warehouse</div>
+<pre><span class="k">MATCH</span> (author:User)-[:AUTHORED]-&gt;(p:Post)&lt;-[:LIKED]-(liker:User)
+<span class="k">RETURN</span> author.name <span class="k">AS</span> author, p.content <span class="k">AS</span> post, <span class="f">count</span>(<span class="k">DISTINCT</span> liker) <span class="k">AS</span> likes
+<span class="k">ORDER BY</span> likes <span class="k">DESC</span>, post <span class="k">LIMIT</span> 5</pre>
+        <div class="result">
+          <div class="result-label">5 rows</div>
+          <div class="tbl-scroll"><table>
+            <thead><tr><th>author</th><th>post</th><th>likes</th></tr></thead>
+            <tbody>
+              <tr><td>Uma</td><td>Graph machine learning</td><td class="num">5</td></tr>
+              <tr><td>Grace</td><td>Graph algorithms overview</td><td class="num">4</td></tr>
+              <tr><td>Ben</td><td>Graph query languages comparison</td><td class="num">4</td></tr>
+              <tr><td>Leo</td><td>Indexing strategies for graphs</td><td class="num">4</td></tr>
+              <tr><td>Iris</td><td>Real-time graph analytics</td><td class="num">4</td></tr>
+            </tbody>
+          </table></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="eyebrow">The point</div>
+    <h2>Same warehouse tables. Zero copies.</h2>
+    <div class="verdict reveal">
+      <div class="tbl-scroll"><table>
+        <thead><tr><th>Scenario</th><th>Traversal</th><th>Could a vector store do it?</th></tr></thead>
+        <tbody>
+          <tr><td>01 · Influencers</td><td>1 hop, aggregate</td><td class="v-yes">roughly</td></tr>
+          <tr><td>02 · Recommendation</td><td>2 hops + anti-join</td><td class="v-no">no — answer is in graph shape</td></tr>
+          <tr><td>03 · Content grounding</td><td>2 hops, scoped</td><td class="v-no">no — needs edge-scoping</td></tr>
+          <tr><td>04 · Connection path</td><td>variable-length</td><td class="v-no">no — not a vector</td></tr>
+          <tr><td>05 · Engagement</td><td>3-way join</td><td class="v-no">no — relationship aggregation</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+</section>
+
+<div class="kicker">
+  <div class="wrap">
+    <div class="eyebrow">Warehouse-portable</div>
+    <h2>Swap the port. Same Cypher runs.</h2>
+    <p>The graph is a query-time view over the warehouse, not a copy of it. Point the
+      MCP server at ClickHouse or Databricks — every query on this page runs unchanged.</p>
+    <div class="swap">
+      <div>
+        <span class="cm"># ClickHouse (ClickGraph)</span><br>
+        --db-url bolt://localhost:<span class="port">7687</span><br><br>
+        <span class="cm"># Databricks (DeltaGraph)</span><br>
+        --db-url bolt://localhost:<span class="port">7688</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <div class="wrap">
+    <p class="meta">All five scenarios verified live on 2026-08-16 against the DeltaGraph
+      Databricks social graph, via the <code>mcp-neo4j-cypher</code> server over Bolt.</p>
+    <p>ClickGraph is a read-only, drop-in Neo4j MCP target. Runbook:
+      <code>demos/mcp-agent/</code> · Deterministic proof without an LLM:
+      <code>verify_mcp.py</code>.</p>
+  </div>
+</footer>
+
+<script>
+  // --- theme-aware canvas graph with an animated 2-hop traversal ---
+  (function () {
+    var canvas = document.getElementById('graph');
+    if (!canvas) return;
+    var ctx = canvas.getContext('2d');
+    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    // fixed layout (0..1 space) — deterministic, no random
+    var nodes = {
+      Alice:  {x:0.10, y:0.50, hero:true},
+      David:  {x:0.34, y:0.28, via:true},
+      Carol:  {x:0.34, y:0.74},
+      Ben:    {x:0.60, y:0.24, rec:true},
+      Eve:    {x:0.58, y:0.62},
+      Henry:  {x:0.82, y:0.40, rec:true},
+      Victor: {x:0.80, y:0.78, rec:true},
+      Frank:  {x:0.60, y:0.90}
+    };
+    var edges = [
+      ['Alice','David'], ['Alice','Carol'], ['Alice','Eve'],
+      ['David','Ben'], ['David','Henry'],
+      ['Carol','Eve'], ['Carol','Frank'],
+      ['Eve','Victor'], ['Ben','Henry'], ['Henry','Victor']
+    ];
+    // the highlighted 2-hop path Alice -> David -> Ben
+    var path = [['Alice','David'], ['David','Ben']];
+
+    function css(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+
+    var t0 = null;
+    function draw(ts) {
+      if (t0 === null) t0 = ts;
+      var elapsed = (ts - t0) / 1000;
+      var W = canvas.width, H = canvas.height;
+      var pad = 70;
+      var col = {
+        edge: css('--border'),
+        accent: css('--accent'),
+        node: css('--node'),
+        text: css('--text'),
+        muted: css('--muted'),
+        surface: css('--surface')
+      };
+      ctx.clearRect(0, 0, W, H);
+      function px(n){ return pad + nodes[n].x * (W - 2*pad); }
+      function py(n){ return pad + nodes[n].y * (H - 2*pad); }
+
+      // base edges
+      ctx.lineWidth = 2.5;
+      edges.forEach(function (e) {
+        ctx.strokeStyle = col.edge;
+        ctx.beginPath(); ctx.moveTo(px(e[0]), py(e[0])); ctx.lineTo(px(e[1]), py(e[1])); ctx.stroke();
+      });
+
+      // animated traversal: a pulse traveling Alice->David->Ben
+      var cycle = 3.2;                       // seconds per full 2-hop sweep
+      var phase = reduce ? 2 : (elapsed % cycle) / cycle * 2; // 0..2 across two segments
+      var litSegs = Math.min(2, Math.floor(phase) + 1);
+      for (var i = 0; i < litSegs; i++) {
+        var seg = path[i];
+        var frac = reduce ? 1 : Math.max(0, Math.min(1, phase - i));
+        var x1 = px(seg[0]), y1 = py(seg[0]), x2 = px(seg[1]), y2 = py(seg[1]);
+        ctx.strokeStyle = col.accent; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(x1, y1);
+        ctx.lineTo(x1 + (x2 - x1) * frac, y1 + (y2 - y1) * frac); ctx.stroke();
+        if (!reduce && frac < 1) {
+          var hx = x1 + (x2 - x1) * frac, hy = y1 + (y2 - y1) * frac;
+          ctx.fillStyle = col.accent;
+          ctx.beginPath(); ctx.arc(hx, hy, 6, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+
+      // recommendation glow once the sweep completes
+      var recPulse = reduce ? 0.6 : (phase >= 2 ? 0 : (0.4 + 0.35 * Math.sin(elapsed * 3)));
+
+      // nodes
+      Object.keys(nodes).forEach(function (name) {
+        var n = nodes[name], x = px(name), y = py(name);
+        var r = n.hero ? 13 : 10;
+        if (n.rec) {
+          ctx.fillStyle = col.accent;
+          ctx.globalAlpha = recPulse;
+          ctx.beginPath(); ctx.arc(x, y, r + 9, 0, Math.PI * 2); ctx.fill();
+          ctx.globalAlpha = 1;
+        }
+        ctx.fillStyle = col.surface;
+        ctx.beginPath(); ctx.arc(x, y, r + 3, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = (n.hero || n.via) ? col.accent : (n.rec ? col.accent : col.node);
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+
+        ctx.fillStyle = col.text;
+        ctx.font = '600 22px ui-monospace, monospace';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+        ctx.fillText(name, x, y + r + 8);
+      });
+
+      if (!reduce) requestAnimationFrame(draw);
+    }
+    requestAnimationFrame(draw);
+
+    // scroll reveal
+    if ('IntersectionObserver' in window) {
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (en) { if (en.isIntersecting) { en.target.classList.add('in'); io.unobserve(en.target); } });
+      }, { threshold: 0.12 });
+      document.querySelectorAll('.reveal').forEach(function (el) { io.observe(el); });
+    } else {
+      document.querySelectorAll('.reveal').forEach(function (el) { el.classList.add('in'); });
+    }
+  })();
+</script>
+</body>
+</html>
