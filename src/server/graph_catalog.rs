@@ -740,6 +740,11 @@ pub async fn add_to_schema(
         }
     }
 
+    // The insert_* mutators above only touch `relationships`/`nodes`; the derived
+    // `rel_type_index`/`denormalized_nodes` must be rebuilt so subsequent lookups
+    // resolve simple relationship type names (same defect class as #1081).
+    graph_schema.rebuild_derived_indexes();
+
     let schema_json = serde_json::to_string(&*graph_schema)
         .map_err(|e| format!("Schema serialization error: {}", e))?;
 

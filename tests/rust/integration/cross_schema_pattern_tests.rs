@@ -785,3 +785,60 @@ async fn cs_composite_id_p12_inline_filter() {
     assert_contains(&sql, "composite_id/P12", "'Alice'");
     assert_contains(&sql, "composite_id/P12", "org_id");
 }
+
+// ===========================================================================
+// #1081 — anonymous-relationship alias collision with user variables
+// ===========================================================================
+
+/// #1081 root cause: anonymous nodes/edges are auto-aliased from a shared
+/// `t{N}` counter (`logical_plan::generate_id`). When a query explicitly names a
+/// variable `t2`, the generated alias for an adjacent anonymous relationship
+/// collided with it, and that relationship's composite-key label
+/// (`AUTHORED::User::Post`) overwrote node `t2`'s real label — surfacing as
+/// `AnalyzerError: Invalid relationship pattern:
+/// (AUTHORED::User::Post)-[:AUTHORED::User::Post]->(Post)`.
+///
+/// A variable-length hop forces adjacent anonymous relationships, which is how
+/// the GraphRAG demo's `(t)-[:RELATED_TO*1..2]->(t2)-[:DISCUSSES]->(d)` tripped
+/// it live. The failure is deterministic whenever a user variable matches a
+/// generated `t{N}` alias; it looked "intermittent" in production only because
+/// different hand-typed queries used different variable names. The fix makes
+/// anonymous alias generation skip any alias the user (or plan context) already
+/// uses. Regression guard: this exact shape must plan.
+#[tokio::test]
+async fn cs_standard_1081_anonymous_alias_collision() {
+    let schema = load_schema(SCHEMA_STANDARD);
+    // Endpoint deliberately named `t2` — collides with the generated alias for
+    // the anonymous `-[:AUTHORED]->` relationship unless generation avoids it.
+    let cypher = "MATCH path = (t:User)-[:FOLLOWS*1..2]->(t2:User)-[:AUTHORED]->(d:Post) \
+                  RETURN t2.name, d.content, length(path) AS hops LIMIT 5";
+    let sql = generate_sql(&schema, cypher).await;
+    assert_valid_sql(&sql, "standard", "1081-alias-collision");
+    // `t2` must resolve as the User node, and the AUTHORED edge table is present.
+    assert_contains(&sql, "standard/1081", "cs_test.authored");
+}
+
+/// #1081-adjacent latent bug: `GraphSchema::rel_type_index` (and the
+/// denormalized-node metadata) are `#[serde(skip)]`, so a schema recovered from
+/// the `graph_catalog` JSON persistence path / the `monitor_schema_updates`
+/// refresh came back with an EMPTY index. A relationship then looked up by
+/// SIMPLE type name — as the variable-length recursive-CTE path does, having no
+/// endpoint labels to reconstruct the composite key — could not be resolved
+/// (`RelationshipTypeNotFound`). Independent of the alias-collision bug above;
+/// the aliases here (`u`/`u2`/`p`) do not collide. The fix rebuilds the derived
+/// indexes on deserialize.
+#[tokio::test]
+async fn cs_standard_1081_vlp_chain_after_serde_roundtrip() {
+    let built = load_schema(SCHEMA_STANDARD);
+    let json = serde_json::to_string(&built).expect("schema should serialize");
+    let restored: GraphSchema = serde_json::from_str(&json).expect("schema should deserialize");
+
+    let cypher = "MATCH path = (u:User)-[:FOLLOWS*1..2]->(u2:User)-[:AUTHORED]->(p:Post) \
+                  RETURN u.name, p.content LIMIT 5";
+    let sql = generate_sql(&restored, cypher).await;
+    assert_valid_sql(
+        &sql,
+        "standard(serde-round-tripped)",
+        "1081-serde-vlp-chain",
+    );
+}

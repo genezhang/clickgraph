@@ -1016,6 +1016,10 @@ impl ProcessedNodeMetadata {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+// Deserialize routes through `GraphSchemaDe`, which rebuilds the `#[serde(skip)]`
+// derived indexes below. `#[derive(Deserialize)]` alone would leave them empty on
+// every round-trip through the `graph_catalog` JSON persistence path (#1081).
+#[serde(from = "GraphSchemaDe")]
 pub struct GraphSchema {
     version: u32,
     database: String,
@@ -1042,6 +1046,44 @@ pub struct GraphSchema {
     /// Maps index name -> config (label, properties, analyzer)
     #[serde(skip)]
     fulltext_indexes: BTreeMap<String, FulltextIndexConfig>,
+}
+
+/// Deserialization shadow for [`GraphSchema`]: only the persisted (non-`skip`)
+/// fields. Serde deserializes into this, then [`From`] rebuilds the derived
+/// indexes via [`GraphSchema::rebuild_derived_indexes`]. This is what closes
+/// #1081 — a `GraphSchema` recovered from JSON otherwise had an empty
+/// `rel_type_index`, so simple relationship-type lookups silently failed. All
+/// fields default so older or partial persisted schemas still load.
+#[derive(Deserialize)]
+struct GraphSchemaDe {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    database: String,
+    #[serde(default)]
+    nodes: BTreeMap<String, NodeSchema>,
+    #[serde(default)]
+    relationships: BTreeMap<String, RelationshipSchema>,
+}
+
+impl From<GraphSchemaDe> for GraphSchema {
+    fn from(de: GraphSchemaDe) -> Self {
+        let mut schema = GraphSchema {
+            version: de.version,
+            database: de.database,
+            nodes: de.nodes,
+            relationships: de.relationships,
+            denormalized_nodes: BTreeMap::new(),
+            rel_type_index: BTreeMap::new(),
+            // Vector / full-text index configs are not derivable from
+            // relationships and are not persisted in graph_catalog JSON, so they
+            // come back empty here (unchanged from the previous derive behavior).
+            vector_indexes: BTreeMap::new(),
+            fulltext_indexes: BTreeMap::new(),
+        };
+        schema.rebuild_derived_indexes();
+        schema
+    }
 }
 
 /// Runtime vector index configuration (resolved from schema definition)
@@ -1202,6 +1244,19 @@ impl GraphSchema {
         }
 
         index
+    }
+
+    /// Recompute the `#[serde(skip)]` derived indexes (`rel_type_index` and
+    /// `denormalized_nodes`) from `self.relationships`.
+    ///
+    /// MUST be called after deserialization or after any mutation of
+    /// `relationships` — both leave the derived indexes empty/stale. `build()`
+    /// populates them at construction; this is the after-the-fact equivalent.
+    /// Vector / full-text index configs are NOT derivable from relationships and
+    /// are intentionally left untouched. See #1081.
+    pub(crate) fn rebuild_derived_indexes(&mut self) {
+        self.denormalized_nodes = Self::build_denormalized_metadata(&self.relationships);
+        self.rel_type_index = Self::build_rel_type_index(&self.relationships);
     }
 
     /// Build denormalized node metadata from relationships
@@ -2305,6 +2360,83 @@ mod tests {
         let rel_types = metadata.get_relationship_types();
         assert_eq!(rel_types.len(), 1);
         assert!(rel_types.contains(&"FLIGHT".to_string()));
+    }
+
+    /// #1081: `rel_type_index` is `#[serde(skip)]`, so a `GraphSchema` recovered
+    /// through serde (the `graph_catalog` JSON persistence path, and the 60s
+    /// `monitor_schema_updates` background refresh) came back with an EMPTY index.
+    /// Resolving a simple relationship type name (`RELATED_TO`) then fell off the
+    /// fast path — which, in a chained pattern `(a)-[:T]->(b)-[:T2]->(c)`,
+    /// corrupted the intermediate node's label to the relationship's own qualified
+    /// name (`RELATED_TO::Topic::Topic`). Intermittent in production (only after a
+    /// monitor tick replaced the built schema), deterministic here.
+    ///
+    /// This uses a standard (non-denormalized) self-referential relationship,
+    /// matching the `vector_graphrag` schema that surfaced #1081: its composite
+    /// keys survive serde as map keys, so rebuilding `rel_type_index` from
+    /// `relationships` is a complete fix. (Denormalized metadata is a separate,
+    /// deeper matter — most `RelationshipSchema` fields incl. `from_node_properties`
+    /// are themselves `#[serde(skip)]`, so denorm schemas do not survive a
+    /// `graph_catalog` round-trip at all; tracked separately, not #1081.)
+    #[test]
+    fn test_rel_type_index_survives_serde_roundtrip() {
+        let mut relationships = HashMap::new();
+        let related_to = RelationshipSchema {
+            database: "default".to_string(),
+            table_name: "topic_related_to".to_string(),
+            column_names: vec!["topic_id".to_string(), "related_topic_id".to_string()],
+            from_node: "Topic".to_string(),
+            to_node: "Topic".to_string(),
+            from_node_table: "topics".to_string(),
+            to_node_table: "topics".to_string(),
+            from_id: Identifier::from("topic_id"),
+            to_id: Identifier::from("related_topic_id"),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::Integer,
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            edge_id: None,
+            type_column: None,
+            from_label_column: None,
+            to_label_column: None,
+            from_node_properties: None,
+            to_node_properties: None,
+            from_label_values: None,
+            to_label_values: None,
+            is_fk_edge: false,
+            constraints: None,
+            edge_id_types: None,
+            source: None,
+            property_types: HashMap::new(),
+        };
+        relationships.insert("RELATED_TO::Topic::Topic".to_string(), related_to);
+
+        let schema = GraphSchema::build(1, "default".to_string(), HashMap::new(), relationships);
+
+        // Freshly built schema resolves the simple type name via the fast path.
+        assert!(!schema.get_rel_type_index().is_empty());
+        assert!(schema
+            .get_rel_schema_with_nodes("RELATED_TO", Some("Topic"), Some("Topic"))
+            .is_ok());
+
+        // Round-trip through the graph_catalog JSON persistence path.
+        let json = serde_json::to_string(&schema).unwrap();
+        let restored: GraphSchema = serde_json::from_str(&json).unwrap();
+
+        // Both FAIL before the #1081 fix (empty rel_type_index after deserialize).
+        assert!(
+            !restored.get_rel_type_index().is_empty(),
+            "#1081: rel_type_index must be rebuilt after deserialize"
+        );
+        assert!(
+            restored
+                .get_rel_schema_with_nodes("RELATED_TO", Some("Topic"), Some("Topic"))
+                .is_ok(),
+            "#1081: simple relationship-type lookup must work after deserialize"
+        );
     }
 
     #[test]
