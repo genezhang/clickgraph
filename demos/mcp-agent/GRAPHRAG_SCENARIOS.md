@@ -211,15 +211,42 @@ Neither retrieval mode does this alone: **vectors find the entry point, the grap
 traverses and explains the connection, then vectors re-rank the grounded
 neighborhood.** That is GraphRAG that is both *relevant* and *explainable*.
 
+**The whole loop in one statement.** The three steps above read as an agent
+*thinking out loud*, but the traversal and the re-rank also compose into a single
+Cypher query — variable-length graph expansion feeding a vector re-rank, no
+round-trip to the client in between:
+
+```cypher
+MATCH (t:Topic {name:'Machine Learning'})-[:RELATED_TO*1..2]->(t2:Topic)
+WITH DISTINCT t2
+MATCH (t2)-[:DISCUSSES]->(d:Document)
+RETURN DISTINCT d.title AS document, t2.name AS via_topic,
+       round(1 - cosineDistance(d.embedding, $q), 4) AS similarity
+ORDER BY similarity DESC
+```
+
+| document | via_topic | similarity |
+|---|---|---|
+| Transformer Architecture Explained | Natural Language Processing | 0.6844 |
+| Deep Learning for NLP | Natural Language Processing | 0.0943 |
+| Object Detection with YOLO | Computer Vision | −0.0016 |
+
+The `RELATED_TO*1..2` frontier is expanded in a recursive CTE, its endpoints feed
+the `DISCUSSES` join, and `cosineDistance` re-ranks the result — one statement,
+translated to one ClickHouse query. This unblocked once
+[#1081](https://github.com/genezhang/clickgraph/issues/1081) (an anonymous-alias
+collision that corrupted variable-length-plus-chained patterns) was fixed in
+[#1083](https://github.com/genezhang/clickgraph/pull/1083).
+
 > **Scope note.** Vector distance functions (`cosineDistance`, `L2Distance`,
 > `dotProduct`, `gds.similarity.*`, `vector.similarity.*`) and the
 > `CALL db.index.vector.queryNodes(...)` procedure are **ClickHouse-native**; this
-> scenario runs on the ClickGraph/ClickHouse endpoint. Vector and traversal are
-> kept as **separate agentic steps** on purpose — fusing them into one query
-> (`… -[:RELATED_TO*1..2]->(t2)-[:DISCUSSES]->(d) … cosineDistance(…)`) can hit an
-> intermittent planner bug tracked in
-> [#1081](https://github.com/genezhang/clickgraph/issues/1081), which is
-> independent of the vector functions themselves.
+> scenario runs on the ClickGraph/ClickHouse endpoint. The single-statement form
+> above threads the variable-length traversal through a `WITH` barrier before the
+> chained `DISCUSSES` hop; the fully-inline form
+> (`… -[:RELATED_TO*1..2]->(t2)-[:DISCUSSES]->(d) …`) is tracked separately in
+> [#1085](https://github.com/genezhang/clickgraph/issues/1085) and should use the
+> `WITH`-barrier form until it lands.
 
 ---
 
@@ -232,7 +259,7 @@ neighborhood.** That is GraphRAG that is both *relevant* and *explainable*.
 | 3 · Content grounding | 2 hops, neighborhood-scoped | **No** — needs edge-scoping, not similarity |
 | 4 · Connection path | variable-length | **No** — not representable as a vector |
 | 5 · Engagement | 3-way join | **No** — relationship aggregation |
-| 6 · Hybrid vector + graph | vector seed → traverse → re-rank | **Only step 1** — traversal & explanation need the graph |
+| 6 · Hybrid vector + graph | vector seed → traverse → re-rank, one statement | **Only step 1** — traversal & re-rank compose in a single Cypher query |
 
 Same schema. Same warehouse tables. **Zero ETL, zero graph database.** The agent
 speaks Bolt to ClickGraph/DeltaGraph, which translates Cypher to ClickHouse or
