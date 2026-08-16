@@ -7982,25 +7982,50 @@ impl RenderExpr {
                     }
                 }
 
-                // Node identity comparison: Cypher `a <> b` or `a = b` where both sides
-                // are bare node variables (TableAlias) should compare by node ID column.
+                // Node identity comparison: Cypher `a = b` / `a <> b` where both
+                // sides are bare node variables (TableAlias) compares node
+                // identity — i.e. the node's ID column(s). Resolve each alias's
+                // node_id from the schema (it may be a renamed column such as
+                // `user_id`, or composite) rather than assuming a literal `id`
+                // column, which usually does not exist and fails at execution
+                // (ClickHouse "cannot be resolved" / Databricks UNRESOLVED_COLUMN).
                 // ClickHouse doesn't understand bare table aliases as values.
                 if matches!(op.operator, Operator::Equal | Operator::NotEqual)
                     && op.operands.len() == 2
                 {
-                    let both_table_aliases = op
-                        .operands
-                        .iter()
-                        .all(|o| matches!(o, RenderExpr::TableAlias(_)));
-                    if both_table_aliases {
+                    if let (RenderExpr::TableAlias(l), RenderExpr::TableAlias(r)) =
+                        (&op.operands[0], &op.operands[1])
+                    {
+                        use crate::server::query_context::{
+                            get_current_schema, get_node_label_for_alias,
+                        };
+                        // Resolve a bare node alias to its schema node_id identifier.
+                        let node_id_of =
+                            |alias: &str| -> Option<crate::graph_catalog::config::Identifier> {
+                                let schema = get_current_schema()?;
+                                let label = get_node_label_for_alias(alias)?;
+                                schema
+                                    .node_schema_opt(&label)
+                                    .map(|ns| ns.node_id.id.clone())
+                            };
+                        if let (Some(lid), Some(rid)) = (node_id_of(&l.0), node_id_of(&r.0)) {
+                            // `to_sql_equality` pairs columns element-wise and is
+                            // dialect-aware; negate for `<>` (nodes always have a
+                            // non-null id, so NOT(=) matches `<>` semantics).
+                            let eq = lid.to_sql_equality(&l.0, &rid, &r.0);
+                            return if op.operator == Operator::Equal {
+                                eq
+                            } else {
+                                format!("NOT ({})", eq)
+                            };
+                        }
+                        // Label/schema unresolvable — preserve prior behavior.
                         let op_str = if op.operator == Operator::Equal {
                             "="
                         } else {
                             "<>"
                         };
-                        let lhs = op.operands[0].to_sql();
-                        let rhs = op.operands[1].to_sql();
-                        return format!("{}.id {} {}.id", lhs, op_str, rhs);
+                        return format!("{}.id {} {}.id", l.0, op_str, r.0);
                     }
                 }
 

@@ -19433,3 +19433,72 @@ async fn mixed_vlp_end_filter_deferred_to_wrapper_not_per_hop_1003() {
         }
     }
 }
+
+/// Node-identity comparison — Cypher `a = b` / `a <> b` between two bare node
+/// variables compares node identity, which must resolve to the schema's node_id
+/// column (`user_id`), NOT a hardcoded `.id` that no table has. Regression for the
+/// live-found bug where `WHERE a <> b` emitted `a.id <> b.id` → ClickHouse Code 47
+/// / Databricks UNRESOLVED_COLUMN. Both dialects, both operators.
+#[tokio::test]
+async fn node_identity_comparison_resolves_schema_node_id() {
+    let schema = load_schema("benchmarks/social_network/schemas/social_benchmark.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // Inequality: NOT (a.user_id = b.user_id), never a bare `.id`.
+        let neq = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS]->(b:User) WHERE a <> b RETURN a.name",
+            dialect,
+        )
+        .await;
+        assert!(
+            neq.contains("a.user_id") && neq.contains("b.user_id"),
+            "({dialect:?}) `a <> b` must compare the schema node_id column user_id:\n{neq}"
+        );
+        assert!(
+            !neq.contains("a.id") && !neq.contains("b.id"),
+            "({dialect:?}) `a <> b` must NOT emit a hardcoded `.id` column:\n{neq}"
+        );
+
+        // Equality: a.user_id = b.user_id.
+        let eq = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS]->(b:User) WHERE a = b RETURN a.name",
+            dialect,
+        )
+        .await;
+        assert!(
+            eq.contains("a.user_id = b.user_id"),
+            "({dialect:?}) `a = b` must render `a.user_id = b.user_id`:\n{eq}"
+        );
+        assert!(
+            !eq.contains("a.id") && !eq.contains("b.id"),
+            "({dialect:?}) `a = b` must NOT emit a hardcoded `.id` column:\n{eq}"
+        );
+    }
+}
+
+/// Composite node-identity: `a <> b` on a node whose node_id is multi-column
+/// (`Account` = [bank_id, account_number]) must compare every id column pairwise
+/// (`NOT (a.bank_id = b.bank_id AND a.account_number = b.account_number)`), not a
+/// bare `.id`. Covers the `to_sql_equality` composite path the fix routes through.
+#[tokio::test]
+async fn node_identity_comparison_composite_node_id() {
+    let schema = load_schema("schemas/test/composite_node_ids.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(
+            &schema,
+            "MATCH (a:Account)-[:TRANSFERRED]->(b:Account) WHERE a <> b RETURN a.account_type",
+            dialect,
+        )
+        .await;
+        assert!(
+            sql.contains("a.bank_id = b.bank_id")
+                && sql.contains("a.account_number = b.account_number"),
+            "({dialect:?}) composite `a <> b` must compare every node_id column pairwise:\n{sql}"
+        );
+        assert!(
+            !sql.contains("a.id") && !sql.contains("b.id"),
+            "({dialect:?}) composite `a <> b` must NOT emit a hardcoded `.id`:\n{sql}"
+        );
+    }
+}
