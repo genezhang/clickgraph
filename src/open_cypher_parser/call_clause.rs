@@ -57,14 +57,39 @@ fn parse_procedure_name<'a>(
 fn parse_call_argument<'a>(
     input: &'a str,
 ) -> IResult<&'a str, CallArgument<'a>, OpenCypherParsingError<'a>> {
-    let (input, name) = ws(alphanumeric1).parse(input)?;
+    // Named argument: `name: value` (traditional) or `name => value` (GDS style).
+    fn named_argument<'a>(
+        input: &'a str,
+    ) -> IResult<&'a str, CallArgument<'a>, OpenCypherParsingError<'a>> {
+        let (input, name) = ws(alphanumeric1).parse(input)?;
+        // Support both => (GDS style) and : (traditional) syntax
+        let (input, _) = ws(alt((tag("=>"), tag(":")))).parse(input)?;
+        let (input, value) = expression_parser(input)?;
+        Ok((input, CallArgument { name, value }))
+    }
 
-    // Support both => (GDS style) and : (traditional) syntax
-    let (input, _) = ws(alt((tag("=>"), tag(":")))).parse(input)?;
+    // Positional argument: a bare expression with no name, e.g. the config map
+    // `{sample: 1000}` that APOC procedures such as `apoc.meta.schema(config)`
+    // take. Every Neo4j MCP server issues `apoc.meta.schema({sample: N})`, so
+    // rejecting positional args broke drop-in schema discovery. Downstream
+    // consumers match on `arg.name`, so an unnamed positional arg is simply not
+    // matched (the apoc.meta.schema stub ignores its config entirely). Tried
+    // after the named form, which still wins for `name: value` arguments.
+    fn positional_argument<'a>(
+        input: &'a str,
+    ) -> IResult<&'a str, CallArgument<'a>, OpenCypherParsingError<'a>> {
+        // Parse WITHOUT elevating a recoverable Error to Failure: an empty arg
+        // list (`db.labels()`) reaches here on the `)`, and `separated_list0`
+        // must be able to stop gracefully with zero arguments rather than abort.
+        let (input, value) = expression::parse_expression(input).map_err(|e| match e {
+            nom::Err::Incomplete(needed) => nom::Err::Incomplete(needed),
+            nom::Err::Error(err) => nom::Err::Error(OpenCypherParsingError::from(err)),
+            nom::Err::Failure(err) => nom::Err::Failure(OpenCypherParsingError::from(err)),
+        })?;
+        Ok((input, CallArgument { name: "", value }))
+    }
 
-    let (input, value) = expression_parser(input)?;
-
-    Ok((input, CallArgument { name, value }))
+    alt((named_argument, positional_argument)).parse(input)
 }
 
 fn expression_parser(input: &str) -> IResult<&str, Expression<'_>, OpenCypherParsingError<'_>> {
@@ -109,6 +134,21 @@ mod tests {
         assert_eq!(call.arguments.len(), 2);
         assert_eq!(call.arguments[0].name, "iterations");
         assert_eq!(call.arguments[1].name, "damping");
+    }
+
+    #[test]
+    fn test_parse_call_clause_positional_map_arg() {
+        // APOC config-map form issued by every Neo4j MCP server:
+        //   CALL apoc.meta.schema({sample: 1000}) YIELD value RETURN value
+        // The argument is a positional map literal, not a named argument.
+        let input = "CALL apoc.meta.schema({sample: 1000}) YIELD value";
+        let result = parse_call_clause(input);
+        assert!(result.is_ok(), "parse failed: {:?}", result.err());
+        let (rest, call) = result.unwrap();
+        assert_eq!(call.procedure_name, "apoc.meta.schema");
+        assert_eq!(call.arguments.len(), 1);
+        assert_eq!(call.arguments[0].name, ""); // positional → no name
+        assert_eq!(rest.trim(), ""); // YIELD consumed, nothing left dangling
     }
 
     #[test]

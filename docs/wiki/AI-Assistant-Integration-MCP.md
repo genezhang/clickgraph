@@ -42,8 +42,15 @@ Configure once in `~/.config/cg/config.toml` and `cg` handles credentials, schem
 ### Prerequisites
 
 - ClickGraph server running with Bolt protocol enabled (default)
-- Node.js and npm/npx installed
-- Claude Desktop or compatible MCP client
+- [`uv`](https://docs.astral.sh/uv/) installed (provides `uvx`) — no Node.js required
+- An MCP client: Claude Desktop, Cursor, or the Claude Code CLI
+
+> **Verified path.** The instructions below use **`mcp-neo4j-cypher`** (Neo4j Labs'
+> Python MCP server, on PyPI), launched with `uvx`. This is the server ClickGraph's
+> MCP compatibility is tested against — end-to-end against both a ClickHouse and a
+> Databricks (DeltaGraph) backend, exercising both `get_neo4j_schema` (via
+> `apoc.meta.schema`) and `read_neo4j_cypher`. Run it with `--read-only`, which
+> matches ClickGraph's read-only engine exactly.
 
 ### 1. Start ClickGraph
 
@@ -98,39 +105,56 @@ EOF
 {
   "mcpServers": {
     "clickgraph": {
-      "command": "npx",
+      "command": "uvx",
       "args": [
-        "@anthropic-ai/mcp-server-neo4j",
-        "bolt://localhost:7687"
-      ],
-      "env": {
-        "NEO4J_USERNAME": "neo4j",
-        "NEO4J_PASSWORD": "password"
-      }
+        "--from", "mcp-neo4j-cypher", "mcp-neo4j-cypher",
+        "--db-url", "bolt://localhost:7687",
+        "--username", "neo4j",
+        "--password", "password",
+        "--read-only",
+        "--transport", "stdio"
+      ]
     }
   }
 }
 ```
 
-**For remote ClickGraph instances**:
+**For remote ClickGraph instances**, change `--db-url` to your host:
 
 ```json
 {
   "mcpServers": {
     "clickgraph-prod": {
-      "command": "npx",
+      "command": "uvx",
       "args": [
-        "@anthropic-ai/mcp-server-neo4j",
-        "bolt://your-server.com:7687"
-      ],
-      "env": {
-        "NEO4J_USERNAME": "your_username",
-        "NEO4J_PASSWORD": "your_password"
-      }
+        "--from", "mcp-neo4j-cypher", "mcp-neo4j-cypher",
+        "--db-url", "bolt://your-server.com:7687",
+        "--username", "your_username",
+        "--password", "your_password",
+        "--read-only",
+        "--transport", "stdio"
+      ]
     }
   }
 }
 ```
+
+### 2b. (Alternative) Configure the Claude Code CLI
+
+No GUI needed — register the same server from a terminal. This is the quickest way
+to verify the integration end-to-end:
+
+```bash
+claude mcp add clickgraph -- \
+  uvx --from mcp-neo4j-cypher mcp-neo4j-cypher \
+  --db-url bolt://localhost:7687 --username neo4j --password password \
+  --read-only --transport stdio
+
+claude mcp list   # → clickgraph: ... ✔ Connected
+```
+
+Then ask Claude in the CLI, e.g. *"Using the clickgraph MCP server, discover the
+schema and show the top 3 users by follower count."*
 
 ### 3. Restart Claude Desktop
 
@@ -165,30 +189,31 @@ Claude: [Uses shortestPath() function with graph traversal]
 
 Connect to multiple ClickGraph instances with different schemas:
 
+Each ClickGraph server exposes one graph; register one MCP server per Bolt
+endpoint (they may be different ports on one host or different hosts):
+
 ```json
 {
   "mcpServers": {
     "social-graph": {
-      "command": "npx",
-      "args": ["@anthropic-ai/mcp-server-neo4j", "bolt://localhost:7687"]
+      "command": "uvx",
+      "args": ["--from", "mcp-neo4j-cypher", "mcp-neo4j-cypher",
+               "--db-url", "bolt://localhost:7687",
+               "--username", "neo4j", "--password", "password",
+               "--read-only", "--transport", "stdio"]
     },
     "ecommerce-graph": {
-      "command": "npx",
-      "args": ["@anthropic-ai/mcp-server-neo4j", "bolt://localhost:7688"]
-    },
-    "fraud-detection": {
-      "command": "npx",
-      "args": ["@anthropic-ai/mcp-server-neo4j", "bolt://prod-server:7687"],
-      "env": {
-        "NEO4J_USERNAME": "analyst",
-        "NEO4J_PASSWORD": "${PROD_PASSWORD}"  
-      }
+      "command": "uvx",
+      "args": ["--from", "mcp-neo4j-cypher", "mcp-neo4j-cypher",
+               "--db-url", "bolt://localhost:7688",
+               "--username", "neo4j", "--password", "password",
+               "--read-only", "--transport", "stdio"]
     }
   }
 }
 ```
 
-Then specify which database in your queries:
+Then name the graph in your queries:
 ```
 You: "Using social-graph, show me trending posts"
 You: "In ecommerce-graph, find products frequently bought together"
@@ -205,13 +230,16 @@ docker run -d -p 9090:9090 -p 8687:8687 \
   --http-port 9090 --bolt-port 8687
 ```
 
-Update MCP config:
+Update the `--db-url` in the MCP config to match:
 ```json
 {
   "mcpServers": {
     "clickgraph": {
-      "command": "npx",
-      "args": ["@anthropic-ai/mcp-server-neo4j", "bolt://localhost:8687"]
+      "command": "uvx",
+      "args": ["--from", "mcp-neo4j-cypher", "mcp-neo4j-cypher",
+               "--db-url", "bolt://localhost:8687",
+               "--username", "neo4j", "--password", "password",
+               "--read-only", "--transport", "stdio"]
     }
   }
 }
@@ -219,25 +247,9 @@ Update MCP config:
 
 ### Authentication Configuration
 
-ClickGraph supports multiple authentication methods through Bolt:
-
-**Basic Auth** (default):
-```json
-{
-  "env": {
-    "NEO4J_USERNAME": "your_username",
-    "NEO4J_PASSWORD": "your_password"
-  }
-}
-```
-
-**No Authentication** (development only):
-```json
-{
-  "args": ["@anthropic-ai/mcp-server-neo4j", "bolt://localhost:7687"],
-  "env": {}
-}
-```
+Credentials are passed to the MCP server via `--username` / `--password` (or the
+`NEO4J_USERNAME` / `NEO4J_PASSWORD` environment variables), which it forwards over
+Bolt. ClickGraph's default demo credentials are `neo4j` / `password`.
 
 ### Docker Networking
 
@@ -416,16 +428,17 @@ EOF
    cat ~/Library/Application\ Support/Claude/claude_desktop_config.json | python3 -m json.tool
    ```
 
-2. **Check Node.js installation**:
+2. **Check `uv` installation**:
    ```bash
-   node --version  # Should be v14 or higher
-   npx --version
+   uvx --version   # provided by uv: https://docs.astral.sh/uv/
    ```
 
 3. **Test MCP server manually**:
    ```bash
-   npx @anthropic-ai/mcp-server-neo4j bolt://localhost:7687
-   # Should start without errors
+   uvx --from mcp-neo4j-cypher mcp-neo4j-cypher \
+     --db-url bolt://localhost:7687 --username neo4j --password password \
+     --read-only --transport stdio
+   # Should start and print the FastMCP banner without errors
    ```
 
 4. **Check Claude Desktop logs** (macOS):
@@ -618,15 +631,22 @@ See [Custom MCP Server Development](#future-enhancements) below.
 
 ## Compatible MCP Servers
 
-ClickGraph has been tested with the following Neo4j MCP servers:
+| Server | Install | Status |
+|--------|---------|--------|
+| [Neo4j Labs Cypher MCP](https://github.com/neo4j-contrib/mcp-neo4j) ([PyPI](https://pypi.org/project/mcp-neo4j-cypher/)) | `uvx --from mcp-neo4j-cypher mcp-neo4j-cypher` | ✅ **Verified** — both `get_neo4j_schema` and `read_neo4j_cypher`, against ClickHouse and Databricks backends |
 
-| Server | Install | Notes |
-|--------|---------|-------|
-| [Anthropic Neo4j MCP](https://www.npmjs.com/package/@anthropic-ai/mcp-server-neo4j) | `npx @anthropic-ai/mcp-server-neo4j` | Recommended for Claude Desktop |
-| [Neo4j Official MCP](https://www.npmjs.com/package/@neo4j/mcp-neo4j) | `npx @neo4j/mcp-neo4j` | Official Neo4j MCP server |
-| [Labs Python MCP](https://github.com/neo4j-contrib/mcp-neo4j) | `uvx mcp-neo4j-cypher` | Python-based, uses simpler schema query |
+`mcp-neo4j-cypher` discovers the graph with `apoc.meta.schema()` and runs queries
+through the Neo4j driver's `execute_query()`. Both are supported: ClickGraph
+answers the APOC config-map schema call (`apoc.meta.schema({sample: N})`) and
+accepts the `db="neo4j"` default-database field that every driver sends. Launch it
+with `--read-only` — ClickGraph is a read-only engine, so the write tool is inert
+by design.
 
-All three use `apoc.meta.schema()` for schema discovery, which ClickGraph fully supports.
+> **Note on other servers.** Some earlier guides referenced npm packages such as
+> `@anthropic-ai/mcp-server-neo4j` or `@neo4j/mcp-neo4j`; these are not published on
+> the npm registry. Use the `uvx` server above. Any MCP server that speaks the Bolt
+> protocol and discovers schema via `apoc.meta.schema()` should work — but only the
+> server in this table is verified against ClickGraph.
 
 ## Future Enhancements
 
@@ -665,6 +685,5 @@ Potential improvements for MCP integration:
 **MCP Protocol Resources**:
 
 - [Model Context Protocol Specification](https://modelcontextprotocol.io)
-- [Anthropic Neo4j MCP Server](https://www.npmjs.com/package/@anthropic-ai/mcp-server-neo4j)
-- [Neo4j Official MCP Server](https://www.npmjs.com/package/@neo4j/mcp-neo4j)
-- [Neo4j Labs Python MCP Server](https://github.com/neo4j-contrib/mcp-neo4j)
+- [Neo4j Labs Cypher MCP Server (verified)](https://github.com/neo4j-contrib/mcp-neo4j) · [PyPI](https://pypi.org/project/mcp-neo4j-cypher/)
+- [`uv` / `uvx` install guide](https://docs.astral.sh/uv/)
