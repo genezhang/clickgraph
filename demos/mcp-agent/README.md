@@ -66,6 +66,10 @@ The agent calls `get_neo4j_schema` (learns the `User`/`Post` labels and the
 `FOLLOWS`/`AUTHORED`/`LIKED` relationships), writes the Cypher, calls
 `read_neo4j_cypher`, and ClickGraph executes it on the warehouse.
 
+For a curated, live-verified set of **GraphRAG use cases** — recommendation,
+neighborhood content grounding, and connection paths, each showing what a vector
+store *cannot* do — see [`GRAPHRAG_SCENARIOS.md`](./GRAPHRAG_SCENARIOS.md).
+
 ## 3 · Verify the whole loop without an LLM
 
 `verify_mcp.py` drives the *same* server binary over stdio and calls both tools

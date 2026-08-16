@@ -136,6 +136,9 @@ docs1/
 # Agent documentation for AI-assisted development
 !**/AGENTS.md
 
+# Demo runbooks and scenario docs (publishable)
+!demos/**/*.md
+
 # Agent skills (publishable, for end-users)
 !skills/
 !skills/**
