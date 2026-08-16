@@ -17,7 +17,26 @@ use crate::{
 };
 
 use crate::query_planner::logical_plan::generate_id;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+/// Generate an anonymous alias (`t1`, `t2`, …) that does NOT collide with any
+/// alias already in `used` — user-provided pattern variables plus aliases
+/// already bound in the plan context or generated earlier in this pattern.
+///
+/// Anonymous nodes/edges are auto-aliased from a shared `t{N}` counter (see
+/// `generate_id`). Without this guard a query that explicitly names a variable
+/// `t2` collides with the generated `t2` for an adjacent anonymous relationship,
+/// and the relationship's composite-key label overwrites the user node's real
+/// label — the #1081 `(TYPE::From::To)-[:TYPE::From::To]->(...)` corruption.
+/// The generated candidate is recorded in `used` so later generation skips it too.
+fn generate_unique_alias(used: &mut HashSet<String>) -> String {
+    loop {
+        let candidate = generate_id();
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+}
 
 // Import from sibling modules
 use super::helpers::{
@@ -78,6 +97,26 @@ fn traverse_connected_pattern_with_mode<'a>(
     // Use pointer equality to detect shared Rc instances.
     // Note: HashMap is already imported at the top of this file.
 
+    // Collect every alias the user explicitly wrote in this pattern (node and
+    // relationship variables), plus any alias already bound in the plan context
+    // from earlier clauses. Anonymous alias generation below must avoid these so
+    // a generated `t{N}` never clobbers a user variable of the same name (#1081).
+    let mut used_aliases: HashSet<String> = HashSet::new();
+    for connected_pattern in connected_patterns.iter() {
+        if let Some(name) = connected_pattern.start_node.borrow().name {
+            used_aliases.insert(name.to_string());
+        }
+        if let Some(name) = connected_pattern.end_node.borrow().name {
+            used_aliases.insert(name.to_string());
+        }
+        if let Some(name) = connected_pattern.relationship.name {
+            used_aliases.insert(name.to_string());
+        }
+    }
+    for (alias, _) in plan_ctx.iter_table_contexts() {
+        used_aliases.insert(alias.clone());
+    }
+
     // Use usize from Rc::as_ptr() cast as the key for pointer-based identity
     let mut node_alias_map: HashMap<usize, String> = HashMap::new();
 
@@ -89,7 +128,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             let alias = if let Some(name) = start_node_ref.name {
                 name.to_string()
             } else {
-                generate_id()
+                generate_unique_alias(&mut used_aliases)
             };
             drop(start_node_ref);
             alias
@@ -102,7 +141,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             let alias = if let Some(name) = end_node_ref.name {
                 name.to_string()
             } else {
-                generate_id()
+                generate_unique_alias(&mut used_aliases)
             };
             drop(end_node_ref);
             alias
@@ -123,7 +162,7 @@ fn traverse_connected_pattern_with_mode<'a>(
         let start_node_alias = node_alias_map
             .get(&(connected_pattern.start_node.as_ptr() as usize))
             .cloned()
-            .unwrap_or_else(generate_id);
+            .unwrap_or_else(|| generate_unique_alias(&mut used_aliases));
 
         // CRITICAL FIX: Label resolution order:
         // 1. If AST has explicit label (Some(...)), use it
@@ -178,7 +217,7 @@ fn traverse_connected_pattern_with_mode<'a>(
         let end_node_alias = node_alias_map
             .get(&(connected_pattern.end_node.as_ptr() as usize))
             .cloned()
-            .unwrap_or_else(generate_id);
+            .unwrap_or_else(|| generate_unique_alias(&mut used_aliases));
         let end_node_label_from_ast = end_node_ref.first_label().map(|val| val.to_string());
 
         log::debug!(
@@ -210,7 +249,7 @@ fn traverse_connected_pattern_with_mode<'a>(
         let rel_alias = if let Some(alias) = rel.name {
             alias.to_string()
         } else {
-            generate_id()
+            generate_unique_alias(&mut used_aliases)
         };
 
         // Handle anonymous edge patterns: [] (no type specified)

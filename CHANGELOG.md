@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+### 🐛 Bug Fixes
+
+- **#1081 — anonymous-relationship alias collision corrupted chained/VLP patterns.** Anonymous nodes and relationships are auto-aliased from a shared `t{N}` counter (`logical_plan::generate_id`). When a query explicitly named a variable `t2` (etc.), the generated alias for an adjacent anonymous relationship collided with it, and that relationship's composite-key label (e.g. `AUTHORED::User::Post`) overwrote the user node's real label — surfacing as `AnalyzerError: Invalid relationship pattern (TYPE::From::To)-[:TYPE::From::To]->(…)` (masked as Bolt `50N42`). A variable-length hop forces adjacent anonymous relationships, so patterns like `(t)-[:REL*1..2]->(t2)-[:REL2]->(d)` reliably tripped it; it looked "intermittent" only because different hand-typed queries used different variable names. Fixed in `traversal.rs` by making anonymous alias generation skip any alias already used by the query (user pattern variables + plan-context bindings). This unblocks single-query hybrid vector + variable-length-graph retrieval (VLP traversal + chained hop + `cosineDistance` re-ranking in one statement).
+- **Latent: `GraphSchema` derived indexes dropped on deserialize.** `rel_type_index` and the denormalized-node metadata are `#[serde(skip)]` and were built only in `GraphSchema::build()`, so a schema recovered from the `graph_catalog` JSON persistence path (server startup restore, and the 60s `monitor_schema_updates` refresh of the `default` schema) came back with an empty `rel_type_index` — breaking relationship lookups by simple type name. Fixed by routing deserialize through an intermediate that rebuilds the derived indexes (`rebuild_derived_indexes`), also applied on the schema-mutation (DDL) path. (Found while investigating #1081; independent root cause.)
+
 ## [0.6.8-dev] - 2026-08-09
 
 ### ✨ Features

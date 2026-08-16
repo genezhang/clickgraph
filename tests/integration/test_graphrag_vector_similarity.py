@@ -325,9 +325,19 @@ class TestVectorSimilarityWithGraphRAG:
         similarities = [row["similarity"] for row in rows]
         assert similarities == sorted(similarities), "Should be ordered by similarity"
     
-    @pytest.mark.xfail(reason="Code bug: VLP identifier resolution with vector similarity")
     def test_vector_similarity_with_vlp(self, vector_graphrag_schema):
-        """Variable-length path + vector similarity ranking."""
+        """Variable-length path + chained hop + vector similarity ranking.
+
+        Regression test for #1081. This previously xfailed with the reason
+        "VLP identifier resolution with vector similarity" — a misattribution.
+        The real bug was neither VLP- nor vector-specific: the chained anonymous
+        `-[:DISCUSSES]->` relationship was auto-aliased `t2` from the shared
+        `t{N}` counter, colliding with the user's explicitly-named endpoint `t2`,
+        so the relationship's composite-key label overwrote node `t2`'s real
+        label (AnalyzerError: Invalid relationship pattern
+        `(DISCUSSES::Topic::Document)-[...]->(Document)`). Fixed by making
+        anonymous alias generation avoid user-defined aliases.
+        """
         
         query_vec = generate_embedding(101)  # Similar to NLP
         query_vec_str = "[" + ",".join(map(str, query_vec)) + "]"
