@@ -624,12 +624,35 @@
           <p style="margin:12px 0 0;color:var(--muted);font-size:14px">The graph scopes the candidates; the vector re-ranks them. The two foundational ML/NLP papers rise; the off-topic CV paper sinks. <b>Relevant <em>and</em> explainable.</b></p>
         </div>
 
+        <div class="step-label"><span class="step-n">4</span> ALL AT ONCE — the whole loop in one statement</div>
+<pre><span class="k">MATCH</span> (t:Topic {name:<span class="s">'Machine Learning'</span>})-[:RELATED_TO*1..2]-&gt;(t2:Topic)
+<span class="k">WITH</span> <span class="k">DISTINCT</span> t2
+<span class="k">MATCH</span> (t2)-[:DISCUSSES]-&gt;(d:Document)
+<span class="k">RETURN</span> <span class="k">DISTINCT</span> d.title <span class="k">AS</span> document, t2.name <span class="k">AS</span> via_topic,
+       <span class="f">round</span>(1 - <span class="f">cosineDistance</span>(d.embedding, $q), 4) <span class="k">AS</span> similarity
+<span class="k">ORDER BY</span> similarity <span class="k">DESC</span></pre>
+        <div class="result">
+          <div class="result-label">3 rows · unblocked by <a href="https://github.com/genezhang/clickgraph/pull/1083">#1083</a></div>
+          <div class="tbl-scroll"><table>
+            <thead><tr><th>document</th><th>via_topic</th><th>similarity</th></tr></thead>
+            <tbody>
+              <tr><td>Transformer Architecture Explained</td><td>Natural Language Processing</td><td class="num">0.6844</td></tr>
+              <tr><td>Deep Learning for NLP</td><td>Natural Language Processing</td><td class="num">0.0943</td></tr>
+              <tr><td>Object Detection with YOLO</td><td>Computer Vision</td><td class="num">−0.0016</td></tr>
+            </tbody>
+          </table></div>
+          <p style="margin:12px 0 0;color:var(--muted);font-size:14px">Variable-length graph expansion feeds a vector re-rank in <b>one Cypher statement</b> — no client round-trip between traversal and ranking. <span style="opacity:.8">The NLP-adjacent paper rises; the CV paper sinks.</span></p>
+        </div>
+
         <div class="note"><b>ClickHouse-native vectors.</b>
           <code>cosineDistance</code> / <code>L2Distance</code> / <code>gds.similarity.*</code> and
           <code>CALL db.index.vector.queryNodes(…)</code> run on the ClickGraph/ClickHouse endpoint.
-          Vector and traversal are kept as separate agentic steps on purpose — fusing them into one
-          query can hit an intermittent planner bug (<a href="https://github.com/genezhang/clickgraph/issues/1081">#1081</a>),
-          independent of the vector functions themselves.</div>
+          The single-statement form threads the variable-length traversal through a <code>WITH</code>
+          barrier before the chained <code>DISCUSSES</code> hop — which composes once the
+          anonymous-alias collision (<a href="https://github.com/genezhang/clickgraph/pull/1083">#1083</a>,
+          fixing <a href="https://github.com/genezhang/clickgraph/issues/1081">#1081</a>) is in place;
+          the fully-inline chain form is tracked in
+          <a href="https://github.com/genezhang/clickgraph/issues/1085">#1085</a>.</div>
       </div>
     </div>
   </div>
@@ -648,7 +671,7 @@
           <tr><td>03 · Content grounding</td><td>2 hops, scoped</td><td class="v-no">no — needs edge-scoping</td></tr>
           <tr><td>04 · Connection path</td><td>variable-length</td><td class="v-no">no — not a vector</td></tr>
           <tr><td>05 · Engagement</td><td>3-way join</td><td class="v-no">no — relationship aggregation</td></tr>
-          <tr><td>06 · Hybrid vector + graph</td><td>vector seed → traverse → re-rank</td><td class="v-no">step 1 only — traversal &amp; explanation need the graph</td></tr>
+          <tr><td>06 · Hybrid vector + graph</td><td>vector seed → traverse → re-rank, one statement</td><td class="v-no">step 1 only — traversal &amp; re-rank compose in one query</td></tr>
         </tbody>
       </table></div>
     </div>
