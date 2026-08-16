@@ -65,6 +65,48 @@ fn bolt_value_to_string(value: &BoltValue) -> String {
     }
 }
 
+/// Resolve the graph schema a RUN/BEGIN message should route to from its Bolt
+/// `db` field.
+///
+/// ClickGraph maps the Bolt `db` field onto a loaded graph-schema name. But
+/// generic Neo4j clients — drivers via `execute_query()`, Neo4j Browser, and
+/// every Neo4j MCP server — send `db="neo4j"` (Neo4j's conventional *default*
+/// database name), because they have no way to know ClickGraph's schema names.
+/// Routing that literal to a schema named "neo4j" fails as a generic 50N42 and
+/// breaks drop-in compatibility (the mainstream `mcp-neo4j-cypher` server hit
+/// exactly this). So a reserved default name (`neo4j`, `system`, or empty) is
+/// treated as "use the session's default schema" — unless a schema by that
+/// literal name is actually loaded, in which case it is honored. Any other
+/// unrecognized name is passed through unchanged so genuine typos still surface
+/// downstream rather than being silently redirected.
+async fn resolve_requested_schema(
+    requested: Option<String>,
+    session_default: Option<String>,
+) -> Option<String> {
+    match requested {
+        Some(db) => {
+            let is_reserved_default = db.is_empty()
+                || db.eq_ignore_ascii_case("neo4j")
+                || db.eq_ignore_ascii_case("system");
+            if is_reserved_default {
+                let loaded = graph_catalog::list_available_schemas().await;
+                let db_is_loaded = loaded.iter().any(|s| s.eq_ignore_ascii_case(&db));
+                if !db_is_loaded {
+                    log::debug!(
+                        "Bolt db {:?} is a reserved Neo4j default with no matching schema; \
+                         using session default {:?}",
+                        db,
+                        session_default
+                    );
+                    return session_default;
+                }
+            }
+            Some(db)
+        }
+        None => session_default,
+    }
+}
+
 /// Detect Browser 5.x's bundled count query:
 ///   `MATCH (n) RETURN count(n) AS result UNION ALL MATCH ()-[r]->() RETURN count(r) AS result`
 ///
@@ -1282,7 +1324,7 @@ impl BoltHandler {
         // that reference nodes not in the browser's graph, crashing with "t.source is undefined".
 
         // Get selected schema from context, or from RUN message metadata
-        let (schema_name, tenant_id, role, view_parameters) = {
+        let (requested_db, session_default, tenant_id, role, view_parameters) = {
             let context = lock_context!(self.context);
 
             // Debug: log RUN message fields
@@ -1291,24 +1333,11 @@ impl BoltHandler {
                 log::info!("  Field[{}]: {}", i, bolt_value_to_string(field));
             }
 
-            // Check if RUN message specifies a database (Bolt 4.x)
-            let schema_name = if let Some(run_db) = message.extract_run_database() {
-                log::info!("✅ RUN message contains database: {}", run_db);
-                if run_db != context.schema_name.as_deref().unwrap_or("default") {
-                    log::debug!(
-                        "RUN message overriding schema: {} -> {}",
-                        context.schema_name.as_deref().unwrap_or("default"),
-                        run_db
-                    );
-                }
-                Some(run_db)
-            } else {
-                log::info!(
-                    "⚠️  RUN message does NOT contain database field, using context schema: {:?}",
-                    context.schema_name
-                );
-                context.schema_name.clone()
-            };
+            // Database routing (Bolt 4.x `db` field) is resolved below, after the
+            // context guard drops, since the resolution consults the async schema
+            // registry (a std Mutex guard must not be held across `.await`).
+            let requested_db = message.extract_run_database();
+            let session_default = context.schema_name.clone();
 
             // Extract tenant_id from RUN message metadata, or fall back to session-level
             // value set via CALL sys.set('tenant_id', '...')
@@ -1331,8 +1360,19 @@ impl BoltHandler {
                 log::debug!("✅ RUN message contains view_parameters: {:?}", vp);
             }
 
-            (schema_name, tenant_id, role, view_parameters)
+            (
+                requested_db,
+                session_default,
+                tenant_id,
+                role,
+                view_parameters,
+            )
         };
+
+        // Map the Bolt `db` field to a loaded schema, tolerating the reserved
+        // Neo4j default names (`neo4j`/`system`) that generic clients and MCP
+        // servers always send.
+        let schema_name = resolve_requested_schema(requested_db, session_default).await;
 
         // Store tenant_id on context (needed for execute_cypher_query fallback)
         if let Some(ref tid) = tenant_id {
@@ -1969,16 +2009,20 @@ impl BoltHandler {
 
         if let Some(db) = message.extract_begin_database() {
             log::info!("✅ BEGIN message contains database: {}", db);
+            // Resolve outside the context lock (async registry consult); reserved
+            // Neo4j default names (`neo4j`/`system`) map to the session default.
+            let session_default = { lock_context!(self.context).schema_name.clone() };
+            let effective = resolve_requested_schema(Some(db), session_default).await;
             let mut context = lock_context!(self.context);
-            if context.schema_name.as_deref() != Some(&db) {
+            if context.schema_name != effective {
                 log::debug!(
-                    "BEGIN message overriding schema: {:?} -> {}",
+                    "BEGIN message overriding schema: {:?} -> {:?}",
                     context.schema_name,
-                    db
+                    effective
                 );
-                context.schema_name = Some(db.clone());
+                context.schema_name = effective.clone();
                 let scope_tenant = context.tenant_id.clone();
-                context.id_mapper.set_scope(Some(db), scope_tenant);
+                context.id_mapper.set_scope(effective, scope_tenant);
             }
         } else {
             log::debug!("BEGIN message does NOT contain database field");
