@@ -8,9 +8,12 @@ and ground its answer in the rows that come back.
 
 The scenarios below are an **escalating** set. The first is ordinary retrieval a
 vector store could approximate. Everything after it depends on *traversal* —
-following edges across the warehouse — which similarity search cannot do. Each was
-run **live against the Databricks / DeltaGraph social graph** (Bolt `:7688`); the
-results shown are the actual rows returned.
+following edges across the warehouse — which similarity search cannot do.
+Scenarios 1–5 were run **live against the Databricks / DeltaGraph social graph**
+(Bolt `:7688`); scenario 6 adds **hybrid vector + graph retrieval** on a
+knowledge-base graph via the **ClickGraph / ClickHouse** endpoint (Bolt `:7687`),
+where the vector-distance functions are native. In every case the results shown are
+the actual rows returned.
 
 > The agent always starts by calling `get_neo4j_schema`, which returns the labels
 > (`User`, `Post`), their properties, and the relationships
@@ -141,6 +144,85 @@ ORDER BY likes DESC, post LIMIT 5
 
 ---
 
+## 6 · Hybrid retrieval — "Semantic entry, then graph expansion"
+
+The one that puts vector search and the graph in the *same loop*. A pure vector
+store retrieves by similarity and stops. Here the agent uses similarity only to
+find the **entry point**, then the graph does what similarity cannot: traverse the
+neighborhood, read the connection back **by name**, and re-rank grounded results.
+
+Run against a knowledge-base graph (`Topic ─RELATED_TO→ Topic`,
+`Topic ─DISCUSSES→ Document`) where both node types carry 128-dim embeddings. The
+user's question ≈ *"deep learning that spans machine learning and NLP"*, encoded as
+the centroid of the ML + NLP topic vectors.
+
+**Step 1 — VECTOR: what is the question even about?** Rank topics by cosine
+similarity to the query embedding.
+
+```cypher
+MATCH (t:Topic)
+RETURN t.name AS topic, round(1 - cosineDistance(t.embedding, $q), 4) AS similarity
+ORDER BY similarity DESC LIMIT 3
+```
+
+| topic | similarity |
+|---|---|
+| Natural Language Processing | 0.6844 |
+| Machine Learning | 0.6844 |
+| Databases | −0.0001 |
+
+The two AI topics surface; unrelated topics sit at ~0. `cosineDistance` is
+ClickHouse-native. **A vector store stops here.**
+
+**Step 2 — GRAPH: how does that topic connect, read by name?** (the path readout
+shipped in [#1079](https://github.com/genezhang/clickgraph/pull/1079))
+
+```cypher
+MATCH path = (start:Topic {name:'Machine Learning'})-[:RELATED_TO*1..2]->(t2:Topic)
+RETURN [n IN nodes(path) | n.name] AS topic_chain, length(path) AS hops
+ORDER BY hops, topic_chain
+```
+
+| topic_chain | hops |
+|---|---|
+| ["Machine Learning", "Natural Language Processing"] | 1 |
+| ["Machine Learning", "Computer Vision"] | 1 |
+| ["Machine Learning", "Natural Language Processing", "Computer Vision"] | 2 |
+
+**Step 3 — HYBRID: of the documents in that neighborhood, which actually answer
+the question?** The graph scopes the candidate set; the vector re-ranks it.
+
+```cypher
+MATCH (t:Topic)-[:DISCUSSES]->(d:Document)
+WHERE t.name IN ['Machine Learning','Natural Language Processing','Computer Vision']
+RETURN d.title AS document, t.name AS via_topic,
+       round(1 - cosineDistance(d.embedding, $q), 4) AS similarity
+ORDER BY similarity DESC LIMIT 5
+```
+
+| document | via_topic | similarity |
+|---|---|---|
+| Introduction to Neural Networks | Machine Learning | 0.6844 |
+| Transformer Architecture Explained | Natural Language Processing | 0.6844 |
+| Object Detection with YOLO | Computer Vision | −0.0016 |
+
+The two foundational ML/NLP papers float to the top; the off-topic CV paper sinks.
+Neither retrieval mode does this alone: **vectors find the entry point, the graph
+traverses and explains the connection, then vectors re-rank the grounded
+neighborhood.** That is GraphRAG that is both *relevant* and *explainable*.
+
+> **Scope note.** Vector distance functions (`cosineDistance`, `L2Distance`,
+> `dotProduct`, `gds.similarity.*`, `vector.similarity.*`) and the
+> `CALL db.index.vector.queryNodes(...)` procedure are **ClickHouse-native**; this
+> scenario runs on the ClickGraph/ClickHouse endpoint. Vector and traversal are
+> kept as **separate agentic steps** on purpose — fusing them into one query
+> (`… -[:RELATED_TO*1..2]->(t2)-[:DISCUSSES]->(d) … cosineDistance(…)`) can hit an
+> intermittent planner bug tracked in
+> [#1081](https://github.com/genezhang/clickgraph/issues/1081), which is
+> independent of the vector functions themselves.
+
+---
+
 ## The point
 
 | Scenario | Traversal depth | Could a vector store do it? |
@@ -150,6 +232,7 @@ ORDER BY likes DESC, post LIMIT 5
 | 3 · Content grounding | 2 hops, neighborhood-scoped | **No** — needs edge-scoping, not similarity |
 | 4 · Connection path | variable-length | **No** — not representable as a vector |
 | 5 · Engagement | 3-way join | **No** — relationship aggregation |
+| 6 · Hybrid vector + graph | vector seed → traverse → re-rank | **Only step 1** — traversal & explanation need the graph |
 
 Same schema. Same warehouse tables. **Zero ETL, zero graph database.** The agent
 speaks Bolt to ClickGraph/DeltaGraph, which translates Cypher to ClickHouse or
