@@ -97,33 +97,25 @@ everything.
 The question a vector store cannot even represent: *what is the chain of
 relationships between two specific entities?*
 
-**How far apart** (shortest-path length):
+**The whole chain, by name** — read the nodes along the shortest path:
 
 ```cypher
 MATCH path = shortestPath((a:User {name:'Alice'})-[:FOLLOWS*1..5]->(b:User {name:'Rachel'}))
-RETURN length(path) AS hops
+RETURN [n IN nodes(path) | n.name] AS connection_path, length(path) AS hops
 ```
 
-→ `hops = 4` — Alice reaches Rachel in four follow-hops (and *not* within three;
-the bounded `*1..3` traversal returns empty, confirming it).
+| connection_path | hops |
+|---|---|
+| ["Alice", "David", "Henry", "Sam", "Rachel"] | 4 |
 
-**The actual chain** to a nearer user:
+Alice reaches Rachel in four follow-hops, *through David → Henry → Sam* — a chain a
+vector store cannot represent, let alone read back in order. The names come out in
+traversal order because the property is materialized as a parallel array carried
+alongside the path during the recursive traversal.
 
-```cypher
-MATCH (a:User {name:'Alice'})-[:FOLLOWS]->(via:User)-[:FOLLOWS]->(b:User {name:'Ben'})
-RETURN a.name AS from_user, via.name AS connected_through, b.name AS to_user
-```
-
-| from_user | connected_through | to_user |
-|---|---|---|
-| Alice | David | Ben |
-
-> **Known limitation ([#1077](https://github.com/genezhang/clickgraph/issues/1077)):**
-> reading the *node names along a path* via a comprehension —
-> `RETURN [n IN nodes(path) | n.name]` — currently fails at planning
-> (`ProjectionTagging: No table context for alias 'n'`) on **both** backends;
-> over Bolt it surfaces as an opaque `50N42`. `length(path)` and explicit-hop
-> chains (shown above) work today; full path readout is tracked in #1077.
+> Reading node properties along a path (`[n IN nodes(path) | n.name]`) shipped in
+> [#1079](https://github.com/genezhang/clickgraph/pull/1079) — it was the third real
+> bug this MCP demo surfaced. Verified live on both ClickHouse and Databricks.
 
 ---
 

@@ -482,27 +482,19 @@
           </div>
         </div>
         <div class="toolcall"><span class="pill">read_neo4j_cypher</span><span class="arrow">→</span> warehouse</div>
-<pre><span class="c">// how far apart?</span>
+<pre><span class="c">// read the whole chain, by name</span>
 <span class="k">MATCH</span> path = <span class="f">shortestPath</span>((a:User {name:<span class="s">'Alice'</span>})-[:FOLLOWS*1..5]-&gt;(b:User {name:<span class="s">'Rachel'</span>}))
-<span class="k">RETURN</span> <span class="f">length</span>(path) <span class="k">AS</span> hops</pre>
+<span class="k">RETURN</span> [n <span class="k">IN</span> <span class="f">nodes</span>(path) | n.name] <span class="k">AS</span> connection_path, <span class="f">length</span>(path) <span class="k">AS</span> hops</pre>
         <div class="result">
           <div class="result-label">1 row</div>
-          <div class="chain"><span class="n">Alice</span><span class="e">→ 4 follow-hops →</span><span class="n">Rachel</span></div>
-          <p style="margin:12px 0 0;color:var(--muted);font-size:14px">…and not within three: the bounded <code>*1..3</code> traversal returns empty, confirming it.</p>
+          <div class="chain"><span class="n">Alice</span><span class="e">→</span><span class="n">David</span><span class="e">→</span><span class="n">Henry</span><span class="e">→</span><span class="n">Sam</span><span class="e">→</span><span class="n">Rachel</span></div>
+          <p style="margin:12px 0 0;color:var(--muted);font-size:14px"><code>hops = 4</code> — the names come back <em>in traversal order</em>, materialized as a parallel array carried alongside the path.</p>
         </div>
-<pre><span class="c">// the actual chain to a nearer user</span>
-<span class="k">MATCH</span> (a:User {name:<span class="s">'Alice'</span>})-[:FOLLOWS]-&gt;(via:User)-[:FOLLOWS]-&gt;(b:User {name:<span class="s">'Ben'</span>})
-<span class="k">RETURN</span> a.name, via.name, b.name</pre>
-        <div class="result">
-          <div class="result-label">1 row</div>
-          <div class="chain"><span class="n">Alice</span><span class="e">─FOLLOWS→</span><span class="n">David</span><span class="e">─FOLLOWS→</span><span class="n">Ben</span></div>
-        </div>
-        <div class="note limit"><b>Honest limitation
-          (<a href="https://github.com/genezhang/clickgraph/issues/1077">#1077</a>):</b>
-          reading the node names along a path via
-          <code>[n IN nodes(path) | n.name]</code> currently fails at planning on both
-          backends. <code>length(path)</code> and explicit-hop chains work today; full
-          path readout is tracked and open. Surfaced by building this very demo.</div>
+        <div class="note"><b>Path readout by name</b>
+          (<a href="https://github.com/genezhang/clickgraph/pull/1079">#1079</a>)
+          shipped from building this demo — the third real bug the MCP loop
+          surfaced. <code>[n IN nodes(path) | n.name]</code> now returns the ordered
+          chain, verified live on ClickHouse and Databricks.</div>
       </div>
     </div>
 
