@@ -217,6 +217,20 @@
   }
   .toolcall .arrow { color: var(--border); }
 
+  .step-label {
+    display: flex; align-items: center; gap: 10px;
+    font-family: var(--mono); font-size: 12px; font-weight: 700;
+    letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+    padding: 16px 22px 12px; border-top: 1px solid var(--border);
+  }
+  .step-label:first-of-type { border-top: none; padding-top: 4px; }
+  .step-n {
+    flex: none; width: 20px; height: 20px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--accent);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 800;
+  }
+
   pre {
     margin: 0; background: var(--code-bg); color: var(--code-text);
     font-family: var(--mono); font-size: 13.5px; line-height: 1.65;
@@ -352,7 +366,7 @@
 
 <section>
   <div class="wrap">
-    <div class="eyebrow">Five scenarios · verified live on Databricks</div>
+    <div class="eyebrow">Six scenarios · verified live</div>
     <h2>What traversal does that similarity can't</h2>
     <p class="section-intro">The first is ordinary retrieval. Everything after it
       depends on following edges across the warehouse — which a vector store cannot
@@ -531,6 +545,75 @@
         </div>
       </div>
     </div>
+
+    <!-- 6 -->
+    <div class="scenario reveal">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <div class="idx">06 · HYBRID — VECTOR + GRAPH</div>
+            <h3>Semantic entry, then graph expansion</h3>
+            <p class="ask">Use similarity to find the entry point; use the graph to traverse, explain, and re-rank. The question ≈ <em>"deep learning spanning ML and NLP"</em>, encoded as a query vector.</p>
+          </div>
+          <div class="badges">
+            <span class="badge hops">vector + traversal</span>
+            <span class="badge can">vector store: step 1 only</span>
+          </div>
+        </div>
+
+        <div class="step-label"><span class="step-n">1</span> VECTOR — what is the question about?</div>
+        <div class="toolcall"><span class="pill">read_neo4j_cypher</span><span class="arrow">→</span> warehouse</div>
+<pre><span class="k">MATCH</span> (t:Topic)
+<span class="k">RETURN</span> t.name <span class="k">AS</span> topic, <span class="f">round</span>(1 - <span class="f">cosineDistance</span>(t.embedding, $q), 4) <span class="k">AS</span> similarity
+<span class="k">ORDER BY</span> similarity <span class="k">DESC</span> <span class="k">LIMIT</span> 3</pre>
+        <div class="result">
+          <div class="result-label">3 rows</div>
+          <div class="tbl-scroll"><table>
+            <thead><tr><th>topic</th><th>similarity</th></tr></thead>
+            <tbody>
+              <tr><td>Natural Language Processing</td><td class="num">0.6844</td></tr>
+              <tr><td>Machine Learning</td><td class="num">0.6844</td></tr>
+              <tr><td>Databases</td><td class="num">−0.0001</td></tr>
+            </tbody>
+          </table></div>
+          <p style="margin:12px 0 0;color:var(--muted);font-size:14px">The two AI topics surface; unrelated topics sit at ~0. <b>A vector store stops here.</b></p>
+        </div>
+
+        <div class="step-label"><span class="step-n">2</span> GRAPH — how does that topic connect, by name?</div>
+<pre><span class="k">MATCH</span> path = (start:Topic {name:<span class="s">'Machine Learning'</span>})-[:RELATED_TO*1..2]-&gt;(t2:Topic)
+<span class="k">RETURN</span> [n <span class="k">IN</span> <span class="f">nodes</span>(path) | n.name] <span class="k">AS</span> topic_chain, <span class="f">length</span>(path) <span class="k">AS</span> hops</pre>
+        <div class="result">
+          <div class="result-label">3 rows · path readout <a href="https://github.com/genezhang/clickgraph/pull/1079">#1079</a></div>
+          <div class="chain"><span class="n">Machine Learning</span><span class="e">→</span><span class="n">Natural Language Processing</span><span class="e">→</span><span class="n">Computer Vision</span></div>
+          <p style="margin:12px 0 0;color:var(--muted);font-size:14px"><code>[n IN nodes(path) | n.name]</code> reads the neighborhood back in traversal order — similarity search cannot represent this.</p>
+        </div>
+
+        <div class="step-label"><span class="step-n">3</span> HYBRID — re-rank the grounded neighborhood</div>
+<pre><span class="k">MATCH</span> (t:Topic)-[:DISCUSSES]-&gt;(d:Document)
+<span class="k">WHERE</span> t.name <span class="k">IN</span> [<span class="s">'Machine Learning'</span>,<span class="s">'Natural Language Processing'</span>,<span class="s">'Computer Vision'</span>]
+<span class="k">RETURN</span> d.title <span class="k">AS</span> document, <span class="f">round</span>(1 - <span class="f">cosineDistance</span>(d.embedding, $q), 4) <span class="k">AS</span> similarity
+<span class="k">ORDER BY</span> similarity <span class="k">DESC</span> <span class="k">LIMIT</span> 5</pre>
+        <div class="result">
+          <div class="result-label">top 3 of 5</div>
+          <div class="tbl-scroll"><table>
+            <thead><tr><th>document</th><th>via_topic</th><th>similarity</th></tr></thead>
+            <tbody>
+              <tr><td>Introduction to Neural Networks</td><td>Machine Learning</td><td class="num">0.6844</td></tr>
+              <tr><td>Transformer Architecture Explained</td><td>Natural Language Processing</td><td class="num">0.6844</td></tr>
+              <tr><td>Object Detection with YOLO</td><td>Computer Vision</td><td class="num">−0.0016</td></tr>
+            </tbody>
+          </table></div>
+          <p style="margin:12px 0 0;color:var(--muted);font-size:14px">The graph scopes the candidates; the vector re-ranks them. The two foundational ML/NLP papers rise; the off-topic CV paper sinks. <b>Relevant <em>and</em> explainable.</b></p>
+        </div>
+
+        <div class="note"><b>ClickHouse-native vectors.</b>
+          <code>cosineDistance</code> / <code>L2Distance</code> / <code>gds.similarity.*</code> and
+          <code>CALL db.index.vector.queryNodes(…)</code> run on the ClickGraph/ClickHouse endpoint.
+          Vector and traversal are kept as separate agentic steps on purpose — fusing them into one
+          query can hit an intermittent planner bug (<a href="https://github.com/genezhang/clickgraph/issues/1081">#1081</a>),
+          independent of the vector functions themselves.</div>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -547,6 +630,7 @@
           <tr><td>03 · Content grounding</td><td>2 hops, scoped</td><td class="v-no">no — needs edge-scoping</td></tr>
           <tr><td>04 · Connection path</td><td>variable-length</td><td class="v-no">no — not a vector</td></tr>
           <tr><td>05 · Engagement</td><td>3-way join</td><td class="v-no">no — relationship aggregation</td></tr>
+          <tr><td>06 · Hybrid vector + graph</td><td>vector seed → traverse → re-rank</td><td class="v-no">step 1 only — traversal &amp; explanation need the graph</td></tr>
         </tbody>
       </table></div>
     </div>
@@ -572,8 +656,9 @@
 
 <footer>
   <div class="wrap">
-    <p class="meta">All five scenarios verified live on 2026-08-16 against the DeltaGraph
-      Databricks social graph, via the <code>mcp-neo4j-cypher</code> server over Bolt.</p>
+    <p class="meta">Scenarios 1–5 verified live on 2026-08-16 against the DeltaGraph
+      Databricks social graph; scenario 6 (hybrid vector + graph) on the ClickGraph/ClickHouse
+      endpoint where the vector functions are native — all via the <code>mcp-neo4j-cypher</code> server over Bolt.</p>
     <p>ClickGraph is a read-only, drop-in Neo4j MCP target. Runbook:
       <code>demos/mcp-agent/</code> · Deterministic proof without an LLM:
       <code>verify_mcp.py</code>.</p>
