@@ -571,6 +571,7 @@ pub fn generate_vlp_cte_via_manager(
     use_bfs_mode: bool,
     is_undirected: bool,
     undirected_single_walk: bool,
+    path_node_properties: Vec<NodeProperty>,
 ) -> Result<Cte, RenderBuildError> {
     use std::sync::Arc;
 
@@ -597,6 +598,7 @@ pub fn generate_vlp_cte_via_manager(
     context.use_bfs_mode = use_bfs_mode;
     context.is_undirected = is_undirected;
     context.undirected_single_walk = undirected_single_walk;
+    context.path_node_properties = path_node_properties;
 
     // Convert filters to CategorizedFilters format
     let filters = super::filter_pipeline::CategorizedFilters {
@@ -4882,6 +4884,95 @@ pub fn extract_ctes_with_context(
                         false
                     };
 
+                    // #1077: detect `[n IN nodes(path) | n.<prop>]` and request a parallel
+                    // per-node property array from the VLP CTE. Forms we cannot yet render
+                    // correctly (filtered/composite bodies, `relationships(path)` property
+                    // access, or a multi-label path where the binder ranges over nodes of
+                    // different labels) fail loudly here, never emitting broken SQL.
+                    let path_node_properties: Vec<NodeProperty> = if let Some(ref pv) =
+                        graph_rel.path_variable
+                    {
+                        // Prefer the outermost plan (thread-local) so the enclosing
+                        // RETURN/WITH projection is visible; fall back to context
+                        // root_plan, then the local subtree.
+                        let root = render_root_plan().or_else(|| context.root_plan.clone());
+                        let check: &LogicalPlan = root.as_deref().unwrap_or(plan);
+                        let access = analyze_path_node_property_access(check, pv);
+                        if let Some(reason) = access.unsupported {
+                            return Err(RenderBuildError::UnsupportedFeature(format!(
+                                "Path-node property access on `{}`: {}",
+                                pv, reason
+                            )));
+                        }
+                        // Route the emitter-variant gate through PatternSchemaContext /
+                        // schema-catalog APIs (node access strategy + join strategy), not
+                        // raw denormalized/fk-edge flags, per the axis-dispatch rule: the
+                        // parallel `path_<prop>` arrays are only emitted by the pure-standard
+                        // base/recursive/zero-hop arms (both endpoints own their table, not an
+                        // FK-edge join, not weighted).
+                        let is_pure_standard_pattern = {
+                            use crate::graph_catalog::pattern_schema::{
+                                JoinStrategy, NodeAccessStrategy,
+                            };
+                            let both_own_table = matches!(
+                                &pattern_ctx.left_node,
+                                NodeAccessStrategy::OwnTable { .. }
+                            ) && matches!(
+                                &pattern_ctx.right_node,
+                                NodeAccessStrategy::OwnTable { .. }
+                            );
+                            let fk_edge = matches!(
+                                &pattern_ctx.join_strategy,
+                                JoinStrategy::FkEdgeJoin { .. }
+                            );
+                            both_own_table && !fk_edge && weight_cte_config.is_none()
+                        };
+                        if access.node_props.is_empty() {
+                            Vec::new()
+                        } else if start_label.is_empty() || start_label != end_label {
+                            // The binder ranges over EVERY node on the path, so a single
+                            // `path_<prop>` column is only sound when all path nodes share
+                            // one label (one property→column mapping).
+                            return Err(RenderBuildError::UnsupportedFeature(format!(
+                                "Path-node property access on `{}` is only supported when all \
+                                 path nodes share one label; this path spans `{}`..`{}`. Use \
+                                 `[n IN nodes({}) | n]` for ids, or an explicit per-label pattern.",
+                                pv, start_label, end_label, pv
+                            )));
+                        } else if !is_pure_standard_pattern {
+                            return Err(RenderBuildError::UnsupportedFeature(format!(
+                                "Path-node property access on `{}` is only supported for standard \
+                                 single-label variable-length paths where both endpoints have \
+                                 their own node table; this pattern uses a denormalized/FK-edge/\
+                                 weighted strategy. Project node ids with `[n IN nodes({}) | n]` \
+                                 instead, or use an explicit fixed-length pattern.",
+                                pv, pv
+                            )));
+                        } else {
+                            access
+                                .node_props
+                                .iter()
+                                .map(|prop| {
+                                    let column_name =
+                                        crate::render_plan::cte_generation::map_property_to_column_with_schema(
+                                            prop,
+                                            &start_label,
+                                        )
+                                        .unwrap_or_else(|_| prop.clone());
+                                    NodeProperty {
+                                        // Sentinel alias: never matches start/end cypher aliases,
+                                        // so the endpoint-property gates in the emitter skip it.
+                                        cypher_alias: "__path_node__".to_string(),
+                                        column_name,
+                                        alias: prop.clone(),
+                                    }
+                                })
+                                .collect()
+                        }
+                    } else {
+                        Vec::new()
+                    };
+
                     // Detect lightweight BFS mode for shortestPath + length(path)-only queries.
                     // BFS tracks only distinct reachable node_ids per hop level instead of
                     // per-path visited arrays, reducing memory from ~500M rows to ~180K rows.
@@ -4979,6 +5070,7 @@ pub fn extract_ctes_with_context(
                         needs_bfs_mode,
                         is_undirected,
                         undirected_single_walk,
+                        path_node_properties,
                     )?;
 
                     // TODO(multi-vlp): Per-VLP unique aliases (vt0, vt1) are used in
@@ -6986,6 +7078,246 @@ pub fn plan_uses_nodes_fn(plan: &LogicalPlan, path_var: &str) -> bool {
     }
 
     plan_has_nodes(plan, path_var)
+}
+
+thread_local! {
+    /// The outermost plan currently being rendered, for #1077 path-node property
+    /// detection. CTE extraction runs at the subtree level (GraphRel/GraphJoins),
+    /// whose own `to_render_plan` resets `context.root_plan` to itself — hiding the
+    /// enclosing RETURN/WITH projection where `[n IN nodes(p) | n.<prop>]` lives.
+    /// Set at the outermost render entry (outermost wins), so detection always sees
+    /// the full tree regardless of which subtree owns the VLP CTE.
+    static RENDER_ROOT_PLAN: std::cell::RefCell<Option<std::sync::Arc<LogicalPlan>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Restores the previous outermost-plan value when dropped.
+pub struct RenderRootPlanGuard(Option<std::sync::Arc<LogicalPlan>>);
+impl Drop for RenderRootPlanGuard {
+    fn drop(&mut self) {
+        RENDER_ROOT_PLAN.with(|c| *c.borrow_mut() = self.0.take());
+    }
+}
+
+/// Record `plan` as the outermost render plan for path-node property detection,
+/// but only if none is set yet (outermost wins — nested renders don't clobber it).
+/// The returned guard restores the prior value on drop, so the slot is cleared
+/// once the outermost render returns.
+pub fn scoped_render_root_plan(plan: std::sync::Arc<LogicalPlan>) -> RenderRootPlanGuard {
+    RENDER_ROOT_PLAN.with(|c| {
+        let mut slot = c.borrow_mut();
+        let prev = slot.clone();
+        if slot.is_none() {
+            *slot = Some(plan);
+        }
+        RenderRootPlanGuard(prev)
+    })
+}
+
+/// The outermost render plan, if set (see [`scoped_render_root_plan`]).
+pub fn render_root_plan() -> Option<std::sync::Arc<LogicalPlan>> {
+    RENDER_ROOT_PLAN.with(|c| c.borrow().clone())
+}
+
+/// Result of scanning a plan for path-node property access (#1077).
+#[derive(Debug, Default)]
+pub struct PathNodePropAccess {
+    /// Property names read via the supported identity form
+    /// `[n IN nodes(path) | n.<prop>]` (deduped, stable order).
+    pub node_props: std::collections::BTreeSet<String>,
+    /// `Some(reason)` if an unsupported path-comprehension form was found
+    /// (filtered, non-identity/multi-prop body, or `relationships(path)`
+    /// property access). Drives a loud plan-time guard rather than emitting
+    /// broken SQL.
+    pub unsupported: Option<String>,
+}
+
+/// Scan the plan for list comprehensions over `nodes(path)` / `relationships(path)`
+/// that access a property of the binder (#1077). The comprehension lowers to
+/// `arrayMap(Lambda([b], body), <source>)`; we classify each occurrence:
+///   * source `nodes(path)`, body exactly `b.<prop>`  → supported (collect prop)
+///   * source `nodes(path)`, body references `b` otherwise (composite / multi-prop) → guard
+///   * source `arrayFilter(_, nodes/relationships(path))` (filtered) → guard
+///   * source `relationships(path)`, body references `b`             → guard
+///
+/// The bare form `[n IN nodes(path) | n]` (no property) is untouched (already works).
+pub fn analyze_path_node_property_access(plan: &LogicalPlan, path_var: &str) -> PathNodePropAccess {
+    use crate::query_planner::logical_expr::LogicalExpr;
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum SourceKind {
+        Nodes,
+        Rels,
+    }
+
+    // Classify the arrayMap list argument as a path source over `path_var`.
+    // Returns the element kind and whether it is wrapped in an arrayFilter.
+    fn path_source_kind(
+        inner: &LogicalExpr,
+        path_var: &str,
+        filtered: bool,
+    ) -> Option<(SourceKind, bool)> {
+        if let LogicalExpr::ScalarFnCall(fc) = inner {
+            let hits_pv = |args: &[LogicalExpr]| {
+                args.iter().any(|a| match a {
+                    LogicalExpr::TableAlias(v) => v.0 == path_var,
+                    LogicalExpr::PropertyAccessExp(pa) => pa.table_alias.0 == path_var,
+                    _ => false,
+                })
+            };
+            match fc.name.as_str() {
+                "nodes" if hits_pv(&fc.args) => return Some((SourceKind::Nodes, filtered)),
+                "relationships" if hits_pv(&fc.args) => return Some((SourceKind::Rels, filtered)),
+                "arrayFilter" if fc.args.len() == 2 => {
+                    return path_source_kind(&fc.args[1], path_var, true);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    // Does `expr` reference the lambda binder `b` anywhere (bare or property)?
+    fn references_binder(expr: &LogicalExpr, b: &str) -> bool {
+        match expr {
+            LogicalExpr::TableAlias(v) => v.0 == b,
+            LogicalExpr::PropertyAccessExp(pa) => pa.table_alias.0 == b,
+            LogicalExpr::ScalarFnCall(fc) => fc.args.iter().any(|a| references_binder(a, b)),
+            LogicalExpr::OperatorApplicationExp(op) => {
+                op.operands.iter().any(|o| references_binder(o, b))
+            }
+            LogicalExpr::Case(c) => {
+                c.expr.as_deref().is_some_and(|e| references_binder(e, b))
+                    || c.when_then
+                        .iter()
+                        .any(|(w, t)| references_binder(w, b) || references_binder(t, b))
+                    || c.else_expr
+                        .as_deref()
+                        .is_some_and(|e| references_binder(e, b))
+            }
+            LogicalExpr::Lambda(l) => references_binder(&l.body, b),
+            _ => false,
+        }
+    }
+
+    fn scan_expr(expr: &LogicalExpr, path_var: &str, out: &mut PathNodePropAccess) {
+        if let LogicalExpr::ScalarFnCall(fc) = expr {
+            if fc.name == "arrayMap" && fc.args.len() == 2 {
+                if let LogicalExpr::Lambda(lambda) = &fc.args[0] {
+                    if let Some(binder) = lambda.params.first() {
+                        if let Some((kind, filtered)) =
+                            path_source_kind(&fc.args[1], path_var, false)
+                        {
+                            match (kind, filtered) {
+                                (SourceKind::Nodes, false) => {
+                                    // Identity body `b.<prop>` is supported; anything
+                                    // else that touches the binder is guarded (v1).
+                                    match lambda.body.as_ref() {
+                                        LogicalExpr::PropertyAccessExp(pa)
+                                            if pa.table_alias.0 == *binder =>
+                                        {
+                                            out.node_props.insert(pa.column.raw().to_string());
+                                        }
+                                        // Bare identity `[n IN nodes(p) | n]` → array of
+                                        // node ids; already works, leave untouched.
+                                        LogicalExpr::TableAlias(v) if v.0 == *binder => {}
+                                        body if references_binder(body, binder) => {
+                                            out.unsupported.get_or_insert_with(|| {
+                                                "only the identity form \
+                                                 `[n IN nodes(p) | n.<prop>]` is supported; \
+                                                 wrap the property outside the comprehension \
+                                                 (e.g. `[n IN nodes(p) | n.name]` then map)"
+                                                    .to_string()
+                                            });
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                (SourceKind::Nodes, true) => {
+                                    if references_binder(&lambda.body, binder) {
+                                        out.unsupported.get_or_insert_with(|| {
+                                            "property access on a filtered `nodes(p)` \
+                                             comprehension is not supported yet"
+                                                .to_string()
+                                        });
+                                    }
+                                }
+                                (SourceKind::Rels, _) => {
+                                    if references_binder(&lambda.body, binder) {
+                                        out.unsupported.get_or_insert_with(|| {
+                                            "property access on `relationships(p)` is not \
+                                             supported yet; project the relationships or use \
+                                             an explicit pattern"
+                                                .to_string()
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for a in &fc.args {
+                scan_expr(a, path_var, out);
+            }
+        } else {
+            match expr {
+                LogicalExpr::OperatorApplicationExp(op) => {
+                    for o in &op.operands {
+                        scan_expr(o, path_var, out);
+                    }
+                }
+                LogicalExpr::Case(c) => {
+                    if let Some(e) = c.expr.as_deref() {
+                        scan_expr(e, path_var, out);
+                    }
+                    for (w, t) in &c.when_then {
+                        scan_expr(w, path_var, out);
+                        scan_expr(t, path_var, out);
+                    }
+                    if let Some(e) = c.else_expr.as_deref() {
+                        scan_expr(e, path_var, out);
+                    }
+                }
+                LogicalExpr::Lambda(l) => scan_expr(&l.body, path_var, out),
+                _ => {}
+            }
+        }
+    }
+
+    fn scan_plan(plan: &LogicalPlan, path_var: &str, out: &mut PathNodePropAccess) {
+        match plan {
+            LogicalPlan::Projection(p) => {
+                for item in &p.items {
+                    scan_expr(&item.expression, path_var, out);
+                }
+            }
+            LogicalPlan::Filter(f) => scan_expr(&f.predicate, path_var, out),
+            LogicalPlan::WithClause(wc) => {
+                for item in &wc.items {
+                    scan_expr(&item.expression, path_var, out);
+                }
+            }
+            LogicalPlan::OrderBy(ob) => {
+                for item in &ob.items {
+                    scan_expr(&item.expression, path_var, out);
+                }
+            }
+            LogicalPlan::GraphRel(gr) => {
+                if let Some(p) = &gr.where_predicate {
+                    scan_expr(p, path_var, out);
+                }
+            }
+            _ => {}
+        }
+        for c in plan.children() {
+            scan_plan(c, path_var, out);
+        }
+    }
+
+    let mut out = PathNodePropAccess::default();
+    scan_plan(plan, path_var, &mut out);
+    out
 }
 
 /// Check if the path variable is used bare (as TableAlias/ColumnAlias) outside of

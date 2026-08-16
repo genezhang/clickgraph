@@ -63,6 +63,10 @@ pub struct CteGenerationContext {
     /// two-monotone-arm Union split). Distinct from `is_undirected`, which is
     /// also true for the individual arms of a legacy split.
     pub undirected_single_walk: bool,
+    /// #1077: per-path-node properties requested via `[n IN nodes(p) | n.<prop>]`.
+    /// Threaded to the VLP generator, which accumulates a parallel `path_<prop>`
+    /// array per entry. Empty unless the query reads path-node properties.
+    pub path_node_properties: Vec<NodeProperty>,
     /// Root plan reference for checking path variable usage across the entire query.
     /// Set at the top-level to_render_plan call so VLP extraction can check if path
     /// variables are used bare (preventing BFS optimization).

@@ -351,11 +351,12 @@ pub fn rewrite_render_expr_for_vlp_with_from_alias(
             // Path functions use bare Column("path_nodes") that get qualified as t.path_nodes during SQL generation
             // We need to convert them to PropertyAccessExp so they can be rewritten
             // Check if this is a path function column (path_nodes, hop_count, path_relationships)
+            // plus the #1077 per-node property accumulators `path_<prop>` (e.g. `path_name`).
+            // A bare `Column` starting with `path_` only originates from the VLP path-function
+            // marker (`__vlp_bare_col`); real node properties are always alias-qualified, so
+            // this does not capture user columns.
             let col_name_str = column.0.raw().to_string(); // Clone to avoid borrow issues
-            if matches!(
-                col_name_str.as_str(),
-                "path_nodes" | "hop_count" | "path_relationships" | "path_edges"
-            ) {
+            if col_name_str == "hop_count" || col_name_str.starts_with("path_") {
                 log::info!(
                     "🔄 VLP: Converting Column({}) to PropertyAccessExp({}.{})",
                     col_name_str,

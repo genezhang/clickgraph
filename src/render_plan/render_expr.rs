@@ -2110,7 +2110,49 @@ impl TryFrom<LogicalExpr> for RenderExpr {
                 }
             }
             LogicalExpr::AggregateFnCall(agg) => RenderExpr::AggregateFnCall(agg.try_into()?),
-            LogicalExpr::ScalarFnCall(fn_call) => RenderExpr::ScalarFnCall(fn_call.try_into()?),
+            LogicalExpr::ScalarFnCall(fn_call) => {
+                // #1077: `[n IN nodes(p) | n.<prop>]` lowered (ast_conversion) to
+                // `arrayMap(Lambda([n], n.<prop>), nodes(p))`. When the body is the
+                // identity property access, resolve the whole comprehension to the
+                // VLP CTE's accumulated `path_<prop>` array via the `__vlp_bare_col`
+                // bare-column marker (resolves against the single VLP FROM table).
+                // This MUST match here — before the lambda is flattened to `Raw`
+                // text (see the `LogicalExpr::Lambda` arm below) — so it covers the
+                // RETURN, WITH, and filter paths uniformly. The parallel `path_<prop>`
+                // column is emitted only when this comprehension is present (detected
+                // in cte_extraction), so a non-matching arrayMap is unaffected.
+                let path_node_marker = if fn_call.name == "arrayMap" && fn_call.args.len() == 2 {
+                    if let (LogicalExpr::Lambda(l), LogicalExpr::ScalarFnCall(inner)) =
+                        (&fn_call.args[0], &fn_call.args[1])
+                    {
+                        let inner_is_nodes = inner.name == "nodes"
+                            && inner.args.len() == 1
+                            && matches!(&inner.args[0], LogicalExpr::TableAlias(_));
+                        match (inner_is_nodes, l.params.first(), l.body.as_ref()) {
+                            (true, Some(binder), LogicalExpr::PropertyAccessExp(pa))
+                                if pa.table_alias.0 == *binder =>
+                            {
+                                Some(RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias("__vlp_bare_col".to_string()),
+                                    column: PropertyValue::Column(format!(
+                                        "path_{}",
+                                        pa.column.raw()
+                                    )),
+                                }))
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                match path_node_marker {
+                    Some(marker) => marker,
+                    None => RenderExpr::ScalarFnCall(fn_call.try_into()?),
+                }
+            }
             LogicalExpr::PropertyAccessExp(pa) => RenderExpr::PropertyAccessExp(pa.try_into()?),
             LogicalExpr::OperatorApplicationExp(op) => {
                 // Special case: NOT (PathPattern) -> NOT EXISTS subquery
