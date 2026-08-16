@@ -313,6 +313,34 @@ RETURN [node IN nodes(path) | node.name] AS route
 - Analyze alternative routes
 - Network redundancy analysis
 
+### Reading node properties along a path
+
+`nodes(path)` yields the nodes visited by a variable-length or shortest path.
+Extract a per-node property with a list comprehension:
+
+```cypher
+MATCH path = shortestPath((a:User {name: 'Alice'})-[:FOLLOWS*1..5]->(b:User {name: 'Rachel'}))
+RETURN [n IN nodes(path) | n.name] AS hops
+-- → ['Alice', 'David', 'Henry', 'Sam', 'Rachel']
+```
+
+The property is materialized in traversal order (start → … → end) by accumulating a
+parallel property array in the recursive traversal — no extra table scan, so it
+scales the same as the traversal itself. Works identically on ClickHouse
+(ClickGraph) and Databricks/Spark SQL (DeltaGraph).
+
+**Scope** (other forms fail loudly at plan time with an actionable message rather
+than returning wrong results):
+
+| Form | Supported |
+|---|---|
+| `[n IN nodes(path) \| n.prop]` (single property, identity body) | ✅ |
+| `[n IN nodes(path) \| n]` (node ids) | ✅ |
+| `[n IN nodes(path) \| f(n.prop)]` (composite body, e.g. `toUpper(n.name)`) | ❌ — map outside the comprehension |
+| `[r IN relationships(path) \| r.prop]` (relationship property) | ❌ — not yet |
+| Multi-label paths (nodes of different labels) | ❌ — the property→column mapping must be shared |
+| Denormalized / FK-edge / weighted variable-length paths | ❌ — project ids with `[n IN nodes(path) \| n]` |
+
 ### Shortest Path with Length Constraints
 
 ```cypher

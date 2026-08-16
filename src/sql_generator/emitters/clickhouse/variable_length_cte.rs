@@ -547,6 +547,14 @@ pub struct VariableLengthCteGenerator<'a> {
     /// `is_undirected` here would turn each monotone arm into a complete
     /// undirected walk and double-count every path.
     pub undirected_single_walk: bool,
+    /// #1077: per-path-node properties to accumulate as parallel `path_<alias>`
+    /// arrays (one per requested property), alongside the id-only `path_nodes`.
+    /// Populated only when a query does `[n IN nodes(path) | n.<prop>]`; empty
+    /// otherwise, so the emit is byte-identical for every other query. Each
+    /// entry's `column_name` is the resolved physical column on the (single,
+    /// shared) node label; `alias` is the Cypher property name, yielding a
+    /// `path_<alias>` column. Set post-construction (see cte_manager).
+    pub path_node_properties: Vec<NodeProperty>,
 }
 
 /// Configuration for weighted shortest path using a pre-computed edge weight CTE
@@ -769,6 +777,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             use_bfs_mode: false,
             is_undirected: false,
             undirected_single_walk: false,
+            path_node_properties: Vec::new(),
         }
     }
 
@@ -845,6 +854,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             use_bfs_mode: false,
             is_undirected: false,
             undirected_single_walk: false,
+            path_node_properties: Vec::new(),
         }
     }
 
@@ -2539,6 +2549,18 @@ impl<'a> VariableLengthCteGenerator<'a> {
             ),
         ];
 
+        // #1077: zero-hop parallel per-node property arrays — the path visits
+        // only the start node at hop 0, so a single-element `[start_node.<col>]`
+        // (mirrors the `path_nodes` singleton above). Column order matches the
+        // 1-hop base / recursive arms for UNION alignment.
+        for p in &self.path_node_properties {
+            select_items.push(format!(
+                "{} as path_{}",
+                arr(&format!("{}.{}", self.start_node_alias, p.column_name)),
+                p.alias
+            ));
+        }
+
         // #628: a CLOSED `*0..N` walk enforces EDGE-uniqueness (so real cycles
         // survive — see `uses_edge_uniqueness`). The zero-hop base has no edge,
         // so it seeds an EMPTY-but-typed `path_edges` array. A bare `[]` is
@@ -2721,6 +2743,22 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 select_items.push(format!("{empty_str_arr} as path_relationships"));
             }
             select_items.push(path_nodes_selection);
+
+            // #1077: seed parallel per-node property arrays for
+            // `[n IN nodes(p) | n.<prop>]`. Mirrors the 2-element `path_nodes`
+            // seed exactly ([start, end]) using the already-JOINed node rows —
+            // no extra scan. Empty (byte-identical) for every query that does
+            // not read path-node properties.
+            for p in &self.path_node_properties {
+                select_items.push(format!(
+                    "{} as path_{}",
+                    arr(&format!(
+                        "{}.{}, {}.{}",
+                        self.start_node_alias, p.column_name, self.end_node_alias, p.column_name
+                    )),
+                    p.alias
+                ));
+            }
 
             // #598 (part 2): seed path_edges with this hop's edge identity so the
             // recursive step can enforce relationship-uniqueness (Cypher default).
@@ -3014,6 +3052,20 @@ impl<'a> VariableLengthCteGenerator<'a> {
             select_items.push(format!("{empty_str_arr} as path_relationships"));
         }
         select_items.push(path_nodes_selection);
+
+        // #1077: accumulate parallel per-node property arrays, mirroring the
+        // `path_nodes` extension above. Appends this hop's end-node property
+        // value using the already-JOINed `end_node` row. Same order as the base
+        // case (Vec order) so recursive-CTE UNION columns line up. Empty for
+        // queries that do not read path-node properties → byte-identical.
+        for p in &self.path_node_properties {
+            select_items.push(format!(
+                "{ac}(vp.path_{}, {}) as path_{}",
+                p.alias,
+                arr(&format!("{}.{}", self.end_node_alias, p.column_name)),
+                p.alias
+            ));
+        }
 
         // #598 (part 2): accumulate this hop's edge identity so relationship-uniqueness
         // (Cypher default) can be enforced below. path_nodes is still accumulated

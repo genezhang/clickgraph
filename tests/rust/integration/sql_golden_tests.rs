@@ -19502,3 +19502,104 @@ async fn node_identity_comparison_composite_node_id() {
         );
     }
 }
+
+/// #1077: `[n IN nodes(path) | n.<prop>]` (path-node property readout) must
+/// accumulate a parallel `path_<prop>` array in the VLP CTE — seeded from both
+/// endpoints in the base case and extended by `end_node.<col>` in the recursive
+/// case — and resolve the comprehension to that array (NOT leave a stranded
+/// `arrayMap(n -> n.name, path_nodes)` that fails at execution). Standard schema:
+/// `User.name` → `full_name`. Both dialects (CH `[..]`/`arrayConcat`, Databricks
+/// `array(..)`/`concat`).
+#[tokio::test]
+async fn path_node_property_readout_accumulates_parallel_array() {
+    let schema = load_schema("benchmarks/social_network/schemas/social_benchmark.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(
+            &schema,
+            "MATCH path = (a:User {name:'Alice'})-[:FOLLOWS*1..2]->(b) \
+             RETURN [n IN nodes(path) | n.name] AS names",
+            dialect,
+        )
+        .await;
+        // Parallel property array is emitted (base seed + recursive extension),
+        // keyed on the mapped physical column `full_name`.
+        assert!(
+            sql.contains("as path_name"),
+            "({dialect:?}) must emit a parallel `path_name` array:\n{sql}"
+        );
+        assert!(
+            sql.contains("start_node.full_name") && sql.contains("end_node.full_name"),
+            "({dialect:?}) `path_name` must accumulate the mapped `full_name` column:\n{sql}"
+        );
+        // The comprehension resolves to the accumulated array — no stranded arrayMap
+        // over the id-only `path_nodes`.
+        assert!(
+            !sql.contains("n.name"),
+            "({dialect:?}) `n.name` must be resolved to the `path_name` array, not left bare:\n{sql}"
+        );
+        assert!(
+            sql.contains("path_name AS") || sql.contains("path_name  AS"),
+            "({dialect:?}) final projection must select the `path_name` array:\n{sql}"
+        );
+    }
+}
+
+/// #1077: the id-only form `[n IN nodes(path) | n]` (no property access) is
+/// unchanged — it maps over the id array `path_nodes` and must NOT trigger the
+/// path-property accumulator or any guard.
+#[tokio::test]
+async fn path_node_id_list_is_unchanged() {
+    let schema = load_schema("benchmarks/social_network/schemas/social_benchmark.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(
+            &schema,
+            "MATCH path = (a:User {name:'Alice'})-[:FOLLOWS*1..2]->(b) \
+             RETURN [n IN nodes(path) | n] AS ids",
+            dialect,
+        )
+        .await;
+        assert!(
+            !sql.contains("as path_name") && !sql.contains("path_full_name"),
+            "({dialect:?}) id-only comprehension must NOT emit a property accumulator:\n{sql}"
+        );
+        assert!(
+            sql.contains("path_nodes"),
+            "({dialect:?}) id-only comprehension still maps over `path_nodes`:\n{sql}"
+        );
+    }
+}
+
+/// #1077 guards: unsupported path-comprehension forms fail loudly at plan time
+/// with an actionable message (never opaque, never silently-wrong SQL).
+#[tokio::test]
+async fn path_node_property_readout_unsupported_forms_guarded() {
+    let schema = load_schema("benchmarks/social_network/schemas/social_benchmark.yaml");
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // Composite / non-identity body.
+        let composite = try_render(
+            &schema,
+            "MATCH path = (a:User {name:'Alice'})-[:FOLLOWS*1..2]->(b) \
+             RETURN [n IN nodes(path) | toUpper(n.name)] AS r",
+            dialect,
+        )
+        .await;
+        assert!(
+            composite.is_err()
+                && composite.as_ref().unwrap_err().contains("identity form"),
+            "({dialect:?}) composite body must be guarded with an actionable message: {composite:?}"
+        );
+
+        // relationships(path) property access.
+        let rels = try_render(
+            &schema,
+            "MATCH path = (a:User {name:'Alice'})-[r:FOLLOWS*1..2]->(b) \
+             RETURN [x IN relationships(path) | x.created_at] AS r",
+            dialect,
+        )
+        .await;
+        assert!(
+            rels.is_err() && rels.as_ref().unwrap_err().contains("relationships(p)"),
+            "({dialect:?}) relationships(path) property must be guarded: {rels:?}"
+        );
+    }
+}

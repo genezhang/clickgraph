@@ -1335,6 +1335,13 @@ impl RenderPlanBuilder for LogicalPlan {
     }
 
     fn to_render_plan(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<RenderPlan> {
+        // #1077: record the outermost plan for path-node property detection
+        // (outermost wins; restored on drop). CTE extraction runs at the subtree
+        // level and would otherwise only see a GraphRel, hiding the RETURN/WITH
+        // projection where `[n IN nodes(p) | n.<prop>]` lives.
+        let _root_plan_guard =
+            super::cte_extraction::scoped_render_root_plan(std::sync::Arc::new(self.clone()));
+
         // CRITICAL: If the plan contains WITH clauses, use the specialized handler
         // build_chained_with_match_cte_plan handles chained/nested WITH correctly
         use super::plan_builder_utils::{
@@ -4044,6 +4051,11 @@ impl RenderPlanBuilder for LogicalPlan {
         plan_ctx: Option<&PlanCtx>,
         scope: Option<&super::variable_scope::VariableScope>,
     ) -> RenderPlanBuilderResult<RenderPlan> {
+        // #1077: record the outermost plan for path-node property detection
+        // (outermost wins; restored on drop) — see `to_render_plan`.
+        let _root_plan_guard =
+            super::cte_extraction::scoped_render_root_plan(std::sync::Arc::new(self.clone()));
+
         let mut render_plan = (|| -> RenderPlanBuilderResult<RenderPlan> {
             log::debug!(
                 "🔀🔀🔀 to_render_plan_with_ctx ENTRY - plan type: {:?}",

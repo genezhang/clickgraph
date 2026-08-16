@@ -524,6 +524,18 @@ impl ProjectionTagging {
                     property_access.column.raw()
                 );
 
+                // Lambda-binder shield (#1077): a comprehension binder (e.g. `n` in
+                // `[n IN nodes(path) | n.name]`) is registered as a projection alias by the
+                // `Lambda` arm for the duration of body tagging — it is NOT a graph table
+                // alias and has no `TableCtx`. The sibling `TableAlias` arm already returns
+                // early for such aliases; mirror that here so property access on the binder
+                // (`n.name`) is left intact for the render layer to resolve against the VLP
+                // `path_<prop>` accumulator array, rather than erroring with
+                // `No table context for alias 'n'`.
+                if plan_ctx.is_projection_alias(&property_access.table_alias.0) {
+                    return Ok(());
+                }
+
                 // ====================================================================
                 // CRITICAL: Check if this is a CTE-sourced variable (NEW Jan 2026)
                 // ====================================================================

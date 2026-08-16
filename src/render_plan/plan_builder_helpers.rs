@@ -2382,6 +2382,43 @@ pub(super) fn rewrite_logical_path_functions(
 
     match expr {
         LogicalExpr::ScalarFnCall(fn_call) => {
+            // #1077: `[n IN nodes(path) | n.<prop>]` lowers to
+            // `arrayMap(Lambda([n], n.<prop>), nodes(path))`. When the body is the
+            // identity property access `n.<prop>`, the whole comprehension resolves
+            // to the VLP CTE's pre-accumulated `path_<prop>` array (built by the
+            // emitter). Rewrite it to the bare-column marker directly — consuming
+            // the arrayMap WHOLE, before its inner `nodes(path)` is independently
+            // rewritten to `path_nodes` (which would strand the `n.<prop>` body).
+            if fn_call.name == "arrayMap" && fn_call.args.len() == 2 {
+                if let LogicalExpr::Lambda(lambda) = &fn_call.args[0] {
+                    let inner_is_nodes_of_pv = matches!(
+                        &fn_call.args[1],
+                        LogicalExpr::ScalarFnCall(inner)
+                            if inner.name == "nodes"
+                                && inner.args.len() == 1
+                                && matches!(
+                                    &inner.args[0],
+                                    LogicalExpr::TableAlias(TableAlias(a)) if a == path_var_name
+                                )
+                    );
+                    if inner_is_nodes_of_pv {
+                        if let (Some(binder), LogicalExpr::PropertyAccessExp(pa)) =
+                            (lambda.params.first(), lambda.body.as_ref())
+                        {
+                            if pa.table_alias.0 == *binder {
+                                return LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias("__vlp_bare_col".to_string()),
+                                    column: PropertyValue::Column(format!(
+                                        "path_{}",
+                                        pa.column.raw()
+                                    )),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
             // Check if this is a path function call with the path variable as argument
             if fn_call.args.len() == 1 {
                 if let LogicalExpr::TableAlias(TableAlias(alias)) = &fn_call.args[0] {

@@ -1701,6 +1701,15 @@ impl VariableLengthCteStrategy {
         generator.is_undirected = context.is_undirected;
         generator.undirected_single_walk = context.undirected_single_walk;
 
+        // #1077: per-path-node property arrays (`[n IN nodes(p) | n.prop]`).
+        // Only ever non-empty for the pure-standard single-label pattern — the
+        // detection site in cte_extraction gates it via PatternSchemaContext
+        // (both endpoints OwnTable, not FK-edge, not weighted) and refuses other
+        // strategies with an actionable error, so setting it here unconditionally
+        // is safe: the parallel `path_<prop>` arrays are emitted only by the
+        // standard base/recursive/zero-hop arms.
+        generator.path_node_properties = context.path_node_properties.clone();
+
         // Generate the CTE using the comprehensive generator
         let cte = generator.generate_cte();
 
