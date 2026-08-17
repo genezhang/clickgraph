@@ -54,7 +54,9 @@ pub type LogicalPlanResult<T> = Result<T, LogicalPlanError>;
 /// clause boundaries that per-pattern `used_aliases` collection cannot see
 /// (#1081/#1084).
 fn collect_declared_aliases(query_ast: &OpenCypherQueryAst) -> HashSet<String> {
-    use crate::open_cypher_parser::ast::{PathPattern, ReadingClause};
+    use crate::open_cypher_parser::ast::{
+        MatchClause, OptionalMatchClause, PathPattern, ReadingClause, WithClause,
+    };
 
     fn walk_path_pattern(pattern: &PathPattern, out: &mut HashSet<String>) {
         match pattern {
@@ -82,6 +84,45 @@ fn collect_declared_aliases(query_ast: &OpenCypherQueryAst) -> HashSet<String> {
         }
     }
 
+    fn collect_match(m: &MatchClause, out: &mut HashSet<String>) {
+        for (path_var, pattern) in &m.path_patterns {
+            if let Some(v) = path_var {
+                out.insert(v.to_string());
+            }
+            walk_path_pattern(pattern, out);
+        }
+    }
+
+    fn collect_optional(om: &OptionalMatchClause, out: &mut HashSet<String>) {
+        for pattern in &om.path_patterns {
+            walk_path_pattern(pattern, out);
+        }
+    }
+
+    // A `WITH` carries a whole chain of subsequent clauses (`WITH … MATCH … WITH …`),
+    // each lowered on a child scope that inherits the reserved set. Their variables
+    // must be reserved too, or an anonymous alias generated for a post-WITH pattern
+    // can still collide with a user variable there (#1084 across a WITH barrier).
+    fn collect_with(w: &WithClause, out: &mut HashSet<String>) {
+        for item in &w.with_items {
+            if let Some(alias) = item.alias {
+                out.insert(alias.to_string());
+            }
+        }
+        if let Some(unwind) = &w.subsequent_unwind {
+            out.insert(unwind.alias.to_string());
+        }
+        if let Some(m) = &w.subsequent_match {
+            collect_match(m, out);
+        }
+        for om in &w.subsequent_optional_matches {
+            collect_optional(om, out);
+        }
+        if let Some(next) = &w.subsequent_with {
+            collect_with(next, out);
+        }
+    }
+
     let mut reserved: HashSet<String> = HashSet::new();
 
     // `reading_clauses` preserves MATCH/OPTIONAL MATCH order and is the canonical
@@ -90,41 +131,26 @@ fn collect_declared_aliases(query_ast: &OpenCypherQueryAst) -> HashSet<String> {
     // (a set), so we cover whichever the parser populated.
     for reading_clause in &query_ast.reading_clauses {
         match reading_clause {
-            ReadingClause::Match(m) => {
-                for (path_var, pattern) in &m.path_patterns {
-                    if let Some(v) = path_var {
-                        reserved.insert(v.to_string());
-                    }
-                    walk_path_pattern(pattern, &mut reserved);
-                }
-            }
-            ReadingClause::OptionalMatch(om) => {
-                for pattern in &om.path_patterns {
-                    walk_path_pattern(pattern, &mut reserved);
-                }
-            }
+            ReadingClause::Match(m) => collect_match(m, &mut reserved),
+            ReadingClause::OptionalMatch(om) => collect_optional(om, &mut reserved),
         }
     }
     for m in &query_ast.match_clauses {
-        for (path_var, pattern) in &m.path_patterns {
-            if let Some(v) = path_var {
-                reserved.insert(v.to_string());
-            }
-            walk_path_pattern(pattern, &mut reserved);
-        }
+        collect_match(m, &mut reserved);
     }
     for om in &query_ast.optional_match_clauses {
-        for pattern in &om.path_patterns {
-            walk_path_pattern(pattern, &mut reserved);
-        }
+        collect_optional(om, &mut reserved);
     }
     for unwind in &query_ast.unwind_clauses {
         reserved.insert(unwind.alias.to_string());
     }
     if let Some(with_clause) = &query_ast.with_clause {
-        for item in &with_clause.with_items {
-            if let Some(alias) = item.alias {
-                reserved.insert(alias.to_string());
+        collect_with(with_clause, &mut reserved);
+    }
+    if let Some(call) = &query_ast.call_clause {
+        if let Some(yields) = &call.yield_items {
+            for y in yields {
+                reserved.insert(y.to_string());
             }
         }
     }
@@ -591,5 +617,66 @@ fn extract_source_alias_from_expr(
 
         // All other expressions (aggregations, arithmetic, etc.) are not simple aliases
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod reserved_alias_tests {
+    use super::collect_declared_aliases;
+    use crate::open_cypher_parser::parse_query;
+
+    fn declared(cypher: &str) -> std::collections::HashSet<String> {
+        let ast = parse_query(cypher).expect("parse should succeed");
+        collect_declared_aliases(&ast)
+    }
+
+    /// #1084: every node/relationship variable across comma-separated patterns in
+    /// one MATCH is reserved — the shape that the analyzer's anonymous-alias
+    /// generation must avoid across the comma boundary.
+    #[test]
+    fn collects_cross_comma_pattern_variables() {
+        let set = declared(
+            "MATCH (a:User)-[r:FOLLOWS]->(x), (t1:User)-[:AUTHORED]->(d:Post) RETURN t1.name",
+        );
+        for v in ["a", "r", "x", "t1", "d"] {
+            assert!(
+                set.contains(v),
+                "expected reserved set to contain {v:?}: {set:?}"
+            );
+        }
+    }
+
+    /// #1084 (post-WITH): variables declared in clauses chained after a WITH —
+    /// `WITH … MATCH …` — must be reserved too, or an anonymous alias generated for
+    /// a post-WITH pattern can still collide with a user variable there.
+    #[test]
+    fn collects_post_with_subsequent_match_variables() {
+        let set = declared(
+            "MATCH (a:User) WITH a \
+             MATCH (a)-[:FOLLOWS]->(), (t1:User)-[:AUTHORED]->(d:Post) RETURN t1.name",
+        );
+        assert!(set.contains("a"), "leading MATCH var missing: {set:?}");
+        assert!(
+            set.contains("t1"),
+            "post-WITH subsequent-MATCH var `t1` missing — #1084 across a WITH barrier: {set:?}"
+        );
+        assert!(
+            set.contains("d"),
+            "post-WITH subsequent-MATCH var `d` missing: {set:?}"
+        );
+    }
+
+    /// #1084: UNWIND aliases and chained `WITH … WITH …` projection aliases are
+    /// reserved (a user could name either `t{N}`).
+    #[test]
+    fn collects_unwind_and_chained_with_aliases() {
+        let set = declared(
+            "UNWIND [1, 2, 3] AS t2 \
+             MATCH (a:User) WITH a AS t3 \
+             MATCH (t3)-[:AUTHORED]->(p:Post) RETURN p.content",
+        );
+        assert!(set.contains("t2"), "UNWIND alias missing: {set:?}");
+        assert!(set.contains("t3"), "chained WITH alias missing: {set:?}");
+        assert!(set.contains("p"), "post-WITH pattern var missing: {set:?}");
     }
 }

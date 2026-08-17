@@ -846,6 +846,16 @@ impl PlanCtx {
 
         // Merge status messages from other context
         self.status_messages.extend(other.status_messages);
+
+        // #1084: union the query-scoped reserved-alias sets. For a Cypher UNION the
+        // combined ctx is the first branch's ctx, but the analyzer then runs over
+        // the merged plan and generates anonymous aliases for every branch. Without
+        // this, branch ≥2's user variables would not be reserved and could collide.
+        if !other.reserved_aliases.is_empty() {
+            let mut merged: HashSet<String> = (*self.reserved_aliases).clone();
+            merged.extend(other.reserved_aliases.iter().cloned());
+            self.reserved_aliases = Arc::new(merged);
+        }
     }
 
     /// Register columns exported by a CTE
