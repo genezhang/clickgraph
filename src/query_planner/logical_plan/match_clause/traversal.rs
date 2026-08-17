@@ -16,7 +16,6 @@ use crate::{
     },
 };
 
-use crate::query_planner::logical_plan::generate_id;
 use std::collections::{HashMap, HashSet};
 
 /// Generate an anonymous alias (`t1`, `t2`, …) that does NOT collide with any
@@ -30,12 +29,7 @@ use std::collections::{HashMap, HashSet};
 /// label — the #1081 `(TYPE::From::To)-[:TYPE::From::To]->(...)` corruption.
 /// The generated candidate is recorded in `used` so later generation skips it too.
 fn generate_unique_alias(used: &mut HashSet<String>) -> String {
-    loop {
-        let candidate = generate_id();
-        if used.insert(candidate.clone()) {
-            return candidate;
-        }
-    }
+    crate::query_planner::logical_plan::generate_id_avoiding(used)
 }
 
 // Import from sibling modules
@@ -116,6 +110,11 @@ fn traverse_connected_pattern_with_mode<'a>(
     for (alias, _) in plan_ctx.iter_table_contexts() {
         used_aliases.insert(alias.clone());
     }
+    // #1084: Also avoid every user variable declared anywhere in the statement,
+    // not just this pattern. A later comma-separated pattern's variable (e.g. the
+    // `t2` in `MATCH (a)-[]->(x), (t2)-[]->(y)`) is not yet bound in `plan_ctx`
+    // while this pattern is lowered, so per-pattern collection alone cannot see it.
+    used_aliases.extend(plan_ctx.reserved_aliases().iter().cloned());
 
     // Use usize from Rc::as_ptr() cast as the key for pointer-based identity
     let mut node_alias_map: HashMap<usize, String> = HashMap::new();
@@ -1889,10 +1888,15 @@ pub(super) fn traverse_node_pattern(
 ) -> LogicalPlanResult<Arc<LogicalPlan>> {
     // Generate anonymous alias for nodes without names
     // This supports Neo4j Browser "dot" feature: MATCH () RETURN *
-    let node_alias = node_pattern
-        .name
-        .map(|n| n.to_string())
-        .unwrap_or_else(generate_id);
+    // #1084: skip the query-scoped user variables (and any already-bound aliases)
+    // so a generated `t{N}` never clobbers a user variable of the same name.
+    let node_alias = node_pattern.name.map(|n| n.to_string()).unwrap_or_else(|| {
+        let mut used: HashSet<String> = plan_ctx.reserved_aliases().clone();
+        for (alias, _) in plan_ctx.iter_table_contexts() {
+            used.insert(alias.clone());
+        }
+        crate::query_planner::logical_plan::generate_id_avoiding(&mut used)
+    });
     let mut node_label: Option<String> = node_pattern.first_label().map(|val| val.to_string());
 
     // === SINGLE-NODE-SCHEMA INFERENCE ===

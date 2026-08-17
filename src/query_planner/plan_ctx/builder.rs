@@ -210,6 +210,7 @@ impl PlanCtxBuilder {
             pattern_contexts: self.pattern_contexts,
             vlp_endpoints: self.vlp_endpoints,
             vlp_alias_counter: 0,
+            reserved_aliases: std::sync::Arc::new(std::collections::HashSet::new()),
             variables: self.variables,
             cte_alias_sources: self.cte_alias_sources,
             where_property_requirements: self.where_property_requirements,

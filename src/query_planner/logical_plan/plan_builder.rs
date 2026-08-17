@@ -28,7 +28,7 @@
 //! - Unsupported syntax
 //! - Type inference errors
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::{
@@ -46,6 +46,92 @@ use crate::{
 
 pub type LogicalPlanResult<T> = Result<T, LogicalPlanError>;
 
+/// #1084: Collect every alias the user explicitly declared anywhere in the
+/// statement — node/relationship/path-pattern variables plus UNWIND and WITH
+/// aliases — into a single query-scoped set. Anonymous-alias generation
+/// (`generate_id` → `t{N}`) consults this so a generated alias never clobbers a
+/// user variable of the same name, including across comma-separated patterns and
+/// clause boundaries that per-pattern `used_aliases` collection cannot see
+/// (#1081/#1084).
+fn collect_declared_aliases(query_ast: &OpenCypherQueryAst) -> HashSet<String> {
+    use crate::open_cypher_parser::ast::{PathPattern, ReadingClause};
+
+    fn walk_path_pattern(pattern: &PathPattern, out: &mut HashSet<String>) {
+        match pattern {
+            PathPattern::Node(node) => {
+                if let Some(name) = node.name {
+                    out.insert(name.to_string());
+                }
+            }
+            PathPattern::ConnectedPattern(connected) => {
+                for cp in connected {
+                    if let Some(name) = cp.start_node.borrow().name {
+                        out.insert(name.to_string());
+                    }
+                    if let Some(name) = cp.end_node.borrow().name {
+                        out.insert(name.to_string());
+                    }
+                    if let Some(name) = cp.relationship.name {
+                        out.insert(name.to_string());
+                    }
+                }
+            }
+            PathPattern::ShortestPath(inner) | PathPattern::AllShortestPaths(inner) => {
+                walk_path_pattern(inner, out);
+            }
+        }
+    }
+
+    let mut reserved: HashSet<String> = HashSet::new();
+
+    // `reading_clauses` preserves MATCH/OPTIONAL MATCH order and is the canonical
+    // source when populated; the split `match_clauses`/`optional_match_clauses`
+    // vecs are the fallback path. Walking every available source is idempotent
+    // (a set), so we cover whichever the parser populated.
+    for reading_clause in &query_ast.reading_clauses {
+        match reading_clause {
+            ReadingClause::Match(m) => {
+                for (path_var, pattern) in &m.path_patterns {
+                    if let Some(v) = path_var {
+                        reserved.insert(v.to_string());
+                    }
+                    walk_path_pattern(pattern, &mut reserved);
+                }
+            }
+            ReadingClause::OptionalMatch(om) => {
+                for pattern in &om.path_patterns {
+                    walk_path_pattern(pattern, &mut reserved);
+                }
+            }
+        }
+    }
+    for m in &query_ast.match_clauses {
+        for (path_var, pattern) in &m.path_patterns {
+            if let Some(v) = path_var {
+                reserved.insert(v.to_string());
+            }
+            walk_path_pattern(pattern, &mut reserved);
+        }
+    }
+    for om in &query_ast.optional_match_clauses {
+        for pattern in &om.path_patterns {
+            walk_path_pattern(pattern, &mut reserved);
+        }
+    }
+    for unwind in &query_ast.unwind_clauses {
+        reserved.insert(unwind.alias.to_string());
+    }
+    if let Some(with_clause) = &query_ast.with_clause {
+        for item in &with_clause.with_items {
+            if let Some(alias) = item.alias {
+                reserved.insert(alias.to_string());
+            }
+        }
+    }
+
+    reserved
+}
+
 pub fn build_logical_plan(
     query_ast: &OpenCypherQueryAst,
     schema: &GraphSchema,
@@ -60,6 +146,12 @@ pub fn build_logical_plan(
         view_parameter_values,
         max_inferred_types.unwrap_or(20), // Default 20 for Neo4j Browser compatibility
     );
+
+    // #1084: Reserve every user-declared alias up front so anonymous-alias
+    // generation (`t{N}`) never collides with a user variable — including across
+    // comma-separated patterns and clause boundaries that per-pattern collection
+    // cannot see. Inherited by WITH child scopes (see `PlanCtx::with_parent_scope`).
+    plan_ctx.set_reserved_aliases(collect_declared_aliases(query_ast));
 
     log::debug!(
         "build_logical_plan: Processing query with {} MATCH clauses, {} optional_match_clauses",

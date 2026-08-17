@@ -333,6 +333,24 @@ pub fn generate_id() -> String {
     format!("t{}", n)
 }
 
+/// Generate a simple alias (`t{N}`) that does NOT collide with any name already
+/// present in `used` — the query-scoped set of user-declared variables plus any
+/// aliases generated earlier in the same batch. The chosen candidate is recorded
+/// in `used` so a subsequent call in the same batch skips it too.
+///
+/// Anonymous nodes/edges draw from the shared `t{N}` counter (`generate_id`); a
+/// user variable named exactly `t{N}` would otherwise collide with a generated
+/// alias, corrupting the node/relationship it aliases (#1081, #1084). Callers seed
+/// `used` from `PlanCtx::reserved_aliases()` (and any locally-bound aliases).
+pub fn generate_id_avoiding(used: &mut std::collections::HashSet<String>) -> String {
+    loop {
+        let candidate = generate_id();
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+}
+
 /// Reset the alias counter (useful for testing to get predictable aliases)
 #[allow(dead_code)]
 pub fn reset_alias_counter() {

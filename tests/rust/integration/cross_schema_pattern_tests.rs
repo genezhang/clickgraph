@@ -894,3 +894,31 @@ async fn cs_standard_1081_vlp_chain_after_serde_roundtrip() {
         "1081-serde-vlp-chain",
     );
 }
+
+/// #1084: the #1081 fix collected anonymous-alias avoidance only per connected
+/// pattern (plus whatever was already bound in `plan_ctx`). A user variable in a
+/// *later* comma-separated pattern is not yet bound while an *earlier* pattern is
+/// lowered, so its name was not protected — an anonymous alias generated for the
+/// first pattern could still collide with it across the comma boundary. Here the
+/// first pattern's anonymous end node draws the generated alias `t1` (the counter
+/// resets to 1 per query) while the second pattern names a node `t1`. The fix
+/// reserves every user-declared variable query-wide up front, so generation skips
+/// `t1`. Regression guard: both comma patterns must lower — proven by both edge
+/// tables appearing — with the user's `t1` resolving as its own `User` node.
+#[tokio::test]
+async fn cs_standard_1084_cross_comma_anonymous_alias_collision() {
+    let schema = load_schema(SCHEMA_STANDARD);
+    let cypher = "MATCH (a:User)-[:FOLLOWS]->(), (t1:User)-[:AUTHORED]->(d:Post) \
+                  RETURN t1.name, d.content LIMIT 5";
+    let sql = generate_sql(&schema, cypher).await;
+    assert_valid_sql(&sql, "standard", "1084-cross-comma-alias");
+    // Both relationship tables must be present: proof both comma patterns lowered.
+    assert_contains(&sql, "standard/1084", "cs_test.authored");
+    assert_contains(&sql, "standard/1084", "cs_test.follows");
+    // The two comma-separated patterns are disconnected, so the user's `t1` node
+    // must join as an independent cartesian product (`AS t1 ON 1 = 1`). Under the
+    // pre-#1084 collision the first pattern's anonymous end node took alias `t1`
+    // and FUSED with the user's node — `t1` would instead be joined on the FOLLOWS
+    // relationship's `followed_id`. Assert the cartesian join to lock the fix.
+    assert_contains(&sql, "standard/1084", "AS t1 ON 1 = 1");
+}

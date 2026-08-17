@@ -333,6 +333,11 @@ impl GraphTRaversalPlanning {
         graph_schema: &GraphSchema,
         is_anchor_traversal: bool,
     ) -> AnalyzerResult<(GraphRel, Vec<CtxToUpdate>)> {
+        // #1084: snapshot the query-scoped user-declared aliases up front (cheap
+        // clone) so later anonymous-alias generation in the edge-list path avoids
+        // them without holding a borrow on `plan_ctx`.
+        let reserved_aliases = plan_ctx.reserved_aliases().clone();
+
         // Check for $any nodes - skip graph traversal planning for polymorphic wildcards
         let left_alias = &graph_rel.left_connection;
         let right_alias = &graph_rel.right_connection;
@@ -438,6 +443,7 @@ impl GraphTRaversalPlanning {
             left_projections,
             right_projections,
             is_anchor_traversal,
+            &reserved_aliases,
         )
     }
 
@@ -448,6 +454,8 @@ impl GraphTRaversalPlanning {
         left_projections: Vec<ProjectionItem>,
         right_projections: Vec<ProjectionItem>,
         is_anchor_traversal: bool,
+        // #1084: user-declared variables to avoid when generating anonymous aliases.
+        reserved_aliases: &std::collections::HashSet<String>,
     ) -> AnalyzerResult<(GraphRel, Vec<CtxToUpdate>)> {
         let mut ctxs_to_update: Vec<CtxToUpdate> = vec![];
 
@@ -459,6 +467,7 @@ impl GraphTRaversalPlanning {
             graph_context.right.cte_name.clone(),
             graph_context.right.id_column.clone(),
             graph_rel.is_rel_anchor,
+            reserved_aliases,
         );
         let rel_cte_name: String = r_cte_name;
         rel_ctxs_to_update = r_ctxs_to_update;
@@ -597,6 +606,8 @@ impl GraphTRaversalPlanning {
         connected_node_cte_name: String,
         connected_node_id_column: String,
         is_rel_anchor: bool,
+        // #1084: user-declared variables to avoid when generating anonymous aliases.
+        reserved_aliases: &std::collections::HashSet<String>,
     ) -> (String, Arc<LogicalPlan>, Vec<CtxToUpdate>) {
         let star_found = graph_context
             .rel
@@ -629,8 +640,12 @@ impl GraphTRaversalPlanning {
                 graph_rel.left_connection, graph_rel.right_connection
             );
 
-            let outgoing_alias = logical_plan::generate_id();
-            let incoming_alias = logical_plan::generate_id();
+            // #1084: skip user-declared variables so these anonymous UNION-branch
+            // table aliases never collide with a user variable named `t{N}` (which
+            // would corrupt the qualified column references built from them below).
+            let mut used_aliases: std::collections::HashSet<String> = reserved_aliases.clone();
+            let outgoing_alias = logical_plan::generate_id_avoiding(&mut used_aliases);
+            let incoming_alias = logical_plan::generate_id_avoiding(&mut used_aliases);
 
             let rel_plan: Arc<LogicalPlan> = Arc::new(LogicalPlan::Union(Union {
                 inputs: vec![Arc::new(LogicalPlan::Empty), Arc::new(LogicalPlan::Empty)],

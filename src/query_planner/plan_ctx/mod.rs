@@ -129,6 +129,15 @@ pub struct PlanCtx {
     /// Counter for generating unique per-VLP CTE outer aliases (vt0, vt1, vt2, ...).
     /// Scoped to this PlanCtx (per-query), avoiding global static race conditions.
     vlp_alias_counter: usize,
+    /// #1084: Query-scoped set of every alias the user explicitly declared anywhere
+    /// in the statement (node/relationship/path-pattern variables, UNWIND and WITH
+    /// aliases). Anonymous-alias generation (`generate_id` → `t{N}`) must skip these
+    /// so a generated alias never clobbers a user variable of the same name (#1081).
+    /// Populated once up front in `build_logical_plan` and inherited by WITH child
+    /// scopes, so it protects across comma-separated patterns and clause boundaries
+    /// that per-pattern `used_aliases` collection cannot see. Wrapped in `Arc` so
+    /// the frequent `PlanCtx::clone()` (parent-scope boxing) stays cheap.
+    reserved_aliases: Arc<HashSet<String>>,
     /// **NEW (Jan 2026)**: Typed variable registry for unified variable tracking
     /// This is the single source of truth for variable types across the query.
     /// Replaces fragmented type tracking in TableCtx and ScopeContext.
@@ -541,6 +550,7 @@ impl PlanCtx {
             pattern_contexts: HashMap::new(),
             vlp_endpoints: HashMap::new(),
             vlp_alias_counter: 0,
+            reserved_aliases: Arc::new(HashSet::new()),
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
@@ -574,6 +584,7 @@ impl PlanCtx {
             pattern_contexts: HashMap::new(),
             vlp_endpoints: HashMap::new(),
             vlp_alias_counter: 0,
+            reserved_aliases: Arc::new(HashSet::new()),
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
@@ -637,6 +648,7 @@ impl PlanCtx {
             pattern_contexts: HashMap::new(),
             vlp_endpoints: HashMap::new(),
             vlp_alias_counter: 0,
+            reserved_aliases: Arc::new(HashSet::new()),
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
@@ -682,6 +694,9 @@ impl PlanCtx {
             pattern_contexts: HashMap::new(), // New scope - patterns computed fresh
             vlp_endpoints: parent.vlp_endpoints.clone(), // Inherit VLP endpoint info from parent
             vlp_alias_counter: parent.vlp_alias_counter, // Continue counter from parent scope
+            // #1084: inherit the query-scoped reserved-alias set (cheap Arc clone) so
+            // anonymous-alias generation after a WITH barrier still avoids user vars.
+            reserved_aliases: parent.reserved_aliases.clone(),
             variables: VariableRegistry::new(), // Fresh variable registry for new scope
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
@@ -718,6 +733,7 @@ impl PlanCtx {
             pattern_contexts: HashMap::new(),
             vlp_endpoints: HashMap::new(),
             vlp_alias_counter: 0,
+            reserved_aliases: Arc::new(HashSet::new()),
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
@@ -1303,6 +1319,19 @@ impl PlanCtx {
         let idx = self.vlp_alias_counter;
         self.vlp_alias_counter += 1;
         format!("vt{}", idx)
+    }
+
+    /// #1084: Record the query-scoped set of user-declared aliases. Called once
+    /// per statement from `build_logical_plan`; inherited by WITH child scopes.
+    pub fn set_reserved_aliases(&mut self, reserved: HashSet<String>) {
+        self.reserved_aliases = Arc::new(reserved);
+    }
+
+    /// #1084: The query-scoped set of user-declared aliases that anonymous-alias
+    /// generation (`generate_id`) must avoid. Empty until `set_reserved_aliases`
+    /// is called (e.g. in tests that construct a `PlanCtx` directly).
+    pub fn reserved_aliases(&self) -> &HashSet<String> {
+        &self.reserved_aliases
     }
 
     /// Get the proper (table_alias, column) for a JOIN condition, accounting for VLP endpoints.
