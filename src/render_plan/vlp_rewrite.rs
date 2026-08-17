@@ -109,6 +109,29 @@ pub fn rewrite_vlp_aggregate_aliases(plan: &mut RenderPlan) -> RenderPlanBuilder
                 );
                 continue;
             }
+            // #643: a chained optional VLP materializes its shared intermediate
+            // endpoint as a REAL base-table node LEFT JOIN (`(a)-[*]->(b) OPTIONAL
+            // MATCH (b)-[*]->(c)` → `LEFT JOIN users AS b ON b.id = vt0.end_id`,
+            // built in inference.rs so `b`'s properties read from the real node and
+            // `vt1` chains off it). `rewrite_vlp_union_branch_aliases` already
+            // EXCLUDES such an intermediate from endpoint rewriting (it is a CTE
+            // START alias), leaving `b.name` as the real `b.full_name`. Swapping it
+            // here to the CTE alias (`b → vt0`) would re-break it to the
+            // non-existent `vt0.full_name`. Skip any end alias that has a real
+            // (non-vlp) node join of its own. Single / terminal VLP endpoints have
+            // no such node join → unchanged (byte-identical).
+            if plan
+                .joins
+                .0
+                .iter()
+                .any(|j| j.table_alias == *cypher_end_alias && !j.table_name.starts_with("vlp_"))
+            {
+                log::debug!(
+                    "🔧 VLP aggregate rewrite: skipping chained intermediate end alias '{}' (materialized as a real node join, #643)",
+                    cypher_end_alias
+                );
+                continue;
+            }
             // Find the corresponding JOIN to get the CTE alias
             for join in &plan.joins.0 {
                 if join.table_name == cte.cte_name {
@@ -586,6 +609,13 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
     // `count(b)`-normalised `b.<logical_id>` reference and resolve it to the CTE's
     // canonical `start_id`/`end_id` rather than a non-existent `end_{logical_id}`.
     id_property_by_alias: &HashMap<String, String>,
+    // #643: per-endpoint Cypher alias → its OWN VLP CTE's outer JOIN alias (e.g.
+    // `c → "vt1"` for the SECOND VLP in a chained pattern). A single
+    // `vlp_from_alias` is only the FIRST vlp join, so it resolves every endpoint
+    // to that one alias — wrong for the 2nd+ endpoint. When an alias is present
+    // here its OWN join alias is used as the rewrite output; otherwise the shared
+    // `vlp_from_alias` default applies (single-VLP shapes stay byte-identical).
+    endpoint_alias_override: &HashMap<String, String>,
 ) {
     log::debug!("🔍 REWRITE: Processing expr with new lookup-based mapping (no splitting)");
     match expr {
@@ -641,6 +671,14 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                 let col_name = prop_access.column.raw();
                 let alias = prop_access.table_alias.0.clone();
 
+                // #643: resolve THIS endpoint's own VLP CTE alias (e.g. `c → vt1`),
+                // falling back to the shared `vlp_from_alias` when the alias isn't a
+                // per-endpoint-mapped VLP endpoint (single-VLP / path-var → identical).
+                let out_alias = endpoint_alias_override
+                    .get(alias.as_str())
+                    .map(|s| s.as_str())
+                    .unwrap_or(vlp_from_alias);
+
                 // NEW ALGORITHM: Direct lookup using DB column name
                 // No splitting, no guessing - just look up the exact DB column name
                 if let Some((cte_column_name, _position)) =
@@ -654,7 +692,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                     );
 
                     // Rewrite to use the CTE column
-                    prop_access.table_alias.0 = vlp_from_alias.to_string();
+                    prop_access.table_alias.0 = out_alias.to_string();
                     prop_access.column = PropertyValue::Column(cte_column_name.clone());
                 } else {
                     // #659: a `count(<endpoint>)` normalises to `count(b.<logical_id>)`
@@ -683,7 +721,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                                     vlp_from_alias,
                                     id_col
                                 );
-                                prop_access.table_alias.0 = vlp_from_alias.to_string();
+                                prop_access.table_alias.0 = out_alias.to_string();
                                 prop_access.column = PropertyValue::Column(id_col.to_string());
                                 return;
                             }
@@ -706,7 +744,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                         fallback_col
                     );
 
-                    prop_access.table_alias.0 = vlp_from_alias.to_string();
+                    prop_access.table_alias.0 = out_alias.to_string();
                     prop_access.column = PropertyValue::Column(fallback_col);
                 }
             }
@@ -722,6 +760,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                     endpoint_position,
                     cte_column_mapping,
                     id_property_by_alias,
+                    endpoint_alias_override,
                 );
             }
             for (when_expr, then_expr) in &mut case_expr.when_then {
@@ -732,6 +771,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                     endpoint_position,
                     cte_column_mapping,
                     id_property_by_alias,
+                    endpoint_alias_override,
                 );
                 rewrite_render_expr_for_vlp_with_endpoint_info(
                     then_expr,
@@ -740,6 +780,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                     endpoint_position,
                     cte_column_mapping,
                     id_property_by_alias,
+                    endpoint_alias_override,
                 );
             }
             if let Some(else_expr) = &mut case_expr.else_expr {
@@ -750,6 +791,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                     endpoint_position,
                     cte_column_mapping,
                     id_property_by_alias,
+                    endpoint_alias_override,
                 );
             }
         }
@@ -762,6 +804,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                     endpoint_position,
                     cte_column_mapping,
                     id_property_by_alias,
+                    endpoint_alias_override,
                 );
             }
         }
@@ -774,6 +817,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                     endpoint_position,
                     cte_column_mapping,
                     id_property_by_alias,
+                    endpoint_alias_override,
                 );
             }
         }
@@ -786,6 +830,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                     endpoint_position,
                     cte_column_mapping,
                     id_property_by_alias,
+                    endpoint_alias_override,
                 );
             }
         }
@@ -797,6 +842,7 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
                 endpoint_position,
                 cte_column_mapping,
                 id_property_by_alias,
+                endpoint_alias_override,
             );
         }
         _ => {

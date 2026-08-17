@@ -11423,10 +11423,13 @@ mod walker_drift_family_484_490_495_476_483 {
             "#630: a REQUIRED VLP (FROM alias t) must NOT be rewritten to vt0:\n{req}"
         );
 
-        // #630 guard (must NOT trade loud for silent): with TWO chained OPTIONAL
-        // VLPs the endpoint→alias mapping is ambiguous (a separate defect, #643).
-        // The GROUP BY must stay on the hardcoded `t` so the query FAILS LOUD
-        // (Code 47) rather than silently grouping by the wrong VLP's endpoint.
+        // #643 (was the #630 loud-guard): with TWO chained OPTIONAL VLPs the 2nd
+        // endpoint (`c`) is the END of the SECOND VLP (`vlp_b_c`, LEFT JOINed as
+        // `vt1`), so SELECT / GROUP BY / ORDER BY must ALL reference `vt1.end_name`
+        // — its OWN VLP's alias, resolved per-endpoint (`endpoint_alias_override`).
+        // This formerly stayed on the hardcoded `t` to FAIL LOUD (Code 47) rather
+        // than silently group by the FIRST VLP's endpoint; #643 fixes the
+        // resolution so it groups by the CORRECT endpoint instead of failing.
         let two_vlp = render(
             &schema,
             "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS*1..2]->(b:User) \
@@ -11436,9 +11439,88 @@ mod walker_drift_family_484_490_495_476_483 {
         )
         .await;
         assert!(
-            two_vlp.contains("GROUP BY t.end_name"),
-            "#630/#643: two chained OPTIONAL VLPs must keep GROUP BY on the \
-             hardcoded `t` (fails loud, not a silently-wrong endpoint):\n{two_vlp}"
+            two_vlp.contains("LEFT JOIN vlp_b_c AS vt1"),
+            "#643: the 2nd chained OPTIONAL VLP endpoint must LEFT JOIN as vt1:\n{two_vlp}"
+        );
+        assert!(
+            two_vlp.contains("GROUP BY vt1.end_name"),
+            "#643: GROUP BY must reference the 2nd VLP's OWN join alias vt1, not \
+             the 1st VLP's vt0 nor a dangling hardcoded t:\n{two_vlp}"
+        );
+        assert!(
+            two_vlp.contains("ORDER BY vt1.end_name"),
+            "#643: ORDER BY must reference vt1 too:\n{two_vlp}"
+        );
+        assert!(
+            !two_vlp.contains("vt0.end_name"),
+            "#643: the endpoint `c` must NOT resolve to the FIRST VLP's alias vt0:\n{two_vlp}"
+        );
+    }
+
+    /// #643: chained OPTIONAL variable-length paths
+    /// (`MATCH (a) OPTIONAL MATCH (a)-[*]->(b) OPTIONAL MATCH (b)-[*]->(c)`).
+    /// Three coupled defects on main: (1) `c.name` resolved to the FIRST VLP's
+    /// alias `vt0` instead of its own `vt1`; (2) the shared intermediate `b.name`
+    /// mis-rendered as `vt0.full_name` (a column the CTE never exposes); (3) `b`
+    /// was emitted as a bare `JOIN ... ON 1 = 1` cartesian instead of being sourced
+    /// from the first VLP's endpoint. The fix (Design A — the VLP plays the role of
+    /// the edge, the endpoint node is a real scan, mirroring the non-VLP chained
+    /// path) materializes `b` as `LEFT JOIN users AS b ON b.user_id = vt0.end_id`,
+    /// keeps `b.name` as the real `b.full_name`, and resolves `c` to `vt1.end_name`.
+    #[tokio::test]
+    async fn chained_optional_vlp_endpoint_alias_and_topology_643() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+
+        let sql = render(
+            &schema,
+            "MATCH (a:User) \
+             OPTIONAL MATCH (a)-[:FOLLOWS*1..2]->(b) \
+             OPTIONAL MATCH (b)-[:FOLLOWS*1..2]->(c) \
+             RETURN a.name, b.name, c.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        // Defect 3 (topology): the shared intermediate `b` is sourced from the
+        // FIRST VLP's endpoint, NOT a spurious cartesian.
+        assert!(
+            sql.contains("LEFT JOIN social.users_bench AS b ON b.user_id = vt0.end_id"),
+            "#643: intermediate `b` must be LEFT JOINed off vt0.end_id:\n{sql}"
+        );
+        assert!(
+            !sql.contains("ON 1 = 1"),
+            "#643: no spurious cartesian for the chained VLP endpoint:\n{sql}"
+        );
+        // Defect 2: `b` is a real node → its own column, not a VLP CTE column.
+        assert!(
+            sql.contains("b.full_name AS \"b.name\""),
+            "#643: b.name must read the real node column b.full_name:\n{sql}"
+        );
+        assert!(
+            !sql.contains("vt0.full_name"),
+            "#643: b.name must NOT mis-render as the non-existent vt0.full_name:\n{sql}"
+        );
+        // Defect 1: `c` (2nd VLP endpoint) resolves to its OWN alias vt1.
+        assert!(
+            sql.contains("vt1.end_name AS \"c.name\""),
+            "#643: c.name must resolve to the 2nd VLP's alias vt1.end_name:\n{sql}"
+        );
+        assert!(
+            sql.contains("LEFT JOIN vlp_b_c AS vt1 ON b.user_id = vt1.start_id"),
+            "#643: the 2nd VLP chains off the materialized `b`:\n{sql}"
+        );
+
+        // Single OPTIONAL VLP is unchanged (endpoint folds into the CTE, no node
+        // scan): the shared-intermediate handling must not perturb it.
+        let single = render(
+            &schema,
+            "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS*1..2]->(b) RETURN a.name, b.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            single.contains("vt0.end_name AS \"b.name\"") && !single.contains("users_bench AS b"),
+            "#643: single OPTIONAL VLP stays folded into vt0.end_name (byte-identical):\n{single}"
         );
     }
 

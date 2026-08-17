@@ -3414,20 +3414,53 @@ impl GraphJoinInference {
                 });
             }
 
-            // 1. Create FROM marker for the anchor node
-            helpers::JoinBuilder::from_marker(anchor_schema.full_table_name(), anchor_alias)
-                .build_and_push(collected_graph_joins);
-
-            // 2. Create LEFT JOIN to VLP CTE.
-            // CTE name is always `vlp_{start}_{end}` (start = left_connection,
-            // end = right_connection) regardless of which endpoint is the anchor.
-            let cte_name = format!("vlp_{}_{}", left_alias, right_alias);
             let anchor_id_col = anchor_schema
                 .node_id
                 .columns()
                 .first()
                 .expect("Node ID must have at least one column")
                 .to_string();
+
+            // #643: if the anchor node is itself the endpoint of a PRECEDING VLP
+            // in a chained optional pattern (`(a)-[*]->(b) OPTIONAL MATCH
+            // (b)-[*]->(c)` — `b` is VLP1's END and VLP2's START), it must be
+            // JOINed to that VLP's CTE endpoint (`b.id = vt0.end_id`), NOT emitted
+            // as a bare FROM marker that the render turns into a spurious
+            // `ON 1 = 1` cartesian (join_builder.rs). This mirrors the non-VLP
+            // chained-optional path, where the endpoint node is joined off the
+            // preceding hop's target column (`b.id = t1.followed_id`). The
+            // preceding VLP already marked `b` in the join context from the
+            // sibling clause (`should_skip_for_vlp`), so `get_vlp_endpoint` yields
+            // its alias (`vt0`) and position (`end`). Detected via a DIFFERENT
+            // `rel_alias` — a same-rel mark is THIS VLP's own endpoint, not a
+            // preceding one — so single / non-chained VLPs fall through to the
+            // original bare marker and stay byte-identical.
+            let anchor_prev_vlp = join_ctx
+                .get_vlp_endpoint(anchor_alias)
+                .filter(|info| info.rel_alias != rel_alias)
+                .cloned();
+
+            // 1. Create the anchor node join (real LEFT JOIN when it chains off a
+            //    preceding VLP endpoint, else a bare FROM marker).
+            if let Some(prev) = &anchor_prev_vlp {
+                helpers::JoinBuilder::new(anchor_schema.full_table_name(), anchor_alias)
+                    .join_type(JoinType::Left)
+                    .add_condition(
+                        anchor_alias,
+                        &anchor_id_col,
+                        &prev.vlp_alias,
+                        prev.cte_column(),
+                    )
+                    .build_and_push(collected_graph_joins);
+            } else {
+                helpers::JoinBuilder::from_marker(anchor_schema.full_table_name(), anchor_alias)
+                    .build_and_push(collected_graph_joins);
+            }
+
+            // 2. Create LEFT JOIN to VLP CTE.
+            // CTE name is always `vlp_{start}_{end}` (start = left_connection,
+            // end = right_connection) regardless of which endpoint is the anchor.
+            let cte_name = format!("vlp_{}_{}", left_alias, right_alias);
 
             // Get the unique VLP alias from the endpoint marked in should_skip_for_vlp
             // (`should_skip_for_vlp` marks the END endpoint = right_alias).

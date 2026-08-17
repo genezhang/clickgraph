@@ -2077,12 +2077,6 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
     // every clause agrees — previously WHERE and GROUP BY hardcoded `"t"`, which
     // dangled for OPTIONAL VLP where the join alias is `vt0` (#630; SELECT/ORDER
     // BY already used this value).
-    let vlp_join_count = plan
-        .joins
-        .0
-        .iter()
-        .filter(|j| j.table_name.starts_with("vlp_"))
-        .count();
     let vlp_from_alias = if is_optional_vlp {
         plan.joins
             .0
@@ -2099,20 +2093,48 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
             .unwrap_or_else(crate::server::query_context::vlp_from_alias)
     };
 
-    // The alias to use for the WHERE / GROUP BY endpoint rewrite. Use the
-    // resolved `vlp_from_alias` ONLY when there is a single VLP join (or the
-    // required-VLP FROM case) so the endpoint reference is UNAMBIGUOUS. With TWO
-    // OR MORE VLP joins (`OPTIONAL MATCH (a)-[*]->(b) OPTIONAL MATCH (b)-[*]->(c)`)
-    // `vlp_from_alias` is just the FIRST vlp join — using it for GROUP BY on the
-    // SECOND endpoint would silently group by the WRONG VLP (a separate,
-    // deeper endpoint-resolution defect, tracked as #643). Keep the historical
-    // `"t"` there so that shape continues to FAIL LOUD (Code 47) rather than
-    // return a silently-wrong aggregate (#630 must not trade loud for silent).
-    let group_where_alias: &str = if is_optional_vlp && vlp_join_count > 1 {
-        "t"
-    } else {
-        &vlp_from_alias
+    // #643: each VLP endpoint Cypher alias → its OWN VLP CTE's outer JOIN alias,
+    // so a chained pattern's 2nd+ endpoint resolves to its own `vt1`/`vt2` rather
+    // than the single FIRST-join `vlp_from_alias`. Keyed prefer-END: a node that
+    // is BOTH one CTE's end and another's start (the shared intermediate) takes
+    // the END mapping, consistent with `cte_column_mapping` / `endpoint_position`.
+    // Only VLP CTEs that are actually JOINed (OPTIONAL VLP) contribute; a required
+    // VLP's CTE is the FROM (no join) so the map is empty and the shared
+    // `vlp_from_alias` default applies → single-VLP shapes stay byte-identical.
+    let cte_join_alias = |cte_name: &str| -> Option<String> {
+        plan.joins
+            .0
+            .iter()
+            .find(|j| j.table_name == cte_name)
+            .map(|j| j.table_alias.clone())
     };
+    let mut endpoint_alias_override: HashMap<String, String> = HashMap::new();
+    for cte in &plan.ctes.0 {
+        if let (Some(end), Some(join_alias)) = (
+            cte.vlp_cypher_end_alias.as_ref(),
+            cte_join_alias(&cte.cte_name),
+        ) {
+            endpoint_alias_override.insert(end.clone(), join_alias);
+        }
+    }
+    for cte in &plan.ctes.0 {
+        if let (Some(start), Some(join_alias)) = (
+            cte.vlp_cypher_start_alias.as_ref(),
+            cte_join_alias(&cte.cte_name),
+        ) {
+            endpoint_alias_override
+                .entry(start.clone())
+                .or_insert(join_alias);
+        }
+    }
+
+    // The alias to use for the WHERE / GROUP BY endpoint rewrite. Endpoint
+    // references now resolve per-endpoint via `endpoint_alias_override` (above),
+    // so a chained multi-VLP no longer needs the historical `"t"` loud-guard
+    // (#630/#643 — it forced Code 47 rather than group by the WRONG VLP). The
+    // shared `vlp_from_alias` remains the default for non-endpoint (path-var)
+    // references not present in the override.
+    let group_where_alias: &str = &vlp_from_alias;
 
     // 🔧 CRITICAL: Check if this is a multi-type VLP (from CTE name)
     // Multi-type VLP CTEs use Cypher aliases directly in SELECT (e.g., x.end_type)
@@ -2152,6 +2174,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
                 &endpoint_position,
                 &cte_column_mapping,
                 &id_property_by_alias,
+                &endpoint_alias_override,
             );
         }
 
@@ -2185,6 +2208,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
                     &endpoint_position,
                     &cte_column_mapping,
                     &id_property_by_alias,
+                    &endpoint_alias_override,
                 );
             }
         }
@@ -2202,6 +2226,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
             &endpoint_position,
             &cte_column_mapping,
             &id_property_by_alias,
+            &endpoint_alias_override,
         );
     }
 
@@ -2221,6 +2246,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
             &endpoint_position,
             &cte_column_mapping,
             &id_property_by_alias,
+            &endpoint_alias_override,
         );
     }
 
