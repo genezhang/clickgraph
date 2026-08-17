@@ -11522,6 +11522,31 @@ mod walker_drift_family_484_490_495_476_483 {
             single.contains("vt0.end_name AS \"b.name\"") && !single.contains("users_bench AS b"),
             "#643: single OPTIONAL VLP stays folded into vt0.end_name (byte-identical):\n{single}"
         );
+
+        // Ground rule 1: the #643 topology fix handles the FORWARD orientation
+        // only. The REVERSED-arrow chained aggregate (`(a)<-[*]-(b)<-[*]-(c)`, the
+        // #840 family) still emits a bare `ON 1 = 1` cartesian, so it MUST stay
+        // LOUD — the lifted WHERE/GROUP guard is retained (dangling `t`) precisely
+        // for this unhandled shape rather than executing a silently-wrong
+        // cartesian-inflated aggregate. (Adversarial-review finding.)
+        let reversed_agg = render(
+            &schema,
+            "MATCH (a:User) OPTIONAL MATCH (a)<-[:FOLLOWS*1..2]-(b) \
+             OPTIONAL MATCH (b)<-[:FOLLOWS*1..2]-(c) \
+             RETURN b.name, count(*) AS cnt",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            reversed_agg.contains("ON 1 = 1"),
+            "#643/#840: reversed chained VLP still renders a bare cartesian:\n{reversed_agg}"
+        );
+        assert!(
+            reversed_agg.contains("GROUP BY t.end_name"),
+            "#643/#630: the unhandled reversed-cartesian shape must keep the \
+             dangling `t` GROUP BY so it fails LOUD, not silently group a \
+             cartesian:\n{reversed_agg}"
+        );
     }
 
     /// #788: a MULTI-TYPE VLP aggregate that ORDER-BYs a grouped endpoint
