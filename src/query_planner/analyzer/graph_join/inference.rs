@@ -3739,7 +3739,8 @@ impl GraphJoinInference {
             all_aliases.dedup();
             let is_chained_forward = chains_forward
                 && all_aliases.len() == required_vlps.len() + 1
-                && !Self::scope_has_undirected_required_vlp(plan);
+                && !Self::scope_has_undirected_required_vlp(plan)
+                && !Self::scope_has_path_var_required_vlp(plan);
 
             // #544: tell the render phase how many VLP CTEs a chained-forward path
             // must materialize. If render can't build the full chain (a hop
@@ -3928,6 +3929,49 @@ impl GraphJoinInference {
             LogicalPlan::CartesianProduct(cp) => {
                 Self::scope_has_undirected_required_vlp(&cp.left)
                     || Self::scope_has_undirected_required_vlp(&cp.right)
+            }
+            LogicalPlan::Union(_) => false,
+            _ => false,
+        }
+    }
+
+    /// #544: does this scope bind a named path variable on a required VLP? A
+    /// chained-forward path renders as N independent recursive CTEs, each with
+    /// its OWN `path_nodes`/`path_edges`/`hop_count` — there is no single
+    /// materialized path spanning the whole chain, so `length(p)`/`nodes(p)`/
+    /// `relationships(p)` over the chain cannot be evaluated (it silently
+    /// collapsed to `0`/one segment). A path variable therefore excludes the
+    /// chained-forward fast path (the scope stays #544-loud). Single-VLP path
+    /// variables are unaffected — this predicate is only consulted when a scope
+    /// has MORE THAN ONE required VLP. Mirrors `collect_required_vlps`'s
+    /// traversal and skip conditions exactly.
+    fn scope_has_path_var_required_vlp(plan: &LogicalPlan) -> bool {
+        match plan {
+            LogicalPlan::GraphRel(gr) => {
+                if let Some(spec) = gr.variable_length.as_ref() {
+                    let is_fixed_length =
+                        spec.exact_hop_count().is_some() && gr.shortest_path_mode.is_none();
+                    let is_optional = gr.is_optional.unwrap_or(false);
+                    if !is_fixed_length && !is_optional && gr.path_variable.is_some() {
+                        return true;
+                    }
+                }
+                Self::scope_has_path_var_required_vlp(&gr.left)
+                    || Self::scope_has_path_var_required_vlp(&gr.right)
+            }
+            LogicalPlan::GraphNode(gn) => Self::scope_has_path_var_required_vlp(&gn.input),
+            LogicalPlan::Filter(f) => Self::scope_has_path_var_required_vlp(&f.input),
+            LogicalPlan::Projection(p) => Self::scope_has_path_var_required_vlp(&p.input),
+            LogicalPlan::GroupBy(g) => Self::scope_has_path_var_required_vlp(&g.input),
+            LogicalPlan::OrderBy(o) => Self::scope_has_path_var_required_vlp(&o.input),
+            LogicalPlan::Skip(s) => Self::scope_has_path_var_required_vlp(&s.input),
+            LogicalPlan::Limit(l) => Self::scope_has_path_var_required_vlp(&l.input),
+            LogicalPlan::Cte(c) => Self::scope_has_path_var_required_vlp(&c.input),
+            LogicalPlan::GraphJoins(gj) => Self::scope_has_path_var_required_vlp(&gj.input),
+            LogicalPlan::Unwind(u) => Self::scope_has_path_var_required_vlp(&u.input),
+            LogicalPlan::CartesianProduct(cp) => {
+                Self::scope_has_path_var_required_vlp(&cp.left)
+                    || Self::scope_has_path_var_required_vlp(&cp.right)
             }
             LogicalPlan::Union(_) => false,
             _ => false,

@@ -17947,6 +17947,38 @@ mod vlp_family_remnants_544_545_528_525 {
         );
     }
 
+    /// #544 chained-forward excludes a named path variable spanning the chain.
+    /// Each VLP renders as its own recursive CTE with its OWN path_nodes/
+    /// path_edges/hop_count — there is no single materialized path across the
+    /// chain, so `length(p)`/`nodes(p)` would silently collapse (observed:
+    /// `length(p)` → constant 0). Stay loud. Single-VLP path variables are
+    /// unaffected (they are one CTE).
+    #[tokio::test]
+    async fn chained_vlp_with_path_variable_stays_loud_544() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let err = try_render(
+            &schema,
+            "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User) \
+             RETURN length(p)",
+            SqlDialect::ClickHouse,
+        )
+        .await
+        .expect_err("a path variable over a chained VLP must stay loud, not collapse to 0");
+        assert!(err.contains("#544"), "expected a #544 error: {err}");
+
+        // Sanity: a SINGLE-VLP path variable still renders (one CTE, real path).
+        let sql = render(
+            &schema,
+            "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN length(p)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.to_uppercase().contains("WITH RECURSIVE"),
+            "single-VLP path variable must still render its CTE: {sql}"
+        );
+    }
+
     /// #544 chained-forward is scoped to DIRECTED chains: an undirected chain
     /// `(a)-[*]-(b)-[*]-(c)` renders as #617 doubled-edge walks whose two-VLP
     /// chaining semantics are not yet verified, so it stays loud rather than
