@@ -1516,8 +1516,15 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   design-cycle work still open: ~~#643 (chained VLP endpoint alias)~~
   **[FIXED — PR #1092 `c2ecd692`, chained OPTIONAL VLP; forward/fan-out/undirected/
   denorm; reversed #840 form kept loud]**, #840 (shortestPath reverse-arm join
-  drop), #544 (required multi-VLP-in-one-scope — required render path orphans
-  all-but-one CTE, needs an INNER-semantics N-CTE-chaining rebuild; still gated).
+  drop), ~~#544 (required multi-VLP-in-one-scope)~~ **[IMPLEMENTED — PRs #1094
+  `0ffc0fca` (fan-in projection) + #1095 `523811d2` (chained-forward). Required
+  chained `(a)-[:R*1..2]->(b)-[:R*1..2]->(c)...` now renders N CTEs joined on the
+  shared intermediate with cross-segment edge-uniqueness (`NOT hasAny(path_edges)`,
+  Databricks `arrays_overlap`), verified vs acyclic+cyclic oracles both dialects.
+  CONFINED to a plain single MATCH scope, directed, single-type, `*min>=1`. Still
+  #544-loud (follow-up): UNION/WITH-scoped chains (need per-branch/per-WITH emit
+  paths + per-scope authorization), undirected, multi-type/untyped, `*0..N`,
+  path-variable-over-chain, reversed/fan-out/disjoint/cycle-back]**.
 
 - 2026-08-03: **Feature — #629 PR2: DIRECTED multi-hop uncorrelated
   `size([x IN list WHERE (x)-[:R]->()-[:R]->()])`** (branch
