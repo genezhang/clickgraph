@@ -17960,6 +17960,49 @@ mod vlp_family_remnants_544_545_528_525 {
         );
     }
 
+    /// #544 chained-forward is confined to a plain single MATCH scope. Chained
+    /// fusion is only wired into the outermost single-scope emit path; the
+    /// per-UNION-branch and per-WITH-scope emit paths don't build the chain
+    /// JOINs, so a chained VLP in a UNION branch would render half-fused
+    /// (silently wrong) and in a WITH scope would dangle (Code 47). Any UNION or
+    /// WITH in the query keeps chaining #544-loud until those paths learn it.
+    #[tokio::test]
+    async fn chained_vlp_with_union_or_with_stays_loud_544() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        // Chained VLP inside a UNION branch (the reviewer's silent-wrong repro).
+        let err_union = try_render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User) \
+             RETURN a.full_name AS x \
+             UNION MATCH (m:User)-[:FOLLOWS*1..2]->(n:User) RETURN m.full_name AS x",
+            SqlDialect::ClickHouse,
+        )
+        .await
+        .expect_err("chained VLP in a UNION branch must stay loud, not render half-fused");
+        assert!(err_union.contains("#544"), "expected #544: {err_union}");
+
+        // Chained VLP feeding a WITH.
+        let err_with = try_render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User) \
+             WITH a.full_name AS an RETURN an",
+            SqlDialect::ClickHouse,
+        )
+        .await
+        .expect_err("chained VLP feeding a WITH must stay loud");
+        assert!(err_with.contains("#544"), "expected #544: {err_with}");
+
+        // A plain single-scope chain (no UNION/WITH) still renders.
+        let sql = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User) \
+             RETURN a.name, c.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(sql.contains("t_ch_0"), "plain chain still renders: {sql}");
+    }
+
     /// #544 chained-forward excludes a ZERO-minimum-bound VLP (`*0..N`): a
     /// zero-length-capable VLP renders with node-uniqueness and does NOT project
     /// the `path_edges` column the chain's cross-segment edge-uniqueness join

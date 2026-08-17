@@ -160,6 +160,15 @@ pub struct QueryContext {
     /// fails LOUD instead. Reset per query in `clear_all_render_contexts`.
     pub expected_chained_vlp_count: Option<usize>,
 
+    /// #544: the current query contains a UNION (or is otherwise a context the
+    /// chained-forward fusion cannot safely handle). Chained fusion is applied
+    /// per-render but the per-UNION-branch SQL-emit path does NOT build the chain
+    /// JOINs, so a chained VLP inside a UNION branch would render half-fused
+    /// (silently wrong). Set once from the whole-query plan at the start of
+    /// `GraphJoinInference` and consulted by the `is_chained_forward` gate so
+    /// such queries stay #544-loud. Reset per query in `clear_all_render_contexts`.
+    pub chained_query_unsafe_scope: bool,
+
     /// Current variable registry for SQL rendering.
     /// Set from the CTE or RenderPlan being rendered; used by PropertyAccessExp::to_sql()
     /// to resolve cypher_alias.property → correct SQL column.
@@ -833,6 +842,22 @@ pub fn expected_chained_vlp_count() -> Option<usize> {
         .flatten()
 }
 
+/// #544: mark the current query as an unsafe scope for chained-forward fusion
+/// (e.g. it contains a UNION). Set once from the whole-query plan at the start
+/// of analysis.
+pub fn register_chained_query_unsafe_scope(unsafe_scope: bool) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().chained_query_unsafe_scope = unsafe_scope;
+    });
+}
+
+/// #544: is the current query an unsafe scope for chained-forward fusion?
+pub fn chained_query_unsafe_scope() -> bool {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().chained_query_unsafe_scope)
+        .unwrap_or(false)
+}
+
 /// Check if an alias is a multi-type VLP endpoint
 pub fn is_multi_type_vlp_alias(alias: &str) -> bool {
     QUERY_CONTEXT
@@ -1213,8 +1238,9 @@ pub fn clear_all_render_contexts() {
         ctx.cte_alias_to_cte_name.clear();
         ctx.all_cte_names.clear();
         ctx.weight_cte_config = None;
-        // #544: reset the chained-forward multi-VLP expected count.
+        // #544: reset the chained-forward multi-VLP expected count + unsafe-scope.
         ctx.expected_chained_vlp_count = None;
+        ctx.chained_query_unsafe_scope = false;
         // #1088: reset the query-scoped VLP FROM alias so the next query starts
         // from the default `"t"` and re-registers its own value if it collides.
         ctx.vlp_from_alias = None;

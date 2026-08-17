@@ -110,6 +110,26 @@ impl AnalyzerPass for GraphJoinInference {
         // precedes its VLP hop in pattern order (e.g. `(a)-[:R1]->(b)-[:R2*1..3]->(c)`)
         // still sees `b` as a known VLP endpoint when its JOIN is generated.
         // See `pre_register_vlp_endpoints` doc comment for the full explanation.
+        //
+        // #544: decide ONCE, from the WHOLE query plan, whether chained-forward
+        // fusion is unsafe here. Chained fusion is only wired into the OUTERMOST
+        // single-scope SQL-emit path (`rewrite_vlp_select_aliases`); the
+        // per-UNION-branch (`rewrite_vlp_branch_select`) and per-WITH-scope
+        // (`with_to_cte`) emit paths do NOT build the chain JOINs. So a chained
+        // VLP inside a UNION branch or a WITH-separated scope renders half-fused
+        // — the render rewrites the SELECT to `t`/`t_ch_N` but the emit leaves a
+        // single-CTE FROM (a dropped hop + dangling endpoint: silently wrong in
+        // the UNION case, Code 47 in the WITH case). Until those emit paths learn
+        // the chain, restrict chaining to a plain single MATCH scope: any UNION
+        // or WITH makes the whole query unsafe. Computed at this top-level entry
+        // (before the per-branch/per-scope `pre_register_vlp_endpoints` calls) so
+        // every scope's `is_chained_forward` gate sees the same decision, and the
+        // query stays cleanly #544-loud (as it was before chaining existed).
+        let query_unsafe_for_chaining = logical_plan
+            .any_node(|n| matches!(n, LogicalPlan::Union(_) | LogicalPlan::WithClause(_)));
+        crate::server::query_context::register_chained_query_unsafe_scope(
+            query_unsafe_for_chaining,
+        );
         Self::pre_register_vlp_endpoints(&logical_plan, plan_ctx)?;
 
         self.collect_graph_joins(
@@ -3739,6 +3759,7 @@ impl GraphJoinInference {
             all_aliases.dedup();
             let is_chained_forward = chains_forward
                 && all_aliases.len() == required_vlps.len() + 1
+                && !crate::server::query_context::chained_query_unsafe_scope()
                 && !Self::scope_has_undirected_required_vlp(plan)
                 && !Self::scope_has_path_var_required_vlp(plan)
                 && !Self::scope_has_nonsingle_type_required_vlp(plan);
