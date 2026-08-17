@@ -1513,8 +1513,11 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   successor to #899 on the same closed-optional shape. Out of scope / pre-existing
   loud: denorm closed optional (fails loud, `MissingTableInfo`), composite-id
   closed optional (pre-existing single-vs-composite key mismatch). Adjacent VLP
-  design-cycle work still open: #643 (chained VLP endpoint alias), #840
-  (shortestPath reverse-arm join drop).
+  design-cycle work still open: ~~#643 (chained VLP endpoint alias)~~
+  **[FIXED — PR #1092 `c2ecd692`, chained OPTIONAL VLP; forward/fan-out/undirected/
+  denorm; reversed #840 form kept loud]**, #840 (shortestPath reverse-arm join
+  drop), #544 (required multi-VLP-in-one-scope — required render path orphans
+  all-but-one CTE, needs an INNER-semantics N-CTE-chaining rebuild; still gated).
 
 - 2026-08-03: **Feature — #629 PR2: DIRECTED multi-hop uncorrelated
   `size([x IN list WHERE (x)-[:R]->()-[:R]->()])`** (branch
