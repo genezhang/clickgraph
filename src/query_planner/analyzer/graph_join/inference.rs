@@ -3710,6 +3710,38 @@ impl GraphJoinInference {
             }
         }
 
+        // #1085: the VLP CTE's outer FROM alias is a fixed reserved name
+        // (VLP_CTE_FROM_ALIAS = "t"), threaded as a string-level protocol through
+        // the render + SQL-emit phases (endpoint join resolution, `t.start_*`/
+        // `t.end_*` column references, the reverse-branch `swap_vlp_start_end`
+        // text substitution, etc.). If a user names a VLP endpoint exactly "t",
+        // that reserved alias becomes indistinguishable from the user's node:
+        // the endpoint rewriters re-resolve an already-correct `t.end_id` back to
+        // `t.start_id`, so a chained hop after the VLP silently returns the wrong
+        // rows (docs of the START, not the endpoint — #1085). Making the reserved
+        // alias query-scoped to eliminate the collision is the multi-VLP-aliasing
+        // work tracked in TODO(multi-vlp); until that lands, reject the colliding
+        // pattern LOUDLY rather than emit silently-wrong SQL (ground rule 1). The
+        // fix is a one-character rename of the user's variable.
+        let reserved = crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
+        if let Some((l, r, rel)) = required_vlps
+            .iter()
+            .find(|(l, r, _)| l == reserved || r == reserved)
+        {
+            let which = if l == reserved { l } else { r };
+            return Err(AnalyzerError::UnsupportedPattern {
+                message: format!(
+                    "variable-length path endpoint is named '{which}' in \
+                     ({l})-[{rel}*..]->({r}), which collides with ClickGraph's \
+                     reserved internal alias for variable-length-path CTEs \
+                     ('{reserved}'). This collision would silently produce wrong \
+                     results for a chained hop after the path (issue #1085). \
+                     Rename the '{reserved}' variable (e.g. to '{reserved}1') and \
+                     re-run."
+                ),
+            });
+        }
+
         for (left_alias, right_alias, rel_alias) in required_vlps {
             plan_ctx.register_vlp_endpoint(
                 left_alias.clone(),

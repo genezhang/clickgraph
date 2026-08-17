@@ -342,11 +342,15 @@ class TestVectorSimilarityWithGraphRAG:
         query_vec = generate_embedding(101)  # Similar to NLP
         query_vec_str = "[" + ",".join(map(str, query_vec)) + "]"
         
+        # Start node is `topic`, NOT `t`: a VLP endpoint literally named `t`
+        # collides with ClickGraph's reserved internal VLP CTE alias and is
+        # loud-gated (#1085) to avoid silently-wrong rows for the chained
+        # `-[:DISCUSSES]->` hop. Any other alias resolves correctly.
         result = query_with_sql(
             f"""
-            MATCH path = (t:Topic)-[:RELATED_TO*1..2]->(t2:Topic)-[:DISCUSSES]->(d:Document)
-            WHERE t.name = 'Machine Learning'
-            RETURN DISTINCT d.title, 
+            MATCH path = (topic:Topic)-[:RELATED_TO*1..2]->(t2:Topic)-[:DISCUSSES]->(d:Document)
+            WHERE topic.name = 'Machine Learning'
+            RETURN DISTINCT d.title,
                    cosineDistance(d.embedding, {query_vec_str}) as similarity,
                    length(path) as hops
             ORDER BY similarity ASC

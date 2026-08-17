@@ -213,13 +213,11 @@ neighborhood.** That is GraphRAG that is both *relevant* and *explainable*.
 
 **The whole loop in one statement.** The three steps above read as an agent
 *thinking out loud*, but the traversal and the re-rank also compose into a single
-Cypher query — variable-length graph expansion feeding a vector re-rank, no
-round-trip to the client in between:
+Cypher query — variable-length graph expansion feeding straight into a vector
+re-rank, no round-trip to the client and no intermediate `WITH` barrier:
 
 ```cypher
-MATCH (t:Topic {name:'Machine Learning'})-[:RELATED_TO*1..2]->(t2:Topic)
-WITH DISTINCT t2
-MATCH (t2)-[:DISCUSSES]->(d:Document)
+MATCH (ml:Topic {name:'Machine Learning'})-[:RELATED_TO*1..2]->(t2:Topic)-[:DISCUSSES]->(d:Document)
 RETURN DISTINCT d.title AS document, t2.name AS via_topic,
        round(1 - cosineDistance(d.embedding, $q), 4) AS similarity
 ORDER BY similarity DESC
@@ -231,9 +229,9 @@ ORDER BY similarity DESC
 | Deep Learning for NLP | Natural Language Processing | 0.0943 |
 | Object Detection with YOLO | Computer Vision | −0.0016 |
 
-The `RELATED_TO*1..2` frontier is expanded in a recursive CTE, its endpoints feed
-the `DISCUSSES` join, and `cosineDistance` re-ranks the result — one statement,
-translated to one ClickHouse query. This unblocked once
+The `RELATED_TO*1..2` frontier is expanded in a recursive CTE, its **endpoints**
+feed the `DISCUSSES` join, and `cosineDistance` re-ranks the result — one
+statement, translated to one ClickHouse query. This unblocked once
 [#1081](https://github.com/genezhang/clickgraph/issues/1081) (an anonymous-alias
 collision that corrupted variable-length-plus-chained patterns) was fixed in
 [#1083](https://github.com/genezhang/clickgraph/pull/1083).
@@ -241,12 +239,12 @@ collision that corrupted variable-length-plus-chained patterns) was fixed in
 > **Scope note.** Vector distance functions (`cosineDistance`, `L2Distance`,
 > `dotProduct`, `gds.similarity.*`, `vector.similarity.*`) and the
 > `CALL db.index.vector.queryNodes(...)` procedure are **ClickHouse-native**; this
-> scenario runs on the ClickGraph/ClickHouse endpoint. The single-statement form
-> above threads the variable-length traversal through a `WITH` barrier before the
-> chained `DISCUSSES` hop; the fully-inline form
-> (`… -[:RELATED_TO*1..2]->(t2)-[:DISCUSSES]->(d) …`) is tracked separately in
-> [#1085](https://github.com/genezhang/clickgraph/issues/1085) and should use the
-> `WITH`-barrier form until it lands.
+> scenario runs on the ClickGraph/ClickHouse endpoint. One naming caveat: the
+> variable-length-path start node is `ml`, not `t` — a VLP endpoint named exactly
+> `t` collides with ClickGraph's reserved internal VLP-CTE alias and is rejected
+> with an actionable error ([#1085](https://github.com/genezhang/clickgraph/issues/1085),
+> which would otherwise anchor the chained hop on the path *start* instead of the
+> endpoint). Any other variable name resolves correctly.
 
 ---
 
