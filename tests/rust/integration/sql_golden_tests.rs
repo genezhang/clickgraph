@@ -17879,21 +17879,241 @@ mod vlp_family_remnants_544_545_528_525 {
         assert!(err.contains("#544"), "expected a #544 error: {err}");
     }
 
-    /// #544 (chained variant): two directly adjacent VLPs sharing the middle
-    /// node. Pre-fix only `vlp_b_c` was emitted — `a.name` silently became
-    /// b's start_name and the a→b hop constraint vanished entirely.
+    /// #544 (chained-forward, now SUPPORTED): two+ directly adjacent VLPs
+    /// forming a simple forward path, sharing each middle node. Pre-fix only
+    /// `vlp_b_c` was emitted — `a.name` silently became b's start_name and the
+    /// a→b hop constraint vanished. Now each VLP materializes its own CTE and
+    /// consecutive CTEs are INNER-JOINed on the shared intermediate
+    /// (`t_ch_{i}.start_id = prev.end_id`), each endpoint resolving to its own
+    /// CTE alias.
     #[tokio::test]
-    async fn chained_vlps_rejected_loudly_544() {
+    async fn chained_vlps_render_multi_cte_544() {
         let schema = load_schema(SchemaId::Standard.yaml_path());
-        let err = try_render(
+        let sql = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User) \
+             RETURN a.name, b.name, c.name ORDER BY c.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        // Both VLP CTEs materialize and are chained on the shared middle node.
+        assert!(
+            sql.contains("vlp_a_b") && sql.contains("vlp_b_c"),
+            "both VLP CTEs must render: {sql}"
+        );
+        assert!(
+            sql.contains("FROM vlp_a_b AS t"),
+            "first VLP is the FROM (alias t): {sql}"
+        );
+        assert!(
+            sql.contains("INNER JOIN vlp_b_c AS t_ch_0 ON t_ch_0.start_id = t.end_id"),
+            "second VLP INNER-JOINed on the shared intermediate: {sql}"
+        );
+        // Cross-segment relationship uniqueness (Cypher isomorphism spans the
+        // whole MATCH): no edge may recur across segments (else cyclic graphs
+        // over-count). #544 finding B.
+        assert!(
+            sql.contains("NOT hasAny(t_ch_0.path_edges, t.path_edges)"),
+            "chain join must enforce cross-segment edge disjointness: {sql}"
+        );
+        // Each endpoint resolves to its own CTE alias (no conflation onto `t`).
+        assert!(
+            sql.contains("t.start_name AS \"a.name\""),
+            "a → first CTE start: {sql}"
+        );
+        assert!(
+            sql.contains("t_ch_0.start_name AS \"b.name\""),
+            "shared middle b → second CTE start (matches cte_column_mapping): {sql}"
+        );
+        assert!(
+            sql.contains("t_ch_0.end_name AS \"c.name\""),
+            "c → second CTE end: {sql}"
+        );
+        assert!(
+            sql.contains("ORDER BY t_ch_0.end_name"),
+            "ORDER BY c.name → its own CTE alias, not the raw Cypher alias: {sql}"
+        );
+    }
+
+    /// #544 chained-forward stays scoped: a 3-deep chain renders three chained
+    /// CTEs, but any NON-simple-forward multi-VLP (fan-out, reversed) stays loud.
+    #[tokio::test]
+    async fn chained_vlps_three_deep_render_544() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User)\
+             -[:FOLLOWS*1..2]->(d:User) RETURN a.name, d.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("INNER JOIN vlp_b_c AS t_ch_0 ON t_ch_0.start_id = t.end_id")
+                && sql.contains("INNER JOIN vlp_c_d AS t_ch_1 ON t_ch_1.start_id = t_ch_0.end_id"),
+            "3-deep chain must join c_d onto b_c onto a_b: {sql}"
+        );
+        // Pairwise cross-segment edge disjointness: t_ch_1 vs BOTH prior segments.
+        assert!(
+            sql.contains("NOT hasAny(t_ch_1.path_edges, t.path_edges)")
+                && sql.contains("NOT hasAny(t_ch_1.path_edges, t_ch_0.path_edges)"),
+            "3-deep chain must enforce pairwise edge disjointness: {sql}"
+        );
+    }
+
+    /// #544 chained-forward is confined to a plain single MATCH scope. Chained
+    /// fusion is only wired into the outermost single-scope emit path; the
+    /// per-UNION-branch and per-WITH-scope emit paths don't build the chain
+    /// JOINs, so a chained VLP in a UNION branch would render half-fused
+    /// (silently wrong) and in a WITH scope would dangle (Code 47). Any UNION or
+    /// WITH in the query keeps chaining #544-loud until those paths learn it.
+    #[tokio::test]
+    async fn chained_vlp_with_union_or_with_stays_loud_544() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        // Chained VLP inside a UNION branch (the reviewer's silent-wrong repro).
+        let err_union = try_render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User) \
+             RETURN a.full_name AS x \
+             UNION MATCH (m:User)-[:FOLLOWS*1..2]->(n:User) RETURN m.full_name AS x",
+            SqlDialect::ClickHouse,
+        )
+        .await
+        .expect_err("chained VLP in a UNION branch must stay loud, not render half-fused");
+        assert!(err_union.contains("#544"), "expected #544: {err_union}");
+
+        // Chained VLP feeding a WITH.
+        let err_with = try_render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User) \
+             WITH a.full_name AS an RETURN an",
+            SqlDialect::ClickHouse,
+        )
+        .await
+        .expect_err("chained VLP feeding a WITH must stay loud");
+        assert!(err_with.contains("#544"), "expected #544: {err_with}");
+
+        // A plain single-scope chain (no UNION/WITH) still renders.
+        let sql = render(
             &schema,
             "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User) \
              RETURN a.name, c.name",
             SqlDialect::ClickHouse,
         )
+        .await;
+        assert!(sql.contains("t_ch_0"), "plain chain still renders: {sql}");
+    }
+
+    /// #544 chained-forward excludes a ZERO-minimum-bound VLP (`*0..N`): a
+    /// zero-length-capable VLP renders with node-uniqueness and does NOT project
+    /// the `path_edges` column the chain's cross-segment edge-uniqueness join
+    /// needs (would be Code 47), so it stays #544-loud. A `*min>=1` chain (incl.
+    /// exact `*2..2`, which reroutes through a recursive CTE that DOES project
+    /// path_edges) is unaffected.
+    #[tokio::test]
+    async fn chained_vlp_zero_min_bound_stays_loud_544() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let err = try_render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*0..2]->(b:User)-[:FOLLOWS*1..2]->(c:User) \
+             RETURN a.name, c.name",
+            SqlDialect::ClickHouse,
+        )
         .await
-        .expect_err("chained VLPs must error, not silently drop the first VLP");
+        .expect_err("a *0.. segment lacks path_edges; the chain must stay loud");
         assert!(err.contains("#544"), "expected a #544 error: {err}");
+
+        // Exact-bound *2..2 chain DOES render (recursive CTE has path_edges).
+        let sql = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*2..2]->(b:User)-[:FOLLOWS*2..2]->(c:User) \
+             RETURN a.name, c.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("t_ch_0") && sql.contains("NOT hasAny(t_ch_0.path_edges"),
+            "exact-bound chain must render with edge-uniqueness: {sql}"
+        );
+    }
+
+    /// #544 chained-forward excludes a named path variable spanning the chain.
+    /// Each VLP renders as its own recursive CTE with its OWN path_nodes/
+    /// path_edges/hop_count — there is no single materialized path across the
+    /// chain, so `length(p)`/`nodes(p)` would silently collapse (observed:
+    /// `length(p)` → constant 0). Stay loud. Single-VLP path variables are
+    /// unaffected (they are one CTE).
+    #[tokio::test]
+    async fn chained_vlp_with_path_variable_stays_loud_544() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let err = try_render(
+            &schema,
+            "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User) \
+             RETURN length(p)",
+            SqlDialect::ClickHouse,
+        )
+        .await
+        .expect_err("a path variable over a chained VLP must stay loud, not collapse to 0");
+        assert!(err.contains("#544"), "expected a #544 error: {err}");
+
+        // Sanity: a SINGLE-VLP path variable still renders (one CTE, real path).
+        let sql = render(
+            &schema,
+            "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN length(p)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.to_uppercase().contains("WITH RECURSIVE"),
+            "single-VLP path variable must still render its CTE: {sql}"
+        );
+    }
+
+    /// #544 chained-forward is scoped to DIRECTED chains: an undirected chain
+    /// `(a)-[*]-(b)-[*]-(c)` renders as #617 doubled-edge walks whose two-VLP
+    /// chaining semantics are not yet verified, so it stays loud rather than
+    /// risk silently-wrong results (ground rule 1).
+    #[tokio::test]
+    async fn undirected_chained_vlps_stay_loud_544() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let err = try_render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User)-[:FOLLOWS*1..2]-(c:User) \
+             RETURN a.name, c.name",
+            SqlDialect::ClickHouse,
+        )
+        .await
+        .expect_err("undirected chained VLPs must stay loud, not render unverified");
+        assert!(err.contains("#544"), "expected a #544 error: {err}");
+    }
+
+    /// #544 chained-forward must NOT hijack an OPTIONAL chained VLP. An
+    /// `(a) OPTIONAL MATCH (a)-[*]->(b) OPTIONAL MATCH (b)-[*]->(c)` is fully
+    /// rendered by the #643 OPTIONAL path (anchor as FROM, VLP CTEs LEFT-JOINed
+    /// as vt0/vt1). Those CTEs form a forward chain by name, so the required
+    /// chained emit must recognise they are ALREADY joined and stand down —
+    /// otherwise it clobbers the FROM and duplicates the joins (INNER t/t_ch_N
+    /// alongside LEFT vt0/vt1). Regression guard for the emit `already-joined`
+    /// check.
+    #[tokio::test]
+    async fn optional_chained_vlp_not_hijacked_by_required_chain_544() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS*1..2]->(b:User) \
+             OPTIONAL MATCH (b)-[:FOLLOWS*1..2]->(c:User) RETURN a.name, c.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        // OPTIONAL path: anchor is FROM, VLP CTEs are LEFT-JOINed as vt0/vt1.
+        assert!(
+            sql.contains("LEFT JOIN vlp_a_b AS vt0") && sql.contains("LEFT JOIN vlp_b_c AS vt1"),
+            "OPTIONAL chained must keep its vt0/vt1 LEFT JOINs: {sql}"
+        );
+        // The required-chain INNER-JOIN aliasing must NOT appear.
+        assert!(
+            !sql.contains("t_ch_0") && !sql.contains("FROM vlp_a_b AS t\n"),
+            "required-chain emit must NOT hijack the OPTIONAL render: {sql}"
+        );
     }
 
     /// #544 (fan-out variant): one start fanning out through two VLPs. Unlike

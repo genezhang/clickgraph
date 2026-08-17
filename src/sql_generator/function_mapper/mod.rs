@@ -98,6 +98,11 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// at the call site once dialect is plumbed through (Phase 1).
     fn array_count(&self) -> &'static str;
 
+    /// Do two arrays share any element? CH: `hasAny(a, b)`. Databricks/Spark:
+    /// `arrays_overlap(a, b)`. Both return a boolean-ish value usable directly
+    /// under `NOT`. Used for VLP cross-segment relationship-uniqueness (#544).
+    fn arrays_overlap(&self) -> &'static str;
+
     /// Extract JSON field as a string. CH: `JSONExtractString`.
     /// Spark: `get_json_object`.
     fn json_extract_string(&self) -> &'static str;

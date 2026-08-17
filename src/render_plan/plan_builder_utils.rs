@@ -2227,6 +2227,110 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
         }
     }
 
+    // #544 chained-forward: `(a)-[*]->(b)-[*]->(c)...` renders each VLP as its
+    // own CTE, and the emit phase (`to_sql_query.rs` `rewrite_vlp_select_aliases`)
+    // makes the FIRST the FROM (`t`) and INNER-JOINs each subsequent CTE as
+    // `t_ch_{i-1}` on the shared intermediate (`t_ch_{i-1}.start_id = prev.end_id`).
+    // Those joins are added AFTER render, so — as for fan-in — populate the
+    // per-endpoint override here to mirror that aliasing. Each endpoint resolves
+    // to the CTE where its property column lives: iterate `plan.ctes` in order and
+    // overwrite both endpoints of each CTE, so a shared intermediate (`b`, which is
+    // one CTE's end AND the next CTE's start) takes the LAST-writing CTE's alias —
+    // exactly matching `cte_column_mapping`'s own last-write-wins keying (so
+    // `b.name` → `t_ch_0.start_name`, the column that map resolved). Detection is
+    // the analyzer's `is_chained_forward` shape (consecutive `cte[i].start ==
+    // cte[i-1].end`); disjoint from fan-in, so the two blocks never both fire.
+    let mut is_required_chained = false;
+    if !is_optional_vlp && !is_required_fan_in {
+        let vlp_ctes: Vec<_> = plan
+            .ctes
+            .0
+            .iter()
+            .filter(|c| c.vlp_cypher_start_alias.is_some() && c.vlp_cypher_end_alias.is_some())
+            .collect();
+        // Mirror the analyzer's `is_chained_forward` EXACTLY (inference.rs): a
+        // simple forward path only — consecutive `cte[i].start == cte[i-1].end`,
+        // no self-loop endpoints, and N CTEs covering N+1 DISTINCT node aliases.
+        // The distinct-count guard is what rejects a reverse/reconverging pair
+        // like a shortestPath's `vlp_a_b` + `vlp_b_a` (they satisfy `b == b` but
+        // cover only {a,b} = 2 aliases, not 3), which must NOT be chained here.
+        let mut distinct_aliases: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
+        for c in &vlp_ctes {
+            if let Some(s) = c.vlp_cypher_start_alias.as_deref() {
+                distinct_aliases.insert(s);
+            }
+            if let Some(e) = c.vlp_cypher_end_alias.as_deref() {
+                distinct_aliases.insert(e);
+            }
+        }
+        let is_chain = vlp_ctes.len() > 1
+            && vlp_ctes.windows(2).all(|w| {
+                w[1].vlp_cypher_start_alias == w[0].vlp_cypher_end_alias
+                    && w[0].vlp_cypher_start_alias != w[0].vlp_cypher_end_alias
+                    && w[1].vlp_cypher_start_alias != w[1].vlp_cypher_end_alias
+            })
+            && distinct_aliases.len() == vlp_ctes.len() + 1;
+        // #544 safety net (ground rule 1): the analyzer registers how many VLP
+        // CTEs a chained-forward path must materialize. If the render can build
+        // the full chain (`is_chain` with exactly that many CTEs), proceed. If
+        // the analyzer admitted a chained-forward path but the render CANNOT
+        // reproduce it — a hop degenerated so fewer CTEs exist, or the CTEs no
+        // longer form a clean simple chain — emitting the partial plan would
+        // SILENTLY drop the missing hop's constraint (wrong results). Fail LOUD
+        // instead. When the analyzer did not mark a chained path (`expected` is
+        // `None`), this scope is a single VLP / fan-in / other supported shape
+        // and the net is inert.
+        // POSITIVE authorization (ground rule 1): fuse ONLY when the analyzer
+        // explicitly marked THIS scope a chained-forward path of exactly this
+        // many VLPs. `is_chain` is a purely STRUCTURAL check over the flattened
+        // plan's CTE aliases, so it also matches VLP CTEs that merely LOOK like a
+        // chain — e.g. `(a)-[*]->(b) WITH b MATCH (b)-[*]->(c)`, where `vlp_a_b`
+        // was consumed by the WITH barrier but still lingers in `plan.ctes`.
+        // Requiring `expected == Some(len)` (not merely "not contradicted") keeps
+        // the fusion confined to a genuine single-scope chain the analyzer vetted.
+        let expected = crate::server::query_context::expected_chained_vlp_count();
+        let chain_complete = is_chain && expected == Some(vlp_ctes.len());
+        if chain_complete {
+            is_required_chained = true;
+            for (i, cte) in vlp_ctes.iter().enumerate() {
+                let alias = if i == 0 {
+                    crate::server::query_context::vlp_from_alias()
+                } else {
+                    format!("t_ch_{}", i - 1)
+                };
+                if let Some(start) = cte.vlp_cypher_start_alias.as_ref() {
+                    endpoint_alias_override.insert(start.clone(), alias.clone());
+                }
+                if let Some(end) = cte.vlp_cypher_end_alias.as_ref() {
+                    endpoint_alias_override.insert(end.clone(), alias.clone());
+                }
+            }
+        } else if let Some(n) = expected {
+            // The analyzer marked a chained-forward path of `n` VLPs but this
+            // plan's VLP CTEs do NOT form the expected clean chain. Fire LOUD
+            // only when 2+ VLP CTEs are actually present here yet fail to chain
+            // (the genuine conflation risk — emitting them would silently drop a
+            // hop). A single VLP CTE (`len < 2`) is NOT this scope's chain (e.g. a
+            // sibling single-VLP scope in a multi-part query reading a possibly
+            // stale count), so leave it to the normal single-VLP path. shortestPath
+            // reverse-pairs never reach here — they are not `is_chained_forward`,
+            // so `expected` is `None` for them.
+            if vlp_ctes.len() > 1 {
+                return Err(RenderBuildError::UnsupportedFeature(format!(
+                    "(#544) this scope was analyzed as a chained-forward path of \
+                     {n} variable-length relationships, but the render phase could \
+                     not materialize them as a clean chain of recursive CTEs ({} \
+                     built) — a hop degenerated or the CTEs did not form a simple \
+                     forward path. Emitting the partial plan would silently drop a \
+                     hop constraint, so this shape is rejected. Split the \
+                     variable-length paths into separate queries.",
+                    vlp_ctes.len()
+                )));
+            }
+        }
+    }
+
     // The alias to use for the WHERE / GROUP BY endpoint rewrite. Endpoint
     // references resolve per-endpoint via `endpoint_alias_override` (above), so a
     // fully-materialized chained multi-VLP no longer needs the historical `"t"`
@@ -2308,7 +2412,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
         // otherwise dangle as the raw Cypher alias (`b.name` → Code 47). The
         // per-endpoint `endpoint_alias_override` populated above resolves each
         // spoke to its own `t`/`t_fi_N` alias here, exactly as the SELECT loop did.
-        if is_optional_vlp || is_required_fan_in {
+        if is_optional_vlp || is_required_fan_in || is_required_chained {
             log::debug!("🔍 VLP: Rewriting {} ORDER BY items", plan.order_by.0.len());
             for (idx, order_item) in plan.order_by.0.iter_mut().enumerate() {
                 log::debug!("   ORDER BY[{}]: {:?}", idx, order_item.expression);

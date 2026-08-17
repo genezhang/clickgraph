@@ -42,6 +42,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         "arrayCount"
     }
 
+    fn arrays_overlap(&self) -> &'static str {
+        "hasAny"
+    }
+
     fn json_extract_string(&self) -> &'static str {
         "JSONExtractString"
     }
