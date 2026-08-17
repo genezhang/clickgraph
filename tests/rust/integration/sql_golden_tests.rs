@@ -17917,13 +17917,6 @@ mod vlp_family_remnants_544_545_528_525 {
     /// #544 (guard must NOT over-fire): same-end fan-in is the one multi-VLP
     /// configuration with genuine render support (`to_sql_query.rs` detects
     /// it and INNER JOINs the sibling CTEs on end_id). It must keep working.
-    ///
-    /// KNOWN REMAINING GAP (deliberately not locked here): projecting the
-    /// SECOND fan-in VLP's start-node properties (e.g. `RETURN b.name`) still
-    /// resolves to the shared `t` alias (`t.start_name`, i.e. `a`'s value)
-    /// instead of `t_fi_0.start_name` — same root cause as #544 (single
-    /// shared VLP alias), fixable only by the same render-phase multi-alias
-    /// work. End-alias projections (x) and the join structure are correct.
     #[tokio::test]
     async fn fan_in_same_end_vlps_still_render_544() {
         let schema = load_schema(SchemaId::Standard.yaml_path());
@@ -17941,6 +17934,48 @@ mod vlp_family_remnants_544_545_528_525 {
         assert!(
             sql.contains("ON t_fi_0.end_id = t.end_id"),
             "fan-in must still INNER JOIN the sibling CTE on end_id: {sql}"
+        );
+    }
+
+    /// #544 fan-in projection fix: each fan-in spoke's start-node property must
+    /// resolve to ITS OWN VLP CTE alias, not the shared FROM alias `t`. The
+    /// first spoke (`a`, the FROM) → `t.start_name`; the second spoke (`b`,
+    /// INNER-JOINed as `t_fi_0`) → `t_fi_0.start_name`. Previously BOTH rendered
+    /// as `t.start_name`, so `b.name` silently returned `a`'s value. The shared
+    /// end (`x`) stays on `t.end_name` (all CTEs share `end_id`). ORDER BY /
+    /// WHERE on the second spoke must get the same per-spoke alias (the emit
+    /// phase returns early for fan-in and never rewrote them).
+    #[tokio::test]
+    async fn fan_in_second_spoke_start_alias_distinct_544() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*1..2]->(x:User), (b:User)-[:FOLLOWS*1..2]->(x:User) \
+             RETURN a.name, b.name, x.name ORDER BY b.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("t.start_name AS \"a.name\""),
+            "first spoke a → t.start_name: {sql}"
+        );
+        assert!(
+            sql.contains("t_fi_0.start_name AS \"b.name\""),
+            "second spoke b → its OWN CTE alias t_fi_0.start_name (not t): {sql}"
+        );
+        assert!(
+            sql.contains("t.end_name AS \"x.name\""),
+            "shared end x → t.end_name: {sql}"
+        );
+        // ORDER BY on the second spoke must be rewritten to its own alias, not
+        // dangle as the raw Cypher alias `b.name` (Code 47 at execution).
+        assert!(
+            !sql.contains("ORDER BY b."),
+            "ORDER BY must not dangle the raw Cypher alias: {sql}"
+        );
+        assert!(
+            sql.contains("ORDER BY t_fi_0.start_name"),
+            "ORDER BY b.name → t_fi_0.start_name: {sql}"
         );
     }
 

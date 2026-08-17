@@ -2170,6 +2170,63 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
         }
     }
 
+    // #544 (fan-in): a REQUIRED same-end fan-in `(a)-[*]->(x), (b)-[*]->(x)`
+    // renders as multiple VLP CTEs the emit phase (`to_sql_query.rs`
+    // `rewrite_vlp_select_aliases`) makes the FIRST such CTE the FROM (alias `t`)
+    // and INNER-JOINs the rest as `t_fi_{i}` on `end_id`. Those joins are added
+    // AFTER render, so the join-based override above is empty for the required
+    // path — every spoke's START property would collapse onto the single shared
+    // `vlp_from_alias` (`t`), projecting the FROM spoke's start for EVERY spoke
+    // (silently wrong: `b.name` came out as `a.name`). Mirror the emit phase's
+    // deterministic alias assignment here so each spoke's start resolves to ITS
+    // OWN CTE alias. Scope tightly to the fan-in shape the emit phase and the
+    // #544 analyzer gate actually support (>1 VLP CTE, all same end alias, >1
+    // distinct start alias); every other required multi-VLP shape is still
+    // loud-gated at analysis (#544), so this never fires for them, and the
+    // single-VLP shape (len == 1) is untouched → byte-identical.
+    let mut is_required_fan_in = false;
+    if !is_optional_vlp {
+        let fan_in_ctes: Vec<_> = plan
+            .ctes
+            .0
+            .iter()
+            .filter(|c| c.vlp_cypher_start_alias.is_some() && c.vlp_cypher_end_alias.is_some())
+            .collect();
+        let first_end = fan_in_ctes
+            .first()
+            .and_then(|c| c.vlp_cypher_end_alias.as_deref());
+        let all_same_end = first_end.is_some()
+            && fan_in_ctes
+                .iter()
+                .all(|c| c.vlp_cypher_end_alias.as_deref() == first_end);
+        let distinct_starts: std::collections::HashSet<&str> = fan_in_ctes
+            .iter()
+            .filter_map(|c| c.vlp_cypher_start_alias.as_deref())
+            .collect();
+        if fan_in_ctes.len() > 1 && all_same_end && distinct_starts.len() > 1 {
+            is_required_fan_in = true;
+            // Byte-identical to the emit phase's fan-in aliasing: ctes[0] is the
+            // FROM (`t`); ctes[i>=1] are `t_fi_{i-1}`. The shared end stays on the
+            // FROM alias (all CTEs project the same `end_id`).
+            for (i, cte) in fan_in_ctes.iter().enumerate() {
+                if let Some(start) = cte.vlp_cypher_start_alias.as_ref() {
+                    let alias = if i == 0 {
+                        crate::server::query_context::vlp_from_alias()
+                    } else {
+                        format!("t_fi_{}", i - 1)
+                    };
+                    endpoint_alias_override.insert(start.clone(), alias);
+                }
+            }
+            if let Some(end) = first_end {
+                endpoint_alias_override.insert(
+                    end.to_string(),
+                    crate::server::query_context::vlp_from_alias(),
+                );
+            }
+        }
+    }
+
     // The alias to use for the WHERE / GROUP BY endpoint rewrite. Endpoint
     // references resolve per-endpoint via `endpoint_alias_override` (above), so a
     // fully-materialized chained multi-VLP no longer needs the historical `"t"`
@@ -2244,7 +2301,14 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
         // `vlp_from_alias` is the VLP CTE's JOIN alias, e.g. `vt0`). The anchor
         // property (`a.name`) is excluded by the OPTIONAL-VLP start-alias
         // filter, so ORDER BY on the anchor is unaffected.
-        if is_optional_vlp {
+        //
+        // #544 fan-in also needs this: `rewrite_vlp_select_aliases` returns EARLY
+        // for the required fan-in shape (it emits the `t`/`t_fi_N` joins and
+        // stops before the ORDER BY rewrite), so a `ORDER BY <spoke>.name` would
+        // otherwise dangle as the raw Cypher alias (`b.name` → Code 47). The
+        // per-endpoint `endpoint_alias_override` populated above resolves each
+        // spoke to its own `t`/`t_fi_N` alias here, exactly as the SELECT loop did.
+        if is_optional_vlp || is_required_fan_in {
             log::debug!("🔍 VLP: Rewriting {} ORDER BY items", plan.order_by.0.len());
             for (idx, order_item) in plan.order_by.0.iter_mut().enumerate() {
                 log::debug!("   ORDER BY[{}]: {:?}", idx, order_item.expression);
