@@ -879,6 +879,27 @@ async fn cs_standard_1088_vlp_endpoint_named_t_is_query_scoped() {
     assert_not_contains(&sql, "standard/1088", "AS t\n");
 }
 
+/// #1088: the query-scoped VLP FROM alias must also stay consistent on the
+/// MULTI-TYPE VLP path, whose CTE reconstructs endpoint columns via JSON
+/// extraction (`JSONExtractString(<alias>.end_properties, …)`) and detection keyed
+/// on the endpoint alias. With a colliding endpoint named `t`, the FROM alias
+/// bumps to `vlpt` and the JSON extraction must reference `vlpt.end_properties`,
+/// not a bare `t.end_properties` that the FROM no longer defines.
+#[tokio::test]
+async fn cs_standard_1088_multi_type_vlp_endpoint_t() {
+    let schema = load_schema(SCHEMA_STANDARD);
+    // `[:FOLLOWS|LIVES_IN*1..2]` from a User has a genuine multi-label endpoint
+    // (User via FOLLOWS, City via LIVES_IN) → the multi-type VLP CTE path.
+    let cypher = "MATCH (a:User)-[:FOLLOWS|LIVES_IN*1..2]->(t) RETURN t.name LIMIT 5";
+    let sql = generate_sql(&schema, cypher).await;
+    assert_valid_sql(&sql, "standard", "1088-multi-type-vlp-t");
+    assert_contains(&sql, "standard/1088-mt", "AS vlpt");
+    // The JSON endpoint-property extraction must use the bumped alias.
+    assert_contains(&sql, "standard/1088-mt", "vlpt.end_properties");
+    assert_not_contains(&sql, "standard/1088-mt", "AS t ");
+    assert_not_contains(&sql, "standard/1088-mt", "AS t\n");
+}
+
 /// #1081-adjacent latent bug: `GraphSchema::rel_type_index` (and the
 /// denormalized-node metadata) are `#[serde(skip)]`, so a schema recovered from
 /// the `graph_catalog` JSON persistence path / the `monitor_schema_updates`
