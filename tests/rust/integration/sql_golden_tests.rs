@@ -17960,6 +17960,39 @@ mod vlp_family_remnants_544_545_528_525 {
         );
     }
 
+    /// #544 chained-forward excludes a ZERO-minimum-bound VLP (`*0..N`): a
+    /// zero-length-capable VLP renders with node-uniqueness and does NOT project
+    /// the `path_edges` column the chain's cross-segment edge-uniqueness join
+    /// needs (would be Code 47), so it stays #544-loud. A `*min>=1` chain (incl.
+    /// exact `*2..2`, which reroutes through a recursive CTE that DOES project
+    /// path_edges) is unaffected.
+    #[tokio::test]
+    async fn chained_vlp_zero_min_bound_stays_loud_544() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let err = try_render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*0..2]->(b:User)-[:FOLLOWS*1..2]->(c:User) \
+             RETURN a.name, c.name",
+            SqlDialect::ClickHouse,
+        )
+        .await
+        .expect_err("a *0.. segment lacks path_edges; the chain must stay loud");
+        assert!(err.contains("#544"), "expected a #544 error: {err}");
+
+        // Exact-bound *2..2 chain DOES render (recursive CTE has path_edges).
+        let sql = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*2..2]->(b:User)-[:FOLLOWS*2..2]->(c:User) \
+             RETURN a.name, c.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("t_ch_0") && sql.contains("NOT hasAny(t_ch_0.path_edges"),
+            "exact-bound chain must render with edge-uniqueness: {sql}"
+        );
+    }
+
     /// #544 chained-forward excludes a named path variable spanning the chain.
     /// Each VLP renders as its own recursive CTE with its OWN path_nodes/
     /// path_edges/hop_count — there is no single materialized path across the

@@ -3979,15 +3979,21 @@ impl GraphJoinInference {
         }
     }
 
-    /// #544: does this scope contain a required VLP that is NOT a single
-    /// EXPLICIT relationship type? A multi-type VLP (`[:A|B*..]`) or an untyped
-    /// VLP (`[*..]`) renders through join-expansion / empty-result paths that do
-    /// NOT reliably materialize one recursive `vlp_<s>_<e>` CTE per hop — the
-    /// first hop was observed to degenerate to a plain join (dropping a type and
-    /// collapsing the bound) or to an empty `WHERE false`. Chaining is only
-    /// verified for single-type directed VLPs, so anything else stays #544-loud.
+    /// #544: does this scope contain a required VLP that chaining does NOT
+    /// support? Two per-VLP conditions. (1) NOT a single EXPLICIT relationship
+    /// type — a multi-type VLP (`[:A|B*..]`) or untyped VLP (`[*..]`) renders
+    /// through join-expansion / empty-result paths that do not reliably
+    /// materialize one recursive `vlp_<s>_<e>` CTE per hop (the first hop was
+    /// observed to degenerate to a plain join or an empty `WHERE false`). (2) a
+    /// ZERO minimum bound (`*0..N`) — a zero-length-capable VLP renders with NODE
+    /// uniqueness (`NOT has(path_nodes, ...)`) and does NOT project the
+    /// `path_edges` column the chain join's cross-segment edge-uniqueness
+    /// predicate (`NOT hasAny(seg_i.path_edges, seg_j.path_edges)`) requires
+    /// (Code 47), and its node-uniqueness semantics differ from the
+    /// edge-uniqueness the chain enforces. Chaining is only verified for
+    /// single-type directed `*min>=1` VLPs, so anything else stays #544-loud.
     /// Only consulted when a scope has 2+ required VLPs. Mirrors
-    /// `collect_required_vlps`'s traversal and skip conditions exactly.
+    /// `collect_required_vlps`'s traversal and skip conditions.
     fn scope_has_nonsingle_type_required_vlp(plan: &LogicalPlan) -> bool {
         match plan {
             LogicalPlan::GraphRel(gr) => {
@@ -3996,7 +4002,8 @@ impl GraphJoinInference {
                         spec.exact_hop_count().is_some() && gr.shortest_path_mode.is_none();
                     let is_optional = gr.is_optional.unwrap_or(false);
                     let single_type = gr.labels.as_ref().map(|l| l.len()) == Some(1);
-                    if !is_fixed_length && !is_optional && !single_type {
+                    let zero_min = spec.effective_min_hops() == 0;
+                    if !is_fixed_length && !is_optional && (!single_type || zero_min) {
                         return true;
                     }
                 }
