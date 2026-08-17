@@ -1,5 +1,5 @@
 use crate::{
-    query_planner::join_context::{VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN},
+    query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN},
     query_planner::logical_plan::LogicalPlan,
     render_plan::{
         cte_extraction::merge_cte_deduping_by_name_content,
@@ -18,7 +18,7 @@ use crate::{
     server::query_context::{
         clear_all_render_contexts, get_relationship_columns, is_multi_type_vlp_alias,
         restore_branch_context, set_alias_label_map, set_all_render_contexts,
-        set_multi_type_vlp_aliases, snapshot_branch_context,
+        set_multi_type_vlp_aliases, snapshot_branch_context, vlp_from_alias,
     },
     utils::cte_naming::is_generated_cte_name,
 };
@@ -1414,7 +1414,7 @@ fn unify_mixed_anchor_branch_selects(plan: &mut RenderPlan) {
                 .0
                 .as_ref()
                 .and_then(|f| f.alias.clone())
-                .unwrap_or_else(|| VLP_CTE_FROM_ALIAS.to_string());
+                .unwrap_or_else(vlp_from_alias);
             let unified: Vec<crate::render_plan::SelectItem> = base_items
                 .iter()
                 .filter_map(|base_item| {
@@ -1516,7 +1516,7 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
             plan.from = FromTableItem(Some(ViewTableRef {
                 source: std::sync::Arc::new(LogicalPlan::Empty),
                 name: first.cte_name.clone(),
-                alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
+                alias: Some(vlp_from_alias()),
                 use_final: false,
             }));
 
@@ -1537,7 +1537,7 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                                     ),
                             }),
                             RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(VLP_CTE_FROM_ALIAS.to_string()),
+                                table_alias: TableAlias(vlp_from_alias()),
                                 column:
                                     crate::graph_catalog::expression_parser::PropertyValue::Column(
                                         VLP_END_ID_COLUMN.to_string(),
@@ -1747,7 +1747,7 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                         if let RenderExpr::Column(Column(PropertyValue::Column(col))) =
                             &item.expression
                         {
-                            if col == "t.start_id" {
+                            if *col == format!("{}.start_id", vlp_from_alias()) {
                                 let rv = col_alias.0.trim_end_matches(".start_id").to_string();
                                 if !rv.is_empty() {
                                     rel_var_name = Some(rv);
@@ -1779,15 +1779,17 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                 });
                 if !already_injected {
                     plan.select.items.push(SelectItem {
-                        expression: RenderExpr::Column(Column(PropertyValue::Column(
-                            "t.r_from_id".to_string(),
-                        ))),
+                        expression: RenderExpr::Column(Column(PropertyValue::Column(format!(
+                            "{}.r_from_id",
+                            vlp_from_alias()
+                        )))),
                         col_alias: Some(ColumnAlias(format!("{}.r_from_id", rv))),
                     });
                     plan.select.items.push(SelectItem {
-                        expression: RenderExpr::Column(Column(PropertyValue::Column(
-                            "t.r_to_id".to_string(),
-                        ))),
+                        expression: RenderExpr::Column(Column(PropertyValue::Column(format!(
+                            "{}.r_to_id",
+                            vlp_from_alias()
+                        )))),
                         col_alias: Some(ColumnAlias(format!("{}.r_to_id", rv))),
                     });
                     log::info!("🔧 Injected r_from_id/r_to_id projections for rel '{}'", rv);
@@ -2281,6 +2283,12 @@ pub(crate) fn rewrite_expr_for_vlp(
 ) -> RenderExpr {
     use crate::graph_catalog::expression_parser::PropertyValue;
 
+    // #1088: the VLP CTE FROM alias is query-scoped (defaults "t"). Read it once
+    // and build every `<alias>.start_*`/`<alias>.end_*`/`<alias>.<path_col>`
+    // reference from it so this whole rewriter stays consistent with the FROM
+    // clause emitted elsewhere.
+    let vlp_alias = crate::server::query_context::vlp_from_alias();
+
     match expr {
         RenderExpr::TableAlias(alias) => {
             // For VLP, TableAlias references to VLP endpoints should be rewritten to CTE columns
@@ -2289,16 +2297,16 @@ pub(crate) fn rewrite_expr_for_vlp(
                     if skip_start_alias {
                         return expr.clone();
                     }
-                    return RenderExpr::Column(Column(PropertyValue::Column(
-                        "t.start_id".to_string(),
-                    )));
+                    return RenderExpr::Column(Column(PropertyValue::Column(format!(
+                        "{vlp_alias}.start_id"
+                    ))));
                 }
             }
             if let Some(end) = end_alias {
                 if &alias.0 == end {
-                    return RenderExpr::Column(Column(PropertyValue::Column(
-                        "t.end_id".to_string(),
-                    )));
+                    return RenderExpr::Column(Column(PropertyValue::Column(format!(
+                        "{vlp_alias}.end_id"
+                    ))));
                 }
             }
             // Handle bare path variable: p -> tuple(t.path_nodes, t.path_relationships, t.hop_count)
@@ -2307,22 +2315,19 @@ pub(crate) fn rewrite_expr_for_vlp(
                 log::info!(
                     "VLP path variable expansion: {} -> tuple({}.path_nodes, ...)",
                     alias.0,
-                    VLP_CTE_FROM_ALIAS,
+                    vlp_alias,
                 );
                 return RenderExpr::ScalarFnCall(ScalarFnCall {
                     name: "tuple".to_string(),
                     args: vec![
                         RenderExpr::Column(Column(PropertyValue::Column(format!(
-                            "{}.path_nodes",
-                            VLP_CTE_FROM_ALIAS
+                            "{vlp_alias}.path_nodes"
                         )))),
                         RenderExpr::Column(Column(PropertyValue::Column(format!(
-                            "{}.path_relationships",
-                            VLP_CTE_FROM_ALIAS
+                            "{vlp_alias}.path_relationships"
                         )))),
                         RenderExpr::Column(Column(PropertyValue::Column(format!(
-                            "{}.hop_count",
-                            VLP_CTE_FROM_ALIAS
+                            "{vlp_alias}.hop_count"
                         )))),
                     ],
                 });
@@ -2354,8 +2359,7 @@ pub(crate) fn rewrite_expr_for_vlp(
                                     col_name
                                 );
                                 return RenderExpr::Column(Column(PropertyValue::Column(format!(
-                                    "t.{}",
-                                    col_name
+                                    "{vlp_alias}.{col_name}"
                                 ))));
                             }
                         }
@@ -2416,9 +2420,9 @@ pub(crate) fn rewrite_expr_for_vlp(
                         || col_raw.contains(".resp_")
                     {
                         // This is the ID column - use t.start_id directly
-                        return RenderExpr::Column(Column(PropertyValue::Column(
-                            "t.start_id".to_string(),
-                        )));
+                        return RenderExpr::Column(Column(PropertyValue::Column(format!(
+                            "{vlp_alias}.start_id"
+                        ))));
                     }
 
                     // This is accessing start node property
@@ -2426,8 +2430,7 @@ pub(crate) fn rewrite_expr_for_vlp(
                     // The FROM clause has the CTE aliased as 't', so use t.start_xxx
                     let prop_name = derive_cypher_property_name(col_raw);
                     return RenderExpr::Column(Column(PropertyValue::Column(format!(
-                        "t.start_{}",
-                        prop_name
+                        "{vlp_alias}.start_{prop_name}"
                     ))));
                 }
             }
@@ -2443,16 +2446,15 @@ pub(crate) fn rewrite_expr_for_vlp(
                         || col_raw.contains(".resp_")
                     {
                         // This is the ID column - use t.end_id directly
-                        return RenderExpr::Column(Column(PropertyValue::Column(
-                            "t.end_id".to_string(),
-                        )));
+                        return RenderExpr::Column(Column(PropertyValue::Column(format!(
+                            "{vlp_alias}.end_id"
+                        ))));
                     }
 
                     // This is accessing end node property
                     let prop_name = derive_cypher_property_name(col_raw);
                     return RenderExpr::Column(Column(PropertyValue::Column(format!(
-                        "t.end_{}",
-                        prop_name
+                        "{vlp_alias}.end_{prop_name}"
                     ))));
                 }
             }
@@ -2471,8 +2473,7 @@ pub(crate) fn rewrite_expr_for_vlp(
                     | "end_type"
             ) {
                 return RenderExpr::Column(Column(PropertyValue::Column(format!(
-                    "t.{}",
-                    col_name
+                    "{vlp_alias}.{col_name}"
                 ))));
             }
 
@@ -2539,23 +2540,20 @@ pub(crate) fn rewrite_expr_for_vlp(
             log::info!(
                 "🔧 VLP path variable expansion (ColumnAlias): {} → tuple({}.path_nodes, ...)",
                 alias_str,
-                VLP_CTE_FROM_ALIAS,
+                vlp_alias,
             );
-            // Expand to tuple of path components using VLP_CTE_FROM_ALIAS constant
+            // Expand to tuple of path components using the query-scoped VLP alias
             RenderExpr::ScalarFnCall(ScalarFnCall {
                 name: "tuple".to_string(),
                 args: vec![
                     RenderExpr::Column(Column(PropertyValue::Column(format!(
-                        "{}.path_nodes",
-                        VLP_CTE_FROM_ALIAS
+                        "{vlp_alias}.path_nodes"
                     )))),
                     RenderExpr::Column(Column(PropertyValue::Column(format!(
-                        "{}.path_relationships",
-                        VLP_CTE_FROM_ALIAS
+                        "{vlp_alias}.path_relationships"
                     )))),
                     RenderExpr::Column(Column(PropertyValue::Column(format!(
-                        "{}.hop_count",
-                        VLP_CTE_FROM_ALIAS
+                        "{vlp_alias}.hop_count"
                     )))),
                 ],
             })
@@ -2602,7 +2600,7 @@ pub(crate) fn rewrite_expr_for_vlp(
                                 args: vec![RenderExpr::AggregateFnCall(AggregateFnCall {
                                     name: min_or_null,
                                     args: vec![RenderExpr::Column(Column(PropertyValue::Column(
-                                        "t.hop_count".to_string(),
+                                        format!("{}.hop_count", vlp_from_alias()),
                                     )))],
                                 })],
                             }),
@@ -5157,13 +5155,19 @@ fn rewrite_joins_for_vlp(
 /// Used for reverse VLP UNION branches where the direction is swapped.
 /// Uses placeholder-based approach to avoid double-swap issues.
 fn swap_vlp_start_end(sql: &str) -> String {
-    // Phase 1: Replace all t.start_* with placeholder
+    // #1088: the VLP FROM alias is query-scoped (defaults "t"); build the
+    // `<alias>.start_`/`<alias>.end_` prefixes from it so this text substitution
+    // matches the columns actually emitted for a bumped alias.
+    let a = vlp_from_alias();
+    let start_prefix = format!("{a}.start_");
+    let end_prefix = format!("{a}.end_");
+    // Phase 1: Replace all <alias>.start_* with placeholder
     let placeholder = "__VLP_SWAP_PLACEHOLDER_";
-    let result = sql.replace("t.start_", &format!("{}start_", placeholder));
-    // Phase 2: Replace all t.end_* with t.start_*
-    let result = result.replace("t.end_", "t.start_");
-    // Phase 3: Replace placeholders with t.end_*
-    result.replace(&format!("{}start_", placeholder), "t.end_")
+    let result = sql.replace(&start_prefix, &format!("{}start_", placeholder));
+    // Phase 2: Replace all <alias>.end_* with <alias>.start_*
+    let result = result.replace(&end_prefix, &start_prefix);
+    // Phase 3: Replace placeholders with <alias>.end_*
+    result.replace(&format!("{}start_", placeholder), &end_prefix)
 }
 
 /// Recursively collect all CTE definitions from a RenderPlan tree,
@@ -6522,9 +6526,9 @@ impl ToSql for FromTableItem {
                 match view_ref.source.as_ref() {
                     LogicalPlan::ViewScan(_) => {
                         // ViewScan fallback - should not reach here if alias is properly set
-                        VLP_CTE_FROM_ALIAS.to_string()
+                        vlp_from_alias()
                     }
-                    _ => VLP_CTE_FROM_ALIAS.to_string(), // Default fallback
+                    _ => vlp_from_alias(), // Default fallback
                 }
             };
 

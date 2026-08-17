@@ -128,6 +128,7 @@ async fn generate_sql(schema: &GraphSchema, cypher: &str) -> String {
 
 /// Fallible variant of [`generate_sql`]: returns the analyzer/render error as a
 /// String instead of panicking, for tests that assert a pattern is loud-gated.
+#[allow(dead_code)] // retained for loud-gate assertions (e.g. #544 multi-VLP)
 async fn try_generate_sql(schema: &GraphSchema, cypher: &str) -> Result<String, String> {
     let schema = schema.clone();
     let cypher = cypher.to_string();
@@ -837,8 +838,9 @@ async fn cs_standard_1081_anonymous_alias_collision() {
     // Endpoint deliberately named `t2` — collides with the generated alias for
     // the anonymous `-[:AUTHORED]->` relationship unless generation avoids it.
     // Start node is `a`, NOT `t`: a VLP endpoint literally named `t` is a
-    // separate collision with the reserved VLP CTE alias and is loud-gated
-    // (#1085, see `cs_standard_1085_vlp_endpoint_named_t_is_loud`); this test
+    // separate collision with the VLP CTE FROM alias, now handled by the
+    // query-scoped alias (#1088, see
+    // `cs_standard_1088_vlp_endpoint_named_t_is_query_scoped`); this test
     // isolates the #1081 anonymous-relationship-alias collision.
     let cypher = "MATCH path = (a:User)-[:FOLLOWS*1..2]->(t2:User)-[:AUTHORED]->(d:Post) \
                   RETURN t2.name, d.content, length(path) AS hops LIMIT 5";
@@ -848,26 +850,33 @@ async fn cs_standard_1081_anonymous_alias_collision() {
     assert_contains(&sql, "standard/1081", "cs_test.authored");
 }
 
-/// #1085: a variable-length-path endpoint named exactly `t` collides with the
-/// reserved VLP CTE FROM alias (`VLP_CTE_FROM_ALIAS`), which is threaded as a
-/// string-level protocol through the render/emit phases. Left unguarded, a
-/// chained hop after the VLP silently anchors on the VLP *start* instead of the
-/// endpoint (returning the wrong rows). Until the reserved alias is made
-/// query-scoped (TODO(multi-vlp)), the collision is rejected LOUDLY at plan time
-/// rather than emitted as silently-wrong SQL (ground rule 1). Exposed by the
-/// #1081 fix, which made this exact shape plan for the first time.
+/// #1088 (was #1085): a variable-length-path endpoint named exactly `t` used to
+/// collide with the VLP CTE FROM alias (`VLP_CTE_FROM_ALIAS = "t"`), which is
+/// threaded as a string-level protocol through the render/emit phases — a chained
+/// hop after the VLP then silently anchored on the VLP *start* instead of the
+/// endpoint. #1085 rejected the shape loudly as an interim measure; #1088 makes
+/// the FROM alias query-scoped, so a user variable named `t` bumps it to a
+/// collision-free value (`vlpt`) and the query now runs CORRECTLY. Regression
+/// guard: the VLP CTE is aliased `vlpt` and the chained AUTHORED hop joins the
+/// VLP *endpoint* (`vlpt.end_id`), never a bare `t.end_id`/`t.start_id`.
 #[tokio::test]
-async fn cs_standard_1085_vlp_endpoint_named_t_is_loud() {
+async fn cs_standard_1088_vlp_endpoint_named_t_is_query_scoped() {
     let schema = load_schema(SCHEMA_STANDARD);
     let cypher = "MATCH (t:User)-[:FOLLOWS*1..2]->(t2:User)-[:AUTHORED]->(d:Post) \
                   RETURN d.content, t2.name";
-    let result = try_generate_sql(&schema, cypher).await;
-    let err = result.expect_err("VLP endpoint named 't' must be rejected, not silently wrong");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("reserved") && msg.contains("#1085"),
-        "expected an actionable #1085 collision error, got: {msg}"
-    );
+    let sql = generate_sql(&schema, cypher).await;
+    assert_valid_sql(&sql, "standard", "1088-vlp-endpoint-t");
+    // FROM alias bumped away from the colliding user variable `t`.
+    assert_contains(&sql, "standard/1088", "AS vlpt");
+    // The chained hop must anchor on the VLP ENDPOINT via the bumped alias
+    // (the #1085 bug anchored on the start instead).
+    assert_contains(&sql, "standard/1088", "vlpt.end_id");
+    assert_contains(&sql, "standard/1088", "vlpt.end_name");
+    // No bare `t`-aliased VLP FROM clause should remain. (`assert_not_contains`
+    // on `t.end_id` is unsafe — it is a substring of the correct `vlpt.end_id`;
+    // check the FROM alias instead, which cannot be a substring of `AS vlpt`.)
+    assert_not_contains(&sql, "standard/1088", "AS t ");
+    assert_not_contains(&sql, "standard/1088", "AS t\n");
 }
 
 /// #1081-adjacent latent bug: `GraphSchema::rel_type_index` (and the

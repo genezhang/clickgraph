@@ -142,6 +142,15 @@ pub struct QueryContext {
     /// NOTE: Currently not populated — see TODO(multi-vlp) in cte_extraction.rs.
     pub vlp_cte_outer_aliases: HashMap<String, String>,
 
+    /// #1088: The query-scoped VLP CTE FROM alias. `None` ⇒ the default `"t"`
+    /// (`VLP_CTE_FROM_ALIAS`). Set once during analysis (`pre_register_vlp_endpoints`)
+    /// to a collision-free value when the query declares a user variable literally
+    /// named `"t"` (which would otherwise collide with this reserved internal alias,
+    /// #1085). Every render/emit site that constructs or detects the VLP FROM alias
+    /// reads it via `vlp_from_alias()` so the single value stays consistent across
+    /// the ~100 string-protocol sites. Reset per query in `clear_all_render_contexts`.
+    pub vlp_from_alias: Option<String>,
+
     /// Current variable registry for SQL rendering.
     /// Set from the CTE or RenderPlan being rendered; used by PropertyAccessExp::to_sql()
     /// to resolve cypher_alias.property → correct SQL column.
@@ -775,6 +784,28 @@ pub fn get_vlp_cte_outer_alias(cte_name: &str) -> Option<String> {
         .flatten()
 }
 
+/// #1088: Register the query-scoped VLP CTE FROM alias. Called once during
+/// analysis (`pre_register_vlp_endpoints`) with either the default `"t"` or a
+/// collision-free value when a user variable is named `"t"`.
+pub fn register_vlp_from_alias(alias: &str) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().vlp_from_alias = Some(alias.to_string());
+    });
+}
+
+/// #1088: The query-scoped VLP CTE FROM alias, or the default
+/// [`VLP_CTE_FROM_ALIAS`](crate::query_planner::join_context::VLP_CTE_FROM_ALIAS)
+/// (`"t"`) when none was registered (no VLP, or no collision). Every render/emit
+/// site that constructs or detects the VLP FROM alias MUST read it through this
+/// getter so the single query-scoped value stays consistent across all sites.
+pub fn vlp_from_alias() -> String {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().vlp_from_alias.clone())
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string())
+}
+
 /// Check if an alias is a multi-type VLP endpoint
 pub fn is_multi_type_vlp_alias(alias: &str) -> bool {
     QUERY_CONTEXT
@@ -1155,6 +1186,9 @@ pub fn clear_all_render_contexts() {
         ctx.cte_alias_to_cte_name.clear();
         ctx.all_cte_names.clear();
         ctx.weight_cte_config = None;
+        // #1088: reset the query-scoped VLP FROM alias so the next query starts
+        // from the default `"t"` and re-registers its own value if it collides.
+        ctx.vlp_from_alias = None;
     });
 }
 

@@ -39,7 +39,9 @@ pub fn is_vlp_planning_alias(alias: &str) -> bool {
 /// be treated as a stale/dead reference during plan cleanup.
 pub fn is_vlp_or_cte_alias(alias: &str) -> bool {
     alias.starts_with("with_")
-        || alias == VLP_CTE_FROM_ALIAS
+        // #1088: compare against the query-scoped VLP FROM alias (default "t"),
+        // so a collision-bumped alias is still recognized as a VLP/CTE alias.
+        || alias == crate::server::query_context::vlp_from_alias()
         || alias.starts_with("vlp_")
         || is_vlp_planning_alias(alias)
 }
