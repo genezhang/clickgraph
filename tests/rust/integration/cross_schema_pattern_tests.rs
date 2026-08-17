@@ -126,6 +126,32 @@ async fn generate_sql(schema: &GraphSchema, cypher: &str) -> String {
     .await
 }
 
+/// Fallible variant of [`generate_sql`]: returns the analyzer/render error as a
+/// String instead of panicking, for tests that assert a pattern is loud-gated.
+async fn try_generate_sql(schema: &GraphSchema, cypher: &str) -> Result<String, String> {
+    let schema = schema.clone();
+    let cypher = cypher.to_string();
+
+    let ctx = QueryContext::new(Some("default".to_string()));
+    with_query_context(ctx, async {
+        set_current_schema(Arc::new(schema.clone()));
+
+        let (_remaining, statement) =
+            clickgraph::open_cypher_parser::parse_cypher_statement(&cypher)
+                .map_err(|e| format!("parse error: {e:?}"))?;
+
+        let (logical_plan, plan_ctx) =
+            evaluate_read_statement(statement, &schema, None, None, None)
+                .map_err(|e| format!("{e}"))?;
+
+        let render_plan =
+            logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx))
+                .map_err(|e| format!("{e}"))?;
+        Ok(render_plan.to_sql())
+    })
+    .await
+}
+
 /// Basic assertion: SQL was generated and contains SELECT.
 fn assert_valid_sql(sql: &str, schema_name: &str, pattern: &str) {
     assert!(
@@ -810,12 +836,38 @@ async fn cs_standard_1081_anonymous_alias_collision() {
     let schema = load_schema(SCHEMA_STANDARD);
     // Endpoint deliberately named `t2` — collides with the generated alias for
     // the anonymous `-[:AUTHORED]->` relationship unless generation avoids it.
-    let cypher = "MATCH path = (t:User)-[:FOLLOWS*1..2]->(t2:User)-[:AUTHORED]->(d:Post) \
+    // Start node is `a`, NOT `t`: a VLP endpoint literally named `t` is a
+    // separate collision with the reserved VLP CTE alias and is loud-gated
+    // (#1085, see `cs_standard_1085_vlp_endpoint_named_t_is_loud`); this test
+    // isolates the #1081 anonymous-relationship-alias collision.
+    let cypher = "MATCH path = (a:User)-[:FOLLOWS*1..2]->(t2:User)-[:AUTHORED]->(d:Post) \
                   RETURN t2.name, d.content, length(path) AS hops LIMIT 5";
     let sql = generate_sql(&schema, cypher).await;
     assert_valid_sql(&sql, "standard", "1081-alias-collision");
     // `t2` must resolve as the User node, and the AUTHORED edge table is present.
     assert_contains(&sql, "standard/1081", "cs_test.authored");
+}
+
+/// #1085: a variable-length-path endpoint named exactly `t` collides with the
+/// reserved VLP CTE FROM alias (`VLP_CTE_FROM_ALIAS`), which is threaded as a
+/// string-level protocol through the render/emit phases. Left unguarded, a
+/// chained hop after the VLP silently anchors on the VLP *start* instead of the
+/// endpoint (returning the wrong rows). Until the reserved alias is made
+/// query-scoped (TODO(multi-vlp)), the collision is rejected LOUDLY at plan time
+/// rather than emitted as silently-wrong SQL (ground rule 1). Exposed by the
+/// #1081 fix, which made this exact shape plan for the first time.
+#[tokio::test]
+async fn cs_standard_1085_vlp_endpoint_named_t_is_loud() {
+    let schema = load_schema(SCHEMA_STANDARD);
+    let cypher = "MATCH (t:User)-[:FOLLOWS*1..2]->(t2:User)-[:AUTHORED]->(d:Post) \
+                  RETURN d.content, t2.name";
+    let result = try_generate_sql(&schema, cypher).await;
+    let err = result.expect_err("VLP endpoint named 't' must be rejected, not silently wrong");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("reserved") && msg.contains("#1085"),
+        "expected an actionable #1085 collision error, got: {msg}"
+    );
 }
 
 /// #1081-adjacent latent bug: `GraphSchema::rel_type_index` (and the
