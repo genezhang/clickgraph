@@ -1600,7 +1600,20 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                 distinct_aliases.insert(e);
             }
         }
+        // Only the REQUIRED chain applies here. An OPTIONAL chained VLP
+        // (`(a) OPTIONAL MATCH (a)-[*]->(b) OPTIONAL MATCH (b)-[*]->(c)`) is
+        // already fully rendered by the #643 OPTIONAL path — anchor as FROM with
+        // the VLP CTEs LEFT-JOINed as `vt0`/`vt1`. Those CTEs therefore ALREADY
+        // appear as join tables; taking the chained path here would clobber the
+        // FROM and DUPLICATE the joins (INNER `t`/`t_ch_N` alongside the LEFT
+        // `vt0`/`vt1`). Skip when any chain CTE is already joined — the required
+        // chain's CTEs are unreferenced at this point (which is why they'd
+        // otherwise be pruned), so this cleanly separates the two paths.
+        let chain_cte_already_joined = chain_ctes
+            .iter()
+            .any(|c| plan.joins.0.iter().any(|j| j.table_name == c.cte_name));
         let is_chain = chain_ctes.len() > 1
+            && !chain_cte_already_joined
             && chain_ctes.windows(2).all(|w| {
                 w[1].vlp_cypher_start_alias == w[0].vlp_cypher_end_alias
                     && w[0].vlp_cypher_start_alias != w[0].vlp_cypher_end_alias

@@ -17965,6 +17965,36 @@ mod vlp_family_remnants_544_545_528_525 {
         assert!(err.contains("#544"), "expected a #544 error: {err}");
     }
 
+    /// #544 chained-forward must NOT hijack an OPTIONAL chained VLP. An
+    /// `(a) OPTIONAL MATCH (a)-[*]->(b) OPTIONAL MATCH (b)-[*]->(c)` is fully
+    /// rendered by the #643 OPTIONAL path (anchor as FROM, VLP CTEs LEFT-JOINed
+    /// as vt0/vt1). Those CTEs form a forward chain by name, so the required
+    /// chained emit must recognise they are ALREADY joined and stand down —
+    /// otherwise it clobbers the FROM and duplicates the joins (INNER t/t_ch_N
+    /// alongside LEFT vt0/vt1). Regression guard for the emit `already-joined`
+    /// check.
+    #[tokio::test]
+    async fn optional_chained_vlp_not_hijacked_by_required_chain_544() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS*1..2]->(b:User) \
+             OPTIONAL MATCH (b)-[:FOLLOWS*1..2]->(c:User) RETURN a.name, c.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        // OPTIONAL path: anchor is FROM, VLP CTEs are LEFT-JOINed as vt0/vt1.
+        assert!(
+            sql.contains("LEFT JOIN vlp_a_b AS vt0") && sql.contains("LEFT JOIN vlp_b_c AS vt1"),
+            "OPTIONAL chained must keep its vt0/vt1 LEFT JOINs: {sql}"
+        );
+        // The required-chain INNER-JOIN aliasing must NOT appear.
+        assert!(
+            !sql.contains("t_ch_0") && !sql.contains("FROM vlp_a_b AS t\n"),
+            "required-chain emit must NOT hijack the OPTIONAL render: {sql}"
+        );
+    }
+
     /// #544 (fan-out variant): one start fanning out through two VLPs. Unlike
     /// same-end fan-in (below), fan-OUT has no render-phase support at all:
     /// pre-fix `vlp_x_a` was silently dropped and `a.name` was projected from
