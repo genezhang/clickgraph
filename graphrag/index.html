@@ -625,9 +625,7 @@
         </div>
 
         <div class="step-label"><span class="step-n">4</span> ALL AT ONCE — the whole loop in one statement</div>
-<pre><span class="k">MATCH</span> (t:Topic {name:<span class="s">'Machine Learning'</span>})-[:RELATED_TO*1..2]-&gt;(t2:Topic)
-<span class="k">WITH</span> <span class="k">DISTINCT</span> t2
-<span class="k">MATCH</span> (t2)-[:DISCUSSES]-&gt;(d:Document)
+<pre><span class="k">MATCH</span> (ml:Topic {name:<span class="s">'Machine Learning'</span>})-[:RELATED_TO*1..2]-&gt;(t2:Topic)-[:DISCUSSES]-&gt;(d:Document)
 <span class="k">RETURN</span> <span class="k">DISTINCT</span> d.title <span class="k">AS</span> document, t2.name <span class="k">AS</span> via_topic,
        <span class="f">round</span>(1 - <span class="f">cosineDistance</span>(d.embedding, $q), 4) <span class="k">AS</span> similarity
 <span class="k">ORDER BY</span> similarity <span class="k">DESC</span></pre>
@@ -647,12 +645,15 @@
         <div class="note"><b>ClickHouse-native vectors.</b>
           <code>cosineDistance</code> / <code>L2Distance</code> / <code>gds.similarity.*</code> and
           <code>CALL db.index.vector.queryNodes(…)</code> run on the ClickGraph/ClickHouse endpoint.
-          The single-statement form threads the variable-length traversal through a <code>WITH</code>
-          barrier before the chained <code>DISCUSSES</code> hop — which composes once the
-          anonymous-alias collision (<a href="https://github.com/genezhang/clickgraph/pull/1083">#1083</a>,
-          fixing <a href="https://github.com/genezhang/clickgraph/issues/1081">#1081</a>) is in place;
-          the fully-inline chain form is tracked in
-          <a href="https://github.com/genezhang/clickgraph/issues/1085">#1085</a>.</div>
+          Variable-length expansion feeds the chained <code>DISCUSSES</code> hop directly — no
+          <code>WITH</code> barrier — which composes once the anonymous-alias collision
+          (<a href="https://github.com/genezhang/clickgraph/pull/1083">#1083</a>, fixing
+          <a href="https://github.com/genezhang/clickgraph/issues/1081">#1081</a>) is in place.
+          One naming caveat: the path start node is <code>ml</code>, not <code>t</code> — a
+          variable-length-path endpoint named exactly <code>t</code> collides with ClickGraph's
+          reserved internal VLP-CTE alias and is rejected with an actionable error
+          (<a href="https://github.com/genezhang/clickgraph/issues/1085">#1085</a>); any other name
+          resolves correctly.</div>
       </div>
     </div>
   </div>
