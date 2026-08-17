@@ -96,6 +96,10 @@ impl FunctionMapper for DatabricksFunctionMapper {
         );
     }
 
+    fn arrays_overlap(&self) -> &'static str {
+        "arrays_overlap"
+    }
+
     fn json_extract_string(&self) -> &'static str {
         // The function name is a clean swap; the *argument* needs JSONPath
         // shape (`$.field` instead of `field`). The call site in

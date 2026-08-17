@@ -3740,7 +3740,8 @@ impl GraphJoinInference {
             let is_chained_forward = chains_forward
                 && all_aliases.len() == required_vlps.len() + 1
                 && !Self::scope_has_undirected_required_vlp(plan)
-                && !Self::scope_has_path_var_required_vlp(plan);
+                && !Self::scope_has_path_var_required_vlp(plan)
+                && !Self::scope_has_nonsingle_type_required_vlp(plan);
 
             // #544: tell the render phase how many VLP CTEs a chained-forward path
             // must materialize. If render can't build the full chain (a hop
@@ -3972,6 +3973,49 @@ impl GraphJoinInference {
             LogicalPlan::CartesianProduct(cp) => {
                 Self::scope_has_path_var_required_vlp(&cp.left)
                     || Self::scope_has_path_var_required_vlp(&cp.right)
+            }
+            LogicalPlan::Union(_) => false,
+            _ => false,
+        }
+    }
+
+    /// #544: does this scope contain a required VLP that is NOT a single
+    /// EXPLICIT relationship type? A multi-type VLP (`[:A|B*..]`) or an untyped
+    /// VLP (`[*..]`) renders through join-expansion / empty-result paths that do
+    /// NOT reliably materialize one recursive `vlp_<s>_<e>` CTE per hop — the
+    /// first hop was observed to degenerate to a plain join (dropping a type and
+    /// collapsing the bound) or to an empty `WHERE false`. Chaining is only
+    /// verified for single-type directed VLPs, so anything else stays #544-loud.
+    /// Only consulted when a scope has 2+ required VLPs. Mirrors
+    /// `collect_required_vlps`'s traversal and skip conditions exactly.
+    fn scope_has_nonsingle_type_required_vlp(plan: &LogicalPlan) -> bool {
+        match plan {
+            LogicalPlan::GraphRel(gr) => {
+                if let Some(spec) = gr.variable_length.as_ref() {
+                    let is_fixed_length =
+                        spec.exact_hop_count().is_some() && gr.shortest_path_mode.is_none();
+                    let is_optional = gr.is_optional.unwrap_or(false);
+                    let single_type = gr.labels.as_ref().map(|l| l.len()) == Some(1);
+                    if !is_fixed_length && !is_optional && !single_type {
+                        return true;
+                    }
+                }
+                Self::scope_has_nonsingle_type_required_vlp(&gr.left)
+                    || Self::scope_has_nonsingle_type_required_vlp(&gr.right)
+            }
+            LogicalPlan::GraphNode(gn) => Self::scope_has_nonsingle_type_required_vlp(&gn.input),
+            LogicalPlan::Filter(f) => Self::scope_has_nonsingle_type_required_vlp(&f.input),
+            LogicalPlan::Projection(p) => Self::scope_has_nonsingle_type_required_vlp(&p.input),
+            LogicalPlan::GroupBy(g) => Self::scope_has_nonsingle_type_required_vlp(&g.input),
+            LogicalPlan::OrderBy(o) => Self::scope_has_nonsingle_type_required_vlp(&o.input),
+            LogicalPlan::Skip(s) => Self::scope_has_nonsingle_type_required_vlp(&s.input),
+            LogicalPlan::Limit(l) => Self::scope_has_nonsingle_type_required_vlp(&l.input),
+            LogicalPlan::Cte(c) => Self::scope_has_nonsingle_type_required_vlp(&c.input),
+            LogicalPlan::GraphJoins(gj) => Self::scope_has_nonsingle_type_required_vlp(&gj.input),
+            LogicalPlan::Unwind(u) => Self::scope_has_nonsingle_type_required_vlp(&u.input),
+            LogicalPlan::CartesianProduct(cp) => {
+                Self::scope_has_nonsingle_type_required_vlp(&cp.left)
+                    || Self::scope_has_nonsingle_type_required_vlp(&cp.right)
             }
             LogicalPlan::Union(_) => false,
             _ => false,

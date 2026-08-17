@@ -2281,8 +2281,16 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
         // instead. When the analyzer did not mark a chained path (`expected` is
         // `None`), this scope is a single VLP / fan-in / other supported shape
         // and the net is inert.
+        // POSITIVE authorization (ground rule 1): fuse ONLY when the analyzer
+        // explicitly marked THIS scope a chained-forward path of exactly this
+        // many VLPs. `is_chain` is a purely STRUCTURAL check over the flattened
+        // plan's CTE aliases, so it also matches VLP CTEs that merely LOOK like a
+        // chain — e.g. `(a)-[*]->(b) WITH b MATCH (b)-[*]->(c)`, where `vlp_a_b`
+        // was consumed by the WITH barrier but still lingers in `plan.ctes`.
+        // Requiring `expected == Some(len)` (not merely "not contradicted") keeps
+        // the fusion confined to a genuine single-scope chain the analyzer vetted.
         let expected = crate::server::query_context::expected_chained_vlp_count();
-        let chain_complete = is_chain && expected.is_none_or(|n| n == vlp_ctes.len());
+        let chain_complete = is_chain && expected == Some(vlp_ctes.len());
         if chain_complete {
             is_required_chained = true;
             for (i, cte) in vlp_ctes.iter().enumerate() {

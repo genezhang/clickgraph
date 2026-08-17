@@ -68,4 +68,4 @@ vlp_b_c AS (
 SELECT 
       count(t_ch_0.end_id) AS "count"
 FROM vlp_a_b AS t
-INNER JOIN vlp_b_c AS t_ch_0 ON t_ch_0.start_id = t.end_id
+INNER JOIN vlp_b_c AS t_ch_0 ON t_ch_0.start_id = t.end_id AND NOT hasAny(t_ch_0.path_edges, t.path_edges)

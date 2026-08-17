@@ -17909,6 +17909,13 @@ mod vlp_family_remnants_544_545_528_525 {
             sql.contains("INNER JOIN vlp_b_c AS t_ch_0 ON t_ch_0.start_id = t.end_id"),
             "second VLP INNER-JOINed on the shared intermediate: {sql}"
         );
+        // Cross-segment relationship uniqueness (Cypher isomorphism spans the
+        // whole MATCH): no edge may recur across segments (else cyclic graphs
+        // over-count). #544 finding B.
+        assert!(
+            sql.contains("NOT hasAny(t_ch_0.path_edges, t.path_edges)"),
+            "chain join must enforce cross-segment edge disjointness: {sql}"
+        );
         // Each endpoint resolves to its own CTE alias (no conflation onto `t`).
         assert!(
             sql.contains("t.start_name AS \"a.name\""),
@@ -17944,6 +17951,12 @@ mod vlp_family_remnants_544_545_528_525 {
             sql.contains("INNER JOIN vlp_b_c AS t_ch_0 ON t_ch_0.start_id = t.end_id")
                 && sql.contains("INNER JOIN vlp_c_d AS t_ch_1 ON t_ch_1.start_id = t_ch_0.end_id"),
             "3-deep chain must join c_d onto b_c onto a_b: {sql}"
+        );
+        // Pairwise cross-segment edge disjointness: t_ch_1 vs BOTH prior segments.
+        assert!(
+            sql.contains("NOT hasAny(t_ch_1.path_edges, t.path_edges)")
+                && sql.contains("NOT hasAny(t_ch_1.path_edges, t_ch_0.path_edges)"),
+            "3-deep chain must enforce pairwise edge disjointness: {sql}"
         );
     }
 

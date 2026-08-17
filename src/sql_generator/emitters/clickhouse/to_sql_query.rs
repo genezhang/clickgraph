@@ -1612,8 +1612,15 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
         let chain_cte_already_joined = chain_ctes
             .iter()
             .any(|c| plan.joins.0.iter().any(|j| j.table_name == c.cte_name));
+        // POSITIVE authorization (ground rule 1): only fuse when the analyzer
+        // explicitly marked this scope a chained-forward path of exactly this many
+        // VLPs. Mirrors the render-phase guard — a purely structural `is_chain`
+        // also matches CTEs that merely look chained (e.g. a `vlp_a_b` left over
+        // from a WITH barrier), which would corrupt the FROM/keys.
+        let expected = crate::server::query_context::expected_chained_vlp_count();
         let is_chain = chain_ctes.len() > 1
             && !chain_cte_already_joined
+            && expected == Some(chain_ctes.len())
             && chain_ctes.windows(2).all(|w| {
                 w[1].vlp_cypher_start_alias == w[0].vlp_cypher_end_alias
                     && w[0].vlp_cypher_start_alias != w[0].vlp_cypher_end_alias
@@ -1634,32 +1641,61 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                 use_final: false,
             }));
 
-            // INNER JOIN each subsequent CTE on the shared intermediate.
+            // `path_edges` column reference for a chain segment alias.
+            let seg_path_edges = |alias: &str| {
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(alias.to_string()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                        "path_edges".to_string(),
+                    ),
+                })
+            };
+
+            // INNER JOIN each subsequent CTE on the shared intermediate, and
+            // enforce cross-segment RELATIONSHIP UNIQUENESS (Cypher isomorphism
+            // spans the whole MATCH): no edge traversed in one segment may recur
+            // in another. Each VLP CTE already tracks its own `path_edges`; add a
+            // dialect-aware `NOT hasAny(this.path_edges, prev.path_edges)` against
+            // EVERY already-placed segment (pairwise), so a cyclic graph cannot
+            // over-count paths that reuse an edge across segments (#544 finding B).
             let mut prev_alias = vlp_from_alias();
+            let mut placed_aliases: Vec<String> = vec![vlp_from_alias()];
             for (i, cte) in chain_ctes[1..].iter().enumerate() {
                 let this_alias = format!("t_ch_{}", i);
+                let mut joining_on = vec![OperatorApplication {
+                    operator: Operator::Equal,
+                    operands: vec![
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(this_alias.clone()),
+                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                VLP_START_ID_COLUMN.to_string(),
+                            ),
+                        }),
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(prev_alias.clone()),
+                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                VLP_END_ID_COLUMN.to_string(),
+                            ),
+                        }),
+                    ],
+                }];
+                let overlap_fn = crate::sql_generator::function_mapper::current_function_mapper()
+                    .arrays_overlap();
+                for placed in &placed_aliases {
+                    joining_on.push(OperatorApplication {
+                        operator: Operator::Not,
+                        operands: vec![RenderExpr::ScalarFnCall(
+                            crate::render_plan::render_expr::ScalarFnCall {
+                                name: overlap_fn.to_string(),
+                                args: vec![seg_path_edges(&this_alias), seg_path_edges(placed)],
+                            },
+                        )],
+                    });
+                }
                 let join = Join {
                     table_name: cte.cte_name.clone(),
                     table_alias: this_alias.clone(),
-                    joining_on: vec![OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(this_alias.clone()),
-                                column:
-                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                        VLP_START_ID_COLUMN.to_string(),
-                                    ),
-                            }),
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(prev_alias.clone()),
-                                column:
-                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                        VLP_END_ID_COLUMN.to_string(),
-                                    ),
-                            }),
-                        ],
-                    }],
+                    joining_on,
                     join_type: JoinType::Inner,
                     pre_filter: None,
                     from_id_column: None,
@@ -1668,6 +1704,7 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                     is_cartesian: false,
                 };
                 plan.joins.0.push(join);
+                placed_aliases.push(this_alias.clone());
                 prev_alias = this_alias;
             }
 
