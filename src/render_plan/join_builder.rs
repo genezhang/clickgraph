@@ -26,7 +26,6 @@ use crate::utils::cte_column_naming::{cte_column_name, is_cte_column};
 use std::sync::Arc;
 
 // Helper function imports from plan_builder_helpers
-use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
 use crate::render_plan::cte_extraction::{
     build_vlp_context, expand_fixed_length_joins_with_context, extract_node_label_from_viewscan,
     extract_relationship_columns, table_to_id_column, VlpSchemaType,
@@ -1361,7 +1360,7 @@ impl JoinBuilder for LogicalPlan {
                                     if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) = operand {
                                         let alias = &pa.table_alias.0;
                                         crate::query_planner::join_context::is_vlp_planning_alias(alias)
-                                            || alias.as_str() == crate::query_planner::join_context::VLP_CTE_FROM_ALIAS
+                                            || *alias == crate::server::query_context::vlp_from_alias()
                                     } else {
                                         false
                                     }
@@ -2346,7 +2345,7 @@ impl JoinBuilder for LogicalPlan {
                             // Look up per-VLP unique alias from query context
                             let vlp_alias =
                                 crate::server::query_context::get_vlp_cte_outer_alias(&cte_name)
-                                    .unwrap_or_else(|| VLP_CTE_FROM_ALIAS.to_string());
+                                    .unwrap_or_else(crate::server::query_context::vlp_from_alias);
 
                             // Get the start node's ID column
                             let start_id_col = extract_id_column(&graph_rel.left)

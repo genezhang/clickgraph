@@ -72,9 +72,7 @@ pub use crate::server::query_context::{
     clear_denormalized_aliases, get_denormalized_alias_mapping, register_denormalized_alias,
 };
 
-use crate::query_planner::join_context::{
-    VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
-};
+use crate::query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN};
 use crate::query_planner::logical_plan::{
     Join as LogicalJoin, JoinType as LogicalJoinType, OrderByItem as LogicalOrderByItem,
     OrderByOrder as LogicalOrderByOrder, UnionType as LogicalUnionType,
@@ -478,7 +476,7 @@ impl Cte {
                     vlp_position: Some(cte_manager::VlpColumnPosition::End),
                 },
             ],
-            from_alias: Some(VLP_CTE_FROM_ALIAS.to_string()), // VLP CTEs use standard FROM alias
+            from_alias: Some(crate::server::query_context::vlp_from_alias()), // #1088: query-scoped VLP FROM alias
             outer_where_filters: None,
             with_exported_aliases: Vec::new(),
             variable_registry: None,

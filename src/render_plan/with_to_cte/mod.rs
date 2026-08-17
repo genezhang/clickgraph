@@ -3272,7 +3272,7 @@ fn apply_weighted_shortest_path_restructure(render_plan: &mut RenderPlan) {
                 render_plan.from = FromTableItem(Some(ViewTableRef {
                     source: std::sync::Arc::new(LogicalPlan::Empty),
                     name: vlp_cte_name,
-                    alias: Some("t".to_string()),
+                    alias: Some(crate::server::query_context::vlp_from_alias()),
                     use_final: false,
                 }));
 

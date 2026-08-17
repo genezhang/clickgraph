@@ -33,17 +33,18 @@
 //! - **Week 5: from_builder.rs** ← Current
 //! - Week 6: group_by_builder.rs (planned)
 
-use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
 use crate::query_planner::logical_plan::{GraphRel, LogicalPlan};
 use crate::utils::cte_naming::{extract_cte_base_name, is_generated_cte_name};
 use log::debug;
 use std::sync::Arc;
 
-/// Get the outer-query alias for a VLP CTE, using query context registry first,
-/// then falling back to the default VLP_CTE_FROM_ALIAS constant.
+/// Get the outer-query alias for a VLP CTE, using the per-CTE query-context
+/// registry first, then falling back to the query-scoped VLP FROM alias
+/// (`vlp_from_alias()`, which is the default `"t"` unless a user variable named
+/// `"t"` forced a collision-free value — #1088).
 fn vlp_cte_alias_for(cte_name: &str) -> String {
     crate::server::query_context::get_vlp_cte_outer_alias(cte_name)
-        .unwrap_or_else(|| VLP_CTE_FROM_ALIAS.to_string())
+        .unwrap_or_else(crate::server::query_context::vlp_from_alias)
 }
 
 /// Check if a GraphRel with variable_length is a fixed-length VLP (*2..2, *3..3)

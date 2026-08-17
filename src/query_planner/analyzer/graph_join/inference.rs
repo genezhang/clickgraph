@@ -1032,8 +1032,7 @@ impl GraphJoinInference {
                     .map(|info| info.vlp_alias.clone())
                     .collect();
                 if !vlp_available.is_empty() {
-                    vlp_available
-                        .insert(crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string());
+                    vlp_available.insert(crate::server::query_context::vlp_from_alias());
                 }
 
                 // Reorder JOINs using clean topological sort
@@ -3435,9 +3434,7 @@ impl GraphJoinInference {
             let vlp_alias = join_ctx
                 .get_vlp_endpoint(&right_alias)
                 .map(|info| info.vlp_alias.clone())
-                .unwrap_or_else(|| {
-                    crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string()
-                });
+                .unwrap_or_else(crate::server::query_context::vlp_from_alias);
 
             // #922: a CLOSED OPTIONAL VLP (`(a)-[*..]->(a)`,
             // `left_connection == right_connection`) must pin the CTE path back
@@ -3710,37 +3707,36 @@ impl GraphJoinInference {
             }
         }
 
-        // #1085: the VLP CTE's outer FROM alias is a fixed reserved name
-        // (VLP_CTE_FROM_ALIAS = "t"), threaded as a string-level protocol through
-        // the render + SQL-emit phases (endpoint join resolution, `t.start_*`/
-        // `t.end_*` column references, the reverse-branch `swap_vlp_start_end`
-        // text substitution, etc.). If a user names a VLP endpoint exactly "t",
-        // that reserved alias becomes indistinguishable from the user's node:
-        // the endpoint rewriters re-resolve an already-correct `t.end_id` back to
-        // `t.start_id`, so a chained hop after the VLP silently returns the wrong
-        // rows (docs of the START, not the endpoint — #1085). Making the reserved
-        // alias query-scoped to eliminate the collision is the multi-VLP-aliasing
-        // work tracked in TODO(multi-vlp); until that lands, reject the colliding
-        // pattern LOUDLY rather than emit silently-wrong SQL (ground rule 1). The
-        // fix is a one-character rename of the user's variable.
-        let reserved = crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
-        if let Some((l, r, rel)) = required_vlps
-            .iter()
-            .find(|(l, r, _)| l == reserved || r == reserved)
-        {
-            let which = if l == reserved { l } else { r };
-            return Err(AnalyzerError::UnsupportedPattern {
-                message: format!(
-                    "variable-length path endpoint is named '{which}' in \
-                     ({l})-[{rel}*..]->({r}), which collides with ClickGraph's \
-                     reserved internal alias for variable-length-path CTEs \
-                     ('{reserved}'). This collision would silently produce wrong \
-                     results for a chained hop after the path (issue #1085). \
-                     Rename the '{reserved}' variable (e.g. to '{reserved}1') and \
-                     re-run."
-                ),
-            });
-        }
+        // #1088: the VLP CTE's outer FROM alias is a query-scoped name (default
+        // `VLP_CTE_FROM_ALIAS = "t"`), threaded as a string-level protocol through
+        // the render + SQL-emit phases (endpoint join resolution, `<alias>.start_*`/
+        // `<alias>.end_*` column references, the reverse-branch `swap_vlp_start_end`
+        // text substitution, etc.) via `server::query_context::vlp_from_alias()`.
+        // If a user declares a variable literally named "t" it would collide with
+        // this reserved internal alias — silently re-resolving an already-correct
+        // `t.end_id` back to `t.start_id` and returning the wrong rows for a chained
+        // hop after the path (#1085). Instead of rejecting the query (the old #1085
+        // loud gate), pick a collision-free alias and register it query-scoped so
+        // every emit/detect site agrees. `reserved_aliases` (#1084) is the set of
+        // all user-declared variables, populated up front in `build_logical_plan`
+        // and inherited by every scope, so this decision is identical across the
+        // per-branch `pre_register_vlp_endpoints` calls.
+        let default_alias = crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
+        let vlp_from_alias = if plan_ctx.reserved_aliases().contains(default_alias) {
+            // Collision: choose the first `vlpt`, `vlpt2`, … not taken by a user
+            // variable. `vlpt` is deliberately not confusable with the internal
+            // `vt{N}` / `vlp_` / `with_` alias families (see `is_vlp_or_cte_alias`).
+            let mut n: u32 = 1;
+            let mut candidate = String::from("vlpt");
+            while plan_ctx.reserved_aliases().contains(&candidate) {
+                n += 1;
+                candidate = format!("vlpt{n}");
+            }
+            candidate
+        } else {
+            default_alias.to_string()
+        };
+        crate::server::query_context::register_vlp_from_alias(&vlp_from_alias);
 
         for (left_alias, right_alias, rel_alias) in required_vlps {
             plan_ctx.register_vlp_endpoint(

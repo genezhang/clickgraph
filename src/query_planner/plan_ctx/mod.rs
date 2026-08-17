@@ -1351,11 +1351,12 @@ impl PlanCtx {
     /// - For VLP endpoints: returns ("t", "start_id"/"end_id")
     pub fn get_vlp_join_reference(&self, alias: &str, default_column: &str) -> (String, String) {
         if let Some(vlp_info) = self.vlp_endpoints.get(alias) {
-            // Use VLP_CTE_FROM_ALIAS ("t") instead of per-VLP alias ("vt0", "vt1")
-            // because the render phase always aliases VLP CTEs as "t" in FROM clauses.
-            // TODO(multi-vlp): When render phase supports per-VLP aliases, use vlp_info.vlp_alias
+            // #1088: the render phase aliases the VLP CTE as the query-scoped VLP
+            // FROM alias (`vlp_from_alias()`, default "t"), so resolve endpoint
+            // joins to that same alias for consistency.
+            // TODO(multi-vlp): When render supports per-VLP aliases, use vlp_info.vlp_alias
             (
-                crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string(),
+                crate::server::query_context::vlp_from_alias(),
                 vlp_info.cte_column().to_string(),
             )
         } else {

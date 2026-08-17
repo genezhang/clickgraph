@@ -6,9 +6,7 @@ use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::graph_catalog::pattern_schema::{JoinStrategy, PatternSchemaContext};
-use crate::query_planner::join_context::{
-    VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
-};
+use crate::query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN};
 use crate::query_planner::logical_expr::expression_rewriter::{
     rewrite_projection_items_with_property_mapping, ExpressionRewriteContext,
 };
@@ -4601,7 +4599,7 @@ pub fn extract_ctes_with_context(
                                             vlp_position: Some(crate::render_plan::cte_manager::VlpColumnPosition::End),
                                         },
                                     ],
-                                    from_alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
+                                    from_alias: Some(crate::server::query_context::vlp_from_alias()),
                                     outer_where_filters: None, // Multi-type VLP doesn't need outer filters
                                     with_exported_aliases: Vec::new(),
                                     variable_registry: None,

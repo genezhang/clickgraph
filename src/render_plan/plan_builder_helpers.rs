@@ -14,7 +14,6 @@ use super::render_expr::{
     ScalarFnCall, TableAlias,
 };
 use crate::graph_catalog::expression_parser::PropertyValue;
-use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
 use crate::render_plan::cte_extraction::{
     get_node_label_for_alias, get_relationship_type_for_alias,
 };
@@ -5383,8 +5382,10 @@ pub(super) fn collect_schema_filters(
     match plan {
         LogicalPlan::ViewScan(scan) => {
             if let Some(ref schema_filter) = scan.schema_filter {
-                let table_alias = alias_hint.unwrap_or(VLP_CTE_FROM_ALIAS);
-                if let Ok(sql) = schema_filter.to_sql(table_alias) {
+                let table_alias = alias_hint
+                    .map(str::to_string)
+                    .unwrap_or_else(crate::server::query_context::vlp_from_alias);
+                if let Ok(sql) = schema_filter.to_sql(&table_alias) {
                     log::debug!(
                         "Collected schema filter for table '{}' with alias '{}': {}",
                         scan.source_table,
@@ -5425,8 +5426,10 @@ pub(super) fn collect_schema_filters_with_alias(
     match plan {
         LogicalPlan::ViewScan(scan) => {
             if let Some(ref schema_filter) = scan.schema_filter {
-                let table_alias = alias_hint.unwrap_or(VLP_CTE_FROM_ALIAS);
-                if let Ok(sql) = schema_filter.to_sql(table_alias) {
+                let table_alias = alias_hint
+                    .map(str::to_string)
+                    .unwrap_or_else(crate::server::query_context::vlp_from_alias);
+                if let Ok(sql) = schema_filter.to_sql(&table_alias) {
                     filters.push((
                         RenderExpr::Raw(sql),
                         table_alias.to_string(),

@@ -12,9 +12,7 @@ use crate::graph_catalog::{
     config::Identifier, graph_schema::GraphSchema, EdgeAccessStrategy, JoinStrategy,
     NodeAccessStrategy, PatternSchemaContext,
 };
-use crate::query_planner::join_context::{
-    VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
-};
+use crate::query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN};
 use crate::query_planner::logical_plan::VariableLengthSpec;
 use crate::render_plan::cte_extraction::collect_parameters_from_filters;
 use crate::render_plan::cte_generation::CteGenerationContext;
@@ -630,7 +628,7 @@ impl DenormalizedCteStrategy {
             parameters: collect_parameters_from_filters(filters),
             cte_name,
             recursive: true,
-            from_alias: VLP_CTE_FROM_ALIAS.to_string(),
+            from_alias: crate::server::query_context::vlp_from_alias(),
             columns,
             vlp_endpoint: Some(vlp_endpoint),
             // ⚠️ CRITICAL: For denormalized VLP, end_node_filters must be applied in outer SELECT
@@ -1751,7 +1749,7 @@ impl VariableLengthCteStrategy {
             parameters: vec![],
             cte_name,
             recursive: true,
-            from_alias: VLP_CTE_FROM_ALIAS.to_string(),
+            from_alias: crate::server::query_context::vlp_from_alias(),
             columns,
             vlp_endpoint: Some(vlp_endpoint),
             outer_where_filters: None,

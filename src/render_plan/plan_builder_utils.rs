@@ -2089,14 +2089,14 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
             .iter()
             .find(|j| j.table_name.starts_with("vlp_"))
             .map(|j| j.table_alias.clone())
-            .unwrap_or_else(|| "t".to_string())
+            .unwrap_or_else(crate::server::query_context::vlp_from_alias)
     } else {
         plan.from
             .0
             .as_ref()
             .and_then(|from_ref| from_ref.alias.as_ref())
             .cloned()
-            .unwrap_or_else(|| "t".to_string())
+            .unwrap_or_else(crate::server::query_context::vlp_from_alias)
     };
 
     // The alias to use for the WHERE / GROUP BY endpoint rewrite. Use the
@@ -2364,8 +2364,7 @@ fn detect_vlp_endpoint_from_plan(plan: &LogicalPlan, alias: &str) -> Option<VlpE
                         position: VlpPosition::Start,
                         other_endpoint_alias: rel.right_connection.clone(),
                         rel_alias: rel.alias.clone(),
-                        vlp_alias: crate::query_planner::join_context::VLP_CTE_FROM_ALIAS
-                            .to_string(),
+                        vlp_alias: crate::server::query_context::vlp_from_alias(),
                     });
                 }
 
@@ -2380,8 +2379,7 @@ fn detect_vlp_endpoint_from_plan(plan: &LogicalPlan, alias: &str) -> Option<VlpE
                         position: VlpPosition::End,
                         other_endpoint_alias: rel.left_connection.clone(),
                         rel_alias: rel.alias.clone(),
-                        vlp_alias: crate::query_planner::join_context::VLP_CTE_FROM_ALIAS
-                            .to_string(),
+                        vlp_alias: crate::server::query_context::vlp_from_alias(),
                     });
                 }
             }
@@ -3308,7 +3306,7 @@ pub(crate) fn expand_table_alias_to_group_by_id_only(
                 // ⚠️ FALLBACK: CTE metadata lookup FAILED - using constants from join_context.rs
                 // This indicates a gap in CTE metadata propagation. The deterministic path
                 // via CteColumnMetadata should have found this alias.
-                let vlp_alias = VLP_CTE_FROM_ALIAS;
+                let vlp_alias = crate::server::query_context::vlp_from_alias();
                 let id_column = if is_start {
                     VLP_START_ID_COLUMN
                 } else {

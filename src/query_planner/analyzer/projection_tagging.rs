@@ -869,7 +869,7 @@ impl ProjectionTagging {
                                         // pass could rewrite for us.
                                         item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
                                             table_alias: TableAlias(
-                                                crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string(),
+                                                crate::server::query_context::vlp_from_alias(),
                                             ),
                                             column: crate::graph_catalog::expression_parser::PropertyValue::Column("end_type".to_string()),
                                         });
@@ -947,7 +947,8 @@ impl ProjectionTagging {
                                             {
                                                 alias.clone()
                                             } else {
-                                                "t".to_string() // VLP CTE uses 't' alias
+                                                crate::server::query_context::vlp_from_alias()
+                                                // #1088: query-scoped VLP alias
                                             };
                                             item.expression = LogicalExpr::ArraySubscript {
                                                 array: Box::new(LogicalExpr::PropertyAccessExp(PropertyAccess {
@@ -1064,7 +1065,7 @@ impl ProjectionTagging {
                                             // always rendered as `FROM vlp_multi_type_... AS t`).
                                             let end_type_expr = LogicalExpr::PropertyAccessExp(PropertyAccess {
                                                 table_alias: TableAlias(
-                                                    crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string(),
+                                                    crate::server::query_context::vlp_from_alias(),
                                                 ),
                                                 column: crate::graph_catalog::expression_parser::PropertyValue::Column("end_type".to_string()),
                                             });
@@ -1167,7 +1168,7 @@ impl ProjectionTagging {
                                             // Cypher alias — see the labels() fix above.
                                             item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
                                                 table_alias: TableAlias(
-                                                    crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string(),
+                                                    crate::server::query_context::vlp_from_alias(),
                                                 ),
                                                 column: crate::graph_catalog::expression_parser::PropertyValue::Column("end_type".to_string()),
                                             });
@@ -1635,8 +1636,7 @@ impl ProjectionTagging {
                                     let access = |col: &str| {
                                         LogicalExpr::PropertyAccessExp(PropertyAccess {
                                             table_alias: TableAlias(
-                                                crate::query_planner::join_context::VLP_CTE_FROM_ALIAS
-                                                    .to_string(),
+                                                crate::server::query_context::vlp_from_alias(),
                                             ),
                                             column: crate::graph_catalog::expression_parser::PropertyValue::Column(
                                                 col.to_string(),

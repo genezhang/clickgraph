@@ -628,7 +628,7 @@ impl SelectBuilder for LogicalPlan {
                                     let cte_alias = if has_pattern_combinations {
                                         gr.alias.clone()
                                     } else {
-                                        "t".to_string()
+                                        crate::server::query_context::vlp_from_alias()
                                     };
                                     let position = if gr.left_connection == prop.table_alias.0 {
                                         "start"
@@ -699,7 +699,7 @@ impl SelectBuilder for LogicalPlan {
                                         select_items.push(SelectItem {
                                             expression: RenderExpr::PropertyAccessExp(
                                                 PropertyAccess {
-                                                    table_alias: RenderTableAlias("t".to_string()),
+                                                    table_alias: RenderTableAlias(crate::server::query_context::vlp_from_alias()),
                                                     column: PropertyValue::Column(
                                                         "path_relationships".to_string(),
                                                     ),
@@ -713,7 +713,7 @@ impl SelectBuilder for LogicalPlan {
                                         select_items.push(SelectItem {
                                             expression: RenderExpr::PropertyAccessExp(
                                                 PropertyAccess {
-                                                    table_alias: RenderTableAlias("t".to_string()),
+                                                    table_alias: RenderTableAlias(crate::server::query_context::vlp_from_alias()),
                                                     column: PropertyValue::Column(
                                                         "rel_properties".to_string(),
                                                     ),
@@ -727,7 +727,7 @@ impl SelectBuilder for LogicalPlan {
                                         select_items.push(SelectItem {
                                             expression: RenderExpr::PropertyAccessExp(
                                                 PropertyAccess {
-                                                    table_alias: RenderTableAlias("t".to_string()),
+                                                    table_alias: RenderTableAlias(crate::server::query_context::vlp_from_alias()),
                                                     column: PropertyValue::Column(
                                                         "start_id".to_string(),
                                                     ),
@@ -741,7 +741,7 @@ impl SelectBuilder for LogicalPlan {
                                         select_items.push(SelectItem {
                                             expression: RenderExpr::PropertyAccessExp(
                                                 PropertyAccess {
-                                                    table_alias: RenderTableAlias("t".to_string()),
+                                                    table_alias: RenderTableAlias(crate::server::query_context::vlp_from_alias()),
                                                     column: PropertyValue::Column(
                                                         "end_id".to_string(),
                                                     ),
@@ -756,7 +756,7 @@ impl SelectBuilder for LogicalPlan {
                                         select_items.push(SelectItem {
                                             expression: RenderExpr::PropertyAccessExp(
                                                 PropertyAccess {
-                                                    table_alias: RenderTableAlias("t".to_string()),
+                                                    table_alias: RenderTableAlias(crate::server::query_context::vlp_from_alias()),
                                                     column: PropertyValue::Column(
                                                         "start_type".to_string(),
                                                     ),
@@ -770,7 +770,7 @@ impl SelectBuilder for LogicalPlan {
                                         select_items.push(SelectItem {
                                             expression: RenderExpr::PropertyAccessExp(
                                                 PropertyAccess {
-                                                    table_alias: RenderTableAlias("t".to_string()),
+                                                    table_alias: RenderTableAlias(crate::server::query_context::vlp_from_alias()),
                                                     column: PropertyValue::Column(
                                                         "end_type".to_string(),
                                                     ),
@@ -1065,7 +1065,7 @@ impl SelectBuilder for LogicalPlan {
                                     let cte_alias = if has_pattern_combinations {
                                         gr.alias.clone()
                                     } else {
-                                        "t".to_string()
+                                        crate::server::query_context::vlp_from_alias()
                                     };
                                     let position = if gr.left_connection == *cypher_alias {
                                         "start"
@@ -1704,8 +1704,7 @@ impl SelectBuilder for LogicalPlan {
                                             if let Some(vlp_info) = ctx.get_vlp_endpoint(&alias.0)
                                             {
                                                 let from_alias =
-                                                    crate::query_planner::join_context::VLP_CTE_FROM_ALIAS
-                                                        .to_string();
+                                                    crate::server::query_context::vlp_from_alias();
                                                 let id_col = vlp_info.cte_column();
                                                 log::debug!(
                                                     "🔍 SelectBuilder: id({}) -> VLP CTE '{}'.'{}' (#538)",
@@ -2618,9 +2617,9 @@ impl LogicalPlan {
                         "🔀 PatternResolver 2.0: Using relationship alias '{}' for CTE reference",
                         alias
                     );
-                    alias // Pattern combinations use relationship alias
+                    alias.to_string() // Pattern combinations use relationship alias
                 } else {
-                    "t" // VLP uses VLP_CTE_FROM_ALIAS
+                    crate::server::query_context::vlp_from_alias() // #1088: query-scoped VLP alias
                 };
 
                 // Add all CTE columns needed to reconstruct the relationship
@@ -3247,9 +3246,8 @@ impl LogicalPlan {
         let is_vlp = path_var.length_bounds.is_some() || path_var.is_shortest_path;
 
         if is_vlp {
-            // VLP path - use VLP CTE columns
-            use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
-            let cte_alias = VLP_CTE_FROM_ALIAS;
+            // VLP path - use VLP CTE columns (#1088: query-scoped FROM alias)
+            let cte_alias = crate::server::query_context::vlp_from_alias();
 
             log::info!(
                 "🔍 Expanding VLP path variable '{}' using CTE columns from '{}'",

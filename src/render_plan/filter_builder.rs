@@ -291,7 +291,7 @@ impl FilterBuilder for LogicalPlan {
                             // CTE only.
                             if graph_rel.left_connection == graph_rel.right_connection {
                                 use crate::query_planner::join_context::{
-                                    VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
+                                    VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
                                 };
                                 // #628: a closed `*0..N` on a STANDARD schema is now
                                 // supported. The recursive CTE switches to
@@ -427,7 +427,7 @@ impl FilterBuilder for LogicalPlan {
                                 );
                                 return Ok(Some(RenderExpr::Raw(format!(
                                     "{a}.{s} = {a}.{e}",
-                                    a = VLP_CTE_FROM_ALIAS,
+                                    a = crate::server::query_context::vlp_from_alias(),
                                     s = VLP_START_ID_COLUMN,
                                     e = VLP_END_ID_COLUMN,
                                 ))));
