@@ -2077,12 +2077,6 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
     // every clause agrees — previously WHERE and GROUP BY hardcoded `"t"`, which
     // dangled for OPTIONAL VLP where the join alias is `vt0` (#630; SELECT/ORDER
     // BY already used this value).
-    let vlp_join_count = plan
-        .joins
-        .0
-        .iter()
-        .filter(|j| j.table_name.starts_with("vlp_"))
-        .count();
     let vlp_from_alias = if is_optional_vlp {
         plan.joins
             .0
@@ -2099,16 +2093,91 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
             .unwrap_or_else(crate::server::query_context::vlp_from_alias)
     };
 
-    // The alias to use for the WHERE / GROUP BY endpoint rewrite. Use the
-    // resolved `vlp_from_alias` ONLY when there is a single VLP join (or the
-    // required-VLP FROM case) so the endpoint reference is UNAMBIGUOUS. With TWO
-    // OR MORE VLP joins (`OPTIONAL MATCH (a)-[*]->(b) OPTIONAL MATCH (b)-[*]->(c)`)
-    // `vlp_from_alias` is just the FIRST vlp join — using it for GROUP BY on the
-    // SECOND endpoint would silently group by the WRONG VLP (a separate,
-    // deeper endpoint-resolution defect, tracked as #643). Keep the historical
-    // `"t"` there so that shape continues to FAIL LOUD (Code 47) rather than
-    // return a silently-wrong aggregate (#630 must not trade loud for silent).
-    let group_where_alias: &str = if is_optional_vlp && vlp_join_count > 1 {
+    // #643/#630: the per-endpoint override + lifted WHERE/GROUP guard below are
+    // only SOUND when the chained topology is fully materialized. The #643 fix
+    // handles the FORWARD orientation (`(a)-[*]->(b) OPTIONAL MATCH (b)-[*]->(c)`
+    // — `b` becomes a real `LEFT JOIN … ON b.id = vt0.end_id`), but a multi-VLP
+    // shape it does NOT yet handle — notably the REVERSED-arrow chain
+    // `(a)<-[*]-(b) OPTIONAL MATCH (b)<-[*]-(c)` (the #840 family) — still emits
+    // the shared intermediate as a bare `ON 1 = 1` cartesian. For such a shape the
+    // #630 `"t"` loud-guard MUST remain: lifting it would let a cartesian-inflated
+    // aggregate execute silently-wrong instead of failing Code 47 (ground rule 1).
+    // Detect a REMAINING bare cartesian (empty `joining_on`, not a deliberate #601
+    // user comma-cartesian) among multiple VLP joins and, for that unhandled shape
+    // only, fall back to the historical single-alias + dangling-`t` behavior.
+    let vlp_join_count = plan
+        .joins
+        .0
+        .iter()
+        .filter(|j| j.table_name.starts_with("vlp_"))
+        .count();
+    // A bare cross-join renders as `ON 1 = 1` — an `Equal(1, 1)` tautology with
+    // no real correlation (and NOT flagged as a deliberate #601 user
+    // comma-cartesian). Its presence among multiple VLP joins means the chained
+    // topology was NOT materialized (the unhandled reversed-arrow shape), so the
+    // endpoint aggregate must stay loud rather than group a cartesian silently.
+    let is_cartesian_tautology = |j: &Join| -> bool {
+        !j.is_cartesian
+            && j.joining_on.len() == 1
+            && j.joining_on[0].operator == crate::render_plan::render_expr::Operator::Equal
+            && j.joining_on[0].operands.len() == 2
+            && matches!(
+                (&j.joining_on[0].operands[0], &j.joining_on[0].operands[1]),
+                (
+                    RenderExpr::Literal(crate::render_plan::render_expr::Literal::Integer(_)),
+                    RenderExpr::Literal(crate::render_plan::render_expr::Literal::Integer(_)),
+                )
+            )
+    };
+    let has_unhandled_vlp_cartesian = plan.joins.0.iter().any(is_cartesian_tautology);
+    let keep_loud_multi_vlp = is_optional_vlp && vlp_join_count > 1 && has_unhandled_vlp_cartesian;
+
+    // #643: each VLP endpoint Cypher alias → its OWN VLP CTE's outer JOIN alias,
+    // so a chained pattern's 2nd+ endpoint resolves to its own `vt1`/`vt2` rather
+    // than the single FIRST-join `vlp_from_alias`. Keyed prefer-END: a node that
+    // is BOTH one CTE's end and another's start (the shared intermediate) takes
+    // the END mapping, consistent with `cte_column_mapping` / `endpoint_position`.
+    // Only VLP CTEs that are actually JOINed (OPTIONAL VLP) contribute; a required
+    // VLP's CTE is the FROM (no join) so the map is empty and the shared
+    // `vlp_from_alias` default applies → single-VLP shapes stay byte-identical.
+    // Left empty for the unhandled-cartesian shape so its endpoints dangle loud.
+    let cte_join_alias = |cte_name: &str| -> Option<String> {
+        plan.joins
+            .0
+            .iter()
+            .find(|j| j.table_name == cte_name)
+            .map(|j| j.table_alias.clone())
+    };
+    let mut endpoint_alias_override: HashMap<String, String> = HashMap::new();
+    if !keep_loud_multi_vlp {
+        for cte in &plan.ctes.0 {
+            if let (Some(end), Some(join_alias)) = (
+                cte.vlp_cypher_end_alias.as_ref(),
+                cte_join_alias(&cte.cte_name),
+            ) {
+                endpoint_alias_override.insert(end.clone(), join_alias);
+            }
+        }
+        for cte in &plan.ctes.0 {
+            if let (Some(start), Some(join_alias)) = (
+                cte.vlp_cypher_start_alias.as_ref(),
+                cte_join_alias(&cte.cte_name),
+            ) {
+                endpoint_alias_override
+                    .entry(start.clone())
+                    .or_insert(join_alias);
+            }
+        }
+    }
+
+    // The alias to use for the WHERE / GROUP BY endpoint rewrite. Endpoint
+    // references resolve per-endpoint via `endpoint_alias_override` (above), so a
+    // fully-materialized chained multi-VLP no longer needs the historical `"t"`
+    // loud-guard (#630/#643 — it forced Code 47 rather than group by the WRONG
+    // VLP). For an UNHANDLED multi-VLP cartesian shape keep the dangling `"t"` so
+    // it stays loud (see `keep_loud_multi_vlp` above). The shared `vlp_from_alias`
+    // remains the default for non-endpoint (path-var) references.
+    let group_where_alias: &str = if keep_loud_multi_vlp {
         "t"
     } else {
         &vlp_from_alias
@@ -2152,6 +2221,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
                 &endpoint_position,
                 &cte_column_mapping,
                 &id_property_by_alias,
+                &endpoint_alias_override,
             );
         }
 
@@ -2185,6 +2255,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
                     &endpoint_position,
                     &cte_column_mapping,
                     &id_property_by_alias,
+                    &endpoint_alias_override,
                 );
             }
         }
@@ -2202,6 +2273,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
             &endpoint_position,
             &cte_column_mapping,
             &id_property_by_alias,
+            &endpoint_alias_override,
         );
     }
 
@@ -2221,6 +2293,7 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
             &endpoint_position,
             &cte_column_mapping,
             &id_property_by_alias,
+            &endpoint_alias_override,
         );
     }
 
