@@ -3718,7 +3718,40 @@ impl GraphJoinInference {
             starts.sort_unstable();
             starts.dedup();
             let is_fan_in = all_same_end && starts.len() == required_vlps.len();
-            if !is_fan_in {
+
+            // #544 chained-forward: the VLPs form a single simple forward path
+            // `(a)-[*]->(b)-[*]->(c)...` — each VLP's right endpoint is the next
+            // VLP's left endpoint (`collect_required_vlps` yields them in this
+            // forward order), and the N edges cover exactly N+1 distinct node
+            // aliases (a simple path, no branching/reconvergence). The render +
+            // emit phases materialize each VLP CTE and INNER-JOIN consecutive
+            // ones on the shared intermediate (`t_ch_{i}.start_id = prev.end_id`),
+            // resolving each endpoint to its own CTE alias. Any other multi-VLP
+            // shape (fan-out, disjoint, reversed/reconverging chains) stays loud.
+            let chains_forward = required_vlps
+                .windows(2)
+                .all(|w| w[0].1 == w[1].0 && w[0].1 != w[0].0 && w[1].1 != w[1].0);
+            let mut all_aliases: Vec<&str> = required_vlps
+                .iter()
+                .flat_map(|(l, r, _)| [l.as_str(), r.as_str()])
+                .collect();
+            all_aliases.sort_unstable();
+            all_aliases.dedup();
+            let is_chained_forward = chains_forward
+                && all_aliases.len() == required_vlps.len() + 1
+                && !Self::scope_has_undirected_required_vlp(plan);
+
+            // #544: tell the render phase how many VLP CTEs a chained-forward path
+            // must materialize. If render can't build the full chain (a hop
+            // degenerated — e.g. a type-incompatible VLP built fewer CTEs), it
+            // must fail LOUD rather than silently drop the missing hop constraint.
+            if is_chained_forward {
+                crate::server::query_context::register_expected_chained_vlp_count(
+                    required_vlps.len(),
+                );
+            }
+
+            if !is_fan_in && !is_chained_forward {
                 let described: Vec<String> = required_vlps
                     .iter()
                     .map(|(l, r, rel)| format!("({l})-[{rel}*..]->({r})"))
@@ -3857,6 +3890,47 @@ impl GraphJoinInference {
             // WithClause is a separate scope boundary — its inner scope gets
             // its own pre-pass call at its own collect_graph_joins call site.
             _ => {}
+        }
+    }
+
+    /// #544: does this scope contain any UNDIRECTED required VLP? Undirected VLPs
+    /// render as a #617 doubled-edge single walk whose chaining semantics across
+    /// two VLPs are not yet verified, so `is_chained_forward` excludes them
+    /// (they stay #544-loud). Mirrors `collect_required_vlps`'s traversal and
+    /// skip conditions exactly.
+    fn scope_has_undirected_required_vlp(plan: &LogicalPlan) -> bool {
+        match plan {
+            LogicalPlan::GraphRel(gr) => {
+                if let Some(spec) = gr.variable_length.as_ref() {
+                    let is_fixed_length =
+                        spec.exact_hop_count().is_some() && gr.shortest_path_mode.is_none();
+                    let is_optional = gr.is_optional.unwrap_or(false);
+                    let is_undirected = gr.direction
+                        == crate::query_planner::logical_expr::Direction::Either
+                        || gr.was_undirected == Some(true);
+                    if !is_fixed_length && !is_optional && is_undirected {
+                        return true;
+                    }
+                }
+                Self::scope_has_undirected_required_vlp(&gr.left)
+                    || Self::scope_has_undirected_required_vlp(&gr.right)
+            }
+            LogicalPlan::GraphNode(gn) => Self::scope_has_undirected_required_vlp(&gn.input),
+            LogicalPlan::Filter(f) => Self::scope_has_undirected_required_vlp(&f.input),
+            LogicalPlan::Projection(p) => Self::scope_has_undirected_required_vlp(&p.input),
+            LogicalPlan::GroupBy(g) => Self::scope_has_undirected_required_vlp(&g.input),
+            LogicalPlan::OrderBy(o) => Self::scope_has_undirected_required_vlp(&o.input),
+            LogicalPlan::Skip(s) => Self::scope_has_undirected_required_vlp(&s.input),
+            LogicalPlan::Limit(l) => Self::scope_has_undirected_required_vlp(&l.input),
+            LogicalPlan::Cte(c) => Self::scope_has_undirected_required_vlp(&c.input),
+            LogicalPlan::GraphJoins(gj) => Self::scope_has_undirected_required_vlp(&gj.input),
+            LogicalPlan::Unwind(u) => Self::scope_has_undirected_required_vlp(&u.input),
+            LogicalPlan::CartesianProduct(cp) => {
+                Self::scope_has_undirected_required_vlp(&cp.left)
+                    || Self::scope_has_undirected_required_vlp(&cp.right)
+            }
+            LogicalPlan::Union(_) => false,
+            _ => false,
         }
     }
 

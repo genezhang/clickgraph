@@ -17879,20 +17879,89 @@ mod vlp_family_remnants_544_545_528_525 {
         assert!(err.contains("#544"), "expected a #544 error: {err}");
     }
 
-    /// #544 (chained variant): two directly adjacent VLPs sharing the middle
-    /// node. Pre-fix only `vlp_b_c` was emitted — `a.name` silently became
-    /// b's start_name and the a→b hop constraint vanished entirely.
+    /// #544 (chained-forward, now SUPPORTED): two+ directly adjacent VLPs
+    /// forming a simple forward path, sharing each middle node. Pre-fix only
+    /// `vlp_b_c` was emitted — `a.name` silently became b's start_name and the
+    /// a→b hop constraint vanished. Now each VLP materializes its own CTE and
+    /// consecutive CTEs are INNER-JOINed on the shared intermediate
+    /// (`t_ch_{i}.start_id = prev.end_id`), each endpoint resolving to its own
+    /// CTE alias.
     #[tokio::test]
-    async fn chained_vlps_rejected_loudly_544() {
+    async fn chained_vlps_render_multi_cte_544() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User) \
+             RETURN a.name, b.name, c.name ORDER BY c.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        // Both VLP CTEs materialize and are chained on the shared middle node.
+        assert!(
+            sql.contains("vlp_a_b") && sql.contains("vlp_b_c"),
+            "both VLP CTEs must render: {sql}"
+        );
+        assert!(
+            sql.contains("FROM vlp_a_b AS t"),
+            "first VLP is the FROM (alias t): {sql}"
+        );
+        assert!(
+            sql.contains("INNER JOIN vlp_b_c AS t_ch_0 ON t_ch_0.start_id = t.end_id"),
+            "second VLP INNER-JOINed on the shared intermediate: {sql}"
+        );
+        // Each endpoint resolves to its own CTE alias (no conflation onto `t`).
+        assert!(
+            sql.contains("t.start_name AS \"a.name\""),
+            "a → first CTE start: {sql}"
+        );
+        assert!(
+            sql.contains("t_ch_0.start_name AS \"b.name\""),
+            "shared middle b → second CTE start (matches cte_column_mapping): {sql}"
+        );
+        assert!(
+            sql.contains("t_ch_0.end_name AS \"c.name\""),
+            "c → second CTE end: {sql}"
+        );
+        assert!(
+            sql.contains("ORDER BY t_ch_0.end_name"),
+            "ORDER BY c.name → its own CTE alias, not the raw Cypher alias: {sql}"
+        );
+    }
+
+    /// #544 chained-forward stays scoped: a 3-deep chain renders three chained
+    /// CTEs, but any NON-simple-forward multi-VLP (fan-out, reversed) stays loud.
+    #[tokio::test]
+    async fn chained_vlps_three_deep_render_544() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User)\
+             -[:FOLLOWS*1..2]->(d:User) RETURN a.name, d.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("INNER JOIN vlp_b_c AS t_ch_0 ON t_ch_0.start_id = t.end_id")
+                && sql.contains("INNER JOIN vlp_c_d AS t_ch_1 ON t_ch_1.start_id = t_ch_0.end_id"),
+            "3-deep chain must join c_d onto b_c onto a_b: {sql}"
+        );
+    }
+
+    /// #544 chained-forward is scoped to DIRECTED chains: an undirected chain
+    /// `(a)-[*]-(b)-[*]-(c)` renders as #617 doubled-edge walks whose two-VLP
+    /// chaining semantics are not yet verified, so it stays loud rather than
+    /// risk silently-wrong results (ground rule 1).
+    #[tokio::test]
+    async fn undirected_chained_vlps_stay_loud_544() {
         let schema = load_schema(SchemaId::Standard.yaml_path());
         let err = try_render(
             &schema,
-            "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User) \
+            "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User)-[:FOLLOWS*1..2]-(c:User) \
              RETURN a.name, c.name",
             SqlDialect::ClickHouse,
         )
         .await
-        .expect_err("chained VLPs must error, not silently drop the first VLP");
+        .expect_err("undirected chained VLPs must stay loud, not render unverified");
         assert!(err.contains("#544"), "expected a #544 error: {err}");
     }
 

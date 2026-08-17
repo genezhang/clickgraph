@@ -151,6 +151,15 @@ pub struct QueryContext {
     /// the ~100 string-protocol sites. Reset per query in `clear_all_render_contexts`.
     pub vlp_from_alias: Option<String>,
 
+    /// #544: number of VLPs the analyzer admitted as a chained-forward multi-VLP
+    /// path `(a)-[*]->(b)-[*]->(c)...` in the current scope. `None` when the
+    /// scope is not a chained multi-VLP. The render phase reads this to VERIFY it
+    /// can materialize the full chain of CTEs — if a VLP degenerates (e.g. a
+    /// type-incompatible hop builds fewer CTEs than expected), the chain would be
+    /// silently truncated (a dropped hop constraint = wrong results), so render
+    /// fails LOUD instead. Reset per query in `clear_all_render_contexts`.
+    pub expected_chained_vlp_count: Option<usize>,
+
     /// Current variable registry for SQL rendering.
     /// Set from the CTE or RenderPlan being rendered; used by PropertyAccessExp::to_sql()
     /// to resolve cypher_alias.property → correct SQL column.
@@ -806,6 +815,24 @@ pub fn vlp_from_alias() -> String {
         .unwrap_or_else(|| crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string())
 }
 
+/// #544: record that the current scope is a chained-forward multi-VLP path of
+/// `count` VLPs. Called from the analyzer's `pre_register_vlp_endpoints` gate.
+pub fn register_expected_chained_vlp_count(count: usize) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().expected_chained_vlp_count = Some(count);
+    });
+}
+
+/// #544: the expected chained-forward VLP count for the current scope, or `None`
+/// if this scope is not a chained multi-VLP. Read by the render phase to verify
+/// the full CTE chain materialized (else fail loud rather than drop a hop).
+pub fn expected_chained_vlp_count() -> Option<usize> {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().expected_chained_vlp_count)
+        .ok()
+        .flatten()
+}
+
 /// Check if an alias is a multi-type VLP endpoint
 pub fn is_multi_type_vlp_alias(alias: &str) -> bool {
     QUERY_CONTEXT
@@ -1186,6 +1213,8 @@ pub fn clear_all_render_contexts() {
         ctx.cte_alias_to_cte_name.clear();
         ctx.all_cte_names.clear();
         ctx.weight_cte_config = None;
+        // #544: reset the chained-forward multi-VLP expected count.
+        ctx.expected_chained_vlp_count = None;
         // #1088: reset the query-scoped VLP FROM alias so the next query starts
         // from the default `"t"` and re-registers its own value if it collides.
         ctx.vlp_from_alias = None;

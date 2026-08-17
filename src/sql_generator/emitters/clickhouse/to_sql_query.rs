@@ -1567,6 +1567,103 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
         }
     }
 
+    // ── Chained-forward multi-VLP (#544) ────────────────────────────────────
+    // `(a)-[*]->(b)-[*]->(c)...` renders one VLP CTE per hop, chained on the
+    // shared intermediate node. The analyzer gate (`is_chained_forward`) admits
+    // only this simple-forward-path shape. Make the FIRST CTE the FROM (alias
+    // `t`) and INNER-JOIN each subsequent CTE as `t_ch_{i-1}` on the shared
+    // intermediate: `t_ch_{i-1}.start_id = <prev>.end_id`. The render phase
+    // already rewrote SELECT/WHERE/ORDER endpoint references to these same
+    // per-CTE aliases (`endpoint_alias_override`, matching this aliasing), so —
+    // unlike fan-in — the outer WHERE is CORRECT (each endpoint filter resolved
+    // to its own CTE alias) and must NOT be cleared.
+    {
+        let chain_ctes: Vec<&Cte> = plan
+            .ctes
+            .0
+            .iter()
+            .filter(|c| c.vlp_cypher_start_alias.is_some() && c.vlp_cypher_end_alias.is_some())
+            .collect();
+        // Mirror the analyzer's `is_chained_forward` and the render-phase
+        // detection EXACTLY: consecutive `cte[i].start == cte[i-1].end`, no
+        // self-loop endpoints, and N CTEs over N+1 DISTINCT node aliases. The
+        // distinct-count guard rejects a reverse/reconverging pair such as a
+        // shortestPath's `vlp_a_b` + `vlp_b_a` (they share `b` but cover only
+        // {a,b}), which is a UNION of directions, not a chain.
+        let mut distinct_aliases: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
+        for c in &chain_ctes {
+            if let Some(s) = c.vlp_cypher_start_alias.as_deref() {
+                distinct_aliases.insert(s);
+            }
+            if let Some(e) = c.vlp_cypher_end_alias.as_deref() {
+                distinct_aliases.insert(e);
+            }
+        }
+        let is_chain = chain_ctes.len() > 1
+            && chain_ctes.windows(2).all(|w| {
+                w[1].vlp_cypher_start_alias == w[0].vlp_cypher_end_alias
+                    && w[0].vlp_cypher_start_alias != w[0].vlp_cypher_end_alias
+                    && w[1].vlp_cypher_start_alias != w[1].vlp_cypher_end_alias
+            })
+            && distinct_aliases.len() == chain_ctes.len() + 1;
+        if is_chain {
+            log::info!(
+                "🔗 Chained-forward VLP detected: {} CTEs in one simple path",
+                chain_ctes.len()
+            );
+
+            // FROM = first CTE aliased `t`.
+            plan.from = FromTableItem(Some(ViewTableRef {
+                source: std::sync::Arc::new(LogicalPlan::Empty),
+                name: chain_ctes[0].cte_name.clone(),
+                alias: Some(vlp_from_alias()),
+                use_final: false,
+            }));
+
+            // INNER JOIN each subsequent CTE on the shared intermediate.
+            let mut prev_alias = vlp_from_alias();
+            for (i, cte) in chain_ctes[1..].iter().enumerate() {
+                let this_alias = format!("t_ch_{}", i);
+                let join = Join {
+                    table_name: cte.cte_name.clone(),
+                    table_alias: this_alias.clone(),
+                    joining_on: vec![OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(this_alias.clone()),
+                                column:
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        VLP_START_ID_COLUMN.to_string(),
+                                    ),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(prev_alias.clone()),
+                                column:
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        VLP_END_ID_COLUMN.to_string(),
+                                    ),
+                            }),
+                        ],
+                    }],
+                    join_type: JoinType::Inner,
+                    pre_filter: None,
+                    from_id_column: None,
+                    to_id_column: None,
+                    graph_rel: None,
+                    is_cartesian: false,
+                };
+                plan.joins.0.push(join);
+                prev_alias = this_alias;
+            }
+
+            // SELECT/WHERE/ORDER already rewritten to the `t`/`t_ch_N` aliases in
+            // the render phase — return without the single-CTE rewrite below.
+            return plan;
+        }
+    }
+
     // Check if any CTE is a VLP CTE
     let vlp_cte = plan
         .ctes
