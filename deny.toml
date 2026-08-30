@@ -17,7 +17,20 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # proc-macro crate); it never ships in any runtime artifact and is not a
 # security vulnerability. Removing it requires validator_derive to migrate
 # off it upstream — ignore until a validator release drops the dependency.
-ignore = ["RUSTSEC-2025-0134", "RUSTSEC-2026-0097", "RUSTSEC-2026-0173"]
+# RUSTSEC-2026-0258: h2 unbounded empty DATA frames. The server path
+# (axum/hyper 1.x) is patched — h2 upgraded to 0.4.16. The only residual
+# copy is h2 0.3.27, pulled in via the optional `embedded` feature's
+# chdb-rust → reqwest 0.11 outbound HTTP/2 client. No patch exists for the
+# 0.3.x series (fixed only in >=0.4.16) and reqwest 0.11 is pinned by
+# chdb-rust, so it cannot be upgraded without dropping chdb. Low severity,
+# outbound-client-only, and off the default (server) build — ignore until
+# chdb-rust migrates to reqwest 0.12.
+ignore = [
+    "RUSTSEC-2025-0134",
+    "RUSTSEC-2026-0097",
+    "RUSTSEC-2026-0173",
+    "RUSTSEC-2026-0258",
+]
 
 [licenses]
 # Allow common permissive and copyleft-compatible licenses

@@ -26,7 +26,10 @@ jobs:
       - name: Run cargo audit
         # Ignore non-vulnerability warnings for transitive deps we can't control:
         # - RUSTSEC-2025-0134: rustls-pemfile unmaintained (via chdb-rust → reqwest 0.11)
-        run: cargo audit --ignore RUSTSEC-2025-0134
+        # - RUSTSEC-2026-0258: residual h2 0.3.27 via chdb-rust → reqwest 0.11.
+        #   Server path (hyper 1.x) patched to h2 0.4.16; no 0.3.x patch exists.
+        #   See deny.toml for the full justification.
+        run: cargo audit --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2026-0258
 
   deny:
     name: cargo deny

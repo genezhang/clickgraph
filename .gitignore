@@ -174,3 +174,6 @@ notes/
 demos/*/docker-compose.override.yml
 models/
 /target-*/
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
