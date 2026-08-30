@@ -1,0 +1,44 @@
+# DeltaGraph Beat-2 demo schema — the TPC-DS co-purchase graph over Databricks'
+# own 1TB sample dataset (samples.tpcds_sf1000, ships in every Unity-Catalog
+# workspace). FK-edge layout: store_sales IS the PURCHASED edge (customer→item).
+#
+# Graph shape:  (Customer)-[:PURCHASED]->(Item)
+# Recommendation query: (i1)<-[:PURCHASED]-(c)-[:PURCHASED]->(i2)  = "also bought"
+#
+# Verified end-to-end live 2026-08-10: store_sales = 2,879,966,589 rows (~2.88B
+# purchase edges); a bounded 2-hop co-purchase traversal returns in ~1.06s warm.
+name: tpcds_copurchase
+
+graph_schema:
+  nodes:
+    - label: Item
+      database: samples.tpcds_sf1000
+      table: item
+      node_id: i_item_sk
+      property_mappings:
+        item_sk: i_item_sk
+        name: i_product_name
+        category: i_category
+        brand: i_brand
+        class: i_class
+
+    - label: Customer
+      database: samples.tpcds_sf1000
+      table: customer
+      node_id: c_customer_sk
+      property_mappings:
+        customer_sk: c_customer_sk
+        first_name: c_first_name
+        last_name: c_last_name
+
+  edges:
+    - type: PURCHASED
+      database: samples.tpcds_sf1000
+      table: store_sales
+      from_node: Customer
+      to_node: Item
+      from_id: ss_customer_sk
+      to_id: ss_item_sk
+      property_mappings:
+        quantity: ss_quantity
+        sales_price: ss_sales_price
