@@ -1,0 +1,343 @@
+{
+  "benchmark": "LDBC SNB official",
+  "scale_factor": "sf10",
+  "iterations": 5,
+  "timestamp": "2026-08-30T23:39:52",
+  "results": [
+    {
+      "qid": "IS1",
+      "status": "ok",
+      "median_ms": 4.5,
+      "min_ms": 4.3,
+      "max_ms": 6.3,
+      "rows": 1,
+      "error": null
+    },
+    {
+      "qid": "IS2",
+      "status": "error",
+      "median_ms": 6.3,
+      "error": "Executor error: I/O error while reading results: bad response: Code: 47. DB::Exception: Identifier 'message_messageCreationDate_messageId.p7_message_start_id' cannot be resolved from subquery with name message_messageCreationDate_messageId. In scope WITH RECURSIVE vlp_multi_type_message_t1 AS (SELEC",
+      "rows": null
+    },
+    {
+      "qid": "IS3",
+      "status": "ok",
+      "median_ms": 26.8,
+      "min_ms": 24.2,
+      "max_ms": 28.3,
+      "rows": 25,
+      "error": null
+    },
+    {
+      "qid": "IS4",
+      "status": "ok",
+      "median_ms": 3.5,
+      "min_ms": 3.4,
+      "max_ms": 3.9,
+      "rows": 1,
+      "error": null
+    },
+    {
+      "qid": "IS5",
+      "status": "ok",
+      "median_ms": 31.3,
+      "min_ms": 31.0,
+      "max_ms": 33.1,
+      "rows": 1,
+      "error": null
+    },
+    {
+      "qid": "IS6",
+      "status": "ok",
+      "median_ms": 308.3,
+      "min_ms": 292.0,
+      "max_ms": 352.3,
+      "rows": 0,
+      "error": null
+    },
+    {
+      "qid": "IS7",
+      "status": "error",
+      "median_ms": 0.9,
+      "error": "Planning error: AnalyzerError: Unsupported pattern: OPTIONAL MATCH with an undirected hop chained onto another optional hop (e.g. `OPTIONAL MATCH (a)-[:R]-(b) OPTIONAL MATCH (b)-[:R]-(c)`, or `OPTIONAL MATCH (a)-[:R]-(b)-[:R]-(c)`) is not supported: the bidirectional expansion of the undirected hop ",
+      "rows": null
+    },
+    {
+      "qid": "IC1",
+      "status": "error",
+      "median_ms": 1.1,
+      "error": "Planning error: AnalyzerError: Invalid relationship pattern: (Company)-[:IS_LOCATED_IN]->(Country). Schema defines IS_LOCATED_IN as (Comment)-[:IS_LOCATED_IN]->(Country). Please add the missing relationship definition to your schema YAML.",
+      "rows": null
+    },
+    {
+      "qid": "IC2",
+      "status": "ok",
+      "median_ms": 188.3,
+      "min_ms": 184.1,
+      "max_ms": 241.1,
+      "rows": 20,
+      "error": null
+    },
+    {
+      "qid": "IC3",
+      "status": "error",
+      "median_ms": 10.5,
+      "error": "Executor error: I/O error while reading results: bad response: Code: 62. DB::Exception: Syntax error: failed at position 937 (.) (line 21, col 32): .one\nINNER JOIN ldbc_sf10.Place AS country ON country.id = t1.Place2Id\nINNER JOIN ldbc_sf10.Place_isPartOf_Place AS t1 ON t1.Place1Id = city.id\nWHERE (c",
+      "rows": null
+    },
+    {
+      "qid": "IC4",
+      "status": "ok",
+      "median_ms": 187.2,
+      "min_ms": 178.7,
+      "max_ms": 187.6,
+      "rows": 10,
+      "error": null
+    },
+    {
+      "qid": "IC5",
+      "status": "error",
+      "median_ms": 18.1,
+      "error": "Executor error: I/O error while reading results: bad response: Code: 47. DB::Exception: Unknown expression or function identifier `person` in scope SELECT start_node.id AS start_id, end_node.id AS end_id, 1 AS hop_count, CAST([], 'Array(String)') AS path_relationships, [start_node.id, end_node.id] A",
+      "rows": null
+    },
+    {
+      "qid": "IC6",
+      "status": "ok",
+      "median_ms": 612.7,
+      "min_ms": 584.6,
+      "max_ms": 634.1,
+      "rows": 10,
+      "error": null
+    },
+    {
+      "qid": "IC7",
+      "status": "ok",
+      "median_ms": 372.4,
+      "min_ms": 362.3,
+      "max_ms": 397.3,
+      "rows": 20,
+      "error": null
+    },
+    {
+      "qid": "IC8",
+      "status": "ok",
+      "median_ms": 591.5,
+      "min_ms": 577.2,
+      "max_ms": 618.2,
+      "rows": 20,
+      "error": null
+    },
+    {
+      "qid": "IC9",
+      "status": "error",
+      "median_ms": 49.9,
+      "error": "Executor error: I/O error while reading results: bad response: Code: 47. DB::Exception: Unknown expression or function identifier `friend` in scope SELECT start_node.id AS start_id, end_node.id AS end_id, 1 AS hop_count, CAST([], 'Array(String)') AS path_relationships, [start_node.id, end_node.id] A",
+      "rows": null
+    },
+    {
+      "qid": "IC10",
+      "status": "error",
+      "median_ms": 6.9,
+      "error": "Executor error: I/O error while reading results: bad response: Code: 47. DB::Exception: Unknown expression identifier `person.id` in scope  with_birthday_city_friend_person_cte_0 AS birthday_city_friend_person. Maybe you meant: ['personId']. (UNKNOWN_IDENTIFIER) (version 26.7.1.1315 (official build)",
+      "rows": null
+    },
+    {
+      "qid": "IC11",
+      "status": "error",
+      "median_ms": 0.6,
+      "error": "Planning error: AnalyzerError: Invalid relationship pattern: (Company)-[:IS_LOCATED_IN]->(Country). Schema defines IS_LOCATED_IN as (Comment)-[:IS_LOCATED_IN]->(Country). Please add the missing relationship definition to your schema YAML.",
+      "rows": null
+    },
+    {
+      "qid": "IC12",
+      "status": "ok",
+      "median_ms": 446.6,
+      "min_ms": 436.4,
+      "max_ms": 465.6,
+      "rows": 20,
+      "error": null
+    },
+    {
+      "qid": "IC13",
+      "status": "ok",
+      "median_ms": 80.7,
+      "min_ms": 76.7,
+      "max_ms": 88.2,
+      "rows": 1,
+      "error": null
+    },
+    {
+      "qid": "IC14",
+      "status": "error",
+      "median_ms": 0.6,
+      "error": "Query syntax error: Parsing Failure: OpenCypherParsingError { errors: [(\"CALL gds.graph.project.cypher(\\n  apoc.create.uuidBase64(),\\n  'MATCH (p:Person) RETURN id(p) AS id',\\n  'MATCH\\n      (pA:Person)-[knows:KNOWS]-(pB:Person),\\n      (pA)<-[:HAS_CREATOR]-(m1:Message)-[r:REPLY_OF]-(m2:Message)-[:",
+      "rows": null
+    },
+    {
+      "qid": "BI1",
+      "status": "ok",
+      "median_ms": 536.2,
+      "min_ms": 531.6,
+      "max_ms": 538.5,
+      "rows": 12,
+      "error": null
+    },
+    {
+      "qid": "BI2",
+      "status": "ok",
+      "median_ms": 203.5,
+      "min_ms": 199.3,
+      "max_ms": 208.0,
+      "rows": 77,
+      "error": null
+    },
+    {
+      "qid": "BI3",
+      "status": "ok",
+      "median_ms": 240760.2,
+      "min_ms": 211488.5,
+      "max_ms": 253740.9,
+      "rows": 20,
+      "error": null
+    },
+    {
+      "qid": "BI4",
+      "status": "error",
+      "median_ms": 0.6,
+      "error": "Query syntax error: Parsing Failure: OpenCypherParsingError { errors: [(\"CALL {\\n  WITH topForums\\n  UNWIND topForums AS topForum1\\n  MATCH (topForum1)-[:CONTAINER_OF]->(post:Post)<-[:REPLY_OF*0..]-(message:Message)-[:HAS_CREATOR]->(person:Person)<-[:HAS_MEMBER]-(topForum2:Forum)\\n  WITH person, mes",
+      "rows": null
+    },
+    {
+      "qid": "BI5",
+      "status": "ok",
+      "median_ms": 358.4,
+      "min_ms": 353.8,
+      "max_ms": 374.5,
+      "rows": 100,
+      "error": null
+    },
+    {
+      "qid": "BI6",
+      "status": "ok",
+      "median_ms": 3979.6,
+      "min_ms": 3868.4,
+      "max_ms": 4170.9,
+      "rows": 100,
+      "error": null
+    },
+    {
+      "qid": "BI7",
+      "status": "ok",
+      "median_ms": 466.0,
+      "min_ms": 456.7,
+      "max_ms": 483.2,
+      "rows": 100,
+      "error": null
+    },
+    {
+      "qid": "BI8",
+      "status": "ok",
+      "median_ms": 6408.7,
+      "min_ms": 6241.6,
+      "max_ms": 6452.7,
+      "rows": 100,
+      "error": null
+    },
+    {
+      "qid": "BI9",
+      "status": "ok",
+      "median_ms": 1929.1,
+      "min_ms": 1858.2,
+      "max_ms": 1933.5,
+      "rows": 100,
+      "error": null
+    },
+    {
+      "qid": "BI10",
+      "status": "error",
+      "median_ms": 0.6,
+      "error": "Query syntax error: Parsing Failure: OpenCypherParsingError { errors: [(\"CALL apoc.path.subgraphNodes(startPerson, {\\n\\trelationshipFilter: \\\"KNOWS\\\",\\n    minLevel: 1,\\n    maxLevel: 3\\n})\\nYIELD node\\nWITH nodesCloserThanMinPathDistance, collect(DISTINCT node) AS nodesCloserThanMaxPathDistance\\nWI",
+      "rows": null
+    },
+    {
+      "qid": "BI11",
+      "status": "ok",
+      "median_ms": 1323.7,
+      "min_ms": 1271.1,
+      "max_ms": 1412.1,
+      "rows": 1,
+      "error": null
+    },
+    {
+      "qid": "BI12",
+      "status": "error",
+      "median_ms": 22.5,
+      "error": "Executor error: I/O error while reading results: bad response: Code: 47. DB::Exception: Identifier 'end_node.language' cannot be resolved from table with name end_node. In scope SELECT vp.start_id, end_node.id AS end_id, vp.hop_count + 1 AS hop_count, CAST([], 'Array(String)') AS path_relationships,",
+      "rows": null
+    },
+    {
+      "qid": "BI13",
+      "status": "ok",
+      "median_ms": 1730.6,
+      "min_ms": 1684.2,
+      "max_ms": 1769.2,
+      "rows": 16,
+      "error": null
+    },
+    {
+      "qid": "BI14",
+      "status": "ok",
+      "median_ms": 2125.7,
+      "min_ms": 2093.3,
+      "max_ms": 2621.6,
+      "rows": 100,
+      "error": null
+    },
+    {
+      "qid": "BI15",
+      "status": "error",
+      "median_ms": 0.7,
+      "error": "Query syntax error: Parsing Failure: OpenCypherParsingError { errors: [(\"CALL gds.graph.project.cypher(\\n  'bi15',\\n  'MATCH (p:Person) RETURN id(p) AS id',\\n  'MATCH (pA:Person)-[knows:KNOWS]-(pB:Person)\\n      OPTIONAL MATCH (pA)<-[:HAS_CREATOR]-(m1:Message)-[r:REPLY_OF]-(m2:Message)-[:HAS_CREATOR",
+      "rows": null
+    },
+    {
+      "qid": "BI16",
+      "status": "error",
+      "median_ms": 0.6,
+      "error": "Query syntax error: Parsing Failure: OpenCypherParsingError { errors: [(\"CALL {\\n  WITH paramTagX, paramDateX\\n  MATCH (person1:Person)<-[:HAS_CREATOR]-(message1:Message)-[:HAS_TAG]->(tag:Tag {name: paramTagX})\\n  WHERE date(message1.creationDate) = date(paramDateX)\\n  OPTIONAL MATCH (person1)-[:KNO",
+      "rows": null
+    },
+    {
+      "qid": "BI17",
+      "status": "error",
+      "median_ms": 1.2,
+      "error": "Planning error: AnalyzerError: Unsupported pattern: (#544) this MATCH scope contains 2 variable-length path relationships ((message1)-[t2*..]->(post1), (message2)-[t11*..]->(post2)). ClickGraph does not yet support multiple recursive variable-length paths in one MATCH scope (except same-end fan-in) ",
+      "rows": null
+    },
+    {
+      "qid": "BI18",
+      "status": "ok",
+      "median_ms": 856.6,
+      "min_ms": 843.5,
+      "max_ms": 862.7,
+      "rows": 20,
+      "error": null
+    },
+    {
+      "qid": "BI19",
+      "status": "error",
+      "median_ms": 0.7,
+      "error": "Query syntax error: Parsing Failure: OpenCypherParsingError { errors: [(\".totalWeight\\nRETURN person1Id, person2Id, totalWeight\\nORDER BY person1Id, person2Id\", \"Unexpected tokens after query\"), (\".totalWeight\\nRETURN person1Id, person2Id, totalWeight\\nORDER BY person1Id, person2Id\", \"Unparsed input",
+      "rows": null
+    },
+    {
+      "qid": "BI20",
+      "status": "error",
+      "median_ms": 0.3,
+      "error": "Query syntax error: Parsing Failure: OpenCypherParsingError { errors: [(\"WITH person1.id AS person1Id, totalCost AS totalWeight\\nORDER BY totalWeight ASC\\nWITH collect({person1Id: person1Id, totalWeight: totalWeight}) AS results\\nUNWIND results AS result\\nWITH result.person1Id AS person1Id, result.t",
+      "rows": null
+    }
+  ]
+}
