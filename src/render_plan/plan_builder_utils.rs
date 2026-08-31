@@ -1889,6 +1889,24 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
         }
     }
 
+    // #1100 (re-match shape): when a VLP endpoint is carried across a WITH/UNWIND
+    // barrier and then re-matched (`MATCH (friend)<-[:...]-(m)`), the barrier's
+    // WITH CTE is JOINed in (not in FROM), e.g. `INNER JOIN with_friend_cte_0 AS
+    // friend`. Its columns are already the aliased `p{N}_{alias}_{prop}` form, so
+    // the endpoint alias must NOT be VLP-rewritten (which would prepend `end_` and
+    // swap to the VLP FROM alias, yielding a bogus `t.end_p6_friend_id`). Mirror
+    // the FROM-clause detection above over the JOIN list.
+    for join in &plan.joins.0 {
+        if is_generated_cte_name(&join.table_name) {
+            aliases_covered_by_with_cte.insert(join.table_alias.clone());
+            log::info!(
+                "🔧 VLP: JOIN uses WITH CTE '{}' with alias '{}' - excluding from rewrite (#1100 re-match)",
+                join.table_name,
+                join.table_alias
+            );
+        }
+    }
+
     for cte in &plan.ctes.0 {
         if let (Some(start), Some(end)) = (&cte.vlp_cypher_start_alias, &cte.vlp_cypher_end_alias) {
             vlp_endpoint_aliases.insert(start.clone());

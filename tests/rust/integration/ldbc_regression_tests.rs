@@ -683,3 +683,111 @@ async fn ldbc_bi_18() {
     assert!(!sql.is_empty());
     assert!(sql.contains("SELECT"));
 }
+
+// ---------------------------------------------------------------------------
+// #1100 — VLP endpoint referenced across a WITH / UNWIND barrier
+//
+// A variable-length path compiles to a recursive CTE (`vlp_*`). When a later
+// clause carries the VLP's endpoint across a WITH/UNWIND barrier and re-matches
+// it (`MATCH (friend)<-[:...]-(m)`), the barrier's WITH CTE is JOINed in (not in
+// FROM). The endpoint alias must resolve to that WITH CTE's aliased column
+// (`friend.p6_friend_id`), NOT be VLP-rewritten into a bogus `t.end_p6_friend_id`
+// (VLP FROM alias `t` + `end_` prefix), which references a table not in the
+// outer SELECT's scope and fails at execution (ClickHouse Code 47).
+// ---------------------------------------------------------------------------
+
+/// Render an inline Cypher string through the full pipeline (no CH connection).
+async fn generate_sql_inline(schema: &GraphSchema, cypher: &str) -> String {
+    let schema = schema.clone();
+    let cypher = cypher.to_string();
+    let ctx = QueryContext::new(Some("default".to_string()));
+    with_query_context(ctx, async {
+        set_current_schema(Arc::new(schema.clone()));
+        let cleaned = strip_comments(&cypher);
+        let (_rem, statement) = clickgraph::open_cypher_parser::parse_cypher_statement(&cleaned)
+            .unwrap_or_else(|e| panic!("parse: {e:?}"));
+        let (logical_plan, plan_ctx) =
+            evaluate_read_statement(statement, &schema, None, None, None)
+                .unwrap_or_else(|e| panic!("plan: {e:?}"));
+        let render_plan =
+            logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx))
+                .unwrap_or_else(|e| panic!("render: {e:?}"));
+        render_plan.to_sql()
+    })
+    .await
+}
+
+/// #1100 sub-shape 1 (WITH barrier + re-MATCH): the re-matched endpoint's
+/// property must reference the WITH CTE alias, never the VLP FROM alias `t`
+/// with an `end_` prefix.
+#[tokio::test]
+async fn ldbc_1100_vlp_endpoint_rematch_after_with() {
+    let schema = load_ldbc_schema();
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (root:Person {id: 14})-[:KNOWS*1..2]-(friend:Person)
+         WITH friend
+         MATCH (friend)<-[:HAS_CREATOR]-(m:Message)
+         RETURN m.id, friend.id LIMIT 5",
+    )
+    .await;
+    assert!(
+        sql.contains("friend.p6_friend_id"),
+        "#1100: re-matched endpoint `friend.id` must resolve to the WITH CTE \
+         column `friend.p6_friend_id`:\n{sql}"
+    );
+    assert!(
+        !sql.contains("t.end_p6_friend_id"),
+        "#1100: endpoint must NOT be VLP-rewritten to the bogus \
+         `t.end_p6_friend_id` (VLP FROM alias + end_ prefix):\n{sql}"
+    );
+}
+
+/// #1100 sub-shape 1 (collect + UNWIND barrier, IC9-min): identical resolution
+/// requirement when the endpoint crosses a `collect(...)` / `UNWIND` barrier.
+#[tokio::test]
+async fn ldbc_1100_vlp_endpoint_rematch_after_collect_unwind() {
+    let schema = load_ldbc_schema();
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (root:Person {id: 14})-[:KNOWS*1..2]-(friend:Person)
+         WITH collect(distinct friend) AS friends
+         UNWIND friends AS friend
+         MATCH (friend)<-[:HAS_CREATOR]-(message:Message)
+         RETURN friend.id LIMIT 5",
+    )
+    .await;
+    assert!(
+        sql.contains("friend.p6_friend_id"),
+        "#1100: post-UNWIND `friend.id` must resolve to the WITH CTE column:\n{sql}"
+    );
+    assert!(
+        !sql.contains("t.end_p6_friend_id"),
+        "#1100: endpoint must NOT be VLP-rewritten to `t.end_p6_friend_id`:\n{sql}"
+    );
+}
+
+/// #1100 regression guard: the aggregation shape where the WITH CTE is the FROM
+/// table (not a JOIN) must stay correct — the endpoint keeps resolving to the
+/// WITH CTE alias, unaffected by the JOIN-list exclusion added for the re-match
+/// shape.
+#[tokio::test]
+async fn ldbc_1100_vlp_endpoint_aggregation_from_cte_unaffected() {
+    let schema = load_ldbc_schema();
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (person:Person {id:14})-[:KNOWS*1..2]-(friend:Person)
+         WITH DISTINCT friend
+         RETURN count(friend) AS c",
+    )
+    .await;
+    assert!(
+        sql.contains("count(friend.p6_friend_id)"),
+        "#1100 guard: aggregation over the endpoint must reference the WITH CTE \
+         column `friend.p6_friend_id`:\n{sql}"
+    );
+    assert!(
+        !sql.contains("t.end_p6_friend_id"),
+        "#1100 guard: no bogus VLP-rewritten endpoint reference:\n{sql}"
+    );
+}
