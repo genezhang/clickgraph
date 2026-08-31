@@ -1709,6 +1709,111 @@ fn render_in_list_rhs(
     )
 }
 
+/// #1100: Normalize bare-node-identity comparisons in a VLP filter predicate
+/// into property-access comparisons on the node's real `node_id` column(s).
+///
+/// Rewrites `TableAlias(a) =/<> TableAlias(b)` in place, but ONLY when both
+/// operands are bare node aliases and BOTH are the VLP's endpoint aliases
+/// (`start_alias`/`end_alias`). Left as bare aliases they render as the literal
+/// alias names (`friend != root`) inside the recursive CTE, where those aliases
+/// are not in scope — ClickHouse Code 47.
+///
+/// The rewrite targets the schema-declared `node_id` column(s) — NOT a
+/// hardcoded `.id` — so it is correct on renamed (`user_id`) and composite
+/// (`[bank_id, account_number]`) node ids (axis-dispatch rule, CLAUDE.md §7):
+/// - single column: `a =/<> b` → `a.col =/<> b.col`
+/// - composite `a = b`  → `(a.c1 = b.c1 AND a.c2 = b.c2 …)`
+/// - composite `a <> b` → `NOT (a.c1 = b.c1 AND a.c2 = b.c2 …)`
+///
+/// The resulting property-access form flows through the existing property- and
+/// alias-mapping machinery (→ `end_node.<col>`/`start_node.<col>`). Recurses
+/// through boolean operators so a node-identity conjunct nested under
+/// `AND`/`OR`/`NOT` is reached without disturbing sibling filters. `start_id_cols`
+/// / `end_id_cols` are the resolved node_id columns for each endpoint; when
+/// either is empty (label/schema unresolved) the predicate is left untouched so
+/// behavior falls back to the prior (loud) path rather than emitting wrong SQL.
+fn normalize_bare_node_identity_to_id(
+    expr: &mut RenderExpr,
+    start_alias: &str,
+    end_alias: &str,
+    start_id_cols: &[String],
+    end_id_cols: &[String],
+) {
+    if let RenderExpr::OperatorApplicationExp(op) = expr {
+        let is_eq = matches!(op.operator, Operator::Equal | Operator::NotEqual);
+        if is_eq && op.operands.len() == 2 {
+            if let (RenderExpr::TableAlias(l), RenderExpr::TableAlias(r)) =
+                (&op.operands[0], &op.operands[1])
+            {
+                let both_endpoints = (l.0 == start_alias || l.0 == end_alias)
+                    && (r.0 == start_alias || r.0 == end_alias);
+                if both_endpoints {
+                    // Resolve each side's node_id columns by which endpoint it is.
+                    let cols_for = |alias: &str| -> &[String] {
+                        if alias == start_alias {
+                            start_id_cols
+                        } else {
+                            end_id_cols
+                        }
+                    };
+                    let (lcols, rcols) = (cols_for(&l.0), cols_for(&r.0));
+                    // Both endpoints must resolve to the same arity; otherwise
+                    // leave untouched (loud fallback, never wrong SQL).
+                    if lcols.is_empty() || rcols.is_empty() || lcols.len() != rcols.len() {
+                        return;
+                    }
+                    let prop = |a: &super::render_expr::TableAlias, col: &str| {
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: a.clone(),
+                            column: PropertyValue::Column(col.to_string()),
+                        })
+                    };
+                    // Build per-column equality conjunction.
+                    let eqs: Vec<RenderExpr> = lcols
+                        .iter()
+                        .zip(rcols.iter())
+                        .map(|(lc, rc)| {
+                            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![prop(l, lc), prop(r, rc)],
+                            })
+                        })
+                        .collect();
+                    let all_eq = if eqs.len() == 1 {
+                        eqs.into_iter().next().unwrap()
+                    } else {
+                        RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::And,
+                            operands: eqs,
+                        })
+                    };
+                    *expr = if op.operator == Operator::Equal {
+                        all_eq
+                    } else {
+                        // `a <> b` ≡ NOT(all id columns equal). VLP endpoints are
+                        // always bound (non-null id), so NOT(=) matches `<>`.
+                        RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::Not,
+                            operands: vec![all_eq],
+                        })
+                    };
+                    return;
+                }
+            }
+        }
+        // Recurse into nested operators (AND/OR/NOT and comparison operands).
+        for operand in &mut op.operands {
+            normalize_bare_node_identity_to_id(
+                operand,
+                start_alias,
+                end_alias,
+                start_id_cols,
+                end_id_cols,
+            );
+        }
+    }
+}
+
 /// Convert a RenderExpr to a SQL string for use in CTE WHERE clauses
 pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String)]) -> String {
     match expr {
@@ -3366,12 +3471,53 @@ pub fn extract_ctes_with_context(
 
                     if let Some(cleaned_predicate) = cleaned_predicate {
                         // Convert LogicalExpr to RenderExpr
-                        let render_expr = RenderExpr::try_from(cleaned_predicate).map_err(|e| {
-                            RenderBuildError::UnsupportedFeature(format!(
-                                "Failed to convert LogicalExpr to RenderExpr: {}",
-                                e
-                            ))
-                        })?;
+                        let mut render_expr =
+                            RenderExpr::try_from(cleaned_predicate).map_err(|e| {
+                                RenderBuildError::UnsupportedFeature(format!(
+                                    "Failed to convert LogicalExpr to RenderExpr: {}",
+                                    e
+                                ))
+                            })?;
+
+                        // #1100 (bare-node identity in a VLP filter): a predicate
+                        // like `friend <> root` / `friend = root` compares node
+                        // IDENTITY, but both sides are BARE node aliases
+                        // (`RenderExpr::TableAlias`). Left as-is they render as the
+                        // literal alias names (`friend != root`) inside the recursive
+                        // CTE, where those aliases are not in scope (its node columns
+                        // are `start_node`/`end_node`) — ClickHouse Code 47. Rewrite
+                        // to property-access comparisons on the schema-declared
+                        // `node_id` column(s) (renamed/composite included — NOT a
+                        // hardcoded `.id`, per axis-dispatch rule §7), which the
+                        // existing property/alias mapping resolves correctly. Resolve
+                        // each endpoint's node_id columns from its label; on any
+                        // unresolved label the predicate is left untouched (loud
+                        // fallback, never wrong SQL).
+                        let node_id_cols = |label: &str| -> Vec<String> {
+                            if label.is_empty() {
+                                return Vec::new();
+                            }
+                            schema
+                                .node_schema_opt(label)
+                                .map(|ns| {
+                                    ns.node_id
+                                        .id
+                                        .columns()
+                                        .iter()
+                                        .map(|c| c.to_string())
+                                        .collect()
+                                })
+                                .unwrap_or_default()
+                        };
+                        let start_id_cols = node_id_cols(&start_label);
+                        let end_id_cols = node_id_cols(&end_label);
+                        normalize_bare_node_identity_to_id(
+                            &mut render_expr,
+                            &start_alias,
+                            &end_alias,
+                            &start_id_cols,
+                            &end_id_cols,
+                        );
 
                         // ⚠️ CRITICAL FIX (Jan 10, 2026): Schema-aware categorization for ALL schema variations!
                         //
