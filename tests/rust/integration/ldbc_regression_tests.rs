@@ -809,8 +809,9 @@ async fn ldbc_1100_vlp_endpoint_aggregation_from_cte_unaffected() {
 /// node identity with BARE node aliases. Inside the recursive VLP CTE those
 /// aliases are not in scope (its node columns are `start_node`/`end_node`), so
 /// the bare form would render literally as `friend != root` → ClickHouse Code
-/// 47. It must normalize to the `.id` form → `end_node.id != start_node.id`.
-/// This unblocks LDBC IC9/IC5, which both filter `WHERE NOT friend = root`.
+/// 47. It must normalize to a comparison on the schema `node_id` column(s) →
+/// `NOT (end_node.id = start_node.id)`. Unblocks LDBC IC9/IC5, which both
+/// filter `WHERE NOT friend = root`.
 #[tokio::test]
 async fn ldbc_1100_bare_node_identity_in_vlp_filter() {
     let schema = load_ldbc_schema();
@@ -822,10 +823,9 @@ async fn ldbc_1100_bare_node_identity_in_vlp_filter() {
     )
     .await;
     assert!(
-        sql.contains("end_node.id != start_node.id")
-            || sql.contains("start_node.id != end_node.id"),
+        sql.contains("end_node.id = start_node.id") || sql.contains("start_node.id = end_node.id"),
         "#1100: bare-node identity `friend <> root` must normalize to the VLP \
-         endpoint id columns:\n{sql}"
+         endpoint node_id columns:\n{sql}"
     );
     assert!(
         !sql.contains("friend != root") && !sql.contains("friend = root"),
@@ -854,5 +854,67 @@ async fn ldbc_1100_bare_node_identity_nested_in_and() {
     assert!(
         sql.contains("'Bob'"),
         "#1100: sibling property conjunct must not be dropped:\n{sql}"
+    );
+}
+
+/// Load any GraphSchema from a YAML path (for schema-axis coverage).
+fn load_schema_from(path: &str) -> GraphSchema {
+    GraphSchemaConfig::from_yaml_file(path)
+        .unwrap_or_else(|e| panic!("load {path}: {e:?}"))
+        .to_graph_schema()
+        .unwrap_or_else(|e| panic!("convert {path}: {e:?}"))
+}
+
+/// #1100 axis coverage — RENAMED node_id (`User.node_id: user_id`): the
+/// bare-node identity must normalize to the schema's real id column, NOT a
+/// hardcoded `.id`. A `.id` here fails live (`db_standard.users` has no `id`
+/// column). Regression for the reviewer-found axis-dispatch defect.
+#[tokio::test]
+async fn ldbc_1100_bare_node_identity_renamed_node_id() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (root:User)-[:FOLLOWS*1..2]->(friend:User)
+         WHERE friend <> root
+         RETURN friend.user_id LIMIT 5",
+    )
+    .await;
+    assert!(
+        sql.contains("end_node.user_id = start_node.user_id")
+            || sql.contains("start_node.user_id = end_node.user_id"),
+        "#1100: renamed node_id must compare `user_id`, not `.id`:\n{sql}"
+    );
+    assert!(
+        !sql.contains("node.id = ") && !sql.contains(".id !="),
+        "#1100: must NOT emit a hardcoded `.id` for a renamed node_id:\n{sql}"
+    );
+}
+
+/// #1100 axis coverage — COMPOSITE node_id (`Account.node_id: [bank_id,
+/// account_number]`): `a2 <> a1` must expand to `NOT (all id columns equal)`,
+/// which a single `.id` cannot express. Regression for the reviewer-found
+/// axis-dispatch defect.
+#[tokio::test]
+async fn ldbc_1100_bare_node_identity_composite_node_id() {
+    let schema = load_schema_from("schemas/test/composite_node_ids.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a1:Account)-[:TRANSFERRED*1..2]->(a2:Account)
+         WHERE a2 <> a1
+         RETURN a2.account_type LIMIT 5",
+    )
+    .await;
+    assert!(
+        sql.contains("bank_id = ") && sql.contains("account_number = "),
+        "#1100: composite node_id identity must compare BOTH key columns:\n{sql}"
+    );
+    // Both key-column equalities must be conjoined under a single NOT.
+    assert!(
+        sql.contains("bank_id") && sql.contains("account_number") && sql.contains(" AND "),
+        "#1100: composite identity must be an AND of per-column equalities:\n{sql}"
+    );
+    assert!(
+        !sql.contains(".id = ") && !sql.contains(".id !="),
+        "#1100: must NOT collapse a composite node_id to `.id`:\n{sql}"
     );
 }
