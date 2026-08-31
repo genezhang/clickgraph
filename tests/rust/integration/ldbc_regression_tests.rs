@@ -316,6 +316,19 @@ async fn ldbc_complex_9() {
     .await;
     assert!(!sql.is_empty());
     assert!(sql.contains("SELECT"));
+    // #1100: IC9 filters `WHERE NOT friend = root` (bare-node identity) on a
+    // `KNOWS*1..2` VLP and re-matches `friend` across a collect/UNWIND barrier.
+    // The bare identity must resolve to the VLP endpoint id columns, never leak
+    // the bare alias names into the recursive CTE body (which fails Code 47),
+    // and the re-matched endpoint must resolve to its WITH-CTE column.
+    assert!(
+        !sql.contains("friend = root") && !sql.contains("friend != root"),
+        "#1100: IC9 bare-node identity must not leak bare aliases into SQL:\n{sql}"
+    );
+    assert!(
+        !sql.contains("t.end_p6_friend_id"),
+        "#1100: IC9 re-matched endpoint must not VLP-rewrite to `t.end_*`:\n{sql}"
+    );
 }
 
 #[tokio::test]
@@ -789,5 +802,57 @@ async fn ldbc_1100_vlp_endpoint_aggregation_from_cte_unaffected() {
     assert!(
         !sql.contains("t.end_p6_friend_id"),
         "#1100 guard: no bogus VLP-rewritten endpoint reference:\n{sql}"
+    );
+}
+
+/// #1100 (bare-node identity in a VLP filter): `WHERE friend <> root` compares
+/// node identity with BARE node aliases. Inside the recursive VLP CTE those
+/// aliases are not in scope (its node columns are `start_node`/`end_node`), so
+/// the bare form would render literally as `friend != root` → ClickHouse Code
+/// 47. It must normalize to the `.id` form → `end_node.id != start_node.id`.
+/// This unblocks LDBC IC9/IC5, which both filter `WHERE NOT friend = root`.
+#[tokio::test]
+async fn ldbc_1100_bare_node_identity_in_vlp_filter() {
+    let schema = load_ldbc_schema();
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (root:Person {id: 14})-[:KNOWS*1..2]-(friend:Person)
+         WHERE friend <> root
+         RETURN friend.id LIMIT 5",
+    )
+    .await;
+    assert!(
+        sql.contains("end_node.id != start_node.id")
+            || sql.contains("start_node.id != end_node.id"),
+        "#1100: bare-node identity `friend <> root` must normalize to the VLP \
+         endpoint id columns:\n{sql}"
+    );
+    assert!(
+        !sql.contains("friend != root") && !sql.contains("friend = root"),
+        "#1100: bare alias names must NOT survive into the VLP CTE body:\n{sql}"
+    );
+}
+
+/// #1100 (bare-node identity, `=` variant + nested in AND): the normalization
+/// must reach a node-identity conjunct nested under `AND` and leave sibling
+/// property filters intact.
+#[tokio::test]
+async fn ldbc_1100_bare_node_identity_nested_in_and() {
+    let schema = load_ldbc_schema();
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (root:Person {id: 14})-[:KNOWS*1..2]-(friend:Person)
+         WHERE friend = root AND friend.firstName = 'Bob'
+         RETURN friend.id LIMIT 5",
+    )
+    .await;
+    assert!(
+        sql.contains("end_node.id = start_node.id") || sql.contains("start_node.id = end_node.id"),
+        "#1100: `=` node identity nested in AND must normalize:\n{sql}"
+    );
+    // The sibling property filter must survive (applied on the endpoint).
+    assert!(
+        sql.contains("'Bob'"),
+        "#1100: sibling property conjunct must not be dropped:\n{sql}"
     );
 }

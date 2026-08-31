@@ -1709,6 +1709,48 @@ fn render_in_list_rhs(
     )
 }
 
+/// #1100: Normalize bare-node-identity comparisons in a VLP filter predicate
+/// into the `.id` property-access form.
+///
+/// Rewrites `TableAlias(a) =/<> TableAlias(b)` → `a.id =/<> b.id` in place,
+/// but ONLY when both operands are bare node aliases and BOTH are the VLP's
+/// endpoint aliases (`start_alias`/`end_alias`). Bare-node identity between a
+/// VLP endpoint and some unrelated alias, or any other expression, is left
+/// untouched. Recurses through boolean/nested operators so a node-identity
+/// conjunct inside `AND`/`OR`/`NOT` is reached. The resulting `.id` form flows
+/// through the existing property- and alias-mapping machinery, which resolves
+/// it to `end_node.id`/`start_node.id` (schema-appropriate for renamed or
+/// composite node ids).
+fn normalize_bare_node_identity_to_id(expr: &mut RenderExpr, start_alias: &str, end_alias: &str) {
+    if let RenderExpr::OperatorApplicationExp(op) = expr {
+        let is_eq = matches!(op.operator, Operator::Equal | Operator::NotEqual);
+        if is_eq && op.operands.len() == 2 {
+            if let (RenderExpr::TableAlias(l), RenderExpr::TableAlias(r)) =
+                (&op.operands[0], &op.operands[1])
+            {
+                let both_endpoints = (l.0 == start_alias || l.0 == end_alias)
+                    && (r.0 == start_alias || r.0 == end_alias);
+                if both_endpoints {
+                    let to_id = |a: &super::render_expr::TableAlias| {
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: a.clone(),
+                            column: PropertyValue::Column("id".to_string()),
+                        })
+                    };
+                    let (lid, rid) = (to_id(l), to_id(r));
+                    op.operands[0] = lid;
+                    op.operands[1] = rid;
+                    return;
+                }
+            }
+        }
+        // Recurse into nested operators (AND/OR/NOT and comparison operands).
+        for operand in &mut op.operands {
+            normalize_bare_node_identity_to_id(operand, start_alias, end_alias);
+        }
+    }
+}
+
 /// Convert a RenderExpr to a SQL string for use in CTE WHERE clauses
 pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String)]) -> String {
     match expr {
@@ -3366,12 +3408,33 @@ pub fn extract_ctes_with_context(
 
                     if let Some(cleaned_predicate) = cleaned_predicate {
                         // Convert LogicalExpr to RenderExpr
-                        let render_expr = RenderExpr::try_from(cleaned_predicate).map_err(|e| {
-                            RenderBuildError::UnsupportedFeature(format!(
-                                "Failed to convert LogicalExpr to RenderExpr: {}",
-                                e
-                            ))
-                        })?;
+                        let mut render_expr =
+                            RenderExpr::try_from(cleaned_predicate).map_err(|e| {
+                                RenderBuildError::UnsupportedFeature(format!(
+                                    "Failed to convert LogicalExpr to RenderExpr: {}",
+                                    e
+                                ))
+                            })?;
+
+                        // #1100 (bare-node identity in a VLP filter): a predicate
+                        // like `friend <> root` / `friend = root` compares node
+                        // IDENTITY, but both sides are BARE node aliases
+                        // (`RenderExpr::TableAlias`). Left as-is they render as the
+                        // literal alias names (`friend != root`) inside the recursive
+                        // CTE, where those aliases are not in scope (its node columns
+                        // are `start_node`/`end_node`) — ClickHouse Code 47. The `.id`
+                        // property-access form (`friend.id <> root.id`) already
+                        // resolves correctly (→ `end_node.id != start_node.id`) via
+                        // property + alias mapping, so normalize the bare form into it
+                        // for the two VLP endpoint aliases before categorization. `.id`
+                        // is Cypher's generic node-identity synonym and is resolved
+                        // schema-appropriately downstream (renamed/composite ids
+                        // included), so no schema lookup is needed here.
+                        normalize_bare_node_identity_to_id(
+                            &mut render_expr,
+                            &start_alias,
+                            &end_alias,
+                        );
 
                         // ⚠️ CRITICAL FIX (Jan 10, 2026): Schema-aware categorization for ALL schema variations!
                         //
