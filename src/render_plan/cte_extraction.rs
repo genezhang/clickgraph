@@ -5515,6 +5515,28 @@ pub fn extract_ctes_with_context(
                         );
                     }
 
+                    // #1136: register composite id COMPONENT columns per endpoint
+                    // so the late SELECT/ORDER BY rewriter binds `a.bank_id` to
+                    // the projected `start_bank_id` instead of collapsing it onto
+                    // the whole pipe-joined `start_id`.
+                    for (ep_alias, ep_label) in
+                        [(&start_alias, &start_label), (&end_alias, &end_label)]
+                    {
+                        if ep_label.is_empty() {
+                            continue;
+                        }
+                        if let Some(ns) = schema.node_schema_opt(ep_label) {
+                            let cols = ns.node_id.columns();
+                            if cols.len() > 1 {
+                                let owned: Vec<String> =
+                                    cols.iter().map(|c| c.to_string()).collect();
+                                crate::server::query_context::register_vlp_composite_id_components(
+                                    ep_alias, &owned,
+                                );
+                            }
+                        }
+                    }
+
                     // Generate VLP CTE via unified CteManager API
                     let var_len_cte = generate_vlp_cte_via_manager(
                         &pattern_ctx,

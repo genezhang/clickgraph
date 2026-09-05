@@ -657,6 +657,25 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-09-05: **Correctness — ORDER BY / GROUP BY on a composite id COMPONENT
+  collapsed onto the whole pipe-joined `t.start_id`** (branch
+  `fix/1136-order-by-composite-component`, PR #1137, closes #1136). The late
+  SELECT/ORDER BY rewriter (`rewrite_expr_for_vlp`, to_sql_query.rs) uses an
+  `ends_with("_id")` HEURISTIC to detect id references — `a.bank_id` matched
+  and was widened to the whole concat: silently wrong ordering
+  (concat-LEXICOGRAPHIC), Code 215 under aggregation, Code 47 in union forms.
+  Same class as #1131, different seam (outer projection vs both-endpoint
+  WHERE). Fix: a NEW task-local registration
+  (`register_vlp_composite_id_components`, query_context.rs, reset in
+  `clear_all_render_contexts`) recorded at VLP CTE generation; the rewriter's
+  id heuristic consults it FIRST and binds the projected `<prefix>_<col>`
+  (#1130's both-arm projection makes that column exist). Live: ORDER BY rows
+  correctly grouped b1×5,b2×5 == oracle; the aggregate form (was Code 215)
+  returns b1:5,b2:5 == oracle. Single-column ids never register → heuristic
+  path byte-identical (boundary-tested). 240-combo ORDER BY sweep: exactly 1
+  diff (the target shape). 2 tests (targeting one fails on main). Suite green
+  (1738 + 690 + ratchet), clippy clean, zero golden churn.
+
 - 2026-09-05: **Correctness — zero-hop (`*0..N`) composite VLP emitted a
   malformed base arm (Code 44, loud)** (branch `fix/1132-zero-hop-composite`,
   PR #1134, closes #1132). `generate_zero_hop_base_case` interpolated the RAW

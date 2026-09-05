@@ -2560,6 +2560,15 @@ pub(crate) fn rewrite_expr_for_vlp(
 
                     // Check if this is the ID column (contains "id" or matches known ID column patterns)
                     let col_raw = prop.column.raw();
+                    // #1136: a COMPOSITE id COMPONENT must NOT collapse onto the
+                    // whole pipe-joined `start_id` (wrong ordering; Code 215/47
+                    // in aggregate/union forms). The component is projected as
+                    // `start_<col>` in every arm since #1130 — bind that.
+                    if crate::server::query_context::is_vlp_composite_id_component(start, col_raw) {
+                        return RenderExpr::Column(Column(PropertyValue::Column(format!(
+                            "{vlp_alias}.start_{col_raw}"
+                        ))));
+                    }
                     if col_raw == "id"
                         || col_raw.starts_with("id.")
                         || col_raw.ends_with("_id")
@@ -2586,6 +2595,13 @@ pub(crate) fn rewrite_expr_for_vlp(
                 if &prop.table_alias.0 == end {
                     // Check if this is the ID column
                     let col_raw = prop.column.raw();
+                    // #1136: composite id components bind their projected column
+                    // (see the start arm above).
+                    if crate::server::query_context::is_vlp_composite_id_component(end, col_raw) {
+                        return RenderExpr::Column(Column(PropertyValue::Column(format!(
+                            "{vlp_alias}.end_{col_raw}"
+                        ))));
+                    }
                     if col_raw == "id"
                         || col_raw.starts_with("id.")
                         || col_raw.ends_with("_id")
