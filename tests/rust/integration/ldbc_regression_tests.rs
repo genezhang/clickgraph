@@ -1644,3 +1644,105 @@ async fn ldbc_1113_pc_without_inner_where_unaffected() {
         "#1113: a comprehension with no inner WHERE must render normally:\n{sql}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #1113 follow-up — the count/size pattern-comprehension WHERE renderer
+//
+// `render_logical_expr_to_sql` (the limited renderer serving the count/size
+// correlated path) handles only PropertyAccess / OperatorApplication / Literal
+// / Parameter. Its catch-all returned an EMPTY STRING, which the parent
+// operator arm then joined blindly. Three distinct failure modes resulted:
+//
+//   toLower(x.name) = 'bob'   ->  WHERE  = 'bob'          (malformed SQL)
+//   x.user_id IN [1,2,3]      ->  WHERE x.user_id IN      (malformed SQL)
+//   CASE WHEN ... END         ->  no WHERE at all         (SILENT WRONG)
+//
+// Live proof of the silent case on a 5-follow fixture: `main` returned a count
+// of 4 where the correct answer is 2 — the filter simply vanished.
+//
+// The renderer now returns `Option<String>`; `None` propagates through every
+// operand via `?` instead of poisoning the parent, and the callers refuse
+// loudly rather than emitting an unfiltered comprehension.
+// ---------------------------------------------------------------------------
+
+/// Follow-up: a function call in the count-form inner WHERE must refuse, not
+/// emit `WHERE  = 'bob'`.
+#[tokio::test]
+async fn ldbc_pc_count_where_function_call_refuses() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let err = try_render_inline(
+        &schema,
+        "MATCH (a:User) WITH a, size([(a)-[:FOLLOWS]->(x:User) WHERE toLower(x.name) = 'bob' | x]) AS n
+         RETURN a.name, n",
+    )
+    .await
+    .expect_err("an unrenderable count-form inner WHERE must refuse");
+    assert!(
+        err.contains("cannot be rendered for the count/size form"),
+        "the refusal must name the count/size form:\n{err}"
+    );
+}
+
+/// Follow-up: an `IN` list must refuse rather than emit a truncated `IN `.
+#[tokio::test]
+async fn ldbc_pc_count_where_in_list_refuses() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let err = try_render_inline(
+        &schema,
+        "MATCH (a:User) WITH a, size([(a)-[:FOLLOWS]->(x:User) WHERE x.user_id IN [1,2,3] | x]) AS n
+         RETURN a.name, n",
+    )
+    .await
+    .expect_err("an IN-list count-form inner WHERE must refuse");
+    assert!(
+        err.contains("cannot be rendered for the count/size form"),
+        "the refusal must name the count/size form:\n{err}"
+    );
+}
+
+/// Follow-up: the SILENT case — a CASE expression produced no WHERE at all, so
+/// the comprehension counted rows the user excluded (live: 4 vs the correct 2).
+#[tokio::test]
+async fn ldbc_pc_count_where_case_refuses_instead_of_dropping() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let err = try_render_inline(
+        &schema,
+        "MATCH (a:User)
+         WITH a, size([(a)-[:FOLLOWS]->(x:User) WHERE CASE WHEN x.user_id > 3 THEN true ELSE false END | x]) AS n
+         RETURN a.name, n",
+    )
+    .await
+    .expect_err("a CASE inner WHERE must refuse, not silently drop the filter");
+    assert!(
+        err.contains("cannot be rendered for the count/size form"),
+        "the refusal must name the count/size form:\n{err}"
+    );
+}
+
+/// Follow-up SCOPE: every shape the renderer DOES handle must keep rendering —
+/// plain comparisons, AND-chains, NOT, STARTS WITH, and IS NOT NULL. The
+/// `Option` conversion must not narrow existing coverage.
+#[tokio::test]
+async fn ldbc_pc_count_where_supported_shapes_still_render() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    for (pred, expect) in [
+        ("x.user_id > 3", "__n0e.user_id > 3"),
+        ("x.user_id > 3 AND x.city = 'NYC'", "__n0e.user_id > 3"),
+        ("NOT (x.user_id = 5)", "NOT __n0e.user_id = 5"),
+        ("x.name STARTS WITH 'A'", "startsWith(__n0e.full_name, 'A')"),
+        ("x.user_id IS NOT NULL", "__n0e.user_id IS NOT NULL"),
+    ] {
+        let sql = generate_sql_inline(
+            &schema,
+            &format!(
+                "MATCH (a:User) WITH a, size([(a)-[:FOLLOWS]->(x:User) WHERE {pred} | x]) AS n \
+                 RETURN a.name, n"
+            ),
+        )
+        .await;
+        assert!(
+            sql.contains(expect),
+            "count-form inner WHERE `{pred}` must still render `{expect}`:\n{sql}"
+        );
+    }
+}
