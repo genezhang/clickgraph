@@ -1746,3 +1746,128 @@ async fn ldbc_pc_count_where_supported_shapes_still_render() {
         );
     }
 }
+
+// --- #1118: node schema `filter:` column must be projected into the VLP CTE ---
+//
+// A node-level YAML `filter:` (`Country.filter: "type = 'Country'"`) is combined
+// into the end-filter slot, but #607 defers the end predicate to the OUTER
+// WRAPPER, which can only see columns the recursive CTE projects. The filter
+// column was never added to the CTE's property list (the pruner only keeps
+// properties the query TEXT mentions, and a schema filter is invisible to it),
+// so the wrapper emitted a bare `end_node.type` — out of scope there.
+//
+// Live before the fix (LDBC SF1, `MATCH (a:Place)-[:IS_PART_OF*1..2]->(c:Country)`):
+//   Code 47: Unknown expression or function identifier `end_node.type`
+// After: 1343 rows, matching a hand-computed edge-distinct oracle.
+//
+// This is reachable in the SHIPPED LDBC schema — City/Country/Continent/
+// University/Company are all `filter:`-discriminated views over one table.
+
+/// The end-node schema filter must resolve against a PROJECTED CTE column
+/// (`end_type`), never a bare `end_node.<col>` the wrapper cannot see.
+#[tokio::test]
+async fn ldbc_1118_end_schema_filter_column_projected_into_vlp_cte() {
+    let schema = load_schema_from("benchmarks/ldbc_snb/schemas/ldbc_snb.yaml");
+    for cypher in [
+        "MATCH (a:Place)-[:IS_PART_OF*1..2]->(c:Country) RETURN count(*)",
+        "MATCH (a:Place)-[:IS_PART_OF*0..2]->(c:Country) RETURN count(*)",
+        "MATCH (a:Place)-[:IS_PART_OF*1..3]->(c:Country) RETURN c.name",
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(
+            sql.contains("as end_type") || sql.contains("AS end_type"),
+            "#1118: the schema-filter column must be PROJECTED by the CTE \
+             for `{cypher}`:\n{sql}"
+        );
+        // The wrapper predicate must reference the projected column, not the
+        // out-of-scope node alias.
+        assert!(
+            !sql.contains("end_node.type = 'Country'"),
+            "#1118: the wrapper must not reference the unprojected \
+             `end_node.type` (ClickHouse Code 47) for `{cypher}`:\n{sql}"
+        );
+        assert!(
+            sql.contains("end_type = 'Country'"),
+            "#1118: the end schema filter must survive, rewritten onto the \
+             projected column, for `{cypher}`:\n{sql}"
+        );
+    }
+}
+
+/// shortestPath uses its own `_to_target` wrapper — same defect, same fix.
+#[tokio::test]
+async fn ldbc_1118_shortest_path_end_schema_filter_projected() {
+    let schema = load_schema_from("benchmarks/ldbc_snb/schemas/ldbc_snb.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH p=shortestPath((a:City)-[:IS_PART_OF*1..3]->(c:Country)) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("as end_type") || sql.contains("AS end_type"),
+        "#1118: shortestPath must project the end schema-filter column:\n{sql}"
+    );
+    // The WRAPPER must read the projected column. `end_node.type` still appears
+    // in the CTE's own projection (`end_node.type as end_type`) — that is the
+    // fix working, not the defect; assert on the wrapper predicate itself.
+    assert!(
+        sql.contains("end_type = 'Country'"),
+        "#1118: the shortestPath wrapper must filter on the projected \
+         `end_type`, not an out-of-scope `end_node.type`:\n{sql}"
+    );
+}
+
+/// The START endpoint's schema filter goes in the BASE ARM, where `start_node`
+/// IS in scope — that path already worked and must stay byte-compatible (the
+/// fix must not move it to a projected column or duplicate it).
+#[tokio::test]
+async fn ldbc_1118_start_schema_filter_stays_in_base_arm() {
+    let schema = load_schema_from("benchmarks/ldbc_snb/schemas/ldbc_snb.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Country)-[:IS_PART_OF*1..2]->(c:Place) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("start_node.type = 'Country'"),
+        "#1118: the START schema filter is applied in the base arm, where \
+         `start_node` is in scope — unchanged:\n{sql}"
+    );
+}
+
+/// A single-hop VLP has no wrapper: the base case IS the endpoint, so the end
+/// filter stays on `end_node` there. Guards against "fix everything" overreach.
+#[tokio::test]
+async fn ldbc_1118_single_hop_end_filter_stays_on_end_node() {
+    let schema = load_schema_from("benchmarks/ldbc_snb/schemas/ldbc_snb.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Place)-[:IS_PART_OF*1..1]->(c:Country) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("'Country'"),
+        "#1118: the single-hop end schema filter must still be applied:\n{sql}"
+    );
+}
+
+/// A DENORMALIZED (edge-embedded) endpoint has no own-table column to project,
+/// so #1118 must skip it rather than emit a column the arm cannot resolve.
+/// That family's dropped schema filter is a SEPARATE, pre-existing defect
+/// (#1119, silent-wrong: 6 vs an oracle 3) — this locks the scope boundary,
+/// not the still-wrong behavior.
+#[tokio::test]
+async fn ldbc_1118_embedded_endpoint_not_projected() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop.yaml");
+    // `foreign_selfloop.yaml` declares no `filter:`, so nothing is added; the
+    // assertion is that the mixed arm renders unchanged and stays valid.
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("start_own"),
+        "#1118: the mixed-access arm must be unchanged:\n{sql}"
+    );
+}
