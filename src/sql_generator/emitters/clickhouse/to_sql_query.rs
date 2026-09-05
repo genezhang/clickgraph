@@ -3627,15 +3627,34 @@ fn swap_vlp_role_prefixes(expr: &RenderExpr, roles: &VlpArmRoles) -> RenderExpr 
     // with the Cypher alias and property it came from. That is query-bound and
     // ordered, so the swap becomes a lookup rather than an inference: find the
     // column being referenced, take its PROPERTY, then find the column this
-    // arm projects for the SAME property under the opposite role. Falls back
-    // to the plain prefix flip only when the arm publishes no such metadata.
+    // arm projects for the SAME property under the opposite role.
+    //
+    // Final-review CRITICAL: when that lookup finds NOTHING, the swap must
+    // ABSTAIN — leave the expression exactly as the global rewrite produced it
+    // — never fall back to a bare prefix flip. That flip is the very spelling
+    // round 1 proved wrong (`end_` + the FROM-role column), and it is reachable
+    // on the shipped denorm schema through any EXPRESSION key
+    // (`ORDER BY toUpper(o.state)`), because the pruner only projects the
+    // opposite-role column for BARE keys (which #1141 resolves in
+    // `rewrite_expr_for_vlp`). Emitting it produced a Code 47 that main does
+    // not have, and a silent mis-sort wherever the flipped name happened to
+    // collide with a real column. Abstaining restores main's behavior for that
+    // shape exactly (still imperfect — tracked separately — but never a
+    // regression, and never a NEW silent wrong).
+    //
+    // The lookup is keyed on the source column's own metadata entry. Two
+    // properties can share one physical column (`city`/`town` both ->
+    // `origin_city`), so an entry found by column name alone is ambiguous:
+    // resolve only when every candidate agrees on the target column.
     let target_cte = roles.arm_cte.as_deref();
     let columns: &[crate::render_plan::cte_manager::CteColumnMetadata] = target_cte
         .and_then(|name| roles.columns_by_cte.get(name))
         .map(|v| v.as_slice())
         .unwrap_or(&[]);
 
-    let reresolve = |rest: &str, to_start: bool| -> String {
+    // `None` = cannot resolve; the caller must then leave the WHOLE expression
+    // untouched rather than emit a half-swapped column.
+    let reresolve = |rest: &str, to_start: bool| -> Option<String> {
         let want = if to_start {
             crate::render_plan::cte_manager::VlpColumnPosition::Start
         } else {
@@ -3643,30 +3662,51 @@ fn swap_vlp_role_prefixes(expr: &RenderExpr, roles: &VlpArmRoles) -> RenderExpr 
         };
         // The column as spelled BEFORE the flip, i.e. under the opposite role.
         let have_prefix = if to_start { "end_" } else { "start_" };
+        let target_prefix = if to_start { "start_" } else { "end_" };
         let spelled = format!("{have_prefix}{rest}");
-        let Some(src_meta) = columns.iter().find(|m| m.cte_column_name == spelled) else {
-            return rest.to_string();
-        };
-        // The same PROPERTY, projected by this arm under the target role.
-        match columns
+
+        // Every property this arm projects under `spelled`. Two properties can
+        // legitimately share one physical column, so collect them all.
+        let props: Vec<&str> = columns
             .iter()
-            .find(|m| m.cypher_property == src_meta.cypher_property && m.vlp_position == Some(want))
-        {
-            Some(dst) => dst
-                .cte_column_name
-                .strip_prefix(if to_start { "start_" } else { "end_" })
-                .unwrap_or(&dst.cte_column_name)
-                .to_string(),
-            None => rest.to_string(),
+            .filter(|m| m.cte_column_name == spelled)
+            .map(|m| m.cypher_property.as_str())
+            .collect();
+        if props.is_empty() {
+            return None;
+        }
+
+        // The target-role column for each candidate property. Resolve only if
+        // they agree — an ambiguous column must abstain, not guess.
+        let mut targets: Vec<String> = props
+            .iter()
+            .filter_map(|prop| {
+                columns
+                    .iter()
+                    .find(|m| m.cypher_property == *prop && m.vlp_position == Some(want))
+            })
+            .map(|dst| {
+                dst.cte_column_name
+                    .strip_prefix(target_prefix)
+                    .unwrap_or(&dst.cte_column_name)
+                    .to_string()
+            })
+            .collect();
+        targets.sort();
+        targets.dedup();
+        match targets.as_slice() {
+            // Every candidate agrees, and none was left unresolved.
+            [only] if targets.len() == props.len() || props.len() > 1 => Some(only.clone()),
+            _ => None,
         }
     };
 
     let flip = |col: &str| -> Option<String> {
         if let Some(rest) = col.strip_prefix(&start_pfx) {
-            Some(format!("{end_pfx}{}", reresolve(rest, false)))
+            reresolve(rest, false).map(|c| format!("{end_pfx}{c}"))
         } else {
-            col.strip_prefix(&end_pfx)
-                .map(|rest| format!("{start_pfx}{}", reresolve(rest, true)))
+            let rest = col.strip_prefix(&end_pfx)?;
+            reresolve(rest, true).map(|c| format!("{start_pfx}{c}"))
         }
     };
 
