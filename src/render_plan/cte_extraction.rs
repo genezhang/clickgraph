@@ -5268,6 +5268,11 @@ pub fn extract_ctes_with_context(
                             match (required_for(start_conn), required_for(end_conn)) {
                                 (Some(a), Some(b)) => Some(a.union(b).cloned().collect()),
                                 (Some(a), None) => Some(a.clone()),
+                                // Unreachable by construction, kept defensively:
+                                // `needs_all_for` returns true exactly when
+                                // `get_requirements` is None, so a `None` here
+                                // means that alias's `include_all` short-circuits
+                                // the filter below and this set is never consulted.
                                 (None, Some(b)) => Some(b.clone()),
                                 (None, None) => None,
                             };
