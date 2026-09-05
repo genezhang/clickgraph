@@ -3713,8 +3713,110 @@ fn rebind_vlp_arm_select(outer: &RenderPlan, arm: &RenderPlan) -> Option<SelectI
         .0
         .iter()
         .find(|c| c.cte_name == from_name && c.vlp_cypher_start_alias.is_some())?;
+
+    // Review H1: `CteColumnMetadata` is what the CTE BUILDER intended to
+    // project, and on the composite-denorm path it disagrees with what the CTE
+    // BODY actually emits — the metadata advertises `start_code`/`start_state`
+    // while the body emits only `start_origin_code`/`start_origin_state`.
+    // Binding straight off the metadata therefore fabricated a name no arm
+    // defines. That is loud today, but only by luck: on a schema where a
+    // logical property maps to a physical column literally named `code`, the
+    // fabricated `start_code` EXISTS and carries the wrong value — loud
+    // becomes silently wrong, the exact hazard this helper exists to avoid.
+    //
+    // So intersect the metadata with the body's real output names and treat
+    // the intersection as the resolvable set. An entry the body does not
+    // emit is not a candidate, which routes the whole item to the ABSTAIN
+    // path (reproducing today's output byte-for-byte) rather than to a
+    // plausible-looking guess.
+    let emitted = cte_body_output_names(cte);
+    let projected: Vec<crate::render_plan::cte_manager::CteColumnMetadata> = cte
+        .columns
+        .iter()
+        .filter(|m| emitted.contains(m.cte_column_name.as_str()))
+        .cloned()
+        .collect();
+
     let vlp_alias = crate::server::query_context::vlp_from_alias();
-    rebind_arm_items_to_cte_columns(&arm.select, &cte.cte_name, &cte.columns, &vlp_alias)
+    rebind_arm_items_to_cte_columns(&arm.select, &cte.cte_name, &projected, &vlp_alias)
+}
+
+/// Review H1: the set of column names a VLP CTE's BODY actually exports.
+///
+/// `CteColumnMetadata` records the builder's intent and can drift from the
+/// rendered body (see `rebind_vlp_arm_select`). This reads the body itself so
+/// the rebind can only ever name a column that exists.
+///
+/// A structured body exposes its select items' aliases directly. A raw-SQL body
+/// is scanned for `AS <name>` / `as "<name>"` — the same spelling every VLP CTE
+/// generator emits. When the body yields NOTHING recognizable the set is empty,
+/// which makes every lookup abstain: unable to prove a column exists, the
+/// helper declines rather than guessing.
+fn cte_body_output_names(cte: &crate::render_plan::Cte) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    match &cte.content {
+        crate::render_plan::CteContent::Structured(inner) => {
+            collect_structured_output_names(inner, &mut names);
+        }
+        crate::render_plan::CteContent::RawSql(sql) => {
+            collect_sql_output_names(sql, &mut names);
+        }
+    }
+    names
+}
+
+/// Aliases exported by a structured CTE body, including its UNION arms (a
+/// recursive VLP CTE is `base UNION ALL recursive`, and both arms must agree,
+/// so either arm's aliases describe the exported shape).
+fn collect_structured_output_names(
+    plan: &RenderPlan,
+    names: &mut std::collections::HashSet<String>,
+) {
+    for item in &plan.select.items {
+        if let Some(alias) = &item.col_alias {
+            names.insert(alias.0.trim_matches('"').to_string());
+        }
+    }
+    if let Some(union) = &plan.union.0 {
+        for arm in &union.input {
+            collect_structured_output_names(arm, names);
+        }
+    }
+}
+
+/// `AS <name>` / `as "<name>"` occurrences in a raw-SQL CTE body.
+fn collect_sql_output_names(sql: &str, names: &mut std::collections::HashSet<String>) {
+    let bytes: Vec<char> = sql.chars().collect();
+    let lower: Vec<char> = sql.to_ascii_lowercase().chars().collect();
+    let mut i = 0usize;
+    while i + 3 < lower.len() {
+        let is_as = lower[i] == 'a'
+            && lower[i + 1] == 's'
+            && (i == 0 || !lower[i - 1].is_alphanumeric() && lower[i - 1] != '_')
+            && lower[i + 2].is_whitespace();
+        if !is_as {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 3;
+        while j < bytes.len() && bytes[j].is_whitespace() {
+            j += 1;
+        }
+        let quoted = j < bytes.len() && bytes[j] == '"';
+        if quoted {
+            j += 1;
+        }
+        let start = j;
+        while j < bytes.len()
+            && (bytes[j].is_alphanumeric() || bytes[j] == '_' || (quoted && bytes[j] == '.'))
+        {
+            j += 1;
+        }
+        if j > start {
+            names.insert(bytes[start..j].iter().collect());
+        }
+        i = j.max(i + 1);
+    }
 }
 
 /// #1140: the PRIMARY direction's `(start_alias, end_alias)` — the roles the

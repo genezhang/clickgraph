@@ -3374,3 +3374,110 @@ async fn ldbc_1152_directed_denorm_vlp_whole_node_unchanged() {
         "#1152: the directed shape renders ONE outer arm, not a union:\n{sql}"
     );
 }
+
+/// #1152 review H1: the rebind may only name a column the CTE BODY actually
+/// emits, not merely one its `CteColumnMetadata` advertises.
+///
+/// On the composite-denorm path the two disagree: the metadata claims
+/// `start_code`/`start_state` while the body emits only
+/// `start_origin_code`/`start_origin_state`. Binding straight off the metadata
+/// fabricated a name no arm defines. That is loud here only by luck — on a
+/// schema where a logical property maps to a physical column literally named
+/// `code`, the fabricated `start_code` EXISTS and carries the wrong value, so
+/// loud would become silently wrong. The body/metadata intersection makes the
+/// item abstain instead.
+///
+/// This also pins the `[]`-no-candidates ABSTAIN arm that the whole safety
+/// argument rests on (review M1): a mutation replacing it with a guess must be
+/// caught here.
+#[tokio::test]
+async fn ldbc_1152_rebind_never_names_a_column_the_body_lacks() {
+    let schema = load_schema_from("schemas/dev/flights_denorm_mixed_sources.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:AirportComposite)-[:COMPOSITE_FLIGHT*1..2]-(b:AirportComposite) RETURN a",
+    )
+    .await;
+
+    let outer = sql
+        .rsplit_once(") AS __union")
+        .map(|(head, _)| {
+            let idx = head.rfind("SELECT `").unwrap_or(0);
+            head[idx..].to_string()
+        })
+        .unwrap_or_else(|| panic!("expected a two-arm union:\n{sql}"));
+
+    // Collect every column the outer SELECT reads off the VLP CTE alias, and
+    // require each to be a name some CTE body actually exports. Asserting the
+    // GENERAL property (rather than the two names that happen to be wrong
+    // today) is what makes this survive changes to the metadata builder.
+    let exported: std::collections::HashSet<String> = sql
+        .split(" as ")
+        .skip(1)
+        .chain(sql.split(" AS ").skip(1))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .map(|n| n.trim_matches(|c| c == '"' || c == ',').to_string())
+        .collect();
+
+    for tok in outer.split(|c: char| c.is_whitespace() || c == ',') {
+        let Some(col) = tok.strip_prefix("t.") else {
+            continue;
+        };
+        let col = col.trim_matches('"');
+        if col.is_empty() {
+            continue;
+        }
+        assert!(
+            exported.contains(col),
+            "#1152 H1: outer SELECT reads `t.{col}`, which no CTE body \
+             exports — the rebind must ABSTAIN rather than name a column \
+             that only exists in `CteColumnMetadata`:\n{sql}"
+        );
+    }
+
+    // Concretely: these two were fabricated before the intersection.
+    assert!(
+        !outer.contains("t.start_code") && !outer.contains("t.end_code"),
+        "#1152 H1: `start_code`/`end_code` are metadata-only names on this \
+         schema; the body emits `start_origin_code`/`end_dest_code`:\n{outer}"
+    );
+}
+
+/// #1152 review M1: pin the `[]`-no-candidates ABSTAIN arm directly.
+///
+/// `RETURN o.city, o` projects the same property twice; the duplicate carries a
+/// disambiguated output alias (`o.city_2`) that no `CteColumnMetadata` entry
+/// matches, so the lookup finds ZERO candidates and must abstain. Replacing
+/// that arm with any same-alias fallback binds `t.end_id` there — a CITY column
+/// holding an airport CODE, executing happily and silently wrong.
+///
+/// The other tests all pass under that mutation (it only affects this
+/// duplicate-projection shape), so without this the guard the whole safety
+/// argument rests on would be untested.
+#[tokio::test]
+async fn ldbc_1152_no_candidate_lookup_abstains_rather_than_guessing() {
+    let schema = load_schema_from("schemas/test/flights_denorm_test.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o.city, o",
+    )
+    .await;
+
+    let dup = sql
+        .lines()
+        .find(|l| l.contains("\"o.city_2\""))
+        .unwrap_or_else(|| panic!("#1152 M1: expected a disambiguated duplicate:\n{sql}"));
+
+    assert!(
+        !dup.contains("end_id") && !dup.contains("start_id"),
+        "#1152 M1: the unmatched duplicate must ABSTAIN, not fall back to the \
+         arm's id column — that binds an airport CODE under a CITY alias and \
+         executes silently wrong:\n{dup}"
+    );
+    // Abstaining means keeping the pre-existing edge-alias spelling, which
+    // stays loud exactly as on main (ground rule 1).
+    assert!(
+        dup.contains("dest_city") || dup.contains("origin_city"),
+        "#1152 M1: abstaining reproduces main's spelling for this item:\n{dup}"
+    );
+}
