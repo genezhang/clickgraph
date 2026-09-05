@@ -677,9 +677,22 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   resolve their filter through the NORMAL plan-walk (end-wrapper placement,
   row-equivalent under `start_id = end_id`; re-verified 4/5/12 == oracles), so
   the #1124 label-fallback no longer fires — kept as a defensive net, comment
-  updated. Change surface: 354-combo sweep = exactly the 4 LDBC-schema closed
-  single-hop shapes. 3 regression tests (targeting one fails on main). Suite
-  green (1738 + 675 + ratchet), clippy clean, zero golden churn.
+  updated. Adversarial review (PR #1126, no CRITICAL) CORRECTED my
+  change-surface claim: the real surface is LARGER than the 4 closed
+  single-hop shapes — single-label inferred-target opens
+  (`(a:Person)-[:IS_LOCATED_IN]->(b)`) also gain a node join +
+  `WHERE b.type='City'` (semantically correct — main was internally
+  INCONSISTENT, applying the filter on ORDER BY but not count(*) forms of the
+  SAME query — but it defeats the count-only join-elision optimization for
+  filtered targets, a perf cost). That load-bearing join EXPOSED a latent
+  schema misdeclaration (review H1): `ldbc_snb.yaml` `WORK_AT to_id:
+  OrganisationId` vs physical `CompanyId` (other 3 LDBC schemas were right) —
+  fixed in the same PR, 21357 == oracle. Review M2 filed as **#1127** (OPEN,
+  pre-existing): multi-label UNION arms apply NO per-label filter, so a
+  stray-subtype edge row over-returns and single- vs multi-label forms of the
+  same traversal disagree; correct design = per-arm filters, locking test
+  annotated accordingly. 3 regression tests (targeting one fails on main).
+  Suite green (1738 + 675 + ratchet), clippy clean, zero golden churn.
 
 - 2026-09-04: **Correctness (ground-rule-1) — a CLOSED VLP pattern
   `(a:Country)-[:R*2..3]->(a)` dropped its node schema `filter:` entirely,

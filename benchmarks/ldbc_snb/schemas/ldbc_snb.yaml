@@ -260,7 +260,11 @@ graph_schema:
       database: ldbc
       table: Person_workAt_Organisation
       from_id: PersonId
-      to_id: OrganisationId
+      # #1126 review (H1): the physical column is CompanyId, not OrganisationId
+      # (matching ldbc_snb_complete/mini/embedded). The misdeclaration was
+      # latent while count-only queries elided the target join; carrying the
+      # Company schema filter (#1125) makes that join load-bearing.
+      to_id: CompanyId
       from_node: Person
       to_node: Company
       property_mappings:

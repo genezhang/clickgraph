@@ -2044,9 +2044,16 @@ async fn ldbc_1125_unfiltered_closed_single_hop_unchanged() {
 }
 
 /// #1125 boundary: a MULTI-label inferred node must NOT get the first label's
-/// filter (it stands for several labels; restricting to one would drop rows).
-/// `(a:Person)-[r]->(b)` infers b across City/Country/... — no `b.type = ...`
-/// may appear outside the per-arm discriminators.
+/// filter as a GLOBAL restriction (it stands for several labels; restricting
+/// to one would drop rows — caught live when `(a:Person)-[r]->(b)` grew a
+/// spurious `WHERE b.type = 'City'`).
+///
+/// NOTE (#1127): PER-ARM filters inside the multi-type CTE — each UNION arm
+/// applying its own label's filter to its own node join — are the eventual
+/// goal, NOT forbidden by this test. Today the arms are unfiltered, which
+/// over-returns when an edge row violates the schema's declared subtype; that
+/// gap is tracked as #1127. This test only pins that the wrong GLOBAL
+/// restriction stays fixed.
 #[tokio::test]
 async fn ldbc_1125_multi_label_inferred_node_gets_no_filter() {
     let schema = load_schema_from("benchmarks/ldbc_snb/schemas/ldbc_snb.yaml");
