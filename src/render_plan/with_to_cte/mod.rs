@@ -4747,7 +4747,7 @@ fn apply_pattern_comprehensions(
     schema: &GraphSchema,
     plan_ctx: Option<&PlanCtx>,
     cte_schemas: &crate::render_plan::CteSchemas,
-) {
+) -> RenderPlanBuilderResult<()> {
     use super::CteContent;
     if !pattern_comprehensions.is_empty() {
         // Check if any PC has full pattern info for correlated subquery approach
@@ -4883,11 +4883,24 @@ fn apply_pattern_comprehensions(
 
                         pc_cte_names.push((*pc_idx, pc_cte_name));
                     }
+                } else if pc_meta.where_clause.is_some() {
+                    // #1113 follow-up: the PC CTE builder returns `None` when its inner
+                    // WHERE could not be rendered. Dropping the comprehension there
+                    // silently removes the whole computed column (and, before this,
+                    // emitted it UNFILTERED). Refuse loudly instead.
+                    return Err(RenderBuildError::UnsupportedFeature(format!(
+                        "pattern comprehension inner WHERE cannot be rendered for the \
+                         count/size form: `{:?}`. This path supports property comparisons \
+                         on the pattern's own nodes; function calls, CASE expressions and \
+                         list literals are not yet lowered here. Rewrite the filter as a \
+                         plain property comparison, or lift it into the enclosing MATCH.",
+                        pc_meta.where_clause
+                    )));
                 } else {
                     log::warn!(
-                                "⚠️ Could not generate PC CTE for pattern comprehension #{} — falling back to 0",
-                                pc_idx
-                            );
+                        "⚠️ Could not generate PC CTE for pattern comprehension #{} — falling back to 0",
+                        pc_idx
+                    );
                 }
             }
 
@@ -5178,6 +5191,8 @@ fn apply_pattern_comprehensions(
             }
         }
     }
+
+    Ok(())
 }
 
 /// Build the CTE's column metadata from its rendered SELECT items (a STEP of the
@@ -9134,7 +9149,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 schema,
                 plan_ctx,
                 &cte_schemas,
-            );
+            )?;
 
             // NOTE: Previously had intermediate_reverse_mapping block here (~180 lines)
             // that built reverse mapping from CTE columns and rewrote CTE body expressions.

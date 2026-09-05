@@ -330,14 +330,19 @@ fn generate_pattern_comprehension_correlated_subquery(
 
     // Handle WHERE clause from pattern comprehension
     if let Some(ref where_expr) = pc_meta.where_clause {
-        if let Some(where_sql) = render_pc_where_clause(
+        match render_pc_where_clause(
             where_expr,
             &pc_meta.pattern_hops,
             &edge_tables,
             schema,
             &mut join_clauses,
         ) {
-            where_conditions.push(where_sql);
+            Some(where_sql) => where_conditions.push(where_sql),
+            // #1113 follow-up: unrenderable ⇒ refuse the whole comprehension
+            // rather than emit it UNFILTERED (which would silently count rows
+            // the user asked to exclude). The caller turns `None` into a loud
+            // render error naming the predicate.
+            None => return None,
         }
     }
 
@@ -501,14 +506,19 @@ pub(crate) fn generate_pattern_comprehension_cte(
 
     // Handle WHERE clause from pattern comprehension
     if let Some(ref where_expr) = pc_meta.where_clause {
-        if let Some(where_sql) = render_pc_where_clause(
+        match render_pc_where_clause(
             where_expr,
             &pc_meta.pattern_hops,
             &edge_tables,
             schema,
             &mut join_clauses,
         ) {
-            where_conditions.push(where_sql);
+            Some(where_sql) => where_conditions.push(where_sql),
+            // #1113 follow-up: unrenderable ⇒ refuse the whole comprehension
+            // rather than emit it UNFILTERED (which would silently count rows
+            // the user asked to exclude). The caller turns `None` into a loud
+            // render error naming the predicate.
+            None => return None,
         }
     }
 
@@ -700,7 +710,7 @@ fn generate_pc_cte_with_either(
 
         // WHERE clause
         if let Some(ref where_expr) = pc_meta.where_clause {
-            if let Some(where_sql) = render_pc_where_clause(
+            match render_pc_where_clause(
                 where_expr,
                 &pc_meta.pattern_hops,
                 &edge_tables
@@ -710,7 +720,9 @@ fn generate_pc_cte_with_either(
                 schema,
                 &mut join_clauses,
             ) {
-                where_conditions.push(where_sql);
+                // #1113 follow-up: unrenderable ⇒ refuse, never emit unfiltered.
+                None => return None,
+                Some(where_sql) => where_conditions.push(where_sql),
             }
         }
 
@@ -966,14 +978,19 @@ fn generate_list_comp_array_count(
 
     // Handle additional WHERE clause from pattern
     if let Some(ref where_expr) = pc_meta.where_clause {
-        if let Some(where_sql) = render_pc_where_clause(
+        match render_pc_where_clause(
             where_expr,
             &pc_meta.pattern_hops,
             &edge_tables,
             schema,
             &mut join_clauses,
         ) {
-            where_conditions.push(where_sql);
+            Some(where_sql) => where_conditions.push(where_sql),
+            // #1113 follow-up: unrenderable ⇒ refuse the whole comprehension
+            // rather than emit it UNFILTERED (which would silently count rows
+            // the user asked to exclude). The caller turns `None` into a loud
+            // render error naming the predicate.
+            None => return None,
         }
     }
 
@@ -1386,7 +1403,7 @@ fn generate_pc_correlated_subquery_with_either(
 
         // WHERE clause from pattern comprehension
         if let Some(ref where_expr) = pc_meta.where_clause {
-            if let Some(where_sql) = render_pc_where_clause(
+            match render_pc_where_clause(
                 where_expr,
                 &pc_meta.pattern_hops,
                 &edge_tables
@@ -1396,7 +1413,9 @@ fn generate_pc_correlated_subquery_with_either(
                 schema,
                 &mut join_clauses,
             ) {
-                where_conditions.push(where_sql);
+                // #1113 follow-up: unrenderable ⇒ refuse, never emit unfiltered.
+                None => return None,
+                Some(where_sql) => where_conditions.push(where_sql),
             }
         }
 
@@ -1810,7 +1829,7 @@ fn render_pc_where_clause(
         schema,
         join_clauses,
         &mut node_joins_added,
-    );
+    )?;
 
     if sql.is_empty() {
         None
@@ -1832,7 +1851,7 @@ fn render_logical_expr_to_sql(
     schema: &GraphSchema,
     join_clauses: &mut Vec<String>,
     node_joins_added: &mut HashSet<String>,
-) -> String {
+) -> Option<String> {
     use crate::query_planner::logical_expr::LogicalExpr;
 
     match expr {
@@ -1879,10 +1898,10 @@ fn render_logical_expr_to_sql(
                     prop_name
                 };
 
-                format!("{}.{}", sql_alias, db_col)
+                Some(format!("{}.{}", sql_alias, db_col))
             } else {
                 // Not a pattern node - might be an outer reference, use raw
-                format!("{}.{}", alias, prop_name)
+                Some(format!("{}.{}", alias, prop_name))
             }
         }
         LogicalExpr::OperatorApplicationExp(op) => {
@@ -1928,7 +1947,7 @@ fn render_logical_expr_to_sql(
                     schema,
                     join_clauses,
                     node_joins_added,
-                );
+                )?;
                 let right = render_logical_expr_to_sql(
                     &op.operands[1],
                     node_alias_map,
@@ -1937,8 +1956,8 @@ fn render_logical_expr_to_sql(
                     schema,
                     join_clauses,
                     node_joins_added,
-                );
-                return match op.operator {
+                )?;
+                return Some(match op.operator {
                     Op::StartsWith => {
                         crate::clickhouse_query_generator::starts_with_predicate(&left, &right)
                     }
@@ -1953,7 +1972,7 @@ fn render_logical_expr_to_sql(
                         crate::clickhouse_query_generator::regex_match_predicate(&left, &right)
                     }
                     _ => unreachable!(),
-                };
+                });
             }
 
             // Unary postfix operators (IS NULL, IS NOT NULL)
@@ -1966,8 +1985,8 @@ fn render_logical_expr_to_sql(
                     schema,
                     join_clauses,
                     node_joins_added,
-                );
-                return format!("{}{}", operand, op_str);
+                )?;
+                return Some(format!("{}{}", operand, op_str));
             }
 
             // Unary prefix operator (NOT)
@@ -1980,8 +1999,8 @@ fn render_logical_expr_to_sql(
                     schema,
                     join_clauses,
                     node_joins_added,
-                );
-                return format!("{}{}", op_str, operand);
+                )?;
+                return Some(format!("{}{}", op_str, operand));
             }
 
             if op.operands.len() == 2 {
@@ -1993,7 +2012,7 @@ fn render_logical_expr_to_sql(
                     schema,
                     join_clauses,
                     node_joins_added,
-                );
+                )?;
                 let right = render_logical_expr_to_sql(
                     &op.operands[1],
                     node_alias_map,
@@ -2002,13 +2021,13 @@ fn render_logical_expr_to_sql(
                     schema,
                     join_clauses,
                     node_joins_added,
-                );
+                )?;
                 // Exponentiation has no infix form on ClickHouse/Spark; route
                 // through the dialect mapper's `POWER(base, exp)` (Rule #7).
                 if op.operator == Op::Exponentiation {
-                    return current_function_mapper().power(&left, &right);
+                    return Some(current_function_mapper().power(&left, &right));
                 }
-                format!("{}{}{}", left, op_str, right)
+                Some(format!("{}{}{}", left, op_str, right))
             } else {
                 let rendered: Vec<String> = op
                     .operands
@@ -2024,11 +2043,11 @@ fn render_logical_expr_to_sql(
                             node_joins_added,
                         )
                     })
-                    .collect();
-                rendered.join(op_str)
+                    .collect::<Option<Vec<String>>>()?;
+                Some(rendered.join(op_str))
             }
         }
-        LogicalExpr::Literal(lit) => match lit {
+        LogicalExpr::Literal(lit) => Some(match lit {
             crate::query_planner::logical_expr::Literal::Integer(i) => i.to_string(),
             crate::query_planner::logical_expr::Literal::Float(f) => f.to_string(),
             crate::query_planner::logical_expr::Literal::String(s) => {
@@ -2042,14 +2061,23 @@ fn render_logical_expr_to_sql(
                 }
             }
             _ => "NULL".to_string(),
-        },
-        LogicalExpr::Parameter(p) => format!("${}", p),
+        }),
+        LogicalExpr::Parameter(p) => Some(format!("${}", p)),
+        // #1113 follow-up: an unhandled variant returns `None`, NOT an empty
+        // string. This renderer only covers PropertyAccess / OperatorApplication
+        // / Literal / Parameter — a ScalarFnCall, CASE, list literal, etc. lands
+        // here. Returning `""` poisoned the PARENT operator, which joined
+        // operands blindly: `toLower(x.name) = 'bob'` became `WHERE  = 'bob'`
+        // and `x.user_id IN [1,2,3]` became `WHERE x.user_id IN ` — malformed
+        // SQL — while a top-level CASE produced no WHERE at all (silent wrong).
+        // `None` propagates through every operand via `?`, so the caller learns
+        // the predicate is unrenderable instead of emitting garbage.
         _ => {
             log::warn!(
                 "⚠️ Unhandled LogicalExpr variant in PC WHERE clause: {:?}",
                 expr
             );
-            String::new()
+            None
         }
     }
 }
