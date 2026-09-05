@@ -2351,3 +2351,92 @@ async fn ldbc_1131_single_id_comparison_still_collapses() {
          projection:\n{sql}"
     );
 }
+
+// --- #1132: zero-hop (*0..N) composite VLP base arm ---------------------------
+//
+// `generate_zero_hop_base_case` interpolated the RAW comma-separated composite
+// column string: `start_node.bank_id, account_number as start_id` — two
+// columns with the alias on the second; the pipe-joined concat never built —
+// Code 44 on every composite `*0..N` (loud, both channels). The zero-hop arm
+// also never projected the per-component columns the non-zero arms carry
+// (#1130 grouped order), so UNION ALL would misbind by position once the id
+// emission was fixed. Fix: route through `emit_id_expr` + emit the grouped
+// component columns + skip them in the props loop (Code 44 double-projection).
+// Live: count 15 == oracle AND the full 4-column 15-row matrix row-for-row
+// identical to a hand enumeration.
+
+/// Zero-hop composite: pipe-joined id, grouped component columns, no
+/// double-projection.
+#[tokio::test]
+async fn ldbc_1132_zero_hop_composite_id_emission() {
+    let schema = load_schema_from("schemas/test/composite_node_ids.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Account)-[:TRANSFERRED*0..2]->(b:Account) \
+         RETURN a.bank_id, a.account_number, b.bank_id, b.account_number",
+    )
+    .await;
+    assert!(
+        sql.contains(
+            "concat(toString(start_node.bank_id), '|', toString(start_node.account_number)) as start_id"
+        ),
+        "#1132: the zero-hop seed id must be the composite-aware concat:\n{sql}"
+    );
+    assert!(
+        !sql.contains(", account_number as start_id"),
+        "#1132: never the raw comma-joined column string:\n{sql}"
+    );
+    // Grouped component columns present exactly once each in the zero-hop arm.
+    let zero_arm = sql.split("UNION ALL").next().unwrap_or("");
+    for col in [
+        "as start_bank_id",
+        "as start_account_number",
+        "as end_bank_id",
+        "as end_account_number",
+    ] {
+        assert_eq!(
+            zero_arm.matches(col).count(),
+            1,
+            "#1132: `{col}` must appear exactly once in the zero-hop arm:\n{sql}"
+        );
+    }
+}
+
+/// #1132 boundary: single-column-id zero-hop is byte-compatible (the id
+/// emission path is identical for `Identifier::Single`).
+#[tokio::test]
+async fn ldbc_1132_zero_hop_single_id_unchanged() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS*0..2]->(b:User) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("start_node.user_id as start_id"),
+        "#1132: single-column zero-hop id emission unchanged:\n{sql}"
+    );
+}
+
+/// #1132 review (HIGH): the undirected two-CTE split gave BOTH directional
+/// arms `min_hops: 0`, so the direction-independent zero-hop identity rows
+/// were seeded TWICE and the outer UNION ALL kept both copies — every
+/// zero-hop row silently doubled (30 vs an oracle 25 on the composite
+/// fixture), newly reachable once #1132 made composite `*0..N` render at all.
+/// The seed now lives in the FORWARD arm only; the swapped Incoming arm
+/// starts at 1 hop.
+#[tokio::test]
+async fn ldbc_1132_undirected_split_seeds_zero_hop_once() {
+    let schema = load_schema_from("schemas/test/composite_node_ids.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Account)-[:TRANSFERRED*0..2]-(b:Account) RETURN count(*)",
+    )
+    .await;
+    assert_eq!(
+        sql.matches("0 as hop_count").count(),
+        1,
+        "#1132: the two-CTE undirected split must seed the zero-hop identity \
+         row in exactly ONE arm:\n{sql}"
+    );
+}

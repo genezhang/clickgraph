@@ -2712,26 +2712,22 @@ impl<'a> VariableLengthCteGenerator<'a> {
             std::collections::HashSet::new() // Not needed when tables are same
         };
 
+        // #1132: the id must go through the composite-aware `emit_id_expr` —
+        // interpolating the raw comma-separated column string produced
+        // `start_node.bank_id, acct_no as start_id` (two columns, alias on the
+        // second; the pipe-joined concat never built) → Code 44 on every
+        // composite `*0..N`. Single-column ids emit byte-identically to the
+        // old string form.
+        let start_id_identifier = Identifier::from_comma_separated(&self.start_node_id_column);
+        let start_id_expr = emit_id_expr(&self.start_node_alias, &start_id_identifier);
         let mut select_items = vec![
-            format!(
-                "{}.{} as start_id",
-                self.start_node_alias, self.start_node_id_column
-            ),
-            format!(
-                "{}.{} as end_id",
-                self.start_node_alias,
-                self.start_node_id_column // Same node for self-loop
-            ),
+            format!("{start_id_expr} as start_id"),
+            // Same node for self-loop
+            format!("{start_id_expr} as end_id"),
             "0 as hop_count".to_string(), // Zero hops
             format!("{empty_str_arr} as path_relationships"), // Minimal placeholder when path data not needed
             // Add path_nodes for UNWIND nodes(p) support - for zero hop, just the start node
-            format!(
-                "{} as path_nodes",
-                arr(&format!(
-                    "{}.{}",
-                    self.start_node_alias, self.start_node_id_column
-                ))
-            ),
+            format!("{} as path_nodes", arr(&start_id_expr)),
         ];
 
         // #1077: zero-hop parallel per-node property arrays — the path visits
@@ -2768,6 +2764,37 @@ impl<'a> VariableLengthCteGenerator<'a> {
             ));
         }
 
+        // #1132: the non-zero arms project each composite component as
+        // `start_<col>`/`end_<col>` (grouped — #1130). The zero-hop arm must
+        // emit the SAME columns in the SAME order or UNION ALL misbinds by
+        // position. At hop 0 start == end, so both groups read the start node.
+        if let Identifier::Composite(cols) = &start_id_identifier {
+            for col in cols.iter() {
+                select_items.push(format!(
+                    "{}.{} as start_{}",
+                    self.start_node_alias,
+                    crate::clickhouse_query_generator::quote_identifier(col),
+                    col
+                ));
+            }
+            for col in cols.iter() {
+                select_items.push(format!(
+                    "{}.{} as end_{}",
+                    self.start_node_alias,
+                    crate::clickhouse_query_generator::quote_identifier(col),
+                    col
+                ));
+            }
+        }
+
+        // Composite components already projected above — the props loop must
+        // not emit them again (Code 44 column-already-exists). Mirrors the
+        // non-zero arms, whose props loops skip id components too.
+        let is_id_component = |col: &str| -> bool {
+            matches!(&start_id_identifier, Identifier::Composite(cols)
+                if cols.iter().any(|c| c == col))
+        };
+
         // Add properties for start node (which is also the end node)
         for prop in &self.properties {
             if prop.cypher_alias == self.start_cypher_alias {
@@ -2775,6 +2802,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 // But keep it if it's a different property that happens to be the ID column
                 // (e.g., "node_id" as a separate property in some schemas)
                 if prop.column_name == self.start_node_id_column && prop.alias == "id" {
+                    continue;
+                }
+                if is_id_component(&prop.column_name) {
                     continue;
                 }
 
@@ -2787,6 +2817,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
             if prop.cypher_alias == self.end_cypher_alias {
                 // Skip ID column when it's the actual id property (already added as end_id)
                 if prop.column_name == self.end_node_id_column && prop.alias == "id" {
+                    continue;
+                }
+                if is_id_component(&prop.column_name) {
                     continue;
                 }
 

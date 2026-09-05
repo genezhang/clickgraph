@@ -657,6 +657,35 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-09-05: **Correctness — zero-hop (`*0..N`) composite VLP emitted a
+  malformed base arm (Code 44, loud)** (branch `fix/1132-zero-hop-composite`,
+  PR #1134, closes #1132). `generate_zero_hop_base_case` interpolated the RAW
+  comma-separated composite column string (`start_node.bank_id, account_number
+  as start_id` — alias on the SECOND column, concat never built). Fix: route
+  the seed id through the composite-aware `emit_id_expr` (#604/#713 pattern:
+  thread the column vector, don't stringify), emit the per-component columns
+  in the #1130 GROUPED order so UNION ALL binds correctly, and skip components
+  in the props loop (a first cut double-projected → Code 44; caught by the
+  full-projection probe per the pruning-can-mask lesson). Live: count 15 ==
+  oracle AND the full 4-column 15-row matrix row-for-row identical to a hand
+  enumeration. 240-combo `*0..2` sweep: 3 diffs = the fix on 2 composite
+  schemas + a thread-id in a pre-existing panic message (byte-equal
+  otherwise). Focused review (PR #1134) passed all 6 directed attacks (3-arm
+  alignment incl. pruned subsets; filters; closed; cross-type refusal;
+  nodes(p)/#1077 arrays; LDBC 1454 unchanged) but found a **HIGH the fix
+  newly exposed**: the undirected two-CTE split gave BOTH arms `min_hops: 0`,
+  so the direction-independent zero-hop identity rows were seeded twice —
+  silently DOUBLED (30 vs oracle 25), loud→silent via #1132 making the shape
+  render at all (the loud-fix-exposes-silent-bug class). Fixed in-PR: the
+  swapped Incoming arm's min bumped to 1, seed lives in the forward arm only
+  (25 == oracle; single-walk single-id and LDBC shapes byte-identical/4431
+  unchanged; the hop-2 mixed-direction UNDERCOUNT 20-vs-22 is PRE-EXISTING
+  #583/#887-family, byte-identical on main). Review also re-confirmed
+  pre-existing: ORDER BY on a composite component maps to whole `t.start_id`;
+  `*0..0` renders as a plain 1-hop join (semantics bug, all id shapes).
+  3 tests (targeting ones fail on main). Suite green (1738 + 688 + ratchet),
+  clippy clean, zero golden churn.
+
 - 2026-09-05: **Correctness (ground-rule-1) — cross-endpoint COMPOSITE
   component comparison silently widened to whole-id equality** (branch
   `fix/1131-composite-component-cross-endpoint`, PR #1133, closes #1131).
