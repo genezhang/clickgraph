@@ -670,7 +670,21 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   ids keep the skip (rewrite onto `end_id`, locked by a boundary test). Live
   on a populated composite fixture: Code 47 → **2 == oracle** (both
   channels). 240-combo sweep vs main: exactly 1 diff (the target shape).
-  2 tests (targeting one fails on main). Suite green (1738 + 682 + ratchet),
+  2 tests (targeting one fails on main). Adversarial review (PR #1130) found a
+  **CRITICAL** in the first cut and BLOCKED the merge: the recursive arm
+  emitted composite components INTERLEAVED per column while the base arm
+  groups them — UNION ALL binds by POSITION (#908 class), so every hop>=2 row
+  swapped `start_account_number`↔`end_bank_id`, silently scrambling
+  RETURN-position component reads (PRE-EXISTING on main: hop>=2 was always
+  wrong, no WHERE needed) and making the new wrapper end-filter read scrambled
+  data (loud→WRONG: 2 rows vs oracle 4; a filter on a NONEXISTENT bank
+  returned 3 phantom rows; my count(*) validation passed only because pruning
+  happened to align the arms — correctness depended on which columns the
+  query RETURNed). Fixed in-PR by aligning the recursive block to the base
+  arm's grouped order (+ keying start pass-throughs on the START composite,
+  not end's): all reviewer repros now == oracle, and main's pre-existing
+  RETURN-position scramble is fixed too (10/10 rows correct). Structural
+  arm-order test added (fails on main). Suite green (1738 + 683 + ratchet),
   clippy clean, zero golden churn.
 
 - 2026-09-05: **Correctness (ground-rule-1) — schema-filter column colliding
