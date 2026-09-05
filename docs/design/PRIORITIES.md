@@ -657,6 +657,22 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-09-05: **Correctness — zero-hop (`*0..N`) composite VLP emitted a
+  malformed base arm (Code 44, loud)** (branch `fix/1132-zero-hop-composite`,
+  PR #1134, closes #1132). `generate_zero_hop_base_case` interpolated the RAW
+  comma-separated composite column string (`start_node.bank_id, account_number
+  as start_id` — alias on the SECOND column, concat never built). Fix: route
+  the seed id through the composite-aware `emit_id_expr` (#604/#713 pattern:
+  thread the column vector, don't stringify), emit the per-component columns
+  in the #1130 GROUPED order so UNION ALL binds correctly, and skip components
+  in the props loop (a first cut double-projected → Code 44; caught by the
+  full-projection probe per the pruning-can-mask lesson). Live: count 15 ==
+  oracle AND the full 4-column 15-row matrix row-for-row identical to a hand
+  enumeration. 240-combo `*0..2` sweep: 3 diffs = the fix on 2 composite
+  schemas + a thread-id in a pre-existing panic message (byte-equal
+  otherwise). 2 tests (targeting one fails on main). Suite green
+  (1738 + 687 + ratchet), clippy clean, zero golden churn.
+
 - 2026-09-05: **Correctness (ground-rule-1) — cross-endpoint COMPOSITE
   component comparison silently widened to whole-id equality** (branch
   `fix/1131-composite-component-cross-endpoint`, PR #1133, closes #1131).
