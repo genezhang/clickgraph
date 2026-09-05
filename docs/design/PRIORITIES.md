@@ -657,6 +657,22 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-09-05: **Correctness — a filter on a COMPOSITE node_id COMPONENT was
+  left unrewritten in the VLP wrapper → Code 47 (loud)** (branch
+  `fix/1123-composite-id-filter-component`, PR #1130, closes #1123). A
+  composite id's `end_id` is a pipe-joined concat with no per-component
+  target, so BOTH channels — a schema `filter: "bank_id = 7"` AND a user
+  `WHERE b.bank_id = 'x'` — emitted a bare `end_node.bank_id` in the wrapper.
+  Fix: composite id components FALL THROUGH the id-skips (the #1118
+  schema-filter block and the regular VLP property builder, both sides) and
+  are projected as ordinary `<prefix>_<col>` columns; the #1128
+  boundary-aware rewrite binds the wrapper predicate to them. Single-column
+  ids keep the skip (rewrite onto `end_id`, locked by a boundary test). Live
+  on a populated composite fixture: Code 47 → **2 == oracle** (both
+  channels). 240-combo sweep vs main: exactly 1 diff (the target shape).
+  2 tests (targeting one fails on main). Suite green (1738 + 682 + ratchet),
+  clippy clean, zero golden churn.
+
 - 2026-09-05: **Correctness (ground-rule-1) — schema-filter column colliding
   with a differently-mapped declared property mis-bound the wrapper predicate
   to the WRONG column** (branch `fix/1122-structural-end-filter-rewrite`,

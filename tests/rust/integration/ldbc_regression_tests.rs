@@ -2188,3 +2188,59 @@ async fn ldbc_1122_literal_value_not_corrupted() {
         "#1128: the literal VALUE must survive the rewrite verbatim:\n{sql}"
     );
 }
+
+// --- #1123: filter on a COMPOSITE node_id component --------------------------
+//
+// A composite id's `end_id` is a pipe-joined concat with no per-component
+// target, so the id rewrite could not handle `end_node.bank_id` and BOTH
+// channels — a schema `filter: "bank_id = 7"` and a user `WHERE b.bank_id`
+// — left the reference unrewritten in the wrapper -> Code 47.
+// Fix: composite id components FALL THROUGH the id-skips (the #1118 block and
+// the regular VLP property builder) and are projected as ordinary
+// `<prefix>_<col>` columns; the boundary-aware rewrite binds the wrapper
+// predicate to them. Live: Code 47 -> 2 == oracle on a populated fixture.
+// Single-column ids keep the skip: they're already handled by the id rewrite.
+
+/// Both channels — schema filter and user WHERE — on a composite component
+/// must project the component and bind the wrapper predicate to it.
+#[tokio::test]
+async fn ldbc_1123_composite_component_filter_projected() {
+    let schema = load_schema_from("schemas/test/composite_node_ids.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Account)-[r*1..2]->(b:Account) WHERE b.bank_id = 'x' RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("end_node.bank_id as end_bank_id"),
+        "#1123: the composite id component must be projected:\n{sql}"
+    );
+    assert!(
+        sql.contains("end_bank_id = 'x'"),
+        "#1123: the wrapper predicate must bind to the projected component:\n{sql}"
+    );
+    assert!(
+        !sql.contains("WHERE (end_node.bank_id"),
+        "#1123: no bare out-of-scope `end_node.bank_id` in the wrapper:\n{sql}"
+    );
+}
+
+/// #1123 boundary: a SINGLE-column id keeps the skip — its filter rewrites
+/// onto `end_id`, with no extra projected column.
+#[tokio::test]
+async fn ldbc_1123_single_id_filter_still_uses_end_id() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE b.user_id = 5 RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("end_id = 5"),
+        "#1123: a single-column id filter must still rewrite onto `end_id`:\n{sql}"
+    );
+    assert!(
+        !sql.contains("as end_user_id"),
+        "#1123: no redundant projected column for a single-column id:\n{sql}"
+    );
+}

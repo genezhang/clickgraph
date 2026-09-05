@@ -4078,7 +4078,13 @@ pub fn extract_ctes_with_context(
                                 start_node_schema.property_mappings.iter().collect();
                             sorted_props.sort_by_key(|(k, _)| k.as_str());
                             for (prop_name, prop_value) in sorted_props {
-                                if start_id_columns.contains(&prop_value.raw()) {
+                                // A SINGLE id is projected as `start_id` and its
+                                // references rewrite onto it. A COMPOSITE id's
+                                // components have no per-component target (#1123),
+                                // so they fall through to ordinary projection.
+                                if start_id_columns.len() == 1
+                                    && start_id_columns.contains(&prop_value.raw())
+                                {
                                     continue;
                                 }
                                 // Prune: skip if requirements exist and this property isn't needed
@@ -4124,7 +4130,11 @@ pub fn extract_ctes_with_context(
                                 end_node_schema.property_mappings.iter().collect();
                             sorted_props.sort_by_key(|(k, _)| k.as_str());
                             for (prop_name, prop_value) in sorted_props {
-                                if end_id_columns.contains(&prop_value.raw()) {
+                                // Composite id components fall through (#1123) — see
+                                // the start-side comment.
+                                if end_id_columns.len() == 1
+                                    && end_id_columns.contains(&prop_value.raw())
+                                {
                                     continue;
                                 }
                                 // Check both Cypher property name and DB column name
@@ -4266,14 +4276,17 @@ pub fn extract_ctes_with_context(
                         };
                         let id_columns = node_schema.node_id.columns();
                         for col in schema_filter.get_columns() {
-                            // The id column is projected as `start_id`/`end_id`, not as
-                            // a `<prefix>_<prop>` column; skip it — a filter on a SINGLE
-                            // id is already handled by the id rewrite
-                            // (`end_node.<id_col>` -> `end_id`). That does NOT hold for a
-                            // COMPOSITE id, whose `end_id` is a pipe-joined concat with no
-                            // per-component target: such a filter is left unrewritten and
-                            // fails loud (Code 47). Pre-existing, tracked as #1123.
-                            if id_columns.contains(&col.as_str()) {
+                            // A SINGLE id column is projected as `start_id`/`end_id`
+                            // and its filter is handled by the id rewrite
+                            // (`end_node.<id_col>` -> `end_id`) — skip it. A COMPOSITE
+                            // id's `end_id` is a pipe-joined concat with NO
+                            // per-component target, so a filter on one component was
+                            // left unrewritten -> Code 47 (#1123). Fall THROUGH for
+                            // the composite case: the component is then projected as
+                            // an ordinary `<prefix>_<col>` column (mangled if a
+                            // declared property collides) and the boundary-aware
+                            // rewrite binds the wrapper predicate to it.
+                            if id_columns.len() == 1 && id_columns.contains(&col.as_str()) {
                                 continue;
                             }
                             // The filter is written against PHYSICAL columns, but the
