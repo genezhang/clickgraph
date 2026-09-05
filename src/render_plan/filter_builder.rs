@@ -1203,6 +1203,13 @@ impl FilterBuilder for LogicalPlan {
             LogicalPlan::Delete(d) => d.input.extract_filters()?,
             LogicalPlan::Remove(r) => r.input.extract_filters()?,
         };
+        // #1104: refuse a node-identity comparison whose endpoints have
+        // mismatched node_id arity before it can be silently truncated by
+        // `zip` in the emitter. Resolved against THIS plan (the task-local
+        // alias→label map is only built later, inside the emitter).
+        if let Some(ref f) = filters {
+            reject_mismatched_arity_node_identity(f, self)?;
+        }
         Ok(filters)
     }
 
@@ -1559,4 +1566,91 @@ fn render_rhs_to_sql(expr: &LogicalExpr, as_string: bool) -> String {
             }
         }
     }
+}
+
+/// #1104: refuse a bare-node identity comparison (`a = b` / `a <> b`) whose two
+/// endpoints have **different node_id arity** — e.g. a single-column
+/// `Customer.customer_id` against a composite `Account.[bank_id,
+/// account_number]`.
+///
+/// `Identifier::to_sql_equality` pairs columns element-wise with `zip`, which
+/// **silently truncates** to the shorter side: the composite's trailing
+/// `account_number` was dropped and `customer_id` was compared against the
+/// unrelated `bank_id`, producing a semantically meaningless predicate that
+/// executes without error (`WHERE NOT (c.customer_id = a.bank_id)`).
+///
+/// Why refuse rather than constant-fold: it is tempting to fold cross-label
+/// identity to `false` (for `=`) on the theory that distinct labels imply
+/// distinct nodes. That does **not** hold — Cypher nodes may carry multiple
+/// labels, and ClickGraph models exactly that with polymorphic parent labels
+/// (LDBC `Message` ⊃ `Post`/`Comment`), where two differently-labelled aliases
+/// can legitimately bind the same node. Folding would silently change results
+/// for those schemas. Since arity mismatch means the ids are not comparable as
+/// written, a loud refusal is the only answer that cannot be silently wrong.
+///
+/// Same-arity comparisons (including composite-to-composite, and the renamed
+/// single-column case) are untouched — this only fires where the old code
+/// would have dropped a key column.
+fn reject_mismatched_arity_node_identity(
+    expr: &RenderExpr,
+    plan: &LogicalPlan,
+) -> FilterBuilderResult<()> {
+    use crate::render_plan::cte_extraction::get_node_label_for_alias;
+    use crate::server::query_context::get_current_schema;
+
+    if let RenderExpr::OperatorApplicationExp(op) = expr {
+        if matches!(op.operator, Operator::Equal | Operator::NotEqual) && op.operands.len() == 2 {
+            if let (RenderExpr::TableAlias(l), RenderExpr::TableAlias(r)) =
+                (&op.operands[0], &op.operands[1])
+            {
+                // Resolve each alias's node_id arity. When either side is
+                // unresolvable, stay silent: the emitter has its own fallback
+                // and this guard must not turn an unrelated shape into an error.
+                let arity_of = |alias: &str| -> Option<(usize, Vec<String>)> {
+                    let schema = get_current_schema()?;
+                    let label = get_node_label_for_alias(alias, plan)?;
+                    let ns = schema.node_schema_opt(&label)?;
+                    let cols: Vec<String> = ns
+                        .node_id
+                        .id
+                        .columns()
+                        .iter()
+                        .map(|c| c.to_string())
+                        .collect();
+                    Some((cols.len(), cols))
+                };
+                if let (Some((ln, lcols)), Some((rn, rcols))) = (arity_of(&l.0), arity_of(&r.0)) {
+                    if ln != rn {
+                        return Err(RenderBuildError::UnsupportedFeature(format!(
+                            "node identity comparison `{} {} {}` compares nodes whose \
+                             node_id column counts differ ({} has {} column(s) [{}]; {} has \
+                             {} column(s) [{}]). ClickGraph cannot compare them as written — \
+                             the extra key column(s) would be silently dropped. Compare the \
+                             specific properties instead (e.g. `{}.<prop> = {}.<prop>`).",
+                            l.0,
+                            if op.operator == Operator::Equal {
+                                "="
+                            } else {
+                                "<>"
+                            },
+                            r.0,
+                            l.0,
+                            ln,
+                            lcols.join(", "),
+                            r.0,
+                            rn,
+                            rcols.join(", "),
+                            l.0,
+                            r.0,
+                        )));
+                    }
+                }
+            }
+        }
+        // Recurse so a mismatched conjunct nested under AND/OR/NOT is reached.
+        for operand in &op.operands {
+            reject_mismatched_arity_node_identity(operand, plan)?;
+        }
+    }
+    Ok(())
 }
