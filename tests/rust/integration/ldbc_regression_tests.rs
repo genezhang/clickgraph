@@ -1879,16 +1879,24 @@ async fn ldbc_1120_closed_pattern_schema_filter_in_base_arm() {
         sql.contains("t.start_id = t.end_id"),
         "#1120: the closed-pattern closure predicate must remain:\n{sql}"
     );
+    // #1125 upstream fix: the type-inference ViewScan rebuilds now CARRY
+    // `schema_filter`, so the filter reaches this shape through the normal
+    // plan-walk — as an END filter on the wrapper (`end_type = 'Country'`),
+    // which under the closure predicate `start_id = end_id` is equivalent to
+    // filtering the start. Row-verified on the cyclic fixture (4/5/12 == the
+    // same oracles the base-arm placement produced). The #1120 label-fallback
+    // stays as a dead-code safety net (it requires BOTH plan-walks to return
+    // None, which the #1125 rebuild fix now prevents for labeled patterns).
     assert!(
-        sql.contains("start_node.type = 'Country'"),
-        "#1120: the schema filter must be re-resolved by label into the base \
-         arm (it was dropped entirely):\n{sql}"
+        sql.contains("end_type = 'Country'") || sql.contains("start_node.type = 'Country'"),
+        "#1120/#1125: the schema filter must be applied (either placement is \
+         row-equivalent under start_id = end_id):\n{sql}"
     );
-    // Applied ONCE — no spurious end-side duplicate that would reference an
-    // out-of-scope alias in the wrapper (the #1118 defect class).
+    // Never the #1118 defect class: no out-of-scope bare alias in the wrapper.
     assert!(
-        !sql.contains("end_node.type = 'Country'") && !sql.contains("end_type = 'Country'"),
-        "#1120: the filter is applied once, in the base arm:\n{sql}"
+        !sql.contains("WHERE ((end_node.type = 'Country'))"),
+        "#1118 class: the wrapper must not reference the unprojected \
+         `end_node.type`:\n{sql}"
     );
 }
 
@@ -1925,10 +1933,13 @@ async fn ldbc_1120_polymorphic_closed_pattern_filter_in_base_arm() {
         "MATCH (a:User)-[:FOLLOWS*2..3]->(a) RETURN count(*)",
     )
     .await;
+    // Post-#1125 the filter arrives via the plan-walk as a projected end-wrapper
+    // filter (row-equivalent under `start_id = end_id`; see the standard test).
     assert!(
-        sql.contains("start_node.account_status = 'active'"),
-        "#1120: the polymorphic closed pattern must get the schema filter in \
-         the base arm (Traditional-classified, fallback fires):\n{sql}"
+        sql.contains("end_account_status = 'active'")
+            || sql.contains("start_node.account_status = 'active'"),
+        "#1120/#1125: the polymorphic closed pattern must get the schema \
+         filter (either row-equivalent placement):\n{sql}"
     );
     assert!(
         sql.contains("rel.interaction_type = 'FOLLOWS'"),
@@ -1987,4 +1998,62 @@ async fn ldbc_1118_embedded_endpoint_not_projected() {
             "#1118: the mixed-access arm must otherwise be unchanged:\n{sql}"
         );
     }
+}
+
+// --- #1125: flat single-hop closed pattern must keep the schema filter --------
+//
+// `(a:Country)-[:R]->(a)` and `*1..1` render via the #994 fold (edge join with
+// both endpoint equalities; the node scan elided when unreferenced). The node's
+// schema `filter:` vanished because the type-inference ViewScan REBUILDS (the
+// closed endpoint always goes through label inference) dropped `schema_filter`.
+// Live before the fix: 2 self-loops counted where the oracle is 1 (a City
+// self-loop leaked through a :Country pattern). The rebuilds now carry the
+// filter (via `NodeSchema::carryable_schema_filter` — denorm returns None,
+// #1119), which also lets the #1120 CTE shapes resolve it through the normal
+// plan-walk instead of the label fallback.
+
+/// The flat closed single-hop must apply the filter — via a node join when one
+/// exists, or by whatever placement — the string must reach the SQL.
+#[tokio::test]
+async fn ldbc_1125_flat_closed_single_hop_keeps_schema_filter() {
+    let schema = load_schema_from("benchmarks/ldbc_snb/schemas/ldbc_snb.yaml");
+    for cypher in [
+        "MATCH (a:Country)-[:IS_PART_OF]->(a) RETURN count(*)",
+        "MATCH (a:Country)-[:IS_PART_OF*1..1]->(a) RETURN count(*)",
+        "MATCH (a:Country)-[:IS_PART_OF]->(a) RETURN a.name",
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(
+            sql.contains("'Country'"),
+            "#1125: the schema filter must survive the flat closed single-hop \
+             for `{cypher}`:\n{sql}"
+        );
+    }
+}
+
+/// #1125 boundary: unfiltered labels' closed single-hop stays the bare #994
+/// fold (no node join reintroduced, no phantom filter).
+#[tokio::test]
+async fn ldbc_1125_unfiltered_closed_single_hop_unchanged() {
+    let schema = load_schema_from("benchmarks/ldbc_snb/schemas/ldbc_snb.yaml");
+    let sql = generate_sql_inline(&schema, "MATCH (a:Person)-[:KNOWS]->(a) RETURN count(*)").await;
+    assert!(
+        !sql.contains("'Country'") && !sql.contains("type ="),
+        "#1125: an unfiltered label's closed single-hop is unchanged:\n{sql}"
+    );
+}
+
+/// #1125 boundary: a MULTI-label inferred node must NOT get the first label's
+/// filter (it stands for several labels; restricting to one would drop rows).
+/// `(a:Person)-[r]->(b)` infers b across City/Country/... — no `b.type = ...`
+/// may appear outside the per-arm discriminators.
+#[tokio::test]
+async fn ldbc_1125_multi_label_inferred_node_gets_no_filter() {
+    let schema = load_schema_from("benchmarks/ldbc_snb/schemas/ldbc_snb.yaml");
+    let sql = generate_sql_inline(&schema, "MATCH (a:Person)-[r]->(b) RETURN count(*)").await;
+    assert!(
+        !sql.contains("WHERE (b.type = 'City')") && !sql.contains("WHERE (b.type = 'Country')"),
+        "#1125: a multi-label inferred node must not be restricted by one \
+         label's schema filter:\n{sql}"
+    );
 }

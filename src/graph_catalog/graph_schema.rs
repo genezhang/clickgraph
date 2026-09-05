@@ -337,6 +337,20 @@ impl NodeSchema {
         Some(result)
     }
 
+    /// The node-level schema `filter:` as carried by a rebuilt plan ViewScan
+    /// (#1125). A DENORMALIZED node returns `None`: its render paths address the
+    /// node through edge / own-table aliases — no `<alias>.` scan exists — so a
+    /// carried filter would render as a dangling identifier. That family's
+    /// dropped schema filter is pre-existing and tracked as #1119; this API
+    /// keeps its behavior unchanged rather than half-fixing it loudly.
+    pub fn carryable_schema_filter(&self) -> Option<SchemaFilter> {
+        if self.is_denormalized {
+            None
+        } else {
+            self.filter.clone()
+        }
+    }
+
     /// Check if this engine supports FINAL (regardless of whether we use it by default)
     pub fn can_use_final(&self) -> bool {
         if let Some(ref engine) = self.engine {

@@ -5075,13 +5075,20 @@ pub fn extract_ctes_with_context(
                     let end_schema_filter =
                         extract_schema_filter_from_node(&graph_rel.right, "end_node");
 
-                    // #1120: a CLOSED pattern `(a:Country)-[:R*2..3]->(a)` loses its
+                    // #1120: a CLOSED pattern `(a:Country)-[:R*2..3]->(a)` lost its
                     // schema filter entirely: `DuplicateScansRemoving` replaces the
                     // repeated endpoint's subtree with `Empty`, and the surviving
-                    // side's ViewScan is (re)built WITHOUT `schema_filter` — so both
-                    // plan-walks above return None and the filter silently vanishes
+                    // side's ViewScan was rebuilt WITHOUT `schema_filter` — so both
+                    // plan-walks above returned None and the filter silently vanished
                     // (5 rows vs an oracle 3 on a cyclic fixture; invisible on
                     // LDBC's acyclic Place graph, where 0 == 0 by coincidence).
+                    //
+                    // #1125 later fixed the rebuild itself (type_inference now
+                    // carries `schema_filter` through), so for labeled patterns the
+                    // filter arrives via the NORMAL walk (as an end filter on the
+                    // wrapper — row-equivalent under `start_id = end_id`) and this
+                    // fallback no longer fires. It stays as a defensive net for any
+                    // remaining rebuild path that still drops the field.
                     //
                     // The label is still known, so fall back to resolving the filter
                     // from the SCHEMA by label. Same variable ⇒ same node ⇒ applying
