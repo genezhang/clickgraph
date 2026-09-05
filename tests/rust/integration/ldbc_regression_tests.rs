@@ -2813,6 +2813,77 @@ async fn ldbc_1141_role_swap_resolution_is_deterministic() {
     );
 }
 
+/// #1141/#1140 final review (CRITICAL): when the arm publishes no target-role
+/// entry for the key's property, the swap must ABSTAIN — leave the expression
+/// exactly as the global rewrite produced it — never emit a bare prefix flip.
+///
+/// That flip is the spelling round 1 proved wrong (`end_` + the FROM-role
+/// column). It is reachable on the shipped denorm schema through any
+/// EXPRESSION key, because the pruner only projects the opposite-role column
+/// for BARE keys (which #1141 resolves in `rewrite_expr_for_vlp`). Emitting it
+/// caused a Code 47 that main does NOT have.
+///
+/// Abstaining reproduces main's spelling for this shape exactly: still
+/// imperfect (both arms sort by the forward endpoint — tracked separately),
+/// but never a regression and never a NEW silent wrong.
+#[tokio::test]
+async fn ldbc_1141_unresolvable_expression_key_abstains_not_prefix_flip() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) \
+         RETURN o.city ORDER BY toUpper(o.state)",
+    )
+    .await;
+    assert!(
+        !sql.contains("end_OriginState"),
+        "#1141 final review: must never emit the FROM-role column under an \
+         `end_` prefix — that column is projected by no arm (Code 47), a \
+         regression versus main:\n{sql}"
+    );
+    // Main's spelling: both arms keep the globally-rewritten key.
+    assert_eq!(
+        sql.matches("upperUTF8(t.start_OriginState) AS \"__order_col_0\"")
+            .count(),
+        2,
+        "#1141 final review: abstain leaves BOTH arms with the global \
+         rewrite:\n{sql}"
+    );
+}
+
+/// #1141/#1140 final review (HIGH): two Cypher properties may share one
+/// from-side physical column (`city` and `town` both -> `origin_city`) while
+/// differing on the to-side (`dest_city` vs `dest_code`). The swap must
+/// resolve the key's OWN property, not whichever entry matches the column
+/// name first.
+#[tokio::test]
+async fn ldbc_1141_shared_from_column_resolves_the_keys_own_property() {
+    let schema = load_schema_from("schemas/test/denorm_shared_from_column.yaml");
+
+    let town = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o.state ORDER BY o.town",
+    )
+    .await;
+    assert_eq!(
+        town.matches("t.end_dest_code AS \"__order_col_0\"").count(),
+        1,
+        "#1141: `town` maps to dest_code on the to-side:\n{town}"
+    );
+
+    let city = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o.state ORDER BY o.city",
+    )
+    .await;
+    assert_eq!(
+        city.matches("t.end_dest_city AS \"__order_col_0\"").count(),
+        1,
+        "#1141: `city` maps to dest_city — the sibling property sharing the \
+         same from-side column must NOT bleed across:\n{city}"
+    );
+}
+
 // --- #1135: `*0..0` is the zero-hop identity, not a 1-hop chain --------------
 //
 // `exact_hop_count()` returned `Some(0)` and every consumer treats `Some(n)`
