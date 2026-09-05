@@ -8141,12 +8141,35 @@ impl RenderExpr {
                 // column, which usually does not exist and fails at execution
                 // (ClickHouse "cannot be resolved" / Databricks UNRESOLVED_COLUMN).
                 // ClickHouse doesn't understand bare table aliases as values.
+                //
+                // #1112: the same comparison in RETURN/projection position does
+                // NOT arrive as two `TableAlias` operands — the planner lowers a
+                // bare node variable there to a whole-node `PropertyAccess(alias,
+                // "*")`. That form reached the generic emitter and rendered
+                // `a.* = b.*`, which is not valid SQL. Accept BOTH spellings of
+                // "a bare node reference" so WHERE- and RETURN-position identity
+                // resolve identically.
                 if matches!(op.operator, Operator::Equal | Operator::NotEqual)
                     && op.operands.len() == 2
                 {
-                    if let (RenderExpr::TableAlias(l), RenderExpr::TableAlias(r)) =
-                        (&op.operands[0], &op.operands[1])
-                    {
+                    // A bare node reference: `TableAlias("a")` (predicate
+                    // position) or `PropertyAccess("a", "*")` (projection
+                    // position). Returns the alias.
+                    fn bare_node_alias(e: &RenderExpr) -> Option<&str> {
+                        match e {
+                            RenderExpr::TableAlias(t) => Some(t.0.as_str()),
+                            RenderExpr::PropertyAccessExp(p) if p.column.raw() == "*" => {
+                                Some(p.table_alias.0.as_str())
+                            }
+                            _ => None,
+                        }
+                    }
+                    if let (Some(la), Some(ra)) = (
+                        bare_node_alias(&op.operands[0]),
+                        bare_node_alias(&op.operands[1]),
+                    ) {
+                        let (l, r) = (TableAlias(la.to_string()), TableAlias(ra.to_string()));
+                        let (l, r) = (&l, &r);
                         use crate::server::query_context::{
                             get_current_schema, get_node_label_for_alias,
                         };

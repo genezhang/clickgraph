@@ -1634,9 +1634,29 @@ fn check_one_node_identity(expr: &RenderExpr, plan: &LogicalPlan) -> FilterBuild
 
     if let RenderExpr::OperatorApplicationExp(op) = expr {
         if matches!(op.operator, Operator::Equal | Operator::NotEqual) && op.operands.len() == 2 {
-            if let (RenderExpr::TableAlias(l), RenderExpr::TableAlias(r)) =
-                (&op.operands[0], &op.operands[1])
-            {
+            // #1112: a bare node reference has TWO spellings — `TableAlias("a")`
+            // in predicate position, and a whole-node `PropertyAccess("a", "*")`
+            // in projection position (the planner lowers `RETURN a = b` that
+            // way). Accept both, or a mismatched-arity comparison in RETURN
+            // position truncates silently exactly as the WHERE form used to.
+            fn bare_node_alias(e: &RenderExpr) -> Option<&str> {
+                match e {
+                    RenderExpr::TableAlias(t) => Some(t.0.as_str()),
+                    RenderExpr::PropertyAccessExp(p) if p.column.raw() == "*" => {
+                        Some(p.table_alias.0.as_str())
+                    }
+                    _ => None,
+                }
+            }
+            if let (Some(l), Some(r)) = (
+                bare_node_alias(&op.operands[0]),
+                bare_node_alias(&op.operands[1]),
+            ) {
+                let (l, r) = (
+                    crate::render_plan::render_expr::TableAlias(l.to_string()),
+                    crate::render_plan::render_expr::TableAlias(r.to_string()),
+                );
+                let (l, r) = (&l, &r);
                 // Resolve each alias's node_id arity. When either side is
                 // unresolvable, stay silent: the emitter has its own fallback
                 // and this guard must not turn an unrelated shape into an error.

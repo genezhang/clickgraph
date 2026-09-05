@@ -1987,6 +1987,18 @@ impl SelectBuilder for LogicalPlan {
             LogicalPlan::Remove(r) => r.input.extract_select_items(plan_ctx)?,
         };
 
+        // #1112/#1104: a node-identity comparison in PROJECTION position must
+        // obey the same arity rule as in WHERE position. #1104 hooked
+        // `extract_filters` and the post-WITH render sites, none of which a
+        // SELECT item passes through — so a mismatched-arity `RETURN c = a`
+        // would silently truncate exactly the way the WHERE form used to.
+        for item in &select_items {
+            crate::render_plan::filter_builder::reject_mismatched_arity_node_identity(
+                &item.expression,
+                self,
+            )?;
+        }
+
         Ok(select_items)
     }
 }

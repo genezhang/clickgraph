@@ -1475,3 +1475,96 @@ async fn ldbc_1111_denorm_without_both_endpoint_unwrapped() {
         "#1111: a start-only filter must still be applied:\n{sql}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #1112 — node identity in RETURN / projection position
+//
+// `a = b` between bare node variables compares node IDENTITY. In WHERE position
+// it resolves to the schema's node_id column(s) (#1076/#1104). In projection
+// position it reached neither seam and rendered `a.* = b.*` — invalid SQL.
+//
+// Root cause: the planner lowers a bare node variable in RETURN to a whole-node
+// `PropertyAccess(alias, "*")`, NOT a `TableAlias`, so the identity handler's
+// two-`TableAlias` match never fired. Both seams now accept both spellings.
+// ---------------------------------------------------------------------------
+
+/// #1112: `RETURN a = b` must compare the node_id columns, not `a.* = b.*`.
+#[tokio::test]
+async fn ldbc_1112_return_position_identity_resolves_node_id() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN a = b AS same",
+    )
+    .await;
+    assert!(
+        sql.contains("a.user_id = b.user_id"),
+        "#1112: RETURN-position identity must resolve to the node_id column:\n{sql}"
+    );
+    assert!(
+        !sql.contains("a.* = b.*"),
+        "#1112: must not emit the invalid whole-node comparison:\n{sql}"
+    );
+}
+
+/// #1112: the same inside a projection-position CASE (the emitter must reach it
+/// through the wrapper, not only at the top level).
+#[tokio::test]
+async fn ldbc_1112_return_position_identity_inside_case() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN CASE WHEN a = b THEN 1 ELSE 0 END AS x",
+    )
+    .await;
+    assert!(
+        sql.contains("CASE WHEN a.user_id = b.user_id"),
+        "#1112: identity inside a projection CASE must resolve:\n{sql}"
+    );
+}
+
+/// #1112: COMPOSITE node_ids expand to the full per-column AND chain here too —
+/// a hardcoded `.id` or a first-column-only comparison would be wrong.
+#[tokio::test]
+async fn ldbc_1112_return_position_identity_composite() {
+    let schema = load_schema_from("schemas/test/composite_node_ids.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a1:Account)-[:TRANSFERRED]->(a2:Account) RETURN a1 = a2 AS same",
+    )
+    .await;
+    assert!(
+        sql.contains("a1.bank_id = a2.bank_id")
+            && sql.contains("a1.account_number = a2.account_number"),
+        "#1112: composite node_id must compare BOTH key columns:\n{sql}"
+    );
+}
+
+/// #1112 + #1104 parity: a mismatched-arity identity in RETURN position must
+/// refuse exactly like the WHERE-position form, not truncate silently.
+#[tokio::test]
+async fn ldbc_1112_return_position_mismatched_arity_refuses() {
+    let schema = load_schema_from("schemas/examples/composite_node_id_test.yaml");
+    let err = try_render_inline(
+        &schema,
+        "MATCH (c:Customer)-[:OWNS]->(a:Account) RETURN c = a AS same",
+    )
+    .await
+    .expect_err("#1112: mismatched arity in RETURN position must refuse");
+    assert!(
+        err.contains("node_id column counts differ"),
+        "#1112: RETURN position must reuse the #1104 arity refusal:\n{err}"
+    );
+}
+
+/// #1112 SCOPE: a bare `RETURN a` (whole-node projection, no comparison) must
+/// still expand to its columns — the new match keys on the comparison operator.
+#[tokio::test]
+async fn ldbc_1112_bare_node_projection_unaffected() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql = generate_sql_inline(&schema, "MATCH (a:User) RETURN a LIMIT 1").await;
+    assert!(
+        sql.contains("a.city") && sql.contains("a.user_id"),
+        "#1112: a bare whole-node projection must still expand:\n{sql}"
+    );
+}
