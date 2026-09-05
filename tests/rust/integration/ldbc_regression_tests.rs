@@ -1153,9 +1153,18 @@ async fn ldbc_1103_unprojected_property_is_a_real_error() {
     }
 }
 
-/// #1103: COMPOSITE node_id is projected as ONE pipe-joined `start_id`/`end_id`,
-/// so every key column maps to it — and the per-column expansion collapses to a
-/// single predicate rather than a repeated conjunct.
+/// #1103 (updated by #1131): COMPOSITE node_id identity comparison. Originally
+/// this collapsed every key column onto the ONE pipe-joined `start_id`/`end_id`
+/// — which was also what silently turned a SINGLE-component cross-endpoint
+/// comparison (`a.bank_id = b.bank_id`) into whole-id equality (#1131, 0 rows
+/// vs an oracle 3). Post-#1131 each component maps to its own projected
+/// `<prefix>_<col>` column, so whole-node identity expands to the
+/// per-component AND — row-equivalent to concat equality (and safer for values
+/// containing the `|` separator), live-verified 10 == oracle 10 on a populated
+/// fixture. The #1133 review then PROVED the separator case live: with values
+/// 'x|y'+'z' vs 'x'+'y|z' (identical concats), main's concat equality DROPPED
+/// a `<>` row and FABRICATED a phantom `=` "cycle" — the per-component form is
+/// strictly MORE correct, not merely row-equivalent on benign data.
 #[tokio::test]
 async fn ldbc_1103_composite_node_id_collapses_to_single_id_predicate() {
     let schema = load_schema_from("schemas/test/composite_node_ids.yaml");
@@ -1167,13 +1176,16 @@ async fn ldbc_1103_composite_node_id_collapses_to_single_id_predicate() {
     )
     .await;
     assert!(
-        sql.contains("WHERE (NOT (end_id = start_id))"),
-        "#1103: composite node_id identity must collapse to the pipe-joined id \
-         columns, deduplicated:\n{sql}"
+        sql.contains(
+            "NOT ((end_bank_id = start_bank_id AND end_account_number = start_account_number))"
+        ),
+        "#1103/#1131: composite node identity expands to the per-component \
+         conjunction over the projected component columns:\n{sql}"
     );
     assert!(
-        !sql.contains("end_id = start_id AND end_id = start_id"),
-        "#1103: the collapsed per-column conjuncts must be deduplicated:\n{sql}"
+        !sql.contains("end_id = start_id"),
+        "#1131: no whole-concat collapse — a component-level predicate must \
+         never be widened to pipe-joined-id equality:\n{sql}"
     );
 }
 
@@ -2290,5 +2302,52 @@ async fn ldbc_1123_composite_component_arm_order_aligned() {
         base_order, rec_order,
         "#1130: base and recursive arms must emit component columns in the \
          SAME positional order (UNION ALL binds by position):\n{sql}"
+    );
+}
+
+// --- #1131: cross-endpoint COMPONENT comparison must not widen to whole-id ---
+//
+// `WHERE a.bank_id = b.bank_id` on a composite-id VLP was lowered by the #1103
+// path to `start_id = end_id` — equality of the FULL pipe-joined id, i.e. a
+// cycle test — silently excluding same-bank different-account paths (live: 0
+// vs an oracle 3). Post-#1130 every component is projected in both arms
+// (grouped order), so a component reference maps to its own
+// `<prefix>_<col>` column. Single-column ids keep the id collapse.
+
+/// A single-component cross-endpoint comparison binds the component columns.
+#[tokio::test]
+async fn ldbc_1131_component_comparison_not_widened_to_whole_id() {
+    let schema = load_schema_from("schemas/test/composite_node_ids.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Account)-[:TRANSFERRED*1..2]->(b:Account) \
+         WHERE a.bank_id = b.bank_id RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("start_bank_id = end_bank_id"),
+        "#1131: the component comparison must bind the projected component \
+         columns:\n{sql}"
+    );
+    assert!(
+        !sql.contains("start_id = end_id"),
+        "#1131: never widened to whole-pipe-joined-id equality (a cycle \
+         test):\n{sql}"
+    );
+}
+
+/// #1131 boundary: a SINGLE-column id keeps the id collapse.
+#[tokio::test]
+async fn ldbc_1131_single_id_comparison_still_collapses() {
+    let schema = load_schema_from("benchmarks/ldbc_snb/schemas/ldbc_snb.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Place)-[:IS_PART_OF*1..2]->(c:Place) WHERE a.id = c.id RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("start_id = end_id"),
+        "#1131: a single-column id comparison still collapses to the id \
+         projection:\n{sql}"
     );
 }

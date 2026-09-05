@@ -657,6 +657,33 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-09-05: **Correctness (ground-rule-1) — cross-endpoint COMPOSITE
+  component comparison silently widened to whole-id equality** (branch
+  `fix/1131-composite-component-cross-endpoint`, PR #1133, closes #1131).
+  `WHERE a.bank_id = b.bank_id` on a composite-id VLP was lowered by the #1103
+  path to `start_id = end_id` — the FULL pipe-joined id, i.e. a CYCLE test —
+  silently excluding same-bank different-account paths: live 0 vs an oracle 3.
+  Post-#1130 every component is projected in BOTH arms (grouped order), so the
+  fix maps a component reference to its own `<prefix>_<col>` column (len==1
+  ids keep the collapse). Whole-node identity (`a <> b`) now expands to the
+  per-component AND — row-equivalent to concat equality and safer for values
+  containing `|`; live-verified 10 == oracle 10; the #1103 golden-locking test
+  updated accordingly with the rationale. Single-col LDBC comparison unchanged
+  (still `start_id = end_id`). 240-combo sweep: exactly 1 diff (the target
+  shape). 2 tests (targeting one fails on main). Focused adversarial review
+  (PR #1133, no CRITICAL/HIGH) UPGRADED the identity claim: on a
+  separator-injection fixture ('x|y'+'z' vs 'x'+'y|z', identical concats)
+  main's concat equality DROPPED a `<>` row AND fabricated a phantom `=`
+  "cycle" — the per-component expansion is strictly MORE correct, not merely
+  row-equivalent. Also live-verified: mixed one-operand conjuncts (2==2),
+  `<>` (7==7), ordering `<` (5==5, main 7 via concat lexicographic
+  false-positives); FK-edge/undirected/shortestPath/multi-type/renamed-component
+  all bind correctly. Review re-confirmed **#1132** (zero-hop composite
+  malformed — the zero-hop base arm never got composite-capable id emission)
+  + found LOW: a component physically named `id` collides with the whole-id
+  alias (Code 179, loud, pre-existing). Suite green (1738 + 686 + ratchet),
+  clippy clean, zero golden churn.
+
 - 2026-09-05: **Correctness — a filter on a COMPOSITE node_id COMPONENT was
   left unrewritten in the VLP wrapper → Code 47 (loud)** (branch
   `fix/1123-composite-id-filter-component`, PR #1130, closes #1123). A
