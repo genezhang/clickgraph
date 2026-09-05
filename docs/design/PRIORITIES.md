@@ -657,6 +657,26 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-09-05: **Correctness (ground-rule-1) — `*0..0` (and the `*0` spelling)
+  rendered as a plain ONE-hop join instead of the zero-hop identity** (branch
+  `fix/1135-zero-zero-hop`, PR #1142, closes #1135). `exact_hop_count()`
+  returned `Some(0)` and every consumer treats `Some(n)` as an n-edge flat
+  r1..rN chain — which has no zero-length form: live, `*0..0` returned the
+  1-hop pairs where the answer is one identity row per node. Silent-wrong on
+  ALL id shapes. Fixed at the SINGLE SOURCE OF TRUTH: `exact_hop_count()`
+  returns None for (0,0), routing via `is_range()` to the recursive CTE whose
+  zero-hop seed with `max_hops == Some(0)` (no recursive arm) is exactly this
+  shape — the generator already handled it. (A first cut flipped only the
+  from_builder gate; the sibling flat-join walkers disagreed → invalid SQL —
+  the walkers-must-agree hazard, avoided by fixing the shared predicate
+  instead.) Live: identity rows == oracle; *1..1/*2..2/*0..1/undirected/WHERE
+  boundaries all correct; 240-combo sweep = exactly the `*0..0` shape (+
+  thread-id noise in a pre-existing panic). TWO CORPUS GOLDENS HAD FROZEN THE
+  BUG (`test_zero_length_path`, `test_zero_length`): their own source Python
+  tests assert `a.name == b.name` and row_count 1 — the #933-class stale-golden
+  trap; regenerated with justification. 2 tests (targeting one fails on main).
+  Suite green (1738 + 694 + ratchet), clippy clean.
+
 - 2026-09-05: **Correctness (ground-rule-1) — undirected-VLP union ORDER BY
   key bound the START role in BOTH arms → silently mis-sorted rows** (branch
   `fix/1138-order-col-role`, PR #1139, closes #1138). The synthesized
