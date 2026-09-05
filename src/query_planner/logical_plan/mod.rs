@@ -1087,6 +1087,16 @@ impl VariableLengthSpec {
     /// Returns Some(n) if min == max == n, None otherwise
     pub fn exact_hop_count(&self) -> Option<u32> {
         match (self.min_hops, self.max_hops) {
+            // #1135: `*0..0` is NOT a fixed-length traversal — it is the
+            // zero-hop identity (a = b, no edge). Every consumer of this
+            // function treats `Some(n)` as an n-edge flat chain (r1..rN
+            // self-joins), which has no zero-length form: the flat path
+            // silently rendered `*0..0` as ONE hop (returned the 1-hop pairs
+            // where the answer is the identity rows). Returning None routes it
+            // through `is_range()` to the recursive CTE, whose zero-hop seed
+            // with `max_hops == Some(0)` (no recursive arm) is exactly this
+            // shape — the generator already handles it.
+            (Some(0), Some(0)) => None,
             (Some(min), Some(max)) if min == max => Some(min),
             _ => None,
         }
