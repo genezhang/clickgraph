@@ -1568,3 +1568,79 @@ async fn ldbc_1112_bare_node_projection_unaffected() {
         "#1112: a bare whole-node projection must still expand:\n{sql}"
     );
 }
+
+// #1113 — pattern-comprehension inner WHERE must never be silently dropped
+//
+// `[(a)-[:FOLLOWS]->(x) WHERE <pred> | x.name]` renders as a single-hop
+// subquery joining only the target node as `__tgt`. A predicate that references
+// anything else — the outer correlation var, or a bare node identity — is
+// rejected by the target-safe allowlist (#882) and `build_pattern_comprehension_sql`
+// returns `None`. For a PROJECTION that fallback is harmless; for a WHERE it
+// silently produced an UNFILTERED comprehension, collecting rows the user asked
+// to exclude. It now refuses loudly.
+// ---------------------------------------------------------------------------
+
+/// #1113: bare-node identity inside a pattern comprehension must refuse.
+#[tokio::test]
+async fn ldbc_1113_pc_inner_where_bare_identity_refuses() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let err = try_render_inline(
+        &schema,
+        "MATCH (a:User) RETURN [(a)-[:FOLLOWS]->(x:User) WHERE a <> x | x.name] AS fs",
+    )
+    .await
+    .expect_err("#1113: an unrenderable inner WHERE must refuse, not drop");
+    assert!(
+        err.contains("pattern comprehension inner WHERE cannot be evaluated"),
+        "#1113: the refusal must name the unrenderable inner WHERE:\n{err}"
+    );
+}
+
+/// #1113: a CORRELATED property reference (outer var on one side) is equally
+/// unresolvable in the single-hop subquery and must refuse.
+#[tokio::test]
+async fn ldbc_1113_pc_inner_where_correlated_property_refuses() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let err = try_render_inline(
+        &schema,
+        "MATCH (a:User) RETURN [(a)-[:FOLLOWS]->(x:User) WHERE a.user_id <> x.user_id | x.name] AS fs",
+    )
+    .await
+    .expect_err("#1113: a correlated inner WHERE must refuse, not drop");
+    assert!(
+        err.contains("pattern comprehension inner WHERE cannot be evaluated"),
+        "#1113: the refusal must name the unrenderable inner WHERE:\n{err}"
+    );
+}
+
+/// #1113 SCOPE: a TARGET-ONLY predicate is resolvable and must keep rendering
+/// exactly as before — the refusal fires only where the filter was being lost.
+#[tokio::test]
+async fn ldbc_1113_pc_inner_where_target_only_still_applied() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User) RETURN [(a)-[:FOLLOWS]->(x:User) WHERE x.user_id > 3 | x.name] AS fs",
+    )
+    .await;
+    assert!(
+        sql.contains("WHERE __tgt.user_id > 3"),
+        "#1113: a target-only inner WHERE must still be applied:\n{sql}"
+    );
+}
+
+/// #1113 SCOPE: a comprehension with NO inner WHERE is untouched (the refusal
+/// keys on `where_clause` being present, not on the builder returning None).
+#[tokio::test]
+async fn ldbc_1113_pc_without_inner_where_unaffected() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User) RETURN [(a)-[:FOLLOWS]->(x:User) | x.name] AS fs",
+    )
+    .await;
+    assert!(
+        sql.contains("groupArray"),
+        "#1113: a comprehension with no inner WHERE must render normally:\n{sql}"
+    );
+}

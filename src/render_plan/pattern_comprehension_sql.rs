@@ -2227,7 +2227,25 @@ pub(crate) fn build_pattern_comprehension_sql(
     // filter is silently dropped (#878).
     let inner_where_sql = match (where_clause, target_var, target_label) {
         (Some(expr), Some(tvar), Some(tlabel)) => {
-            render_target_where_predicate(expr, tvar, tlabel, schema)
+            let rendered = render_target_where_predicate(expr, tvar, tlabel, schema);
+            if rendered.is_none() {
+                // #1113: the target-safe allowlist rejected this predicate — it
+                // references something other than the target var (the
+                // correlation var, a bare node identity like `WHERE a <> x`, an
+                // intermediate node), none of which the single-hop `__tgt`
+                // subquery can resolve.
+                //
+                // For a PROJECTION, falling back is harmless (a different value
+                // shape). For a WHERE PREDICATE it is NOT: "no filter" silently
+                // collects rows the user asked to exclude. Signal the caller to
+                // refuse instead of dropping it.
+                log::warn!(
+                    "#1113: pattern-comprehension inner WHERE is not resolvable against \
+                     the target node alone; refusing rather than dropping it: {expr:?}"
+                );
+                return None;
+            }
+            rendered
         }
         _ => None,
     };

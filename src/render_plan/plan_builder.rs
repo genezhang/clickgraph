@@ -1589,6 +1589,10 @@ impl RenderPlanBuilder for LogicalPlan {
                             render_plan.group_by.0.clear();
 
                             log::info!("✅ Added pattern comp CTE '{}' with LEFT JOIN (GraphJoins context)", pc_cte_name);
+                        } else if let Some(err) = pattern_comprehension_where_unrenderable(pc_meta)
+                        {
+                            // #1113: never let an unrenderable inner WHERE become "no filter".
+                            return Err(err);
                         }
                     }
                 }
@@ -2684,6 +2688,10 @@ impl RenderPlanBuilder for LogicalPlan {
                                 "✅ Added pattern comp CTE '{}' with LEFT JOIN for RETURN context",
                                 pc_cte_name
                             );
+                        } else if let Some(err) = pattern_comprehension_where_unrenderable(pc_meta)
+                        {
+                            // #1113: never let an unrenderable inner WHERE become "no filter".
+                            return Err(err);
                         }
                     }
                 }
@@ -5913,6 +5921,11 @@ impl RenderPlanBuilder for LogicalPlan {
                                     "✅ Added pattern comp CTE '{}' with LEFT JOIN (with_ctx path)",
                                     pc_cte_name
                                 );
+                            } else if let Some(err) =
+                                pattern_comprehension_where_unrenderable(pc_meta)
+                            {
+                                // #1113: never let an unrenderable inner WHERE become "no filter".
+                                return Err(err);
                             }
                         }
                     }
@@ -6824,4 +6837,31 @@ fn find_pattern_comprehensions_in_plan(
         LogicalPlan::GraphNode(gn) => find_pattern_comprehensions_in_plan(&gn.input),
         _ => vec![],
     }
+}
+
+/// #1113: a pattern comprehension whose inner `WHERE` could not be rendered
+/// must NOT silently become an unfiltered comprehension.
+///
+/// `build_pattern_comprehension_sql` returns `None` both when there is no SQL to
+/// build and when the target-safe allowlist rejected the inner predicate (it
+/// references the correlation var, a bare node identity, or an intermediate
+/// node — none resolvable in the single-hop `__tgt` subquery). For a projection
+/// the fallback is harmless; for a WHERE predicate "no filter" collects rows the
+/// user asked to exclude. Call this when the builder returns `None` AND the
+/// comprehension carried a `where_clause`, so the query fails loudly instead.
+fn pattern_comprehension_where_unrenderable(
+    pc_meta: &crate::query_planner::logical_plan::PatternComprehensionMeta,
+) -> Option<RenderBuildError> {
+    let where_clause = pc_meta.where_clause.as_ref()?;
+    Some(RenderBuildError::UnsupportedFeature(format!(
+        "pattern comprehension inner WHERE cannot be evaluated: `{where_clause:?}` \
+         references something other than the comprehension's own target node \
+         `{target}` (e.g. the outer correlation variable, or a bare node identity \
+         like `WHERE a <> {target}`). The comprehension is rendered as a single-hop \
+         subquery joining only the target, so such a predicate cannot be applied \
+         there — and dropping it would silently collect rows you asked to exclude. \
+         Rewrite the filter using only `{target}`'s properties, or lift it into the \
+         enclosing MATCH/WHERE.",
+        target = pc_meta.target_var.as_deref().unwrap_or("<target>")
+    )))
 }
