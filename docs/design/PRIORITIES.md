@@ -684,6 +684,12 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   golden churn**. Exposed **#1119** (OPEN): a DENORMALIZED endpoint drops its
   schema filter entirely and SILENTLY (6 vs an oracle 3 on a purpose-built
   fixture) — unreachable in every shipped schema, filed rather than half-fixed.
+  Also exposed **#1120** (OPEN): a CLOSED pattern `(a:Country)-[:R*2..3]->(a)`
+  drops its schema filter entirely and silently (5 vs an oracle 3). Both are
+  byte-identical on main and on this branch. NOTE on oracles: the closed-pattern
+  defect is INVISIBLE on LDBC's acyclic `Place` graph (0 == 0 by coincidence) —
+  finding it needed a cyclic fixture in which the filter actually discriminates,
+  reinforcing the `cyclic-oracle-for-edge-uniqueness` lesson.
 
 - 2026-09-04 (backfill): the six PRs merged 2026-08-31..09-04 were NOT logged
   here at merge time, contrary to §1 rule 3. Recorded now, newest first:

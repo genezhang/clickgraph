@@ -1851,6 +1851,31 @@ async fn ldbc_1118_single_hop_end_filter_stays_on_end_node() {
     );
 }
 
+/// A CLOSED pattern `(a:Country)-[:R*2..3]->(a)` drops the schema filter
+/// entirely — pre-existing (#1120, silent-wrong: 5 vs an oracle 3 on a cyclic
+/// fixture where the filter discriminates), byte-identical on main and here.
+/// This locks the SCOPE BOUNDARY: #1118 must not change that shape.
+#[tokio::test]
+async fn ldbc_1118_closed_pattern_unchanged() {
+    let schema = load_schema_from("benchmarks/ldbc_snb/schemas/ldbc_snb.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Country)-[:IS_PART_OF*2..3]->(a) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("t.start_id = t.end_id"),
+        "#1118: the closed-pattern render must be unchanged:\n{sql}"
+    );
+    // NOT an assertion that dropping the filter is correct — it is #1120. This
+    // pins that #1118 neither fixed nor worsened it.
+    assert!(
+        !sql.contains("'Country'"),
+        "#1118/#1120: the closed pattern's dropped schema filter is unchanged \
+         by #1118 (tracked as #1120):\n{sql}"
+    );
+}
+
 /// A DENORMALIZED (edge-embedded) endpoint has no own-table column to project,
 /// so #1118 must skip it rather than emit a column the arm cannot resolve.
 /// That family's dropped schema filter is a SEPARATE, pre-existing defect
