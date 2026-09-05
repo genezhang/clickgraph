@@ -2862,6 +2862,17 @@ pub(crate) fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Optio
             }
             None
         }
+        // #1104: these three carry a node subtree but were missing, so an alias
+        // bound below them resolved to `None`. A caller that keys a correctness
+        // guard on the label (the mismatched-arity node-identity refusal in
+        // `filter_builder`) then silently stood down on exactly the shapes it
+        // needed to catch — `WITH … WHERE`, a comma pattern, and `UNWIND …
+        // WHERE`. Purely additive: they only widen resolution for aliases that
+        // previously resolved to nothing.
+        LogicalPlan::WithClause(wc) => get_node_label_for_alias(alias, &wc.input),
+        LogicalPlan::Unwind(uw) => get_node_label_for_alias(alias, &uw.input),
+        LogicalPlan::CartesianProduct(cp) => get_node_label_for_alias(alias, &cp.left)
+            .or_else(|| get_node_label_for_alias(alias, &cp.right)),
         _ => None,
     }
 }
@@ -6861,11 +6872,22 @@ pub fn extract_ctes_with_context(
 
             // Add WHERE clause from WITH to the CTE render plan
             if let Some(where_clause) = &wc.where_clause {
-                let render_where = where_clause.clone().try_into().map_err(|_| {
+                let render_where: RenderExpr = where_clause.clone().try_into().map_err(|_| {
                     RenderBuildError::InvalidRenderPlan(
                         "Failed to convert where clause".to_string(),
                     )
                 })?;
+                // #1104: a post-WITH `WHERE` never passes through
+                // `extract_filters` (that recurses into `wc.input`), so the
+                // mismatched-arity node-identity guard must run here too —
+                // otherwise `WITH … WHERE c <> a` silently truncates while the
+                // pre-barrier `WHERE c <> a … WITH` refuses, making coverage
+                // depend on clause order. Labels resolve against `wc.input`,
+                // where the aliases are bound.
+                crate::render_plan::filter_builder::reject_mismatched_arity_node_identity(
+                    &render_where,
+                    &wc.input,
+                )?;
                 if cte_render_plan.group_by.0.is_empty() {
                     // Non-aggregation, add to filters
                     if let Some(existing) = cte_render_plan.filters.0 {

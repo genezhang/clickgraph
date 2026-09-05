@@ -7145,6 +7145,19 @@ fn apply_with_order_by_skip_limit_where(
     if let Some(where_predicate) = with_where_clause {
         log::debug!("🔧 build_chained_with_match_cte_plan: Applying WHERE clause from WITH");
 
+        // #1104: this is the WITH→CTE path's own renderer for the post-WITH
+        // WHERE — it never passes through `extract_filters`, so the
+        // mismatched-arity node-identity guard must run here too. Checked on
+        // the RAW predicate (before the property/alias rewrite below) so the
+        // bare `TableAlias = TableAlias` shape is still intact, with labels
+        // resolved against the plan being rendered.
+        if let Ok(raw_render_expr) = RenderExpr::try_from(where_predicate.clone()) {
+            crate::render_plan::filter_builder::reject_mismatched_arity_node_identity(
+                &raw_render_expr,
+                plan_to_render,
+            )?;
+        }
+
         // 🔧 FIX: Rewrite renamed aliases back to source aliases in WHERE clause.
         // For `WITH u AS person WHERE person.user_id = 1`, "person" must become "u"
         // so that property mapping resolution can find the correct schema mappings.

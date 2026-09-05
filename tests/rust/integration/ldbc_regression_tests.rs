@@ -1195,3 +1195,208 @@ async fn ldbc_1103_heterogeneous_polymorphic_refuses_loudly() {
         "#1103: the refusal must name the unsupported both-endpoint case:\n{err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #1104 — node identity across mismatched node_id ARITY
+//
+// `Identifier::to_sql_equality` pairs id columns element-wise with `zip`, which
+// silently TRUNCATES to the shorter side. Comparing a single-column
+// `Customer.customer_id` against a composite `Account.[bank_id,
+// account_number]` emitted `NOT (c.customer_id = a.bank_id)` — `account_number`
+// dropped, and two unrelated columns compared. It executes without error, so
+// the wrongness is silent.
+//
+// Refused rather than constant-folded: folding cross-label identity to `false`
+// assumes distinct labels imply distinct nodes, which is FALSE in Cypher
+// (multi-label nodes) and false here (polymorphic parent labels — LDBC
+// `Message` ⊃ `Post`), so folding would silently change those results.
+// ---------------------------------------------------------------------------
+
+/// #1104: mismatched arity must fail LOUD, never drop a key column.
+#[tokio::test]
+async fn ldbc_1104_mismatched_node_id_arity_fails_loud() {
+    let schema = load_schema_from("schemas/examples/composite_node_id_test.yaml");
+    let err = try_render_inline(
+        &schema,
+        "MATCH (c:Customer)-[:OWNS]->(a:Account) WHERE c <> a RETURN a.account_type",
+    )
+    .await
+    .expect_err("#1104: mismatched-arity node identity must be refused, not rendered");
+    assert!(
+        err.contains("node_id column counts differ"),
+        "#1104: the refusal must name the arity mismatch:\n{err}"
+    );
+    assert!(
+        err.contains("customer_id") && err.contains("account_number"),
+        "#1104: the refusal must name the columns on both sides:\n{err}"
+    );
+}
+
+/// #1104: the guard recurses, so a mismatched conjunct nested under AND is
+/// still caught (it would otherwise render silently-wrong alongside valid
+/// siblings).
+#[tokio::test]
+async fn ldbc_1104_mismatched_arity_nested_in_and_fails_loud() {
+    let schema = load_schema_from("schemas/examples/composite_node_id_test.yaml");
+    let err = try_render_inline(
+        &schema,
+        "MATCH (c:Customer)-[:OWNS]->(a:Account)
+         WHERE c.name = 'X' AND c <> a
+         RETURN a.account_type",
+    )
+    .await
+    .expect_err("#1104: nested mismatched-arity identity must also be refused");
+    assert!(
+        err.contains("node_id column counts differ"),
+        "#1104: nested refusal must name the arity mismatch:\n{err}"
+    );
+}
+
+/// #1104 SCOPE: same-arity COMPOSITE identity is correct today and must keep
+/// rendering — the guard fires only where a column would be dropped.
+#[tokio::test]
+async fn ldbc_1104_same_arity_composite_identity_still_renders() {
+    let schema = load_schema_from("schemas/examples/composite_node_id_test.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a1:Account)-[:TRANSFERRED]->(a2:Account) WHERE a1 <> a2 RETURN a2.account_type",
+    )
+    .await;
+    assert!(
+        sql.contains("a1.bank_id = a2.bank_id")
+            && sql.contains("a1.account_number = a2.account_number"),
+        "#1104: same-arity composite identity must still compare BOTH columns:\n{sql}"
+    );
+}
+
+/// #1104 SCOPE: the ordinary single-column case (both sides arity 1, including
+/// a renamed node_id) is untouched.
+#[tokio::test]
+async fn ldbc_1104_single_column_identity_unaffected() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WHERE a <> b RETURN b.name",
+    )
+    .await;
+    assert!(
+        sql.contains("NOT (a.user_id = b.user_id)"),
+        "#1104: single-column identity must be unchanged:\n{sql}"
+    );
+}
+
+// --- #1104 review hardening -------------------------------------------------
+// Adversarial review found the first cut left the exact silent truncation in
+// place on two axes:
+//   F1 — `get_node_label_for_alias` had no arm for WithClause/CartesianProduct/
+//        Unwind, so labels resolved to None and the guard stood down. Worse,
+//        a post-WITH `WHERE` never reaches `extract_filters` at all (that
+//        recurses into `wc.input`) and is rendered by three OTHER sites.
+//   F2 — the guard hand-rolled an `OperatorApplicationExp`-only recursion, so
+//        any other container (CASE, coalesce, NOT-of-CASE) hid the comparison.
+// Both are the parallel-emitter / non-exhaustive-walker class this repo has
+// been bitten by repeatedly; the guard now uses the module's exhaustive
+// `visit_render_expr_mut` and runs at every post-WITH render site.
+
+/// #1104/F2: a CASE wrapper must not hide the comparison from the guard.
+#[tokio::test]
+async fn ldbc_1104_case_wrapper_still_refused() {
+    let schema = load_schema_from("schemas/examples/composite_node_id_test.yaml");
+    let err = try_render_inline(
+        &schema,
+        "MATCH (c:Customer)-[:OWNS]->(a:Account)
+         WHERE CASE WHEN c = a THEN true ELSE false END
+         RETURN a.account_type",
+    )
+    .await
+    .expect_err("#1104: a CASE-wrapped identity must still be refused");
+    assert!(
+        err.contains("node_id column counts differ"),
+        "#1104: CASE wrapper must not defeat the guard:\n{err}"
+    );
+}
+
+/// #1104/F2: a scalar-function wrapper (`coalesce`) is likewise not a hiding
+/// place — the exhaustive visitor descends into call arguments.
+#[tokio::test]
+async fn ldbc_1104_function_wrapper_still_refused() {
+    let schema = load_schema_from("schemas/examples/composite_node_id_test.yaml");
+    let err = try_render_inline(
+        &schema,
+        "MATCH (c:Customer)-[:OWNS]->(a:Account)
+         WHERE coalesce(c = a, false)
+         RETURN a.account_type",
+    )
+    .await
+    .expect_err("#1104: a function-wrapped identity must still be refused");
+    assert!(
+        err.contains("node_id column counts differ"),
+        "#1104: function wrapper must not defeat the guard:\n{err}"
+    );
+}
+
+/// #1104/F1: a POST-WITH `WHERE` must refuse exactly like the pre-WITH form.
+/// Coverage that depends on clause order is not coverage.
+#[tokio::test]
+async fn ldbc_1104_post_with_barrier_still_refused() {
+    let schema = load_schema_from("schemas/examples/composite_node_id_test.yaml");
+    let err = try_render_inline(
+        &schema,
+        "MATCH (c:Customer)-[:OWNS]->(a:Account) WITH c, a WHERE c <> a RETURN a.account_type",
+    )
+    .await
+    .expect_err("#1104: post-WITH identity must be refused");
+    assert!(
+        err.contains("node_id column counts differ"),
+        "#1104: the WITH barrier must not hide the mismatch:\n{err}"
+    );
+}
+
+/// #1104/F1: a comma (cartesian) pattern binds its aliases under
+/// `CartesianProduct`, which the label resolver did not descend into.
+#[tokio::test]
+async fn ldbc_1104_comma_pattern_still_refused() {
+    let schema = load_schema_from("schemas/examples/composite_node_id_test.yaml");
+    let err = try_render_inline(
+        &schema,
+        "MATCH (c:Customer),(a:Account) WHERE c <> a RETURN count(*)",
+    )
+    .await
+    .expect_err("#1104: comma-pattern identity must be refused");
+    assert!(
+        err.contains("node_id column counts differ"),
+        "#1104: CartesianProduct must resolve endpoint labels:\n{err}"
+    );
+}
+
+/// #1104/F1: same for an `Unwind` between the pattern and the WHERE.
+#[tokio::test]
+async fn ldbc_1104_unwind_still_refused() {
+    let schema = load_schema_from("schemas/examples/composite_node_id_test.yaml");
+    let err = try_render_inline(
+        &schema,
+        "MATCH (c:Customer)-[:OWNS]->(a:Account) UNWIND [1] AS z WHERE c <> a RETURN count(*)",
+    )
+    .await
+    .expect_err("#1104: identity after UNWIND must be refused");
+    assert!(
+        err.contains("node_id column counts differ"),
+        "#1104: Unwind must resolve endpoint labels:\n{err}"
+    );
+}
+
+/// #1104 SCOPE: widening the label resolver must not create FALSE POSITIVES.
+/// A post-WITH identity between two SAME-arity nodes still renders.
+#[tokio::test]
+async fn ldbc_1104_post_with_same_arity_still_renders() {
+    let schema = load_ldbc_schema();
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (p:Person)-[:KNOWS]->(f:Person) WITH p, f WHERE p <> f RETURN f.id LIMIT 5",
+    )
+    .await;
+    assert!(
+        sql.contains("p.id") && sql.contains("f.id"),
+        "#1104: same-arity post-WITH identity must still render:\n{sql}"
+    );
+}
