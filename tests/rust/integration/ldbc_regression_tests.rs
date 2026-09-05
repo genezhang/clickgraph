@@ -2551,6 +2551,66 @@ async fn ldbc_1138_two_key_order_role_maps_per_arm() {
     );
 }
 
+// --- #1140: unprojected / expression ORDER BY keys on the undirected union ---
+//
+// #1139 fixed the role binding for keys that are PROJECTED (resolvable through
+// an output alias). A key with no projection to chain through fell to the
+// legacy path and bound the START role in BOTH arms — silently mis-sorted
+// rows on the reversed arm. Each arm's own CTE records its role assignment
+// (`vlp_a_b` = a-start/b-end, `vlp_b_a` the reverse), so an arm that swaps
+// roles relative to the primary direction flips the key's role prefixes.
+
+/// #1140 shape A: the ORDER BY key is not projected (`RETURN a.bank_id
+/// ORDER BY a.balance`).
+#[tokio::test]
+async fn ldbc_1140_unprojected_order_key_role_swaps_per_arm() {
+    let schema = load_schema_from("schemas/test/composite_node_ids.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Account)-[:TRANSFERRED*1..2]-(b:Account) \
+         RETURN a.bank_id ORDER BY a.balance",
+    )
+    .await;
+    assert_eq!(
+        sql.matches("t.start_balance AS \"__order_col_0\"").count(),
+        1,
+        "#1140: the forward arm keeps the start role:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("t.end_balance AS \"__order_col_0\"").count(),
+        1,
+        "#1140: the reversed arm must order by ITS endpoint (end role), not \
+         repeat the start role:\n{sql}"
+    );
+}
+
+/// #1140 shape B: an EXPRESSION key (`ORDER BY toUpper(a.bank_id)`). The swap
+/// must reach INSIDE the function wrapper, which is why the rewriter descends
+/// structurally instead of cloning non-column nodes.
+#[tokio::test]
+async fn ldbc_1140_expression_order_key_role_swaps_inside_wrapper() {
+    let schema = load_schema_from("schemas/test/composite_node_ids.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Account)-[:TRANSFERRED*1..2]-(b:Account) \
+         RETURN a.bank_id ORDER BY toUpper(a.bank_id)",
+    )
+    .await;
+    assert_eq!(
+        sql.matches("upperUTF8(t.start_bank_id) AS \"__order_col_0\"")
+            .count(),
+        1,
+        "#1140: forward arm:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("upperUTF8(t.end_bank_id) AS \"__order_col_0\"")
+            .count(),
+        1,
+        "#1140: the reversed arm must swap the role INSIDE the function \
+         wrapper:\n{sql}"
+    );
+}
+
 // --- #1141: role-ambiguous denorm property in a VLP ORDER BY -----------------
 //
 // A denormalized node whose from/to maps DISAGREE on a property's physical

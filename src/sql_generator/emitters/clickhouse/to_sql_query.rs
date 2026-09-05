@@ -3512,9 +3512,125 @@ fn collect_salvageable_id_order_aliases(
 /// the primary direction gained the extra `__order_col_N` columns while the
 /// nested sibling direction did not, so the inner `UNION ALL` between them
 /// ended up with mismatched column counts (ClickHouse Code 53).
+/// #1140: does this arm SWAP the endpoint roles relative to the direction the
+/// ORDER BY key was globally rewritten against?
+///
+/// The undirected union renders two CTEs whose names encode their role
+/// assignment — `vlp_a_b` binds `a`=start / `b`=end, `vlp_b_a` the reverse —
+/// and each `Cte` records that mapping structurally in
+/// `vlp_cypher_start_alias` / `vlp_cypher_end_alias`. The global ORDER BY
+/// rewrite always resolves against the PRIMARY direction, so an arm whose CTE
+/// assigns the opposite roles needs every `start_*`/`end_*` reference in the
+/// key flipped.
+///
+/// #1139 handles keys that are PROJECTED (resolvable through an output alias);
+/// this covers the residue it could not reach — an unprojected key
+/// (`ORDER BY a.balance` while returning `a.bank_id`) and an expression key
+/// (`ORDER BY toUpper(a.bank_id)`), which have no select item to chain
+/// through. Returns `None` when the arm is not a VLP-CTE scan or its CTE
+/// carries no role metadata, leaving the legacy behavior exactly as-is.
+fn arm_swaps_vlp_roles(plan: &RenderPlan, roles: &VlpArmRoles) -> Option<bool> {
+    // Only the OUTER plan carries `ctes`; an arm carries just its FROM, so the
+    // name->roles map is captured once up front and threaded down.
+    let from = plan.from.0.as_ref()?;
+    let (start, end) = roles.by_cte.get(&from.name)?;
+    // A self-loop endpoint (`start == end`) has no distinguishable roles.
+    if start == end {
+        return None;
+    }
+    if *start == roles.primary.0 && *end == roles.primary.1 {
+        Some(false)
+    } else if *start == roles.primary.1 && *end == roles.primary.0 {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+/// #1140: the undirected union's per-arm role assignment, captured from the
+/// OUTER plan (the only place `ctes` lives) so each arm can be classified
+/// after recursion.
+struct VlpArmRoles {
+    /// CTE name -> (cypher start alias, cypher end alias).
+    by_cte: std::collections::HashMap<String, (String, String)>,
+    /// The roles the global ORDER BY rewrite resolved against.
+    primary: (String, String),
+}
+
+/// #1140: the PRIMARY direction's `(start_alias, end_alias)` — the roles the
+/// global ORDER BY rewrite resolved against. Read from the outer plan's first
+/// role-carrying VLP CTE, which is the one the primary FROM scans.
+fn primary_vlp_roles(plan: &RenderPlan) -> Option<VlpArmRoles> {
+    let by_cte: std::collections::HashMap<String, (String, String)> = plan
+        .ctes
+        .0
+        .iter()
+        .filter_map(|c| {
+            let s = c.vlp_cypher_start_alias.clone()?;
+            let e = c.vlp_cypher_end_alias.clone()?;
+            Some((c.cte_name.clone(), (s, e)))
+        })
+        .collect();
+
+    let from = plan.from.0.as_ref()?;
+    let (start, end) = by_cte.get(&from.name)?.clone();
+    if start == end {
+        return None;
+    }
+    Some(VlpArmRoles {
+        by_cte,
+        primary: (start, end),
+    })
+}
+
+/// #1140: flip every `<vlp_alias>.start_*` / `<vlp_alias>.end_*` column
+/// reference in `expr`, structurally (recursing through every wrapper via
+/// `map_render_expr`, so an EXPRESSION key such as `toUpper(a.bank_id)` is
+/// covered, not just a bare column).
+fn swap_vlp_role_prefixes(expr: &RenderExpr) -> RenderExpr {
+    use crate::graph_catalog::expression_parser::PropertyValue;
+    use crate::render_plan::render_expr::{map_render_expr, RenderRewrite};
+
+    let vlp_alias = crate::server::query_context::vlp_from_alias();
+    let start_pfx = format!("{vlp_alias}.start_");
+    let end_pfx = format!("{vlp_alias}.end_");
+
+    let flip = |col: &str| -> Option<String> {
+        if let Some(rest) = col.strip_prefix(&start_pfx) {
+            Some(format!("{end_pfx}{rest}"))
+        } else {
+            col.strip_prefix(&end_pfx)
+                .map(|rest| format!("{start_pfx}{rest}"))
+        }
+    };
+
+    map_render_expr(expr, &mut |node| match node {
+        RenderExpr::Column(Column(PropertyValue::Column(c))) => match flip(c) {
+            Some(swapped) => {
+                RenderRewrite::Replace(RenderExpr::Column(Column(PropertyValue::Column(swapped))))
+            }
+            None => RenderRewrite::Replace(node.clone()),
+        },
+        RenderExpr::PropertyAccessExp(pa) => {
+            let joined = format!("{}.{}", pa.table_alias.0, pa.column.raw());
+            match flip(&joined) {
+                Some(swapped) => RenderRewrite::Replace(RenderExpr::Column(Column(
+                    PropertyValue::Column(swapped),
+                ))),
+                None => RenderRewrite::Replace(node.clone()),
+            }
+        }
+        // Every other node: DESCEND (not `Replace(clone)`, which would stop
+        // the walk and leave an EXPRESSION key such as `toUpper(a.bank_id)`
+        // unswapped inside its wrapper).
+        _ => RenderRewrite::Recurse,
+    })
+}
+
 fn add_order_by_columns_to_select(
     mut plan: RenderPlan,
     order_columns: &[(RenderExpr, String, Option<String>)],
+    primary_roles: Option<&VlpArmRoles>,
 ) -> RenderPlan {
     use crate::render_plan::render_expr::ColumnAlias;
     use crate::render_plan::SelectItem;
@@ -3564,6 +3680,18 @@ fn add_order_by_columns_to_select(
             // to the legacy paths only when the outer plan projected no item
             // for this key or this arm lacks the alias.
             arm_expr
+        } else if primary_roles
+            .and_then(|p| arm_swaps_vlp_roles(&plan, p))
+            .unwrap_or(false)
+        {
+            // #1140: the key is UNPROJECTED (`ORDER BY a.balance` while
+            // returning `a.bank_id`) or an EXPRESSION (`toUpper(a.bank_id)`),
+            // so #1138's output-alias chain has nothing to resolve through and
+            // the globally-rewritten start-role key would be pushed into BOTH
+            // arms — silently mis-sorting the reversed one. This arm's own CTE
+            // says it assigns the OPPOSITE roles, so flip the key's role
+            // prefixes structurally.
+            swap_vlp_role_prefixes(expr)
         } else if let Some(ref ctx) = path_context {
             resolve_denormalized_order_by_expr(expr, ctx)
         } else {
@@ -3604,7 +3732,7 @@ fn add_order_by_columns_to_select(
         union.input = union
             .input
             .into_iter()
-            .map(|branch| add_order_by_columns_to_select(branch, order_columns))
+            .map(|branch| add_order_by_columns_to_select(branch, order_columns, primary_roles))
             .collect();
         plan.union.0 = Some(union);
     }
@@ -6043,7 +6171,16 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
             // to every top-level arm (each arm would gain the columns once
             // via this call's recursion and again via the loop), producing
             // duplicate `__order_col_N` columns / an outer-scope alias clash.
-            modified_plan = add_order_by_columns_to_select(modified_plan, &order_by_columns);
+            // #1140: capture the PRIMARY direction's role assignment before
+            // recursing, so an arm whose own CTE assigns the opposite roles can
+            // flip an unprojected/expression key that #1138's output-alias
+            // chain cannot resolve.
+            let primary_roles = primary_vlp_roles(&modified_plan);
+            modified_plan = add_order_by_columns_to_select(
+                modified_plan,
+                &order_by_columns,
+                primary_roles.as_ref(),
+            );
         }
 
         // Use the modified plan for SQL generation
@@ -9651,7 +9788,7 @@ mod tests {
             "__order_col_0".to_string(),
             None,
         )];
-        let out = add_order_by_columns_to_select(direction_a, &order_columns);
+        let out = add_order_by_columns_to_select(direction_a, &order_columns, None);
 
         assert!(
             out.select
