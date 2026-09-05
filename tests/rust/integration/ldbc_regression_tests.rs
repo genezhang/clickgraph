@@ -2551,6 +2551,99 @@ async fn ldbc_1138_two_key_order_role_maps_per_arm() {
     );
 }
 
+// --- #1141: role-ambiguous denorm property in a VLP ORDER BY -----------------
+//
+// A denormalized node whose from/to maps DISAGREE on a property's physical
+// column (`Airport.city` -> `OriginCityName` from-side, `DestCityName`
+// to-side) reaches the emitter in its raw Cypher form: the #471 guard
+// deliberately declines to pick one mapping up front. The VLP CTE names each
+// projected property column after the PHYSICAL column it resolved per role,
+// so prefixing the raw Cypher name emitted `t.start_city` — a column no arm
+// projects (ClickHouse Code 47, loud). Resolved per endpoint through
+// `denorm_role_properties`, which also gives each undirected arm its OWN
+// role (the #1138 class of defect, here for a shape #1139 could not reach
+// because the raw spelling never matched an output alias).
+
+/// #1141: the ORDER BY helper column binds the PHYSICAL, role-correct column
+/// in each arm — not the raw Cypher property name.
+#[tokio::test]
+async fn ldbc_1141_denorm_vlp_order_by_binds_physical_role_column() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o.city ORDER BY o.city",
+    )
+    .await;
+    assert!(
+        !sql.contains("start_city") && !sql.contains("end_city"),
+        "#1141: the raw Cypher property name must not be prefixed onto a CTE \
+         column (no arm projects `start_city`/`end_city`):\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("t.start_OriginCityName AS \"__order_col_0\"")
+            .count(),
+        1,
+        "#1141: the forward arm orders by its own (from-role) column:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("t.end_DestCityName AS \"__order_col_0\"")
+            .count(),
+        1,
+        "#1141: the reversed arm must order by ITS role's column, not repeat \
+         the forward arm's:\n{sql}"
+    );
+}
+
+/// #1141: the node_id property is role-ambiguous too (`code` ->
+/// `Origin`/`Dest`) and was equally broken — both arms emitted the dangling
+/// `t.start_code`. It resolves through the same path, and the reversed arm
+/// gets its OWN role.
+#[tokio::test]
+async fn ldbc_1141_denorm_id_property_order_by_binds_role_column() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o.code ORDER BY o.code",
+    )
+    .await;
+    assert!(
+        !sql.contains("start_code") && !sql.contains("end_code"),
+        "#1141: no arm projects `start_code`/`end_code`:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("t.start_Origin AS \"__order_col_0\"").count(),
+        1,
+        "#1141: forward arm orders by its from-role id column:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("t.end_Dest AS \"__order_col_0\"").count(),
+        1,
+        "#1141: reversed arm orders by its to-role id column:\n{sql}"
+    );
+}
+
+/// #1141 boundary: the MULTI-TYPE union CTE (`vlp_multi_type_*`) is built by a
+/// different generator that names property columns after the CYPHER property
+/// (`start_ip`), so this resolution must NOT touch it — doing so re-dangles a
+/// working shape (caught by the zeek corpus golden during development).
+#[tokio::test]
+async fn ldbc_1141_multi_type_union_cte_keeps_cypher_spelling() {
+    let schema = load_schema_from("schemas/examples/zeek_merged.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (ip:IP)-[:DNS_REQUESTED|CONNECTED_TO]->(target) \
+         WHERE ip.ip = '192.168.1.10' RETURN target LIMIT 20",
+    )
+    .await;
+    if sql.contains("vlp_multi_type_") {
+        assert!(
+            !sql.contains("start_id.orig_h"),
+            "#1141: the multi-type union CTE must keep its Cypher-name \
+             spelling (`start_ip`):\n{sql}"
+        );
+    }
+}
+
 // --- #1135: `*0..0` is the zero-hop identity, not a 1-hop chain --------------
 //
 // `exact_hop_count()` returned `Some(0)` and every consumer treats `Some(n)`

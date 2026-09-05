@@ -2584,7 +2584,11 @@ pub(crate) fn rewrite_expr_for_vlp(
                     // This is accessing start node property
                     // Create Column with the full table.column format to prevent heuristic inference
                     // The FROM clause has the CTE aliased as 't', so use t.start_xxx
-                    let prop_name = derive_cypher_property_name(col_raw);
+                    // #1141: a role-ambiguous denormalized property is projected
+                    // under its PHYSICAL from-role column (`start_origin_city`),
+                    // not the raw Cypher name (`start_city`).
+                    let prop_name = vlp_denorm_role_column(start, col_raw, true)
+                        .unwrap_or_else(|| derive_cypher_property_name(col_raw));
                     return RenderExpr::Column(Column(PropertyValue::Column(format!(
                         "{vlp_alias}.start_{prop_name}"
                     ))));
@@ -2615,7 +2619,10 @@ pub(crate) fn rewrite_expr_for_vlp(
                     }
 
                     // This is accessing end node property
-                    let prop_name = derive_cypher_property_name(col_raw);
+                    // #1141: as in the start arm — resolve a role-ambiguous
+                    // denormalized property to its PHYSICAL to-role column.
+                    let prop_name = vlp_denorm_role_column(end, col_raw, false)
+                        .unwrap_or_else(|| derive_cypher_property_name(col_raw));
                     return RenderExpr::Column(Column(PropertyValue::Column(format!(
                         "{vlp_alias}.end_{prop_name}"
                     ))));
@@ -2836,6 +2843,92 @@ fn is_vlp_path_is_null(expr: &RenderExpr, path_variable: &Option<String>) -> boo
         }
     }
     false
+}
+
+/// #1141: the VLP CTE column suffix for a ROLE-AMBIGUOUS denormalized
+/// property, for the endpoint bound to `role_is_from`.
+///
+/// A denormalized node whose `from_properties`/`to_properties` disagree on a
+/// property's physical column (`Airport.city` → `origin_city` from-side,
+/// `dest_city` to-side) reaches the emitter in its RAW Cypher form: the #471
+/// guard (`order_by_property_is_ambiguous_denorm_standalone`) deliberately
+/// declines to pick one mapping up front, precisely because no single choice
+/// is right for both roles. The VLP CTE, however, names each projected
+/// property column after the PHYSICAL column it resolved per role
+/// (`start_origin_city` / `end_dest_city`), so prefixing the raw Cypher name
+/// yields `t.start_city` — a column no arm projects (ClickHouse Code 47).
+///
+/// Resolve it here, per endpoint, through the canonical schema-catalog
+/// accessor (`denorm_role_properties`, axis-dispatch rule / CLAUDE.md §7)
+/// rather than a raw `from_properties`/`to_properties` read. Returns `None`
+/// for every non-denormalized or role-UNambiguous property, leaving the
+/// historical `derive_cypher_property_name` spelling completely untouched.
+fn vlp_denorm_role_column(alias: &str, prop_name: &str, role_is_from: bool) -> Option<String> {
+    use crate::server::query_context::{
+        get_current_schema, get_multi_type_vlp_aliases, get_node_label_for_alias,
+    };
+
+    // The multi-type union CTE (`vlp_multi_type_*`, built by a DIFFERENT
+    // generator in `cte_extraction.rs`) names its property columns after the
+    // CYPHER property (`start_ip`), not the physical column the recursive VLP
+    // CTE uses. Its spellings are already correct and role-resolved per arm;
+    // rewriting them here would dangle. Only the recursive/undirected VLP CTE
+    // needs this resolution.
+    // The multi-type union CTE (`vlp_multi_type_*`) is built by a DIFFERENT
+    // generator (`cte_extraction.rs`) that names its property columns after
+    // the CYPHER property (`start_ip`), not after the physical column the
+    // recursive VLP CTE uses (`start_id.orig_h`). Its spellings are already
+    // correct, so rewriting them here would dangle. The registry is keyed by
+    // the RELATIONSHIP alias, so presence of ANY entry is the signal that this
+    // scope renders through that generator.
+    if !get_multi_type_vlp_aliases().is_empty() {
+        return None;
+    }
+
+    let schema = get_current_schema()?;
+
+    // The render-time alias->label map is not populated on every VLP path
+    // (it is rebuilt per SQL branch), so fall back to resolving by label when
+    // it is available and otherwise scanning the schema's denormalized nodes.
+    // A role-AMBIGUOUS property name is unambiguous within a schema: only a
+    // denormalized node declares role-specific maps that DISAGREE, and the
+    // candidate set below is filtered to exactly those. When two distinct
+    // denormalized labels would disagree about the same property name, bail
+    // (`None`) rather than guess — the historical spelling is preserved and
+    // the shape stays exactly as loud/quiet as it is today.
+    let candidates: Vec<&crate::graph_catalog::graph_schema::NodeSchema> =
+        match get_node_label_for_alias(alias).and_then(|l| schema.node_schema_opt(&l)) {
+            Some(ns) => vec![ns],
+            None => schema
+                .all_node_schemas()
+                .values()
+                .filter(|ns| ns.role_dependent_property_names().contains(prop_name))
+                .collect(),
+        };
+
+    let node_schema = match candidates.as_slice() {
+        [only] => *only,
+        // Zero candidates: not a role-dependent property (the overwhelmingly
+        // common case). More than one: genuinely ambiguous across labels.
+        _ => return None,
+    };
+
+    // Only a genuinely role-DEPENDENT property needs this: when both roles
+    // map to the same physical column the historical spelling is already
+    // correct, and rewriting it would be churn with no behavior change.
+    if !node_schema
+        .role_dependent_property_names()
+        .contains(prop_name)
+    {
+        return None;
+    }
+
+    let resolved = node_schema
+        .denorm_role_properties(role_is_from)?
+        .get(prop_name)
+        .cloned()?;
+
+    Some(resolved)
 }
 
 /// Derive Cypher property name from database column name
