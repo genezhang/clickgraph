@@ -3211,7 +3211,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let ac = fmap.array_concat();
         let empty_str_arr = fmap.empty_string_array_cast();
 
-        // Parse end node ID identifier
+        // Parse endpoint ID identifiers (start needed for the composite
+        // pass-through block below — #1130 review).
+        let start_id_identifier = parse_id_cols(&self.start_node_id_column);
         let end_id_identifier = parse_id_cols(&self.end_node_id_column);
         let end_id_expr_str = emit_id_expr(&self.end_node_alias, &end_id_identifier);
 
@@ -3263,13 +3265,27 @@ impl<'a> VariableLengthCteGenerator<'a> {
             ));
         }
 
-        // For composite IDs, add individual ID component columns
-        // Pass through start ID components from vp, add end ID components from joined node
-        if let Identifier::Composite(cols) = &end_id_identifier {
+        // For composite IDs, add individual ID component columns.
+        //
+        // #1130 review (CRITICAL): the arm ORDER must MATCH the base arm —
+        // grouped (all `start_*`, then all `end_*`), never interleaved per
+        // column. A recursive CTE's UNION ALL binds by POSITION (#908 class):
+        // the old interleaved emission swapped `start_account_number` with
+        // `end_bank_id` on every hop>=2 row, silently scrambling both
+        // RETURN-position component reads (pre-existing on main) and the
+        // wrapper end-filter (#1123) that binds to these columns. Also keyed
+        // on the CORRECT side's identifier: the start pass-throughs iterate
+        // the START composite (the old code iterated end's cols for both,
+        // wrong whenever the two composites differ).
+        if let Identifier::Composite(cols) = &start_id_identifier {
             for col in cols.iter() {
                 // Start ID components pass through from vp
                 select_items.push(format!("vp.start_{} as start_{}", col, col));
-                // End ID components come from newly joined node
+            }
+        }
+        if let Identifier::Composite(cols) = &end_id_identifier {
+            for col in cols.iter() {
+                // End ID components come from the newly joined node
                 select_items.push(format!(
                     "{}.{} as end_{}",
                     self.end_node_alias,
