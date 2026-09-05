@@ -1160,8 +1160,11 @@ async fn ldbc_1103_unprojected_property_is_a_real_error() {
 /// vs an oracle 3). Post-#1131 each component maps to its own projected
 /// `<prefix>_<col>` column, so whole-node identity expands to the
 /// per-component AND — row-equivalent to concat equality (and safer for values
-/// containing the `|` separator), live-verified 8 == oracle 8 on a populated
-/// fixture.
+/// containing the `|` separator), live-verified 10 == oracle 10 on a populated
+/// fixture. The #1133 review then PROVED the separator case live: with values
+/// 'x|y'+'z' vs 'x'+'y|z' (identical concats), main's concat equality DROPPED
+/// a `<>` row and FABRICATED a phantom `=` "cycle" — the per-component form is
+/// strictly MORE correct, not merely row-equivalent on benign data.
 #[tokio::test]
 async fn ldbc_1103_composite_node_id_collapses_to_single_id_predicate() {
     let schema = load_schema_from("schemas/test/composite_node_ids.yaml");
