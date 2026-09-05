@@ -657,6 +657,29 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-09-05: **Correctness (ground-rule-1) — undirected-VLP union ORDER BY
+  key bound the START role in BOTH arms → silently mis-sorted rows** (branch
+  `fix/1138-order-col-role`, PR #1139, closes #1138). The synthesized
+  `__order_col_*` key was rewritten ONCE globally against the primary
+  direction; the reversed arm projects role-swapped VALUES (`t.end_bank_id AS
+  "a.bank_id"`) but received the same start-roled KEY — its rows sorted by
+  the WRONG endpoint (live: b1/b2 interleaved with b3 mid-stream).
+  Property-agnostic, pre-existing (found by the #1137 review). Fix:
+  extraction captures each key's OUTPUT ALIAS from the outer plan;
+  `add_order_by_columns_to_select` (which recurses per arm) re-resolves the
+  key through the arm's OWN select item carrying that alias — comparison on
+  the normalized `<alias>.<col>` spelling, since the two pipelines produce
+  different RenderExpr shapes for the same column. Two dead-ends recorded:
+  an exact-expression match fails (the reversed arm's select is
+  role-swapped), and a role-swap-the-key heuristic mis-fires when BOTH
+  endpoints are projected (`t.start_bank_id` legitimately exists in the
+  reversed arm as the OTHER endpoint's value). Live: single-key fully sorted
+  (b1×9,b2×9,b3×2), two-key nested sort correct with each key role-matched
+  per arm. 360-combo sweep: 1 diff (the target family). 2 structural tests,
+  both fail on main (the two-key one was tightened after passing on main —
+  a weak test proves nothing). Suite green (1738 + 692 + ratchet), clippy
+  clean, zero golden churn.
+
 - 2026-09-05: **Correctness — ORDER BY / GROUP BY on a composite id COMPONENT
   collapsed onto the whole pipe-joined `t.start_id`** (branch
   `fix/1136-order-by-composite-component`, PR #1137, closes #1136). The late
