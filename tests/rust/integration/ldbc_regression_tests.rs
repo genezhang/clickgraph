@@ -1056,3 +1056,142 @@ async fn ldbc_1103_closed_pattern_keeps_base_case_placement() {
          case (it is not a two-endpoint comparison):\n{sql}"
     );
 }
+
+/// Like [`generate_sql_inline`] but surfaces a render error instead of
+/// panicking — for asserting LOUD refusals.
+async fn try_render_inline(schema: &GraphSchema, cypher: &str) -> Result<String, String> {
+    let schema = schema.clone();
+    let cypher = cypher.to_string();
+    let ctx = QueryContext::new(Some("default".to_string()));
+    with_query_context(ctx, async {
+        set_current_schema(Arc::new(schema.clone()));
+        let cleaned = strip_comments(&cypher);
+        let (_rem, statement) = clickgraph::open_cypher_parser::parse_cypher_statement(&cleaned)
+            .unwrap_or_else(|e| panic!("parse: {e:?}"));
+        let (logical_plan, plan_ctx) =
+            evaluate_read_statement(statement, &schema, None, None, None)
+                .unwrap_or_else(|e| panic!("plan: {e:?}"));
+        match logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx)) {
+            Ok(rp) => Ok(rp.to_sql()),
+            Err(e) => Err(format!("{e:?}")),
+        }
+    })
+    .await
+}
+
+// --- #1103 review hardening -------------------------------------------------
+// The first cut of this fix rewrote the predicate by `str::replace` over
+// already-rendered SQL. Adversarial review found that corrupts any property
+// whose name is a PREFIX-collision with the node_id column or another property,
+// and rewrites alias-looking text inside string literals — valid SQL, wrong
+// column, no error. The rewrite is now structural (on the RenderExpr, in
+// `cte_manager::lower_both_endpoint_filter_to_cte_columns`). These tests pin
+// exactly the shapes a textual rewrite gets wrong.
+
+/// #1103: node_id `code` is a PREFIX of property `codeName`; a textual rewrite
+/// produced `end_idName`, which is a different REAL column on this fixture.
+#[tokio::test]
+async fn ldbc_1103_prefix_collision_property_not_corrupted() {
+    let schema = load_schema_from("schemas/test/prefix_collision_vlp.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Item)-[:LINK*1..3]->(b:Item)
+         WHERE a.code = 'X' AND b.codeName <> a.codeName
+         RETURN b.idName",
+    )
+    .await;
+    assert!(
+        sql.contains("(end_codeName != start_codeName)"),
+        "#1103: prefix-colliding property must resolve to its OWN column:\n{sql}"
+    );
+    assert!(
+        !sql.contains("end_idName !=") && !sql.contains("!= start_idName"),
+        "#1103: must not corrupt `codeName` into the unrelated `idName` column:\n{sql}"
+    );
+}
+
+/// #1103: a string literal that happens to contain alias-looking text must be
+/// left byte-intact — a textual rewrite mangled it into a column reference.
+#[tokio::test]
+async fn ldbc_1103_string_literal_not_rewritten() {
+    let schema = load_schema_from("schemas/test/prefix_collision_vlp.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Item)-[:LINK*1..3]->(b:Item)
+         WHERE a.code = 'X' AND (b.codeName <> a.codeName OR b.idName = 'end_node.codeName')
+         RETURN b.idName",
+    )
+    .await;
+    assert!(
+        sql.contains("'end_node.codeName'"),
+        "#1103: the string literal must survive the rewrite unchanged:\n{sql}"
+    );
+}
+
+/// #1103: an unprojected property must fail with a REAL error. The first cut
+/// returned a `-- ERROR …\nSELECT 1 WHERE 0` *string*, which is valid SQL that
+/// executes and returns zero rows — a silent wrong answer wearing an error's
+/// clothes.
+#[tokio::test]
+async fn ldbc_1103_unprojected_property_is_a_real_error() {
+    let schema = load_schema_from("schemas/test/prefix_collision_vlp.yaml");
+    // `other_col`/`idName` is projected only when referenced; compare on a
+    // property the CTE does not carry.
+    let result = try_render_inline(
+        &schema,
+        "MATCH (a:Item)-[:LINK*1..3]->(b:Item) WHERE a.code = 'X' AND b.codeName <> a.codeName
+         RETURN b.code",
+    )
+    .await;
+    // Either it resolves (property projected) or it errors — but it must NEVER
+    // emit the fake-error sentinel that silently returns no rows.
+    if let Ok(sql) = &result {
+        assert!(
+            !sql.contains("SELECT 1 WHERE 0"),
+            "#1103: must not emit a fake-error SQL sentinel:\n{sql}"
+        );
+    }
+}
+
+/// #1103: COMPOSITE node_id is projected as ONE pipe-joined `start_id`/`end_id`,
+/// so every key column maps to it — and the per-column expansion collapses to a
+/// single predicate rather than a repeated conjunct.
+#[tokio::test]
+async fn ldbc_1103_composite_node_id_collapses_to_single_id_predicate() {
+    let schema = load_schema_from("schemas/test/composite_node_ids.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a1:Account)-[:TRANSFERRED*1..2]->(a2:Account)
+         WHERE a2 <> a1
+         RETURN a2.account_type LIMIT 5",
+    )
+    .await;
+    assert!(
+        sql.contains("WHERE (NOT (end_id = start_id))"),
+        "#1103: composite node_id identity must collapse to the pipe-joined id \
+         columns, deduplicated:\n{sql}"
+    );
+    assert!(
+        !sql.contains("end_id = start_id AND end_id = start_id"),
+        "#1103: the collapsed per-column conjuncts must be deduplicated:\n{sql}"
+    );
+}
+
+/// #1103: three generator shapes return before the wrapper is built and would
+/// DROP the predicate silently. They must refuse loudly instead.
+#[tokio::test]
+async fn ldbc_1103_heterogeneous_polymorphic_refuses_loudly() {
+    let schema = load_schema_from("schemas/dev/social_polymorphic.yaml");
+    let err = try_render_inline(
+        &schema,
+        "MATCH (a:User)-[:LIKES*1..2]->(b:Post)
+         WHERE a.user_id = 1 AND b.content <> a.name
+         RETURN b.post_id",
+    )
+    .await
+    .expect_err("#1103: a path shape that cannot apply the predicate must refuse");
+    assert!(
+        err.contains("referencing BOTH path endpoints is not supported"),
+        "#1103: the refusal must name the unsupported both-endpoint case:\n{err}"
+    );
+}

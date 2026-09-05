@@ -1656,75 +1656,41 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
     /// #1103: is there a both-endpoint predicate to apply on the wrapper?
     ///
-    /// Honored for every family that reaches this generator (standard, mixed
-    /// access, FK-edge, polymorphic) — including shortestPath, whose own
-    /// `_to_target`/ROW_NUMBER wrapper is layered on top and must see the
-    /// predicate applied to the FINAL endpoint pair. The fully-denormalized
-    /// pattern never reaches here (`DenormalizedCteStrategy` intercepts it
-    /// upstream in `cte_manager`), so this is a no-op there.
-    fn has_both_endpoint_filter(&self) -> bool {
+    /// Honored by the wrapper built in [`Self::generate_recursive_sql`] —
+    /// standard, mixed access, FK-edge, polymorphic, and shortestPath (whose
+    /// `_to_target`/ROW_NUMBER layer is built there too and must see the
+    /// predicate applied to the FINAL endpoint pair).
+    ///
+    /// NOT reached by three generators that `generate_recursive_sql` delegates
+    /// to before the wrapper is built — BFS shortestPath, weighted-BFS
+    /// reconstruction, and heterogeneous-polymorphic paths — nor by the
+    /// fully-denormalized pattern (`DenormalizedCteStrategy`) or multi-type VLP
+    /// (flat join expansion), both intercepted upstream. `CteManager` refuses
+    /// LOUDLY before constructing any of those with a both-endpoint predicate
+    /// set, so a bypass can never silently drop it; see
+    /// `both_endpoint_filter_unsupported_here` in `cte_manager`.
+    pub(crate) fn has_both_endpoint_filter(&self) -> bool {
         self.both_endpoint_filters.is_some()
     }
 
-    /// #1103: rewrite a both-endpoint predicate onto the recursive CTE's own
-    /// output columns.
-    ///
-    /// The predicate arrives written against the base-case JOIN aliases
-    /// (`start_node.x`, `end_node.y`). In the wrapper only the CTE's projected
-    /// columns exist, so BOTH sides must be rewritten:
-    ///   `start_node.<id_col>` → `start_id`, `end_node.<id_col>` → `end_id`,
-    ///   `start_node.<prop>`   → `start_<prop>`, `end_node.<prop>` → `end_<prop>`.
-    /// Non-id properties are only available when projected — see
-    /// [`Self::both_endpoint_filter_columns_available`], which refuses loudly
-    /// rather than emitting a reference to a column the CTE does not select.
-    fn rewrite_both_endpoint_filter_for_cte(&self, filter: &str) -> String {
-        use crate::query_planner::join_context::VLP_START_ID_COLUMN;
-        let mut rewritten = filter.replace(
-            &format!("{}.{}", self.start_node_alias, self.start_node_id_column),
-            VLP_START_ID_COLUMN,
-        );
-        rewritten = rewritten.replace(
-            &format!("{}.{}", self.end_node_alias, self.end_node_id_column),
-            VLP_END_ID_COLUMN,
-        );
-        for prop in &self.properties {
-            if prop.cypher_alias == self.start_cypher_alias {
-                let replacement = format!("start_{}", prop.alias);
-                rewritten = rewritten.replace(
-                    &format!("{}.{}", self.start_node_alias, prop.column_name),
-                    &replacement,
-                );
-                rewritten = rewritten.replace(
-                    &format!("{}.{}", self.start_node_alias, prop.alias),
-                    &replacement,
-                );
-            }
-            if prop.cypher_alias == self.end_cypher_alias {
-                let replacement = format!("end_{}", prop.alias);
-                rewritten = rewritten.replace(
-                    &format!("{}.{}", self.end_node_alias, prop.column_name),
-                    &replacement,
-                );
-                rewritten = rewritten.replace(
-                    &format!("{}.{}", self.end_node_alias, prop.alias),
-                    &replacement,
-                );
-            }
+    /// #1103: does this generator's shape route AROUND the wrapper that applies
+    /// a both-endpoint predicate? Used by `CteManager` to refuse loudly rather
+    /// than let the predicate vanish. Mirrors the early returns at the top of
+    /// [`Self::generate_recursive_sql`] exactly.
+    pub(crate) fn bypasses_both_endpoint_wrapper(&self) -> Option<&'static str> {
+        if self.use_bfs_mode {
+            return Some("BFS shortest-path mode (length(path)-only optimization)");
         }
-        rewritten
-    }
-
-    /// #1103: did [`Self::rewrite_both_endpoint_filter_for_cte`] fully resolve
-    /// the predicate onto CTE columns?
-    ///
-    /// A leftover `start_node.` / `end_node.` qualifier means some referenced
-    /// property is NOT projected into the CTE (property pruning kept only what
-    /// the rest of the query needs). Emitting it anyway would be a Code-47
-    /// unknown-identifier at best and a wrong-column read at worst, so the
-    /// caller refuses loudly instead.
-    fn both_endpoint_filter_columns_available(&self, rewritten: &str) -> bool {
-        !rewritten.contains(&format!("{}.", self.start_node_alias))
-            && !rewritten.contains(&format!("{}.", self.end_node_alias))
+        if self.weight_cte.is_some()
+            && self.shortest_path_mode.is_some()
+            && self.end_node_filters.is_some()
+        {
+            return Some("weighted shortest path with a target filter");
+        }
+        if self.is_heterogeneous_polymorphic_path() {
+            return Some("heterogeneous polymorphic path (two-CTE structure)");
+        }
+        None
     }
 
     fn rewrite_end_filter_for_cte(&self, filter: &str) -> String {
@@ -2238,20 +2204,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // referenced property was pruned out of the CTE projection; emitting it
         // would reference a nonexistent column, so refuse loudly instead of
         // silently dropping or mis-resolving the predicate.
-        let both_endpoint_pred: Option<String> = match &self.both_endpoint_filters {
-            None => None,
-            Some(raw) => {
-                let rewritten = self.rewrite_both_endpoint_filter_for_cte(raw);
-                if self.both_endpoint_filter_columns_available(&rewritten) {
-                    Some(rewritten)
-                } else {
-                    return format!(
-                        "-- ERROR: ClickGraph cannot render this variable-length path (#1103).\n                         -- A WHERE predicate references BOTH path endpoints, but a property it\n                         -- uses is not projected into the path CTE, so it cannot be applied to\n                         -- the final endpoint pair: {}\n                         SELECT 1 WHERE 0",
-                        rewritten.replace('\n', " ")
-                    );
-                }
-            }
-        };
+        // Already lowered onto this CTE's own `start_*`/`end_*` columns by
+        // `cte_manager::lower_both_endpoint_filter_to_cte_columns`, which owns
+        // the structural rewrite AND the loud failure for an unprojected
+        // property (it has a real `Result` channel; `generate_sql` returns a
+        // bare `String` and must never fabricate an "error" that is itself
+        // valid SQL returning zero rows).
+        let both_endpoint_pred: Option<String> = self.both_endpoint_filters.clone();
         /// Helper: AND an optional extra predicate onto an existing WHERE body.
         fn and_opt(base: &str, extra: Option<&String>) -> String {
             match extra {

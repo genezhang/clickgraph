@@ -556,9 +556,11 @@ pub fn generate_vlp_cte_via_manager(
     start_filters_sql: Option<String>,
     end_filters_sql: Option<String>,
     rel_filters_sql: Option<String>,
-    // #1103: pre-rendered SQL for a predicate naming BOTH VLP endpoints.
-    // Applied on the post-recursion wrapper, never in base/recursive arms.
-    both_endpoint_filters_sql: Option<String>,
+    // #1103: predicate naming BOTH VLP endpoints, as a RenderExpr — NOT
+    // pre-rendered SQL. `CteManager` lowers it structurally onto the path CTE's
+    // own `start_*`/`end_*` columns; a textual rewrite of rendered SQL would
+    // corrupt prefix-colliding property names and string literals.
+    both_endpoint_filters_expr: Option<RenderExpr>,
     path_variable: Option<String>,
     shortest_path_mode: Option<crate::query_planner::logical_plan::ShortestPathMode>,
     relationship_types: Option<Vec<String>>,
@@ -607,11 +609,11 @@ pub fn generate_vlp_cte_via_manager(
         end_node_filters: None,
         relationship_filters: None,
         path_function_filters: None,
-        both_endpoint_filters: None,
+        both_endpoint_filters: both_endpoint_filters_expr,
         start_sql: start_filters_sql,
         end_sql: end_filters_sql,
         relationship_sql: rel_filters_sql,
-        both_endpoint_sql: both_endpoint_filters_sql,
+        both_endpoint_sql: None,
     };
 
     // Create CteManager and generate VLP CTE
@@ -4975,9 +4977,9 @@ pub fn extract_ctes_with_context(
                     // alias mapping during categorization. No schema-filter combining
                     // applies (schema filters are per-node, already folded into the
                     // start/end slots above).
-                    let both_endpoint_filters_sql = categorized_filters_opt
+                    let both_endpoint_filters_expr = categorized_filters_opt
                         .as_ref()
-                        .and_then(|c| c.both_endpoint_sql.clone());
+                        .and_then(|c| c.both_endpoint_filters.clone());
 
                     if start_schema_filter.is_some() || end_schema_filter.is_some() {
                         log::info!(
@@ -5308,7 +5310,7 @@ pub fn extract_ctes_with_context(
                         combined_start_filters,
                         combined_end_filters,
                         rel_filters_sql,
-                        both_endpoint_filters_sql,
+                        both_endpoint_filters_expr,
                         graph_rel.path_variable.clone(),
                         graph_rel.shortest_path_mode.clone(),
                         graph_rel.labels.clone(),
