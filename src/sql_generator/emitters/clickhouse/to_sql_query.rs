@@ -3752,6 +3752,21 @@ fn rebind_vlp_arm_select(outer: &RenderPlan, arm: &RenderPlan) -> Option<SelectI
 /// generator emits. When the body yields NOTHING recognizable the set is empty,
 /// which makes every lookup abstain: unable to prove a column exists, the
 /// helper declines rather than guessing.
+///
+/// SAFETY INVARIANT (review L4). The raw-SQL scan deliberately OVER-collects:
+/// it also picks up type names (`CAST(x AS Int64)`), table aliases
+/// (`FROM tbl AS t1`), `ARRAY JOIN ... AS elem`, and text inside string
+/// literals or comments. That is sound here for one reason only — this set is
+/// used solely to INTERSECT `CteColumnMetadata`, whose `cte_column_name` is
+/// always built as `start_<prop>` / `end_<prop>` (see `cte_manager`'s
+/// `add_property_selections`), and no spurious token takes that shape. Widening
+/// the candidate set can therefore never re-admit a fabricated name.
+///
+/// If a future CTE builder ever emits metadata under a DIFFERENTLY shaped
+/// alias, that invariant lapses and this scan must be tightened to real aliases
+/// (parse the select list) before it can be trusted — otherwise H1 reopens:
+/// a metadata-only name would match a spurious token and be emitted as a
+/// column no arm defines, which is loud only until the name happens to exist.
 fn cte_body_output_names(cte: &crate::render_plan::Cte) -> std::collections::HashSet<String> {
     let mut names = std::collections::HashSet::new();
     match &cte.content {
