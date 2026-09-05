@@ -657,6 +657,43 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-09-05: **Correctness (ground-rule-1) — the type-inference ViewScan
+  rebuilds dropped `schema_filter`, silently disarming every downstream
+  schema-filter application for inferred-label nodes** (branch
+  `fix/1125-flat-closed-single-hop-schema-filter`, PR #1126, closes #1125).
+  Most visible on the FLAT closed single-hop `(a:Country)-[:R]->(a)` / `*1..1`
+  (the closed endpoint always goes through label inference): a City self-loop
+  leaked through a `:Country` pattern — 2 vs an oracle 1, and the property form
+  returned the excluded row's value. ROOT CAUSE upstream of #1120's symptom:
+  three ViewScan-rebuild sites in `analyzer/type_inference.rs` set
+  `is_denormalized`/properties but not `schema_filter`/`node_label`. Fix: carry
+  both through, via a NEW schema-catalog API
+  `NodeSchema::carryable_schema_filter()` (denorm returns None — #1119's family
+  keeps its behavior; first cut used raw `is_denormalized` branches and the
+  RATCHET rejected it, again). The MULTI-label inferred arm deliberately does
+  NOT carry (one label's filter would wrongly restrict the others — caught live
+  when `(a:Person)-[r]->(b)` grew a spurious `WHERE b.type = 'City'`; locked by
+  a boundary test). CONSEQUENCE for #1120: the labeled closed CTE shapes now
+  resolve their filter through the NORMAL plan-walk (end-wrapper placement,
+  row-equivalent under `start_id = end_id`; re-verified 4/5/12 == oracles), so
+  the #1124 label-fallback no longer fires — kept as a defensive net, comment
+  updated. Adversarial review (PR #1126, no CRITICAL) CORRECTED my
+  change-surface claim: the real surface is LARGER than the 4 closed
+  single-hop shapes — single-label inferred-target opens
+  (`(a:Person)-[:IS_LOCATED_IN]->(b)`) also gain a node join +
+  `WHERE b.type='City'` (semantically correct — main was internally
+  INCONSISTENT, applying the filter on ORDER BY but not count(*) forms of the
+  SAME query — but it defeats the count-only join-elision optimization for
+  filtered targets, a perf cost). That load-bearing join EXPOSED a latent
+  schema misdeclaration (review H1): `ldbc_snb.yaml` `WORK_AT to_id:
+  OrganisationId` vs physical `CompanyId` (other 3 LDBC schemas were right) —
+  fixed in the same PR, 21357 == oracle. Review M2 filed as **#1127** (OPEN,
+  pre-existing): multi-label UNION arms apply NO per-label filter, so a
+  stray-subtype edge row over-returns and single- vs multi-label forms of the
+  same traversal disagree; correct design = per-arm filters, locking test
+  annotated accordingly. 3 regression tests (targeting one fails on main).
+  Suite green (1738 + 675 + ratchet), clippy clean, zero golden churn.
+
 - 2026-09-04: **Correctness (ground-rule-1) — a CLOSED VLP pattern
   `(a:Country)-[:R*2..3]->(a)` dropped its node schema `filter:` entirely,
   silently** (branch `fix/1120-closed-vlp-schema-filter`, PR #1124, closes

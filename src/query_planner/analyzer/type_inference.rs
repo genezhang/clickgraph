@@ -756,6 +756,12 @@ impl TypeInference {
                                             (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone()))
                                         }).collect()
                                     });
+                                    // #1125: deliberately NOT carrying
+                                    // `schema_filter` here — this GraphNode stands
+                                    // for MULTIPLE inferred labels, and attaching
+                                    // only the first label's filter would wrongly
+                                    // restrict the others. The single-label arm
+                                    // below carries it (see there).
 
                                     // Create new GraphNode with ViewScan input and FIRST label
                                     let new_node = GraphNode {
@@ -814,6 +820,17 @@ impl TypeInference {
                                             (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone()))
                                         }).collect()
                                     });
+                                    // #1125: carry the node-level schema `filter:`
+                                    // (and label) through the rebuild — dropping it
+                                    // here silently disarmed every downstream
+                                    // schema-filter application for inferred-label
+                                    // nodes (most visibly the closed single-hop
+                                    // pattern, whose repeated endpoint carries no
+                                    // label token and is always inferred). The
+                                    // denorm gate lives in
+                                    // `NodeSchema::carryable_schema_filter` (#1119).
+                                    view_scan.schema_filter = node_schema.carryable_schema_filter();
+                                    view_scan.node_label = Some(label.clone());
 
                                     // Create new GraphNode with ViewScan input and label
                                     let new_node = GraphNode {
@@ -2505,6 +2522,11 @@ impl TypeInference {
                                 vec![],
                             );
                             vs.is_denormalized = node_schema.is_denormalized;
+                            // #1125: carry the schema `filter:` (and label) through
+                            // this rebuild too — same disarm otherwise (denorm gate
+                            // as above; #1119).
+                            vs.schema_filter = node_schema.carryable_schema_filter();
+                            vs.node_label = Some(label.to_string());
 
                             let new_node = GraphNode {
                                 input: Arc::new(LogicalPlan::ViewScan(Arc::new(vs))),
