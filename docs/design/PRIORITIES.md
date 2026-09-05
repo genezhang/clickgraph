@@ -659,7 +659,8 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 - 2026-09-05: **Correctness (ground-rule-1) — unprojected / expression ORDER BY
   keys on the undirected VLP union bound the START role in BOTH arms** (branch
-  `fix/1140-unprojected-order-key-role-map`, PR #1145, closes #1140). #1139
+  `fix/1140-unprojected-order-key-role-map`, PR #1148, closes #1140; review
+  history on the auto-closed #1145). #1139
   fixed only keys resolvable through an OUTPUT ALIAS; a key with no projection
   to chain through (`RETURN a.bank_id ORDER BY a.balance`) or an EXPRESSION key
   (`ORDER BY toUpper(a.bank_id)`) fell to the legacy path and sorted the
@@ -676,6 +677,19 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   (`start == end`) return None. Live (`db_composite_id`): pre-fix the balance
   column comes back scrambled (…15000, 7800.25, 3100.75); post-fix all 32 rows
   ascend monotonically with each balance matching its own account.
+  THREE adversarial review rounds each found a CRITICAL, all one class (see
+  the `fallback-to-a-proven-wrong-spelling` lesson): (1) prefix flipped but
+  column not re-resolved -> binds the other endpoint's value; (2) re-resolving
+  via a SCHEMA-WIDE scan let an unrelated denormalized label rewrite an
+  unrelated (even non-denorm) query, plus HashMap-iteration nondeterminism;
+  (3) the correct per-arm `CteColumnMetadata` lookup STILL fell back to (1)'s
+  spelling on its None branch — reachable through any EXPRESSION key because
+  the pruner only projects the opposite-role column for BARE keys — emitting a
+  Code 47 that main does NOT have. Final: resolve through the arm's own
+  metadata and ABSTAIN when the lookup misses (reproducing main byte-for-byte).
+  EXPOSED #1143 (aggregate/GROUP BY, same class, loud) + #1146
+  (other-endpoint key never projected); #1147 filed then CLOSED as my own
+  false report (the repro queried an undeclared property).
 
 - 2026-09-05: **Correctness — denormalized undirected-VLP ORDER BY bound the
   LOGICAL property name (`t.start_city`) instead of the projected PHYSICAL,
