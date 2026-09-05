@@ -2868,12 +2868,6 @@ fn vlp_denorm_role_column(alias: &str, prop_name: &str, role_is_from: bool) -> O
         get_current_schema, get_multi_type_vlp_aliases, get_node_label_for_alias,
     };
 
-    // The multi-type union CTE (`vlp_multi_type_*`, built by a DIFFERENT
-    // generator in `cte_extraction.rs`) names its property columns after the
-    // CYPHER property (`start_ip`), not the physical column the recursive VLP
-    // CTE uses. Its spellings are already correct and role-resolved per arm;
-    // rewriting them here would dangle. Only the recursive/undirected VLP CTE
-    // needs this resolution.
     // The multi-type union CTE (`vlp_multi_type_*`) is built by a DIFFERENT
     // generator (`cte_extraction.rs`) that names its property columns after
     // the CYPHER property (`start_ip`), not after the physical column the
@@ -3595,12 +3589,48 @@ fn swap_vlp_role_prefixes(expr: &RenderExpr) -> RenderExpr {
     let start_pfx = format!("{vlp_alias}.start_");
     let end_pfx = format!("{vlp_alias}.end_");
 
+    // #1141 review (CRITICAL): flipping only the ROLE PREFIX is not enough on a
+    // DENORMALIZED schema whose from/to maps disagree on the physical column.
+    // `start_origin_state` -> `end_origin_state` keeps the FROM-role column
+    // under the `end_` prefix, which either dangles or — worse, once #1141
+    // makes such names resolvable — binds a column that exists but holds the
+    // OTHER endpoint's value (silently mis-sorted rows). The role's own column
+    // must be re-resolved: `start_origin_state` -> `end_dest_state`.
+    let reresolve_denorm = |rest: &str, to_from_role: bool| -> String {
+        // `rest` is the physical column of the ORIGINAL role. Find the Cypher
+        // property it maps to on that side, then take the OTHER side's column.
+        let Some(schema) = crate::server::query_context::get_current_schema() else {
+            return rest.to_string();
+        };
+        for node_schema in schema.all_node_schemas().values() {
+            if node_schema.role_dependent_property_names().is_empty() {
+                continue;
+            }
+            // The original role is the opposite of the one we are moving TO.
+            let (from_map, to_map) = (
+                node_schema.denorm_role_properties(!to_from_role),
+                node_schema.denorm_role_properties(to_from_role),
+            );
+            let (Some(from_map), Some(to_map)) = (from_map, to_map) else {
+                continue;
+            };
+            if let Some((prop, _)) = from_map.iter().find(|(_, col)| col.as_str() == rest) {
+                if let Some(target) = to_map.get(prop) {
+                    return target.clone();
+                }
+            }
+        }
+        rest.to_string()
+    };
+
     let flip = |col: &str| -> Option<String> {
         if let Some(rest) = col.strip_prefix(&start_pfx) {
-            Some(format!("{end_pfx}{rest}"))
+            // start -> end: the end role is the TO side (`to_from_role = false`).
+            Some(format!("{end_pfx}{}", reresolve_denorm(rest, false)))
         } else {
             col.strip_prefix(&end_pfx)
-                .map(|rest| format!("{start_pfx}{rest}"))
+                // end -> start: the start role is the FROM side.
+                .map(|rest| format!("{start_pfx}{}", reresolve_denorm(rest, true)))
         }
     };
 

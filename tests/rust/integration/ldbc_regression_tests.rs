@@ -2695,13 +2695,53 @@ async fn ldbc_1141_multi_type_union_cte_keeps_cypher_spelling() {
          WHERE ip.ip = '192.168.1.10' RETURN target LIMIT 20",
     )
     .await;
-    if sql.contains("vlp_multi_type_") {
-        assert!(
-            !sql.contains("start_id.orig_h"),
-            "#1141: the multi-type union CTE must keep its Cypher-name \
-             spelling (`start_ip`):\n{sql}"
-        );
-    }
+    // Assert the PRECONDITION rather than branching on it: if planning ever
+    // stops routing this shape through the multi-type generator, this test
+    // must fail loudly rather than silently pass while testing nothing.
+    assert!(
+        sql.contains("vlp_multi_type_"),
+        "#1141: precondition — this shape must render through the multi-type \
+         union generator:\n{sql}"
+    );
+    assert!(
+        !sql.contains("start_id.orig_h"),
+        "#1141: the multi-type union CTE must keep its Cypher-name \
+         spelling (`start_ip`):\n{sql}"
+    );
+}
+
+/// #1141 review (CRITICAL): an UNPROJECTED role-ambiguous key. There is no
+/// select item to chain through (#1139) so it falls to #1140's role swap —
+/// which must re-resolve the DENORM COLUMN for the new role, not merely flip
+/// the `start_`/`end_` prefix. Flipping alone yields `end_OriginState`: the
+/// end role paired with the FROM-role column, which once #1141 makes such
+/// names resolvable would bind a column holding the OTHER endpoint's value
+/// (silently mis-sorted rows — a loud->silent regression).
+#[tokio::test]
+async fn ldbc_1141_unprojected_role_ambiguous_key_reresolves_column() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o.city ORDER BY o.state",
+    )
+    .await;
+    assert_eq!(
+        sql.matches("t.start_OriginState AS \"__order_col_0\"")
+            .count(),
+        1,
+        "#1141: forward arm keeps its from-role column:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("t.end_DestState AS \"__order_col_0\"").count(),
+        1,
+        "#1141: the reversed arm must order by the TO-role column \
+         (`end_DestState`), not the from-role column under an `end_` prefix:\n{sql}"
+    );
+    assert!(
+        !sql.contains("end_OriginState") && !sql.contains("start_DestState"),
+        "#1141: no arm may pair a role prefix with the OTHER role's \
+         column:\n{sql}"
+    );
 }
 
 // --- #1135: `*0..0` is the zero-hop identity, not a 1-hop chain --------------
