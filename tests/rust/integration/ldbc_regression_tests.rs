@@ -2744,6 +2744,75 @@ async fn ldbc_1141_unprojected_role_ambiguous_key_reresolves_column() {
     );
 }
 
+/// #1141/#1140 re-review (CRITICAL): the role swap must be bound to the ARM's
+/// OWN projected columns. Resolving it through a schema-wide scan let ANY
+/// denormalized label in the catalog rewrite an unrelated — here entirely
+/// NON-denormalized — VLP's ORDER BY key into a real column holding the other
+/// endpoint's value (loud -> silently mis-sorted; ground rule 1).
+///
+/// The fixture is the plain composite `Account` graph plus one unrelated
+/// denormalized `Leg` label on a different table AND database.
+#[tokio::test]
+async fn ldbc_1141_unrelated_denorm_label_must_not_rewrite_key() {
+    let schema = load_schema_from("schemas/test/denorm_decoy_unrelated_label.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Account)-[:TRANSFERRED*1..2]-(b:Account) \
+         RETURN a.bank_id ORDER BY a.account_type",
+    )
+    .await;
+    // Scoped to the ORDER BY KEY: `holder_name` legitimately appears as a
+    // projected CTE column (the schema declares it); what must never happen is
+    // the unrelated label's column becoming this query's sort key.
+    assert!(
+        !sql.contains("holder_name AS \"__order_col_"),
+        "#1141 re-review: an unrelated denormalized label must not reach \
+         across into this query's ORDER BY key:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("t.start_account_type AS \"__order_col_0\"")
+            .count(),
+        1,
+        "#1141 re-review: forward arm:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("t.end_account_type AS \"__order_col_0\"")
+            .count(),
+        1,
+        "#1141 re-review: the reversed arm flips only the ROLE — this node has \
+         no role-specific maps, so the column name is unchanged:\n{sql}"
+    );
+}
+
+/// #1141/#1140 re-review (HIGH): SQL generation must be deterministic. The
+/// previous resolution iterated a `HashMap`, so when two Cypher properties
+/// share a from-side physical column but differ on the to-side, the answer
+/// varied run to run (observed 6/6 split over 12 runs). Reading the arm's
+/// ordered `CteColumnMetadata` makes it a lookup, not a guess.
+#[tokio::test]
+async fn ldbc_1141_role_swap_resolution_is_deterministic() {
+    let schema = load_schema_from("schemas/test/denorm_shared_from_column.yaml");
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..8 {
+        let sql = generate_sql_inline(
+            &schema,
+            "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o.state ORDER BY o.city",
+        )
+        .await;
+        let key = sql
+            .split_whitespace()
+            .find(|w| w.starts_with("t.end_"))
+            .unwrap_or("<none>")
+            .to_string();
+        seen.insert(key);
+    }
+    assert_eq!(
+        seen.len(),
+        1,
+        "#1141 re-review: role-swap resolution must be deterministic, saw {seen:?}"
+    );
+}
+
 // --- #1135: `*0..0` is the zero-hop identity, not a 1-hop chain --------------
 //
 // `exact_hop_count()` returned `Some(0)` and every consumer treats `Some(n)`
