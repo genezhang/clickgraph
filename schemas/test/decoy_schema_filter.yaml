@@ -1,0 +1,35 @@
+# #1122 fixture: a declared cypher property NAMED after a different physical
+# column that the schema `filter:` references.
+#
+#   filter: "kind = 'A'"      -- physical column `kind`
+#   property_mappings:
+#     kind: decoy             -- cypher `kind` -> physical column `decoy`
+#
+# Pre-#1122, the end-filter textual rewrite matched the CYPHER-ALIAS spelling
+# too, so the wrapper predicate bound to `end_kind` — a projected column holding
+# `decoy`'s value: valid SQL, WRONG ROWS, no error (returned pk 3 where the
+# answer is pk 2; counts agreed by coincidence). Post-#1122 the collision is
+# projected under a mangled `__sf_`-prefixed alias bound to the REAL column.
+name: decoy_schema_filter_test
+version: "1.0"
+description: "#1122: schema-filter column colliding with a differently-mapped declared property"
+
+graph_schema:
+  nodes:
+    - label: P
+      database: d1122
+      table: p
+      node_id: pk
+      filter: "kind = 'A'"
+      property_mappings:
+        pk: pk
+        kind: decoy
+  edges:
+    - type: L
+      database: d1122
+      table: l
+      from_node: P
+      to_node: P
+      from_id: f
+      to_id: t
+      property_mappings: {}

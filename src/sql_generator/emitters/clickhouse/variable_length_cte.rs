@@ -1699,18 +1699,24 @@ impl<'a> VariableLengthCteGenerator<'a> {
             VLP_END_ID_COLUMN,
         );
 
-        // Replace end_node.{property} with end_{property} for each property
-        // Try both ClickHouse column name and Cypher alias since filters can use either
+        // Replace end_node.{column} with end_{alias} for each projected property.
+        //
+        // #1122: ONLY the physical-column spelling is matched. Filters reaching
+        // this point are already property-mapped (a user WHERE `b.name` arrives
+        // as `end_node.full_name`; a schema `filter:` is written in physical
+        // columns), so the historical second pass that ALSO matched the
+        // cypher-alias spelling (`end_node.<alias>`) had no covered use — and it
+        // was the mis-bind vector: with `kind: decoy` declared and a schema
+        // filter on the UNDECLARED physical column `kind`, it rewrote
+        // `end_node.kind` to `end_kind`, a projected column holding `decoy`'s
+        // value — valid SQL, wrong rows, no error (review of #1121). Any
+        // uncovered reliance on the alias spelling now fails LOUD (unknown
+        // identifier), never silently against the wrong column.
         for prop in &self.properties {
             if prop.cypher_alias == self.end_cypher_alias {
-                // Try ClickHouse column name (e.g., end_node.full_name → end_name)
                 let pattern_col = format!("{}.{}", self.end_node_alias, prop.column_name);
                 let replacement = format!("end_{}", prop.alias);
                 rewritten = rewritten.replace(&pattern_col, &replacement);
-
-                // Also try Cypher alias (e.g., end_node.name → end_name)
-                let pattern_alias = format!("{}.{}", self.end_node_alias, prop.alias);
-                rewritten = rewritten.replace(&pattern_alias, &replacement);
             }
         }
 
