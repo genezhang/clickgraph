@@ -1692,6 +1692,13 @@ impl VariableLengthCteStrategy {
             generator.set_weight_cte(weight_config.clone());
         }
 
+        // #1103: a WHERE predicate naming BOTH endpoints. Set post-construction
+        // (like `needs_path_relationships` below) rather than widening the
+        // already-25-argument constructors. Honored by every family that reaches
+        // this generator; the fully-denormalized pattern returned earlier via
+        // `DenormalizedCteStrategy` and never gets here.
+        generator.both_endpoint_filters = filters.both_endpoint_sql.clone();
+
         // Skip path_relationships growth when relationships(path) isn't used
         generator.needs_path_relationships = context.needs_path_relationships;
         // Lightweight BFS mode for shortestPath + length(path)-only queries
@@ -1833,9 +1840,11 @@ mod tests {
             end_node_filters: None,
             relationship_filters: None,
             path_function_filters: None,
+            both_endpoint_filters: None,
             start_sql: None,
             end_sql: None,
             relationship_sql: None,
+            both_endpoint_sql: None,
         }
     }
 
@@ -2145,9 +2154,11 @@ mod tests {
             end_node_filters: None,
             relationship_filters: None,
             path_function_filters: None,
+            both_endpoint_filters: None,
             start_sql: None,
             end_sql: None,
             relationship_sql: None,
+            both_endpoint_sql: None,
         };
 
         // Generate SQL

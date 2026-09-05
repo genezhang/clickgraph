@@ -822,14 +822,25 @@ async fn ldbc_1100_bare_node_identity_in_vlp_filter() {
          RETURN friend.id LIMIT 5",
     )
     .await;
+    // #1100's invariant is that the bare aliases normalize to the endpoints'
+    // REAL node_id columns. #1103 then moved the placement: a both-endpoint
+    // predicate is applied on the post-recursion wrapper, where those columns
+    // are the CTE's own `start_id`/`end_id` projections of the same node_ids.
     assert!(
-        sql.contains("end_node.id = start_node.id") || sql.contains("start_node.id = end_node.id"),
-        "#1100: bare-node identity `friend <> root` must normalize to the VLP \
-         endpoint node_id columns:\n{sql}"
+        sql.contains("end_id = start_id") || sql.contains("start_id = end_id"),
+        "#1100/#1103: bare-node identity `friend <> root` must normalize to the \
+         VLP endpoint node_id columns, applied on the wrapper:\n{sql}"
     );
     assert!(
         !sql.contains("friend != root") && !sql.contains("friend = root"),
         "#1100: bare alias names must NOT survive into the VLP CTE body:\n{sql}"
+    );
+    // #1103: it must NOT be applied in the base case — that both prunes valid
+    // paths through a failing intermediate and leaks self-paths past hop 1.
+    assert!(
+        !sql.contains("end_node.id = start_node.id")
+            && !sql.contains("start_node.id = end_node.id"),
+        "#1103: a both-endpoint predicate must not be applied in the base case:\n{sql}"
     );
 }
 
@@ -846,9 +857,10 @@ async fn ldbc_1100_bare_node_identity_nested_in_and() {
          RETURN friend.id LIMIT 5",
     )
     .await;
+    // #1103: normalized to the endpoints' node_ids, applied on the wrapper.
     assert!(
-        sql.contains("end_node.id = start_node.id") || sql.contains("start_node.id = end_node.id"),
-        "#1100: `=` node identity nested in AND must normalize:\n{sql}"
+        sql.contains("end_id = start_id") || sql.contains("start_id = end_id"),
+        "#1100/#1103: `=` node identity nested in AND must normalize:\n{sql}"
     );
     // The sibling property filter must survive (applied on the endpoint).
     assert!(
@@ -879,10 +891,13 @@ async fn ldbc_1100_bare_node_identity_renamed_node_id() {
          RETURN friend.user_id LIMIT 5",
     )
     .await;
+    // #1103: the wrapper projects the renamed node_id as `start_id`/`end_id`;
+    // what #1100 guards is that a REAL id column (not a hardcoded `.id`) was
+    // resolved — verified here by the absence of any `.id` reference.
     assert!(
-        sql.contains("end_node.user_id = start_node.user_id")
-            || sql.contains("start_node.user_id = end_node.user_id"),
-        "#1100: renamed node_id must compare `user_id`, not `.id`:\n{sql}"
+        sql.contains("end_id = start_id") || sql.contains("start_id = end_id"),
+        "#1100/#1103: renamed node_id identity must normalize to the endpoint \
+         id columns on the wrapper:\n{sql}"
     );
     assert!(
         !sql.contains("node.id = ") && !sql.contains(".id !="),
@@ -916,5 +931,128 @@ async fn ldbc_1100_bare_node_identity_composite_node_id() {
     assert!(
         !sql.contains(".id = ") && !sql.contains(".id !="),
         "#1100: must NOT collapse a composite node_id to `.id`:\n{sql}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #1103 — both-endpoint WHERE predicate on a VLP
+//
+// A predicate naming BOTH VLP endpoints (`friend <> root`, or its property
+// form) constrains the (start, FINAL endpoint) pair of a whole path. Before
+// #1103 `categorize_filters` routed it to `start_filters`, which the VLP CTE
+// applies in the BASE CASE only. That was wrong in both directions:
+//
+//   * dropped rows — the base case's `end_node` is the hop-1 node, an
+//     INTERMEDIATE node of any longer path. Filtering there deletes valid paths
+//     whose final endpoint satisfies the predicate (verified live on LDBC SF1:
+//     `*1..2` returned 3728 rows where the hand-computed oracle is 3942).
+//   * leaked rows — nothing re-applied it after hop 1, so at `*1..N` (N>=3) on a
+//     cyclic graph, paths returning to the start survived (52 self-paths).
+//
+// The fix routes it to its own `both_endpoint_filters` category, applied on the
+// post-recursion wrapper. Cypher uses TRAIL semantics (relationships cannot
+// repeat, NODES MAY), so it must NOT be applied per-hop on the recursive arm:
+// a path may legally revisit the start node and end elsewhere.
+// ---------------------------------------------------------------------------
+
+/// #1103: the bare-node form must be applied on the WRAPPER, not the base case.
+#[tokio::test]
+async fn ldbc_1103_both_endpoint_filter_applied_in_wrapper() {
+    let schema = load_ldbc_schema();
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (root:Person {id: 14})-[:KNOWS*1..3]-(friend:Person)
+         WHERE friend <> root
+         RETURN friend.id",
+    )
+    .await;
+    assert!(
+        sql.contains("_inner WHERE (NOT (end_id = start_id))")
+            || sql.contains("_inner WHERE (NOT (start_id = end_id))"),
+        "#1103: both-endpoint identity must be applied on the post-recursion \
+         wrapper against the CTE's own start_id/end_id:\n{sql}"
+    );
+    assert!(
+        !sql.contains("end_node.id = start_node.id")
+            && !sql.contains("start_node.id = end_node.id"),
+        "#1103: must NOT be applied in the base case (prunes intermediate hops \
+         AND leaks self-paths past hop 1):\n{sql}"
+    );
+}
+
+/// #1103: the PROPERTY form takes the identical path (same categorization
+/// seam), and its properties must be projected so the wrapper can read them.
+#[tokio::test]
+async fn ldbc_1103_both_endpoint_property_form_in_wrapper() {
+    let schema = load_ldbc_schema();
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (root:Person {id: 14})-[:KNOWS*1..3]-(friend:Person)
+         WHERE friend.firstName <> root.firstName
+         RETURN friend.id",
+    )
+    .await;
+    assert!(
+        sql.contains("start_node.firstName as start_firstName"),
+        "#1103: the start-side property must be projected into the CTE so the \
+         wrapper can compare it:\n{sql}"
+    );
+    assert!(
+        sql.contains("_inner WHERE (end_firstName != start_firstName)")
+            || sql.contains("_inner WHERE (start_firstName != end_firstName)"),
+        "#1103: property form must be applied on the wrapper:\n{sql}"
+    );
+    assert!(
+        !sql.contains("end_node.firstName != start_node.firstName"),
+        "#1103: property form must NOT remain in the base case:\n{sql}"
+    );
+}
+
+/// #1103: for shortestPath the predicate must narrow candidates BEFORE the
+/// shortest pick. Applying it after ranking would let ROW_NUMBER select an
+/// excluded path and then discard it, returning no row where a longer
+/// qualifying path exists.
+#[tokio::test]
+async fn ldbc_1103_both_endpoint_filter_precedes_shortest_pick() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH p = shortestPath((a:User)-[:FOLLOWS*1..5]->(b:User))
+         WHERE a.email <> b.email
+         RETURN length(p)",
+    )
+    .await;
+    let to_target = sql
+        .find("_to_target AS (")
+        .unwrap_or_else(|| panic!("#1103: expected a _to_target layer:\n{sql}"));
+    let row_number = sql
+        .find("ROW_NUMBER()")
+        .unwrap_or_else(|| panic!("#1103: expected a ROW_NUMBER pick:\n{sql}"));
+    assert!(
+        to_target < row_number,
+        "#1103: the both-endpoint filter layer must precede the shortest pick:\n{sql}"
+    );
+    assert!(
+        sql.contains("start_email_address != end_email_address")
+            || sql.contains("end_email_address != start_email_address"),
+        "#1103: shortestPath both-endpoint filter must compare CTE columns:\n{sql}"
+    );
+}
+
+/// #1103 SCOPE — a CLOSED pattern `(a)-[*]->(a)` binds ONE variable, so
+/// `refs_start` and `refs_end` are the same test and `a.prop = v` is a plain
+/// start filter. It must keep its pre-#1103 base-case placement.
+#[tokio::test]
+async fn ldbc_1103_closed_pattern_keeps_base_case_placement() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS*1..2]->(a) WHERE a.user_id = 1 RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("WHERE start_node.user_id = 1"),
+        "#1103: a closed pattern's single-variable filter stays in the base \
+         case (it is not a two-endpoint comparison):\n{sql}"
     );
 }

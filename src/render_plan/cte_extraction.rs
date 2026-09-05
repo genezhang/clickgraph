@@ -556,6 +556,9 @@ pub fn generate_vlp_cte_via_manager(
     start_filters_sql: Option<String>,
     end_filters_sql: Option<String>,
     rel_filters_sql: Option<String>,
+    // #1103: pre-rendered SQL for a predicate naming BOTH VLP endpoints.
+    // Applied on the post-recursion wrapper, never in base/recursive arms.
+    both_endpoint_filters_sql: Option<String>,
     path_variable: Option<String>,
     shortest_path_mode: Option<crate::query_planner::logical_plan::ShortestPathMode>,
     relationship_types: Option<Vec<String>>,
@@ -604,9 +607,11 @@ pub fn generate_vlp_cte_via_manager(
         end_node_filters: None,
         relationship_filters: None,
         path_function_filters: None,
+        both_endpoint_filters: None,
         start_sql: start_filters_sql,
         end_sql: end_filters_sql,
         relationship_sql: rel_filters_sql,
+        both_endpoint_sql: both_endpoint_filters_sql,
     };
 
     // Create CteManager and generate VLP CTE
@@ -3560,6 +3565,15 @@ pub fn extract_ctes_with_context(
                         let mut mapped_end = categorized.end_node_filters.clone();
                         let mut mapped_rel = categorized.relationship_filters.clone();
                         let mut mapped_path = categorized.path_function_filters.clone();
+                        // #1103: a both-endpoint predicate names BOTH aliases, so it
+                        // needs BOTH role mappings applied. `apply_property_mapping_*`
+                        // resolves each PropertyAccess by its own table_alias (via
+                        // `get_node_label_for_alias`), so the two passes touch disjoint
+                        // leaves; the second is a no-op on leaves already rewritten by
+                        // the first (a mapped column arrives as
+                        // `PropertyValue::Column` and re-mapping is idempotent for the
+                        // From/To role that owns it).
+                        let mut mapped_both = categorized.both_endpoint_filters.clone();
 
                         if let Some(ref mut expr) = mapped_start {
                             apply_property_mapping_to_expr_with_context(
@@ -3570,6 +3584,20 @@ pub fn extract_ctes_with_context(
                             );
                         }
                         if let Some(ref mut expr) = mapped_end {
+                            apply_property_mapping_to_expr_with_context(
+                                expr,
+                                &LogicalPlan::GraphRel(graph_rel.clone()),
+                                rel_type,
+                                Some(crate::render_plan::cte_generation::NodeRole::To),
+                            );
+                        }
+                        if let Some(ref mut expr) = mapped_both {
+                            apply_property_mapping_to_expr_with_context(
+                                expr,
+                                &LogicalPlan::GraphRel(graph_rel.clone()),
+                                rel_type,
+                                Some(crate::render_plan::cte_generation::NodeRole::From),
+                            );
                             apply_property_mapping_to_expr_with_context(
                                 expr,
                                 &LogicalPlan::GraphRel(graph_rel.clone()),
@@ -3671,6 +3699,37 @@ pub fn extract_ctes_with_context(
                                 render_expr_to_sql_string(expr, &alias_mapping)
                             }
                         });
+                        // #1103: a both-endpoint predicate names both node aliases, so
+                        // it always uses the NODE alias mapping (start→start_node,
+                        // end→end_node) — never the rel mapping, which would collapse
+                        // both sides onto one alias and destroy the comparison.
+                        let both_endpoint_sql = mapped_both
+                            .as_ref()
+                            .map(|expr| render_expr_to_sql_string(expr, &alias_mapping));
+
+                        // #1103 SCOPE: the fully-denormalized pattern is intercepted
+                        // upstream by `DenormalizedCteStrategy`, which has no wrapper
+                        // path for a both-endpoint predicate — its CTE columns are
+                        // role-prefixed physical names (`start_Origin`/`end_Dest`), so
+                        // the rewrite needs from/to-column role resolution the standard
+                        // rewrite does not do. Rather than drop the predicate (silently
+                        // wrong) or half-rewrite it (Code 47), route it back into the
+                        // start slot — byte-identical to the pre-#1103 behavior for this
+                        // family. The denormalized half of #1103 is tracked separately.
+                        let is_fully_denormalized = matches!(
+                            pattern_ctx_for_mapping.as_ref().map(|c| &c.join_strategy),
+                            Some(JoinStrategy::SingleTableScan { .. })
+                        );
+                        let (both_endpoint_sql, start_sql) = if is_fully_denormalized {
+                            let folded = match (start_sql, both_endpoint_sql) {
+                                (Some(st), Some(be)) => Some(format!("{} AND {}", st, be)),
+                                (Some(st), None) => Some(st),
+                                (None, be) => be,
+                            };
+                            (None, folded)
+                        } else {
+                            (both_endpoint_sql, start_sql)
+                        };
                         // ✅ Relationship filters always use rel_alias_mapping
                         let rel_sql_rendered = mapped_rel
                             .as_ref()
@@ -3684,9 +3743,11 @@ pub fn extract_ctes_with_context(
                             end_node_filters: mapped_end,
                             relationship_filters: mapped_rel,
                             path_function_filters: mapped_path,
+                            both_endpoint_filters: mapped_both,
                             start_sql: start_sql.clone(),
                             end_sql: end_sql.clone(),
                             relationship_sql: rel_sql_rendered.clone(),
+                            both_endpoint_sql: both_endpoint_sql.clone(),
                         };
 
                         // Note: End node filters are placed INSIDE the CTE (via end_sql above).
@@ -3884,7 +3945,7 @@ pub fn extract_ctes_with_context(
 
                     let mut props = Vec::new();
 
-                    if let Some(categorized) = categorized_filters_opt {
+                    if let Some(ref categorized) = categorized_filters_opt {
                         // Extract from start filters
                         if let Some(ref filter_expr) = categorized.start_node_filters {
                             let start_props = extract_properties_from_filter(
@@ -3900,6 +3961,26 @@ pub fn extract_ctes_with_context(
                             let end_props =
                                 extract_properties_from_filter(filter_expr, &end_alias, &end_label);
                             props.extend(end_props);
+                        }
+
+                        // #1103: a both-endpoint predicate names BOTH aliases, so
+                        // extract for each. Its properties must be projected into the
+                        // CTE — the wrapper reads them as `start_*`/`end_*`. This also
+                        // preserves the pre-#1103 LOUD failure for a property that does
+                        // not exist on a denormalized node: extraction produces the
+                        // NodeProperty whose `map_denormalized_property` lookup rejects
+                        // it, rather than silently rendering an unresolvable column.
+                        if let Some(ref filter_expr) = categorized.both_endpoint_filters {
+                            props.extend(extract_properties_from_filter(
+                                filter_expr,
+                                &start_alias,
+                                &start_label,
+                            ));
+                            props.extend(extract_properties_from_filter(
+                                filter_expr,
+                                &end_alias,
+                                &end_label,
+                            ));
                         }
                     }
 
@@ -4618,6 +4699,24 @@ pub fn extract_ctes_with_context(
                         //    from WITH clause output). These belong in the outer query.
                         // 2. Filters involving both start and end aliases (OR) are kept in
                         //    start_filters with end_node. alias replacement done per branch.
+                        // #1103 SCOPE: multi-type VLP expands to FLAT per-branch JOIN
+                        // chains (one branch per concrete hop-count/type combination) —
+                        // there is no recursive CTE and no "intermediate hop" to
+                        // mis-prune, so each branch's WHERE already sees that branch's
+                        // TRUE endpoint pair. Base placement is correct here; fold the
+                        // both-endpoint predicate back into the start slot so this
+                        // family's output is byte-identical to pre-#1103. (The per-branch
+                        // `end_node.` alias substitution below is exactly what makes it
+                        // work.)
+                        let mt_both_endpoint: Option<String> = categorized_filters_opt
+                            .as_ref()
+                            .and_then(|c| c.both_endpoint_sql.clone());
+                        let start_filters_sql: Option<String> =
+                            match (start_filters_sql.clone(), mt_both_endpoint) {
+                                (Some(st), Some(be)) => Some(format!("{} AND {}", st, be)),
+                                (Some(st), None) => Some(st),
+                                (None, be) => be,
+                            };
                         let mt_start_filters = start_filters_sql.as_ref().map(|f| {
                             // Strip outer wrapping parens to get clean predicates
                             let inner = f.trim();
@@ -4871,6 +4970,14 @@ pub fn extract_ctes_with_context(
                         (None, Some(schema)) => Some(schema.clone()),
                         (None, None) => None,
                     };
+
+                    // #1103: both-endpoint predicate, pre-rendered against the node
+                    // alias mapping during categorization. No schema-filter combining
+                    // applies (schema filters are per-node, already folded into the
+                    // start/end slots above).
+                    let both_endpoint_filters_sql = categorized_filters_opt
+                        .as_ref()
+                        .and_then(|c| c.both_endpoint_sql.clone());
 
                     if start_schema_filter.is_some() || end_schema_filter.is_some() {
                         log::info!(
@@ -5201,6 +5308,7 @@ pub fn extract_ctes_with_context(
                         combined_start_filters,
                         combined_end_filters,
                         rel_filters_sql,
+                        both_endpoint_filters_sql,
                         graph_rel.path_variable.clone(),
                         graph_rel.shortest_path_mode.clone(),
                         graph_rel.labels.clone(),

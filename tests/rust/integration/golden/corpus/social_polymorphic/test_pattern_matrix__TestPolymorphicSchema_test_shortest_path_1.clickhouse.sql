@@ -8,7 +8,7 @@ WITH RECURSIVE vlp_a_b_inner AS (
     FROM brahmand.users_bench AS start_node
     JOIN brahmand.interactions AS rel ON start_node.user_id = rel.from_id
     JOIN brahmand.users_bench AS end_node ON rel.to_id = end_node.user_id
-    WHERE rel.interaction_type = 'AUTHORED' AND rel.from_type = 'User' AND rel.to_type = 'User' AND start_node.user_id != end_node.user_id
+    WHERE rel.interaction_type = 'AUTHORED' AND rel.from_type = 'User' AND rel.to_type = 'User'
     UNION ALL
     SELECT
         vp.start_id,
@@ -23,10 +23,13 @@ WITH RECURSIVE vlp_a_b_inner AS (
       AND NOT has(vp.path_nodes, end_node.user_id)
       AND rel.interaction_type = 'AUTHORED' AND rel.from_type = 'User' AND rel.to_type = 'User'
 ),
+vlp_a_b_to_target AS (
+    SELECT * FROM vlp_a_b_inner WHERE start_id != end_id
+),
 vlp_a_b AS (
     SELECT * FROM (
         SELECT *, ROW_NUMBER() OVER (PARTITION BY end_id ORDER BY hop_count ASC) as rn
-        FROM vlp_a_b_inner
+        FROM vlp_a_b_to_target
     ) WHERE rn = 1
 )
 SELECT 
