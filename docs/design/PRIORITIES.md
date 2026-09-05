@@ -657,6 +657,29 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-09-05: **Correctness — denormalized undirected-VLP AGGREGATE bound the
+  reversed arm to the FROM-role column** (branch
+  `fix/1143-denorm-aggregate-arm-select`, PR #1150, closes #1143). The
+  aggregation-union path computes ONE shared inner SELECT from the outer plan
+  and text-substitutes `t.start_` <-> `t.end_` (`swap_vlp_start_end`) for a
+  role-swapped branch — keeping the first arm's PHYSICAL column under the
+  flipped prefix (`t.end_origin_city`, projected by no arm, Code 47). It
+  survived because on every OTHER schema pattern both roles map to the same
+  physical column, so the bare prefix flip is accidentally correct. The
+  reversed branch already carried the right answer in its own `select`
+  (resolved per-arm upstream); the emitter now uses it — the same
+  `build_branch_inner_select_with_own_items` path the non-VLP branches already
+  take. Gated on the branch carrying a NON-AGGREGATE item: an
+  aggregate-args-only shape contributes a different helper-column count per arm
+  and would turn the loud Code 47 into an equally loud Code 53, so it stays on
+  the legacy path (pinned by a boundary test). Live: 4 shapes Code47 -> correct,
+  counts EQUAL the independent ungrouped oracle. Ratchet caught the first draft
+  (a COMMENT naming the raw YAML keys bumped the token count with no new
+  branching) — reworded, no baseline bump. EXPOSED **#1149 OPEN** (the sibling
+  WITH-barrier aggregation path has no swap branch at all and emits the
+  UNMAPPED Cypher name `t.start_city` on BOTH arms; loud, byte-identical on
+  main).
+
 - 2026-09-05: **Correctness (ground-rule-1) — unprojected / expression ORDER BY
   keys on the undirected VLP union bound the START role in BOTH arms** (branch
   `fix/1140-unprojected-order-key-role-map`, PR #1148, closes #1140; review

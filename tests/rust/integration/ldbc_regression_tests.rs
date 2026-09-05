@@ -2884,6 +2884,197 @@ async fn ldbc_1141_shared_from_column_resolves_the_keys_own_property() {
     );
 }
 
+// --- #1143: denorm undirected VLP aggregate binds the reversed arm's column --
+//
+// The aggregate/GROUP BY union path text-substituted `t.start_` <-> `t.end_`
+// on a copy of the FIRST arm's rendered SELECT (`swap_vlp_start_end`), which
+// keeps the first arm's PHYSICAL column under the flipped prefix. On a
+// denormalized schema whose per-role property maps disagree that produced
+// `t.end_OriginCityName` — a column no arm projects (Code 47). It survived
+// because on every other schema pattern both roles map to the SAME physical
+// column, so the bare prefix flip is accidentally correct.
+//
+// The reversed branch already carried the right answer in its own `select`
+// (resolved per-arm upstream); the emitter now uses it, as the non-VLP
+// branches already did.
+
+/// #1143: the reversed arm projects ITS role's column, not the forward arm's
+/// column under an `end_` prefix.
+#[tokio::test]
+async fn ldbc_1143_denorm_aggregate_uses_the_arms_own_column() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o.city, count(*)",
+    )
+    .await;
+    assert!(
+        !sql.contains("end_OriginCityName"),
+        "#1143: must not pair the `end_` role with the FROM-role column — no \
+         arm projects it:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("t.end_DestCityName AS \"o.city\"").count(),
+        1,
+        "#1143: the reversed arm projects its own to-role column:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("t.start_OriginCityName AS \"o.city\"").count(),
+        1,
+        "#1143: the forward arm is unchanged:\n{sql}"
+    );
+}
+
+/// #1143: both endpoints grouped — each arm resolves each key to its own role.
+#[tokio::test]
+async fn ldbc_1143_denorm_aggregate_two_keys_role_map_per_arm() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o.city, d.city, count(*)",
+    )
+    .await;
+    assert!(
+        !sql.contains("end_OriginCityName") && !sql.contains("start_DestCityName"),
+        "#1143: no arm may pair a role prefix with the OTHER role's \
+         column:\n{sql}"
+    );
+}
+
+/// #1143 review (CRITICAL): an AGGREGATE-ARGUMENT column needs the same
+/// per-arm role resolution as a GROUP BY key.
+///
+/// `build_union_inner_select` exports aggregate args through the same inner
+/// SELECT slot the grouping keys use, but the #844 override machinery
+/// originally resolved only `group_by_exprs`. The old text substitution
+/// covered both for free (it rewrote the whole rendered string), so routing a
+/// swapped arm through the per-arm path without extending the resolution left
+/// `count(DISTINCT b.x)` reading arm 0's endpoint on the reversed arm — the
+/// right row COUNT with wrong VALUES, and a REGRESSION on composite where main
+/// was correct.
+///
+/// Asserts the helper column, which is where the defect lives: my first cut's
+/// tests only checked the grouping-key projection and passed with the bug.
+#[tokio::test]
+async fn ldbc_1143_aggregate_argument_column_role_swaps_per_arm() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) \
+         RETURN o.city, count(DISTINCT d.city)",
+    )
+    .await;
+    // The aggregate's argument is `d.city`: to-role in the forward arm,
+    // from-role in the reversed one. UNION ALL binds by POSITION and the outer
+    // aggregate reads one alias, so the helper keeps the SAME output alias in
+    // both arms while its EXPRESSION must differ per arm.
+    assert_eq!(
+        sql.matches("t.end_DestCityName AS \"t.end_DestCityName\"")
+            .count(),
+        1,
+        "#1143: forward arm exports the aggregate arg at its own role:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("t.start_OriginCityName AS \"t.end_DestCityName\"")
+            .count(),
+        1,
+        "#1143: under the SHARED alias the reversed arm must bind ITS role's \
+         column — repeating the forward arm's expression here is the \
+         silent-wrong defect (right row count, wrong values):\n{sql}"
+    );
+}
+
+/// #1143 review: the NON-denormalized composite schema also renders the
+/// two-arm undirected split (unlike standard/polymorphic, which use a single
+/// `undir_edges_` CTE), so it exercises this path too — and main was CORRECT
+/// there. Pins that the aggregate argument still role-swaps.
+#[tokio::test]
+async fn ldbc_1143_composite_aggregate_argument_still_role_swaps() {
+    let schema = load_schema_from("schemas/test/composite_node_ids.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Account)-[:TRANSFERRED*1..2]-(b:Account) \
+         RETURN a.account_number, count(DISTINCT b.account_number)",
+    )
+    .await;
+    assert_eq!(
+        sql.matches("t.end_account_number AS \"t.end_account_number\"")
+            .count(),
+        1,
+        "#1143: forward arm:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("t.start_account_number AS \"t.end_account_number\"")
+            .count(),
+        1,
+        "#1143: under the shared alias the reversed arm must bind the \
+         start-role column — main did this correctly via the text swap, so \
+         losing it is a REGRESSION:\n{sql}"
+    );
+}
+
+/// #1143 review round 2: UNION ALL requires every arm to project the same
+/// NUMBER of columns. A role-swapped arm's own select carries its own
+/// aggregate (whose argument resolves to THIS arm's role column), and
+/// `agg_arg_cols` is derived from whatever the merged list holds — so merging
+/// it alongside the outer aggregate exported BOTH arms' argument columns from
+/// one arm: 3 against the other's 2, ClickHouse Code 53. Main emitted Code 47
+/// for this shape, so that would be trading one loud error for another.
+///
+/// The branch's aggregate is dropped (its per-arm role is carried by
+/// `key_branch_overrides`, which rewrites the EXPRESSION under the outer
+/// argument's alias), and the trim is scoped to swapped VLP arms so the
+/// long-standing coupled / denorm from-to callers keep contributing their own
+/// items verbatim.
+#[tokio::test]
+async fn ldbc_1143_swapped_arm_matches_the_outer_column_contract() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) \
+         RETURN o.city, count(DISTINCT o.state)",
+    )
+    .await;
+    // Both arms of the inner union must project the same number of columns.
+    let inner = sql
+        .split("FROM (")
+        .nth(1)
+        .expect("inner union present")
+        .split(") AS __union")
+        .next()
+        .expect("inner union closed");
+    let widths: Vec<usize> = inner
+        .split("UNION ALL")
+        .map(|arm| arm.matches(" AS \"").count())
+        .collect();
+    assert!(
+        widths.len() >= 2 && widths.iter().all(|w| *w == widths[0]),
+        "#1143: every arm must project the same column count, saw {widths:?}:\n{sql}"
+    );
+}
+
+/// #1143 boundary: an AGGREGATE-ARGS-ONLY shape has no non-aggregate item to
+/// carry, and its arms contribute different helper-column counts — routing it
+/// through the per-arm select would turn the existing loud Code 47 into an
+/// equally loud Code 53. It deliberately stays on the old path (still broken,
+/// tracked on #1143) rather than swapping one error for another.
+#[tokio::test]
+async fn ldbc_1143_aggregate_args_only_shape_stays_on_the_legacy_path() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) \
+         RETURN count(*), count(DISTINCT o.city)",
+    )
+    .await;
+    // Unchanged from main: the prefix-flipped spelling, still loud at execution.
+    assert!(
+        sql.contains("end_OriginCityName"),
+        "#1143 boundary: this shape is intentionally NOT rerouted; if it now \
+         resolves, re-scope the gate and update this test:\n{sql}"
+    );
+}
+
 // --- #1135: `*0..0` is the zero-hop identity, not a 1-hop chain --------------
 //
 // `exact_hop_count()` returned `Some(0)` and every consumer treats `Some(n)`

@@ -4156,6 +4156,48 @@ fn render_expr_contains_aggregate(expr: &RenderExpr) -> bool {
 
 /// Recursively collect property-access SQL from aggregate function arguments,
 /// including aggregates nested inside Case, ScalarFnCall, etc.
+/// #1143 review: the aggregate-ARGUMENT expressions of `expr`, as expression
+/// nodes rather than rendered SQL.
+///
+/// `collect_nested_aggregate_args` yields SQL strings, which is what
+/// `build_union_inner_select` needs to name the exported columns. The per-arm
+/// role resolution in `build_branch_inner_select_with_own_items` instead needs
+/// real nodes, because it walks the outer and branch trees in structural
+/// correspondence. Same traversal shape as its sibling — kept beside it so the
+/// two stay in step when a new wrapper variant is added.
+fn collect_aggregate_arg_exprs(expr: &RenderExpr, out: &mut Vec<RenderExpr>) {
+    match expr {
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in &agg.args {
+                out.push(arg.clone());
+            }
+        }
+        RenderExpr::ScalarFnCall(f) => {
+            for arg in &f.args {
+                collect_aggregate_arg_exprs(arg, out);
+            }
+        }
+        RenderExpr::Case(c) => {
+            if let Some(e) = &c.expr {
+                collect_aggregate_arg_exprs(e, out);
+            }
+            for (cond, val) in &c.when_then {
+                collect_aggregate_arg_exprs(cond, out);
+                collect_aggregate_arg_exprs(val, out);
+            }
+            if let Some(e) = &c.else_expr {
+                collect_aggregate_arg_exprs(e, out);
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for o in &op.operands {
+                collect_aggregate_arg_exprs(o, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn collect_nested_aggregate_args(expr: &RenderExpr, agg_arg_cols: &mut Vec<String>) {
     match expr {
         RenderExpr::AggregateFnCall(agg) => {
@@ -5193,8 +5235,52 @@ fn build_branch_inner_select_with_own_items(
     outer_select: &SelectItems,
     drop_path_metadata: bool,
     group_by_exprs: &[RenderExpr],
+    // #1143: only a role-swapped VLP arm must be trimmed to the outer plan's
+    // alias contract. The long-standing callers (coupled / denormalized from-to
+    // unions) rely on the branch contributing its own items verbatim — trimming
+    // those drops real columns and breaks their goldens.
+    restrict_to_outer_contract: bool,
 ) -> String {
+    // #1143 review round 2: UNION ALL requires every arm to project the SAME
+    // NUMBER of columns, in the same order. A role-swapped VLP arm's own select
+    // can carry a helper item the FORWARD arm does not have — e.g. an aggregate
+    // argument on a role-ambiguous denorm property resolves to
+    // `t.end_dest_state` here but `t.start_origin_state` there, each under its
+    // own alias — so merging the branch's items verbatim yields 4 columns
+    // against the other arm's 3 (ClickHouse Code 53). Main emitted a Code 47
+    // for this shape, so widening it would be swapping one loud error for
+    // another.
+    //
+    // The OUTER plan's alias set is the contract every arm must satisfy: keep
+    // only branch items whose alias the outer select also defines, and let the
+    // pass-through loop below supply anything missing. Per-arm role correctness
+    // is preserved by `key_branch_overrides`, which rewrites the EXPRESSION
+    // under the shared alias rather than adding a column.
+    let outer_aliases: std::collections::HashSet<String> = outer_select
+        .items
+        .iter()
+        .filter_map(|i| i.col_alias.as_ref().map(|a| a.0.clone()))
+        .collect();
     let mut merged_select = branch_select.clone();
+    if restrict_to_outer_contract {
+        merged_select.items.retain(|i| {
+            // The OUTER item is appended for every aggregate below, and
+            // `agg_arg_cols` is derived from whatever ends up in this list — so
+            // keeping the branch's OWN aggregate too exports BOTH arms'
+            // argument columns from this arm (3 columns against the other
+            // arm's 2 → Code 53). Its per-arm role is already carried by
+            // `key_branch_overrides`, which rewrites the expression under the
+            // OUTER argument's alias.
+            if render_expr_contains_aggregate(&i.expression) {
+                return false;
+            }
+            match i.col_alias.as_ref() {
+                Some(a) => outer_aliases.contains(&a.0),
+                // Unaliased items are positional; leave them alone.
+                None => true,
+            }
+        });
+    }
     let branch_aliases: std::collections::HashSet<String> = merged_select
         .items
         .iter()
@@ -5225,7 +5311,25 @@ fn build_branch_inner_select_with_own_items(
     // outer (global) item tree and the branch's own item tree.
     let mut key_branch_overrides: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    for g in group_by_exprs {
+
+    // #1143 review (CRITICAL): AGGREGATE-ARGUMENT columns need the same per-arm
+    // resolution as GROUP BY keys. `build_union_inner_select` exports them via
+    // `collect_nested_aggregate_args` — the same inner-SELECT slot the GROUP BY
+    // keys use — so on a role-swapped arm they must be flipped too. The old
+    // `swap_vlp_start_end` text substitution covered them for free (it rewrote
+    // the WHOLE rendered string); resolving only `group_by_exprs` left
+    // `count(DISTINCT b.x)` reading arm 0's endpoint on the reversed arm —
+    // right row COUNT, wrong VALUES, and a regression on composite where main
+    // was correct.
+    //
+    // Both sources feed one override map: the resolution below is keyed by the
+    // component column's SQL and is identical for either origin.
+    let mut resolution_exprs: Vec<RenderExpr> = group_by_exprs.to_vec();
+    for item in &outer_select.items {
+        collect_aggregate_arg_exprs(&item.expression, &mut resolution_exprs);
+    }
+
+    for g in &resolution_exprs {
         // Resolve the per-arm flip against each denorm COLUMN the key references,
         // not the key as a whole. A bare key (`r.origin_code`, #844) references
         // exactly itself; an expression-WRAPPED key (`upper(r.origin_code)`,
@@ -5352,6 +5456,8 @@ fn render_cypher_union_arm(arm: &RenderPlan) -> String {
                         &arm.select,
                         drop_path_metadata,
                         &arm.group_by.0,
+                        // Legacy path: the branch contributes its own items verbatim.
+                        false,
                     ));
                 } else {
                     part.push_str(&inner_select_sql);
@@ -6540,8 +6646,38 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                         // schema UNION), use the branch's SELECT which has correctly mapped
                         // DB column names. The pre-computed inner_sql from the outer plan
                         // may have unmapped Cypher property names.
-                        let branch_has_own_select =
-                            !union_branch.select.items.is_empty() && branch_vlp_cte.is_none();
+                        //
+                        // #1143: the same reasoning applies to a role-SWAPPED VLP branch.
+                        // The `needs_swap` path below text-substitutes `t.start_` <-> `t.end_`
+                        // on a copy of the FIRST arm's rendered SELECT — which keeps the
+                        // first arm's PHYSICAL column under the flipped prefix. On a
+                        // denormalized schema whose per-role property maps disagree
+                        // (`Airport.city` -> `origin_city` from-side, `dest_city`
+                        // to-side) that yields `t.end_origin_city`,
+                        // a column NO arm projects (Code 47). It survived because on every
+                        // other schema pattern both roles map to the SAME physical column,
+                        // so a bare prefix flip is accidentally correct.
+                        //
+                        // The reversed branch already carries the RIGHT answer: its own
+                        // `select` was resolved per-arm upstream by
+                        // `rewrite_vlp_union_branch_aliases` and holds `t.end_dest_city`.
+                        // Use it, exactly as the non-VLP branches do.
+                        //
+                        // Gated on the branch having a NON-AGGREGATE item to carry: an
+                        // aggregate-args-only shape (`RETURN count(*), count(DISTINCT
+                        // o.city)`) contributes a different number of helper columns per
+                        // arm, which would turn the existing loud Code 47 into an equally
+                        // loud but different Code 53. That shape stays on the old path
+                        // (still broken, tracked on #1143) rather than swapping one error
+                        // for another as a side effect.
+                        let branch_carries_non_aggregate = union_branch
+                            .select
+                            .items
+                            .iter()
+                            .any(|it| !render_expr_contains_aggregate(&it.expression));
+                        let branch_has_own_select = !union_branch.select.items.is_empty()
+                            && (branch_vlp_cte.is_none()
+                                || (needs_swap && branch_carries_non_aggregate));
 
                         if branch_has_own_select {
                             branch_sql.push_str(&build_branch_inner_select_with_own_items(
@@ -6549,6 +6685,10 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                                 &plan.select,
                                 drop_path_metadata,
                                 &plan.group_by.0,
+                                // #1143: a role-swapped VLP arm must match the
+                                // outer plan's column contract exactly; the
+                                // pre-existing non-VLP callers must not.
+                                needs_swap && branch_vlp_cte.is_some(),
                             ));
                         } else if needs_swap {
                             // Swap t.start_id ↔ t.end_id and start_* ↔ end_* in SELECT
