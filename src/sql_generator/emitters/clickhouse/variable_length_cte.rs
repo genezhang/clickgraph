@@ -1694,13 +1694,24 @@ impl<'a> VariableLengthCteGenerator<'a> {
     }
 
     fn rewrite_end_filter_for_cte(&self, filter: &str) -> String {
-        let mut rewritten = filter.replace(
-            &format!("{}.{}", self.end_node_alias, self.end_node_id_column),
-            VLP_END_ID_COLUMN,
-        );
-
-        // Replace end_node.{column} with end_{alias} for each projected property.
-        //
+        // Collect every rewrite pair first, then apply LONGEST column name
+        // first with word-boundary + string-literal awareness. Three defects
+        // this ordering/primitive choice closes (review of #1128):
+        //   - PREFIX COLLISION: with columns `kind` and `kind_extra` both in
+        //     the filter, a plain `replace("end_node.kind", …)` applied first
+        //     corrupted `end_node.kind_extra` into `end_kind_extra` — the
+        //     DECLARED property's projection (decoy bind, silent wrong rows,
+        //     order-dependent on the YAML predicate order).
+        //   - The same corruption from the ID replace (`node_id: pk` +
+        //     `filter: "pk_flag = 1"` → `end_id_flag`).
+        //   - Literal corruption: a VALUE like 'end_node.full_name' inside a
+        //     string literal was edited by the replace.
+        // `replace_column_token` / `rewrite_outside_string_literals` are the
+        // #934 primitives already in this file, with their own unit tests.
+        let mut pairs: Vec<(String, String)> = vec![(
+            format!("{}.{}", self.end_node_alias, self.end_node_id_column),
+            VLP_END_ID_COLUMN.to_string(),
+        )];
         // #1122: ONLY the physical-column spelling is matched. Filters reaching
         // this point are already property-mapped (a user WHERE `b.name` arrives
         // as `end_node.full_name`; a schema `filter:` is written in physical
@@ -1714,13 +1725,25 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // identifier), never silently against the wrong column.
         for prop in &self.properties {
             if prop.cypher_alias == self.end_cypher_alias {
-                let pattern_col = format!("{}.{}", self.end_node_alias, prop.column_name);
-                let replacement = format!("end_{}", prop.alias);
-                rewritten = rewritten.replace(&pattern_col, &replacement);
+                pairs.push((
+                    format!("{}.{}", self.end_node_alias, prop.column_name),
+                    format!("end_{}", prop.alias),
+                ));
             }
         }
+        // Longest needle first: a shorter column that is a prefix of a longer
+        // one can then never fire inside it (belt to the token-boundary
+        // suspenders — boundary alone already blocks it, ordering makes the
+        // outcome independent of predicate order in the schema YAML).
+        pairs.sort_by_key(|(needle, _)| std::cmp::Reverse(needle.len()));
 
-        rewritten
+        Self::rewrite_outside_string_literals(filter, |segment| {
+            let mut seg = segment.to_string();
+            for (needle, replacement) in &pairs {
+                seg = Self::replace_column_token(&seg, needle, replacement);
+            }
+            seg
+        })
     }
 
     // Note: extract_simple_equality_filter was removed as dead code (never called)

@@ -4300,12 +4300,26 @@ pub fn extract_ctes_with_context(
                                     // alias instead of skipping. The skip left the filter
                                     // unrewritten, and the (now removed) alias-spelling
                                     // replace then mis-bound it to the declared property's
-                                    // column — wrong rows, no error. The mangled alias is
-                                    // collision-free, and `rewrite_end_filter_for_cte`'s
-                                    // physical-column replace targets `end_<alias>`, so
-                                    // the wrapper predicate binds to the REAL column.
+                                    // column — wrong rows, no error.
+                                    // `rewrite_end_filter_for_cte`'s physical-column
+                                    // replace targets `end_<alias>`, so the wrapper
+                                    // predicate binds to the REAL column.
+                                    //
+                                    // The mangle is only PRACTICALLY collision-free: a
+                                    // declared property literally named `__sf_<col>`
+                                    // would collide again (review of #1128). Escape by
+                                    // doubling the prefix until free — deterministic and
+                                    // schema-independent, so the dedup check below can
+                                    // never silently resurrect the skip.
+                                    let mut mangled = format!("__sf_{col}");
+                                    while node_schema
+                                        .property_mappings
+                                        .contains_key(mangled.as_str())
+                                    {
+                                        mangled = format!("__sf_{mangled}");
+                                    }
                                     if node_schema.property_mappings.contains_key(col.as_str()) {
-                                        format!("__sf_{col}")
+                                        mangled
                                     } else {
                                         col.clone()
                                     }
