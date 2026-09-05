@@ -3165,6 +3165,15 @@ impl RenderPlanBuilder for LogicalPlan {
                                     "Failed to convert where clause".to_string(),
                                 )
                             })?;
+                        // #1104: a post-WITH WHERE bypasses `extract_filters`
+                        // (which recurses into `with.input`), so the
+                        // mismatched-arity node-identity guard runs at each
+                        // site that renders one. Labels resolve against
+                        // `with.input`, where the aliases are bound.
+                        crate::render_plan::filter_builder::reject_mismatched_arity_node_identity(
+                            &render_where,
+                            &with.input,
+                        )?;
 
                         // 🔧 FIX: Rewrite renamed aliases in WHERE clause back to source aliases.
                         // Same rewrite as the standard path — needed for Union/bidirectional inputs too.
@@ -3235,6 +3244,15 @@ impl RenderPlanBuilder for LogicalPlan {
                                     "Failed to convert where clause".to_string(),
                                 )
                             })?;
+                        // #1104: a post-WITH WHERE bypasses `extract_filters`
+                        // (which recurses into `with.input`), so the
+                        // mismatched-arity node-identity guard runs at each
+                        // site that renders one. Labels resolve against
+                        // `with.input`, where the aliases are bound.
+                        crate::render_plan::filter_builder::reject_mismatched_arity_node_identity(
+                            &render_where,
+                            &with.input,
+                        )?;
 
                         // 🔧 FIX: Rewrite renamed aliases in WHERE clause back to source aliases.
                         // For `WITH u AS person WHERE person.user_id = 1`, the WHERE uses "person"

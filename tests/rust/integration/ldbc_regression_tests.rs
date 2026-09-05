@@ -1284,3 +1284,119 @@ async fn ldbc_1104_single_column_identity_unaffected() {
         "#1104: single-column identity must be unchanged:\n{sql}"
     );
 }
+
+// --- #1104 review hardening -------------------------------------------------
+// Adversarial review found the first cut left the exact silent truncation in
+// place on two axes:
+//   F1 — `get_node_label_for_alias` had no arm for WithClause/CartesianProduct/
+//        Unwind, so labels resolved to None and the guard stood down. Worse,
+//        a post-WITH `WHERE` never reaches `extract_filters` at all (that
+//        recurses into `wc.input`) and is rendered by three OTHER sites.
+//   F2 — the guard hand-rolled an `OperatorApplicationExp`-only recursion, so
+//        any other container (CASE, coalesce, NOT-of-CASE) hid the comparison.
+// Both are the parallel-emitter / non-exhaustive-walker class this repo has
+// been bitten by repeatedly; the guard now uses the module's exhaustive
+// `visit_render_expr_mut` and runs at every post-WITH render site.
+
+/// #1104/F2: a CASE wrapper must not hide the comparison from the guard.
+#[tokio::test]
+async fn ldbc_1104_case_wrapper_still_refused() {
+    let schema = load_schema_from("schemas/examples/composite_node_id_test.yaml");
+    let err = try_render_inline(
+        &schema,
+        "MATCH (c:Customer)-[:OWNS]->(a:Account)
+         WHERE CASE WHEN c = a THEN true ELSE false END
+         RETURN a.account_type",
+    )
+    .await
+    .expect_err("#1104: a CASE-wrapped identity must still be refused");
+    assert!(
+        err.contains("node_id column counts differ"),
+        "#1104: CASE wrapper must not defeat the guard:\n{err}"
+    );
+}
+
+/// #1104/F2: a scalar-function wrapper (`coalesce`) is likewise not a hiding
+/// place — the exhaustive visitor descends into call arguments.
+#[tokio::test]
+async fn ldbc_1104_function_wrapper_still_refused() {
+    let schema = load_schema_from("schemas/examples/composite_node_id_test.yaml");
+    let err = try_render_inline(
+        &schema,
+        "MATCH (c:Customer)-[:OWNS]->(a:Account)
+         WHERE coalesce(c = a, false)
+         RETURN a.account_type",
+    )
+    .await
+    .expect_err("#1104: a function-wrapped identity must still be refused");
+    assert!(
+        err.contains("node_id column counts differ"),
+        "#1104: function wrapper must not defeat the guard:\n{err}"
+    );
+}
+
+/// #1104/F1: a POST-WITH `WHERE` must refuse exactly like the pre-WITH form.
+/// Coverage that depends on clause order is not coverage.
+#[tokio::test]
+async fn ldbc_1104_post_with_barrier_still_refused() {
+    let schema = load_schema_from("schemas/examples/composite_node_id_test.yaml");
+    let err = try_render_inline(
+        &schema,
+        "MATCH (c:Customer)-[:OWNS]->(a:Account) WITH c, a WHERE c <> a RETURN a.account_type",
+    )
+    .await
+    .expect_err("#1104: post-WITH identity must be refused");
+    assert!(
+        err.contains("node_id column counts differ"),
+        "#1104: the WITH barrier must not hide the mismatch:\n{err}"
+    );
+}
+
+/// #1104/F1: a comma (cartesian) pattern binds its aliases under
+/// `CartesianProduct`, which the label resolver did not descend into.
+#[tokio::test]
+async fn ldbc_1104_comma_pattern_still_refused() {
+    let schema = load_schema_from("schemas/examples/composite_node_id_test.yaml");
+    let err = try_render_inline(
+        &schema,
+        "MATCH (c:Customer),(a:Account) WHERE c <> a RETURN count(*)",
+    )
+    .await
+    .expect_err("#1104: comma-pattern identity must be refused");
+    assert!(
+        err.contains("node_id column counts differ"),
+        "#1104: CartesianProduct must resolve endpoint labels:\n{err}"
+    );
+}
+
+/// #1104/F1: same for an `Unwind` between the pattern and the WHERE.
+#[tokio::test]
+async fn ldbc_1104_unwind_still_refused() {
+    let schema = load_schema_from("schemas/examples/composite_node_id_test.yaml");
+    let err = try_render_inline(
+        &schema,
+        "MATCH (c:Customer)-[:OWNS]->(a:Account) UNWIND [1] AS z WHERE c <> a RETURN count(*)",
+    )
+    .await
+    .expect_err("#1104: identity after UNWIND must be refused");
+    assert!(
+        err.contains("node_id column counts differ"),
+        "#1104: Unwind must resolve endpoint labels:\n{err}"
+    );
+}
+
+/// #1104 SCOPE: widening the label resolver must not create FALSE POSITIVES.
+/// A post-WITH identity between two SAME-arity nodes still renders.
+#[tokio::test]
+async fn ldbc_1104_post_with_same_arity_still_renders() {
+    let schema = load_ldbc_schema();
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (p:Person)-[:KNOWS]->(f:Person) WITH p, f WHERE p <> f RETURN f.id LIMIT 5",
+    )
+    .await;
+    assert!(
+        sql.contains("p.id") && sql.contains("f.id"),
+        "#1104: same-arity post-WITH identity must still render:\n{sql}"
+    );
+}

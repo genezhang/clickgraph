@@ -1591,10 +1591,44 @@ fn render_rhs_to_sql(expr: &LogicalExpr, as_string: bool) -> String {
 /// Same-arity comparisons (including composite-to-composite, and the renamed
 /// single-column case) are untouched — this only fires where the old code
 /// would have dropped a key column.
-fn reject_mismatched_arity_node_identity(
+pub(crate) fn reject_mismatched_arity_node_identity(
     expr: &RenderExpr,
     plan: &LogicalPlan,
 ) -> FilterBuilderResult<()> {
+    use crate::render_plan::render_expr::{visit_render_expr_mut, MutVisit};
+
+    // Walk via the module's EXHAUSTIVE visitor rather than a hand-rolled
+    // `OperatorApplicationExp`-only recursion. A bespoke walk stops at every
+    // other container — `CASE WHEN c = a THEN …`, `coalesce(c = a, false)`,
+    // `NOT (CASE …)`, list elements — and the comparison inside renders
+    // silently truncated (the exact #1104 defect). `visit_render_expr_mut` has
+    // no `_` catch-all, so a future RenderExpr variant is a compile error here
+    // rather than a new blind spot.
+    //
+    // The visitor is `_mut`-only; we own a throwaway clone and never propagate
+    // it, so the walk is effectively read-only.
+    let mut scratch = expr.clone();
+    let mut found: Option<RenderBuildError> = None;
+    visit_render_expr_mut(&mut scratch, &mut |e| {
+        if found.is_some() {
+            return MutVisit::Stop;
+        }
+        if let Err(err) = check_one_node_identity(e, plan) {
+            found = Some(err);
+            return MutVisit::Stop;
+        }
+        MutVisit::Recurse
+    });
+    match found {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
+}
+
+/// #1104: check a SINGLE expression node for a mismatched-arity bare-node
+/// identity comparison. Recursion is the caller's job (see
+/// [`reject_mismatched_arity_node_identity`]).
+fn check_one_node_identity(expr: &RenderExpr, plan: &LogicalPlan) -> FilterBuilderResult<()> {
     use crate::render_plan::cte_extraction::get_node_label_for_alias;
     use crate::server::query_context::get_current_schema;
 
@@ -1646,10 +1680,6 @@ fn reject_mismatched_arity_node_identity(
                     }
                 }
             }
-        }
-        // Recurse so a mismatched conjunct nested under AND/OR/NOT is reached.
-        for operand in &op.operands {
-            reject_mismatched_arity_node_identity(operand, plan)?;
         }
     }
     Ok(())
