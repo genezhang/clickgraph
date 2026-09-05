@@ -151,6 +151,17 @@ pub struct QueryContext {
     /// the ~100 string-protocol sites. Reset per query in `clear_all_render_contexts`.
     pub vlp_from_alias: Option<String>,
 
+    /// #1136: composite node_id COMPONENT columns per VLP endpoint cypher alias.
+    /// The late SELECT/ORDER BY/GROUP BY rewriter (`rewrite_expr_for_vlp`)
+    /// collapses anything id-shaped (`ends_with("_id")` heuristic) onto the
+    /// whole `start_id`/`end_id` — for a composite id that widens a COMPONENT
+    /// reference (`a.bank_id`) to the pipe-joined concat (wrong ordering /
+    /// Code 215 / Code 47). Since #1130 every component is projected as
+    /// `<prefix>_<col>` in every arm, so the rewriter checks this map FIRST
+    /// and binds the component column. Reset per query in
+    /// `clear_all_render_contexts`.
+    pub vlp_composite_id_components: HashMap<String, HashSet<String>>,
+
     /// #544: number of VLPs the analyzer admitted as a chained-forward multi-VLP
     /// path `(a)-[*]->(b)-[*]->(c)...` in the current scope. `None` when the
     /// scope is not a chained multi-VLP. The render phase reads this to VERIFY it
@@ -824,6 +835,33 @@ pub fn vlp_from_alias() -> String {
         .unwrap_or_else(|| crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string())
 }
 
+/// #1136: register a VLP endpoint's composite node_id COMPONENT columns, so the
+/// late SELECT/ORDER BY rewriter maps a component reference to its projected
+/// `<prefix>_<col>` column instead of collapsing it onto the whole pipe-joined
+/// `start_id`/`end_id`. Called from VLP CTE generation for composite endpoints.
+pub fn register_vlp_composite_id_components(cypher_alias: &str, components: &[String]) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().vlp_composite_id_components.insert(
+            cypher_alias.to_string(),
+            components.iter().cloned().collect(),
+        );
+    });
+}
+
+/// #1136: is `column` a composite node_id COMPONENT of the VLP endpoint bound to
+/// `cypher_alias`? False for single-column ids (never registered) and for
+/// non-endpoint aliases.
+pub fn is_vlp_composite_id_component(cypher_alias: &str, column: &str) -> bool {
+    QUERY_CONTEXT
+        .try_with(|ctx| {
+            ctx.borrow()
+                .vlp_composite_id_components
+                .get(cypher_alias)
+                .is_some_and(|cols| cols.contains(column))
+        })
+        .unwrap_or(false)
+}
+
 /// #544: record that the current scope is a chained-forward multi-VLP path of
 /// `count` VLPs. Called from the analyzer's `pre_register_vlp_endpoints` gate.
 pub fn register_expected_chained_vlp_count(count: usize) {
@@ -1244,6 +1282,8 @@ pub fn clear_all_render_contexts() {
         // #1088: reset the query-scoped VLP FROM alias so the next query starts
         // from the default `"t"` and re-registers its own value if it collides.
         ctx.vlp_from_alias = None;
+        // #1136: reset composite id component registrations.
+        ctx.vlp_composite_id_components.clear();
     });
 }
 

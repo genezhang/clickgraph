@@ -2440,3 +2440,59 @@ async fn ldbc_1132_undirected_split_seeds_zero_hop_once() {
          row in exactly ONE arm:\n{sql}"
     );
 }
+// --- #1136: ORDER BY / GROUP BY on a composite id COMPONENT ------------------
+//
+// The late SELECT/ORDER BY rewriter's id heuristic (`ends_with("_id")`)
+// collapsed a COMPONENT reference (`a.bank_id`) onto the whole pipe-joined
+// `t.start_id` — wrong ordering silently (concat lexicographic), Code 215
+// under aggregation, Code 47 in union forms. Components are projected as
+// `<prefix>_<col>` in every arm since #1130; a task-local registration
+// (`register_vlp_composite_id_components`) now lets the rewriter bind them.
+
+/// ORDER BY and the aggregate GROUP BY form must bind the component column.
+#[tokio::test]
+async fn ldbc_1136_order_by_component_binds_component_column() {
+    let schema = load_schema_from("schemas/test/composite_node_ids.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Account)-[:TRANSFERRED*1..2]->(b:Account) \
+         RETURN a.bank_id ORDER BY a.bank_id",
+    )
+    .await;
+    assert!(
+        sql.contains("ORDER BY t.start_bank_id"),
+        "#1136: ORDER BY must bind the projected component column:\n{sql}"
+    );
+    assert!(
+        !sql.contains("ORDER BY t.start_id"),
+        "#1136: never the whole pipe-joined id (concat-lexicographic \
+         ordering):\n{sql}"
+    );
+    let agg = generate_sql_inline(
+        &schema,
+        "MATCH (a:Account)-[:TRANSFERRED*1..2]->(b:Account) \
+         RETURN a.bank_id, count(*) ORDER BY a.bank_id",
+    )
+    .await;
+    assert!(
+        agg.contains("GROUP BY t.start_bank_id") && agg.contains("ORDER BY t.start_bank_id"),
+        "#1136: the aggregate form (was Code 215) groups and orders by the \
+         component:\n{agg}"
+    );
+}
+
+/// #1136 boundary: a single-column id keeps the whole-id collapse.
+#[tokio::test]
+async fn ldbc_1136_single_id_order_by_unchanged() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) \
+         RETURN a.user_id ORDER BY a.user_id",
+    )
+    .await;
+    assert!(
+        sql.contains("ORDER BY t.start_id"),
+        "#1136: single-column id ORDER BY still collapses to `t.start_id`:\n{sql}"
+    );
+}
