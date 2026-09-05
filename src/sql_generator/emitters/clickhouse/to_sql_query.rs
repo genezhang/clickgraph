@@ -3558,6 +3558,165 @@ struct VlpArmRoles {
     arm_cte: Option<String>,
 }
 
+/// #1152: rebind a UNION arm's SELECT items to the columns its OWN VLP CTE
+/// projects, using that CTE's `CteColumnMetadata`.
+///
+/// `RETURN o` (a whole node) and `RETURN o.city` reach the emitter differently.
+/// The per-property form arrives already resolved to the arm's role-correct CTE
+/// column (`t.end_dest_city`) — `rewrite_expr_for_vlp` did that upstream. The
+/// whole-node form is expanded by `SelectBuilder`'s `n.*` branch, which resolves
+/// each property against the BASE TABLE and, on a denormalized schema, through
+/// the alias->edge-alias remap: `t1.dest_city`. The physical column is already
+/// role-correct for this arm; only the table alias is wrong — `t1` is the edge
+/// table's alias INSIDE the CTE body, invisible in the outer scope (Code 47).
+///
+/// Rather than suppress that remap upstream (attempted in #1153 and withdrawn —
+/// the gate had to fire on VLP-endpoint-ness alone, which also caught the flat
+/// chained render where the remap is load-bearing, and the mixed-access arm
+/// where it produced silently wrong rows), rebind HERE, where the arm's own CTE
+/// metadata is available and says exactly which column carries which
+/// `(alias, property)` pair.
+///
+/// Deliberately conservative — every unresolvable case ABSTAINS, reproducing
+/// today's output byte-for-byte so no shape becomes newly loud and, far more
+/// importantly, no loud shape becomes silently wrong
+/// (the `fallback-to-a-proven-wrong-spelling` hazard that sank #1153):
+///  - arm does not scan a `vlp_*` CTE with role metadata (the flat chained
+///    render of #1155 scans a BASE TABLE, so it never enters here);
+///  - the item is not a plain `<alias>.<column>` property access;
+///  - the referenced column is not one this CTE projects under that item's
+///    output alias contract;
+///  - the lookup is ambiguous (two properties sharing one physical column).
+fn rebind_arm_items_to_cte_columns(
+    select: &SelectItems,
+    arm_cte_name: &str,
+    columns: &[crate::render_plan::cte_manager::CteColumnMetadata],
+    vlp_alias: &str,
+) -> Option<SelectItems> {
+    use crate::graph_catalog::expression_parser::PropertyValue;
+
+    if columns.is_empty() {
+        return None;
+    }
+
+    let mut rebound = false;
+    let mut items: Vec<SelectItem> = Vec::with_capacity(select.items.len());
+
+    for item in &select.items {
+        // The output alias is the contract: `o.city` names the Cypher
+        // (alias, property) pair this position must carry. Without it there is
+        // nothing to key the lookup on.
+        let Some(out) = item.col_alias.as_ref().map(|a| a.0.clone()) else {
+            items.push(item.clone());
+            continue;
+        };
+        let Some((cy_alias, cy_prop)) = out.split_once('.') else {
+            items.push(item.clone());
+            continue;
+        };
+
+        // Only a bare `<alias>.<column>` property access is rebindable. An
+        // expression (`toUpper(...)`), a literal, or an aggregate keeps its
+        // current form — those either already resolve or are separately
+        // tracked, and guessing here is how a loud error becomes wrong rows.
+        let RenderExpr::PropertyAccessExp(pa) = &item.expression else {
+            items.push(item.clone());
+            continue;
+        };
+        // Already bound to the CTE's own FROM alias: upstream resolved it
+        // (the per-property path). Leave it alone.
+        if pa.table_alias.0 == vlp_alias {
+            items.push(item.clone());
+            continue;
+        }
+
+        // Ask this arm's CTE which column carries that (alias, property) pair.
+        let matches: Vec<&crate::render_plan::cte_manager::CteColumnMetadata> = columns
+            .iter()
+            .filter(|m| m.cypher_alias == cy_alias && m.cypher_property == cy_prop)
+            .collect();
+
+        // A node's id property legitimately appears TWICE: once as the CTE's
+        // generic identity column (`start_id`, `is_id_column`) and once as an
+        // ordinary projected property (`start_origin_code`). Both carry the
+        // SAME `db_column`, so this is two spellings of one value, not a real
+        // ambiguity — disambiguate by the column the item already references
+        // (`t1.origin_code` -> the entry whose `db_column` is `origin_code`),
+        // preferring the non-id spelling when both still qualify so the emitted
+        // column matches what the per-property path produces.
+        //
+        // Anything that remains ambiguous AFTER that (two DIFFERENT physical
+        // columns for one pair) abstains: guessing there is exactly the
+        // proven-wrong-spelling hazard.
+        let referenced = pa.column.raw().to_string();
+        let only = match matches.as_slice() {
+            [one] => *one,
+            [] => {
+                items.push(item.clone());
+                continue;
+            }
+            many => {
+                let same_col: Vec<_> = many.iter().filter(|m| m.db_column == referenced).collect();
+                let distinct_targets: std::collections::BTreeSet<&str> =
+                    same_col.iter().map(|m| m.db_column.as_str()).collect();
+                if same_col.is_empty() || distinct_targets.len() != 1 {
+                    items.push(item.clone());
+                    continue;
+                }
+                match same_col.iter().find(|m| !m.is_id_column) {
+                    Some(m) => **m,
+                    None => *same_col[0],
+                }
+            }
+        };
+
+        log::debug!(
+            "🔧 #1152: arm '{}' rebinding {}.{} -> {}.{} (for {})",
+            arm_cte_name,
+            pa.table_alias.0,
+            pa.column.raw(),
+            vlp_alias,
+            only.cte_column_name,
+            out
+        );
+        rebound = true;
+        items.push(SelectItem {
+            expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(vlp_alias.to_string()),
+                column: PropertyValue::Column(only.cte_column_name.clone()),
+            }),
+            col_alias: item.col_alias.clone(),
+        });
+    }
+
+    // Nothing changed => report `None` so the caller keeps the original object
+    // and the emitted SQL is byte-identical.
+    rebound.then_some(SelectItems {
+        items,
+        distinct: select.distinct,
+    })
+}
+
+/// #1152: apply [`rebind_arm_items_to_cte_columns`] to one arm of an undirected
+/// VLP union, resolving that arm's CTE from the OUTER plan (the only place
+/// `ctes` lives — an arm carries just its FROM).
+///
+/// Returns a rebound `SelectItems`, or `None` meaning "emit exactly what you
+/// would have emitted". `None` covers every shape that is not an arm scanning a
+/// role-annotated `vlp_*` CTE — including the flat chained render (#1155),
+/// whose FROM is a base table, so that shape is excluded structurally rather
+/// than by a blacklist.
+fn rebind_vlp_arm_select(outer: &RenderPlan, arm: &RenderPlan) -> Option<SelectItems> {
+    let from_name = arm.from.0.as_ref().map(|f| f.name.as_str())?;
+    let cte = outer
+        .ctes
+        .0
+        .iter()
+        .find(|c| c.cte_name == from_name && c.vlp_cypher_start_alias.is_some())?;
+    let vlp_alias = crate::server::query_context::vlp_from_alias();
+    rebind_arm_items_to_cte_columns(&arm.select, &cte.cte_name, &cte.columns, &vlp_alias)
+}
+
 /// #1140: the PRIMARY direction's `(start_alias, end_alias)` — the roles the
 /// global ORDER BY rewrite resolved against. Read from the outer plan's first
 /// role-carrying VLP CTE, which is the one the primary FROM scans.
@@ -6552,7 +6711,12 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                     activate_scope_context(&plan.from, &plan.joins);
 
                     let mut first_branch_sql = String::new();
-                    first_branch_sql.push_str(&plan.select.to_sql());
+                    // #1152: the base arm IS the outer plan; rebind its whole-node
+                    // items against the CTE its own FROM scans.
+                    match rebind_vlp_arm_select(&plan, &plan) {
+                        Some(rebound) => first_branch_sql.push_str(&rebound.to_sql()),
+                        None => first_branch_sql.push_str(&plan.select.to_sql()),
+                    }
                     first_branch_sql.push_str(&plan.from.to_sql());
                     first_branch_sql.push_str(&plan.joins.to_sql());
                     // #624: the base arm of a UNION may carry its own UNWIND
@@ -6566,7 +6730,16 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
 
                     for union_branch in &union.input {
                         sql.push_str(union_type_str);
-                        sql.push_str(&render_union_branch_sql(union_branch));
+                        // #1152: same rebinding for the sibling arm, against
+                        // ITS OWN CTE (which assigns the opposite roles).
+                        match rebind_vlp_arm_select(&plan, union_branch) {
+                            Some(rebound) => {
+                                let mut arm = union_branch.clone();
+                                arm.select = rebound;
+                                sql.push_str(&render_union_branch_sql(&arm));
+                            }
+                            None => sql.push_str(&render_union_branch_sql(union_branch)),
+                        }
                     }
                 } else if has_aggregation {
                     // For aggregation: use pre-computed inner SELECT that includes
