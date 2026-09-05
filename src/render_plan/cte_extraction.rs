@@ -5075,6 +5075,55 @@ pub fn extract_ctes_with_context(
                     let end_schema_filter =
                         extract_schema_filter_from_node(&graph_rel.right, "end_node");
 
+                    // #1120: a CLOSED pattern `(a:Country)-[:R*2..3]->(a)` loses its
+                    // schema filter entirely: `DuplicateScansRemoving` replaces the
+                    // repeated endpoint's subtree with `Empty`, and the surviving
+                    // side's ViewScan is (re)built WITHOUT `schema_filter` — so both
+                    // plan-walks above return None and the filter silently vanishes
+                    // (5 rows vs an oracle 3 on a cyclic fixture; invisible on
+                    // LDBC's acyclic Place graph, where 0 == 0 by coincidence).
+                    //
+                    // The label is still known, so fall back to resolving the filter
+                    // from the SCHEMA by label. Same variable ⇒ same node ⇒ applying
+                    // it ONCE, in the base arm's START slot (where the raw
+                    // `start_node` alias is in scope), suffices: the closure
+                    // predicate `start_id = end_id` equates the endpoints, and
+                    // intermediate hops are unlabeled and correctly stay unfiltered.
+                    //
+                    // POSITIVE gate on `JoinStrategy::Traditional` (allowlist, not a
+                    // flag blacklist — ratchet rule 7): only that family's generator
+                    // binds the raw `start_node` alias this filter references. The
+                    // denormalized / mixed / FK-edge closed shapes address their
+                    // endpoints through other aliases — a `start_node.` reference
+                    // there would dangle — and their dropped filter is the #1119
+                    // class, so they keep pre-#1120 behavior.
+                    let start_schema_filter = if start_schema_filter.is_none()
+                        && end_schema_filter.is_none()
+                        && graph_rel.left_connection == graph_rel.right_connection
+                        && matches!(pattern_ctx.join_strategy, JoinStrategy::Traditional { .. })
+                    {
+                        let label = if !start_label.is_empty() {
+                            &start_label
+                        } else {
+                            &end_label
+                        };
+                        let fallback = schema
+                            .node_schema_opt(label)
+                            .and_then(|ns| ns.filter.as_ref())
+                            .and_then(|f| f.to_sql("start_node").ok());
+                        if let Some(ref f) = fallback {
+                            log::info!(
+                                "🔧 #1120: closed pattern lost its schema filter to \
+                                 scan dedup; re-resolved by label '{}': {}",
+                                label,
+                                f
+                            );
+                        }
+                        fallback
+                    } else {
+                        start_schema_filter
+                    };
+
                     // Combine user filters with schema filters using AND
                     let combined_start_filters = match (&start_filters_sql, &start_schema_filter) {
                         (Some(user), Some(schema)) => Some(format!("({}) AND ({})", user, schema)),
