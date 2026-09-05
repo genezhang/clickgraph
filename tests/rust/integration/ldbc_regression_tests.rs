@@ -3202,3 +3202,112 @@ async fn ldbc_1135_positive_exact_bounds_stay_flat() {
         );
     }
 }
+
+// --- #1152: whole-node RETURN on a denormalized undirected VLP ---------------
+//
+// `RETURN o` (as opposed to `RETURN o.city`) reaches a DIFFERENT expansion
+// site than the per-property path: the wildcard branch of `SelectBuilder`,
+// which applies the denormalized alias->EDGE-alias remap before the VLP
+// rewriter runs. On a denormalized schema that rewrote the endpoint to the
+// edge table's alias (`t1`) — a name bound only INSIDE the recursive CTE
+// body, so the outer scope's `t1.origin_city` was ClickHouse Code 47 (loud).
+// The remap is correct for an ordinary embedded-denorm node; it is wrong for
+// a VLP ENDPOINT, whose columns live in the `vlp_*` CTE. Skipping it leaves
+// the Cypher alias in place so the item routes through `rewrite_expr_for_vlp`
+// and picks up each arm's own role prefix, exactly as the per-property path
+// already did (#1140/#1141/#1143/#1146).
+
+/// #1152: each undirected arm binds ITS OWN role's projected CTE columns, and
+/// the edge-table alias never escapes the CTE body.
+#[tokio::test]
+async fn ldbc_1152_whole_node_denorm_undirected_vlp_binds_cte_columns() {
+    let schema = load_schema_from("schemas/test/flights_denorm_test.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o",
+    )
+    .await;
+
+    // Split off the outer SELECT: the CTE bodies legitimately reference the
+    // edge alias, so a whole-file assertion would be vacuous.
+    let outer = sql
+        .rsplit_once(") AS __union")
+        .map(|(head, _)| {
+            let idx = head.rfind("SELECT `").unwrap_or(0);
+            head[idx..].to_string()
+        })
+        .unwrap_or_else(|| panic!("expected a two-arm union:\n{sql}"));
+
+    // Match ANY numbered edge alias (`t1.`, `t3.`, ...) — the anon-alias
+    // counter is query-scoped (#1088), so pinning one spelling would make the
+    // test pass by accident on a plan that merely renumbered.
+    let leaked: Vec<&str> = outer
+        .split_whitespace()
+        .filter(|tok| {
+            tok.strip_prefix('t')
+                .and_then(|rest| rest.split_once('.'))
+                .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+        })
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "#1152: an edge-table alias escaped into the outer SELECT (bound only \
+         inside the CTE body -> Code 47): {leaked:?}\n{outer}"
+    );
+    // Per arm, not whole-file: main emitted BOTH physical spellings too (off
+    // the edge alias), so a bare `contains` pair would pass on main.
+    let arms: Vec<&str> = outer.split("UNION ALL").collect();
+    assert_eq!(arms.len(), 2, "#1152: expected two arms:\n{outer}");
+    assert!(
+        arms[0].contains("t.start_origin_city") && arms[0].contains("t.start_origin_state"),
+        "#1152: the forward arm must read its FROM-role columns:\n{outer}"
+    );
+    assert!(
+        arms[1].contains("t.end_dest_city") && arms[1].contains("t.end_dest_state"),
+        "#1152: the reversed arm must read its TO-role columns — binding the \
+         forward arm's spelling here would return the WRONG airport's data \
+         while still executing:\n{outer}"
+    );
+}
+
+/// #1152: the gate keys on VLP-endpoint-ness, not on denormalization, so a
+/// non-denormalized undirected VLP must be BYTE-IDENTICAL to its pre-fix form
+/// (it never had an alias remap to skip).
+#[tokio::test]
+async fn ldbc_1152_standard_undirected_vlp_whole_node_unchanged() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql =
+        generate_sql_inline(&schema, "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User) RETURN a").await;
+    // The standard schema resolves the whole node through the base-table path
+    // (one alias, no role split) and already worked; pin that it still does.
+    assert!(
+        sql.contains("t.start_name") && sql.contains("t.start_city"),
+        "#1152: a standard VLP endpoint must keep reading its CTE columns:\n{sql}"
+    );
+    assert!(
+        !sql.contains("UNION ALL\nSELECT \n      t1."),
+        "#1152: no edge-alias leak on the standard path:\n{sql}"
+    );
+}
+
+/// #1152: a DIRECTED denorm VLP renders a single CTE and already resolved
+/// correctly — the fix must not perturb it.
+#[tokio::test]
+async fn ldbc_1152_directed_denorm_vlp_whole_node_unchanged() {
+    let schema = load_schema_from("schemas/test/flights_denorm_test.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]->(d:Airport) RETURN o",
+    )
+    .await;
+    assert!(
+        sql.contains("t.start_origin_city"),
+        "#1152: the directed shape must keep its FROM-role CTE columns:\n{sql}"
+    );
+    // The recursive CTE body has its own base/recursive `UNION ALL`; the
+    // point here is that the OUTER select is a single arm (no two-CTE split).
+    assert!(
+        !sql.contains(") AS __union"),
+        "#1152: the directed shape renders ONE outer arm, not a union:\n{sql}"
+    );
+}

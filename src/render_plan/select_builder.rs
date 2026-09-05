@@ -863,10 +863,36 @@ impl SelectBuilder for LogicalPlan {
                                 }
                             }
 
+                            // #1152: a VLP ENDPOINT is bound by the recursive
+                            // `vlp_*` CTE, not by the edge table. On a
+                            // denormalized schema the alias→edge-alias remap
+                            // below would rewrite `o` to the edge table's alias
+                            // (`t1`), which exists only INSIDE the CTE body —
+                            // the outer scope sees only the CTE (aliased `t`),
+                            // so the emitted `t1.origin_city` is ClickHouse
+                            // Code 47. Leaving the Cypher alias in place routes
+                            // the item through `rewrite_expr_for_vlp`, which
+                            // resolves each arm's own role prefix
+                            // (`t.start_origin_city` / `t.end_dest_city`) — the
+                            // same chain the per-property path already uses
+                            // (#1140/#1141/#1143/#1146).
+                            //
+                            // A non-denormalized endpoint has no remap to skip
+                            // (`mapped_alias` already equals the Cypher alias),
+                            // so this gate is a no-op there. Consumes the same
+                            // `graph_rel_vlp_endpoint_role` discriminator the
+                            // #537 composite-id branch above uses, rather than
+                            // a raw denorm flag (CLAUDE.md rule 7).
+                            let is_vlp_endpoint = self
+                                .graph_rel_vlp_endpoint_role(&prop.table_alias.0)
+                                .is_some();
+
                             // Check if this is a denormalized edge alias mapping
                             // First try plan_ctx (populated during planning), then fall back to
                             // logical plan inspection, then QUERY_CONTEXT
-                            let mapped_alias = if let Some(ctx) = plan_ctx {
+                            let mapped_alias = if is_vlp_endpoint {
+                                prop.table_alias.0.clone()
+                            } else if let Some(ctx) = plan_ctx {
                                 if let Some((edge_alias, _is_from, _label, _type)) =
                                     ctx.get_denormalized_alias_info(&prop.table_alias.0)
                                 {
