@@ -4224,24 +4224,37 @@ pub fn extract_ctes_with_context(
                 // must be re-added here, after pruning. This mirrors how a user WHERE's
                 // columns reach the CTE via `extract_properties_from_filter`.
                 //
-                // Checked PER ENDPOINT: a MIXED-access pattern has one embedded and one
-                // own-table endpoint, so a whole-pattern gate would be wrong in both
-                // directions. An endpoint read off the edge row (`EmbeddedInEdge`) has
-                // no own-table column to project, so it is skipped and keeps its
-                // pre-#1118 behavior — that family drops the filter SILENTLY (6 vs
-                // an oracle 3 on a purpose-built fixture) and is tracked as #1119.
-                let start_is_own_table = pattern_ctx_for_filters
-                    .as_ref()
-                    .is_none_or(|c| !c.left_node.is_embedded());
-                let end_is_own_table = pattern_ctx_for_filters
-                    .as_ref()
-                    .is_none_or(|c| !c.right_node.is_embedded());
+                // END ENDPOINT ONLY. The START filter is emitted in the BASE ARM,
+                // where the raw `start_node` alias IS in scope, so it needs no
+                // projected column — pushing one produces a column no predicate ever
+                // references. Review of the first cut confirmed that: the start-side
+                // push was silently deleted again by `prune_vlp_columns`
+                // (`render_plan/plan_optimizer.rs`) in every shape but the UNDIRECTED
+                // mixed-access VLP, where it survived as dead weight and made that
+                // family's SQL differ for no reason. Restricting to the end endpoint
+                // keeps the change surface exactly the shapes that were broken.
+                //
+                // Restricted further to the families whose end filter actually MOVES
+                // to a wrapper. `end_filter_in_base_recursive_case` keeps the
+                // denormalized family's end predicate in the base/recursive arms,
+                // where the raw `end_node` alias IS in scope — so projecting a column
+                // there is pure dead weight (it survived `prune_vlp_columns` on the
+                // undirected mixed shape and made that family's SQL differ for no
+                // reason). Those families keep their pre-#1118 behavior: they drop the
+                // filter SILENTLY (6 vs an oracle 3 on a purpose-built fixture),
+                // tracked as #1119 — a real defect, but not one a projected-but-
+                // unreferenced column fixes.
+                let end_is_own_table = pattern_ctx_for_filters.as_ref().is_none_or(|c| {
+                    !c.right_node.is_embedded()
+                        && !matches!(
+                            c.join_strategy,
+                            JoinStrategy::SingleTableScan { .. } | JoinStrategy::MixedAccess { .. }
+                        )
+                });
                 let filter_properties = {
                     let mut props = filter_properties;
-                    for (alias, label, is_own_table) in [
-                        (&start_alias, &start_label, start_is_own_table),
-                        (&end_alias, &end_label, end_is_own_table),
-                    ] {
+                    for (alias, label, is_own_table) in [(&end_alias, &end_label, end_is_own_table)]
+                    {
                         if label.is_empty() || !is_own_table {
                             continue;
                         }
@@ -4254,8 +4267,12 @@ pub fn extract_ctes_with_context(
                         let id_columns = node_schema.node_id.columns();
                         for col in schema_filter.get_columns() {
                             // The id column is projected as `start_id`/`end_id`, not as
-                            // a `<prefix>_<prop>` column; skip it (a filter on the id is
-                            // already handled by the id rewrite).
+                            // a `<prefix>_<prop>` column; skip it — a filter on a SINGLE
+                            // id is already handled by the id rewrite
+                            // (`end_node.<id_col>` -> `end_id`). That does NOT hold for a
+                            // COMPOSITE id, whose `end_id` is a pipe-joined concat with no
+                            // per-component target: such a filter is left unrewritten and
+                            // fails loud (Code 47). Pre-existing, tracked as #1123.
                             if id_columns.contains(&col.as_str()) {
                                 continue;
                             }
@@ -4277,6 +4294,14 @@ pub fn extract_ctes_with_context(
                                     // its own column name. Skip when a DIFFERENT declared
                                     // property already claims that output name, since
                                     // `end_<name>` would then be ambiguous.
+                                    //
+                                    // NOTE: skipping keeps THIS code from making things
+                                    // worse; it does NOT make that shape correct.
+                                    // `rewrite_end_filter_for_cte` still rewrites via the
+                                    // cypher-alias spelling and binds the predicate to
+                                    // the OTHER property's column — silent-wrong,
+                                    // pre-existing, tracked as #1122 (its textual
+                                    // `str::replace` needs a structural rewrite).
                                     if node_schema.property_mappings.contains_key(col.as_str()) {
                                         continue;
                                     }

@@ -1818,8 +1818,12 @@ async fn ldbc_1118_shortest_path_end_schema_filter_projected() {
 }
 
 /// The START endpoint's schema filter goes in the BASE ARM, where `start_node`
-/// IS in scope — that path already worked and must stay byte-compatible (the
-/// fix must not move it to a projected column or duplicate it).
+/// IS in scope — that path already worked and must stay byte-compatible.
+///
+/// This is why #1118 projects a column for the END endpoint ONLY. The first cut
+/// pushed one for both; review showed the start-side column was then silently
+/// deleted again by `prune_vlp_columns` (`render_plan/plan_optimizer.rs`) in
+/// every shape but the undirected mixed VLP, where it survived as dead weight.
 #[tokio::test]
 async fn ldbc_1118_start_schema_filter_stays_in_base_arm() {
     let schema = load_schema_from("benchmarks/ldbc_snb/schemas/ldbc_snb.yaml");
@@ -1876,23 +1880,38 @@ async fn ldbc_1118_closed_pattern_unchanged() {
     );
 }
 
-/// A DENORMALIZED (edge-embedded) endpoint has no own-table column to project,
-/// so #1118 must skip it rather than emit a column the arm cannot resolve.
+/// A DENORMALIZED / MIXED-access endpoint keeps its end filter in the base and
+/// recursive arms (`end_filter_in_base_recursive_case`), where the raw
+/// `end_node` alias IS in scope — so #1118 must NOT project a column there: it
+/// would be dead weight no predicate references. Review of the first cut caught
+/// exactly that, on the UNDIRECTED mixed shape where `prune_vlp_columns` did not
+/// strip it and that family's SQL changed for no reason.
+///
 /// That family's dropped schema filter is a SEPARATE, pre-existing defect
-/// (#1119, silent-wrong: 6 vs an oracle 3) — this locks the scope boundary,
-/// not the still-wrong behavior.
+/// (#1119, silent-wrong: 6 vs an oracle 3) — this locks the scope boundary, not
+/// the still-wrong behavior.
+///
+/// The fixture DECLARES a `filter:`, so the gate is load-bearing: delete it and
+/// this test fails. (An unfiltered fixture would pass either way.)
 #[tokio::test]
 async fn ldbc_1118_embedded_endpoint_not_projected() {
-    let schema = load_schema_from("schemas/test/foreign_selfloop.yaml");
-    // `foreign_selfloop.yaml` declares no `filter:`, so nothing is added; the
-    // assertion is that the mixed arm renders unchanged and stays valid.
-    let sql = generate_sql_inline(
-        &schema,
+    let schema = load_schema_from("schemas/test/foreign_selfloop_filtered.yaml");
+    for cypher in [
         "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person) RETURN count(*)",
-    )
-    .await;
-    assert!(
-        sql.contains("start_own"),
-        "#1118: the mixed-access arm must be unchanged:\n{sql}"
-    );
+        // The undirected shape is the one where the pruner does NOT strip an
+        // unreferenced projected column, so a leak here is visible.
+        "MATCH (a:Person)-[:REPORTS_TO*1..2]-(b:Person) RETURN count(*)",
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(
+            !sql.contains("end_active") && !sql.contains("start_active"),
+            "#1118: a denormalized/mixed endpoint must NOT get a projected \
+             schema-filter column (dead weight; the filter stays in the base \
+             arm) for `{cypher}`:\n{sql}"
+        );
+        assert!(
+            sql.contains("start_own"),
+            "#1118: the mixed-access arm must otherwise be unchanged:\n{sql}"
+        );
+    }
 }

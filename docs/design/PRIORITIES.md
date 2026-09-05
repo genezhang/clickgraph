@@ -689,7 +689,17 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   byte-identical on main and on this branch. NOTE on oracles: the closed-pattern
   defect is INVISIBLE on LDBC's acyclic `Place` graph (0 == 0 by coincidence) —
   finding it needed a cyclic fixture in which the filter actually discriminates,
-  reinforcing the `cyclic-oracle-for-edge-uniqueness` lesson.
+  reinforcing the `cyclic-oracle-for-edge-uniqueness` lesson. Adversarial review
+  (no CRITICAL/HIGH) additionally found: the first cut projected a column for the
+  START endpoint too, which `prune_vlp_columns` silently deleted again everywhere
+  EXCEPT the undirected mixed VLP, where it survived as dead weight and made the
+  denorm family's SQL differ — so the block is now END-endpoint-only and gated off
+  the denorm/mixed strategies (whose end filter stays in the base arm); and two
+  further PRE-EXISTING defects in `rewrite_end_filter_for_cte`'s textual
+  `str::replace`, filed as **#1122** (a cypher property named after a different
+  physical filter column mis-binds the predicate — SILENT: returns pk 3 where the
+  answer is pk 2, and the COUNTS agree by coincidence) and **#1123** (a filter on a
+  COMPOSITE node_id component is left unrewritten → Code 47, loud).
 
 - 2026-09-04 (backfill): the six PRs merged 2026-08-31..09-04 were NOT logged
   here at merge time, contrary to §1 rule 3. Recorded now, newest first:
