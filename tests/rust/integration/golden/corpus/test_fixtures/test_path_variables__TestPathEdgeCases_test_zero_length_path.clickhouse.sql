@@ -1,8 +1,17 @@
+WITH RECURSIVE vlp_a_b AS (
+    SELECT 
+        start_node.user_id as start_id,
+        start_node.user_id as end_id,
+        0 as hop_count,
+        CAST([] AS Array(String)) as path_relationships,
+        [start_node.user_id] as path_nodes,
+        start_node.name as start_name,
+        start_node.name as end_name
+    FROM test_integration.users AS start_node
+    WHERE start_node.name = 'Alice'
+)
 SELECT 
-      a.name AS "a.name", 
-      b.name AS "b.name", 
-      0 AS "path_length"
-FROM test_integration.users AS a
-INNER JOIN test_integration.follows AS t0 ON t0.follower_id = a.user_id
-INNER JOIN test_integration.users AS b ON b.user_id = t0.followed_id
-WHERE a.name = 'Alice'
+      t.start_name AS "a.name", 
+      t.end_name AS "b.name", 
+      t.hop_count AS "path_length"
+FROM vlp_a_b AS t

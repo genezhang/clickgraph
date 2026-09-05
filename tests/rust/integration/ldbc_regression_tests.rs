@@ -2550,3 +2550,65 @@ async fn ldbc_1138_two_key_order_role_maps_per_arm() {
         "#1138: key 1 must be START-roled in the reversed arm:\n{sql}"
     );
 }
+
+// --- #1135: `*0..0` is the zero-hop identity, not a 1-hop chain --------------
+//
+// `exact_hop_count()` returned `Some(0)` and every consumer treats `Some(n)`
+// as an n-edge flat r1..rN chain — which has no zero-length form, so `*0..0`
+// (and the `*0` spelling) silently rendered as ONE hop: live, the 1-hop
+// pairs where the answer is the identity rows (a = b, one per node). Fixed
+// at the single source of truth: `exact_hop_count()` returns None for
+// (0, 0), routing through `is_range()` to the recursive CTE, whose zero-hop
+// seed with `max_hops == Some(0)` (no recursive arm) is exactly this shape.
+//
+// Two corpus goldens had FROZEN the wrong 1-hop SQL — their own source
+// Python tests assert `a.name == b.name` (identity) and row_count 1, so the
+// goldens contradicted the tests that generated them (the #933-class stale
+// golden trap). Regenerated.
+
+/// `*0..0` renders the zero-hop seed with no edge join and no recursion.
+#[tokio::test]
+async fn ldbc_1135_zero_zero_hop_is_identity() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS*0..0]->(b:User) RETURN a.user_id, b.user_id",
+    )
+    .await;
+    assert!(
+        sql.contains("0 as hop_count"),
+        "#1135: *0..0 must render the zero-hop identity seed:\n{sql}"
+    );
+    assert!(
+        !sql.contains("user_follows") && !sql.contains("JOIN"),
+        "#1135: no edge join — a zero-hop path traverses no edge:\n{sql}"
+    );
+}
+
+/// #1135 boundary: `*1..1` and `*2..2` keep the flat chained-join path.
+#[tokio::test]
+async fn ldbc_1135_positive_exact_bounds_stay_flat() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    for (cypher, expect_joins) in [
+        (
+            "MATCH (a:User)-[:FOLLOWS*1..1]->(b:User) RETURN a.user_id, b.user_id",
+            1,
+        ),
+        (
+            "MATCH (a:User)-[:FOLLOWS*2..2]->(b:User) RETURN a.user_id, b.user_id",
+            2,
+        ),
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(
+            !sql.contains("WITH RECURSIVE"),
+            "#1135: positive exact bounds keep the flat join path \
+             (`{cypher}`):\n{sql}"
+        );
+        assert_eq!(
+            sql.matches("user_follows").count(),
+            expect_joins,
+            "#1135: expected {expect_joins} edge join(s) for `{cypher}`:\n{sql}"
+        );
+    }
+}
