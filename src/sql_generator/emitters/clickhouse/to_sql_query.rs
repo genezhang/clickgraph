@@ -6540,8 +6540,38 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                         // schema UNION), use the branch's SELECT which has correctly mapped
                         // DB column names. The pre-computed inner_sql from the outer plan
                         // may have unmapped Cypher property names.
-                        let branch_has_own_select =
-                            !union_branch.select.items.is_empty() && branch_vlp_cte.is_none();
+                        //
+                        // #1143: the same reasoning applies to a role-SWAPPED VLP branch.
+                        // The `needs_swap` path below text-substitutes `t.start_` <-> `t.end_`
+                        // on a copy of the FIRST arm's rendered SELECT — which keeps the
+                        // first arm's PHYSICAL column under the flipped prefix. On a
+                        // denormalized schema whose per-role property maps disagree
+                        // (`Airport.city` -> `origin_city` from-side, `dest_city`
+                        // to-side) that yields `t.end_origin_city`,
+                        // a column NO arm projects (Code 47). It survived because on every
+                        // other schema pattern both roles map to the SAME physical column,
+                        // so a bare prefix flip is accidentally correct.
+                        //
+                        // The reversed branch already carries the RIGHT answer: its own
+                        // `select` was resolved per-arm upstream by
+                        // `rewrite_vlp_union_branch_aliases` and holds `t.end_dest_city`.
+                        // Use it, exactly as the non-VLP branches do.
+                        //
+                        // Gated on the branch having a NON-AGGREGATE item to carry: an
+                        // aggregate-args-only shape (`RETURN count(*), count(DISTINCT
+                        // o.city)`) contributes a different number of helper columns per
+                        // arm, which would turn the existing loud Code 47 into an equally
+                        // loud but different Code 53. That shape stays on the old path
+                        // (still broken, tracked on #1143) rather than swapping one error
+                        // for another as a side effect.
+                        let branch_carries_non_aggregate = union_branch
+                            .select
+                            .items
+                            .iter()
+                            .any(|it| !render_expr_contains_aggregate(&it.expression));
+                        let branch_has_own_select = !union_branch.select.items.is_empty()
+                            && (branch_vlp_cte.is_none()
+                                || (needs_swap && branch_carries_non_aggregate));
 
                         if branch_has_own_select {
                             branch_sql.push_str(&build_branch_inner_select_with_own_items(

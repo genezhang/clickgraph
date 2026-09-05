@@ -2884,6 +2884,85 @@ async fn ldbc_1141_shared_from_column_resolves_the_keys_own_property() {
     );
 }
 
+// --- #1143: denorm undirected VLP aggregate binds the reversed arm's column --
+//
+// The aggregate/GROUP BY union path text-substituted `t.start_` <-> `t.end_`
+// on a copy of the FIRST arm's rendered SELECT (`swap_vlp_start_end`), which
+// keeps the first arm's PHYSICAL column under the flipped prefix. On a
+// denormalized schema whose per-role property maps disagree that produced
+// `t.end_OriginCityName` — a column no arm projects (Code 47). It survived
+// because on every other schema pattern both roles map to the SAME physical
+// column, so the bare prefix flip is accidentally correct.
+//
+// The reversed branch already carried the right answer in its own `select`
+// (resolved per-arm upstream); the emitter now uses it, as the non-VLP
+// branches already did.
+
+/// #1143: the reversed arm projects ITS role's column, not the forward arm's
+/// column under an `end_` prefix.
+#[tokio::test]
+async fn ldbc_1143_denorm_aggregate_uses_the_arms_own_column() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o.city, count(*)",
+    )
+    .await;
+    assert!(
+        !sql.contains("end_OriginCityName"),
+        "#1143: must not pair the `end_` role with the FROM-role column — no \
+         arm projects it:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("t.end_DestCityName AS \"o.city\"").count(),
+        1,
+        "#1143: the reversed arm projects its own to-role column:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("t.start_OriginCityName AS \"o.city\"").count(),
+        1,
+        "#1143: the forward arm is unchanged:\n{sql}"
+    );
+}
+
+/// #1143: both endpoints grouped — each arm resolves each key to its own role.
+#[tokio::test]
+async fn ldbc_1143_denorm_aggregate_two_keys_role_map_per_arm() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o.city, d.city, count(*)",
+    )
+    .await;
+    assert!(
+        !sql.contains("end_OriginCityName") && !sql.contains("start_DestCityName"),
+        "#1143: no arm may pair a role prefix with the OTHER role's \
+         column:\n{sql}"
+    );
+}
+
+/// #1143 boundary: an AGGREGATE-ARGS-ONLY shape has no non-aggregate item to
+/// carry, and its arms contribute different helper-column counts — routing it
+/// through the per-arm select would turn the existing loud Code 47 into an
+/// equally loud Code 53. It deliberately stays on the old path (still broken,
+/// tracked on #1143) rather than swapping one error for another.
+#[tokio::test]
+async fn ldbc_1143_aggregate_args_only_shape_stays_on_the_legacy_path() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) \
+         RETURN count(*), count(DISTINCT o.city)",
+    )
+    .await;
+    // Unchanged from main: the prefix-flipped spelling, still loud at execution.
+    assert!(
+        sql.contains("end_OriginCityName"),
+        "#1143 boundary: this shape is intentionally NOT rerouted; if it now \
+         resolves, re-scope the gate and update this test:\n{sql}"
+    );
+}
+
 // --- #1135: `*0..0` is the zero-hop identity, not a 1-hop chain --------------
 //
 // `exact_hop_count()` returned `Some(0)` and every consumer treats `Some(n)`
