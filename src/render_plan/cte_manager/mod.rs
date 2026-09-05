@@ -1692,6 +1692,48 @@ impl VariableLengthCteStrategy {
             generator.set_weight_cte(weight_config.clone());
         }
 
+        // #1103: a WHERE predicate naming BOTH endpoints, lowered onto the
+        // recursive CTE's own `start_*`/`end_*` output columns.
+        //
+        // This is done STRUCTURALLY on the RenderExpr (not by string-replacing
+        // the rendered SQL): substring rewriting of `end_node.<prop>` corrupts
+        // any property name that has another property's name — or the node_id
+        // column's name — as a prefix (`code` vs `codeName` → `end_idName`),
+        // and it also rewrites alias-looking text inside string literals. Both
+        // produce valid SQL against the WRONG column, which is silent.
+        //
+        // Set post-construction (like `needs_path_relationships` below) rather
+        // than widening the already-25-argument constructors.
+        if let Some(expr) = &filters.both_endpoint_filters {
+            // A COMPOSITE node_id is projected as ONE pipe-joined `start_id`/
+            // `end_id` column, so every column of the key maps to that single
+            // CTE column. Resolve the full key from the schema rather than the
+            // strategy's single `*_id_col` (which is only the first column).
+            let key_cols = |label: Option<&String>, fallback: &str| -> Vec<String> {
+                label
+                    .and_then(|l| schema.node_schema_opt(l))
+                    .map(|ns| {
+                        ns.node_id
+                            .id
+                            .columns()
+                            .iter()
+                            .map(|c| c.to_string())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_else(|| vec![fallback.to_string()])
+            };
+            let start_key = key_cols(context.start_node_label.as_ref(), &self.start_id_col);
+            let end_key = key_cols(context.end_node_label.as_ref(), &self.end_id_col);
+            generator.both_endpoint_filters = Some(lower_both_endpoint_filter_to_cte_columns(
+                expr,
+                &self.pattern_ctx.left_node_alias,
+                &self.pattern_ctx.right_node_alias,
+                &start_key,
+                &end_key,
+                properties,
+            )?);
+        }
+
         // Skip path_relationships growth when relationships(path) isn't used
         generator.needs_path_relationships = context.needs_path_relationships;
         // Lightweight BFS mode for shortestPath + length(path)-only queries
@@ -1707,6 +1749,26 @@ impl VariableLengthCteStrategy {
         // is safe: the parallel `path_<prop>` arrays are emitted only by the
         // standard base/recursive/zero-hop arms.
         generator.path_node_properties = context.path_node_properties.clone();
+
+        // #1103: every flag that selects a generator shape is now set, so ask
+        // whether this shape routes AROUND the wrapper that applies a
+        // both-endpoint predicate. Three generators (BFS shortest path,
+        // weighted-BFS reconstruction, heterogeneous polymorphic) return before
+        // that wrapper is built and would drop the predicate SILENTLY. Refuse
+        // loudly instead — a wrong answer with no error is the one outcome that
+        // must never ship.
+        if generator.has_both_endpoint_filter() {
+            if let Some(shape) = generator.bypasses_both_endpoint_wrapper() {
+                return Err(CteError::InvalidStrategy(format!(
+                    "variable-length path: a WHERE predicate referencing BOTH path \
+                     endpoints is not supported for {shape}. This path shape does not \
+                     build the post-recursion wrapper the predicate must be applied on, \
+                     and applying it earlier would filter intermediate hops rather than \
+                     the final endpoint pair. Filter on one endpoint, or drop the \
+                     shortestPath/polymorphic form of this pattern."
+                )));
+            }
+        }
 
         // Generate the CTE using the comprehensive generator
         let cte = generator.generate_cte();
@@ -1773,6 +1835,171 @@ impl VariableLengthCteStrategy {
     }
 }
 
+/// #1103: lower a both-endpoint WHERE predicate onto the recursive CTE's own
+/// projected columns.
+///
+/// The predicate is written against the Cypher endpoint aliases; in the
+/// post-recursion wrapper only the CTE's projections exist. Each
+/// `PropertyAccess` is therefore retargeted structurally:
+///   * the endpoint's node_id column → `start_id` / `end_id`
+///   * any other property           → `start_<alias>` / `end_<alias>`
+///     (only if that property is actually projected into the CTE)
+///
+/// Structural, not textual. A `str::replace` over rendered SQL — the shape this
+/// replaced — silently corrupts a property whose name is a PREFIX of another
+/// (node_id `code` turns `end_node.codeName` into `end_idName`, a different
+/// real column) and rewrites alias-looking text inside string literals. Both
+/// yield valid SQL reading the WRONG column: no error, wrong answer.
+///
+/// Fails with a `CteError` — a real error the caller propagates — when a
+/// referenced property is not projected into the CTE. The predicate must never
+/// be silently dropped or pointed at a column that does not exist.
+#[allow(clippy::too_many_arguments)]
+fn lower_both_endpoint_filter_to_cte_columns(
+    expr: &crate::render_plan::render_expr::RenderExpr,
+    start_cypher_alias: &str,
+    end_cypher_alias: &str,
+    start_id_cols: &[String],
+    end_id_cols: &[String],
+    properties: &[NodeProperty],
+) -> Result<String, CteError> {
+    use crate::query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN};
+    use crate::render_plan::render_expr::RenderExpr;
+
+    // Resolve one endpoint property to its CTE column name, or explain why not.
+    // `column` may arrive as either the Cypher property name or the already
+    // schema-mapped DB column, so both are accepted (mirroring how the CTE
+    // projection is built from `NodeProperty { column_name, alias }`).
+    fn cte_column_for(
+        alias: &str,
+        column: &str,
+        cypher_alias: &str,
+        id_cols: &[String],
+        prefix: &str,
+        id_column_name: &str,
+        properties: &[NodeProperty],
+    ) -> Result<String, CteError> {
+        // Any column of the node_id maps to the CTE's single id projection —
+        // a composite key is projected pipe-joined into one `start_id`/`end_id`.
+        if id_cols.iter().any(|c| c == column) {
+            return Ok(id_column_name.to_string());
+        }
+        for prop in properties {
+            if prop.cypher_alias == cypher_alias
+                && (prop.column_name == column || prop.alias == column)
+            {
+                return Ok(format!("{}{}", prefix, prop.alias));
+            }
+        }
+        Err(CteError::SchemaValidationError(format!(
+            "variable-length path: WHERE predicate references both endpoints via \
+             `{alias}.{column}`, but that property is not projected into the path \
+             CTE, so it cannot be evaluated on the final endpoint pair. Return or \
+             otherwise reference `{alias}.{column}` in the query, or filter on the \
+             endpoint id instead."
+        )))
+    }
+
+    // Rewrite in place over a clone; every PropertyAccess on either endpoint is
+    // retargeted, and anything else (literals included) is left untouched.
+    fn rewrite(
+        e: &RenderExpr,
+        start_cypher_alias: &str,
+        end_cypher_alias: &str,
+        start_id_cols: &[String],
+        end_id_cols: &[String],
+        properties: &[NodeProperty],
+    ) -> Result<RenderExpr, CteError> {
+        match e {
+            RenderExpr::PropertyAccessExp(prop) => {
+                let alias = prop.table_alias.0.as_str();
+                let column = prop.column.raw();
+                let cte_col = if alias == start_cypher_alias {
+                    cte_column_for(
+                        alias,
+                        column,
+                        start_cypher_alias,
+                        start_id_cols,
+                        "start_",
+                        VLP_START_ID_COLUMN,
+                        properties,
+                    )?
+                } else if alias == end_cypher_alias {
+                    cte_column_for(
+                        alias,
+                        column,
+                        end_cypher_alias,
+                        end_id_cols,
+                        "end_",
+                        VLP_END_ID_COLUMN,
+                        properties,
+                    )?
+                } else {
+                    // Not an endpoint reference — categorization guarantees the
+                    // predicate names both endpoints, so a third alias here means
+                    // a correlated reference the wrapper cannot resolve.
+                    return Err(CteError::SchemaValidationError(format!(
+                        "variable-length path: both-endpoint WHERE predicate also \
+                         references `{alias}.{column}`, which is outside the path \
+                         pattern and cannot be evaluated on the path CTE."
+                    )));
+                };
+                // Emit as a BARE column of the wrapper's own scope: the wrapper
+                // is `SELECT * FROM <inner> WHERE …`, so its projections are
+                // unqualified. A PropertyAccess with an empty table_alias would
+                // render a leading dot (`.end_id`), so use Column directly.
+                Ok(RenderExpr::Column(crate::render_plan::render_expr::Column(
+                    crate::graph_catalog::expression_parser::PropertyValue::Column(cte_col),
+                )))
+            }
+            RenderExpr::OperatorApplicationExp(op) => {
+                let mut new_op = op.clone();
+                new_op.operands = op
+                    .operands
+                    .iter()
+                    .map(|o| {
+                        rewrite(
+                            o,
+                            start_cypher_alias,
+                            end_cypher_alias,
+                            start_id_cols,
+                            end_id_cols,
+                            properties,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                // A COMPOSITE node_id collapses every key column onto the same
+                // pipe-joined `start_id`/`end_id`, so an identity comparison
+                // expanded per-column upstream (#1102) becomes N copies of one
+                // predicate. Keep one — `A AND A` is `A`, and the duplicate is
+                // only noise in the emitted SQL. Order-preserving.
+                if matches!(
+                    new_op.operator,
+                    crate::render_plan::render_expr::Operator::And
+                ) {
+                    let mut seen = std::collections::HashSet::new();
+                    new_op.operands.retain(|o| seen.insert(format!("{o:?}")));
+                    if new_op.operands.len() == 1 {
+                        return Ok(new_op.operands.remove(0));
+                    }
+                }
+                Ok(RenderExpr::OperatorApplicationExp(new_op))
+            }
+            other => Ok(other.clone()),
+        }
+    }
+
+    let lowered = rewrite(
+        expr,
+        start_cypher_alias,
+        end_cypher_alias,
+        start_id_cols,
+        end_id_cols,
+        properties,
+    )?;
+    Ok(crate::render_plan::cte_extraction::render_expr_to_sql_string(&lowered, &[]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1833,9 +2060,11 @@ mod tests {
             end_node_filters: None,
             relationship_filters: None,
             path_function_filters: None,
+            both_endpoint_filters: None,
             start_sql: None,
             end_sql: None,
             relationship_sql: None,
+            both_endpoint_sql: None,
         }
     }
 
@@ -2145,9 +2374,11 @@ mod tests {
             end_node_filters: None,
             relationship_filters: None,
             path_function_filters: None,
+            both_endpoint_filters: None,
             start_sql: None,
             end_sql: None,
             relationship_sql: None,
+            both_endpoint_sql: None,
         };
 
         // Generate SQL

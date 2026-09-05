@@ -510,6 +510,16 @@ pub struct VariableLengthCteGenerator<'a> {
     pub start_node_filters: Option<String>, // WHERE clause for start node (e.g., "start_node.full_name = 'Alice'")
     pub end_node_filters: Option<String>, // WHERE clause for end node (e.g., "end_full_name = 'Bob'")
     pub relationship_filters: Option<String>, // WHERE clause for relationship (e.g., "rel.weight > 0.5")
+    /// #1103: WHERE predicate referencing BOTH endpoints (e.g.
+    /// `"end_node.id != start_node.id"`). A whole-path predicate on the
+    /// (start, FINAL endpoint) pair — applied ONLY in the post-recursion
+    /// wrapper, rewritten to the CTE's `start_*`/`end_*` output columns.
+    /// Never in the base case (which sees only hop-1 rows) and never per-hop on
+    /// the recursive arm: Cypher's TRAIL semantics let a path revisit any node,
+    /// so an intermediate hop failing the predicate must not prune the path.
+    /// Default `None`; only the standard/mixed/FK-edge generator honors it —
+    /// denormalized VLP is intercepted by `DenormalizedCteStrategy` upstream.
+    pub both_endpoint_filters: Option<String>,
     pub path_variable: Option<String>, // Path variable name from MATCH clause (e.g., "p" in "MATCH p = ...")
     pub relationship_types: Option<Vec<String>>, // Relationship type labels (e.g., ["FOLLOWS", "FRIENDS_WITH"])
     pub edge_id: Option<Identifier>, // Edge ID columns for relationship uniqueness (None = use from_id, to_id)
@@ -756,6 +766,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
             start_node_filters,
             end_node_filters,
             relationship_filters,
+            // #1103: set post-construction by the CteManager (mirrors
+            // `needs_path_relationships` / `use_bfs_mode`).
+            both_endpoint_filters: None,
             path_variable,
             relationship_types,
             edge_id,
@@ -832,6 +845,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
             start_node_filters,
             end_node_filters,
             relationship_filters,
+            // #1103: set post-construction by the CteManager (mirrors
+            // `needs_path_relationships` / `use_bfs_mode`).
+            both_endpoint_filters: None,
             path_variable,
             relationship_types,
             edge_id,
@@ -1638,6 +1654,45 @@ impl<'a> VariableLengthCteGenerator<'a> {
         !self.end_filter_applied_in_wrapper()
     }
 
+    /// #1103: is there a both-endpoint predicate to apply on the wrapper?
+    ///
+    /// Honored by the wrapper built in [`Self::generate_recursive_sql`] —
+    /// standard, mixed access, FK-edge, polymorphic, and shortestPath (whose
+    /// `_to_target`/ROW_NUMBER layer is built there too and must see the
+    /// predicate applied to the FINAL endpoint pair).
+    ///
+    /// NOT reached by three generators that `generate_recursive_sql` delegates
+    /// to before the wrapper is built — BFS shortestPath, weighted-BFS
+    /// reconstruction, and heterogeneous-polymorphic paths — nor by the
+    /// fully-denormalized pattern (`DenormalizedCteStrategy`) or multi-type VLP
+    /// (flat join expansion), both intercepted upstream. `CteManager` refuses
+    /// LOUDLY before constructing any of those with a both-endpoint predicate
+    /// set, so a bypass can never silently drop it; see
+    /// `both_endpoint_filter_unsupported_here` in `cte_manager`.
+    pub(crate) fn has_both_endpoint_filter(&self) -> bool {
+        self.both_endpoint_filters.is_some()
+    }
+
+    /// #1103: does this generator's shape route AROUND the wrapper that applies
+    /// a both-endpoint predicate? Used by `CteManager` to refuse loudly rather
+    /// than let the predicate vanish. Mirrors the early returns at the top of
+    /// [`Self::generate_recursive_sql`] exactly.
+    pub(crate) fn bypasses_both_endpoint_wrapper(&self) -> Option<&'static str> {
+        if self.use_bfs_mode {
+            return Some("BFS shortest-path mode (length(path)-only optimization)");
+        }
+        if self.weight_cte.is_some()
+            && self.shortest_path_mode.is_some()
+            && self.end_node_filters.is_some()
+        {
+            return Some("weighted shortest path with a target filter");
+        }
+        if self.is_heterogeneous_polymorphic_path() {
+            return Some("heterogeneous polymorphic path (two-CTE structure)");
+        }
+        None
+    }
+
     fn rewrite_end_filter_for_cte(&self, filter: &str) -> String {
         let mut rewritten = filter.replace(
             &format!("{}.{}", self.end_node_alias, self.end_node_id_column),
@@ -2041,7 +2096,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let needs_inner_cte = self.shortest_path_mode.is_some()
             || min_hops > 1
             || denorm_needs_end_filter_wrapper
-            || self.end_filter_applied_in_wrapper();
+            || self.end_filter_applied_in_wrapper()
+            // #1103: a both-endpoint predicate is always wrapper-applied, so it
+            // always forces a wrapper — even for a pure single-hop VLP, where
+            // the wrapper is a trivial pass-through filter.
+            || self.has_both_endpoint_filter();
         let recursive_cte_name = if needs_inner_cte {
             format!("{}_inner", self.cte_name)
         } else {
@@ -2135,6 +2194,31 @@ impl<'a> VariableLengthCteGenerator<'a> {
         } else {
             "hop_count"
         };
+        // #1103: the both-endpoint predicate, rewritten onto the recursive CTE's
+        // own `start_*`/`end_*` output columns. Every arm below applies it on a
+        // layer that reads FINISHED paths — after the recursion has run
+        // unfiltered, and (for shortestPath) BEFORE the shortest-path pick, so
+        // ranking never selects a path the predicate excludes.
+        //
+        // If the rewrite leaves a `start_node.` / `end_node.` qualifier the
+        // referenced property was pruned out of the CTE projection; emitting it
+        // would reference a nonexistent column, so refuse loudly instead of
+        // silently dropping or mis-resolving the predicate.
+        // Already lowered onto this CTE's own `start_*`/`end_*` columns by
+        // `cte_manager::lower_both_endpoint_filter_to_cte_columns`, which owns
+        // the structural rewrite AND the loud failure for an unprojected
+        // property (it has a real `Result` channel; `generate_sql` returns a
+        // bare `String` and must never fabricate an "error" that is itself
+        // valid SQL returning zero rows).
+        let both_endpoint_pred: Option<String> = self.both_endpoint_filters.clone();
+        /// Helper: AND an optional extra predicate onto an existing WHERE body.
+        fn and_opt(base: &str, extra: Option<&String>) -> String {
+            match extra {
+                Some(e) => format!("({}) AND ({})", base, e),
+                None => base.to_string(),
+            }
+        }
+
         let sql = match (&self.shortest_path_mode, &self.end_node_filters) {
             (Some(ShortestPathMode::Shortest), Some(end_filters)) => {
                 // Rewrite end filter for use in intermediate CTE
@@ -2154,6 +2238,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     filter_with_bounds =
                         format!("({}) AND hop_count <= {}", filter_with_bounds, max);
                 }
+                // #1103: applied on `_to_target`, i.e. BEFORE the ROW_NUMBER
+                // shortest pick — otherwise ranking could choose a path the
+                // predicate excludes and then discard it, yielding no row where
+                // a longer qualifying path exists.
+                filter_with_bounds = and_opt(&filter_with_bounds, both_endpoint_pred.as_ref());
 
                 // CORRECT ORDER: Filter to target FIRST (with min/max_hops), then find shortest path from EACH start node
                 // This ensures we get the shortest path TO THE TARGET within hop bounds from each source
@@ -2182,6 +2271,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     filter_with_bounds =
                         format!("({}) AND hop_count <= {}", filter_with_bounds, max);
                 }
+                // #1103: applied before the shortest pick — see the Shortest arm.
+                filter_with_bounds = and_opt(&filter_with_bounds, both_endpoint_pred.as_ref());
 
                 // CORRECT ORDER: Filter to target FIRST (with min/max_hops), then find shortest path from EACH start node
                 format!(
@@ -2195,21 +2286,49 @@ impl<'a> VariableLengthCteGenerator<'a> {
             (Some(ShortestPathMode::Shortest), None) => {
                 // 2-tier: inner → select shortest path to EACH end node (no target filter)
                 // Use window function to get the shortest path to each distinct end_id
-                format!(
-                    "{name}_inner AS (\n{body}\n),\n{name} AS (\n    SELECT * FROM (\n        SELECT *, ROW_NUMBER() OVER (PARTITION BY end_id ORDER BY {order_col} ASC) as rn\n        FROM {name}_inner\n    ) WHERE rn = 1\n)",
-                    name = self.cte_name,
-                    body = query_body,
-                    order_col = order_by_column,
-                )
+                //
+                // #1103: with a both-endpoint predicate there is no `_to_target`
+                // layer to carry it, so insert one — the predicate MUST narrow the
+                // candidate set BEFORE the ROW_NUMBER pick, or ranking could select
+                // an excluded path and drop the qualifying longer one.
+                match &both_endpoint_pred {
+                    Some(pred) => format!(
+                        "{name}_inner AS (\n{body}\n),\n{name}_to_target AS (\n    SELECT * FROM {name}_inner WHERE {pred}\n),\n{name} AS (\n    SELECT * FROM (\n        SELECT *, ROW_NUMBER() OVER (PARTITION BY end_id ORDER BY {order_col} ASC) as rn\n        FROM {name}_to_target\n    ) WHERE rn = 1\n)",
+                        name = self.cte_name,
+                        body = query_body,
+                        pred = pred,
+                        order_col = order_by_column,
+                    ),
+                    None => format!(
+                        "{name}_inner AS (\n{body}\n),\n{name} AS (\n    SELECT * FROM (\n        SELECT *, ROW_NUMBER() OVER (PARTITION BY end_id ORDER BY {order_col} ASC) as rn\n        FROM {name}_inner\n    ) WHERE rn = 1\n)",
+                        name = self.cte_name,
+                        body = query_body,
+                        order_col = order_by_column,
+                    ),
+                }
             }
             (Some(ShortestPathMode::AllShortest), None) => {
                 // 2-tier: inner → select all shortest (no target filter)
-                format!(
-                    "{name}_inner AS (\n{body}\n),\n{name} AS (\n    SELECT * FROM {name}_inner WHERE {order_col} = (SELECT MIN({order_col}) FROM {name}_inner)\n)",
-                    name = self.cte_name,
-                    body = query_body,
-                    order_col = order_by_column,
-                )
+                //
+                // #1103: the predicate must constrain BOTH the rows kept and the
+                // MIN() subquery that defines "shortest" — otherwise the minimum
+                // is computed over paths the predicate excludes and the arm can
+                // return nothing where a qualifying longer path exists.
+                match &both_endpoint_pred {
+                    Some(pred) => format!(
+                        "{name}_inner AS (\n{body}\n),\n{name}_to_target AS (\n    SELECT * FROM {name}_inner WHERE {pred}\n),\n{name} AS (\n    SELECT * FROM {name}_to_target WHERE {order_col} = (SELECT MIN({order_col}) FROM {name}_to_target)\n)",
+                        name = self.cte_name,
+                        body = query_body,
+                        pred = pred,
+                        order_col = order_by_column,
+                    ),
+                    None => format!(
+                        "{name}_inner AS (\n{body}\n),\n{name} AS (\n    SELECT * FROM {name}_inner WHERE {order_col} = (SELECT MIN({order_col}) FROM {name}_inner)\n)",
+                        name = self.cte_name,
+                        body = query_body,
+                        order_col = order_by_column,
+                    ),
+                }
             }
             (None, Some(end_filters)) => {
                 // For denormalized VLP, end filters are NOT applied in base/recursive cases
@@ -2242,7 +2361,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
                     format!(
                         "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE ({}){}\n)",
-                        self.cte_name, query_body, self.cte_name, self.cte_name, rewritten_filter, min_hops_filter
+                        self.cte_name,
+                        query_body,
+                        self.cte_name,
+                        self.cte_name,
+                        and_opt(&rewritten_filter, both_endpoint_pred.as_ref()),
+                        min_hops_filter
                     )
                 } else {
                     // Standard VLP.
@@ -2260,14 +2384,32 @@ impl<'a> VariableLengthCteGenerator<'a> {
                         };
                         format!(
                             "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE ({}){}\n)",
-                            self.cte_name, query_body, self.cte_name, self.cte_name, rewritten_filter, min_hops_clause
+                            self.cte_name,
+                            query_body,
+                            self.cte_name,
+                            self.cte_name,
+                            and_opt(&rewritten_filter, both_endpoint_pred.as_ref()),
+                            min_hops_clause
                         )
-                    } else if min_hops > 1 {
-                        // No wrapper carries the end filter (pure single-hop): the
-                        // filter is already in the base case. Only bound min-hops.
+                    } else if min_hops > 1 || both_endpoint_pred.is_some() {
+                        // No wrapper carries the end filter (pure single-hop): that
+                        // filter is already in the base case. The wrapper here only
+                        // bounds min-hops and (#1103) applies the both-endpoint
+                        // predicate, which is never base-case-applied.
+                        let mut conds = Vec::new();
+                        if min_hops > 1 {
+                            conds.push(format!("hop_count >= {}", min_hops));
+                        }
+                        if let Some(pred) = &both_endpoint_pred {
+                            conds.push(format!("({})", pred));
+                        }
                         format!(
-                            "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE hop_count >= {}\n)",
-                            self.cte_name, query_body, self.cte_name, self.cte_name, min_hops
+                            "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE {}\n)",
+                            self.cte_name,
+                            query_body,
+                            self.cte_name,
+                            self.cte_name,
+                            conds.join(" AND ")
                         )
                     } else {
                         format!("{} AS (\n{}\n)", self.cte_name, query_body)
@@ -2279,10 +2421,24 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 // Base case starts at hop 1 to allow recursion, but we need to filter
                 // results to respect min_hops (e.g., *2.. should only return hop_count >= 2)
                 // max_hops is already enforced by recursion termination condition
-                if min_hops > 1 {
+                //
+                // #1103: a both-endpoint predicate is applied here too — this is
+                // the only layer that sees a FINISHED path's (start, end) pair.
+                if min_hops > 1 || both_endpoint_pred.is_some() {
+                    let mut conds = Vec::new();
+                    if min_hops > 1 {
+                        conds.push(format!("hop_count >= {}", min_hops));
+                    }
+                    if let Some(pred) = &both_endpoint_pred {
+                        conds.push(format!("({})", pred));
+                    }
                     format!(
-                        "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE hop_count >= {}\n)",
-                        self.cte_name, query_body, self.cte_name, self.cte_name, min_hops
+                        "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE {}\n)",
+                        self.cte_name,
+                        query_body,
+                        self.cte_name,
+                        self.cte_name,
+                        conds.join(" AND ")
                     )
                 } else {
                     // No filtering needed (min_hops <= 1)

@@ -20,12 +20,23 @@ pub struct CategorizedFilters {
     pub end_node_filters: Option<RenderExpr>,
     pub relationship_filters: Option<RenderExpr>,
     pub path_function_filters: Option<RenderExpr>,
+    /// #1103: predicates referencing BOTH VLP endpoints (e.g. `friend <> root`,
+    /// `friend.id <> root.id`). These are neither start-only nor end-only: they
+    /// constrain the (start, FINAL endpoint) pair of a whole path, so they must
+    /// be applied on the post-recursion wrapper — never in the base case (which
+    /// sees only hop-1 rows) and never per-hop on the recursive arm (whose
+    /// `end_node` is an INTERMEDIATE node, and which Cypher's TRAIL semantics
+    /// allow to revisit any node). Kept separate from `start_node_filters` so
+    /// the base case cannot pick them up.
+    pub both_endpoint_filters: Option<RenderExpr>,
 
     // Pre-rendered SQL strings (for backward compatibility during CteManager transition)
     // These take precedence over RenderExpr when present
     pub start_sql: Option<String>,
     pub end_sql: Option<String>,
     pub relationship_sql: Option<String>,
+    /// Pre-rendered SQL for [`Self::both_endpoint_filters`] (#1103).
+    pub both_endpoint_sql: Option<String>,
 }
 
 /// Categorize filters based on which nodes/relationships they reference
@@ -67,9 +78,11 @@ pub fn categorize_filters(
         end_node_filters: None,
         relationship_filters: None,
         path_function_filters: None,
+        both_endpoint_filters: None,
         start_sql: None,
         end_sql: None,
         relationship_sql: None,
+        both_endpoint_sql: None,
     };
 
     if filter_expr.is_none() {
@@ -194,6 +207,7 @@ pub fn categorize_filters(
     let mut end_filters = Vec::new();
     let mut rel_filters = Vec::new();
     let mut path_fn_filters = Vec::new();
+    let mut both_endpoint_filters = Vec::new();
 
     for predicate in predicates {
         let refs_start = references_alias(&predicate, start_cypher_alias, "start_node");
@@ -255,12 +269,26 @@ pub fn categorize_filters(
                 rel_alias
             );
             rel_filters.push(predicate);
-        } else if refs_start && refs_end {
-            // Filter references both nodes - can't categorize simply
-            // For now, treat as start filter (will be in base case)
-            crate::debug_println!("DEBUG: Going to start_filters (refs both)");
-            start_filters.push(predicate);
+        } else if refs_start && refs_end && start_cypher_alias != end_cypher_alias {
+            // #1103: references BOTH endpoints. This is a whole-path predicate
+            // on the (start, FINAL endpoint) pair — it belongs in neither the
+            // base case nor the per-hop recursive arm. Routing it to
+            // `start_filters` (the pre-#1103 behavior) put it in the base case
+            // only, which was wrong in both directions: it pruned valid paths
+            // whose INTERMEDIATE hop-1 node failed the predicate, and it let
+            // paths whose FINAL endpoint fails the predicate survive past hop 1.
+            // Its own category defers it to the post-recursion wrapper.
+            crate::debug_println!("DEBUG: Going to both_endpoint_filters (refs both)");
+            log::debug!("  -> both_endpoint_filters (references start AND end)");
+            both_endpoint_filters.push(predicate);
         } else if refs_start {
+            // NOTE (#1103): a CLOSED pattern `(a)-[*]->(a)` has
+            // start_cypher_alias == end_cypher_alias, so `refs_start` and
+            // `refs_end` are the SAME test on ONE variable — not a two-endpoint
+            // comparison. The guard above excludes it so `a.prop = v` keeps its
+            // pre-#1103 start-filter placement (base case), which is correct:
+            // the closed pattern's endpoint identity is enforced structurally,
+            // not by this predicate.
             crate::debug_println!("DEBUG: Going to start_filters");
             start_filters.push(predicate);
         } else if refs_end {
@@ -331,6 +359,7 @@ pub fn categorize_filters(
         }))
     }
 
+    result.both_endpoint_filters = combine_with_and(both_endpoint_filters);
     result.start_node_filters = combine_with_and(start_filters);
     result.end_node_filters = combine_with_and(end_filters);
     result.relationship_filters = combine_with_and(rel_filters);

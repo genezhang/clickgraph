@@ -1,0 +1,28 @@
+# #1103 regression fixture: property names that COLLIDE BY PREFIX with the
+# node_id column and with each other. A textual `str::replace` rewrite of
+# rendered SQL turns `end_node.codeName` into `end_idName` (node_id `code` →
+# `end_id`, leaving `Name`), which is a DIFFERENT REAL COLUMN here — valid SQL,
+# wrong answer, no error. Only a structural (AST) rewrite survives this schema.
+name: prefix_collision_vlp
+version: "1.0"
+
+graph_schema:
+  nodes:
+    - label: Item
+      database: pt
+      table: items
+      node_id: code
+      property_mappings:
+        code: code
+        codeName: codeName
+        idName: other_col
+
+  edges:
+    - type: LINK
+      database: pt
+      table: links
+      from_id: src
+      to_id: dst
+      from_node: Item
+      to_node: Item
+      property_mappings: {}
