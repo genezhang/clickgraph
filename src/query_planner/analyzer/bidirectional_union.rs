@@ -2182,6 +2182,25 @@ fn apply_direction_combination_inner(
                     )
                 };
 
+            // #1132 review: a zero-hop (`*0..N`) row is DIRECTION-INDEPENDENT
+            // (the identity a = b, no edge traversed), so it must be seeded in
+            // exactly ONE arm of the two-CTE undirected split. Both arms kept
+            // `min_hops: 0` and the outer UNION ALL retained both copies —
+            // every zero-hop row silently DOUBLED (30 vs an oracle 25 on the
+            // composite fixture; reachable once #1132 made composite `*0..N`
+            // render at all). Keep the seed on the forward arm; the swapped
+            // Incoming arm starts at 1 hop.
+            let arm_variable_length = if is_incoming_swap {
+                graph_rel.variable_length.clone().map(|mut spec| {
+                    if spec.effective_min_hops() == 0 {
+                        spec.min_hops = Some(1);
+                    }
+                    spec
+                })
+            } else {
+                graph_rel.variable_length.clone()
+            };
+
             // Create new GraphRel with the determined direction
             Arc::new(LogicalPlan::GraphRel(GraphRel {
                 left: final_left,
@@ -2192,7 +2211,7 @@ fn apply_direction_combination_inner(
                 left_connection: new_left_connection,
                 right_connection: new_right_connection,
                 is_rel_anchor: graph_rel.is_rel_anchor,
-                variable_length: graph_rel.variable_length.clone(),
+                variable_length: arm_variable_length,
                 shortest_path_mode: graph_rel.shortest_path_mode.clone(),
                 path_variable: graph_rel.path_variable.clone(),
                 where_predicate: graph_rel.where_predicate.clone(),

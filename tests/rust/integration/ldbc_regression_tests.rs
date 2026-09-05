@@ -2417,3 +2417,26 @@ async fn ldbc_1132_zero_hop_single_id_unchanged() {
         "#1132: single-column zero-hop id emission unchanged:\n{sql}"
     );
 }
+
+/// #1132 review (HIGH): the undirected two-CTE split gave BOTH directional
+/// arms `min_hops: 0`, so the direction-independent zero-hop identity rows
+/// were seeded TWICE and the outer UNION ALL kept both copies — every
+/// zero-hop row silently doubled (30 vs an oracle 25 on the composite
+/// fixture), newly reachable once #1132 made composite `*0..N` render at all.
+/// The seed now lives in the FORWARD arm only; the swapped Incoming arm
+/// starts at 1 hop.
+#[tokio::test]
+async fn ldbc_1132_undirected_split_seeds_zero_hop_once() {
+    let schema = load_schema_from("schemas/test/composite_node_ids.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Account)-[:TRANSFERRED*0..2]-(b:Account) RETURN count(*)",
+    )
+    .await;
+    assert_eq!(
+        sql.matches("0 as hop_count").count(),
+        1,
+        "#1132: the two-CTE undirected split must seed the zero-hop identity \
+         row in exactly ONE arm:\n{sql}"
+    );
+}
