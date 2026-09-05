@@ -1,0 +1,40 @@
+# Polymorphic edge over standard node tables, with a node-level `filter:` —
+# the fixture that makes #1120's polymorphic coverage LOAD-BEARING.
+#
+# A polymorphic edge over standard node tables classifies as
+# `JoinStrategy::Traditional` (pattern_schema.rs), so the #1120 closed-pattern
+# schema-filter fallback FIRES for this shape — intended, and verified correct
+# live during the #1124 adversarial review (closed *2..3/*2..2/*0..2 matched
+# hand oracles 4/3/6 where main returned 7/4/10 on a cyclic fixture).
+#
+# Uses the db_polymorphic physical tables; `is_active` does not exist there, so
+# this schema is for STRUCTURAL (sql-gen) tests only — do not execute against
+# db_polymorphic.
+name: polymorphic_filtered_closed_test
+version: "1.0"
+description: "Polymorphic edge + filtered node label: #1120 closed-pattern fallback coverage"
+
+graph_schema:
+  nodes:
+    - label: User
+      database: db_polymorphic
+      table: users
+      node_id: user_id
+      filter: "account_status = 'active'"
+      property_mappings:
+        user_id: user_id
+        name: full_name
+
+  edges:
+    - polymorphic: true
+      database: db_polymorphic
+      table: interactions
+      from_id: from_id
+      to_id: to_id
+      type_column: interaction_type
+      from_label_column: from_type
+      to_label_column: to_type
+      type_values:
+        - FOLLOWS
+      edge_id: [from_id, to_id, interaction_type]
+      property_mappings: {}

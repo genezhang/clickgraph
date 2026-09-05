@@ -5075,6 +5075,66 @@ pub fn extract_ctes_with_context(
                     let end_schema_filter =
                         extract_schema_filter_from_node(&graph_rel.right, "end_node");
 
+                    // #1120: a CLOSED pattern `(a:Country)-[:R*2..3]->(a)` loses its
+                    // schema filter entirely: `DuplicateScansRemoving` replaces the
+                    // repeated endpoint's subtree with `Empty`, and the surviving
+                    // side's ViewScan is (re)built WITHOUT `schema_filter` — so both
+                    // plan-walks above return None and the filter silently vanishes
+                    // (5 rows vs an oracle 3 on a cyclic fixture; invisible on
+                    // LDBC's acyclic Place graph, where 0 == 0 by coincidence).
+                    //
+                    // The label is still known, so fall back to resolving the filter
+                    // from the SCHEMA by label. Same variable ⇒ same node ⇒ applying
+                    // it ONCE, in the base arm's START slot (where the raw
+                    // `start_node` alias is in scope), suffices: the closure
+                    // predicate `start_id = end_id` equates the endpoints, and
+                    // intermediate hops are unlabeled and correctly stay unfiltered.
+                    //
+                    // POSITIVE gate on `JoinStrategy::Traditional` (allowlist, not a
+                    // flag blacklist — ratchet rule 7): that strategy's generators
+                    // bind the raw `start_node` alias this filter references. NOTE
+                    // the gate is WIDER than "standard schema": a POLYMORPHIC edge
+                    // over standard node tables and the standard-node arm of a MIXED
+                    // schema also classify as Traditional — and the fallback firing
+                    // there is intended and verified correct live (review of this
+                    // fix: polymorphic closed *2..3/*2..2/*0..2 returned 4/3/6
+                    // matching hand oracles where main returned 7/4/10). The truly
+                    // denormalized / FK-edge closed shapes classify as other
+                    // strategies, address their endpoints through other aliases — a
+                    // `start_node.` reference would dangle — and keep pre-#1120
+                    // behavior (their dropped filter is the #1119 class).
+                    let start_schema_filter = if start_schema_filter.is_none()
+                        && end_schema_filter.is_none()
+                        && graph_rel.left_connection == graph_rel.right_connection
+                        && matches!(pattern_ctx.join_strategy, JoinStrategy::Traditional { .. })
+                    {
+                        // A closed pattern has ONE variable, so start/end labels
+                        // agree except in the (invalid, double-labeled) form
+                        // `(a:Country)-[*..]->(a:City)` — which is pre-existing
+                        // broken on this path regardless (the second label's filter
+                        // is dropped on main too; not a #1120 concern).
+                        let label = if !start_label.is_empty() {
+                            &start_label
+                        } else {
+                            &end_label
+                        };
+                        let fallback = schema
+                            .node_schema_opt(label)
+                            .and_then(|ns| ns.filter.as_ref())
+                            .and_then(|f| f.to_sql("start_node").ok());
+                        if let Some(ref f) = fallback {
+                            log::info!(
+                                "🔧 #1120: closed pattern lost its schema filter to \
+                                 scan dedup; re-resolved by label '{}': {}",
+                                label,
+                                f
+                            );
+                        }
+                        fallback
+                    } else {
+                        start_schema_filter
+                    };
+
                     // Combine user filters with schema filters using AND
                     let combined_start_filters = match (&start_filters_sql, &start_schema_filter) {
                         (Some(user), Some(schema)) => Some(format!("({}) AND ({})", user, schema)),

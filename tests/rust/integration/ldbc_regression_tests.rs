@@ -1855,12 +1855,20 @@ async fn ldbc_1118_single_hop_end_filter_stays_on_end_node() {
     );
 }
 
-/// A CLOSED pattern `(a:Country)-[:R*2..3]->(a)` drops the schema filter
-/// entirely — pre-existing (#1120, silent-wrong: 5 vs an oracle 3 on a cyclic
-/// fixture where the filter discriminates), byte-identical on main and here.
-/// This locks the SCOPE BOUNDARY: #1118 must not change that shape.
+/// #1120 (upgraded from the #1118 scope-boundary lock): a CLOSED pattern
+/// `(a:Country)-[:R*2..3]->(a)` DROPPED its schema filter — the dedup pass
+/// replaces the repeated endpoint's subtree with `Empty`, and the surviving
+/// side's ViewScan is rebuilt without `schema_filter`, so both plan-walks in
+/// `extract_schema_filter_from_node` returned None. Silent-wrong: 5 vs an
+/// oracle 3 on a cyclic fixture where the filter discriminates (invisible on
+/// LDBC's acyclic Place graph, where 0 == 0 by coincidence).
+///
+/// Fixed by re-resolving the filter from the SCHEMA by label into the base
+/// arm's START slot. Same variable ⇒ same node ⇒ once suffices: the closure
+/// predicate `start_id = end_id` equates the endpoints, and intermediate hops
+/// are unlabeled and stay unfiltered.
 #[tokio::test]
-async fn ldbc_1118_closed_pattern_unchanged() {
+async fn ldbc_1120_closed_pattern_schema_filter_in_base_arm() {
     let schema = load_schema_from("benchmarks/ldbc_snb/schemas/ldbc_snb.yaml");
     let sql = generate_sql_inline(
         &schema,
@@ -1869,14 +1877,79 @@ async fn ldbc_1118_closed_pattern_unchanged() {
     .await;
     assert!(
         sql.contains("t.start_id = t.end_id"),
-        "#1118: the closed-pattern render must be unchanged:\n{sql}"
+        "#1120: the closed-pattern closure predicate must remain:\n{sql}"
     );
-    // NOT an assertion that dropping the filter is correct — it is #1120. This
-    // pins that #1118 neither fixed nor worsened it.
     assert!(
-        !sql.contains("'Country'"),
-        "#1118/#1120: the closed pattern's dropped schema filter is unchanged \
-         by #1118 (tracked as #1120):\n{sql}"
+        sql.contains("start_node.type = 'Country'"),
+        "#1120: the schema filter must be re-resolved by label into the base \
+         arm (it was dropped entirely):\n{sql}"
+    );
+    // Applied ONCE — no spurious end-side duplicate that would reference an
+    // out-of-scope alias in the wrapper (the #1118 defect class).
+    assert!(
+        !sql.contains("end_node.type = 'Country'") && !sql.contains("end_type = 'Country'"),
+        "#1120: the filter is applied once, in the base arm:\n{sql}"
+    );
+}
+
+/// #1120 boundary: an UNFILTERED label's closed pattern must be byte-compatible
+/// with the pre-#1120 render (no fallback fires when the schema has no filter).
+#[tokio::test]
+async fn ldbc_1120_closed_pattern_unfiltered_label_unchanged() {
+    let schema = load_schema_from("benchmarks/ldbc_snb/schemas/ldbc_snb.yaml");
+    for cypher in [
+        "MATCH (a:Place)-[:IS_PART_OF*2..3]->(a) RETURN count(*)",
+        "MATCH (a:Person)-[:KNOWS*2..2]->(a) RETURN count(*)",
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(
+            !sql.contains("'Country'") && !sql.contains("schema filter"),
+            "#1120: no fallback filter may appear for an unfiltered label \
+             (`{cypher}`):\n{sql}"
+        );
+    }
+}
+
+/// #1120: the `JoinStrategy::Traditional` gate is WIDER than "standard schema"
+/// — a POLYMORPHIC edge over standard node tables also classifies Traditional,
+/// so the fallback fires there too. Intended and verified correct live during
+/// the #1124 review (closed *2..3/*2..2/*0..2 matched hand oracles 4/3/6 where
+/// main returned 7/4/10 on a cyclic fixture). This pins that silently
+/// load-bearing coverage: the filter must land in the base arm AND compose
+/// with the polymorphic type discriminators.
+#[tokio::test]
+async fn ldbc_1120_polymorphic_closed_pattern_filter_in_base_arm() {
+    let schema = load_schema_from("schemas/test/polymorphic_filtered_closed.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS*2..3]->(a) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("start_node.account_status = 'active'"),
+        "#1120: the polymorphic closed pattern must get the schema filter in \
+         the base arm (Traditional-classified, fallback fires):\n{sql}"
+    );
+    assert!(
+        sql.contains("rel.interaction_type = 'FOLLOWS'"),
+        "#1120: the polymorphic type discriminator must still compose:\n{sql}"
+    );
+}
+
+/// #1120 boundary: an OPEN pattern with a filtered label is untouched by the
+/// fallback (its filters resolve through the normal plan-walk, per #1118).
+#[tokio::test]
+async fn ldbc_1120_open_pattern_untouched() {
+    let schema = load_schema_from("benchmarks/ldbc_snb/schemas/ldbc_snb.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Country)-[:IS_PART_OF*2..3]->(b:Place) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("start_node.type = 'Country'"),
+        "#1120: the open pattern's start filter comes from the normal \
+         plan-walk and must remain in the base arm:\n{sql}"
     );
 }
 

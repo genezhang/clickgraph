@@ -657,6 +657,40 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-09-04: **Correctness (ground-rule-1) — a CLOSED VLP pattern
+  `(a:Country)-[:R*2..3]->(a)` dropped its node schema `filter:` entirely,
+  silently** (branch `fix/1120-closed-vlp-schema-filter`, PR #1124, closes
+  #1120). `DuplicateScansRemoving` replaces the repeated endpoint's subtree
+  with `Empty`, and the surviving side's ViewScan is rebuilt WITHOUT
+  `schema_filter` — so both plan-walks in `extract_schema_filter_from_node`
+  returned None and the filter vanished. Cycles through EXCLUDED nodes were
+  counted: on a cyclic fixture with a Country 3-cycle + a City 2-cycle,
+  directed `*2..3` returned 5 vs an oracle 3; zero-hop `*0..2` 12 vs 5
+  (counting City zero-hops); undirected `*2..3` 20 vs 12. INVISIBLE on LDBC's
+  acyclic Place graph (0 == 0 by coincidence) — the cyclic-oracle lesson again,
+  and the cycle must contain EXCLUDED nodes or it also agrees by coincidence.
+  Fix: when both walks return None on a closed pattern, re-resolve the filter
+  from the SCHEMA by label into the base arm's START slot; same variable ⇒ same
+  node ⇒ once suffices (the closure predicate `start_id = end_id` equates the
+  endpoints; unlabeled intermediate hops stay unfiltered — verified by an
+  adversarial Country→City→Country cycle that must and does count). POSITIVE
+  gate on `JoinStrategy::Traditional` (the first cut used raw
+  `is_denormalized`/`is_fk_edge` flags and the RATCHET CAUGHT IT — rule 7
+  works). Adversarial review (PR #1124, no CRITICAL/HIGH) CORRECTED the scoping
+  claim: the Traditional gate is WIDER than "standard schema" — POLYMORPHIC
+  edges over standard node tables and the standard-node arm of MIXED schemas
+  also classify Traditional, so the fallback fires there too, and is verified
+  correct live (polymorphic closed *2..3/*2..2/*0..2 → 4/3/6 == oracles, main
+  7/4/10; now pinned by a committed polymorphic test + fixture). Truly
+  denormalized and FK-edge closed shapes ARE byte-identical to main (#1119
+  class). Review also surfaced **#1125** (OPEN): the FLAT single-hop closed
+  shape (`(a:Country)-[:R]->(a)`, `*1..1`) still drops the filter (2 vs oracle
+  1) — it renders via the #994 fold with no node join at all, leaving a seam at
+  exactly hop 1. Composes with a user WHERE (1 == oracle 1). The #1118 boundary test `ldbc_1118_closed_pattern_unchanged` was
+  UPGRADED to `ldbc_1120_closed_pattern_schema_filter_in_base_arm` (correctness)
+  + 2 new boundary tests. Suite green (1738 + 671 + ratchet), clippy clean,
+  zero golden churn.
+
 - 2026-09-04: **Correctness (ground-rule-1) — a node schema `filter:` column was
   never projected into the VLP CTE, so the end-filter reference went out of
   scope** (branch `fix/1118-vlp-schema-filter-column-projection`, PR #1120,
