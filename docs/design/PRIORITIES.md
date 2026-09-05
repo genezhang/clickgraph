@@ -657,6 +657,29 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-09-05: **Correctness — denormalized undirected-VLP ORDER BY bound the
+  LOGICAL property name (`t.start_city`) instead of the projected PHYSICAL,
+  role-correct column** (branch `fix/1141-denorm-undirected-vlp-order-by`,
+  PR #1144, closes #1141). A denormalized node whose `from_properties`/
+  `to_properties` DISAGREE on a property's physical column reaches the emitter
+  in RAW Cypher form — the #471 guard
+  (`order_by_property_is_ambiguous_denorm_standalone`) deliberately declines to
+  pick one mapping up front. `rewrite_expr_for_vlp` then prefixed that raw name
+  verbatim, emitting a column no arm projects (Code 47, loud). New helper
+  `vlp_denorm_role_column` resolves it PER ENDPOINT through the schema-catalog
+  accessor `NodeSchema::denorm_role_properties` (axis-dispatch rule; ratchet
+  clean), which also gives each undirected arm its OWN role — the #1138 class,
+  for a shape #1139 could not reach (the raw spelling never matched an output
+  alias, so the output-alias chain always fell through to the legacy path). The
+  node_id property was equally broken (`t.start_code`) and resolves the same
+  way. Gated OFF for the multi-type union CTE (`vlp_multi_type_*`), a DIFFERENT
+  generator that names columns by CYPHER property — rewriting those re-dangles
+  a working shape (caught in development by the zeek corpus golden, now pinned
+  by a boundary test). Live: 38 rows == the independent `o.code` id path == a
+  hand-computed two-arm oracle. EXPOSED **#1143 OPEN** (aggregate/GROUP BY on
+  the same shape binds `t.end_origin_city` — end role + FROM-role column;
+  loud, byte-identical on main).
+
 - 2026-09-05: **Correctness (ground-rule-1) — `*0..0` (and the `*0` spelling)
   rendered as a plain ONE-hop join instead of the zero-hop identity** (branch
   `fix/1135-zero-zero-hop`, PR #1142, closes #1135). `exact_hop_count()`
