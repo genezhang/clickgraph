@@ -675,7 +675,23 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   reliance now fails LOUD, never silently against the wrong column. LDBC
   matrix re-verified (1343/1454/1343/199). New fixture
   `schemas/test/decoy_schema_filter.yaml` + 3 tests (targeting one fails on
-  main). Suite green (1738 + 678 + ratchet), clippy clean, zero golden churn.
+  main). Adversarial review (PR #1128, VERIFIED no regression across ~50
+  differential shapes + the full #1122 shape matrix incl. shortestPath /
+  zero-hop / undirected / closed — main wrong or Code 47 on most) found the
+  retained plain `str::replace` re-created the decoy bind on a PREFIX PAIR
+  (`kind` + `kind_extra`→decoy2): shortest-first replace corrupted
+  `end_node.kind_extra`→`end_kind_extra`, correctness DEPENDENT ON THE YAML
+  PREDICATE ORDER (pk 3 one order, pk 2 the other) — and the pruner deleted
+  the dead mangled projection, erasing the evidence. Reworked in-PR: rewrite
+  now longest-first + word-boundary (`replace_column_token`) + literal-aware
+  (`rewrite_outside_string_literals`) — the #934 primitives from the same
+  file; both orders now pk 2 == oracle, and the id-prefix (`pk_flag` with
+  node_id `pk`, was Code 47 both binaries → now pk 3 == oracle) and
+  literal-corruption (`= 'end_node.full_name'` edited inside the VALUE) cases
+  verified fixed too. Also hardened the `__sf_` mangle against a declared
+  property literally named `__sf_<col>` (escape by doubling; was a loud
+  resurrected skip). Fixture gained the Q prefix-pair label + 2 tests. Suite
+  green (1738 + 680 + ratchet), clippy clean, zero golden churn.
 
 - 2026-09-05: **Correctness (ground-rule-1) — the type-inference ViewScan
   rebuilds dropped `schema_filter`, silently disarming every downstream
