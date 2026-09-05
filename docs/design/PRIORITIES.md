@@ -676,10 +676,17 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   adversarial Country→City→Country cycle that must and does count). POSITIVE
   gate on `JoinStrategy::Traditional` (the first cut used raw
   `is_denormalized`/`is_fk_edge` flags and the RATCHET CAUGHT IT — rule 7
-  works); denorm/mixed/FK-edge closed shapes keep pre-#1120 behavior (#1119
-  class, their generators don't bind `start_node`). Composes with a user WHERE
-  (1 == oracle 1). 174-combo sweep: only the filtered-label closed shape
-  differs. The #1118 boundary test `ldbc_1118_closed_pattern_unchanged` was
+  works). Adversarial review (PR #1124, no CRITICAL/HIGH) CORRECTED the scoping
+  claim: the Traditional gate is WIDER than "standard schema" — POLYMORPHIC
+  edges over standard node tables and the standard-node arm of MIXED schemas
+  also classify Traditional, so the fallback fires there too, and is verified
+  correct live (polymorphic closed *2..3/*2..2/*0..2 → 4/3/6 == oracles, main
+  7/4/10; now pinned by a committed polymorphic test + fixture). Truly
+  denormalized and FK-edge closed shapes ARE byte-identical to main (#1119
+  class). Review also surfaced **#1125** (OPEN): the FLAT single-hop closed
+  shape (`(a:Country)-[:R]->(a)`, `*1..1`) still drops the filter (2 vs oracle
+  1) — it renders via the #994 fold with no node join at all, leaving a seam at
+  exactly hop 1. Composes with a user WHERE (1 == oracle 1). The #1118 boundary test `ldbc_1118_closed_pattern_unchanged` was
   UPGRADED to `ldbc_1120_closed_pattern_schema_filter_in_base_arm` (correctness)
   + 2 new boundary tests. Suite green (1738 + 671 + ratchet), clippy clean,
   zero golden churn.

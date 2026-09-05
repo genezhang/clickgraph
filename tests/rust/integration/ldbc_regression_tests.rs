@@ -1910,6 +1910,32 @@ async fn ldbc_1120_closed_pattern_unfiltered_label_unchanged() {
     }
 }
 
+/// #1120: the `JoinStrategy::Traditional` gate is WIDER than "standard schema"
+/// — a POLYMORPHIC edge over standard node tables also classifies Traditional,
+/// so the fallback fires there too. Intended and verified correct live during
+/// the #1124 review (closed *2..3/*2..2/*0..2 matched hand oracles 4/3/6 where
+/// main returned 7/4/10 on a cyclic fixture). This pins that silently
+/// load-bearing coverage: the filter must land in the base arm AND compose
+/// with the polymorphic type discriminators.
+#[tokio::test]
+async fn ldbc_1120_polymorphic_closed_pattern_filter_in_base_arm() {
+    let schema = load_schema_from("schemas/test/polymorphic_filtered_closed.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS*2..3]->(a) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("start_node.account_status = 'active'"),
+        "#1120: the polymorphic closed pattern must get the schema filter in \
+         the base arm (Traditional-classified, fallback fires):\n{sql}"
+    );
+    assert!(
+        sql.contains("rel.interaction_type = 'FOLLOWS'"),
+        "#1120: the polymorphic type discriminator must still compose:\n{sql}"
+    );
+}
+
 /// #1120 boundary: an OPEN pattern with a filtered label is untouched by the
 /// fallback (its filters resolve through the normal plan-walk, per #1118).
 #[tokio::test]

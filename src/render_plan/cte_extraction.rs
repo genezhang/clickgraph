@@ -5091,17 +5091,28 @@ pub fn extract_ctes_with_context(
                     // intermediate hops are unlabeled and correctly stay unfiltered.
                     //
                     // POSITIVE gate on `JoinStrategy::Traditional` (allowlist, not a
-                    // flag blacklist — ratchet rule 7): only that family's generator
-                    // binds the raw `start_node` alias this filter references. The
-                    // denormalized / mixed / FK-edge closed shapes address their
-                    // endpoints through other aliases — a `start_node.` reference
-                    // there would dangle — and their dropped filter is the #1119
-                    // class, so they keep pre-#1120 behavior.
+                    // flag blacklist — ratchet rule 7): that strategy's generators
+                    // bind the raw `start_node` alias this filter references. NOTE
+                    // the gate is WIDER than "standard schema": a POLYMORPHIC edge
+                    // over standard node tables and the standard-node arm of a MIXED
+                    // schema also classify as Traditional — and the fallback firing
+                    // there is intended and verified correct live (review of this
+                    // fix: polymorphic closed *2..3/*2..2/*0..2 returned 4/3/6
+                    // matching hand oracles where main returned 7/4/10). The truly
+                    // denormalized / FK-edge closed shapes classify as other
+                    // strategies, address their endpoints through other aliases — a
+                    // `start_node.` reference would dangle — and keep pre-#1120
+                    // behavior (their dropped filter is the #1119 class).
                     let start_schema_filter = if start_schema_filter.is_none()
                         && end_schema_filter.is_none()
                         && graph_rel.left_connection == graph_rel.right_connection
                         && matches!(pattern_ctx.join_strategy, JoinStrategy::Traditional { .. })
                     {
+                        // A closed pattern has ONE variable, so start/end labels
+                        // agree except in the (invalid, double-labeled) form
+                        // `(a:Country)-[*..]->(a:City)` — which is pre-existing
+                        // broken on this path regardless (the second label's filter
+                        // is dropped on main too; not a #1120 concern).
                         let label = if !start_label.is_empty() {
                             &start_label
                         } else {
