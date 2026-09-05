@@ -3074,8 +3074,36 @@ fn rewrite_fixed_path_functions(mut plan: RenderPlan) -> RenderPlan {
 fn extract_order_by_columns_for_union(
     order_by: &OrderByItems,
     salvageable_id_aliases: &HashSet<String>,
-) -> Vec<(RenderExpr, String)> {
+    outer_select: &crate::render_plan::SelectItems,
+) -> Vec<(RenderExpr, String, Option<String>)> {
     let mut columns = Vec::new();
+    // #1138: the OUTER plan's select maps each ORDER BY key to its OUTPUT
+    // alias (`t.start_bank_id` -> "a.bank_id"). The undirected union's arms
+    // role-swap their expressions but keep the SAME output aliases, so the
+    // alias — not the rewritten expression — is the ground truth each arm
+    // resolves against.
+    // The key arrives as `Column("t.start_bank_id")` (global ORDER BY
+    // rewrite) while the select items carry `PropertyAccessExp{t,
+    // start_bank_id}` (SELECT rewrite) — compare on the normalized
+    // `<alias>.<column>` spelling, not the enum shape.
+    fn norm_col(e: &RenderExpr) -> Option<String> {
+        use crate::graph_catalog::expression_parser::PropertyValue;
+        match e {
+            RenderExpr::Column(Column(PropertyValue::Column(c))) => Some(c.clone()),
+            RenderExpr::PropertyAccessExp(pa) => {
+                Some(format!("{}.{}", pa.table_alias.0, pa.column.raw()))
+            }
+            _ => None,
+        }
+    }
+    let output_alias_for = |e: &RenderExpr| -> Option<String> {
+        let key = norm_col(e)?;
+        outer_select
+            .items
+            .iter()
+            .find(|it| norm_col(&it.expression).as_deref() == Some(key.as_str()))
+            .and_then(|it| it.col_alias.as_ref().map(|a| a.0.clone()))
+    };
 
     for (idx, item) in order_by.0.iter().enumerate() {
         // #484 review follow-up: an unresolved `id()`/`elementId()` ScalarFnCall
@@ -3110,7 +3138,7 @@ fn extract_order_by_columns_for_union(
             if let Some(alias) = id_order_item_alias(&item.expression) {
                 if salvageable_id_aliases.contains(&alias) {
                     let col_alias = format!("__order_col_{}", idx);
-                    columns.push((item.expression.clone(), col_alias));
+                    columns.push((item.expression.clone(), col_alias, None));
                     continue;
                 }
             }
@@ -3141,7 +3169,8 @@ fn extract_order_by_columns_for_union(
 
         // Generate a unique alias for this ORDER BY column
         let col_alias = format!("__order_col_{}", idx);
-        columns.push((item.expression.clone(), col_alias));
+        let out_alias = output_alias_for(&item.expression);
+        columns.push((item.expression.clone(), col_alias, out_alias));
     }
 
     columns
@@ -3392,7 +3421,7 @@ fn collect_salvageable_id_order_aliases(
 /// ended up with mismatched column counts (ClickHouse Code 53).
 fn add_order_by_columns_to_select(
     mut plan: RenderPlan,
-    order_columns: &[(RenderExpr, String)],
+    order_columns: &[(RenderExpr, String, Option<String>)],
 ) -> RenderPlan {
     use crate::render_plan::render_expr::ColumnAlias;
     use crate::render_plan::SelectItem;
@@ -3401,7 +3430,30 @@ fn add_order_by_columns_to_select(
     // Parse the path tuple to find which aliases are start/end and the rel alias
     let path_context = extract_path_context_from_select(&plan.select);
 
-    for (expr, alias) in order_columns {
+    // #1138: the ORDER BY expression was rewritten ONCE, globally, against the
+    // primary direction (start-role: `t.start_bank_id`), but the undirected
+    // union's arms ROLE-SWAP their SELECT expressions (`t.end_bank_id AS
+    // "a.bank_id"` in the reversed arm) while keeping the SAME output aliases.
+    // Pushing the globally-rewritten key into both arms sorts the reversed
+    // arm's rows by the WRONG endpoint — silently mis-sorted output. The
+    // OUTPUT ALIAS captured from the outer plan at extraction time is the
+    // ground truth: each arm re-resolves the key through its OWN select item
+    // carrying that alias. (An exact-expression heuristic is NOT enough — with
+    // both endpoints projected, `t.start_bank_id` exists in the reversed arm
+    // too, as the OTHER endpoint's value.)
+    let arm_expr_by_alias = |out_alias: &str| -> Option<RenderExpr> {
+        plan.select
+            .items
+            .iter()
+            .find(|it| it.col_alias.as_ref().is_some_and(|a| a.0 == out_alias))
+            .map(|it| it.expression.clone())
+    };
+    let arm_resolutions: Vec<Option<RenderExpr>> = order_columns
+        .iter()
+        .map(|(_, _, out_alias)| out_alias.as_deref().and_then(&arm_expr_by_alias))
+        .collect();
+
+    for (order_idx, (expr, alias, _)) in order_columns.iter().enumerate() {
         let resolved_expr = if let Some(id_alias) = id_order_item_alias(expr) {
             // #546: an `id(alias)` marker survives extraction only after
             // `union_branches_all_salvage_id` verified that EVERY
@@ -3414,6 +3466,11 @@ fn add_order_by_columns_to_select(
                 Some(id_col) => typed_id_order_key_expr(&id_alias, &id_col),
                 None => typed_id_order_dummy_expr(),
             }
+        } else if let Some(arm_expr) = arm_resolutions.get(order_idx).cloned().flatten() {
+            // #1138: per-arm output-alias resolution (doc above). Falls through
+            // to the legacy paths only when the outer plan projected no item
+            // for this key or this arm lacks the alias.
+            arm_expr
         } else if let Some(ref ctx) = path_context {
             resolve_denormalized_order_by_expr(expr, ctx)
         } else {
@@ -5868,7 +5925,11 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
 
         // Extract ORDER BY columns that need to be added to UNION branches
         let order_by_columns = if !plan.order_by.0.is_empty() {
-            extract_order_by_columns_for_union(&plan.order_by, &salvageable_id_aliases)
+            extract_order_by_columns_for_union(
+                &plan.order_by,
+                &salvageable_id_aliases,
+                &plan.select,
+            )
         } else {
             Vec::new()
         };
@@ -6354,7 +6415,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                 // BY key entirely.
                 let order_clauses: Vec<String> = order_by_columns
                     .iter()
-                    .filter_map(|(_, col_alias)| {
+                    .filter_map(|(_, col_alias, _)| {
                         let idx: usize = col_alias.strip_prefix("__order_col_")?.parse().ok()?;
                         let item = plan.order_by.0.get(idx)?;
                         let order_str = match item.order {
@@ -9495,6 +9556,7 @@ mod tests {
         let order_columns = vec![(
             RenderExpr::TableAlias(TableAlias("1".to_string())),
             "__order_col_0".to_string(),
+            None,
         )];
         let out = add_order_by_columns_to_select(direction_a, &order_columns);
 

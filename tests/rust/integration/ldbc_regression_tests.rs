@@ -2496,3 +2496,57 @@ async fn ldbc_1136_single_id_order_by_unchanged() {
         "#1136: single-column id ORDER BY still collapses to `t.start_id`:\n{sql}"
     );
 }
+
+/// #1138: the undirected two-arm union's synthesized ORDER BY key
+/// (`__order_col_*`) bound the START role in BOTH arms while the projected
+/// value role-swaps — the reversed arm sorted by the wrong endpoint (silently
+/// mis-sorted rows, live-proven). Each arm now re-resolves the key through
+/// its own select item carrying the SAME output alias.
+#[tokio::test]
+async fn ldbc_1138_undirected_union_order_key_role_swaps() {
+    let schema = load_schema_from("schemas/test/composite_node_ids.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Account)-[:TRANSFERRED*1..2]-(b:Account) \
+         RETURN a.bank_id ORDER BY a.bank_id",
+    )
+    .await;
+    assert_eq!(
+        sql.matches("t.start_bank_id AS \"__order_col_0\"").count(),
+        1,
+        "#1138: the forward arm binds the start role once:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("t.end_bank_id AS \"__order_col_0\"").count(),
+        1,
+        "#1138: the reversed arm must bind ITS role (end), not repeat the \
+         start role:\n{sql}"
+    );
+}
+
+/// #1138 boundary: with BOTH endpoints ordered, each arm binds each key to
+/// its own role — start key start-roled in arm 1 / end-roled in arm 2, and
+/// vice versa for the second key.
+#[tokio::test]
+async fn ldbc_1138_two_key_order_role_maps_per_arm() {
+    let schema = load_schema_from("schemas/test/composite_node_ids.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Account)-[:TRANSFERRED*1..2]-(b:Account) \
+         RETURN a.bank_id, b.bank_id ORDER BY a.bank_id, b.bank_id",
+    )
+    .await;
+    // Key 0 is `a.bank_id`: start-roled in the forward arm, END-roled in the
+    // reversed arm (on main both arms bound start — the defect).
+    assert_eq!(
+        sql.matches("t.end_bank_id AS \"__order_col_0\"").count(),
+        1,
+        "#1138: key 0 must be END-roled in the reversed arm:\n{sql}"
+    );
+    // Key 1 is `b.bank_id`: end-roled forward, START-roled reversed.
+    assert_eq!(
+        sql.matches("t.start_bank_id AS \"__order_col_1\"").count(),
+        1,
+        "#1138: key 1 must be START-roled in the reversed arm:\n{sql}"
+    );
+}
