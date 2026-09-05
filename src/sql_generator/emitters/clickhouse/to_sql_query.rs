@@ -4156,6 +4156,48 @@ fn render_expr_contains_aggregate(expr: &RenderExpr) -> bool {
 
 /// Recursively collect property-access SQL from aggregate function arguments,
 /// including aggregates nested inside Case, ScalarFnCall, etc.
+/// #1143 review: the aggregate-ARGUMENT expressions of `expr`, as expression
+/// nodes rather than rendered SQL.
+///
+/// `collect_nested_aggregate_args` yields SQL strings, which is what
+/// `build_union_inner_select` needs to name the exported columns. The per-arm
+/// role resolution in `build_branch_inner_select_with_own_items` instead needs
+/// real nodes, because it walks the outer and branch trees in structural
+/// correspondence. Same traversal shape as its sibling — kept beside it so the
+/// two stay in step when a new wrapper variant is added.
+fn collect_aggregate_arg_exprs(expr: &RenderExpr, out: &mut Vec<RenderExpr>) {
+    match expr {
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in &agg.args {
+                out.push(arg.clone());
+            }
+        }
+        RenderExpr::ScalarFnCall(f) => {
+            for arg in &f.args {
+                collect_aggregate_arg_exprs(arg, out);
+            }
+        }
+        RenderExpr::Case(c) => {
+            if let Some(e) = &c.expr {
+                collect_aggregate_arg_exprs(e, out);
+            }
+            for (cond, val) in &c.when_then {
+                collect_aggregate_arg_exprs(cond, out);
+                collect_aggregate_arg_exprs(val, out);
+            }
+            if let Some(e) = &c.else_expr {
+                collect_aggregate_arg_exprs(e, out);
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for o in &op.operands {
+                collect_aggregate_arg_exprs(o, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn collect_nested_aggregate_args(expr: &RenderExpr, agg_arg_cols: &mut Vec<String>) {
     match expr {
         RenderExpr::AggregateFnCall(agg) => {
@@ -5225,7 +5267,25 @@ fn build_branch_inner_select_with_own_items(
     // outer (global) item tree and the branch's own item tree.
     let mut key_branch_overrides: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    for g in group_by_exprs {
+
+    // #1143 review (CRITICAL): AGGREGATE-ARGUMENT columns need the same per-arm
+    // resolution as GROUP BY keys. `build_union_inner_select` exports them via
+    // `collect_nested_aggregate_args` — the same inner-SELECT slot the GROUP BY
+    // keys use — so on a role-swapped arm they must be flipped too. The old
+    // `swap_vlp_start_end` text substitution covered them for free (it rewrote
+    // the WHOLE rendered string); resolving only `group_by_exprs` left
+    // `count(DISTINCT b.x)` reading arm 0's endpoint on the reversed arm —
+    // right row COUNT, wrong VALUES, and a regression on composite where main
+    // was correct.
+    //
+    // Both sources feed one override map: the resolution below is keyed by the
+    // component column's SQL and is identical for either origin.
+    let mut resolution_exprs: Vec<RenderExpr> = group_by_exprs.to_vec();
+    for item in &outer_select.items {
+        collect_aggregate_arg_exprs(&item.expression, &mut resolution_exprs);
+    }
+
+    for g in &resolution_exprs {
         // Resolve the per-arm flip against each denorm COLUMN the key references,
         // not the key as a whole. A bare key (`r.origin_code`, #844) references
         // exactly itself; an expression-WRAPPED key (`upper(r.origin_code)`,
