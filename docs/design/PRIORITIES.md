@@ -657,6 +657,30 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-09-05: **Correctness — denormalized VLP projection was NOT
+  role-symmetric, so each undirected arm pruned the column the OTHER arm's role
+  needed** (branch `fix/1146-role-symmetric-vlp-projection`, PR #1151, closes
+  #1146). UPSTREAM of #1140/#1141/#1143: those fixed WHICH column a reference
+  resolves to; no rewrite can succeed when the column was never projected. Both
+  sides now filter by the UNION of the two aliases' REQUIRED sets. The
+  include-all flags deliberately stay PER ALIAS — my first cut ORed them too and
+  widened a simple `RETURN o.city` from 2 projected columns to 6; separate, the
+  cost is ZERO extra columns for a query that needs none. Review proved the
+  "only ever adds columns" property STRUCTURALLY (`needs_all_for` and
+  `required_for` are complementary, so the filter only runs where main's set was
+  already `Some(X)` and HEAD's is `Some(X ∪ Y) ⊇ X`), swept 25 live shapes
+  row-for-row with zero differences, and machine-verified across all 111 repo
+  YAMLs that no SHIPPED schema has two logical properties sharing one physical
+  column. I RETRACTED a claimed bonus fix mid-review (expression ORDER BY keys —
+  the requirements analyzer records a wrapped property differently from a bare
+  one, so it stays abstaining, byte-identical to main). EXPOSED **#1152 OPEN**
+  (whole-node `RETURN o` on a denorm VLP emits the edge-table alias
+  `t1.origin_city`; loud, byte-identical on main). **#1149 remains OPEN and
+  blocked**: I built its fix, found it turned the loud Code 47 into SILENTLY
+  WRONG rows (Phoenix vanished; every count off) because the reversed CTE lacks
+  the column, and reverted — the WITH barrier never maps logical→physical, a
+  defect role-symmetry does not reach.
+
 - 2026-09-05: **Correctness — denormalized undirected-VLP AGGREGATE bound the
   reversed arm to the FROM-role column** (branch
   `fix/1143-denorm-aggregate-arm-select`, PR #1150, closes #1143). The

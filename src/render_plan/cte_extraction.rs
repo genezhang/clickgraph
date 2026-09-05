@@ -5239,10 +5239,45 @@ pub fn extract_ctes_with_context(
                                 })
                             };
 
+                        // #1146: an UNDIRECTED VLP renders TWO CTEs whose role
+                        // assignment is SWAPPED (`vlp_o_d` binds o=start/d=end,
+                        // `vlp_d_o` the reverse), but this collection filters the
+                        // from-side by `start_conn`'s requirements and the to-side by
+                        // `end_conn`'s. In the reversed arm those roles no longer line
+                        // up with the aliases, so each arm prunes exactly the column the
+                        // OTHER arm's role needs — e.g. `RETURN o.city ORDER BY d.state`
+                        // leaves `vlp_d_o` without any `state` column at all, and every
+                        // downstream reference to it dangles (Code 47) no matter how
+                        // correctly the rewriter resolves the role.
+                        //
+                        // A denormalized property must therefore be projected
+                        // ROLE-SYMMETRICALLY: if EITHER endpoint alias needs it, both
+                        // sides carry it, so whichever role an arm assigns has a column
+                        // to bind. This only ever ADDS columns (never drops one), so no
+                        // existing reference can start dangling.
+                        //
+                        // Only the REQUIRED SETS are unioned. The include-all flags stay
+                        // PER ALIAS: `requires_all` on one endpoint means "everything
+                        // THIS alias asked for", not "project every property of the
+                        // other endpoint too". ORing them widened a single-property
+                        // query from 2 projected columns to 6; keeping them separate
+                        // holds the cost to exactly the columns some endpoint asked for.
                         let start_include_all = needs_all_for(start_conn);
                         let end_include_all = needs_all_for(end_conn);
-                        let start_required = required_for(start_conn);
-                        let end_required = required_for(end_conn);
+                        let role_symmetric_required: Option<std::collections::HashSet<String>> =
+                            match (required_for(start_conn), required_for(end_conn)) {
+                                (Some(a), Some(b)) => Some(a.union(b).cloned().collect()),
+                                (Some(a), None) => Some(a.clone()),
+                                // Unreachable by construction, kept defensively:
+                                // `needs_all_for` returns true exactly when
+                                // `get_requirements` is None, so a `None` here
+                                // means that alias's `include_all` short-circuits
+                                // the filter below and this set is never consulted.
+                                (None, Some(b)) => Some(b.clone()),
+                                (None, None) => None,
+                            };
+                        let start_required = role_symmetric_required.as_ref();
+                        let end_required = start_required;
 
                         // Handle both "table" and "database.table" formats
                         let rel_table_name = rel_table.rsplit('.').next().unwrap_or(&rel_table);

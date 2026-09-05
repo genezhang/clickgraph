@@ -3666,7 +3666,8 @@ fn swap_vlp_role_prefixes(expr: &RenderExpr, roles: &VlpArmRoles) -> RenderExpr 
         let spelled = format!("{have_prefix}{rest}");
 
         // Every property this arm projects under `spelled`. Two properties can
-        // legitimately share one physical column, so collect them all.
+        // legitimately share one physical column (`city` and `town` both ->
+        // `origin_city`), so collect them all.
         let props: Vec<&str> = columns
             .iter()
             .filter(|m| m.cte_column_name == spelled)

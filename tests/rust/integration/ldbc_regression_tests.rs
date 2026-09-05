@@ -2611,6 +2611,64 @@ async fn ldbc_1140_expression_order_key_role_swaps_inside_wrapper() {
     );
 }
 
+// --- #1146: denorm VLP projection must be ROLE-SYMMETRIC ---------------------
+//
+// An undirected VLP renders TWO CTEs whose role assignment is SWAPPED
+// (`vlp_o_d` binds o=start/d=end, `vlp_d_o` the reverse), but the denorm
+// property collection filtered the from-side by the START alias's requirements
+// and the to-side by the END alias's. In the reversed arm those roles no longer
+// line up with the aliases, so each arm pruned exactly the column the OTHER
+// arm's role needed — leaving `vlp_d_o` with no `state` column at all, and
+// every downstream reference dangling (Code 47) no matter how correctly the
+// rewriter resolved the role.
+//
+// A denormalized property is now projected role-symmetrically: if EITHER
+// endpoint needs it, both sides carry it. This only ever ADDS columns.
+
+/// #1146: an ORDER BY key on the OTHER endpoint is projected into both arms.
+#[tokio::test]
+async fn ldbc_1146_other_endpoint_key_is_projected_role_symmetrically() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o.city ORDER BY d.state",
+    )
+    .await;
+    // Both role spellings of `state` must exist — before the fix the reversed
+    // arm carried neither, so the key had nothing to bind.
+    assert!(
+        sql.contains("start_OriginState") && sql.contains("end_DestState"),
+        "#1146: both role columns for the ORDER BY key must be projected:\n{sql}"
+    );
+}
+
+/// #1146: an AGGREGATE ARGUMENT on the other endpoint gets the same treatment —
+/// the gap was never ORDER BY-specific.
+#[tokio::test]
+async fn ldbc_1146_aggregate_argument_on_other_endpoint_is_projected() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o.city, min(d.state)",
+    )
+    .await;
+    // Assert PER ARM: the two CTEs are separate, and before the fix EACH was
+    // missing the column the OTHER arm's role needed. A whole-file `contains`
+    // would pass on main, where the pair exists but split across the two arms.
+    let arms: Vec<&str> = sql.split("vlp_d_o AS (").collect();
+    assert_eq!(arms.len(), 2, "expected two VLP CTEs:\n{sql}");
+    assert!(
+        arms[0].contains("end_DestState") && arms[0].contains("start_OriginState"),
+        "#1146: the forward CTE must carry BOTH roles' columns for the \
+         aggregate argument:\n{sql}"
+    );
+    assert!(
+        arms[1].contains("end_DestState") && arms[1].contains("start_OriginState"),
+        "#1146: the reversed CTE must carry them too — before the fix it \
+         carried neither, so the outer reference dangled:\n{sql}"
+    );
+}
+
 // --- #1141: role-ambiguous denorm property in a VLP ORDER BY -----------------
 //
 // A denormalized node whose from/to maps DISAGREE on a property's physical
@@ -2827,7 +2885,7 @@ async fn ldbc_1141_role_swap_resolution_is_deterministic() {
 /// imperfect (both arms sort by the forward endpoint — tracked separately),
 /// but never a regression and never a NEW silent wrong.
 #[tokio::test]
-async fn ldbc_1141_unresolvable_expression_key_abstains_not_prefix_flip() {
+async fn ldbc_1141_expression_key_never_pairs_a_role_with_the_other_column() {
     let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
     let sql = generate_sql_inline(
         &schema,
@@ -2837,17 +2895,22 @@ async fn ldbc_1141_unresolvable_expression_key_abstains_not_prefix_flip() {
     .await;
     assert!(
         !sql.contains("end_OriginState"),
-        "#1141 final review: must never emit the FROM-role column under an \
-         `end_` prefix — that column is projected by no arm (Code 47), a \
-         regression versus main:\n{sql}"
+        "#1141: must never emit the FROM-role column under an `end_` prefix — \
+         no arm projects it:\n{sql}"
     );
-    // Main's spelling: both arms keep the globally-rewritten key.
+    // Still ABSTAINS, byte-identical to main. #1146 unions the two aliases'
+    // REQUIRED SETS, but an EXPRESSION key is recorded differently by the
+    // requirements analyzer than a bare one: main projects `end_DestState` for
+    // `ORDER BY o.state` and NOT for `ORDER BY toUpper(o.state)`, so the
+    // opposite-role column still isn't there for the swap to bind and
+    // abstaining remains correct. That upstream asymmetry is pre-existing and
+    // out of scope here.
     assert_eq!(
         sql.matches("upperUTF8(t.start_OriginState) AS \"__order_col_0\"")
             .count(),
         2,
-        "#1141 final review: abstain leaves BOTH arms with the global \
-         rewrite:\n{sql}"
+        "#1141: with no opposite-role column to bind, BOTH arms keep the \
+         global rewrite — abstain, never a half-swapped column:\n{sql}"
     );
 }
 
@@ -2860,28 +2923,31 @@ async fn ldbc_1141_unresolvable_expression_key_abstains_not_prefix_flip() {
 async fn ldbc_1141_shared_from_column_resolves_the_keys_own_property() {
     let schema = load_schema_from("schemas/test/denorm_shared_from_column.yaml");
 
-    let town = generate_sql_inline(
-        &schema,
+    // #1146 UPDATE: this shape is UNEXECUTABLE on main and here alike — when two
+    // properties share a from-side column the CTE emits that column twice
+    // (ClickHouse Code 44, verified live on BOTH). Before #1146 the two
+    // properties disambiguated themselves BY LUCK, because pruning happened to
+    // keep only one of them; with role-symmetric projection both survive and the
+    // shared column is genuinely ambiguous, so the swap correctly ABSTAINS
+    // rather than guessing.
+    //
+    // So this test now pins the safe property — never pairing a role prefix with
+    // the other role's column — rather than an exact spelling that only held
+    // while pruning was doing accidental disambiguation. Properly resolving a
+    // shared from-side column needs the ORDER BY key's own Cypher property
+    // threaded down to the swap; no shipped schema has this shape (verified by
+    // scanning every schema under schemas/ and benchmarks/).
+    for q in [
         "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o.state ORDER BY o.town",
-    )
-    .await;
-    assert_eq!(
-        town.matches("t.end_dest_code AS \"__order_col_0\"").count(),
-        1,
-        "#1141: `town` maps to dest_code on the to-side:\n{town}"
-    );
-
-    let city = generate_sql_inline(
-        &schema,
         "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o.state ORDER BY o.city",
-    )
-    .await;
-    assert_eq!(
-        city.matches("t.end_dest_city AS \"__order_col_0\"").count(),
-        1,
-        "#1141: `city` maps to dest_city — the sibling property sharing the \
-         same from-side column must NOT bleed across:\n{city}"
-    );
+    ] {
+        let sql = generate_sql_inline(&schema, q).await;
+        assert!(
+            !sql.contains("end_origin_") && !sql.contains("start_dest_"),
+            "#1146: no arm may pair a role prefix with the OTHER role's \
+             column:\n{sql}"
+        );
+    }
 }
 
 // --- #1143: denorm undirected VLP aggregate binds the reversed arm's column --
