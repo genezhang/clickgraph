@@ -3549,6 +3549,13 @@ struct VlpArmRoles {
     by_cte: std::collections::HashMap<String, (String, String)>,
     /// The roles the global ORDER BY rewrite resolved against.
     primary: (String, String),
+    /// CTE name -> the columns that CTE projects, each tagged with the Cypher
+    /// alias/property it came from. Query-bound truth for the role swap
+    /// (re-review CRITICAL: a schema-wide scan mis-bound unrelated VLPs).
+    columns_by_cte:
+        std::collections::HashMap<String, Vec<crate::render_plan::cte_manager::CteColumnMetadata>>,
+    /// The CTE the arm currently being rewritten scans. Set per arm.
+    arm_cte: Option<String>,
 }
 
 /// #1140: the PRIMARY direction's `(start_alias, end_alias)` — the roles the
@@ -3566,6 +3573,16 @@ fn primary_vlp_roles(plan: &RenderPlan) -> Option<VlpArmRoles> {
         })
         .collect();
 
+    let columns_by_cte: std::collections::HashMap<
+        String,
+        Vec<crate::render_plan::cte_manager::CteColumnMetadata>,
+    > = plan
+        .ctes
+        .0
+        .iter()
+        .map(|c| (c.cte_name.clone(), c.columns.clone()))
+        .collect();
+
     let from = plan.from.0.as_ref()?;
     let (start, end) = by_cte.get(&from.name)?.clone();
     if start == end {
@@ -3574,6 +3591,8 @@ fn primary_vlp_roles(plan: &RenderPlan) -> Option<VlpArmRoles> {
     Some(VlpArmRoles {
         by_cte,
         primary: (start, end),
+        columns_by_cte,
+        arm_cte: None,
     })
 }
 
@@ -3581,7 +3600,7 @@ fn primary_vlp_roles(plan: &RenderPlan) -> Option<VlpArmRoles> {
 /// reference in `expr`, structurally (recursing through every wrapper via
 /// `map_render_expr`, so an EXPRESSION key such as `toUpper(a.bank_id)` is
 /// covered, not just a bare column).
-fn swap_vlp_role_prefixes(expr: &RenderExpr) -> RenderExpr {
+fn swap_vlp_role_prefixes(expr: &RenderExpr, roles: &VlpArmRoles) -> RenderExpr {
     use crate::graph_catalog::expression_parser::PropertyValue;
     use crate::render_plan::render_expr::{map_render_expr, RenderRewrite};
 
@@ -3594,43 +3613,60 @@ fn swap_vlp_role_prefixes(expr: &RenderExpr) -> RenderExpr {
     // `start_origin_state` -> `end_origin_state` keeps the FROM-role column
     // under the `end_` prefix, which either dangles or — worse, once #1141
     // makes such names resolvable — binds a column that exists but holds the
-    // OTHER endpoint's value (silently mis-sorted rows). The role's own column
-    // must be re-resolved: `start_origin_state` -> `end_dest_state`.
-    let reresolve_denorm = |rest: &str, to_from_role: bool| -> String {
-        // `rest` is the physical column of the ORIGINAL role. Find the Cypher
-        // property it maps to on that side, then take the OTHER side's column.
-        let Some(schema) = crate::server::query_context::get_current_schema() else {
+    // OTHER endpoint's value (silently mis-sorted rows).
+    //
+    // Re-review CRITICAL: resolving that through a SCHEMA-WIDE scan let a
+    // denormalized label anywhere in the catalog rewrite an unrelated (even
+    // non-denormalized) VLP's key — proven live: a `Leg` label on a different
+    // table/database rewrote a plain `Account` key to `end_holder_name`, a
+    // real column that sorts wrongly. It was also nondeterministic (`HashMap`
+    // iteration picked between two properties sharing a from-side column).
+    //
+    // Both go away by asking the ARM ITSELF. Every VLP `Cte` carries
+    // `CteColumnMetadata` — the exact set of columns it projects, each tagged
+    // with the Cypher alias and property it came from. That is query-bound and
+    // ordered, so the swap becomes a lookup rather than an inference: find the
+    // column being referenced, take its PROPERTY, then find the column this
+    // arm projects for the SAME property under the opposite role. Falls back
+    // to the plain prefix flip only when the arm publishes no such metadata.
+    let target_cte = roles.arm_cte.as_deref();
+    let columns: &[crate::render_plan::cte_manager::CteColumnMetadata] = target_cte
+        .and_then(|name| roles.columns_by_cte.get(name))
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+
+    let reresolve = |rest: &str, to_start: bool| -> String {
+        let want = if to_start {
+            crate::render_plan::cte_manager::VlpColumnPosition::Start
+        } else {
+            crate::render_plan::cte_manager::VlpColumnPosition::End
+        };
+        // The column as spelled BEFORE the flip, i.e. under the opposite role.
+        let have_prefix = if to_start { "end_" } else { "start_" };
+        let spelled = format!("{have_prefix}{rest}");
+        let Some(src_meta) = columns.iter().find(|m| m.cte_column_name == spelled) else {
             return rest.to_string();
         };
-        for node_schema in schema.all_node_schemas().values() {
-            if node_schema.role_dependent_property_names().is_empty() {
-                continue;
-            }
-            // The original role is the opposite of the one we are moving TO.
-            let (from_map, to_map) = (
-                node_schema.denorm_role_properties(!to_from_role),
-                node_schema.denorm_role_properties(to_from_role),
-            );
-            let (Some(from_map), Some(to_map)) = (from_map, to_map) else {
-                continue;
-            };
-            if let Some((prop, _)) = from_map.iter().find(|(_, col)| col.as_str() == rest) {
-                if let Some(target) = to_map.get(prop) {
-                    return target.clone();
-                }
-            }
+        // The same PROPERTY, projected by this arm under the target role.
+        match columns
+            .iter()
+            .find(|m| m.cypher_property == src_meta.cypher_property && m.vlp_position == Some(want))
+        {
+            Some(dst) => dst
+                .cte_column_name
+                .strip_prefix(if to_start { "start_" } else { "end_" })
+                .unwrap_or(&dst.cte_column_name)
+                .to_string(),
+            None => rest.to_string(),
         }
-        rest.to_string()
     };
 
     let flip = |col: &str| -> Option<String> {
         if let Some(rest) = col.strip_prefix(&start_pfx) {
-            // start -> end: the end role is the TO side (`to_from_role = false`).
-            Some(format!("{end_pfx}{}", reresolve_denorm(rest, false)))
+            Some(format!("{end_pfx}{}", reresolve(rest, false)))
         } else {
             col.strip_prefix(&end_pfx)
-                // end -> start: the start role is the FROM side.
-                .map(|rest| format!("{start_pfx}{}", reresolve_denorm(rest, true)))
+                .map(|rest| format!("{start_pfx}{}", reresolve(rest, true)))
         }
     };
 
@@ -3721,7 +3757,17 @@ fn add_order_by_columns_to_select(
             // arms — silently mis-sorting the reversed one. This arm's own CTE
             // says it assigns the OPPOSITE roles, so flip the key's role
             // prefixes structurally.
-            swap_vlp_role_prefixes(expr)
+            {
+                // Bind the metadata lookup to THIS arm's CTE.
+                let base = primary_roles.expect("guarded by arm_swaps_vlp_roles above");
+                let arm_roles = VlpArmRoles {
+                    by_cte: base.by_cte.clone(),
+                    primary: base.primary.clone(),
+                    columns_by_cte: base.columns_by_cte.clone(),
+                    arm_cte: plan.from.0.as_ref().map(|f| f.name.clone()),
+                };
+                swap_vlp_role_prefixes(expr, &arm_roles)
+            }
         } else if let Some(ref ctx) = path_context {
             resolve_denormalized_order_by_expr(expr, ctx)
         } else {
