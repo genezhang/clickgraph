@@ -2551,6 +2551,66 @@ async fn ldbc_1138_two_key_order_role_maps_per_arm() {
     );
 }
 
+// --- #1140: unprojected / expression ORDER BY keys on the undirected union ---
+//
+// #1139 fixed the role binding for keys that are PROJECTED (resolvable through
+// an output alias). A key with no projection to chain through fell to the
+// legacy path and bound the START role in BOTH arms — silently mis-sorted
+// rows on the reversed arm. Each arm's own CTE records its role assignment
+// (`vlp_a_b` = a-start/b-end, `vlp_b_a` the reverse), so an arm that swaps
+// roles relative to the primary direction flips the key's role prefixes.
+
+/// #1140 shape A: the ORDER BY key is not projected (`RETURN a.bank_id
+/// ORDER BY a.balance`).
+#[tokio::test]
+async fn ldbc_1140_unprojected_order_key_role_swaps_per_arm() {
+    let schema = load_schema_from("schemas/test/composite_node_ids.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Account)-[:TRANSFERRED*1..2]-(b:Account) \
+         RETURN a.bank_id ORDER BY a.balance",
+    )
+    .await;
+    assert_eq!(
+        sql.matches("t.start_balance AS \"__order_col_0\"").count(),
+        1,
+        "#1140: the forward arm keeps the start role:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("t.end_balance AS \"__order_col_0\"").count(),
+        1,
+        "#1140: the reversed arm must order by ITS endpoint (end role), not \
+         repeat the start role:\n{sql}"
+    );
+}
+
+/// #1140 shape B: an EXPRESSION key (`ORDER BY toUpper(a.bank_id)`). The swap
+/// must reach INSIDE the function wrapper, which is why the rewriter descends
+/// structurally instead of cloning non-column nodes.
+#[tokio::test]
+async fn ldbc_1140_expression_order_key_role_swaps_inside_wrapper() {
+    let schema = load_schema_from("schemas/test/composite_node_ids.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Account)-[:TRANSFERRED*1..2]-(b:Account) \
+         RETURN a.bank_id ORDER BY toUpper(a.bank_id)",
+    )
+    .await;
+    assert_eq!(
+        sql.matches("upperUTF8(t.start_bank_id) AS \"__order_col_0\"")
+            .count(),
+        1,
+        "#1140: forward arm:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("upperUTF8(t.end_bank_id) AS \"__order_col_0\"")
+            .count(),
+        1,
+        "#1140: the reversed arm must swap the role INSIDE the function \
+         wrapper:\n{sql}"
+    );
+}
+
 // --- #1141: role-ambiguous denorm property in a VLP ORDER BY -----------------
 //
 // A denormalized node whose from/to maps DISAGREE on a property's physical
@@ -2635,13 +2695,193 @@ async fn ldbc_1141_multi_type_union_cte_keeps_cypher_spelling() {
          WHERE ip.ip = '192.168.1.10' RETURN target LIMIT 20",
     )
     .await;
-    if sql.contains("vlp_multi_type_") {
-        assert!(
-            !sql.contains("start_id.orig_h"),
-            "#1141: the multi-type union CTE must keep its Cypher-name \
-             spelling (`start_ip`):\n{sql}"
-        );
+    // Assert the PRECONDITION rather than branching on it: if planning ever
+    // stops routing this shape through the multi-type generator, this test
+    // must fail loudly rather than silently pass while testing nothing.
+    assert!(
+        sql.contains("vlp_multi_type_"),
+        "#1141: precondition — this shape must render through the multi-type \
+         union generator:\n{sql}"
+    );
+    assert!(
+        !sql.contains("start_id.orig_h"),
+        "#1141: the multi-type union CTE must keep its Cypher-name \
+         spelling (`start_ip`):\n{sql}"
+    );
+}
+
+/// #1141 review (CRITICAL): an UNPROJECTED role-ambiguous key. There is no
+/// select item to chain through (#1139) so it falls to #1140's role swap —
+/// which must re-resolve the DENORM COLUMN for the new role, not merely flip
+/// the `start_`/`end_` prefix. Flipping alone yields `end_OriginState`: the
+/// end role paired with the FROM-role column, which once #1141 makes such
+/// names resolvable would bind a column holding the OTHER endpoint's value
+/// (silently mis-sorted rows — a loud->silent regression).
+#[tokio::test]
+async fn ldbc_1141_unprojected_role_ambiguous_key_reresolves_column() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o.city ORDER BY o.state",
+    )
+    .await;
+    assert_eq!(
+        sql.matches("t.start_OriginState AS \"__order_col_0\"")
+            .count(),
+        1,
+        "#1141: forward arm keeps its from-role column:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("t.end_DestState AS \"__order_col_0\"").count(),
+        1,
+        "#1141: the reversed arm must order by the TO-role column \
+         (`end_DestState`), not the from-role column under an `end_` prefix:\n{sql}"
+    );
+    assert!(
+        !sql.contains("end_OriginState") && !sql.contains("start_DestState"),
+        "#1141: no arm may pair a role prefix with the OTHER role's \
+         column:\n{sql}"
+    );
+}
+
+/// #1141/#1140 re-review (CRITICAL): the role swap must be bound to the ARM's
+/// OWN projected columns. Resolving it through a schema-wide scan let ANY
+/// denormalized label in the catalog rewrite an unrelated — here entirely
+/// NON-denormalized — VLP's ORDER BY key into a real column holding the other
+/// endpoint's value (loud -> silently mis-sorted; ground rule 1).
+///
+/// The fixture is the plain composite `Account` graph plus one unrelated
+/// denormalized `Leg` label on a different table AND database.
+#[tokio::test]
+async fn ldbc_1141_unrelated_denorm_label_must_not_rewrite_key() {
+    let schema = load_schema_from("schemas/test/denorm_decoy_unrelated_label.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Account)-[:TRANSFERRED*1..2]-(b:Account) \
+         RETURN a.bank_id ORDER BY a.account_type",
+    )
+    .await;
+    // Scoped to the ORDER BY KEY: `holder_name` legitimately appears as a
+    // projected CTE column (the schema declares it); what must never happen is
+    // the unrelated label's column becoming this query's sort key.
+    assert!(
+        !sql.contains("holder_name AS \"__order_col_"),
+        "#1141 re-review: an unrelated denormalized label must not reach \
+         across into this query's ORDER BY key:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("t.start_account_type AS \"__order_col_0\"")
+            .count(),
+        1,
+        "#1141 re-review: forward arm:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches("t.end_account_type AS \"__order_col_0\"")
+            .count(),
+        1,
+        "#1141 re-review: the reversed arm flips only the ROLE — this node has \
+         no role-specific maps, so the column name is unchanged:\n{sql}"
+    );
+}
+
+/// #1141/#1140 re-review (HIGH): SQL generation must be deterministic. The
+/// previous resolution iterated a `HashMap`, so when two Cypher properties
+/// share a from-side physical column but differ on the to-side, the answer
+/// varied run to run (observed 6/6 split over 12 runs). Reading the arm's
+/// ordered `CteColumnMetadata` makes it a lookup, not a guess.
+#[tokio::test]
+async fn ldbc_1141_role_swap_resolution_is_deterministic() {
+    let schema = load_schema_from("schemas/test/denorm_shared_from_column.yaml");
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..8 {
+        let sql = generate_sql_inline(
+            &schema,
+            "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o.state ORDER BY o.city",
+        )
+        .await;
+        let key = sql
+            .split_whitespace()
+            .find(|w| w.starts_with("t.end_"))
+            .unwrap_or("<none>")
+            .to_string();
+        seen.insert(key);
     }
+    assert_eq!(
+        seen.len(),
+        1,
+        "#1141 re-review: role-swap resolution must be deterministic, saw {seen:?}"
+    );
+}
+
+/// #1141/#1140 final review (CRITICAL): when the arm publishes no target-role
+/// entry for the key's property, the swap must ABSTAIN — leave the expression
+/// exactly as the global rewrite produced it — never emit a bare prefix flip.
+///
+/// That flip is the spelling round 1 proved wrong (`end_` + the FROM-role
+/// column). It is reachable on the shipped denorm schema through any
+/// EXPRESSION key, because the pruner only projects the opposite-role column
+/// for BARE keys (which #1141 resolves in `rewrite_expr_for_vlp`). Emitting it
+/// caused a Code 47 that main does NOT have.
+///
+/// Abstaining reproduces main's spelling for this shape exactly: still
+/// imperfect (both arms sort by the forward endpoint — tracked separately),
+/// but never a regression and never a NEW silent wrong.
+#[tokio::test]
+async fn ldbc_1141_unresolvable_expression_key_abstains_not_prefix_flip() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) \
+         RETURN o.city ORDER BY toUpper(o.state)",
+    )
+    .await;
+    assert!(
+        !sql.contains("end_OriginState"),
+        "#1141 final review: must never emit the FROM-role column under an \
+         `end_` prefix — that column is projected by no arm (Code 47), a \
+         regression versus main:\n{sql}"
+    );
+    // Main's spelling: both arms keep the globally-rewritten key.
+    assert_eq!(
+        sql.matches("upperUTF8(t.start_OriginState) AS \"__order_col_0\"")
+            .count(),
+        2,
+        "#1141 final review: abstain leaves BOTH arms with the global \
+         rewrite:\n{sql}"
+    );
+}
+
+/// #1141/#1140 final review (HIGH): two Cypher properties may share one
+/// from-side physical column (`city` and `town` both -> `origin_city`) while
+/// differing on the to-side (`dest_city` vs `dest_code`). The swap must
+/// resolve the key's OWN property, not whichever entry matches the column
+/// name first.
+#[tokio::test]
+async fn ldbc_1141_shared_from_column_resolves_the_keys_own_property() {
+    let schema = load_schema_from("schemas/test/denorm_shared_from_column.yaml");
+
+    let town = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o.state ORDER BY o.town",
+    )
+    .await;
+    assert_eq!(
+        town.matches("t.end_dest_code AS \"__order_col_0\"").count(),
+        1,
+        "#1141: `town` maps to dest_code on the to-side:\n{town}"
+    );
+
+    let city = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN o.state ORDER BY o.city",
+    )
+    .await;
+    assert_eq!(
+        city.matches("t.end_dest_city AS \"__order_col_0\"").count(),
+        1,
+        "#1141: `city` maps to dest_city — the sibling property sharing the \
+         same from-side column must NOT bleed across:\n{city}"
+    );
 }
 
 // --- #1135: `*0..0` is the zero-hop identity, not a 1-hop chain --------------

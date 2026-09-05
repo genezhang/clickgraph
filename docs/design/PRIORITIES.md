@@ -657,6 +657,26 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-09-05: **Correctness (ground-rule-1) — unprojected / expression ORDER BY
+  keys on the undirected VLP union bound the START role in BOTH arms** (branch
+  `fix/1140-unprojected-order-key-role-map`, PR #1145, closes #1140). #1139
+  fixed only keys resolvable through an OUTPUT ALIAS; a key with no projection
+  to chain through (`RETURN a.bank_id ORDER BY a.balance`) or an EXPRESSION key
+  (`ORDER BY toUpper(a.bank_id)`) fell to the legacy path and sorted the
+  reversed arm by the WRONG endpoint — silently mis-sorted rows. Each arm's own
+  `Cte` already records its role assignment structurally
+  (`vlp_cypher_start_alias`/`vlp_cypher_end_alias`); an arm assigning the
+  OPPOSITE roles now has the key's `start_*`/`end_*` prefixes flipped. TWO
+  first-cut bugs recorded in the commit: (1) reading `plan.ctes` PER ARM never
+  fired — only the OUTER plan carries `ctes` (the reversed arm has zero), so
+  the name→roles map is captured once and threaded through the recursion;
+  (2) returning `Replace(clone)` for non-column nodes stopped `map_render_expr`
+  and left the EXPRESSION shape unfixed — must `Recurse`. Ordered strictly
+  AFTER #1139's chain, so projected keys are untouched; self-loop endpoints
+  (`start == end`) return None. Live (`db_composite_id`): pre-fix the balance
+  column comes back scrambled (…15000, 7800.25, 3100.75); post-fix all 32 rows
+  ascend monotonically with each balance matching its own account.
+
 - 2026-09-05: **Correctness — denormalized undirected-VLP ORDER BY bound the
   LOGICAL property name (`t.start_city`) instead of the projected PHYSICAL,
   role-correct column** (branch `fix/1141-denorm-undirected-vlp-order-by`,
