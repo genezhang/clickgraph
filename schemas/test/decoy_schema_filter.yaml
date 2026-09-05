@@ -1,0 +1,60 @@
+# #1122 fixture: a declared cypher property NAMED after a different physical
+# column that the schema `filter:` references.
+#
+#   P:  filter: "kind = 'A'"   + property_mappings: kind: decoy
+#       (cypher `kind` -> physical `decoy`; filter on the physical `kind`)
+#   Q:  filter: "kind = 'A' AND kind_extra = 'X'" + kind_extra: decoy2
+#       (#1128 review HIGH: `kind` is a strict PREFIX of `kind_extra`)
+#
+# Pre-#1122 (P), the end-filter textual rewrite matched the CYPHER-ALIAS
+# spelling too, so the wrapper predicate bound to `end_kind` — a projected
+# column holding `decoy`'s value: valid SQL, WRONG ROWS, no error (returned
+# pk 3 where the answer is pk 2; counts agreed by coincidence).
+#
+# Pre-rework (Q), the plain replace applied shortest-first corrupted
+# `end_node.kind_extra` -> `end_kind_extra` (the decoy projection), with
+# correctness DEPENDENT ON THE YAML PREDICATE ORDER. Fixed by longest-first +
+# word-boundary (`replace_column_token`) + literal-aware
+# (`rewrite_outside_string_literals`) rewrite — the #934 primitives.
+name: decoy_schema_filter_test
+version: "1.0"
+description: "#1122/#1128: schema-filter columns colliding with differently-mapped declared properties"
+
+graph_schema:
+  nodes:
+    - label: P
+      database: d1122
+      table: p
+      node_id: pk
+      filter: "kind = 'A'"
+      property_mappings:
+        pk: pk
+        kind: decoy
+
+    - label: Q
+      database: d1122
+      table: p2
+      node_id: pk
+      filter: "kind = 'A' AND kind_extra = 'X'"
+      property_mappings:
+        pk: pk
+        kind_extra: decoy2
+
+  edges:
+    - type: L
+      database: d1122
+      table: l
+      from_node: P
+      to_node: P
+      from_id: f
+      to_id: t
+      property_mappings: {}
+
+    - type: L2
+      database: d1122
+      table: l2
+      from_node: Q
+      to_node: Q
+      from_id: f
+      to_id: t
+      property_mappings: {}

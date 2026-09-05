@@ -2064,3 +2064,127 @@ async fn ldbc_1125_multi_label_inferred_node_gets_no_filter() {
          label's schema filter:\n{sql}"
     );
 }
+
+// --- #1122: schema-filter column colliding with a differently-mapped property -
+//
+// `filter: "kind = 'A'"` (physical column `kind`) + `property_mappings:
+// kind: decoy` (cypher `kind` -> physical `decoy`). Two coupled defects:
+//   1. The #1118 projection SKIPPED the collision (ambiguous `end_kind`),
+//      leaving the filter unprojected.
+//   2. `rewrite_end_filter_for_cte` ALSO matched the cypher-alias spelling
+//      (`end_node.kind`), rewriting the unprojected filter onto `end_kind` —
+//      the DECLARED property's projected column, holding `decoy`'s value.
+// Net: valid SQL, wrong rows, no error — live pk 3 where the answer is pk 2,
+// with the COUNTS agreeing by coincidence (1 either way).
+//
+// Fix: project the collision under a mangled `__sf_<col>` alias bound to the
+// REAL column, and drop the alias-spelling replace (filters reach the rewrite
+// already property-mapped, so it had no covered use — an uncovered reliance
+// now fails LOUD instead of silently against the wrong column).
+
+/// The wrapper predicate must bind to the REAL filter column via the mangled
+/// projection — never to the declared property's (differently-mapped) column.
+#[tokio::test]
+async fn ldbc_1122_colliding_schema_filter_binds_real_column() {
+    let schema = load_schema_from("schemas/test/decoy_schema_filter.yaml");
+    for cypher in [
+        "MATCH (a:P)-[:L*1..3]->(b:P) RETURN b.pk",
+        "MATCH (a:P)-[:L*1..3]->(b:P) RETURN count(*)",
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(
+            sql.contains("end_node.kind as end___sf_kind"),
+            "#1122: the colliding filter column must be projected under the \
+             mangled alias, bound to the REAL `kind` column, for `{cypher}`:\n{sql}"
+        );
+        assert!(
+            sql.contains("end___sf_kind = 'A'"),
+            "#1122: the wrapper predicate must reference the mangled \
+             projection for `{cypher}`:\n{sql}"
+        );
+        // The mis-bind: predicate on the DECLARED property's projection.
+        assert!(
+            !sql.contains("(end_kind = 'A'"),
+            "#1122: the predicate must NOT bind to `end_kind` (that column \
+             holds `decoy`'s value) for `{cypher}`:\n{sql}"
+        );
+    }
+}
+
+/// #1122 boundary: the normal declared-property path (filter column IS the
+/// declared property's physical column) keeps its unmangled alias.
+#[tokio::test]
+async fn ldbc_1122_non_colliding_filter_unmangled() {
+    let schema = load_schema_from("benchmarks/ldbc_snb/schemas/ldbc_snb.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Place)-[:IS_PART_OF*1..2]->(c:Country) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("end_type = 'Country'") && !sql.contains("__sf_"),
+        "#1122: the non-colliding LDBC shape keeps its plain alias:\n{sql}"
+    );
+}
+
+/// #1122 boundary: a user WHERE spelled with the cypher alias still works —
+/// it reaches the rewrite already property-mapped to the physical column, so
+/// removing the alias-spelling replace loses nothing.
+#[tokio::test]
+async fn ldbc_1122_user_where_still_property_mapped() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE b.name = 'Bob' RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("end_name = 'Bob'"),
+        "#1122: a user WHERE on a renamed property must still rewrite onto \
+         the projected column:\n{sql}"
+    );
+}
+
+/// #1128 review (HIGH): prefix-pair collision. `kind` is a strict prefix of
+/// `kind_extra` (which maps to `decoy2`); the shortest-first plain replace
+/// corrupted `end_node.kind_extra` into `end_kind_extra` — the decoy
+/// projection — with correctness dependent on the YAML predicate ORDER.
+/// Live before the rework: pk 3 where the answer is pk 2 in one order,
+/// correct in the other. Now longest-first + word-boundary + literal-aware.
+#[tokio::test]
+async fn ldbc_1122_prefix_pair_filter_binds_real_columns() {
+    let schema = load_schema_from("schemas/test/decoy_schema_filter.yaml");
+    let sql = generate_sql_inline(&schema, "MATCH (a:Q)-[:L2*1..3]->(b:Q) RETURN b.pk").await;
+    assert!(
+        sql.contains("end___sf_kind_extra = 'X'"),
+        "#1128: the longer colliding column must bind its mangled projection \
+         (never the decoy `end_kind_extra`):\n{sql}"
+    );
+    assert!(
+        sql.contains("end_kind = 'A'"),
+        "#1128: the shorter (undeclared, non-colliding) column keeps its \
+         plain projection:\n{sql}"
+    );
+    assert!(
+        !sql.contains("end_kind_extra = 'X'") || sql.contains("end___sf_kind_extra = 'X'"),
+        "#1128: `end_node.kind_extra` must never be corrupted into the decoy \
+         `end_kind_extra` projection:\n{sql}"
+    );
+}
+
+/// #1128 review: a string LITERAL that happens to contain `end_node.<col>`
+/// must not be edited by the rewrite (`rewrite_outside_string_literals`).
+#[tokio::test]
+async fn ldbc_1122_literal_value_not_corrupted() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) \
+         WHERE b.name = 'end_node.full_name' RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("end_name = 'end_node.full_name'"),
+        "#1128: the literal VALUE must survive the rewrite verbatim:\n{sql}"
+    );
+}

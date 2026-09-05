@@ -4291,21 +4291,38 @@ pub fn extract_ctes_with_context(
                                     // Undeclared filter column — the shipped LDBC shape
                                     // (`Country.filter: "type = 'Country'"` with `type`
                                     // absent from property_mappings). Project it under
-                                    // its own column name. Skip when a DIFFERENT declared
-                                    // property already claims that output name, since
-                                    // `end_<name>` would then be ambiguous.
+                                    // its own column name — unless a DIFFERENT declared
+                                    // property already claims that output name
+                                    // (`kind: decoy` declared + filter on physical
+                                    // `kind`), where `end_<name>` would be ambiguous.
                                     //
-                                    // NOTE: skipping keeps THIS code from making things
-                                    // worse; it does NOT make that shape correct.
-                                    // `rewrite_end_filter_for_cte` still rewrites via the
-                                    // cypher-alias spelling and binds the predicate to
-                                    // the OTHER property's column — silent-wrong,
-                                    // pre-existing, tracked as #1122 (its textual
-                                    // `str::replace` needs a structural rewrite).
-                                    if node_schema.property_mappings.contains_key(col.as_str()) {
-                                        continue;
+                                    // #1122: for that collision, project under a MANGLED
+                                    // alias instead of skipping. The skip left the filter
+                                    // unrewritten, and the (now removed) alias-spelling
+                                    // replace then mis-bound it to the declared property's
+                                    // column — wrong rows, no error.
+                                    // `rewrite_end_filter_for_cte`'s physical-column
+                                    // replace targets `end_<alias>`, so the wrapper
+                                    // predicate binds to the REAL column.
+                                    //
+                                    // The mangle is only PRACTICALLY collision-free: a
+                                    // declared property literally named `__sf_<col>`
+                                    // would collide again (review of #1128). Escape by
+                                    // doubling the prefix until free — deterministic and
+                                    // schema-independent, so the dedup check below can
+                                    // never silently resurrect the skip.
+                                    let mut mangled = format!("__sf_{col}");
+                                    while node_schema
+                                        .property_mappings
+                                        .contains_key(mangled.as_str())
+                                    {
+                                        mangled = format!("__sf_{mangled}");
                                     }
-                                    col.clone()
+                                    if node_schema.property_mappings.contains_key(col.as_str()) {
+                                        mangled
+                                    } else {
+                                        col.clone()
+                                    }
                                 }
                             };
                             if props.iter().any(|p: &NodeProperty| {

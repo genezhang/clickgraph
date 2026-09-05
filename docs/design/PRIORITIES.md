@@ -657,6 +657,26 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-09-05: **Correctness (ground-rule-1) — schema-filter column colliding
+  with a differently-mapped declared property mis-bound the wrapper predicate
+  to the WRONG column** (branch `fix/1122-structural-end-filter-rewrite`,
+  PR #1128, closes #1122). `filter: "kind = 'A'"` + `property_mappings: kind:
+  decoy` → two coupled defects: the #1118 projection SKIPPED the collision
+  (leaving the filter unprojected) and `rewrite_end_filter_for_cte`'s
+  cypher-ALIAS-spelling replace then rewrote `end_node.kind` onto `end_kind`
+  — the declared property's projected column, holding `decoy`'s value. Valid
+  SQL, WRONG ROWS, no error: live pk 3 where the answer is pk 2, with the
+  COUNTS agreeing by coincidence (1 either way — a count-only oracle passes
+  this defect; assert on IDs). Fix: (1) project the collision under a mangled
+  `__sf_<col>` alias bound to the REAL column; (2) DELETE the alias-spelling
+  replace — filters reach the rewrite already property-mapped (verified: a
+  236-combo end-WHERE sweep and the full suite are byte-identical without it),
+  so it had no covered use and was purely the mis-bind vector; an uncovered
+  reliance now fails LOUD, never silently against the wrong column. LDBC
+  matrix re-verified (1343/1454/1343/199). New fixture
+  `schemas/test/decoy_schema_filter.yaml` + 3 tests (targeting one fails on
+  main). Suite green (1738 + 678 + ratchet), clippy clean, zero golden churn.
+
 - 2026-09-05: **Correctness (ground-rule-1) — the type-inference ViewScan
   rebuilds dropped `schema_filter`, silently disarming every downstream
   schema-filter application for inferred-label nodes** (branch
