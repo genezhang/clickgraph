@@ -5235,8 +5235,52 @@ fn build_branch_inner_select_with_own_items(
     outer_select: &SelectItems,
     drop_path_metadata: bool,
     group_by_exprs: &[RenderExpr],
+    // #1143: only a role-swapped VLP arm must be trimmed to the outer plan's
+    // alias contract. The long-standing callers (coupled / denormalized from-to
+    // unions) rely on the branch contributing its own items verbatim — trimming
+    // those drops real columns and breaks their goldens.
+    restrict_to_outer_contract: bool,
 ) -> String {
+    // #1143 review round 2: UNION ALL requires every arm to project the SAME
+    // NUMBER of columns, in the same order. A role-swapped VLP arm's own select
+    // can carry a helper item the FORWARD arm does not have — e.g. an aggregate
+    // argument on a role-ambiguous denorm property resolves to
+    // `t.end_dest_state` here but `t.start_origin_state` there, each under its
+    // own alias — so merging the branch's items verbatim yields 4 columns
+    // against the other arm's 3 (ClickHouse Code 53). Main emitted a Code 47
+    // for this shape, so widening it would be swapping one loud error for
+    // another.
+    //
+    // The OUTER plan's alias set is the contract every arm must satisfy: keep
+    // only branch items whose alias the outer select also defines, and let the
+    // pass-through loop below supply anything missing. Per-arm role correctness
+    // is preserved by `key_branch_overrides`, which rewrites the EXPRESSION
+    // under the shared alias rather than adding a column.
+    let outer_aliases: std::collections::HashSet<String> = outer_select
+        .items
+        .iter()
+        .filter_map(|i| i.col_alias.as_ref().map(|a| a.0.clone()))
+        .collect();
     let mut merged_select = branch_select.clone();
+    if restrict_to_outer_contract {
+        merged_select.items.retain(|i| {
+            // The OUTER item is appended for every aggregate below, and
+            // `agg_arg_cols` is derived from whatever ends up in this list — so
+            // keeping the branch's OWN aggregate too exports BOTH arms'
+            // argument columns from this arm (3 columns against the other
+            // arm's 2 → Code 53). Its per-arm role is already carried by
+            // `key_branch_overrides`, which rewrites the expression under the
+            // OUTER argument's alias.
+            if render_expr_contains_aggregate(&i.expression) {
+                return false;
+            }
+            match i.col_alias.as_ref() {
+                Some(a) => outer_aliases.contains(&a.0),
+                // Unaliased items are positional; leave them alone.
+                None => true,
+            }
+        });
+    }
     let branch_aliases: std::collections::HashSet<String> = merged_select
         .items
         .iter()
@@ -5412,6 +5456,8 @@ fn render_cypher_union_arm(arm: &RenderPlan) -> String {
                         &arm.select,
                         drop_path_metadata,
                         &arm.group_by.0,
+                        // Legacy path: the branch contributes its own items verbatim.
+                        false,
                     ));
                 } else {
                     part.push_str(&inner_select_sql);
@@ -6639,6 +6685,10 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                                 &plan.select,
                                 drop_path_metadata,
                                 &plan.group_by.0,
+                                // #1143: a role-swapped VLP arm must match the
+                                // outer plan's column contract exactly; the
+                                // pre-existing non-VLP callers must not.
+                                needs_swap && branch_vlp_cte.is_some(),
                             ));
                         } else if needs_swap {
                             // Swap t.start_id ↔ t.end_id and start_* ↔ end_* in SELECT

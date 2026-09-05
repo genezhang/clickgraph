@@ -3013,6 +3013,46 @@ async fn ldbc_1143_composite_aggregate_argument_still_role_swaps() {
     );
 }
 
+/// #1143 review round 2: UNION ALL requires every arm to project the same
+/// NUMBER of columns. A role-swapped arm's own select carries its own
+/// aggregate (whose argument resolves to THIS arm's role column), and
+/// `agg_arg_cols` is derived from whatever the merged list holds — so merging
+/// it alongside the outer aggregate exported BOTH arms' argument columns from
+/// one arm: 3 against the other's 2, ClickHouse Code 53. Main emitted Code 47
+/// for this shape, so that would be trading one loud error for another.
+///
+/// The branch's aggregate is dropped (its per-arm role is carried by
+/// `key_branch_overrides`, which rewrites the EXPRESSION under the outer
+/// argument's alias), and the trim is scoped to swapped VLP arms so the
+/// long-standing coupled / denorm from-to callers keep contributing their own
+/// items verbatim.
+#[tokio::test]
+async fn ldbc_1143_swapped_arm_matches_the_outer_column_contract() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) \
+         RETURN o.city, count(DISTINCT o.state)",
+    )
+    .await;
+    // Both arms of the inner union must project the same number of columns.
+    let inner = sql
+        .split("FROM (")
+        .nth(1)
+        .expect("inner union present")
+        .split(") AS __union")
+        .next()
+        .expect("inner union closed");
+    let widths: Vec<usize> = inner
+        .split("UNION ALL")
+        .map(|arm| arm.matches(" AS \"").count())
+        .collect();
+    assert!(
+        widths.len() >= 2 && widths.iter().all(|w| *w == widths[0]),
+        "#1143: every arm must project the same column count, saw {widths:?}:\n{sql}"
+    );
+}
+
 /// #1143 boundary: an AGGREGATE-ARGS-ONLY shape has no non-aggregate item to
 /// carry, and its arms contribute different helper-column counts — routing it
 /// through the per-arm select would turn the existing loud Code 47 into an
