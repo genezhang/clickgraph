@@ -1994,10 +1994,20 @@ fn lower_both_endpoint_filter_to_cte_columns(
         id_column_name: &str,
         properties: &[NodeProperty],
     ) -> Result<String, CteError> {
-        // Any column of the node_id maps to the CTE's single id projection —
-        // a composite key is projected pipe-joined into one `start_id`/`end_id`.
-        if id_cols.iter().any(|c| c == column) {
+        // A SINGLE-column node_id maps to the CTE's id projection. A COMPOSITE
+        // key's `start_id`/`end_id` is the pipe-joined concat of ALL components,
+        // so collapsing ONE component onto it changes semantics (#1131: a
+        // same-bank cross-endpoint comparison `a.bank_id = b.bank_id` became
+        // whole-id equality — i.e. a cycle test — silently excluding same-bank
+        // different-account paths, 0 vs an oracle 3). Since #1130 the emitter
+        // always projects each composite component as `<prefix>_<col>` in BOTH
+        // arms (grouped order), so a component reference maps to its own
+        // projected column instead.
+        if id_cols.len() == 1 && id_cols.iter().any(|c| c == column) {
             return Ok(id_column_name.to_string());
+        }
+        if id_cols.len() > 1 && id_cols.iter().any(|c| c == column) {
+            return Ok(format!("{}{}", prefix, column));
         }
         for prop in properties {
             if prop.cypher_alias == cypher_alias
