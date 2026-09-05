@@ -3720,29 +3720,12 @@ pub fn extract_ctes_with_context(
                             .as_ref()
                             .map(|expr| render_expr_to_sql_string(expr, &alias_mapping));
 
-                        // #1103 SCOPE: the fully-denormalized pattern is intercepted
-                        // upstream by `DenormalizedCteStrategy`, which has no wrapper
-                        // path for a both-endpoint predicate — its CTE columns are
-                        // role-prefixed physical names (`start_Origin`/`end_Dest`), so
-                        // the rewrite needs from/to-column role resolution the standard
-                        // rewrite does not do. Rather than drop the predicate (silently
-                        // wrong) or half-rewrite it (Code 47), route it back into the
-                        // start slot — byte-identical to the pre-#1103 behavior for this
-                        // family. The denormalized half of #1103 is tracked separately.
-                        let is_fully_denormalized = matches!(
-                            pattern_ctx_for_mapping.as_ref().map(|c| &c.join_strategy),
-                            Some(JoinStrategy::SingleTableScan { .. })
-                        );
-                        let (both_endpoint_sql, start_sql) = if is_fully_denormalized {
-                            let folded = match (start_sql, both_endpoint_sql) {
-                                (Some(st), Some(be)) => Some(format!("{} AND {}", st, be)),
-                                (Some(st), None) => Some(st),
-                                (None, be) => be,
-                            };
-                            (None, folded)
-                        } else {
-                            (both_endpoint_sql, start_sql)
-                        };
+                        // #1111: the fully-denormalized pattern now has its OWN
+                        // role-aware lowering + post-recursion wrapper
+                        // (`DenormalizedCteStrategy::lower_both_endpoint_filter`),
+                        // so the predicate is no longer folded back into the start
+                        // slot the way #1103 left it. It flows through
+                        // `both_endpoint_filters` like every other family.
                         // ✅ Relationship filters always use rel_alias_mapping
                         let rel_sql_rendered = mapped_rel
                             .as_ref()

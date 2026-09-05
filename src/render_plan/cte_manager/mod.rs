@@ -545,6 +545,33 @@ impl DenormalizedCteStrategy {
         // Build the recursive CTE SQL for denormalized schema
         let sql = self.generate_recursive_cte_sql(context, properties, filters)?;
 
+        // #1111: a WHERE predicate naming BOTH endpoints (`a.city <> b.city`)
+        // is a whole-path predicate on the (start, FINAL endpoint) pair. Applied
+        // in the base case — where the denorm strategy previously left it — it
+        // both prunes valid paths whose hop-1 INTERMEDIATE airport fails the
+        // predicate and leaks paths whose final endpoint fails it past hop 1.
+        // #1103 fixed this for the standard families by deferring to a
+        // post-recursion wrapper; this does the same here, using the denorm
+        // CTE's own role-prefixed physical columns
+        // (`start_<from_col>`/`end_<to_col>`).
+        let sql = match &filters.both_endpoint_filters {
+            None => sql,
+            Some(expr) => {
+                let pred = self.lower_both_endpoint_filter(expr, properties)?;
+                let inner = format!("{}_inner", cte_name);
+                // `generate_recursive_cte_sql` emits `<cte_name> AS ( … )` and
+                // self-references `<cte_name>` in the recursive arm; rename both
+                // to the inner name, then wrap.
+                let renamed = sql
+                    .replacen(&format!("{} AS (", cte_name), &format!("{} AS (", inner), 1)
+                    .replace(
+                        &format!("FROM {} vp", cte_name),
+                        &format!("FROM {} vp", inner),
+                    );
+                format!("{renamed},\n{cte_name} AS (\n    SELECT * FROM {inner} WHERE ({pred})\n)")
+            }
+        };
+
         // Build column metadata for denormalized schema
         let mut columns = Vec::new();
 
@@ -634,6 +661,94 @@ impl DenormalizedCteStrategy {
             // ⚠️ CRITICAL: For denormalized VLP, end_node_filters must be applied in outer SELECT
             outer_where_filters: filters.end_sql.clone(),
         })
+    }
+
+    /// #1111: lower a both-endpoint predicate onto the DENORMALIZED CTE's own
+    /// projected columns.
+    ///
+    /// Denorm projections are role-prefixed PHYSICAL names — `start_<from_col>`
+    /// / `end_<to_col>` for the ids, and `start_<physical>` / `end_<physical>`
+    /// for properties, where the physical column depends on WHICH ROLE the node
+    /// plays (`Airport.city` is `OriginCityName` as the from-node and
+    /// `DestCityName` as the to-node). That role resolution is what the standard
+    /// lowering in [`lower_both_endpoint_filter_to_cte_columns`] does not do,
+    /// and why #1103 scoped this family out.
+    ///
+    /// Structural, on the RenderExpr — never a textual rewrite of rendered SQL
+    /// (see #1103's prefix-collision defect). Fails with a `CteError` when a
+    /// referenced property is not projected, rather than emitting a reference to
+    /// a column the CTE does not select.
+    fn lower_both_endpoint_filter(
+        &self,
+        expr: &crate::render_plan::render_expr::RenderExpr,
+        properties: &[NodeProperty],
+    ) -> Result<String, CteError> {
+        use crate::query_planner::join_context::{VLP_END_ID_COLUMN, VLP_START_ID_COLUMN};
+        use crate::render_plan::render_expr::RenderExpr;
+
+        let start_alias = self.pattern_ctx.left_node_alias.clone();
+        let id_prop = self.denorm_node_id_property_name();
+
+        // Resolve one endpoint reference to its CTE column, or explain why not.
+        // `column` may arrive as the Cypher property name OR the already
+        // role-mapped physical column, so both are accepted — mirroring how the
+        // projection is built from `NodeProperty { column_name, alias }`.
+        let resolve = |alias: &str, column: &str| -> Result<String, CteError> {
+            let is_start = alias == start_alias;
+            let (prefix, id_col, id_column_name) = if is_start {
+                ("start_", self.from_col.as_str(), VLP_START_ID_COLUMN)
+            } else {
+                ("end_", self.to_col.as_str(), VLP_END_ID_COLUMN)
+            };
+            // The node_id, by either its logical property name or its physical column.
+            if column == id_col || id_prop.as_deref() == Some(column) {
+                return Ok(id_column_name.to_string());
+            }
+            for prop in properties {
+                if prop.cypher_alias == alias
+                    && (prop.column_name == column || prop.alias == column)
+                {
+                    // Denorm projections key on the PHYSICAL column name, not the
+                    // Cypher alias (see the metadata builder above).
+                    return Ok(format!("{}{}", prefix, prop.column_name));
+                }
+            }
+            Err(CteError::SchemaValidationError(format!(
+                "denormalized variable-length path: WHERE predicate references both \
+                 endpoints via `{alias}.{column}`, but that property is not projected \
+                 into the path CTE, so it cannot be evaluated on the final endpoint \
+                 pair. Reference `{alias}.{column}` in the query, or filter on the \
+                 endpoint id instead."
+            )))
+        };
+
+        fn rewrite<F>(e: &RenderExpr, resolve: &F) -> Result<RenderExpr, CteError>
+        where
+            F: Fn(&str, &str) -> Result<String, CteError>,
+        {
+            match e {
+                RenderExpr::PropertyAccessExp(pa) => {
+                    let col = resolve(pa.table_alias.0.as_str(), pa.column.raw())?;
+                    // Bare column of the wrapper's own scope (`SELECT * FROM inner`).
+                    Ok(RenderExpr::Column(crate::render_plan::render_expr::Column(
+                        crate::graph_catalog::expression_parser::PropertyValue::Column(col),
+                    )))
+                }
+                RenderExpr::OperatorApplicationExp(op) => {
+                    let mut new_op = op.clone();
+                    new_op.operands = op
+                        .operands
+                        .iter()
+                        .map(|o| rewrite(o, resolve))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(RenderExpr::OperatorApplicationExp(new_op))
+                }
+                other => Ok(other.clone()),
+            }
+        }
+
+        let lowered = rewrite(expr, &resolve)?;
+        Ok(crate::render_plan::cte_extraction::render_expr_to_sql_string(&lowered, &[]))
     }
 
     pub fn validate(&self, pattern_ctx: &PatternSchemaContext) -> Result<(), CteError> {

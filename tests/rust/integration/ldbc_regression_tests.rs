@@ -1400,3 +1400,78 @@ async fn ldbc_1104_post_with_same_arity_still_renders() {
         "#1104: same-arity post-WITH identity must still render:\n{sql}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #1111 — DENORMALIZED VLP both-endpoint WHERE predicate
+//
+// #1103 moved a both-endpoint predicate to the post-recursion wrapper for the
+// standard families but scoped the fully-denormalized pattern OUT: its CTE
+// columns are role-prefixed PHYSICAL names (`start_OriginCityName` /
+// `end_DestCityName`, since `Airport.city` is a different column depending on
+// which end the node plays), which the standard lowering cannot resolve. It was
+// left applying the predicate in the base case — the original defect.
+//
+// Verified live on a CYCLIC 4-flight fixture (A→B→C→A plus A→C): main returned
+// 14 rows for `WHERE a.city <> b.city` at `*1..3`; the hand-computed oracle is
+// 9 (5 same-city paths must be excluded). An ACYCLIC fixture cannot expose the
+// leak half — see the "cyclic oracle" lesson.
+// ---------------------------------------------------------------------------
+
+/// #1111: the predicate must land on the wrapper, against role-resolved columns.
+#[tokio::test]
+async fn ldbc_1111_denorm_both_endpoint_applied_in_wrapper() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Airport)-[:FLIGHT*1..3]->(b:Airport) WHERE a.city <> b.city RETURN b.code",
+    )
+    .await;
+    assert!(
+        sql.contains("_inner WHERE (start_OriginCityName != end_DestCityName)"),
+        "#1111: denorm both-endpoint predicate must be applied on the wrapper \
+         against ROLE-RESOLVED physical columns:\n{sql}"
+    );
+    assert!(
+        !sql.contains("WHERE t1.OriginCityName != t1.DestCityName"),
+        "#1111: must NOT remain in the base case (prunes intermediate hops AND \
+         leaks same-city paths past hop 1):\n{sql}"
+    );
+}
+
+/// #1111: role resolution is the crux — `city` is `OriginCityName` on the FROM
+/// side and `DestCityName` on the TO side. A role-blind rewrite would compare
+/// the same column to itself (a tautology) or emit a nonexistent one.
+#[tokio::test]
+async fn ldbc_1111_denorm_both_endpoint_resolves_per_role() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Airport)-[:FLIGHT*1..3]->(b:Airport) WHERE a.city <> b.city RETURN b.code",
+    )
+    .await;
+    assert!(
+        !sql.contains("start_OriginCityName != end_OriginCityName")
+            && !sql.contains("start_DestCityName != end_DestCityName"),
+        "#1111: each endpoint must resolve `city` through its OWN role:\n{sql}"
+    );
+}
+
+/// #1111 SCOPE: a denorm VLP with no both-endpoint predicate keeps its single
+/// un-wrapped CTE — the wrapper is added only when there is a predicate for it.
+#[tokio::test]
+async fn ldbc_1111_denorm_without_both_endpoint_unwrapped() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Airport)-[:FLIGHT*1..3]->(b:Airport) WHERE a.city = 'Seattle' RETURN b.code",
+    )
+    .await;
+    assert!(
+        !sql.contains("vlp_a_b_inner"),
+        "#1111: no both-endpoint predicate ⇒ no wrapper CTE:\n{sql}"
+    );
+    assert!(
+        sql.contains("'Seattle'"),
+        "#1111: a start-only filter must still be applied:\n{sql}"
+    );
+}
