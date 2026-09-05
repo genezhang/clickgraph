@@ -657,6 +657,69 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-09-04: **Correctness (ground-rule-1) — a node schema `filter:` column was
+  never projected into the VLP CTE, so the end-filter reference went out of
+  scope** (branch `fix/1118-vlp-schema-filter-column-projection`, PR #1120,
+  closes #1118). A node-level YAML `filter:` (`Country.filter: "type =
+  'Country'"`) is combined into the end-filter slot, but #607 defers the end
+  predicate to the OUTER WRAPPER, which can only reference columns the recursive
+  CTE projects. `filter_properties` is built from the query TEXT plus
+  `PropertyRequirements` — a schema filter is a SCHEMA fact invisible to both —
+  so the column was pruned and the wrapper emitted a bare `end_node.type`:
+  ClickHouse **Code 47 on every multi-hop-capable shape**. Reachable in the
+  SHIPPED LDBC schema, whose `City`/`Country`/`Continent`/`University`/`Company`
+  labels are all `filter:`-discriminated views over one physical table. Live
+  matrix on `ldbc` SF1, each verified against a hand-computed edge-distinct
+  oracle: `*1..2` Code 47 → **1343**, `*0..2` Code 47 → **1454**, shortestPath
+  Code 47 → **1343**; `*1..1` (1343) and `*2..2` (0) already passed — they render
+  as flat joins / a base-case-only CTE where `end_node` IS in scope — and the
+  START-side filter (base arm, 111) was always correct. Fix: re-add the schema
+  filter's columns to `filter_properties` AFTER pruning, mirroring how a user
+  WHERE's columns reach the CTE via `extract_properties_from_filter`; the
+  declared property that maps to the column supplies the output alias, falling
+  back to the raw column name for the undeclared case (LDBC's `type`). Gated PER
+  ENDPOINT — a mixed-access pattern has one embedded and one own-table endpoint,
+  so a whole-pattern gate is wrong in both directions. 5 regression tests
+  (`ldbc_1118_*`), full suite green (1738 + 668 + ratchet), clippy clean, **zero
+  golden churn**. Exposed **#1119** (OPEN): a DENORMALIZED endpoint drops its
+  schema filter entirely and SILENTLY (6 vs an oracle 3 on a purpose-built
+  fixture) — unreachable in every shipped schema, filed rather than half-fixed.
+  Also exposed **#1120** (OPEN): a CLOSED pattern `(a:Country)-[:R*2..3]->(a)`
+  drops its schema filter entirely and silently (5 vs an oracle 3). Both are
+  byte-identical on main and on this branch. NOTE on oracles: the closed-pattern
+  defect is INVISIBLE on LDBC's acyclic `Place` graph (0 == 0 by coincidence) —
+  finding it needed a cyclic fixture in which the filter actually discriminates,
+  reinforcing the `cyclic-oracle-for-edge-uniqueness` lesson. Adversarial review
+  (no CRITICAL/HIGH) additionally found: the first cut projected a column for the
+  START endpoint too, which `prune_vlp_columns` silently deleted again everywhere
+  EXCEPT the undirected mixed VLP, where it survived as dead weight and made the
+  denorm family's SQL differ — so the block is now END-endpoint-only and gated off
+  the denorm/mixed strategies (whose end filter stays in the base arm); and two
+  further PRE-EXISTING defects in `rewrite_end_filter_for_cte`'s textual
+  `str::replace`, filed as **#1122** (a cypher property named after a different
+  physical filter column mis-binds the predicate — SILENT: returns pk 3 where the
+  answer is pk 2, and the COUNTS agree by coincidence) and **#1123** (a filter on a
+  COMPOSITE node_id component is left unrewritten → Code 47, loud).
+
+- 2026-09-04 (backfill): the six PRs merged 2026-08-31..09-04 were NOT logged
+  here at merge time, contrary to §1 rule 3. Recorded now, newest first:
+  **#1117** `af49fb47` — #1113 follow-up: the count/size pattern-comprehension
+  inner-WHERE renderer returned `""` for an unhandled variant, which POISONED
+  the parent operator (`toLower(x.name) = 'bob'` → `WHERE  = 'bob'`; a `CASE`
+  predicate vanished entirely → live count 4 where the oracle is 2). Now returns
+  `Option<String>`; `None` propagates and all 5 call sites refuse.
+  **#1116** `7e858353` — #1113: an inner WHERE rejected by the #882 allowlist was
+  dropped instead of refused (silent over-count).
+  **#1115** `24c874a0` — #1112: node identity in RETURN position emitted an
+  invalid `a.* = b.*`.
+  **#1114** `af1d3e93` — #1111: a denormalized both-endpoint WHERE predicate was
+  applied on the base case, not the wrapper (cyclic fixture: 14 vs an oracle 9).
+  **#1110** `04240dbf` — #1104: node-identity comparison across mismatched
+  node_id arity now refuses loudly instead of comparing incomparable keys.
+  **#1109** `8cd13f6e` — #1103: a both-endpoint WHERE predicate was applied on
+  the BASE CASE, deleting legal paths (`*1..2` 3728 vs an oracle 3942) and
+  leaking self-paths (`*1..3` 52 vs an oracle 0).
+
 - 2026-08-09: **Correctness (ground-rule-1) — `ORDER BY <expr> DESC` placed
   NULLs last, but Neo4j places them first (and Databricks ASC diverged too)**
   (branch `fix/order-by-null-placement-1065`, PR #1066 `44232ef2`, closes

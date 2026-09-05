@@ -1,0 +1,39 @@
+# `foreign_selfloop.yaml` plus a node-level `filter:` — the fixture that makes
+# the #1118 embedded-endpoint gate LOAD-BEARING.
+#
+# A denormalized / mixed-access endpoint keeps its end filter in the base and
+# recursive arms (`end_filter_in_base_recursive_case`), where the raw `end_node`
+# alias IS in scope. #1118 projects a schema-filter column ONLY for the families
+# whose end predicate moves to a wrapper — projecting one here would be dead
+# weight that no predicate references, and on the UNDIRECTED shape
+# `prune_vlp_columns` does not strip it, so it would leak into the SQL.
+#
+# NOTE: this schema's filter is NOT applied at all today — that is #1119
+# (silent-wrong: 6 vs an oracle 3 on a populated fixture). This file exists to
+# pin the #1118 scope boundary, NOT to assert that behavior is correct.
+name: foreign_selfloop_filtered_test
+version: "1.0"
+description: "Foreign-embedded self-loop WITH a node schema filter (#1118 scope-boundary fixture; the filter itself is #1119)"
+
+graph_schema:
+  nodes:
+    - label: Person
+      database: testdb
+      table: people_f
+      node_id: pid
+      is_denormalized: true
+      filter: "active = 1"
+      property_mappings:
+        pid: pid
+        name: name
+      from_node_properties:
+        pid: mgr_id
+  edges:
+    - type: REPORTS_TO
+      database: testdb
+      table: reports_f
+      from_node: Person
+      to_node: Person
+      from_id: mgr_id
+      to_id: emp_id
+      property_mappings: {}

@@ -4206,6 +4206,129 @@ pub fn extract_ctes_with_context(
                     props
                 };
 
+                // #1118: a node-level schema `filter:` (YAML `filter: "type =
+                // 'Country'"`) is combined into the start/end filter slots below, but
+                // its COLUMNS were never added to `filter_properties`. For the END node
+                // that is a correctness hole: `end_filter_applied_in_wrapper` (#607)
+                // defers the end predicate to the outer wrapper, which can only see
+                // columns the recursive CTE actually PROJECTS. An unprojected filter
+                // column therefore renders as a bare `end_node.<col>` reference in the
+                // wrapper — out of scope there → ClickHouse Code 47 on every
+                // multi-hop-capable shape (`*1..2`, `*0..N`, shortestPath). This is
+                // reachable in the shipped LDBC schema, whose City/Country/Continent/
+                // University/Company labels are all `filter:`-discriminated views over
+                // one physical `Place`/`Organisation` table.
+                //
+                // The pruner (`PropertyRequirements`) keeps only properties the query
+                // TEXT mentions, and a schema filter is invisible to it — so the column
+                // must be re-added here, after pruning. This mirrors how a user WHERE's
+                // columns reach the CTE via `extract_properties_from_filter`.
+                //
+                // END ENDPOINT ONLY. The START filter is emitted in the BASE ARM,
+                // where the raw `start_node` alias IS in scope, so it needs no
+                // projected column — pushing one produces a column no predicate ever
+                // references. Review of the first cut confirmed that: the start-side
+                // push was silently deleted again by `prune_vlp_columns`
+                // (`render_plan/plan_optimizer.rs`) in every shape but the UNDIRECTED
+                // mixed-access VLP, where it survived as dead weight and made that
+                // family's SQL differ for no reason. Restricting to the end endpoint
+                // keeps the change surface exactly the shapes that were broken.
+                //
+                // Restricted further to the families whose end filter actually MOVES
+                // to a wrapper. `end_filter_in_base_recursive_case` keeps the
+                // denormalized family's end predicate in the base/recursive arms,
+                // where the raw `end_node` alias IS in scope — so projecting a column
+                // there is pure dead weight (it survived `prune_vlp_columns` on the
+                // undirected mixed shape and made that family's SQL differ for no
+                // reason). Those families keep their pre-#1118 behavior: they drop the
+                // filter SILENTLY (6 vs an oracle 3 on a purpose-built fixture),
+                // tracked as #1119 — a real defect, but not one a projected-but-
+                // unreferenced column fixes.
+                let end_is_own_table = pattern_ctx_for_filters.as_ref().is_none_or(|c| {
+                    !c.right_node.is_embedded()
+                        && !matches!(
+                            c.join_strategy,
+                            JoinStrategy::SingleTableScan { .. } | JoinStrategy::MixedAccess { .. }
+                        )
+                });
+                let filter_properties = {
+                    let mut props = filter_properties;
+                    for (alias, label, is_own_table) in [(&end_alias, &end_label, end_is_own_table)]
+                    {
+                        if label.is_empty() || !is_own_table {
+                            continue;
+                        }
+                        let Some(node_schema) = schema.node_schema_opt(label) else {
+                            continue;
+                        };
+                        let Some(ref schema_filter) = node_schema.filter else {
+                            continue;
+                        };
+                        let id_columns = node_schema.node_id.columns();
+                        for col in schema_filter.get_columns() {
+                            // The id column is projected as `start_id`/`end_id`, not as
+                            // a `<prefix>_<prop>` column; skip it — a filter on a SINGLE
+                            // id is already handled by the id rewrite
+                            // (`end_node.<id_col>` -> `end_id`). That does NOT hold for a
+                            // COMPOSITE id, whose `end_id` is a pipe-joined concat with no
+                            // per-component target: such a filter is left unrewritten and
+                            // fails loud (Code 47). Pre-existing, tracked as #1123.
+                            if id_columns.contains(&col.as_str()) {
+                                continue;
+                            }
+                            // The filter is written against PHYSICAL columns, but the
+                            // generator names its output after the CYPHER property
+                            // (`end_<prop>`), and `rewrite_end_filter_for_cte` rewrites
+                            // `end_node.<column>` to exactly that. Prefer the declared
+                            // property that maps to this column.
+                            let prop_name = match node_schema
+                                .property_mappings
+                                .iter()
+                                .find(|(_, v)| v.raw() == col)
+                            {
+                                Some((name, _)) => name.clone(),
+                                None => {
+                                    // Undeclared filter column — the shipped LDBC shape
+                                    // (`Country.filter: "type = 'Country'"` with `type`
+                                    // absent from property_mappings). Project it under
+                                    // its own column name. Skip when a DIFFERENT declared
+                                    // property already claims that output name, since
+                                    // `end_<name>` would then be ambiguous.
+                                    //
+                                    // NOTE: skipping keeps THIS code from making things
+                                    // worse; it does NOT make that shape correct.
+                                    // `rewrite_end_filter_for_cte` still rewrites via the
+                                    // cypher-alias spelling and binds the predicate to
+                                    // the OTHER property's column — silent-wrong,
+                                    // pre-existing, tracked as #1122 (its textual
+                                    // `str::replace` needs a structural rewrite).
+                                    if node_schema.property_mappings.contains_key(col.as_str()) {
+                                        continue;
+                                    }
+                                    col.clone()
+                                }
+                            };
+                            if props.iter().any(|p: &NodeProperty| {
+                                p.cypher_alias == *alias && p.alias == prop_name
+                            }) {
+                                continue;
+                            }
+                            log::info!(
+                                "🔧 #1118: projecting schema-filter column '{}' for '{}' ({}) into the VLP CTE",
+                                col,
+                                alias,
+                                label
+                            );
+                            props.push(NodeProperty {
+                                cypher_alias: alias.clone(),
+                                column_name: col.clone(),
+                                alias: prop_name,
+                            });
+                        }
+                    }
+                    props
+                };
+
                 // Generate CTE with filters
                 // For shortest path queries, always use recursive CTE (even for exact hops)
                 // because we need proper filtering and shortest path selection logic
