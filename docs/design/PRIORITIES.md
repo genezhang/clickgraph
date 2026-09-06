@@ -657,6 +657,57 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-09-06: **Correctness — mixed-access whole-node RETURN silently dropped
+  an endpoint** (branch `fix/1154-mixed-access-whole-node-endpoint`, PR #1159,
+  closes #1154 fixed-hop half). On a MIXED-access edge
+  (`classify_edge_table_pattern` -> `Mixed`) whole-node expansion sourced its
+  property set from the structural plan-walk, which returns the EDGE's embedded
+  map — incomplete for BOTH roles at once: the embedded role loses its
+  non-embedded properties (`a.name`), the own-table role has no entry at all
+  and the endpoint VANISHES from the projection. Directed, `RETURN a, b`
+  returned ONE column for two nodes; undirected, `normalize_branch` NULL-padded
+  the missing side into right-count/wrong-value rows. Two corrections to the
+  issue as filed, both verified: NOT VLP-specific (a plain single hop fails
+  identically) and the undirected half is NOT latent (silently wrong on main
+  today). AUTHORITY is the node's `property_mappings`, NOT the edge access
+  strategy — on a mixed edge both roles' strategies are partial, which IS the
+  defect; a first cut keyed on the strategy fixed only the own-table role
+  (measured). Wired at BOTH whole-node sites (`TableAlias` branch and the `n.*`
+  wildcard branch, where undirected UNION arms land). Load-bearing gate,
+  established by MUTATION on the corpus: the pattern must have bound SOME
+  endpoint node table. Of four guards, one was DEAD across all 2400 shapes and
+  was REMOVED rather than shipped unexercised; another is kept with an explicit
+  comment that it is intent, not a filter. Review round 1 found a **CRITICAL**:
+  the gate reads the outermost plan (`GraphJoins` is the root, above the
+  Projection the builder sees) and disjoined across UNION branches, so a
+  COLLAPSED arm passed on its SIBLING's evidence and emitted the dangling
+  columns the gate exists to prevent. Fixed by consulting only branches owning
+  the alias's relationship and requiring EVERY one to bind — "every", not
+  "exactly one": the undirected split reuses the SAME rel alias in both arms,
+  and an "exactly one owner" rule silently restored the NULL padding while all
+  single-clause tests passed. Round 2 found two more, both mine: a **HIGH**
+  regression (across a WITH barrier the second pattern's endpoint join is
+  spelled with the EDGE-side id column -> Code 47 where main returned rows;
+  the corruption happens in a render-stage rewrite AFTER the gate, so it cannot
+  be detected there — abstain across a barrier, filed **#1160**) and a
+  **MEDIUM** over-abstain (any `ORDER BY`/`LIMIT`/`SKIP` above a Union root hid
+  it from the branch lookup, silently switching the fix OFF for the very
+  undirected shape at issue). Final verification, two corpora vs clean main in
+  isolated target dirs: 2400 two-node shapes (109 changed) + 2940 multi-clause
+  shapes (68 changed), all confined to the three mixed-access schemas; live
+  **22 ERROR->OK, 95 OK->OK, 0 OK->ERROR**. Every fixed-hop shape matches an
+  independent per-property oracle row-for-row, undirected per-arm roles
+  included (#908 class). 11 regression tests, each verified to FAIL when the
+  gate it pins is removed; one is labelled in-code as a BEHAVIOR pin only,
+  because no fixture produces a mixed-verdict cartesian. Filed alongside:
+  **#1157** (VLP whole-node still truncates — CTE-column path, different
+  mechanism), **#1158** (chained mixed-access renders `JOIN ON 1 = 1`, rows
+  where the shared middle variable holds TWO values; comma form has the mirror
+  defect), **#1160**. Process lesson reinforced twice more: my sweep generators
+  emit ONE query clause and no clause modifiers, and all three review findings
+  lived in exactly that gap — a gate too LOOSE (CRITICAL) and a gate too TIGHT
+  (MEDIUM) are indistinguishable from "tests pass" without mutation.
+
 - 2026-09-05: **Correctness — whole-node `RETURN o` on a denormalized
   undirected VLP emitted the edge-table alias** (branch
   `fix/1152-whole-node-cte-metadata`, PR #1156, closes #1152). `RETURN o` and
