@@ -657,6 +657,47 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-09-05: **Correctness — whole-node `RETURN o` on a denormalized
+  undirected VLP emitted the edge-table alias** (branch
+  `fix/1152-whole-node-cte-metadata`, PR #1156, closes #1152). `RETURN o` and
+  `RETURN o.city` reach DIFFERENT expansion sites: the per-property form is
+  resolved upstream by `rewrite_expr_for_vlp`; the whole-node form is expanded
+  by `SelectBuilder`'s `n.*` branch against the BASE TABLE through the denorm
+  alias->edge-alias remap, so the outer scope got `t1.origin_city` — an alias
+  bound only INSIDE the CTE body (Code 47, loud). **A first attempt (PR #1153)
+  suppressed that remap upstream and was CLOSED UNMERGED**: the only available
+  discriminator there is VLP-endpoint-ness, which also catches the flat chained
+  render (remap load-bearing -> new loud regression) and the mixed-access arm
+  (-> silently WRONG rows). Probing confirmed the target, the flat render and
+  the mixed-access arm are INDISTINGUISHABLE at that layer. The fix therefore
+  lives one layer down, in the emitter, where each arm's own
+  `CteColumnMetadata` states which column carries which
+  `(cypher_alias, cypher_property)` pair — the same query-bound truth
+  #1140/#1143 already consume. No upstream gate, so the over-broad-gate class
+  does not apply, and the flat render (which scans a BASE TABLE) is excluded
+  structurally rather than by a blacklist. Everything unresolvable ABSTAINS
+  byte-for-byte. Review found H1 (the abstain contract was FALSE on the
+  composite-denorm path: metadata advertises `start_code` while the body emits
+  `start_origin_code`, so the rebind named a column no arm defines — loud only
+  by luck; where a physical column IS named `code` it would be silently wrong)
+  and M1 (the `[]`-no-candidates abstain arm, on which the whole safety
+  argument rests, passed all five tests under a mutation that replaced it with
+  a guess). Both fixed in `87c7d643`: intersect the metadata against the names
+  the CTE BODY actually exports, and pin the abstain arm with the
+  duplicate-projection shape `RETURN o.city, o` (under the mutation `o.city_2`
+  binds `t.end_id` — an airport CODE under a CITY alias). Verified: target 38
+  rows PAIRWISE identical to an independent oracle; #1155 flat chained
+  unchanged (22 rows); #1154 mixed-access still abstains and stays loud.
+  Reviewer's 4,902-shape sweep: 344 changed, 0 worked->loud, 0 value changes,
+  0 gaining an edge-alias reference. Exposed + filed **#1154** (mixed-access
+  whole-node silently DROPS the other endpoint — directed `RETURN a, b`
+  returns ONE column) and **#1155** (chained denorm VLP renders flat and
+  IGNORES the hop range: `*1..2` and `*1..3` both 22 rows vs oracle 68), both
+  pre-existing on main. Two process lessons banked: a corpus sweep is only as
+  good as its GENERATOR (mine missed chained shapes, then multi-type /
+  shortestPath / path-variable shapes — H1 lived in that gap), and a guard test
+  must be verified by BREAKING its gate, not by running it on main.
+
 - 2026-09-05: **Correctness — denormalized VLP projection was NOT
   role-symmetric, so each undirected arm pruned the column the OTHER arm's role
   needed** (branch `fix/1146-role-symmetric-vlp-projection`, PR #1151, closes
