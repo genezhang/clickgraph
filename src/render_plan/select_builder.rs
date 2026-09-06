@@ -908,6 +908,22 @@ impl SelectBuilder for LogicalPlan {
                                 &mapped_alias
                             };
 
+                            // #1154: same mixed-access defect as the TableAlias
+                            // branch below — an undirected pattern's UNION arms
+                            // arrive here as `n.*` instead. Without this the
+                            // arms project only the edge-side subset (or
+                            // nothing), and `normalize_branch` NULL-pads the
+                            // missing side into right-count/wrong-value rows.
+                            if let Some(items) = self.mixed_access_whole_node_items(
+                                &prop.table_alias.0,
+                                property_lookup_alias,
+                                &mapped_alias,
+                                plan_ctx,
+                            ) {
+                                select_items.extend(items);
+                                continue;
+                            }
+
                             let (properties, table_alias_for_render) =
                                 match self.get_properties_with_table_alias(property_lookup_alias) {
                                     Ok((props, _)) => {
@@ -2740,6 +2756,35 @@ impl LogicalPlan {
             &actual_table_alias
         };
 
+        // #1154: a MIXED-access edge's embedded property map is a strict SUBSET
+        // of the endpoint's real property set — or, for the own-table role,
+        // EMPTY. The structural plan-walk below returns exactly that map, so a
+        // whole-node `RETURN a` silently projected only the embedded columns
+        // (losing `a.name`) and a whole-node `RETURN b` projected NOTHING AT
+        // ALL (the column vanished from the result with no error; under an
+        // undirected UNION the missing side was then NULL-padded by
+        // `normalize_branch`, yielding right-count/wrong-value rows).
+        //
+        // The per-property path never had this bug: it resolves each property
+        // individually and falls through to the #1006 own-table join request
+        // when the embedded map lacks it. Whole-node expansion is the one
+        // caller that asks for the WHOLE SET at once, so it must consult the
+        // same authority the #1006 path ultimately relies on — the schema —
+        // rather than the edge's partial map.
+        //
+        // Per the axis-dispatch rule this goes through `PlanCtx`'s
+        // `NodeAccessStrategy` (built from `PatternSchemaContext`), never a raw
+        // denorm flag. Gated to the case that is actually broken: the strategy
+        // must disagree with the structural walk about which properties exist.
+        // When they agree — every standard, fully-denormalized, FK-edge and
+        // polymorphic shape — this is inert and the output is byte-identical.
+        if let Some(items) =
+            self.mixed_access_whole_node_items(alias, lookup_alias, &actual_table_alias, plan_ctx)
+        {
+            select_items.extend(items);
+            return;
+        }
+
         // Use plan_ctx-aware method to handle coupled edges
         match self.get_properties_with_plan_ctx(lookup_alias, plan_ctx) {
             Ok((properties, resolved_table_alias)) if !properties.is_empty() => {
@@ -2768,6 +2813,324 @@ impl LogicalPlan {
                 log::debug!("⚠️ No properties found for base table entity '{}'", alias);
             }
         }
+    }
+
+    /// #1154: did the planner bind ANY endpoint node table for this pattern?
+    ///
+    /// A mixed-access pattern normally emits a join for its own-table endpoint
+    /// (`b` in `foreign_selfloop`). When the `SingleTableScan` collapse fires
+    /// the join list holds only the edge alias, and nothing will bind an
+    /// endpoint's own table — so own-table columns emitted for EITHER endpoint
+    /// would dangle.
+    ///
+    /// The test is deliberately "some endpoint is joined", not "THIS alias is
+    /// joined": the embedded endpoint's own-table join is injected LAZILY by
+    /// `inject_own_table_joins` in response to the very request this function's
+    /// caller registers, so it is legitimately absent at check time. The
+    /// collapse is a whole-pattern decision, so one endpoint's presence is a
+    /// sound proxy for "the collapse did not fire".
+    fn pattern_binds_an_endpoint_table(&self, endpoints: &[String]) -> bool {
+        use crate::query_planner::logical_plan::LogicalPlan;
+        match self {
+            LogicalPlan::GraphJoins(gj) => {
+                gj.joins
+                    .iter()
+                    .any(|j| endpoints.iter().any(|e| e == &j.table_alias))
+                    || gj.input.pattern_binds_an_endpoint_table(endpoints)
+            }
+            LogicalPlan::GraphRel(gr) => {
+                gr.left.pattern_binds_an_endpoint_table(endpoints)
+                    || gr.center.pattern_binds_an_endpoint_table(endpoints)
+                    || gr.right.pattern_binds_an_endpoint_table(endpoints)
+            }
+            LogicalPlan::GraphNode(gn) => gn.input.pattern_binds_an_endpoint_table(endpoints),
+            LogicalPlan::Projection(p) => p.input.pattern_binds_an_endpoint_table(endpoints),
+            LogicalPlan::Filter(f) => f.input.pattern_binds_an_endpoint_table(endpoints),
+            LogicalPlan::GroupBy(g) => g.input.pattern_binds_an_endpoint_table(endpoints),
+            LogicalPlan::OrderBy(o) => o.input.pattern_binds_an_endpoint_table(endpoints),
+            LogicalPlan::Limit(l) => l.input.pattern_binds_an_endpoint_table(endpoints),
+            LogicalPlan::Skip(sk) => sk.input.pattern_binds_an_endpoint_table(endpoints),
+            LogicalPlan::Unwind(u) => u.input.pattern_binds_an_endpoint_table(endpoints),
+            LogicalPlan::WithClause(w) => w.input.pattern_binds_an_endpoint_table(endpoints),
+            LogicalPlan::Cte(c) => c.input.pattern_binds_an_endpoint_table(endpoints),
+            LogicalPlan::CartesianProduct(cp) => {
+                cp.left.pattern_binds_an_endpoint_table(endpoints)
+                    || cp.right.pattern_binds_an_endpoint_table(endpoints)
+            }
+            LogicalPlan::Union(u) => u
+                .inputs
+                .iter()
+                .any(|b| b.pattern_binds_an_endpoint_table(endpoints)),
+            _ => false,
+        }
+    }
+
+    /// #1154: whole-node property set for a MIXED-access (foreign-embedded)
+    /// endpoint, or `None` to leave the caller's pre-#1154 behavior untouched.
+    ///
+    /// # Why this exists
+    ///
+    /// `classify_edge_table_pattern` returns `Mixed` when one endpoint of an
+    /// edge is `EmbeddedInEdge` and the other is `OwnTable`. On such an edge
+    /// the embedded property map — the only thing the structural plan-walk
+    /// `get_properties_with_table_alias` knows about — is INCOMPLETE for both
+    /// roles at once:
+    ///
+    /// * the embedded role's map holds only the columns physically present on
+    ///   the EDGE table (`foreign_selfloop`: `a` embeds `pid → mgr_id`, so
+    ///   `name` is absent);
+    /// * the own-table role has NO entry on the edge at all, so the walk
+    ///   returns an empty vector and the caller emits nothing.
+    ///
+    /// The node's real property set lives on its own table either way. This
+    /// resolves it through the schema (via `PlanCtx`'s `NodeAccessStrategy`,
+    /// per the axis-dispatch rule) and registers the same #1006 own-table join
+    /// requests the per-property path registers, so `join_builder`'s
+    /// `inject_own_table_joins` supplies the LEFT JOIN those columns need.
+    ///
+    /// # Which authority decides "what properties does this node have"
+    ///
+    /// The node's own `property_mappings`, NOT the edge access strategy. This
+    /// is the crux: on a mixed-access edge BOTH roles' strategies are partial
+    /// — the embedded role sees only the edge-side subset (`pid`, not `name`),
+    /// and the own-table role has no entry on the edge at all. Keying the gate
+    /// on the strategy therefore fixes only the own-table role and leaves the
+    /// embedded role's `name` silently missing (measured: it did exactly that).
+    /// The node schema is the only source that knows the full set for both.
+    ///
+    /// The strategy is still consulted for the one thing it alone knows —
+    /// whether the node is `Virtual` (polymorphic `$any`, no fixed label) —
+    /// and only when it is available: a UNION arm's cloned `PlanCtx` carries
+    /// no pattern contexts, which is precisely the undirected case this must
+    /// serve.
+    ///
+    /// # Abstain contract
+    ///
+    /// Returning `None` MUST reproduce main's output exactly. Every guard
+    /// abstains rather than guesses:
+    ///
+    /// * no `PlanCtx`, or a `Virtual` strategy;
+    /// * the node schema declares no property the structural walk lacks — we
+    ///   would be acting without new information. (This also covers a
+    ///   same-table denormalized node, whose map is `{}` by design.);
+    /// * the alias is a `__denorm_scan_` anchor (#582/#590), whose properties
+    ///   resolve through the anchor CTE, not a lazy own-table join;
+    /// * **the planner bound no endpoint node table for this pattern** — the
+    ///   `SingleTableScan` collapse fired, so own-table columns would dangle.
+    ///   Measured by mutation on a 2400-shape schema corpus, this is the
+    ///   load-bearing gate: it is the only one whose removal changes output,
+    ///   and it alone excludes every fully-denormalized and collapsed shape;
+    /// * a composite node id — `inject_own_table_joins` bails on those, so
+    ///   emitting columns it will not join would be a Code 47 of our own
+    ///   making;
+    /// * the node label cannot be resolved, or the schema has no such node;
+    /// * nothing in the set actually needed the own table (the caller's
+    ///   existing path already covers the alias).
+    ///
+    /// # Scope
+    ///
+    /// Fixed-hop patterns only. A VLP endpoint's properties come from CTE
+    /// columns (`t.start_name`), not an own-table join, so this mechanism does
+    /// not apply and VLP whole-node output is byte-identical to before —
+    /// including where it is still truncated. Extending the repair there is a
+    /// separate change against a different resolution path.
+    ///
+    /// A partial answer is never returned: if ANY property in the set fails to
+    /// resolve against the own table we abstain wholesale, because projecting
+    /// a subset is precisely the silent-truncation defect being fixed here.
+    fn mixed_access_whole_node_items(
+        &self,
+        alias: &str,
+        lookup_alias: &str,
+        actual_table_alias: &str,
+        plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
+    ) -> Option<Vec<SelectItem>> {
+        use crate::graph_catalog::pattern_schema::NodeAccessStrategy;
+
+        let ctx = plan_ctx?;
+
+        // Polymorphic `$any`: the concrete label is a runtime value, so there
+        // is no single node schema to read a property set from. Checked only
+        // when a strategy is actually available — a UNION arm's cloned PlanCtx
+        // carries no pattern contexts, and the schema lookup below is the
+        // authority in that case anyway.
+        let rel_alias = self
+            .find_graph_rel_for_alias(alias)
+            .map(|g| g.alias.clone());
+        if matches!(
+            ctx.get_node_strategy(alias, rel_alias.as_deref())
+                .or_else(|| ctx.get_node_strategy(alias, None)),
+            Some(NodeAccessStrategy::Virtual { .. })
+        ) {
+            return None;
+        }
+
+        // `__denorm_scan_` anchors (#582/#590) resolve through the anchor CTE,
+        // never a lazy own-table join.
+        if crate::render_plan::plan_builder_helpers::is_denorm_scan_anchor_alias(alias, self) {
+            return None;
+        }
+
+        // The pattern collapsed to a bare edge-table scan: the planner emitted
+        // NO join binding this endpoint's own table, so the own-table columns
+        // we would emit have nothing to reference (Code 47).
+        //
+        // `RETURN *` reaches here on a mixed-access edge because
+        // `plan_references_alias` has no `LogicalExpr::Star` arm — every alias
+        // reads as unreferenced, and the `SingleTableScan` collapse in
+        // `graph_join::inference` fires. That is a PRE-EXISTING analyzer
+        // defect (main drops the second endpoint from the projection outright,
+        // and discards an explicitly written `b.name` alongside `RETURN *`);
+        // fixing it belongs in the reference analysis, not here. Until then
+        // abstain, so those shapes keep main's exact behavior rather than
+        // trading a silent truncation for a loud error.
+        //
+        // Read off the PLAN, not `PatternSchemaContext.join_strategy`: the
+        // context is registered BEFORE the collapse is applied
+        // (`inference.rs`, register at ~3253 vs override at ~3334), so its
+        // stored strategy still says `MixedAccess` here. The planner's join
+        // list is the post-collapse truth.
+        //
+        // That list lives on `GraphJoins`, which is the plan ROOT and wraps the
+        // Projection this builder is invoked on — so `self` cannot see it.
+        // Consult the outermost plan recorded by `scoped_render_root_plan`
+        // (the same mechanism #1077 uses for path-node detection). When no root
+        // is recorded (a nested/standalone render), fall back to `self`.
+        let endpoints: Vec<String> = self
+            .find_graph_rel_for_alias(alias)
+            .map(|gr| vec![gr.left_connection.clone(), gr.right_connection.clone()])
+            .unwrap_or_else(|| vec![alias.to_string()]);
+        let root = crate::render_plan::cte_extraction::render_root_plan();
+        let join_source: &LogicalPlan = root.as_deref().unwrap_or(self);
+        if !join_source.pattern_binds_an_endpoint_table(&endpoints) {
+            return None;
+        }
+
+        let schema = crate::server::query_context::get_current_schema_with_fallback()?;
+        let label = crate::render_plan::cte_extraction::get_node_label_for_alias(alias, self)?;
+        let node_schema = schema.node_schema_opt(&label)?;
+
+        // What the structural walk believes this alias has — the caller uses
+        // exactly this, so it is the baseline we must strictly improve on.
+        let (structural, _) = self.get_properties_with_table_alias(lookup_alias).ok()?;
+
+        // AUTHORITY: the node's OWN `property_mappings` is what "this node's
+        // properties" means — see the doc comment for why the edge strategy
+        // is deliberately NOT the authority here.
+        //
+        // Gate: only act when the node schema declares a property the
+        // structural walk does not carry, i.e. we genuinely know more than the
+        // caller's existing path does. This also subsumes the empty-map case:
+        // a same-table denormalized node keeps all its properties on the edge
+        // under role-specific names, so it declares nothing extra and abstains.
+        //
+        // Verified by mutation, this gate changes NO output on the 2400-shape
+        // schema corpus — the endpoint-join gate below already excludes every
+        // shape it would catch. It is retained as the statement of intent
+        // ("never act without new information"), not as a load-bearing filter;
+        // do not read its presence as evidence that some shape needs it.
+        let id_columns = node_schema.node_id.columns();
+        let structural_names: std::collections::BTreeSet<&str> =
+            structural.iter().map(|(p, _)| p.as_str()).collect();
+        let declared_names: std::collections::BTreeSet<&str> = node_schema
+            .property_mappings
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        if !declared_names.iter().any(|p| !structural_names.contains(p)) {
+            return None;
+        }
+
+        // The full declared set, in a deterministic order (HashMap iteration
+        // order is not stable across runs and this drives SELECT column order).
+        let mut ordered: Vec<(String, String)> = node_schema
+            .property_mappings
+            .iter()
+            .map(|(k, v)| (k.clone(), v.raw().to_string()))
+            .collect();
+        ordered.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // `inject_own_table_joins` bails on a composite node id, so any column
+        // we emit under the node alias would be unbound. Abstain in step.
+        if id_columns.len() != 1 {
+            return None;
+        }
+        let id_name = id_columns[0].to_string();
+
+        // Resolve the FULL set against the node's own table. The embedded map
+        // still wins for a property it does carry — that column is on the edge
+        // table, already in scope, and joining for it would be wasteful.
+        let embedded: std::collections::BTreeMap<&str, &str> = structural
+            .iter()
+            .map(|(p, c)| (p.as_str(), c.as_str()))
+            .collect();
+
+        let mut resolved: Vec<(String, String, String)> = Vec::new(); // (prop, alias, column)
+        let mut own_table_props: Vec<String> = Vec::new();
+
+        for (prop, _) in &ordered {
+            if let Some(col) = embedded.get(prop.as_str()) {
+                resolved.push((
+                    prop.clone(),
+                    actual_table_alias.to_string(),
+                    (*col).to_string(),
+                ));
+                continue;
+            }
+            // The node id itself is resolvable from the own table under its
+            // own physical column; `own_table_property_column` deliberately
+            // returns None for it (the #1006 per-property path reaches ids
+            // through the embedded map), so resolve it directly here.
+            if prop == &id_name {
+                let physical = node_schema
+                    .property_mappings
+                    .get(prop)
+                    .map(|pv| pv.raw().to_string())
+                    .unwrap_or_else(|| prop.clone());
+                resolved.push((prop.clone(), alias.to_string(), physical));
+                own_table_props.push(prop.clone());
+                continue;
+            }
+            let physical = crate::render_plan::plan_builder_helpers::own_table_property_column(
+                node_schema,
+                prop,
+            )?; // unresolvable → abstain wholesale, never a partial projection
+            resolved.push((prop.clone(), alias.to_string(), physical));
+            own_table_props.push(prop.clone());
+        }
+
+        if own_table_props.is_empty() {
+            // Nothing actually needed the own table; the caller's path is
+            // already correct for this alias.
+            return None;
+        }
+
+        for prop in &own_table_props {
+            crate::server::query_context::register_own_table_join_request(alias, &label, prop);
+        }
+
+        log::info!(
+            "🔧 #1154: whole-node '{}' ({}) resolved to {} properties via own table '{}' ({} embedded, {} own)",
+            alias,
+            label,
+            resolved.len(),
+            node_schema.table_name,
+            resolved.len() - own_table_props.len(),
+            own_table_props.len()
+        );
+
+        Some(
+            resolved
+                .into_iter()
+                .map(|(prop, table, column)| SelectItem {
+                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: RenderTableAlias(table),
+                        column: PropertyValue::Column(column),
+                    }),
+                    col_alias: Some(ColumnAlias(format!("{}.{}", alias, prop))),
+                })
+                .collect(),
+        )
     }
 
     /// Expand a CTE-sourced entity (Node/Relationship from WITH)

@@ -3481,3 +3481,165 @@ async fn ldbc_1152_no_candidate_lookup_abstains_rather_than_guessing() {
         "#1152 M1: abstaining reproduces main's spelling for this item:\n{dup}"
     );
 }
+
+// ===========================================================================
+// #1154 — mixed-access whole-node endpoint resolution
+//
+// On a MIXED-access edge (`classify_edge_table_pattern` → `Mixed`: one endpoint
+// `EmbeddedInEdge`, the other `OwnTable`) a whole-node `RETURN a` / `RETURN a, b`
+// sourced its property set from the plan-walk, which returns the EDGE's embedded
+// map. That map is incomplete for both roles at once, so main:
+//   * lost the embedded endpoint's non-embedded properties (`a.name`), and
+//   * projected NOTHING for the own-table endpoint — the column vanished from
+//     the result with no error (undirected then NULL-padded it into
+//     right-count/wrong-value rows).
+// ===========================================================================
+
+/// #1154 behavior: a directed mixed-access single hop must project BOTH
+/// endpoints in full. On main this rendered a single column (`a.pid`) for two
+/// whole nodes.
+#[tokio::test]
+async fn ldbc_1154_mixed_access_whole_node_projects_both_endpoints() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) RETURN a, b",
+    )
+    .await;
+    for want in ["\"a.name\"", "\"a.pid\"", "\"b.name\"", "\"b.pid\""] {
+        assert!(
+            sql.contains(want),
+            "#1154: whole-node RETURN must project {want}; main dropped it:\n{sql}"
+        );
+    }
+    // The own-table endpoint's columns bind the NODE alias, not the edge alias.
+    assert!(
+        sql.contains("b.name") && sql.contains("b.pid"),
+        "#1154: own-table endpoint must resolve against its own table:\n{sql}"
+    );
+}
+
+/// #1154 role symmetry: the mirrored schema (`foreign_selfloop_end` embeds the
+/// TO role instead of the FROM role) must be repaired identically. A fix that
+/// keyed on one role would leave this one truncated.
+#[tokio::test]
+async fn ldbc_1154_mixed_access_whole_node_is_role_symmetric() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop_end.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) RETURN a, b",
+    )
+    .await;
+    for want in ["\"a.name\"", "\"a.pid\"", "\"b.name\"", "\"b.pid\""] {
+        assert!(
+            sql.contains(want),
+            "#1154: mirrored schema must project {want} too:\n{sql}"
+        );
+    }
+}
+
+/// #1154 undirected: each UNION arm must resolve BOTH endpoints. On main each
+/// arm projected one endpoint and let `normalize_branch` pad the other with a
+/// literal NULL — right row count, every value wrong, no error.
+#[tokio::test]
+async fn ldbc_1154_undirected_arms_resolve_both_endpoints_no_null_padding() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO]-(b:Person) RETURN a, b",
+    )
+    .await;
+    assert!(
+        !sql.contains("NULL AS"),
+        "#1154: no arm may stand in a NULL literal for an unresolved endpoint \
+         — that is indistinguishable from a legitimately absent value:\n{sql}"
+    );
+    // Both arms present, and each names both endpoints.
+    assert_eq!(
+        sql.matches("UNION ALL").count(),
+        1,
+        "#1154: expected the two-arm undirected split:\n{sql}"
+    );
+    for want in ["\"a.name\"", "\"b.name\""] {
+        assert!(
+            sql.contains(want),
+            "#1154: undirected arms must project {want}:\n{sql}"
+        );
+    }
+}
+
+/// #1154 abstain: a same-table denormalized node (`flights_denorm`'s Airport
+/// declares `property_mappings: {}` — every property lives on the edge under a
+/// role-specific name) already renders correctly and must be left BYTE-identical.
+/// This is the gate that keeps the fix inert for every non-mixed schema.
+#[tokio::test]
+async fn ldbc_1154_same_table_denorm_whole_node_unchanged() {
+    let schema = load_schema_from("schemas/test/flights_denorm_test.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT]->(d:Airport) RETURN o, d",
+    )
+    .await;
+    // Role-specific edge columns, NOT own-table columns.
+    for want in ["origin_city", "origin_code", "dest_city", "dest_code"] {
+        assert!(
+            sql.contains(want),
+            "#1154: same-table denorm must keep its per-role edge columns \
+             ({want} missing) — the fix must not fire here:\n{sql}"
+        );
+    }
+}
+
+/// #1154 abstain: a fully-denormalized schema must be left alone. Zeek's Domain
+/// declares `property_mappings: {}` in YAML but the catalog SYNTHESIZES an id
+/// entry (`{query → query}`), so the emptiness filter does NOT stop it — the
+/// endpoint-join gate does, because a fully-denormalized pattern never binds an
+/// endpoint's own table.
+///
+/// This distinction is load-bearing and was found by measurement: an earlier
+/// cut gated on "declares a property beyond its id" and, verified by mutation,
+/// that gate turned out to be masked by the join gate on all 2400 swept shapes
+/// (dead code), so it was removed rather than shipped unexercised. Without the
+/// join gate this query rebinds `b.name` → `b.query` against an unjoined table:
+/// a renamed output column AND a Code 47.
+#[tokio::test]
+async fn ldbc_1154_fully_denormalized_schema_abstains() {
+    let schema = load_schema_from("schemas/test/zeek_merged_collision.yaml");
+    let sql =
+        generate_sql_inline(&schema, "MATCH (a:IP)-[:REQUESTED]->(b:Domain) RETURN a, b").await;
+    assert!(
+        sql.contains("\"b.name\""),
+        "#1154: the node's declared Cypher property name must survive — \
+         rebinding to the synthesized id entry renames the output column:\n{sql}"
+    );
+    assert!(
+        !sql.contains("\"b.query\""),
+        "#1154: an id-only property map must NOT drive the own-table rebind:\n{sql}"
+    );
+}
+
+/// #1154 abstain: when the pattern collapses to a bare edge scan
+/// (`SingleTableScan`) no endpoint node table is joined, so own-table columns
+/// would dangle. `RETURN *` reaches that collapse on a mixed-access edge because
+/// `plan_references_alias` has no `Star` arm — a PRE-EXISTING analyzer defect
+/// (main also discards an explicitly written `b.name` next to `RETURN *`).
+/// Until that is fixed upstream this shape must keep main's exact output rather
+/// than trade a silent truncation for a Code 47.
+#[tokio::test]
+async fn ldbc_1154_collapsed_pattern_abstains_rather_than_dangling() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) RETURN *",
+    )
+    .await;
+    assert!(
+        !sql.contains("a.name"),
+        "#1154: with the pattern collapsed to a bare edge scan there is no \
+         own-table join to bind to — the fix must abstain here:\n{sql}"
+    );
+    assert!(
+        sql.contains("mgr_id"),
+        "#1154: abstaining must reproduce main's spelling:\n{sql}"
+    );
+}
