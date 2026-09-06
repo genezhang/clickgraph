@@ -2898,6 +2898,19 @@ impl LogicalPlan {
     ) -> Option<bool> {
         use crate::query_planner::logical_plan::LogicalPlan;
         match root {
+            // Descend through single-input wrappers. `pattern_binds_an_endpoint_table`
+            // now stops dead at a `Union`/`CartesianProduct` (it must, or a
+            // branch borrows a sibling's joins), so an `ORDER BY` / `LIMIT` /
+            // `SKIP` sitting above the root would hide the `Union` beneath it,
+            // this lookup would return `None`, and the fallback would abstain.
+            // That silently disabled the fix the moment a sort or limit was
+            // added to the very undirected shape this issue is about
+            // (follow-up review, MEDIUM).
+            LogicalPlan::OrderBy(o) => Self::union_branches_all_bind(&o.input, rel, endpoints),
+            LogicalPlan::Limit(l) => Self::union_branches_all_bind(&l.input, rel, endpoints),
+            LogicalPlan::Skip(sk) => Self::union_branches_all_bind(&sk.input, rel, endpoints),
+            LogicalPlan::Projection(p) => Self::union_branches_all_bind(&p.input, rel, endpoints),
+            LogicalPlan::GraphJoins(gj) => Self::union_branches_all_bind(&gj.input, rel, endpoints),
             LogicalPlan::Union(u) => {
                 let owning: Vec<&std::sync::Arc<LogicalPlan>> = u
                     .inputs
@@ -3065,6 +3078,27 @@ impl LogicalPlan {
             .map(|gr| vec![gr.left_connection.clone(), gr.right_connection.clone()])
             .unwrap_or_else(|| vec![alias.to_string()]);
         let root = crate::render_plan::cte_extraction::render_root_plan();
+
+        // #1160: after a WITH barrier the planner binds a second pattern's
+        // own-table endpoint through the EDGE-side id column — it renders
+        // `people AS d ON d.mgr_id = t2.emp_id`, and `people` has no `mgr_id`.
+        // The corruption happens in a render-stage rewrite, AFTER this gate
+        // runs (at analyzer level the join is still the correct `d.pid =
+        // t2.emp_id`), so it cannot be detected by inspecting the join here.
+        //
+        // Main hides that defect by dropping the endpoint from the projection
+        // entirely; projecting it correctly makes the broken join reachable and
+        // turns a silent truncation into a Code 47. Losing a column and gaining
+        // an error are both wrong, and this fix is not the place to repair the
+        // join — so abstain across a barrier and reproduce main until #1160
+        // lands. Verified: 20 shapes across the three mixed-access schemas.
+        if root
+            .as_deref()
+            .is_some_and(crate::render_plan::plan_predicates::has_with_clause_in_tree)
+        {
+            return None;
+        }
+
         let binds = match (root.as_deref(), rel_alias.as_deref()) {
             (Some(r), Some(rel)) => Self::union_branches_all_bind(r, rel, &endpoints)
                 .unwrap_or_else(|| r.pattern_binds_an_endpoint_table(&endpoints)),

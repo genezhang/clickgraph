@@ -3776,3 +3776,86 @@ async fn ldbc_1154_cartesian_sides_are_scoped_independently() {
          must be too — asymmetry means the gate crossed sides:\n{sql}"
     );
 }
+
+/// #1154 follow-up review (MEDIUM): `pattern_binds_an_endpoint_table` must stop
+/// at a `Union` (or a branch borrows a sibling's joins), so a wrapper above the
+/// root — `ORDER BY`, `LIMIT`, `SKIP` — would hide the `Union` beneath it, the
+/// branch lookup would find nothing, and the gate would abstain.
+///
+/// That silently disabled the whole fix for the undirected shape the moment a
+/// sort or limit was added: back to `NULL AS "b.pid"` and wrong values, with
+/// every unsorted test still green. `union_branches_all_bind` now descends
+/// through those wrappers.
+#[tokio::test]
+async fn ldbc_1154_wrapper_above_union_does_not_disable_the_fix() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop.yaml");
+    for suffix in [
+        "",
+        " ORDER BY a.pid",
+        " LIMIT 3",
+        " SKIP 1",
+        " ORDER BY a.pid LIMIT 2",
+    ] {
+        let sql = generate_sql_inline(
+            &schema,
+            &format!("MATCH (a:Person)-[:REPORTS_TO]-(b:Person) RETURN a, b{suffix}"),
+        )
+        .await;
+        assert!(
+            !sql.contains("NULL AS"),
+            "#1154: `{suffix}` above the undirected UNION must not hide it from \
+             the branch lookup — a NULL literal here means the fix silently \
+             stopped applying:\n{sql}"
+        );
+        assert!(
+            sql.contains("\"a.name\"") && sql.contains("\"b.name\""),
+            "#1154: both endpoints must still resolve with `{suffix}`:\n{sql}"
+        );
+    }
+}
+
+/// #1154 follow-up review (HIGH): across a WITH barrier the planner binds a
+/// second pattern's own-table endpoint through the EDGE-side id column —
+/// `people AS d ON d.mgr_id = t2.emp_id`, and `people` has no `mgr_id` (#1160).
+///
+/// Main hides that by dropping the endpoint from the projection entirely.
+/// Projecting it correctly makes the broken join reachable, turning a silent
+/// truncation into a Code 47 — trading one wrong answer for another. The
+/// corruption happens in a render-stage rewrite AFTER this gate runs (at
+/// analyzer level the join is still the correct `d.pid = t2.emp_id`), so it
+/// cannot be detected by inspecting the join; the gate abstains across a
+/// barrier instead and reproduces main until #1160 lands.
+///
+/// A TRIVIAL `WITH a, b` is eliminated by the analyzer and never reaches here,
+/// so the abstain costs nothing on that shape — pinned below so the scope of
+/// this concession stays visible.
+#[tokio::test]
+async fn ldbc_1154_with_barrier_second_match_abstains_pending_1160() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop.yaml");
+
+    // Real barrier + a second pattern: abstain, reproducing main.
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) WITH count(*) AS n \
+         MATCH (c:Person)-[:REPORTS_TO]->(d:Person) RETURN c, d, n",
+    )
+    .await;
+    assert!(
+        !sql.contains("d.name"),
+        "#1154/#1160: across a WITH barrier the endpoint's join is spelled with \
+         the edge-side id column, so projecting own-table columns yields a \
+         Code 47 — abstain until #1160 fixes the join:\n{sql}"
+    );
+
+    // Trivial WITH is eliminated upstream, so the fix still applies there.
+    let trivial = generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) WITH a, b RETURN a, b",
+    )
+    .await;
+    assert!(
+        trivial.contains("\"a.name\"") && trivial.contains("\"b.name\""),
+        "#1154: a trivial WITH is eliminated by the analyzer and must NOT be \
+         caught by the barrier abstain:\n{trivial}"
+    );
+}
