@@ -730,6 +730,28 @@ async fn generate_sql_inline(schema: &GraphSchema, cypher: &str) -> String {
     .await
 }
 
+/// Like [`generate_sql_inline`] but surfaces planner/render errors as `Err`
+/// instead of panicking — for asserting clean-error behavior.
+async fn try_generate_sql_inline(schema: &GraphSchema, cypher: &str) -> Result<String, String> {
+    let schema = schema.clone();
+    let cypher = cypher.to_string();
+    let ctx = QueryContext::new(Some("default".to_string()));
+    with_query_context(ctx, async {
+        set_current_schema(Arc::new(schema.clone()));
+        let cleaned = strip_comments(&cypher);
+        let (_rem, statement) = clickgraph::open_cypher_parser::parse_cypher_statement(&cleaned)
+            .map_err(|e| format!("parse: {e:?}"))?;
+        let (logical_plan, plan_ctx) =
+            evaluate_read_statement(statement, &schema, None, None, None)
+                .map_err(|e| format!("plan: {e:?}"))?;
+        let render_plan =
+            logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx))
+                .map_err(|e| format!("render: {e:?}"))?;
+        Ok(render_plan.to_sql())
+    })
+    .await
+}
+
 /// #1100 sub-shape 1 (WITH barrier + re-MATCH): the re-matched endpoint's
 /// property must reference the WITH CTE alias, never the VLP FROM alias `t`
 /// with an `end_` prefix.
@@ -3479,5 +3501,361 @@ async fn ldbc_1152_no_candidate_lookup_abstains_rather_than_guessing() {
     assert!(
         dup.contains("dest_city") || dup.contains("origin_city"),
         "#1152 M1: abstaining reproduces main's spelling for this item:\n{dup}"
+    );
+}
+
+// ===========================================================================
+// #1154 — mixed-access whole-node endpoint resolution
+//
+// On a MIXED-access edge (`classify_edge_table_pattern` → `Mixed`: one endpoint
+// `EmbeddedInEdge`, the other `OwnTable`) a whole-node `RETURN a` / `RETURN a, b`
+// sourced its property set from the plan-walk, which returns the EDGE's embedded
+// map. That map is incomplete for both roles at once, so main:
+//   * lost the embedded endpoint's non-embedded properties (`a.name`), and
+//   * projected NOTHING for the own-table endpoint — the column vanished from
+//     the result with no error (undirected then NULL-padded it into
+//     right-count/wrong-value rows).
+// ===========================================================================
+
+/// #1154 behavior: a directed mixed-access single hop must project BOTH
+/// endpoints in full. On main this rendered a single column (`a.pid`) for two
+/// whole nodes.
+#[tokio::test]
+async fn ldbc_1154_mixed_access_whole_node_projects_both_endpoints() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) RETURN a, b",
+    )
+    .await;
+    for want in ["\"a.name\"", "\"a.pid\"", "\"b.name\"", "\"b.pid\""] {
+        assert!(
+            sql.contains(want),
+            "#1154: whole-node RETURN must project {want}; main dropped it:\n{sql}"
+        );
+    }
+    // The own-table endpoint's columns bind the NODE alias, not the edge alias.
+    assert!(
+        sql.contains("b.name") && sql.contains("b.pid"),
+        "#1154: own-table endpoint must resolve against its own table:\n{sql}"
+    );
+}
+
+/// #1154 role symmetry: the mirrored schema (`foreign_selfloop_end` embeds the
+/// TO role instead of the FROM role) must be repaired identically. A fix that
+/// keyed on one role would leave this one truncated.
+#[tokio::test]
+async fn ldbc_1154_mixed_access_whole_node_is_role_symmetric() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop_end.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) RETURN a, b",
+    )
+    .await;
+    for want in ["\"a.name\"", "\"a.pid\"", "\"b.name\"", "\"b.pid\""] {
+        assert!(
+            sql.contains(want),
+            "#1154: mirrored schema must project {want} too:\n{sql}"
+        );
+    }
+}
+
+/// #1154 undirected: each UNION arm must resolve BOTH endpoints. On main each
+/// arm projected one endpoint and let `normalize_branch` pad the other with a
+/// literal NULL — right row count, every value wrong, no error.
+#[tokio::test]
+async fn ldbc_1154_undirected_arms_resolve_both_endpoints_no_null_padding() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO]-(b:Person) RETURN a, b",
+    )
+    .await;
+    assert!(
+        !sql.contains("NULL AS"),
+        "#1154: no arm may stand in a NULL literal for an unresolved endpoint \
+         — that is indistinguishable from a legitimately absent value:\n{sql}"
+    );
+    // Both arms present, and each names both endpoints.
+    assert_eq!(
+        sql.matches("UNION ALL").count(),
+        1,
+        "#1154: expected the two-arm undirected split:\n{sql}"
+    );
+    for want in ["\"a.name\"", "\"b.name\""] {
+        assert!(
+            sql.contains(want),
+            "#1154: undirected arms must project {want}:\n{sql}"
+        );
+    }
+}
+
+/// #1154 abstain: a same-table denormalized node (`flights_denorm`'s Airport
+/// declares `property_mappings: {}` — every property lives on the edge under a
+/// role-specific name) already renders correctly and must be left BYTE-identical.
+/// This is the gate that keeps the fix inert for every non-mixed schema.
+#[tokio::test]
+async fn ldbc_1154_same_table_denorm_whole_node_unchanged() {
+    let schema = load_schema_from("schemas/test/flights_denorm_test.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Airport)-[:FLIGHT]->(d:Airport) RETURN o, d",
+    )
+    .await;
+    // Role-specific edge columns, NOT own-table columns.
+    for want in ["origin_city", "origin_code", "dest_city", "dest_code"] {
+        assert!(
+            sql.contains(want),
+            "#1154: same-table denorm must keep its per-role edge columns \
+             ({want} missing) — the fix must not fire here:\n{sql}"
+        );
+    }
+}
+
+/// #1154 abstain: a fully-denormalized schema must be left alone. Zeek's Domain
+/// declares `property_mappings: {}` in YAML but the catalog SYNTHESIZES an id
+/// entry (`{query → query}`), so the emptiness filter does NOT stop it — the
+/// endpoint-join gate does, because a fully-denormalized pattern never binds an
+/// endpoint's own table.
+///
+/// This distinction is load-bearing and was found by measurement: an earlier
+/// cut gated on "declares a property beyond its id" and, verified by mutation,
+/// that gate turned out to be masked by the join gate on all 2400 swept shapes
+/// (dead code), so it was removed rather than shipped unexercised. Without the
+/// join gate this query rebinds `b.name` → `b.query` against an unjoined table:
+/// a renamed output column AND a Code 47.
+#[tokio::test]
+async fn ldbc_1154_fully_denormalized_schema_abstains() {
+    let schema = load_schema_from("schemas/test/zeek_merged_collision.yaml");
+    let sql =
+        generate_sql_inline(&schema, "MATCH (a:IP)-[:REQUESTED]->(b:Domain) RETURN a, b").await;
+    assert!(
+        sql.contains("\"b.name\""),
+        "#1154: the node's declared Cypher property name must survive — \
+         rebinding to the synthesized id entry renames the output column:\n{sql}"
+    );
+    assert!(
+        !sql.contains("\"b.query\""),
+        "#1154: an id-only property map must NOT drive the own-table rebind:\n{sql}"
+    );
+}
+
+/// #1154 abstain: when the pattern collapses to a bare edge scan
+/// (`SingleTableScan`) no endpoint node table is joined, so own-table columns
+/// would dangle. `RETURN *` reaches that collapse on a mixed-access edge because
+/// `plan_references_alias` has no `Star` arm — a PRE-EXISTING analyzer defect
+/// (main also discards an explicitly written `b.name` next to `RETURN *`).
+/// Until that is fixed upstream this shape must keep main's exact output rather
+/// than trade a silent truncation for a Code 47.
+#[tokio::test]
+async fn ldbc_1154_collapsed_pattern_abstains_rather_than_dangling() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) RETURN *",
+    )
+    .await;
+    assert!(
+        !sql.contains("a.name"),
+        "#1154: with the pattern collapsed to a bare edge scan there is no \
+         own-table join to bind to — the fix must abstain here:\n{sql}"
+    );
+    assert!(
+        sql.contains("mgr_id"),
+        "#1154: abstaining must reproduce main's spelling:\n{sql}"
+    );
+}
+
+/// #1154 review (CRITICAL): the endpoint-join gate is evaluated against the
+/// OUTERMOST plan, but a Cypher `UNION` renders each arm separately. A first cut
+/// disjoined across branches (`Union => inputs.iter().any(..)`), so a COLLAPSED
+/// arm — `RETURN *`, where `SingleTableScan` fires and nothing binds an endpoint
+/// table — passed the gate on its SIBLING's evidence and emitted exactly the
+/// dangling own-table columns the gate exists to prevent (Code 47 where main
+/// returned rows).
+///
+/// The fix requires EVERY branch that owns the relationship to bind an endpoint.
+/// Here the collapsed arm does not, so its own expansion abstains. What remains
+/// is a genuine Cypher arity mismatch, surfaced LOUDLY: main hid it by
+/// truncating BOTH arms to one column so they happened to line up.
+///
+/// Single-arm `RETURN *` cannot catch this — the leak needs a sibling to leak
+/// from, which is why the earlier sweep (single-clause queries only) missed it.
+#[tokio::test]
+async fn ldbc_1154_union_arm_gate_does_not_leak_across_branches() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop.yaml");
+    let err = try_generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) RETURN * \
+         UNION MATCH (a:Person)-[:REPORTS_TO]->(b:Person) RETURN a, b",
+    )
+    .await
+    .expect_err("#1154: expected a loud arity error, not a dangling projection");
+    assert!(
+        err.contains("UnionColumnMismatch"),
+        "#1154: the collapsed arm must abstain, leaving a clean arity error — \
+         a rendered SQL with b.name and no b join means the gate leaked \
+         across branches:\n{err}"
+    );
+    // The collapsed arm keeps main's single column; the healthy arm keeps its
+    // full set. Both halves of that are the point: neither arm borrowed the
+    // other's evidence.
+    assert!(
+        err.contains("first_columns: \"a.pid\"") && err.contains("a.name, a.pid, b.name, b.pid"),
+        "#1154: expected the collapsed arm truncated and the healthy arm \
+         complete:\n{err}"
+    );
+}
+
+/// #1154 review: the undirected two-arm split reuses the SAME rel alias in both
+/// arms with swapped connections. It is a legitimate multi-owner case, so the
+/// branch-scoped gate must resolve it rather than abstain on ambiguity — an
+/// "exactly one owning branch" rule silently re-broke this (back to NULL
+/// padding) while every single-clause test still passed.
+#[tokio::test]
+async fn ldbc_1154_undirected_split_shares_rel_alias_across_arms() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO]-(b:Person) RETURN a, b",
+    )
+    .await;
+    assert!(
+        !sql.contains("NULL AS"),
+        "#1154: both arms share rel alias `t1`; requiring a UNIQUE owning \
+         branch makes the gate abstain and restores the NULL padding:\n{sql}"
+    );
+    for want in ["\"a.name\"", "\"b.name\""] {
+        assert!(
+            sql.contains(want),
+            "#1154: undirected arms must still resolve {want}:\n{sql}"
+        );
+    }
+}
+
+/// #1154 review (HIGH): two independent `MATCH` clauses plan as a
+/// `CartesianProduct`, whose sides are also rendered separately. The gate
+/// judges each side on ITS OWN joins.
+///
+/// Here both sides DO bind their own-table endpoint (`b`, `d`), so both expand
+/// — while `a` and `c` stay embedded-only because nothing binds a table for
+/// them. The mixed result is not a "partial set": it is per-alias resolution
+/// doing exactly what the evidence supports, and it matches the per-property
+/// oracle on this build row-for-row (verified live). Main projected only
+/// `a.pid`/`c.pid`, dropping `b` and `d` entirely.
+///
+/// HONEST SCOPE: unlike its UNION sibling, this test is a BEHAVIOR pin, not a
+/// gate pin. Mutating the cartesian arm back to the leaky cross-side
+/// disjunction leaves this output byte-identical — on every available fixture
+/// the two sides agree about whether an endpoint is bound, so the leak has no
+/// observable effect. No schema in the repo produces a mixed-verdict cartesian.
+/// The scoping is still correct by construction (a side's joins say nothing
+/// about its sibling); it is simply not observable here, and this comment
+/// exists so nobody later reads a passing test as proof that it is.
+#[tokio::test]
+async fn ldbc_1154_cartesian_sides_are_scoped_independently() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) \
+         MATCH (c:Person)-[:REPORTS_TO]->(d:Person) RETURN *",
+    )
+    .await;
+    // Each own-table endpoint resolves against ITS OWN side's join.
+    assert!(
+        sql.contains("b.name") && sql.contains("d.name"),
+        "#1154: each cartesian side binds its own endpoint table, so both \
+         must expand:\n{sql}"
+    );
+    // Symmetry is the tell that neither side borrowed the other's evidence:
+    // an asymmetric result would mean one side passed on foreign joins.
+    assert_eq!(
+        sql.matches("\"b.").count(),
+        sql.matches("\"d.").count(),
+        "#1154: the two sides are structurally identical, so their projections \
+         must be too — asymmetry means the gate crossed sides:\n{sql}"
+    );
+}
+
+/// #1154 follow-up review (MEDIUM): `pattern_binds_an_endpoint_table` must stop
+/// at a `Union` (or a branch borrows a sibling's joins), so a wrapper above the
+/// root — `ORDER BY`, `LIMIT`, `SKIP` — would hide the `Union` beneath it, the
+/// branch lookup would find nothing, and the gate would abstain.
+///
+/// That silently disabled the whole fix for the undirected shape the moment a
+/// sort or limit was added: back to `NULL AS "b.pid"` and wrong values, with
+/// every unsorted test still green. `union_branches_all_bind` now descends
+/// through those wrappers.
+#[tokio::test]
+async fn ldbc_1154_wrapper_above_union_does_not_disable_the_fix() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop.yaml");
+    for suffix in [
+        "",
+        " ORDER BY a.pid",
+        " LIMIT 3",
+        " SKIP 1",
+        " ORDER BY a.pid LIMIT 2",
+    ] {
+        let sql = generate_sql_inline(
+            &schema,
+            &format!("MATCH (a:Person)-[:REPORTS_TO]-(b:Person) RETURN a, b{suffix}"),
+        )
+        .await;
+        assert!(
+            !sql.contains("NULL AS"),
+            "#1154: `{suffix}` above the undirected UNION must not hide it from \
+             the branch lookup — a NULL literal here means the fix silently \
+             stopped applying:\n{sql}"
+        );
+        assert!(
+            sql.contains("\"a.name\"") && sql.contains("\"b.name\""),
+            "#1154: both endpoints must still resolve with `{suffix}`:\n{sql}"
+        );
+    }
+}
+
+/// #1154 follow-up review (HIGH): across a WITH barrier the planner binds a
+/// second pattern's own-table endpoint through the EDGE-side id column —
+/// `people AS d ON d.mgr_id = t2.emp_id`, and `people` has no `mgr_id` (#1160).
+///
+/// Main hides that by dropping the endpoint from the projection entirely.
+/// Projecting it correctly makes the broken join reachable, turning a silent
+/// truncation into a Code 47 — trading one wrong answer for another. The
+/// corruption happens in a render-stage rewrite AFTER this gate runs (at
+/// analyzer level the join is still the correct `d.pid = t2.emp_id`), so it
+/// cannot be detected by inspecting the join; the gate abstains across a
+/// barrier instead and reproduces main until #1160 lands.
+///
+/// A TRIVIAL `WITH a, b` is eliminated by the analyzer and never reaches here,
+/// so the abstain costs nothing on that shape — pinned below so the scope of
+/// this concession stays visible.
+#[tokio::test]
+async fn ldbc_1154_with_barrier_second_match_abstains_pending_1160() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop.yaml");
+
+    // Real barrier + a second pattern: abstain, reproducing main.
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) WITH count(*) AS n \
+         MATCH (c:Person)-[:REPORTS_TO]->(d:Person) RETURN c, d, n",
+    )
+    .await;
+    assert!(
+        !sql.contains("d.name"),
+        "#1154/#1160: across a WITH barrier the endpoint's join is spelled with \
+         the edge-side id column, so projecting own-table columns yields a \
+         Code 47 — abstain until #1160 fixes the join:\n{sql}"
+    );
+
+    // Trivial WITH is eliminated upstream, so the fix still applies there.
+    let trivial = generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) WITH a, b RETURN a, b",
+    )
+    .await;
+    assert!(
+        trivial.contains("\"a.name\"") && trivial.contains("\"b.name\""),
+        "#1154: a trivial WITH is eliminated by the analyzer and must NOT be \
+         caught by the barrier abstain:\n{trivial}"
     );
 }
