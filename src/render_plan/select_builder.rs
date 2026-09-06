@@ -2838,6 +2838,13 @@ impl LogicalPlan {
                     .any(|j| endpoints.iter().any(|e| e == &j.table_alias))
                     || gj.input.pattern_binds_an_endpoint_table(endpoints)
             }
+            // A UNION branch or a cartesian side is rendered SEPARATELY, and
+            // its joins say nothing about the branch being rendered now. See
+            // `join_scope_for` — this predicate is only ever applied to a
+            // single scope, so these two arms must NOT disjoin across
+            // siblings. Recursing into a sibling would let a collapsed arm
+            // pass on its neighbour's evidence and emit dangling columns.
+            LogicalPlan::Union(_) | LogicalPlan::CartesianProduct(_) => false,
             LogicalPlan::GraphRel(gr) => {
                 gr.left.pattern_binds_an_endpoint_table(endpoints)
                     || gr.center.pattern_binds_an_endpoint_table(endpoints)
@@ -2853,15 +2860,72 @@ impl LogicalPlan {
             LogicalPlan::Unwind(u) => u.input.pattern_binds_an_endpoint_table(endpoints),
             LogicalPlan::WithClause(w) => w.input.pattern_binds_an_endpoint_table(endpoints),
             LogicalPlan::Cte(c) => c.input.pattern_binds_an_endpoint_table(endpoints),
-            LogicalPlan::CartesianProduct(cp) => {
-                cp.left.pattern_binds_an_endpoint_table(endpoints)
-                    || cp.right.pattern_binds_an_endpoint_table(endpoints)
-            }
-            LogicalPlan::Union(u) => u
-                .inputs
-                .iter()
-                .any(|b| b.pattern_binds_an_endpoint_table(endpoints)),
             _ => false,
+        }
+    }
+
+    /// #1154: the plan subtree whose join list governs the alias currently
+    /// being rendered.
+    ///
+    /// `GraphJoins` sits ABOVE the Projection this builder is invoked on, so
+    /// the arm's own joins are not reachable from `self` and the outermost
+    /// plan recorded by `scoped_render_root_plan` must be consulted. But that
+    /// root may be a `Union` (Cypher `UNION`, or the undirected two-arm split)
+    /// or a `CartesianProduct` (two independent `MATCH` clauses), whose
+    /// branches are rendered SEPARATELY and hold unrelated joins.
+    ///
+    /// Only the branches that actually contain this alias's relationship are
+    /// consulted, and EVERY one of them must satisfy the gate.
+    ///
+    /// "Every", not "any", is the whole point. A Cypher `UNION` can pair a
+    /// collapsed arm with a non-collapsed one; disjoining lets the collapsed
+    /// arm pass on its sibling's evidence and emit exactly the dangling
+    /// columns the gate exists to prevent (adversarial review, CRITICAL).
+    ///
+    /// "Every owning branch", not "exactly one", because the undirected
+    /// two-arm split reuses the SAME rel alias in both arms with swapped
+    /// connections — a legitimate multi-owner case that must still resolve.
+    /// Requiring all owners keeps that working while staying conservative:
+    /// if any arm that binds this relationship lacks an endpoint table, we
+    /// abstain for all of them and reproduce main.
+    ///
+    /// Returns `None` when no branch owns the relationship, which the caller
+    /// turns into an abstain.
+    fn union_branches_all_bind(
+        root: &LogicalPlan,
+        rel: &str,
+        endpoints: &[String],
+    ) -> Option<bool> {
+        use crate::query_planner::logical_plan::LogicalPlan;
+        match root {
+            LogicalPlan::Union(u) => {
+                let owning: Vec<&std::sync::Arc<LogicalPlan>> = u
+                    .inputs
+                    .iter()
+                    .filter(|b| b.find_graph_rel_by_rel_alias(rel).is_some())
+                    .collect();
+                if owning.is_empty() {
+                    return None;
+                }
+                Some(owning.iter().all(|b| {
+                    Self::union_branches_all_bind(b, rel, endpoints)
+                        .unwrap_or_else(|| b.pattern_binds_an_endpoint_table(endpoints))
+                }))
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                let sides: Vec<&std::sync::Arc<LogicalPlan>> = [&cp.left, &cp.right]
+                    .into_iter()
+                    .filter(|b| b.find_graph_rel_by_rel_alias(rel).is_some())
+                    .collect();
+                if sides.is_empty() {
+                    return None;
+                }
+                Some(sides.iter().all(|b| {
+                    Self::union_branches_all_bind(b, rel, endpoints)
+                        .unwrap_or_else(|| b.pattern_binds_an_endpoint_table(endpoints))
+                }))
+            }
+            _ => None,
         }
     }
 
@@ -3001,8 +3065,13 @@ impl LogicalPlan {
             .map(|gr| vec![gr.left_connection.clone(), gr.right_connection.clone()])
             .unwrap_or_else(|| vec![alias.to_string()]);
         let root = crate::render_plan::cte_extraction::render_root_plan();
-        let join_source: &LogicalPlan = root.as_deref().unwrap_or(self);
-        if !join_source.pattern_binds_an_endpoint_table(&endpoints) {
+        let binds = match (root.as_deref(), rel_alias.as_deref()) {
+            (Some(r), Some(rel)) => Self::union_branches_all_bind(r, rel, &endpoints)
+                .unwrap_or_else(|| r.pattern_binds_an_endpoint_table(&endpoints)),
+            (Some(r), None) => r.pattern_binds_an_endpoint_table(&endpoints),
+            (None, _) => self.pattern_binds_an_endpoint_table(&endpoints),
+        };
+        if !binds {
             return None;
         }
 
