@@ -2171,6 +2171,28 @@ pub(crate) fn normalize(sql: &str) -> String {
     remap(&s, r"pattern_union_t\d+", "pattern_union_t")
 }
 
+/// Normalize checked-in snapshot text so Git checkout line endings do not
+/// change the meaning of a golden comparison on Windows.
+pub(crate) fn normalize_golden_text(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+#[test]
+fn normalizes_golden_line_endings_without_changing_content() {
+    assert_eq!(
+        normalize_golden_text("SELECT 1\nSELECT 2\n"),
+        "SELECT 1\nSELECT 2\n"
+    );
+    assert_eq!(
+        normalize_golden_text("SELECT 1\r\nSELECT 2\r\n"),
+        "SELECT 1\nSELECT 2\n"
+    );
+    assert_eq!(
+        normalize_golden_text("SELECT 1\rSELECT 2\r"),
+        "SELECT 1\nSELECT 2\n"
+    );
+}
+
 fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
     format!(
         "{}/tests/rust/integration/golden/sql_ir/{}/{}__{}.sql",
@@ -2604,7 +2626,7 @@ async fn sql_golden_snapshots() {
                     std::fs::write(&path, &sql).expect("write golden");
                 } else {
                     match std::fs::read_to_string(&path) {
-                        Ok(expected) if expected == sql => {}
+                        Ok(expected) if normalize_golden_text(&expected) == sql => {}
                         Ok(expected) => mismatches.push(format!(
                             "--- {schema_dir}/{name}__{dname} MISMATCH ---\nEXPECTED:\n{expected}\nACTUAL:\n{sql}\n"
                         )),

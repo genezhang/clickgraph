@@ -65,7 +65,7 @@ use clickgraph::{
     sql_generator::SqlDialect,
 };
 
-use crate::sql_golden_tests::normalize;
+use crate::sql_golden_tests::{normalize, normalize_golden_text};
 
 #[derive(Debug, serde::Deserialize)]
 struct CorpusEntry {
@@ -282,7 +282,7 @@ async fn corpus_sweep() {
                 }
             } else {
                 match std::fs::read_to_string(&path) {
-                    Ok(expected) if expected == content => {}
+                    Ok(expected) if normalize_golden_text(&expected) == content => {}
                     Ok(expected) => mismatches.push(format!(
                         "--- {}/{}__{dname} MISMATCH ---\nEXPECTED:\n{expected}\nACTUAL:\n{content}\n",
                         entry.schema, entry.name
