@@ -57,10 +57,56 @@ macro_rules! lock_context {
     };
 }
 
-/// Helper function to format BoltValue for logging
+/// Return whether a JSON object key may contain authentication material.
+fn is_sensitive_log_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    let normalized = key.replace('-', "_");
+    let parts: Vec<&str> = normalized.split('_').collect();
+
+    [
+        "auth",
+        "authorization",
+        "credential",
+        "credentials",
+        "password",
+        "secret",
+        "token",
+        "tokens",
+    ]
+    .iter()
+    .any(|sensitive| normalized == *sensitive || parts.contains(sensitive))
+}
+
+/// Replace authentication material before a Bolt value is written to logs.
+fn redact_sensitive_log_values(value: &mut Value) {
+    match value {
+        Value::Object(fields) => {
+            for (key, value) in fields.iter_mut() {
+                if is_sensitive_log_key(key) {
+                    *value = Value::String("<redacted>".to_string());
+                } else {
+                    redact_sensitive_log_values(value);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                redact_sensitive_log_values(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Helper function to format BoltValue for safe logging.
 fn bolt_value_to_string(value: &BoltValue) -> String {
     match value {
-        BoltValue::Json(v) => serde_json::to_string(v).unwrap_or_else(|_| format!("{:?}", v)),
+        BoltValue::Json(v) => {
+            let mut safe_value = v.clone();
+            redact_sensitive_log_values(&mut safe_value);
+            serde_json::to_string(&safe_value)
+                .unwrap_or_else(|_| "<unserializable bolt value>".to_string())
+        }
         BoltValue::PackstreamBytes(bytes) => format!("<packstream: {} bytes>", bytes.len()),
     }
 }
@@ -3301,6 +3347,37 @@ mod tests {
         // Unrelated user query — must NOT match
         let user = "MATCH (p:Person) RETURN p.name".to_uppercase();
         assert!(!is_browser_count_union(&user));
+    }
+
+    #[test]
+    fn redacts_sensitive_bolt_log_values_recursively() {
+        let value = BoltValue::Json(serde_json::json!({
+            "scheme": "basic",
+            "principal": "alice",
+            "author": "still-visible",
+            "credentials": "top-level-secret",
+            "nested": {
+                "access_token": "nested-secret",
+                "database": "analytics"
+            },
+            "items": [{"password": "array-secret"}]
+        }));
+
+        let logged = bolt_value_to_string(&value);
+
+        assert!(logged.contains("alice"));
+        assert!(logged.contains("analytics"));
+        assert_eq!(logged.matches("<redacted>").count(), 3);
+        assert!(!logged.contains("top-level-secret"));
+        assert!(!logged.contains("nested-secret"));
+        assert!(!logged.contains("array-secret"));
+    }
+
+    #[test]
+    fn preserves_safe_packstream_log_summary() {
+        let logged = bolt_value_to_string(&BoltValue::PackstreamBytes(vec![0; 7]));
+
+        assert_eq!(logged, "<packstream: 7 bytes>");
     }
 
     #[test]
