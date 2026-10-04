@@ -34,6 +34,43 @@ pub trait FilterBuilder {
     fn extract_distinct(&self) -> bool;
 }
 
+/// #1170 scope gate: the shapes where emitting the chained hops' predicates into the
+/// outer WHERE is NOT yet known to be correct, so `main`'s behaviour is kept
+/// (`None`) rather than risk turning a loud refusal into silently wrong rows.
+///
+/// - **Any WITH in the query.** A WITH-carried node is a CTE alias, and a post-WITH
+///   `c.x = 'v'` is then misread as a join key by `extract_cte_join_condition_from_filter`,
+///   which disarms the #451 cartesian guard (loud refusal → 26 rows where 11 are
+///   correct). And inside a WITH body the chained node's join is pruned when the WITH
+///   projection doesn't name it, so the new WHERE would reference an unjoined alias
+///   (Code 47). Both need CTE-aware handling, tracked as a follow-up.
+/// - **An OPTIONAL chained hop.** Its predicate must stay in the LEFT JOIN's ON
+///   (NULL-extension); an outer WHERE turns the OPTIONAL into an inner join.
+fn child_hop_predicates_are_safe_to_emit(
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+) -> bool {
+    use crate::render_plan::cte_extraction::render_root_plan;
+    use crate::render_plan::plan_predicates::has_with_clause_in_tree;
+    let subtree = LogicalPlan::GraphRel(graph_rel.clone());
+    // The OUTERMOST plan sees a WITH even when this GraphRel is the WITH body or
+    // sits after it; fall back to the subtree when no root is recorded.
+    let has_with = match render_root_plan() {
+        Some(root) => has_with_clause_in_tree(&root) || has_with_clause_in_tree(&subtree),
+        None => has_with_clause_in_tree(&subtree),
+    };
+    if has_with {
+        return false;
+    }
+    let optional_child = [graph_rel.left.as_ref(), graph_rel.right.as_ref()]
+        .into_iter()
+        .any(|child| {
+            child.any_node(
+                |n| matches!(n, LogicalPlan::GraphRel(g) if g.is_optional.unwrap_or(false)),
+            )
+        });
+    !optional_child
+}
+
 /// #1170: the outer-WHERE predicates owned by the FIXED hops chained to a
 /// CTE-backed variable-length `GraphRel` (its children), as one AND-ed expression.
 ///
@@ -57,6 +94,9 @@ fn child_hop_outer_predicates(
     use crate::render_plan::plan_builder_helpers::{
         collect_graphrel_predicates, register_own_table_property_requests,
     };
+    if !child_hop_predicates_are_safe_to_emit(graph_rel) {
+        return None;
+    }
     let mut predicates: Vec<RenderExpr> = Vec::new();
     for child in [graph_rel.left.as_ref(), graph_rel.right.as_ref()] {
         for mut pred in collect_graphrel_predicates(child)
@@ -469,21 +509,12 @@ impl FilterBuilder for LogicalPlan {
                                     graph_rel.left_connection,
                                     graph_rel.right_connection
                                 );
-                                let closed = RenderExpr::Raw(format!(
+                                return Ok(Some(RenderExpr::Raw(format!(
                                     "{a}.{s} = {a}.{e}",
                                     a = crate::server::query_context::vlp_from_alias(),
                                     s = VLP_START_ID_COLUMN,
                                     e = VLP_END_ID_COLUMN,
-                                ));
-                                return Ok(Some(match child_hop_outer_predicates(graph_rel) {
-                                    Some(children) => {
-                                        RenderExpr::OperatorApplicationExp(OperatorApplication {
-                                            operator: Operator::And,
-                                            operands: vec![children, closed],
-                                        })
-                                    }
-                                    None => closed,
-                                }));
+                                ))));
                             }
                             // #1170: the VLP's OWN predicate is in the CTE, but a FIXED
                             // hop chained in front of it (`(c)-[:R]->(a)-[:R*1..2]->(b)

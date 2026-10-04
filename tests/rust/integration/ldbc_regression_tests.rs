@@ -4111,3 +4111,74 @@ async fn two_chained_fixed_hops_keep_every_where_filter_1170() {
         "#1170: both chained nodes' predicates must be kept:\n{sql}"
     );
 }
+
+// #1170 scope gate (review of #1176): shapes where emitting the chained hop's
+// predicate is NOT yet known to be correct must keep `main`'s behaviour.
+
+/// A WITH-carried node is a CTE alias; `c.name = 'v'` was misread as a join key,
+/// disarming the #451 cartesian guard (loud refusal -> 26 rows where 11 are correct).
+#[tokio::test]
+async fn with_carried_node_filter_keeps_the_loud_refusal_1170() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let r = try_generate_sql_inline(
+        &schema,
+        "MATCH (c:User) WITH c MATCH (c)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) \
+         WHERE c.name = 'v' RETURN count(*)",
+    )
+    .await;
+    let err = r.expect_err("must stay a loud refusal, not silently-wrong rows");
+    assert!(
+        err.contains("cartesian"),
+        "#1170: expected the #451 cartesian refusal, got: {err}"
+    );
+}
+
+/// Inside a WITH body the chained node's join is pruned when the WITH projection does
+/// not name it, so a `WHERE c.full_name` there is an unresolvable alias (Code 47).
+#[tokio::test]
+async fn with_after_a_filtered_chain_emits_no_unjoined_reference_1170() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) \
+         WHERE c.name = 'v' WITH count(*) AS k RETURN k",
+    )
+    .await;
+    assert!(
+        !sql.contains("c.full_name"),
+        "#1170: the WITH body has no `c` in scope; referencing it is Code 47:\n{sql}"
+    );
+}
+
+/// An OPTIONAL chained hop keeps its predicate in the LEFT JOIN; an outer WHERE would
+/// turn the OPTIONAL into an inner join (count(*) 26 -> 11).
+#[tokio::test]
+async fn optional_chained_hop_predicate_is_not_hoisted_to_the_outer_where_1170() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User) OPTIONAL MATCH (c:User)-[:FOLLOWS]->(a) WHERE c.name = 'v' \
+         MATCH (a)-[:FOLLOWS*1..2]->(b:User) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        !sql.contains("WHERE c.full_name = 'v'"),
+        "#1170: an OPTIONAL hop's predicate must not become an outer WHERE:\n{sql}"
+    );
+}
+
+/// The VLP's RIGHT child can also be a fixed hop (comma pattern joined on `b`).
+#[tokio::test]
+async fn fixed_hop_on_the_vlps_right_child_keeps_its_filter_1170() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (e:User)-[:FOLLOWS]->(b:User), (a:User)-[:FOLLOWS*1..2]->(b) \
+         WHERE e.name = 'v' RETURN e.name, a.name",
+    )
+    .await;
+    assert!(
+        sql.contains("e.full_name = 'v'"),
+        "#1170: the right-child fixed hop's predicate must reach the outer WHERE:\n{sql}"
+    );
+}
