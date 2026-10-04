@@ -4182,3 +4182,149 @@ async fn fixed_hop_on_the_vlps_right_child_keeps_its_filter_1170() {
         "#1170: the right-child fixed hop's predicate must reach the outer WHERE:\n{sql}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #1174: fixed hop(s) chained in front of a CTE-backed VLP must bind the shared
+// node through the CTE (`t.start_id` / `t.end_id`).
+//
+// `Traditional` (#623) and `SingleTableScan` (#521) folded that binding onto the
+// fixed hop's edge JOIN; `EdgeToEdge` (2nd+ denormalized hop) and `MixedAccess`
+// (foreign-embedded) never did, so the CTE was correlated to NOTHING — a cartesian
+// product (209 rows vs 20 on denormalized flights; 420 vs 14 on mixed-access).
+// ---------------------------------------------------------------------------
+
+/// `true` when some `<alias>.<col> = t.<cte_col>` equality is in the SQL — the
+/// fixed hop's edge column bound to the VLP CTE. Alias numbers come from a
+/// process-wide counter, so they are matched, not hard-coded.
+fn binds_edge_column_to_cte_1174(sql: &str, col: &str, cte_col: &str) -> bool {
+    regex::Regex::new(&format!(
+        r"\bt\d+\.{} = t\.{}\b",
+        regex::escape(col),
+        regex::escape(cte_col)
+    ))
+    .unwrap()
+    .is_match(sql)
+}
+
+/// The issue's repro: the SECOND fixed hop (`EdgeToEdge`) owns the shared node `a`
+/// as its TO endpoint, so its to-id column must equal the CTE's `start_id`.
+#[tokio::test]
+async fn two_fixed_hops_before_vlp_bind_the_cte_to_the_chain_denorm_1174() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (z:Airport)-[:FLIGHT]->(c:Airport)-[:FLIGHT]->(a:Airport)\
+         -[:FLIGHT*1..2]->(b:Airport) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        binds_edge_column_to_cte_1174(&sql, "Dest", "start_id"),
+        "#1174: the hop ending at the VLP start must join `<hop>.Dest = t.start_id`:\n{sql}"
+    );
+}
+
+/// Same shape, hops written backwards: the shared node is the FROM endpoint of the
+/// second hop, so the OTHER edge column is the one that binds (guards the
+/// `left_alias` binding independently of the `right_alias` one).
+#[tokio::test]
+async fn two_incoming_hops_before_vlp_bind_the_cte_to_the_chain_denorm_1174() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (z:Airport)<-[:FLIGHT]-(c:Airport)<-[:FLIGHT]-(a:Airport)\
+         -[:FLIGHT*1..2]->(b:Airport) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        binds_edge_column_to_cte_1174(&sql, "Origin", "start_id"),
+        "#1174: the incoming hop at the VLP start must join `<hop>.Origin = t.start_id`:\n{sql}"
+    );
+}
+
+/// Only the hop ADJACENT to the VLP binds the CTE; earlier hops chain off each
+/// other through the existing edge-to-edge links.
+#[tokio::test]
+async fn only_the_hop_adjacent_to_the_vlp_binds_the_cte_denorm_1174() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (y:Airport)-[:FLIGHT]->(z:Airport)-[:FLIGHT]->(c:Airport)-[:FLIGHT]->(a:Airport)\
+         -[:FLIGHT*1..2]->(b:Airport) RETURN count(*)",
+    )
+    .await;
+    let bound = regex::Regex::new(r"\bt\d+\.\w+ = t\.start_id\b")
+        .unwrap()
+        .find_iter(&sql)
+        .count();
+    assert_eq!(
+        bound, 1,
+        "#1174: exactly one fixed hop (the adjacent one) binds the CTE:\n{sql}"
+    );
+}
+
+/// Mixed-access, VLP start is the OWN-TABLE node of the fixed hop: the binding folds
+/// onto the edge JOIN and NO node-table JOIN is emitted (a `people AS a` JOIN whose
+/// condition is rewritten onto the CTE is correlated to nothing — the 420-row fan).
+#[tokio::test]
+async fn mixed_fixed_hop_before_vlp_folds_the_binding_onto_the_edge_1174() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (c:Person)-[:REPORTS_TO]->(a:Person)-[:REPORTS_TO*1..2]->(b:Person) \
+         RETURN count(*)",
+    )
+    .await;
+    assert!(
+        binds_edge_column_to_cte_1174(&sql, "emp_id", "start_id"),
+        "#1174: the edge must join `<hop>.emp_id = t.start_id`:\n{sql}"
+    );
+    let outer = sql.rsplit_once("FROM vlp_a_b AS t").expect("outer FROM").1;
+    assert!(
+        !outer.contains("testdb.people"),
+        "#1174: the VLP endpoint is bound by the CTE — no uncorrelated node-table JOIN:\n{sql}"
+    );
+}
+
+/// Mixed-access, VLP start is the EMBEDDED node of the fixed hop (its id is a column
+/// of the edge row): bind that column; the own-table node keeps its JOIN.
+#[tokio::test]
+async fn mixed_embedded_endpoint_before_vlp_is_bound_to_the_cte_1174() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop_end.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (c:Person)-[:REPORTS_TO]->(a:Person)-[:REPORTS_TO*1..2]->(b:Person) \
+         RETURN count(*)",
+    )
+    .await;
+    assert!(
+        binds_edge_column_to_cte_1174(&sql, "emp_id", "start_id"),
+        "#1174: the embedded endpoint's edge column must bind the CTE:\n{sql}"
+    );
+}
+
+/// Embedded endpoint of a hop that comes AFTER the VLP (`t.end_id`), and the
+/// incoming-direction variant (`t.start_id` against the FROM-role column).
+#[tokio::test]
+async fn mixed_embedded_endpoint_after_and_incoming_is_bound_to_the_cte_1174() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop.yaml");
+    let after = generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person)-[:REPORTS_TO]->(y:Person) \
+         RETURN a.pid, y.pid",
+    )
+    .await;
+    assert!(
+        binds_edge_column_to_cte_1174(&after, "mgr_id", "end_id"),
+        "#1174: a hop after the VLP must bind `<hop>.mgr_id = t.end_id`:\n{after}"
+    );
+    let incoming = generate_sql_inline(
+        &schema,
+        "MATCH (c:Person)<-[:REPORTS_TO]-(a:Person)-[:REPORTS_TO*1..2]->(b:Person) \
+         RETURN count(*)",
+    )
+    .await;
+    assert!(
+        binds_edge_column_to_cte_1174(&incoming, "mgr_id", "start_id"),
+        "#1174: an incoming hop must bind `<hop>.mgr_id = t.start_id`:\n{incoming}"
+    );
+}

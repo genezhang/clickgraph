@@ -342,7 +342,71 @@ pub fn generate_pattern_joins(
             let edge_avail = already_available.contains(t.rel_alias);
             let node_avail = already_available.contains(node_alias);
 
+            // #1174: a fixed hop in front of a variable-length hop binds the
+            // shared node through the VLP CTE (`t.start_id` / `t.end_id`), the way
+            // `Traditional` (#623) and `SingleTableScan` (#521) already do. Without
+            // it the edge is the FROM marker the CTE takes over (rendered
+            // `JOIN <edge> ON 1 = 1`) and the node JOIN's condition is rewritten to
+            // `t.start_id = <edge>.col`, which leaves the node table correlated to
+            // NOTHING — a cartesian fan (420 rows from 6 edges). Two cases, by
+            // which endpoint of this hop the VLP owns:
+            //   * the OWN-TABLE node (`joined_node`): fold `edge.join_col =
+            //     t.<cte col>` onto the edge JOIN and emit NO node-table JOIN;
+            //   * the EMBEDDED node: its id is a column of this very edge row, so
+            //     bind `edge.<embedded col> = t.<cte col>`; the own-table node still
+            //     needs its JOIN.
+            // Single-column ids only (the CTE column of a composite key is a
+            // `concat(...)`; #623 composite guard) — otherwise the old layout is kept.
+            let (joined_rel_col, emb_alias, emb_rel_col) = match joined_node {
+                NodePosition::Left => (&rel_schema.from_id, t.right_alias, &rel_schema.to_id),
+                NodePosition::Right => (&rel_schema.to_id, t.left_alias, &rel_schema.from_id),
+            };
+            let joined_is_vlp = plan_ctx.is_vlp_endpoint(node_alias)
+                && matches!(joined_rel_col, Identifier::Single(_))
+                && matches!(node_id, Identifier::Single(_));
+            let emb_is_vlp =
+                plan_ctx.is_vlp_endpoint(emb_alias) && matches!(emb_rel_col, Identifier::Single(_));
+            let bind_vlp = |mut b: JoinBuilder, bind_joined: bool| -> JoinBuilder {
+                if bind_joined {
+                    let col = joined_rel_col.first_column().to_string();
+                    let (va, vc) = plan_ctx.get_vlp_join_reference(node_alias, &col);
+                    b = b.add_condition(t.rel_alias, col, va, vc);
+                }
+                if emb_is_vlp {
+                    let col = emb_rel_col.first_column().to_string();
+                    let (va, vc) = plan_ctx.get_vlp_join_reference(emb_alias, &col);
+                    b = b.add_condition(t.rel_alias, col, va, vc);
+                }
+                b
+            };
+
             match (edge_avail, node_avail) {
+                (false, false) if joined_is_vlp || emb_is_vlp => {
+                    // The edge carries the VLP binding, so it is a real JOIN (not a
+                    // bare FROM marker the CTE would turn into `ON 1 = 1`).
+                    let edge = bind_vlp(
+                        JoinBuilder::new(t.rel_table, t.rel_alias)
+                            .pre_filter(pre_filter)
+                            .from_id(rel_schema.from_id.first_column().to_string())
+                            .to_id(rel_schema.to_id.first_column().to_string()),
+                        joined_is_vlp,
+                    )
+                    .build();
+                    let mut v = vec![edge];
+                    if !joined_is_vlp {
+                        v.push(
+                            JoinBuilder::new(node_table, node_alias)
+                                .add_identifier_condition(
+                                    node_alias,
+                                    &r_node_id,
+                                    t.rel_alias,
+                                    &r_join_col,
+                                )
+                                .build(),
+                        );
+                    }
+                    v
+                }
                 (false, false) => vec![
                     JoinBuilder::from_marker(t.rel_table, t.rel_alias)
                         .pre_filter(pre_filter)
@@ -387,6 +451,30 @@ pub fn generate_pattern_joins(
                     &link.prev_edge_alias,
                     &link.prev_edge_col,
                 );
+            }
+            // #1174: the second (and later) fixed hop in front of a variable-length
+            // hop (`(z)-[]->(c)-[]->(a)-[*1..2]->(b)`). `a` is a VLP endpoint, so it
+            // is bound by the recursive CTE, not by a plain scan of its own — and on
+            // a denormalized schema it IS a column of this very edge row. The links
+            // above only chain this edge to the PREVIOUS edge, so without the
+            // binding below nothing ties the CTE to the chain and it renders
+            // `JOIN <first edge> ON 1 = 1` (a cartesian product: 209 rows vs 20).
+            // Same binding `SingleTableScan` (#521) and `Traditional` (#623) emit
+            // for the first fixed hop; composite ids are left alone for the same
+            // reason (#623 composite guard: the CTE column is a `concat(...)`).
+            if plan_ctx.is_vlp_endpoint(t.left_alias)
+                && matches!(rel_schema.from_id, Identifier::Single(_))
+            {
+                let from_col = rel_schema.from_id.first_column().to_string();
+                let (vlp_alias, vlp_col) = plan_ctx.get_vlp_join_reference(t.left_alias, &from_col);
+                b = b.add_condition(t.rel_alias, from_col, vlp_alias, vlp_col);
+            }
+            if plan_ctx.is_vlp_endpoint(t.right_alias)
+                && matches!(rel_schema.to_id, Identifier::Single(_))
+            {
+                let to_col = rel_schema.to_id.first_column().to_string();
+                let (vlp_alias, vlp_col) = plan_ctx.get_vlp_join_reference(t.right_alias, &to_col);
+                b = b.add_condition(t.rel_alias, to_col, vlp_alias, vlp_col);
             }
             vec![b.build()]
         }

@@ -383,6 +383,96 @@ class TestDenormalizedVariableLengthPaths:
             ('New York', 'San Francisco'),
         ]
 
+    # --- #1174: 2+ fixed hops in front of a CTE-backed VLP --------------------
+    #
+    # The VLP CTE was never joined to the chain (`JOIN flights AS t1 ON 1 = 1`), so
+    # every chain row paired with every CTE row. Brute-force oracle over the fixture's
+    # six flights. Cypher relationship-uniqueness across a fixed hop and the VLP is
+    # not enforced yet (#1175), so the result is bracketed: it must contain every
+    # Cypher-correct row (lower) and nothing outside what the engine's contract
+    # allows (upper) — the cartesian bug breaks the upper bound.
+
+    _FLIGHTS_1174 = [('LAX', 'SFO'), ('SFO', 'JFK'), ('JFK', 'LAX'),
+                     ('ORD', 'ATL'), ('ATL', 'LAX'), ('LAX', 'ORD')]
+    _CITY_1174 = {'LAX': 'Los Angeles', 'SFO': 'San Francisco', 'JFK': 'New York',
+                  'ORD': 'Chicago', 'ATL': 'Atlanta'}
+
+    @classmethod
+    def _chain_rows_1174(cls, directions, lo, hi, cross_unique):
+        """Rows (n0, ..., nk) of `n0 -fixed...-> n(k-1) -[*lo..hi]-> nk` as city tuples.
+
+        `directions` = one 'out'/'in' per fixed hop; the VLP is outgoing. Fixed hops
+        are pairwise edge-unique and the VLP is internally edge-unique; with
+        `cross_unique` the VLP also may not reuse a fixed hop's edge (full Cypher).
+        """
+        edges = cls._FLIGHTS_1174
+        rows = []
+
+        def vlp(node, used, depth, forbidden):
+            if depth >= lo:
+                yield node
+            if depth == hi:
+                return
+            for i, (f, t) in enumerate(edges):
+                if f == node and i not in used and i not in forbidden:
+                    yield from vlp(t, used | {i}, depth + 1, forbidden)
+
+        def walk(h, node, bound, fixed_used):
+            if h == len(directions):
+                for end in vlp(node, frozenset(), 0, fixed_used if cross_unique else frozenset()):
+                    rows.append(tuple(cls._CITY_1174[x] for x in bound + [end]))
+                return
+            for i, (f, t) in enumerate(edges):
+                if i in fixed_used:
+                    continue
+                if directions[h] == 'out' and f == node:
+                    walk(h + 1, t, bound + [t], fixed_used | {i})
+                elif directions[h] == 'in' and t == node:
+                    walk(h + 1, f, bound + [f], fixed_used | {i})
+
+        for start in sorted({x for e in edges for x in e}):
+            walk(0, start, [start], frozenset())
+        return rows
+
+    def _assert_chain_bracketed_1174(self, response, directions, ncols):
+        from collections import Counter
+        assert_query_success(response)
+        names = ['n%d' % i for i in range(ncols)]
+        got = Counter(tuple(r[n] for n in names) for r in response['results'])
+        lower = Counter(self._chain_rows_1174(directions, 1, 2, True))
+        upper = Counter(self._chain_rows_1174(directions, 1, 2, False))
+        assert not (lower - got), f"missing Cypher-correct rows: {sorted((lower - got).elements())}"
+        assert not (got - upper), (
+            "rows outside the chain (the VLP CTE is not joined to the fixed hops): "
+            f"{sorted((got - upper).elements())}"
+        )
+
+    def test_two_fixed_hops_before_vlp_are_joined_to_the_cte_1174(self, denormalized_flights_graph):
+        """#1174: `(z)-[]->(c)-[]->(a)-[*1..2]->(b)`; the second hop must bind `a` to
+        the CTE (`<hop>.dest = t.start_id`)."""
+        response = execute_cypher(
+            """
+            MATCH (n0:Airport)-[:FLIGHT]->(n1:Airport)-[:FLIGHT]->(n2:Airport)
+                  -[:FLIGHT*1..2]->(n3:Airport)
+            RETURN n0.city AS n0, n1.city AS n1, n2.city AS n2, n3.city AS n3
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        self._assert_chain_bracketed_1174(response, ['out', 'out'], 4)
+
+    def test_two_incoming_hops_before_vlp_are_joined_to_the_cte_1174(self, denormalized_flights_graph):
+        """#1174: same, hops written backwards — the shared node is the FROM endpoint
+        of the second hop, so the other edge column binds."""
+        response = execute_cypher(
+            """
+            MATCH (n0:Airport)<-[:FLIGHT]-(n1:Airport)<-[:FLIGHT]-(n2:Airport)
+                  -[:FLIGHT*1..2]->(n3:Airport)
+            RETURN n0.city AS n0, n1.city AS n1, n2.city AS n2, n3.city AS n3
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        self._assert_chain_bracketed_1174(response, ['in', 'in'], 4)
+
     def test_variable_path_cte_uses_denormalized_props(self, denormalized_flights_graph):
         """Verify CTEs for variable paths use denormalized properties."""
         # Use sql_only mode to get SQL back
