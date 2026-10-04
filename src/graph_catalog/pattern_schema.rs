@@ -438,6 +438,18 @@ pub enum JoinStrategy {
         joined_node: NodePosition,
         /// Column on edge for the joined node
         join_col: String,
+        /// Own-table id of the EMBEDDED endpoint. Its value on this edge is the
+        /// edge column, but an earlier hop may have bound the same node through
+        /// its own table (`b` is the own-table end of hop 1 and the embedded
+        /// start of hop 2), and then this id is what ties the two together.
+        /// `None` when it cannot be resolved (the old, unbound layout is kept).
+        embedded_id: Option<Identifier>,
+        /// Previous edge that already embeds the LEFT connection node, if any
+        /// (`curr_edge_col` is this edge's from-column).
+        left_prev: Option<EdgeToEdgeLink>,
+        /// Previous edge that already embeds the RIGHT connection node, if any
+        /// (`curr_edge_col` is this edge's to-column).
+        right_prev: Option<EdgeToEdgeLink>,
     },
 
     /// Denormalized edge correlated with previous edge(s) via shared node(s):
@@ -1029,6 +1041,7 @@ impl PatternSchemaContext {
         // otherwise. The legacy same-table left-shared hop keeps its historic
         // unconditional acceptance.
         let fully_denormalized = matches!(edge_pattern, EdgeTablePattern::FullyDenormalized);
+        let is_mixed = matches!(edge_pattern, EdgeTablePattern::Mixed { .. });
         let mut links: Vec<EdgeToEdgeLink> = Vec::new();
         for (prev_edge, curr_edge_col, is_left_side) in [
             (prev_left_edge, &rel_schema.from_id, true),
@@ -1041,7 +1054,12 @@ impl PatternSchemaContext {
                 continue;
             };
             let same_table = prev_rel_schema.full_table_name() == rel_schema.full_table_name();
-            let allowed = fully_denormalized || (same_table && is_left_side);
+            // A MIXED edge (one endpoint embedded, the other on its own table)
+            // is NOT edge-to-edge: `EdgeToEdge` emits only the edge JOIN, so the
+            // own-table endpoint would never be joined (Code 47 on its columns).
+            // It keeps `MixedAccess`, which carries the same previous-edge links
+            // and still joins its own-table node (#1158).
+            let allowed = !is_mixed && (fully_denormalized || (same_table && is_left_side));
             if !allowed {
                 continue;
             }
@@ -1112,23 +1130,55 @@ impl PatternSchemaContext {
                 from_denormalized,
                 to_denormalized: _,
             } => {
-                if *from_denormalized {
+                // #1158: the connection nodes an earlier hop already bound. A
+                // single-column pair only — the composite case keeps the old
+                // (unlinked) layout rather than binding a partial key.
+                let prev_link = |prev: Option<(&str, &str, bool)>,
+                                 curr_col: &Identifier|
+                 -> Option<EdgeToEdgeLink> {
+                    let (prev_alias, prev_type, node_was_from_side) = prev?;
+                    let prev_rel = graph_schema.get_rel_schema(prev_type).ok()?;
+                    let prev_col = if node_was_from_side {
+                        &prev_rel.from_id
+                    } else {
+                        &prev_rel.to_id
+                    };
+                    match (prev_col, curr_col) {
+                        (Identifier::Single(p), Identifier::Single(c)) => Some(EdgeToEdgeLink {
+                            prev_edge_alias: prev_alias.to_string(),
+                            prev_edge_col: p.clone(),
+                            curr_edge_col: c.clone(),
+                        }),
+                        _ => None,
+                    }
+                };
+                let left_prev = prev_link(prev_left_edge, &rel_schema.from_id);
+                let right_prev = prev_link(prev_right_edge, &rel_schema.to_id);
+                let (joined_node, join_col, embedded_id) = if *from_denormalized {
                     (
-                        JoinStrategy::MixedAccess {
-                            joined_node: NodePosition::Right,
-                            join_col: rel_schema.to_id.to_string(),
-                        },
-                        None,
+                        NodePosition::Right,
+                        rel_schema.to_id.to_string(),
+                        // Role `false` on the from-embedded node skips its
+                        // from-role map, resolving the standalone table id.
+                        Self::resolve_id_column(left_node_schema, false).ok(),
                     )
                 } else {
                     (
-                        JoinStrategy::MixedAccess {
-                            joined_node: NodePosition::Left,
-                            join_col: rel_schema.from_id.to_string(),
-                        },
-                        None,
+                        NodePosition::Left,
+                        rel_schema.from_id.to_string(),
+                        Self::resolve_id_column(right_node_schema, true).ok(),
                     )
-                }
+                };
+                (
+                    JoinStrategy::MixedAccess {
+                        joined_node,
+                        join_col,
+                        embedded_id,
+                        left_prev,
+                        right_prev,
+                    },
+                    None,
+                )
             }
         }
     }
