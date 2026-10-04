@@ -3980,6 +3980,21 @@ pub fn extract_ctes_with_context(
                         }
                     }
 
+                    // The start/end/both-endpoint extractions above are independent
+                    // calls, so a property named in two of them (`a.city = 'X' AND
+                    // b.city <> a.city`) is collected twice as an IDENTICAL entry, and
+                    // the CTE would project `start_<col>` twice (Code 44).
+                    {
+                        let mut seen = std::collections::HashSet::new();
+                        props.retain(|p| {
+                            seen.insert((
+                                p.cypher_alias.clone(),
+                                p.alias.clone(),
+                                p.column_name.clone(),
+                            ))
+                        });
+                    }
+
                     // Also include properties from PropertyRequirements (downstream usage)
                     // Without this, properties like friend.birthday referenced after WITH
                     // won't be included in the VLP CTE columns

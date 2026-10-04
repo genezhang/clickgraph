@@ -3892,3 +3892,30 @@ async fn denorm_vlp_filter_property_projects_each_cte_column_once() {
         );
     }
 }
+
+/// Review follow-up: a start filter AND a both-endpoint predicate on the SAME
+/// property collect the identical entry twice (independent extraction calls), so
+/// `start_OriginCityName` was projected twice even with the alias-vs-column dedup.
+#[tokio::test]
+async fn denorm_vlp_repeated_filter_property_projects_each_cte_column_once() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    for pred in [
+        "a.city = 'Atlanta' AND b.city <> a.city",
+        "a.city = 'Atlanta' AND a.city <> b.city",
+    ] {
+        let sql = generate_sql_inline(
+            &schema,
+            &format!(
+                "MATCH p = shortestPath((a:Airport)-[:FLIGHT*1..5]->(b:Airport)) \
+                 WHERE {pred} RETURN b.city, length(p)"
+            ),
+        )
+        .await;
+        let n = sql.matches(" as \"start_OriginCityName\"").count();
+        assert_eq!(
+            n, 2,
+            "`{pred}`: start_OriginCityName must appear once per arm (Code 44 \
+             otherwise):\n{sql}"
+        );
+    }
+}
