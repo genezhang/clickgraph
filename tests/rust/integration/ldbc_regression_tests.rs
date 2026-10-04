@@ -3919,3 +3919,79 @@ async fn denorm_vlp_repeated_filter_property_projects_each_cte_column_once() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// #1166: denormalized `*0..N` must apply the START filter to the zero-hop seed
+//
+// The zero-hop seed is a role-agnostic UNION of the origin-role and
+// destination-role scans, so the start predicate (spelled against origin-role
+// columns) has to be re-resolved for the destination scan. Dropping it made the
+// recursion start from EVERY node: `WHERE a.city = 'Atlanta'` at `*0..2`
+// returned 22 rows (incl. San Francisco, unreachable) instead of 4.
+// ---------------------------------------------------------------------------
+
+/// The relationship alias number (`t1`, `t3`, ...) comes from a process-wide
+/// counter, so it depends on test order. Collapse it for stable assertions.
+fn strip_rel_alias_numbers(sql: &str) -> String {
+    regex::Regex::new(r"\bt\d+\b")
+        .unwrap()
+        .replace_all(sql, "t")
+        .into_owned()
+}
+
+#[tokio::test]
+async fn denorm_zero_hop_seed_applies_start_filter_in_both_roles_1166() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Airport)-[:FLIGHT*0..2]->(b:Airport) \
+         WHERE a.city = 'Atlanta' RETURN b.city",
+    )
+    .await;
+    let sql = strip_rel_alias_numbers(&sql);
+    assert!(
+        sql.contains("AS t WHERE t.OriginCityName = 'Atlanta'"),
+        "#1166: origin-role scan of the zero-hop seed must carry the start filter:\n{sql}"
+    );
+    // The destination-role scan is what reaches nodes with NO outbound flight, and
+    // must filter on the DESTINATION column — not reuse the origin one.
+    assert!(
+        sql.contains("AS t WHERE t.DestCityName = 'Atlanta'"),
+        "#1166: destination-role scan must re-resolve the filter to its own role's \
+         column:\n{sql}"
+    );
+}
+
+/// Id filters and prefix-colliding columns (`Origin` vs `OriginCityName`) must
+/// each resolve to their own destination-role column.
+#[tokio::test]
+async fn denorm_zero_hop_seed_start_filter_id_and_prefix_collision_1166() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Airport)-[:FLIGHT*0..2]->(b:Airport) \
+         WHERE a.code = 'PHX' AND a.city = 'Phoenix' RETURN b.code",
+    )
+    .await;
+    let sql = strip_rel_alias_numbers(&sql);
+    assert!(
+        sql.contains("t.Dest = 'PHX'") && sql.contains("t.DestCityName = 'Phoenix'"),
+        "#1166: id and city must each map to their destination-role columns:\n{sql}"
+    );
+}
+
+/// An unfiltered `*0..N` keeps its historical seed text: no alias, no WHERE.
+#[tokio::test]
+async fn denorm_zero_hop_seed_without_start_filter_is_unchanged_1166() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Airport)-[:FLIGHT*0..2]->(b:Airport) RETURN b.city",
+    )
+    .await;
+    let sql = strip_rel_alias_numbers(&sql);
+    assert!(
+        !sql.contains("AS t WHERE"),
+        "#1166: no start filter -> the seed scans must stay unfiltered:\n{sql}"
+    );
+}

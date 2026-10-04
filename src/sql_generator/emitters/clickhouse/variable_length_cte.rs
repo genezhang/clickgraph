@@ -4261,7 +4261,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// scanner treats `''` inside a literal as an escaped quote, not a close.
     /// Column-prefix rewrites must not corrupt a value literal that happens to
     /// contain the prefix text (e.g. `WHERE b.name = 'end_node.x'`).
-    fn rewrite_outside_string_literals(s: &str, rewrite: impl Fn(&str) -> String) -> String {
+    pub(crate) fn rewrite_outside_string_literals(
+        s: &str,
+        rewrite: impl Fn(&str) -> String,
+    ) -> String {
         let mut out = String::with_capacity(s.len());
         let mut buf = String::new();
         let mut in_literal = false;
