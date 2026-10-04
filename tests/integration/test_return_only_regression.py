@@ -150,6 +150,33 @@ class TestQuestionMarkInStringLiterals:
         assert_query_success(result)
         assert result["results"][0]["s"] in (True, 1)
 
+    @pytest.mark.parametrize(
+        "expr, expected",
+        [
+            # #1171: Cypher `=~` matches the WHOLE string (Java Pattern.matches);
+            # ClickHouse match() / Spark rlike() are unanchored searches.
+            ("'Atlanta' =~ 'A.*'", True),
+            ("'Los Angeles' =~ 'A.*'", False),  # contains an A, does not START with one
+            ("'Atlanta' =~ 'Atl'", False),  # a prefix is not a match
+            ("'Atl' =~ 'Atl|Denver'", True),
+            ("'Atlanta' =~ 'Atl|Denver'", False),  # alternation anchored as a whole
+            ("'xabc' =~ 'a?bc'", False),
+            ("'2024' =~ '\\\\d+'", True),
+            ("'2024x' =~ '\\\\d+'", False),
+            ("'ATLANTA' =~ '(?i)atlanta'", True),  # inline flag still works
+            ("'abc' =~ '^abc'", True),  # a user's own leading ^ is not doubled
+            ("'abcd' =~ '^abc'", False),  # ... and the end is still anchored
+            ("'xabc' =~ '^abc'", False),
+            ("'abc' =~ '^a|b'", False),  # `^a|b` is whole-string `^a` or `b`, not a prefix test
+            ("'b' =~ '^a|b'", True),
+            ("'abc\\n' =~ 'abc'", False),  # a trailing newline is not a match
+        ],
+    )
+    def test_regex_match_requires_the_whole_string_1171(self, simple_graph, expr, expected):
+        result = execute_cypher(f"RETURN {expr} AS s", schema_name="social_integration")
+        assert_query_success(result)
+        assert result["results"][0]["s"] in ((True, 1) if expected else (False, 0)), expr
+
     def test_no_question_mark_unaffected(self, simple_graph):
         """A query with no `?` is passed through unchanged (control)."""
         result = execute_cypher("RETURN 'no marks here' AS s", schema_name="social_integration")

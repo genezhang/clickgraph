@@ -122,12 +122,91 @@ pub fn ends_with_predicate(haystack: &str, needle: &str) -> String {
 /// ClickHouse spells it `match(haystack, pattern)`; Spark/Databricks has no
 /// `match` function and uses `rlike(str, regexp)` (both return a boolean).
 /// Emitted from every `RegexMatch` render site so the two dialects stay in sync.
+///
+/// #1171: Cypher's `=~` must match the ENTIRE string (Neo4j runs Java
+/// `Pattern.matches`; the manual's examples need `.*@company.com` for a partial
+/// match), but `match()` and `rlike()` are both unanchored SEARCHES — so
+/// `x =~ 'A.*'` returned every value merely CONTAINING an `A`. The pattern is
+/// therefore anchored (see [`anchor_regex_pattern_sql`]):
+/// - the general form is `\A(?:<pattern>)\z`. `(?:…)` keeps an alternation
+///   anchored as a whole (`a|b` is whole-string `a` or `b`, not `\Aa|b\z`) and still
+///   lets a leading inline flag (`(?i)…`) apply to the pattern;
+/// - `\z` (not `$`) means end of TEXT under RE2 (ClickHouse) and Java (Databricks)
+///   alike and — unlike `$` in Java — rejects a trailing newline;
+/// - a pattern with no alternation needs no group and is emitted as `^<pattern>\z`,
+///   so ClickHouse can still extract a literal prefix for primary-key pruning
+///   (`name =~ '^key12.*'` reads 12 of 195 granules; the grouped form reads all 195).
 pub fn regex_match_predicate(haystack: &str, pattern: &str) -> String {
     use crate::sql_generator::SqlDialect;
+    let anchored = anchor_regex_pattern_sql(pattern);
     match crate::server::query_context::get_current_dialect() {
-        SqlDialect::Databricks => format!("rlike({}, {})", haystack, pattern),
-        _ => format!("match({}, {})", haystack, pattern),
+        SqlDialect::Databricks => format!("rlike({}, {})", haystack, anchored),
+        _ => format!("match({}, {})", haystack, anchored),
     }
+}
+
+/// Wrap an already-rendered SQL pattern expression so it must match a whole string
+/// (see [`regex_match_predicate`]). The anchors are SQL string literals, so each
+/// backslash is doubled (`'\\A'` is the two characters `\A` in both dialects).
+///
+/// A plain single string literal is folded into one literal — readable SQL, and
+/// the pattern stays a compile-time constant, which ClickHouse's `match` requires.
+/// Anything else (a parameter, a concatenation, a column) gets `concat(...)`,
+/// which is constant whenever its parts are, and always the grouped form because
+/// its text cannot be inspected.
+///
+/// For a literal, the group is dropped (`'A.*'` becomes `'^A.*\\z'`; a user's own
+/// leading `^` is kept, not doubled) ONLY when that is provably the same pattern
+/// (see [`can_skip_regex_group`]); otherwise it is `'\\A(?:A|B)\\z'`, the grouped
+/// form, which fails LOUDLY on a malformed pattern rather than quietly changing
+/// its meaning.
+fn anchor_regex_pattern_sql(pattern: &str) -> String {
+    const OPEN: &str = "\\\\A(?:";
+    const CLOSE: &str = ")\\\\z";
+    const END: &str = "\\\\z";
+    match single_sql_string_literal_body(pattern) {
+        Some(body) if can_skip_regex_group(body) => {
+            let rest = body.strip_prefix('^').unwrap_or(body);
+            format!("'^{rest}{END}'")
+        }
+        Some(body) => format!("'{OPEN}{body}{CLOSE}'"),
+        None => format!("concat('{OPEN}', {pattern}, '{CLOSE}')"),
+    }
+}
+
+/// True when `^<body>\z` is the same whole-string pattern as `\A(?:<body>)\z`.
+/// `body` is the text between the SQL quotes (SQL escapes intact). Refuses, so the
+/// grouped form is used, when the group could matter:
+/// - any `|` — a top-level alternation would escape the anchors;
+/// - `\Q` — an unterminated quote would swallow the closing `\z`;
+/// - a trailing backslash — it would escape the `\` of `\z`.
+fn can_skip_regex_group(body: &str) -> bool {
+    !body.contains('|') && !body.contains("\\Q") && !body.ends_with('\\')
+}
+
+/// If `sql` is exactly ONE single-quoted SQL string literal, return the text
+/// between its quotes (escapes intact). Backslash escapes the next character and
+/// `''` is an escaped quote; a quote that closes the literal before the end of
+/// the text means `sql` is a larger expression (`'a' || x`), so `None`.
+fn single_sql_string_literal_body(sql: &str) -> Option<&str> {
+    let inner = sql.strip_prefix('\'')?;
+    let mut chars = inner.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '\\' => {
+                chars.next();
+            }
+            '\'' => {
+                if matches!(chars.peek(), Some((_, '\''))) {
+                    chars.next();
+                } else {
+                    return (i + 1 == inner.len()).then(|| &inner[..i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Render a Cypher `reduce(acc = init, x IN list | expr)` fold for the active
@@ -702,5 +781,117 @@ mod string_predicate_tests {
         // Spark builtins are lowercase, same arg order.
         assert_eq!(starts, "startswith(n.name, 'Al')");
         assert_eq!(ends, "endswith(n.name, 'ce')");
+    }
+}
+
+/// #1171: Cypher `=~` is a WHOLE-string match; `match()`/`rlike()` are unanchored
+/// searches, so the pattern must be wrapped as `\A(?:<pattern>)\z`.
+#[cfg(test)]
+mod regex_match_tests {
+    use super::{can_skip_regex_group, regex_match_predicate, single_sql_string_literal_body};
+    use crate::server::query_context::{with_query_context, QueryContext};
+    use crate::sql_generator::SqlDialect;
+
+    #[test]
+    fn group_free_literal_is_anchored_with_a_leading_caret_1171() {
+        // The anchors are SQL string-literal text, so each backslash is doubled
+        // (`'\\z'` is the two characters `\z`). No group: ClickHouse can then extract
+        // a literal prefix for primary-key pruning.
+        assert_eq!(
+            regex_match_predicate("n.name", "'A.*'"),
+            r"match(n.name, '^A.*\\z')"
+        );
+        // A user's own leading `^` is kept, not doubled.
+        assert_eq!(
+            regex_match_predicate("n.name", "'^key12.*'"),
+            r"match(n.name, '^key12.*\\z')"
+        );
+    }
+
+    #[test]
+    fn alternation_stays_anchored_as_a_whole_1171() {
+        // `a|b` must be whole-string `a` or `b`; WITHOUT the group `^a|b\z` would
+        // match any value STARTING with `a` or ENDING with `b`.
+        assert_eq!(
+            regex_match_predicate("x", "'a|b'"),
+            r"match(x, '\\A(?:a|b)\\z')"
+        );
+        // Also when the user supplied their own `^`.
+        assert_eq!(
+            regex_match_predicate("x", "'^a|^b'"),
+            r"match(x, '\\A(?:^a|^b)\\z')"
+        );
+    }
+
+    #[test]
+    fn inline_flag_is_valid_without_a_group_1171() {
+        assert_eq!(
+            regex_match_predicate("x", "'(?i)atl.*'"),
+            r"match(x, '^(?i)atl.*\\z')"
+        );
+    }
+
+    #[test]
+    fn group_is_kept_when_dropping_it_could_change_the_pattern_1171() {
+        for body in ["a|b", "(a|b)c", r"\\Qa.b", r"\Qa.b", r"abc\\"] {
+            assert!(!can_skip_regex_group(body), "{body}");
+            assert!(
+                regex_match_predicate("x", &format!("'{body}'")).contains(r"\\A(?:"),
+                "{body}"
+            );
+        }
+        for body in ["A.*", "^key.*", "(?i)atl", r"\\d+", "a(b)c"] {
+            assert!(can_skip_regex_group(body), "{body}");
+        }
+    }
+
+    #[test]
+    fn non_literal_pattern_goes_through_concat_1171() {
+        // A parameter / concatenation / column is NOT a single literal, so it
+        // cannot be folded or inspected: `concat` is constant whenever its parts
+        // are, and the grouped form is always used.
+        assert_eq!(
+            regex_match_predicate("x", "concat('A', 'tl.*')"),
+            r"match(x, concat('\\A(?:', concat('A', 'tl.*'), ')\\z'))"
+        );
+        // A quote at both ends does NOT make it one literal.
+        assert_eq!(
+            regex_match_predicate("x", "'a' || y || 'b'"),
+            r"match(x, concat('\\A(?:', 'a' || y || 'b', ')\\z'))"
+        );
+    }
+
+    #[test]
+    fn single_literal_scanner_is_exact_1171() {
+        assert_eq!(single_sql_string_literal_body("'abc'"), Some("abc"));
+        assert_eq!(single_sql_string_literal_body("''"), Some(""));
+        // `''` is an escaped quote INSIDE the literal; `\'` likewise.
+        assert_eq!(single_sql_string_literal_body("'it''s'"), Some("it''s"));
+        assert_eq!(single_sql_string_literal_body(r"'it\'s'"), Some(r"it\'s"));
+        // A backslash-escaped backslash must not swallow the closing quote.
+        assert_eq!(single_sql_string_literal_body(r"'a\\'"), Some(r"a\\"));
+        // Not exactly one literal: larger expression / unterminated / not quoted.
+        assert_eq!(single_sql_string_literal_body("'a' || 'b'"), None);
+        assert_eq!(single_sql_string_literal_body("'abc"), None);
+        assert_eq!(single_sql_string_literal_body("abc"), None);
+        assert_eq!(single_sql_string_literal_body("'a'x"), None);
+    }
+
+    #[tokio::test]
+    async fn databricks_uses_rlike_with_the_same_anchoring_1171() {
+        let ctx = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        let (plain, alt) = with_query_context(ctx, async {
+            (
+                regex_match_predicate("n.name", "'A.*'"),
+                regex_match_predicate("n.name", "'A|B'"),
+            )
+        })
+        .await;
+        // Spark's rlike is ALSO an unanchored search; Java regex honours `^` and `\z`.
+        assert_eq!(plain, r"rlike(n.name, '^A.*\\z')");
+        assert_eq!(alt, r"rlike(n.name, '\\A(?:A|B)\\z')");
     }
 }
