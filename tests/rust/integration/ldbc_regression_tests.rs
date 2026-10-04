@@ -3859,3 +3859,63 @@ async fn ldbc_1154_with_barrier_second_match_abstains_pending_1160() {
          caught by the barrier abstain:\n{trivial}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Nightly 2026-09/10: denorm shortestPath duplicated CTE columns (Code 44)
+//
+// The `a.city <> b.city` WHERE seeds the property list with entries whose alias
+// is the PHYSICAL column (`OriginCityName`). The denorm collector then added the
+// same column again under its LOGICAL alias (`city`), and its dedup keyed on the
+// alias only, so both survived. The CTE emits `start_<physical>` for each, so
+// `start_OriginCityName` / `end_DestCityName` were projected twice —
+// ClickHouse Code 44 "column with this name already exists". The corpus golden
+// had frozen the duplicated SQL, so the sweep could not catch it.
+// ---------------------------------------------------------------------------
+
+/// Every `start_*`/`end_*` CTE column must be projected exactly once per SELECT
+/// arm: base + recursive arm → exactly 2 occurrences across the whole CTE.
+#[tokio::test]
+async fn denorm_vlp_filter_property_projects_each_cte_column_once() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH p = shortestPath((a:Airport)-[:FLIGHT*1..5]->(b:Airport)) \
+         WHERE a.city <> b.city RETURN length(p)",
+    )
+    .await;
+    for col in ["start_OriginCityName", "end_DestCityName"] {
+        let n = sql.matches(&format!(" as \"{col}\"")).count();
+        assert_eq!(
+            n, 2,
+            "`{col}` must be projected once in the base arm and once in the \
+             recursive arm (a duplicate is ClickHouse Code 44):\n{sql}"
+        );
+    }
+}
+
+/// Review follow-up: a start filter AND a both-endpoint predicate on the SAME
+/// property collect the identical entry twice (independent extraction calls), so
+/// `start_OriginCityName` was projected twice even with the alias-vs-column dedup.
+#[tokio::test]
+async fn denorm_vlp_repeated_filter_property_projects_each_cte_column_once() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    for pred in [
+        "a.city = 'Atlanta' AND b.city <> a.city",
+        "a.city = 'Atlanta' AND a.city <> b.city",
+    ] {
+        let sql = generate_sql_inline(
+            &schema,
+            &format!(
+                "MATCH p = shortestPath((a:Airport)-[:FLIGHT*1..5]->(b:Airport)) \
+                 WHERE {pred} RETURN b.city, length(p)"
+            ),
+        )
+        .await;
+        let n = sql.matches(" as \"start_OriginCityName\"").count();
+        assert_eq!(
+            n, 2,
+            "`{pred}`: start_OriginCityName must appear once per arm (Code 44 \
+             otherwise):\n{sql}"
+        );
+    }
+}

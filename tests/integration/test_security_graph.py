@@ -1064,7 +1064,6 @@ class TestAggregateNegativeTests:
 class TestComplexAggregatePatterns:
     """Complex query patterns with aggregations."""
     
-    @pytest.mark.xfail(reason="VLP end-node table resolution: joins ds_users instead of ds_groups for Group endpoint")
     def test_aggregate_after_vlp(self):
         """Aggregate results of variable-length path."""
         response = execute_cypher(

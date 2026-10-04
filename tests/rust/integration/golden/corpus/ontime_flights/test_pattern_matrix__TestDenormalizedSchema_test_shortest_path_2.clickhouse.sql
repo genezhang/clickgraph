@@ -7,8 +7,6 @@ WITH RECURSIVE vlp_a_b_inner AS (
         [t0.Origin, t0.Dest] as path_nodes,
         ['FLIGHT'] as path_relationships,
         t0."OriginCityName" as "start_OriginCityName",
-        t0."DestCityName" as "end_DestCityName",
-        t0."OriginCityName" as "start_OriginCityName",
         t0."DestCityName" as "end_DestCityName"
     FROM default.flights AS t0
     WHERE 1 <= 5
@@ -20,8 +18,6 @@ WITH RECURSIVE vlp_a_b_inner AS (
         arrayConcat(vp.path_edges, [next.Origin]),
         arrayConcat(vp.path_nodes, [next.Dest]),
         arrayConcat(vp.path_relationships, ['FLIGHT']) as path_relationships,
-        vp."start_OriginCityName" as "start_OriginCityName",
-        next."DestCityName" as "end_DestCityName",
         vp."start_OriginCityName" as "start_OriginCityName",
         next."DestCityName" as "end_DestCityName"
     FROM vlp_a_b_inner vp

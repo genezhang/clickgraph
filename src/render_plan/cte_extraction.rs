@@ -3980,6 +3980,21 @@ pub fn extract_ctes_with_context(
                         }
                     }
 
+                    // The start/end/both-endpoint extractions above are independent
+                    // calls, so a property named in two of them (`a.city = 'X' AND
+                    // b.city <> a.city`) is collected twice as an IDENTICAL entry, and
+                    // the CTE would project `start_<col>` twice (Code 44).
+                    {
+                        let mut seen = std::collections::HashSet::new();
+                        props.retain(|p| {
+                            seen.insert((
+                                p.cypher_alias.clone(),
+                                p.alias.clone(),
+                                p.column_name.clone(),
+                            ))
+                        });
+                    }
+
                     // Also include properties from PropertyRequirements (downstream usage)
                     // Without this, properties like friend.birthday referenced after WITH
                     // won't be included in the VLP CTE columns
@@ -5307,7 +5322,9 @@ pub fn extract_ctes_with_context(
                                         }
                                     }
                                     if !all_denorm_properties.iter().any(|p| {
-                                        p.cypher_alias == *start_conn && p.alias == *logical_prop
+                                        p.cypher_alias == *start_conn
+                                            && (p.alias == *logical_prop
+                                                || p.column_name == *physical_col)
                                     }) {
                                         all_denorm_properties.push(NodeProperty {
                                             cypher_alias: start_conn.clone(),
@@ -5335,7 +5352,9 @@ pub fn extract_ctes_with_context(
                                         }
                                     }
                                     if !all_denorm_properties.iter().any(|p| {
-                                        p.cypher_alias == *end_conn && p.alias == *logical_prop
+                                        p.cypher_alias == *end_conn
+                                            && (p.alias == *logical_prop
+                                                || p.column_name == *physical_col)
                                     }) {
                                         all_denorm_properties.push(NodeProperty {
                                             cypher_alias: end_conn.clone(),
