@@ -164,6 +164,11 @@ class TestQuestionMarkInStringLiterals:
             ("'2024' =~ '\\\\d+'", True),
             ("'2024x' =~ '\\\\d+'", False),
             ("'ATLANTA' =~ '(?i)atlanta'", True),  # inline flag still works
+            ("'abc' =~ '^abc'", True),  # a user's own leading ^ is not doubled
+            ("'abcd' =~ '^abc'", False),  # ... and the end is still anchored
+            ("'xabc' =~ '^abc'", False),
+            ("'abc' =~ '^a|b'", False),  # `^a|b` is whole-string `^a` or `b`, not a prefix test
+            ("'b' =~ '^a|b'", True),
             ("'abc\\n' =~ 'abc'", False),  # a trailing newline is not a match
         ],
     )
