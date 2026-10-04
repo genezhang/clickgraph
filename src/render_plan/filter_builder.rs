@@ -34,6 +34,90 @@ pub trait FilterBuilder {
     fn extract_distinct(&self) -> bool;
 }
 
+/// #1170 scope gate: the shapes where emitting the chained hops' predicates into the
+/// outer WHERE is NOT yet known to be correct, so `main`'s behaviour is kept
+/// (`None`) rather than risk turning a loud refusal into silently wrong rows.
+///
+/// - **Any WITH in the query.** A WITH-carried node is a CTE alias, and a post-WITH
+///   `c.x = 'v'` is then misread as a join key by `extract_cte_join_condition_from_filter`,
+///   which disarms the #451 cartesian guard (loud refusal → 26 rows where 11 are
+///   correct). And inside a WITH body the chained node's join is pruned when the WITH
+///   projection doesn't name it, so the new WHERE would reference an unjoined alias
+///   (Code 47). Both need CTE-aware handling, tracked as a follow-up.
+/// - **An OPTIONAL chained hop.** Its predicate must stay in the LEFT JOIN's ON
+///   (NULL-extension); an outer WHERE turns the OPTIONAL into an inner join.
+fn child_hop_predicates_are_safe_to_emit(
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+) -> bool {
+    use crate::render_plan::cte_extraction::render_root_plan;
+    use crate::render_plan::plan_predicates::has_with_clause_in_tree;
+    let subtree = LogicalPlan::GraphRel(graph_rel.clone());
+    // The OUTERMOST plan sees a WITH even when this GraphRel is the WITH body or
+    // sits after it; fall back to the subtree when no root is recorded.
+    let has_with = match render_root_plan() {
+        Some(root) => has_with_clause_in_tree(&root) || has_with_clause_in_tree(&subtree),
+        None => has_with_clause_in_tree(&subtree),
+    };
+    if has_with {
+        return false;
+    }
+    let optional_child = [graph_rel.left.as_ref(), graph_rel.right.as_ref()]
+        .into_iter()
+        .any(|child| {
+            child.any_node(
+                |n| matches!(n, LogicalPlan::GraphRel(g) if g.is_optional.unwrap_or(false)),
+            )
+        });
+    !optional_child
+}
+
+/// #1170: the outer-WHERE predicates owned by the FIXED hops chained to a
+/// CTE-backed variable-length `GraphRel` (its children), as one AND-ed expression.
+///
+/// `collect_graphrel_predicates` already skips the VLP GraphRel's own
+/// `where_predicate` (it lives inside the CTE) and recurses into its children —
+/// exactly the set wanted here. Deliberately NOT a fall-through into the general
+/// path below: that would also append `collect_schema_filters` for the WHOLE
+/// subtree, including the VLP's endpoint/edge nodes whose tables are not in the
+/// outer scope (the CTE replaces them). Returns `None` when no child hop carries a
+/// predicate, so every VLP query without one renders byte-identically to before.
+///
+/// Each child's predicates are role-mapped against THAT child subtree, never the
+/// VLP root. A node shared by the fixed hop and the VLP (`a` in
+/// `(c)-[t1]->(a)-[*]->(b)`) is the TO endpoint of `t1` but the FROM endpoint of
+/// the VLP; mapped against the root it took the VLP's origin-role column while
+/// being re-aliased onto `t1` (`t1.origin_city` for what `t1` stores as
+/// `dest_city`) — silently the wrong node's value.
+fn child_hop_outer_predicates(
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+) -> Option<RenderExpr> {
+    use crate::render_plan::plan_builder_helpers::{
+        collect_graphrel_predicates, register_own_table_property_requests,
+    };
+    if !child_hop_predicates_are_safe_to_emit(graph_rel) {
+        return None;
+    }
+    let mut predicates: Vec<RenderExpr> = Vec::new();
+    for child in [graph_rel.left.as_ref(), graph_rel.right.as_ref()] {
+        for mut pred in collect_graphrel_predicates(child)
+            .into_iter()
+            .filter(|p| !is_labels_predicate(p))
+        {
+            // Same two steps the general path applies before emitting (#1006
+            // registry, then denormalized/mixed property mapping).
+            register_own_table_property_requests(&pred, child);
+            apply_property_mapping_to_expr(&mut pred, child);
+            predicates.push(pred);
+        }
+    }
+    predicates.into_iter().reduce(|acc, pred| {
+        RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::And,
+            operands: vec![acc, pred],
+        })
+    })
+}
+
 impl FilterBuilder for LogicalPlan {
     fn extract_filters(&self) -> FilterBuilderResult<Option<RenderExpr>> {
         let filters = match &self {
@@ -432,10 +516,11 @@ impl FilterBuilder for LogicalPlan {
                                     e = VLP_END_ID_COLUMN,
                                 ))));
                             }
-                            log::info!(
-                                "🔧 Required VLP with CTE: Filters already in CTE, skipping outer WHERE extraction"
-                            );
-                            return Ok(None);
+                            // #1170: the VLP's OWN predicate is in the CTE, but a FIXED
+                            // hop chained in front of it (`(c)-[:R]->(a)-[:R*1..2]->(b)
+                            // WHERE c.x = …`) owns its predicate in the OUTER query —
+                            // returning None here silently dropped it.
+                            return Ok(child_hop_outer_predicates(graph_rel));
                         }
                     } else {
                         // Fixed-length VLP.
