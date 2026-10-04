@@ -3,7 +3,10 @@
 # Schema discovery uses LLM via :discover command in clickgraph-client
 # ============================================================================
 # Stage 1: Planner - Generate dependency recipe for caching
-FROM lukemathwalker/cargo-chef:latest-rust-1-bullseye AS chef
+# Keep the container toolchain aligned with CI and prevent a moving Docker tag
+# from changing the compiler or system libraries under an otherwise identical
+# source checkout.
+FROM lukemathwalker/cargo-chef:0.1.73-rust-1.92.0-bullseye@sha256:05a8b2a032fee4e9baebd62d37a198fabc0521e9643af373a9d9ad80ed2736f8 AS chef
 WORKDIR /app
 
 FROM chef AS planner
@@ -18,7 +21,7 @@ FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 
 # Build dependencies - caching layer
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --locked --release --recipe-path recipe.json
 
 # Copy source code
 COPY . .
@@ -31,8 +34,8 @@ COPY . .
 # heavy deps — `reqwest` is already non-optional), so the `clickgraph` binary is
 # unchanged in behavior: its Databricks code is inert unless `--databricks` is
 # passed. See docs/deltagraph/PACKAGING.md.
-RUN cargo build --release --features databricks --bin clickgraph --bin deltagraph && \
-    cargo build --release -p clickgraph-client --bin clickgraph-client
+RUN cargo build --locked --release --features databricks --bin clickgraph --bin deltagraph && \
+    cargo build --locked --release -p clickgraph-client --bin clickgraph-client
 
 # Strip debug symbols to reduce binary size
 RUN strip /app/target/release/clickgraph && \
@@ -41,13 +44,12 @@ RUN strip /app/target/release/clickgraph && \
 
 # ============================================================================
 # Stage 3: Runtime - Minimal production image
-FROM debian:bullseye-slim AS runtime
+FROM debian:bookworm-slim AS runtime
 
 # Install runtime dependencies only
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
-        libssl1.1 \
         wget \
     && rm -rf /var/lib/apt/lists/*
 
