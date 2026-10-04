@@ -1,0 +1,37 @@
+# Foreign-embedded self-loop with TWO relationship types over two edge tables, both
+# embedding the FROM role of the same node (#1158). A chain across the two types
+# joins two DIFFERENT edge tables through their shared embedded node — the shape whose
+# SQL used to flip between runs (a `t2.col = t2.col` tautology, a duplicate FROM alias).
+name: foreign_selfloop_two_types_test
+version: "1.0"
+description: "Two edge tables embedding the same from-role node (#1158)"
+
+graph_schema:
+  nodes:
+    - label: Person
+      database: testdb
+      table: people
+      node_id: pid
+      is_denormalized: true
+      property_mappings:
+        pid: pid
+        name: name
+      from_node_properties:
+        pid: mgr_id
+  edges:
+    - type: REPORTS_TO
+      database: testdb
+      table: reports
+      from_node: Person
+      to_node: Person
+      from_id: mgr_id
+      to_id: emp_id
+      property_mappings: {}
+    - type: MENTORS
+      database: testdb
+      table: mentors
+      from_node: Person
+      to_node: Person
+      from_id: mgr_id
+      to_id: emp_id
+      property_mappings: {}

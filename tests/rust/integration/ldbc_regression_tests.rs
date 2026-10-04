@@ -4387,11 +4387,19 @@ async fn hop_between_two_vlp_endpoints_binds_both_denorm_1174() {
 /// process-wide counter, so they are matched, not hard-coded.
 fn edges_linked_1158(sql: &str, col_a: &str, col_b: &str) -> bool {
     let (a, b) = (regex::escape(col_a), regex::escape(col_b));
+    // The two aliases must DIFFER: `t2.col = t2.col` is a tautology, not a link.
     regex::Regex::new(&format!(
-        r"\bt\d+\.{a} = t\d+\.{b}\b|\bt\d+\.{b} = t\d+\.{a}\b"
+        r"\b(t\d+)\.{a} = (t\d+)\.{b}\b|\b(t\d+)\.{b} = (t\d+)\.{a}\b"
     ))
     .unwrap()
-    .is_match(sql)
+    .captures_iter(sql)
+    .any(|c| {
+        let (x, y) = match (c.get(1), c.get(2), c.get(3), c.get(4)) {
+            (Some(x), Some(y), _, _) | (_, _, Some(x), Some(y)) => (x.as_str(), y.as_str()),
+            _ => return false,
+        };
+        x != y
+    })
 }
 
 async fn mixed_sql_1158(schema_file: &str, cypher: &str) -> String {
@@ -4696,4 +4704,57 @@ async fn mixed_undirected_hop_reusing_a_bound_node_fails_loud_1158() {
             "{schema_file}: cartesian join:\n{sql}"
         );
     }
+}
+
+/// Two relationship types over two edge tables that embed the same node. The SQL used
+/// to flip between runs (HashMap-ordered join assembly): a `t2.col = t2.col`
+/// tautology, or a duplicate FROM alias (Code 179). Generate it repeatedly — every
+/// call builds its own hash maps — and require the SAME valid, linked SQL each time.
+#[tokio::test]
+async fn mixed_two_edge_tables_chain_is_deterministic_and_linked_1158() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop_two_types.yaml");
+    let mut seen = std::collections::HashSet::new();
+    let alias_decl = regex::Regex::new(r" AS (t\d+)\b").unwrap();
+    let alias_num = regex::Regex::new(r"\bt\d+\b").unwrap();
+    for _ in 0..40 {
+        let sql = generate_sql_inline(
+            &schema,
+            "MATCH (a:Person)<-[:REPORTS_TO]-(c:Person)-[:MENTORS]->(d:Person) RETURN count(*)",
+        )
+        .await;
+        assert!(
+            edges_linked_1158(&sql, "mgr_id", "mgr_id"),
+            "not linked:\n{sql}"
+        );
+        let aliases: Vec<String> = alias_decl
+            .captures_iter(&sql)
+            .map(|c| c[1].to_string())
+            .collect();
+        let distinct: std::collections::HashSet<_> = aliases.iter().collect();
+        assert_eq!(
+            aliases.len(),
+            distinct.len(),
+            "an alias is declared twice (Code 179):\n{sql}"
+        );
+        // Normalise alias numbering (process-wide counter) before comparing runs.
+        seen.insert(alias_num.replace_all(&sql, "tN").to_string());
+    }
+    // The link may be spelled in the ON or (when a duplicate entry is folded) the WHERE;
+    // both are the same predicate, so allow at most those two spellings.
+    assert!(seen.len() <= 2, "SQL flips between runs: {seen:#?}");
+}
+
+/// A node carried through `WITH` into an OPTIONAL hop is bound just like in the
+/// single-clause form: same loud error, not NULL ids.
+#[tokio::test]
+async fn mixed_with_carried_node_in_optional_hop_fails_loud_1158() {
+    let schema = load_schema_from(MIXED_FROM_1158);
+    let err = try_generate_sql_inline(
+        &schema,
+        "MATCH (e:Person)-[:REPORTS_TO]->(b:Person) WITH e, b \
+         OPTIONAL MATCH (b)-[:REPORTS_TO]->(e) RETURN e.name, b.name",
+    )
+    .await
+    .expect_err("must not render NULL-able ids");
+    assert!(err.contains("#1186"), "unexpected error: {err}");
 }

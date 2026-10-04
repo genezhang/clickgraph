@@ -228,6 +228,8 @@ LOUD = [
     ('from', 'MATCH (a:Person)-[:REPORTS_TO]->(b:Person) OPTIONAL MATCH (b)-[:REPORTS_TO]->(c:Person)'
              ' RETURN a.pid, b.pid, c.pid'),
     ('to', 'MATCH (b:Person) OPTIONAL MATCH (a:Person)-[:REPORTS_TO]->(b) RETURN b.pid, a.pid'),
+    ('from', 'MATCH (e:Person)-[:REPORTS_TO]->(b:Person) WITH e, b'
+             ' OPTIONAL MATCH (b)-[:REPORTS_TO]->(e) RETURN e.name, b.name'),
     ('from', 'MATCH (a:Person)-[:REPORTS_TO]-(c:Person)-[:REPORTS_TO]-(e:Person) RETURN c.pid, count(*)'),
     ('to', 'MATCH (a:Person)-[:REPORTS_TO]->(c:Person)-[:REPORTS_TO]-(e:Person) RETURN c.pid, count(*)'),
 ]

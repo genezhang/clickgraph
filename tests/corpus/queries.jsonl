@@ -1325,3 +1325,4 @@
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO]-(b:Person)-[:REPORTS_TO]->(c:Person) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_from_undirected_first_hop_then_directed", "schema": "foreign_selfloop"}
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO]-(b:Person)-[:REPORTS_TO]->(c:Person) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_to_undirected_first_hop_then_directed", "schema": "foreign_selfloop_end"}
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO]-(c:Person)-[:REPORTS_TO]-(e:Person) RETURN a.pid, c.pid, e.pid", "name": "test_1158__mixed_from_undirected_chain_stays_loud", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (e:Person)-[:REPORTS_TO]->(b:Person) WITH e, b OPTIONAL MATCH (b)-[:REPORTS_TO]->(e) RETURN e.name, b.name", "name": "test_1158__mixed_from_with_carried_optional_stays_loud", "schema": "foreign_selfloop"}

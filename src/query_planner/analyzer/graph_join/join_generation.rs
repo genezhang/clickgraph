@@ -70,6 +70,7 @@ pub fn generate_pattern_joins(
     plan_ctx: &PlanCtx,
     pre_filter: Option<LogicalExpr>,
     already_available: &HashSet<String>,
+    rel_is_optional: bool,
 ) -> AnalyzerResult<Vec<Join>> {
     let joins = match &ctx.join_strategy {
         JoinStrategy::Traditional {
@@ -410,7 +411,7 @@ pub fn generate_pattern_joins(
             // node matched. Resolving that needs the projection layers to agree on
             // the node's FIRST binding (#1186); until then fail loud rather than
             // return NULLs.
-            if emb_own_id.is_some() && plan_ctx.is_optional(t.rel_alias) {
+            if emb_own_id.is_some() && (rel_is_optional || plan_ctx.is_optional(t.rel_alias)) {
                 return Err(AnalyzerError::UnsupportedPattern {
                     message: format!(
                         "OPTIONAL MATCH hop '{}' re-uses node '{}', which an earlier hop bound \

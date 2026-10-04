@@ -2068,7 +2068,49 @@ fn remove_redundant_edge_self_joins(plan: &mut RenderPlan) {
     }
 }
 
+/// A join entry that repeats the FROM table's alias can only render as a duplicate
+/// alias (ClickHouse Code 179) — or, once a pass "eliminates" it, as references
+/// rewritten onto its neighbour. It is the anchor's own correlation with the next
+/// edge, left over when the join list is assembled (#1158: it showed up on some runs
+/// and not others for a two-relationship-type chain). For an INNER join the ON
+/// conditions are exactly WHERE conditions, so move them there and drop the entry;
+/// any other join type is left alone.
+fn drop_from_alias_join_entries(plan: &mut RenderPlan) {
+    let Some(from_alias) = plan.from.0.as_ref().and_then(|f| f.alias.clone()) else {
+        return;
+    };
+    let mut moved: Vec<RenderExpr> = Vec::new();
+    plan.joins.0.retain(|j| {
+        if j.table_alias != from_alias
+            || j.join_type != JoinType::Inner
+            || j.graph_rel.is_some()
+            || j.pre_filter.is_some()
+        {
+            return true;
+        }
+        moved.extend(
+            j.joining_on
+                .iter()
+                .cloned()
+                .map(RenderExpr::OperatorApplicationExp),
+        );
+        false
+    });
+    if moved.is_empty() {
+        return;
+    }
+    let mut conjuncts = plan
+        .filters
+        .0
+        .take()
+        .map(|f| split_top_level_and(&f))
+        .unwrap_or_default();
+    conjuncts.extend(moved);
+    plan.filters.0 = combine_and_conjuncts(conjuncts);
+}
+
 fn optimize_joins_in_plan(plan: &mut RenderPlan, protected_aliases: &HashSet<String>) {
+    drop_from_alias_join_entries(plan);
     // #479: runs first, on the untouched edge+node JOIN pair straight from
     // `extract_joins`, before any other pass restructures them.
     fold_optional_edge_node_join_with_predicate(plan);
@@ -3324,6 +3366,45 @@ mod tests {
         } else {
             panic!("Expected PropertyAccessExp after bridge elimination");
         }
+    }
+
+    #[test]
+    fn test_from_alias_join_entry_moves_its_conditions_to_where() {
+        // An INNER join entry repeating the FROM alias would render as a duplicate
+        // alias (Code 179); its ON conditions are WHERE conditions (#1158).
+        let joins = vec![
+            edge_join(
+                "t2",
+                "mentors",
+                vec![eq_on(prop("t2", "mgr_id"), prop("t1", "mgr_id"))],
+                "mgr_id",
+                "emp_id",
+            ),
+            Join {
+                join_type: JoinType::Inner,
+                ..node_join(
+                    "t1",
+                    "reports",
+                    vec![eq_on(prop("t1", "mgr_id"), prop("t2", "mgr_id"))],
+                )
+            },
+        ];
+        let mut plan = make_plan(joins, vec![prop("t2", "emp_id")]);
+        plan.from = FromTableItem(Some(ViewTableRef {
+            source: std::sync::Arc::new(crate::query_planner::logical_plan::LogicalPlan::Empty),
+            name: "reports".to_string(),
+            alias: Some("t1".to_string()),
+            use_final: false,
+        }));
+
+        drop_from_alias_join_entries(&mut plan);
+
+        assert_eq!(plan.joins.0.len(), 1);
+        assert_eq!(plan.joins.0[0].table_alias, "t2");
+        assert!(
+            plan.filters.0.is_some(),
+            "the condition must survive as a filter"
+        );
     }
 
     #[test]

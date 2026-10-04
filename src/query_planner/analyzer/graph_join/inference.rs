@@ -2904,6 +2904,7 @@ impl GraphJoinInference {
             plan_ctx,
             pre_filter,
             &already_available,
+            rel_is_optional,
         )?;
 
         // Step 1b: If the anchor was injected as "already available" but doesn't have
