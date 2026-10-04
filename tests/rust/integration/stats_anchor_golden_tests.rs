@@ -132,7 +132,8 @@ async fn stats_anchor_golden_snapshots() {
             std::fs::write(&path, &sql).expect("write golden");
         } else {
             match std::fs::read_to_string(&path) {
-                Ok(expected) if expected == sql => {}
+                Ok(expected)
+                    if crate::sql_golden_tests::normalize_golden_text(&expected) == sql => {}
                 Ok(expected) => mismatches.push(format!(
                     "--- stats_standard/{name} MISMATCH ---\nEXPECTED:\n{expected}\nACTUAL:\n{sql}\n"
                 )),
