@@ -3805,10 +3805,40 @@ pub(super) fn get_denormalized_node_id_reference(
     alias: &str,
     plan: &LogicalPlan,
 ) -> Option<(String, String)> {
+    denormalized_node_id_reference_impl(alias, None, plan)
+}
+
+/// Like [`get_denormalized_node_id_reference`] but only considers the edge `edge_alias`.
+///
+/// The unconstrained walk answers with the OUTERMOST edge that embeds the node, i.e.
+/// the most recently written pattern. When an OPTIONAL pattern re-uses a node a
+/// required pattern bound, that is the LEFT-JOINed edge, and a column read off it is
+/// NULL whenever the OPTIONAL hop misses (#1158). The task-local registry keeps the
+/// FIRST binding for OPTIONAL patterns (#491), so callers that have it ask for that
+/// edge here.
+pub(super) fn get_denormalized_node_id_reference_on_edge(
+    alias: &str,
+    edge_alias: &str,
+    plan: &LogicalPlan,
+) -> Option<(String, String)> {
+    denormalized_node_id_reference_impl(alias, Some(edge_alias), plan)
+}
+
+fn denormalized_node_id_reference_impl(
+    alias: &str,
+    only_edge: Option<&str>,
+    plan: &LogicalPlan,
+) -> Option<(String, String)> {
+    let get_denormalized_node_id_reference = |alias: &str, plan: &LogicalPlan| {
+        denormalized_node_id_reference_impl(alias, only_edge, plan)
+    };
     match plan {
         LogicalPlan::GraphRel(rel) => {
             // Check if this node alias matches left or right connection
-            if let LogicalPlan::ViewScan(scan) = rel.center.as_ref() {
+            if let (LogicalPlan::ViewScan(scan), true) = (
+                rel.center.as_ref(),
+                only_edge.is_none_or(|e| e == rel.alias),
+            ) {
                 // For multi-hop patterns like (a)-[r1]->(b)-[r2]->(c), we prefer
                 // the "from" position because in GROUP BY b, we want r2.Origin
                 // (where b is the origin/source of r2)

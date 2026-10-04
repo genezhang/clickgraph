@@ -19,11 +19,13 @@ import pytest
 import requests
 from conftest import CLICKGRAPH_URL, execute_cypher
 
-PEOPLE = {'p1': 'Alice', 'p2': 'Bob', 'p3': 'Carol', 'p4': 'Dan', 'p5': 'Eve', 'p6': 'Fay'}
+PEOPLE = {'p1': 'Alice', 'p2': 'Bob', 'p3': 'Carol', 'p4': 'Dan', 'p5': 'Eve', 'p6': 'Fay',
+          'p7': 'Gus', 'p8': 'Hal'}
 # (manager, employee): a 3-cycle p1->p2->p3->p1, a branch at p2, the triangle
-# p1->p2->p3 with p1->p3, a fan at p1 and a self-loop on p6.
+# p1->p2->p3 with p1->p3, a fan at p1 and a self-loop on p6.  p8 only has an incoming
+# edge and p7 none at all, so an OPTIONAL hop really does miss for some nodes.
 REPORTS = [('p1', 'p2'), ('p2', 'p3'), ('p3', 'p1'), ('p2', 'p4'), ('p4', 'p5'),
-           ('p1', 'p5'), ('p5', 'p6'), ('p1', 'p3'), ('p1', 'p4'), ('p6', 'p6')]
+           ('p1', 'p5'), ('p5', 'p6'), ('p1', 'p3'), ('p1', 'p4'), ('p6', 'p6'), ('p4', 'p8')]
 
 _SCHEMA = """
 name: {name}
@@ -153,3 +155,101 @@ def test_mixed_chain_count_matches_the_oracle_1158(mixed_schemas, role):
     )
     assert int(response['results'][0]['n']) == sum(
         _expected('abc', [('a', 'b'), ('b', 'c')]).values())
+
+
+# --- OPTIONAL hops ------------------------------------------------------------------
+
+def _expected_optional(variables, required, optional):
+    """Left-join semantics: every row of the required pattern, extended by the optional
+    edge when one matches the already-bound nodes, else NULL (''). Relationship
+    uniqueness holds within a clause, not across clauses."""
+    def extend(edges, bind):
+        out = []
+
+        def rec(i, b, used):
+            if i == len(edges):
+                out.append(b)
+                return
+            f, t = edges[i]
+            for k, (ef, et) in enumerate(REPORTS):
+                if k in used or (f in b and b[f] != ef) or (t in b and b[t] != et):
+                    continue
+                if f == t and ef != et:
+                    continue
+                rec(i + 1, {**b, f: ef, t: et}, used | {k})
+
+        rec(0, bind, frozenset())
+        return out
+
+    rows = Counter()
+    for b in extend(required, {}):
+        for c in extend(optional, b) or [b]:
+            rows[tuple(x for v in variables for x in
+                       ((c[v], PEOPLE[c[v]]) if v in c else ('', '')))] += 1
+    return rows
+
+
+def _run_rows(schema, pattern, variables):
+    ret = ', '.join(f'{v}.pid AS {v}_pid, {v}.name AS {v}_name' for v in variables)
+    response = execute_cypher(f'{pattern} RETURN {ret}', schema_name=schema)
+    return Counter(
+        tuple('' if r[f'{v}_{p}'] is None else r[f'{v}_{p}'] for v in variables for p in ('pid', 'name'))
+        for r in response['results']
+    )
+
+
+# Shapes that are supported on BOTH roles: the node the OPTIONAL hop closes on was
+# embedded in an earlier edge, so its first binding is the one that is read.
+@pytest.mark.parametrize('role', ['from', 'to'])
+def test_mixed_optional_closing_edge_matches_the_oracle_1158(mixed_schemas, role):
+    pattern = ('MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person) '
+               'OPTIONAL MATCH (a)-[:REPORTS_TO]->(c)')
+    got = _run_rows(mixed_schemas[role], pattern, 'abc')
+    assert got == _expected_optional('abc', [('a', 'b'), ('b', 'c')], [('a', 'c')])
+
+
+def test_mixed_to_embedded_optional_hop_after_a_hop_matches_the_oracle_1158(mixed_schemas):
+    pattern = ('MATCH (a:Person)-[:REPORTS_TO]->(b:Person) '
+               'OPTIONAL MATCH (b)-[:REPORTS_TO]->(c:Person)')
+    got = _run_rows(mixed_schemas['to'], pattern, 'abc')
+    assert got == _expected_optional('abc', [('a', 'b')], [('b', 'c')])
+
+
+def test_mixed_to_embedded_optional_fan_closing_matches_the_oracle_1158(mixed_schemas):
+    pattern = ('MATCH (a:Person)<-[:REPORTS_TO]-(b:Person)-[:REPORTS_TO]->(c:Person) '
+               'OPTIONAL MATCH (a)-[:REPORTS_TO]->(c)')
+    got = _run_rows(mixed_schemas['to'], pattern, 'abc')
+    assert got == _expected_optional('abc', [('b', 'a'), ('b', 'c')], [('a', 'c')])
+
+
+# Shapes that would return NULL ids (or ids that do not belong to their names) must
+# fail loud instead.
+LOUD = [
+    ('from', 'MATCH (a:Person)-[:REPORTS_TO]->(b:Person) OPTIONAL MATCH (b)-[:REPORTS_TO]->(c:Person)'
+             ' RETURN a.pid, b.pid, c.pid'),
+    ('to', 'MATCH (b:Person) OPTIONAL MATCH (a:Person)-[:REPORTS_TO]->(b) RETURN b.pid, a.pid'),
+    ('from', 'MATCH (a:Person)-[:REPORTS_TO]-(c:Person)-[:REPORTS_TO]-(e:Person) RETURN c.pid, count(*)'),
+    ('to', 'MATCH (a:Person)-[:REPORTS_TO]->(c:Person)-[:REPORTS_TO]-(e:Person) RETURN c.pid, count(*)'),
+]
+
+
+@pytest.mark.parametrize('role,query', LOUD, ids=[f'{r}-{i}' for i, (r, _) in enumerate(LOUD)])
+def test_mixed_unresolvable_shapes_fail_loud_1158(mixed_schemas, role, query):
+    response = execute_cypher(query, schema_name=mixed_schemas[role], raise_on_error=False)
+    assert response.get('status') == 'error', f"expected a loud error, got rows: {response}"
+    assert '#1186' in str(response['error'])
+
+
+# An undirected FIRST hop, or an explicitly directed hop after it, is fine.
+@pytest.mark.parametrize('role', ['from', 'to'])
+def test_mixed_undirected_first_hop_matches_the_oracle_1158(mixed_schemas, role):
+    got = _run_rows(
+        mixed_schemas[role],
+        'MATCH (a:Person)-[:REPORTS_TO]-(b:Person)-[:REPORTS_TO]->(c:Person)', 'abc')
+    expected = Counter()
+    for i, (f1, t1) in enumerate(REPORTS):
+        for (a, b) in {(f1, t1), (t1, f1)}:
+            for j, (f2, t2) in enumerate(REPORTS):
+                if j != i and f2 == b:
+                    expected[(a, PEOPLE[a], b, PEOPLE[b], t2, PEOPLE[t2])] += 1
+    assert got == expected

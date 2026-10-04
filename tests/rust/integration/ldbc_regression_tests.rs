@@ -4565,17 +4565,19 @@ async fn mixed_comma_chain_links_the_hops_1158() {
     );
 }
 
-/// An OPTIONAL hop off the chain end is a LEFT JOIN correlated to the first hop.
+/// An OPTIONAL hop off the chain end is a LEFT JOIN correlated to the first hop. (On the
+/// FROM-embedded schema this shape fails loud, see below; the TO-embedded one has no
+/// own-table-bound node to re-embed.)
 #[tokio::test]
 async fn mixed_optional_hop_is_correlated_to_the_chain_1158() {
     let sql = mixed_sql_1158(
-        MIXED_FROM_1158,
+        MIXED_TO_1158,
         "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) OPTIONAL MATCH (b)-[:REPORTS_TO]->(c:Person) \
          RETURN a.pid, b.pid, c.pid",
     )
     .await;
     assert!(
-        regex::Regex::new(r"LEFT JOIN testdb\.reports AS t\d+ ON t\d+\.emp_id = t\d+\.mgr_id")
+        regex::Regex::new(r"LEFT JOIN testdb\.reports AS t\d+ ON t\d+\.mgr_id = t\d+\.emp_id")
             .unwrap()
             .is_match(&sql),
         "#1158: the OPTIONAL hop must be correlated to the hop before it:\n{sql}"
@@ -4620,4 +4622,78 @@ async fn mixed_disconnected_commas_stay_a_cross_product_1158() {
         sql.contains("1 = 1"),
         "disconnected patterns must stay a cross product:\n{sql}"
     );
+}
+
+/// An OPTIONAL hop that embeds a node an earlier hop bound through its OWN table
+/// would read that node's id off the LEFT-JOINed edge — NULL for every row the hop
+/// misses. That must fail loud, not return NULLs (#1186 tracks the real fix).
+#[tokio::test]
+async fn mixed_optional_hop_embedding_an_own_table_bound_node_fails_loud_1158() {
+    let schema = load_schema_from(MIXED_FROM_1158);
+    let err = try_generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) OPTIONAL MATCH (b)-[:REPORTS_TO]->(c:Person) \
+         RETURN a.pid, b.pid, c.pid",
+    )
+    .await
+    .expect_err("must not render NULL-able ids");
+    assert!(
+        err.contains("OPTIONAL MATCH hop") && err.contains("#1186"),
+        "unexpected error: {err}"
+    );
+}
+
+/// The shapes that ARE resolvable stay supported: the node the OPTIONAL hop closes on
+/// was embedded in an earlier edge (the registry keeps that first binding), so its
+/// own-table properties are joined on THAT edge, not on the LEFT-JOINed one.
+#[tokio::test]
+async fn mixed_optional_closing_edge_joins_properties_on_the_first_binding_1158() {
+    let schema = load_schema_from(MIXED_FROM_1158);
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person) \
+         OPTIONAL MATCH (a)-[:REPORTS_TO]->(c) RETURN a.name, b.name, c.name",
+    )
+    .await;
+    let joined_on = regex::Regex::new(r"AS a ON a\.pid = (t\d+)\.mgr_id")
+        .unwrap()
+        .captures(&sql)
+        .unwrap_or_else(|| panic!("#1158: `a` must be joined on an edge column:\n{sql}"))[1]
+        .to_string();
+    assert!(
+        !sql.contains(&format!("LEFT JOIN testdb.reports AS {joined_on} ")),
+        "#1158: `a` is joined through the OPTIONAL edge {joined_on}:\n{sql}"
+    );
+}
+
+/// An undirected hop that re-uses a bound node: the two directions swap the node's
+/// role but the registry keeps one, so ids would be read off the wrong column in one
+/// arm (row count right, ids not belonging to their names). Fail loud (#1186). An
+/// undirected FIRST hop, and a directed hop after it, stay supported.
+#[tokio::test]
+async fn mixed_undirected_hop_reusing_a_bound_node_fails_loud_1158() {
+    for schema_file in [MIXED_FROM_1158, MIXED_TO_1158] {
+        let schema = load_schema_from(schema_file);
+        let err = try_generate_sql_inline(
+            &schema,
+            "MATCH (a:Person)-[:REPORTS_TO]-(c:Person)-[:REPORTS_TO]-(e:Person) \
+             RETURN a.pid, c.pid, e.pid",
+        )
+        .await
+        .expect_err("undirected re-use of a bound node must not render");
+        assert!(
+            err.contains("undirected hop") && err.contains("#1186"),
+            "{schema_file}: unexpected error: {err}"
+        );
+        let sql = generate_sql_inline(
+            &schema,
+            "MATCH (a:Person)-[:REPORTS_TO]-(b:Person)-[:REPORTS_TO]->(c:Person) \
+             RETURN a.pid, b.pid, c.pid",
+        )
+        .await;
+        assert!(
+            !sql.contains("1 = 1"),
+            "{schema_file}: cartesian join:\n{sql}"
+        );
+    }
 }

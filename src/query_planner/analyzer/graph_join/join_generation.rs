@@ -403,6 +403,26 @@ pub fn generate_pattern_joins(
                         && matches!(emb_rel_col, Identifier::Single(_))
                 })
                 .map(|id| helpers::resolve_identifier(id, emb_cte, plan_ctx));
+            // An OPTIONAL hop that embeds a node an earlier hop bound through its OWN
+            // table: the node's id column is read off the LEFT-JOINed edge by every
+            // later projection (the owning-edge registry records this hop), so it
+            // comes back NULL for each row the OPTIONAL hop misses, although the
+            // node matched. Resolving that needs the projection layers to agree on
+            // the node's FIRST binding (#1186); until then fail loud rather than
+            // return NULLs.
+            if emb_own_id.is_some() && plan_ctx.is_optional(t.rel_alias) {
+                return Err(AnalyzerError::UnsupportedPattern {
+                    message: format!(
+                        "OPTIONAL MATCH hop '{}' re-uses node '{}', which an earlier hop bound \
+                         through its own node table, on an edge that embeds that node's id: its \
+                         id would be read from the OPTIONAL edge and be NULL whenever the hop \
+                         misses. Not supported on mixed-access schemas yet (#1186) — match the \
+                         node's relationship in the required MATCH, or put the node on the \
+                         edge's embedded side.",
+                        t.rel_alias, emb_alias
+                    ),
+                });
+            }
             let emb_bound = emb_prev.is_some() || emb_own_id.is_some();
             let bind_prev = |b: JoinBuilder, link: &EdgeToEdgeLink| -> JoinBuilder {
                 b.add_condition(

@@ -1318,3 +1318,10 @@
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person), (c:Person)-[:REPORTS_TO]->(b) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_to_comma_shared_end", "schema": "foreign_selfloop_end"}
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person)-[:REPORTS_TO]->(a) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_to_cycle", "schema": "foreign_selfloop_end"}
 {"cypher": "MATCH (b:Person) OPTIONAL MATCH (a:Person)-[:REPORTS_TO]->(b) RETURN b.pid, a.pid", "name": "test_1158__mixed_to_anchor_in_optional", "schema": "foreign_selfloop_end"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person) OPTIONAL MATCH (a)-[:REPORTS_TO]->(c) RETURN a.name, b.name, c.name", "name": "test_1158__mixed_from_optional_closing_edge_after_chain", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person) OPTIONAL MATCH (a)-[:REPORTS_TO]->(c) RETURN a.name, b.name, c.name", "name": "test_1158__mixed_to_optional_closing_edge_after_chain", "schema": "foreign_selfloop_end"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) OPTIONAL MATCH (b)-[:REPORTS_TO]->(c:Person) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_to_optional_hop_after_chain", "schema": "foreign_selfloop_end"}
+{"cypher": "MATCH (a:Person)<-[:REPORTS_TO]-(b:Person)-[:REPORTS_TO]->(c:Person) OPTIONAL MATCH (a)-[:REPORTS_TO]->(c) RETURN a.name, b.name, c.name", "name": "test_1158__mixed_to_optional_fan_closing", "schema": "foreign_selfloop_end"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]-(b:Person)-[:REPORTS_TO]->(c:Person) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_from_undirected_first_hop_then_directed", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]-(b:Person)-[:REPORTS_TO]->(c:Person) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_to_undirected_first_hop_then_directed", "schema": "foreign_selfloop_end"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]-(c:Person)-[:REPORTS_TO]-(e:Person) RETURN a.pid, c.pid, e.pid", "name": "test_1158__mixed_from_undirected_chain_stays_loud", "schema": "foreign_selfloop"}

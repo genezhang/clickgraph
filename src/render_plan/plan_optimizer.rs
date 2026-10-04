@@ -2399,8 +2399,18 @@ fn find_bridge_candidates(
     protected_aliases: &HashSet<String>,
 ) -> Vec<BridgeCandidate> {
     let mut candidates = Vec::new();
+    let from_alias = plan.from.0.as_ref().and_then(|f| f.alias.as_deref());
 
     for (idx, join) in plan.joins.0.iter().enumerate().rev() {
+        // Guard: the FROM table is the anchor, never a bridge. A join entry that
+        // repeats the FROM alias (the anchor's own correlation, kept when the join
+        // list is assembled) would otherwise be "eliminated" and every reference to
+        // it rewritten onto its neighbour: `t2.col = t1.col` became the tautology
+        // `t2.col = t2.col`, on some runs and not others (#1158).
+        if Some(join.table_alias.as_str()) == from_alias {
+            continue;
+        }
+
         // Guard: must not be an edge table (edge tables have from_id/to_id columns)
         if join.from_id_column.is_some() || join.to_id_column.is_some() {
             continue;
@@ -3314,6 +3324,56 @@ mod tests {
         } else {
             panic!("Expected PropertyAccessExp after bridge elimination");
         }
+    }
+
+    #[test]
+    fn test_from_table_is_never_a_bridge() {
+        // `t1` is the FROM anchor. A join entry repeating its alias carries the
+        // anchor's own correlation with `t2`; eliminating it as a "bridge" rewrote
+        // `t2.mgr_id = t1.mgr_id` into the tautology `t2.mgr_id = t2.mgr_id` (#1158).
+        let joins = vec![
+            edge_join(
+                "t2",
+                "mentors",
+                vec![eq_on(prop("t2", "mgr_id"), prop("t1", "mgr_id"))],
+                "mgr_id",
+                "emp_id",
+            ),
+            node_join(
+                "t1",
+                "reports",
+                vec![eq_on(prop("t1", "mgr_id"), prop("t2", "mgr_id"))],
+            ),
+        ];
+        let mut plan = make_plan(joins, vec![prop("t2", "emp_id")]);
+        plan.from = FromTableItem(Some(ViewTableRef {
+            source: std::sync::Arc::new(crate::query_planner::logical_plan::LogicalPlan::Empty),
+            name: "reports".to_string(),
+            alias: Some("t1".to_string()),
+            use_final: false,
+        }));
+
+        eliminate_bridge_nodes_in_plan(&mut plan, &HashSet::new());
+
+        assert_eq!(
+            plan.joins.0.len(),
+            2,
+            "the FROM alias must not be bridged away"
+        );
+        let t2_on = &plan.joins.0[0].joining_on[0];
+        let aliases: Vec<&str> = t2_on
+            .operands
+            .iter()
+            .map(|o| match o {
+                RenderExpr::PropertyAccessExp(pa) => pa.table_alias.0.as_str(),
+                _ => "?",
+            })
+            .collect();
+        assert_eq!(
+            aliases,
+            ["t2", "t1"],
+            "t2's link to the anchor must survive"
+        );
     }
 
     #[test]

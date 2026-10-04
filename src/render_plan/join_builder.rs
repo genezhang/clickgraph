@@ -168,8 +168,23 @@ pub(crate) fn inject_own_table_joins(
         }
         // Embedded id column + owning edge alias (only for truly denormalized
         // endpoints — embedded endpoint property maps present).
+        // The edge that FIRST bound the node (the registry keeps it for OPTIONAL
+        // patterns, #491), else the outermost one that embeds it.
         let Some((edge_alias, edge_id_col)) =
-            super::plan_builder_helpers::get_denormalized_node_id_reference(&node_alias, plan)
+            crate::server::query_context::get_denormalized_alias_mapping(&node_alias)
+                .and_then(|edge| {
+                    super::plan_builder_helpers::get_denormalized_node_id_reference_on_edge(
+                        &node_alias,
+                        &edge,
+                        plan,
+                    )
+                })
+                .or_else(|| {
+                    super::plan_builder_helpers::get_denormalized_node_id_reference(
+                        &node_alias,
+                        plan,
+                    )
+                })
         else {
             continue;
         };
