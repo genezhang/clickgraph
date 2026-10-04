@@ -2874,6 +2874,29 @@ impl GraphJoinInference {
         } else {
             false
         };
+        // #1158: a MIXED-access hop that is (an arm of) an undirected pattern and
+        // re-uses a node an earlier hop bound. The arms swap an endpoint's role, but
+        // the owning-edge registry records ONE role per node (the last arm's), so every
+        // later projection reads the node's id off the wrong column in some arm: the
+        // row count is right and its ids no longer belong to their names. Fail loud
+        // until the arms resolve roles independently.
+        if matches!(ctx.join_strategy, JoinStrategy::MixedAccess { .. })
+            && (_graph_rel.was_undirected == Some(true)
+                || _graph_rel.direction == Direction::Either)
+            && (already_available.contains(left_alias) || already_available.contains(right_alias))
+        {
+            return Err(AnalyzerError::UnsupportedPattern {
+                message: format!(
+                    "undirected hop '{}' re-uses a node an earlier hop already bound, on a \
+                     mixed-access schema (one endpoint embedded in the edge table, the other on \
+                     its own table): the node's role differs between the two directions and its \
+                     id would be read from the wrong edge column in one of them. Write the hop \
+                     with an explicit direction, or match each direction in its own MATCH \
+                     (#1186).",
+                    rel_alias
+                ),
+            });
+        }
         let mut new_joins = join_generation::generate_pattern_joins(
             ctx,
             &tables,
@@ -2881,6 +2904,7 @@ impl GraphJoinInference {
             plan_ctx,
             pre_filter,
             &already_available,
+            rel_is_optional,
         )?;
 
         // Step 1b: If the anchor was injected as "already available" but doesn't have

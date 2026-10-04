@@ -4368,3 +4368,393 @@ async fn hop_between_two_vlp_endpoints_binds_both_denorm_1174() {
         "#1174: a hop closing the VLP must bind BOTH endpoints:\n{sql}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #1158: chained hops on a MIXED-access (foreign-embedded) schema must be tied
+// to each other through the node they share.
+//
+// One endpoint of `REPORTS_TO` is embedded in the edge table (`foreign_selfloop`
+// embeds the FROM role, `foreign_selfloop_end` the TO role), the other lives on
+// its own table. A node an earlier hop bound — as that hop's own-table end, or as
+// a column of that hop's edge row — was never equated with the next edge, so the
+// second edge rendered `JOIN <edge> ON 1 = 1`: a cartesian product in which the
+// shared node read two different values in one row (42 rows from 7 edges where
+// the chain has 8).
+// ---------------------------------------------------------------------------
+
+/// `true` when `<tA>.<col_a> = <tB>.<col_b>` is in the SQL in either orientation
+/// — a join predicate between two edge scans. Alias numbers come from a
+/// process-wide counter, so they are matched, not hard-coded.
+fn edges_linked_1158(sql: &str, col_a: &str, col_b: &str) -> bool {
+    let (a, b) = (regex::escape(col_a), regex::escape(col_b));
+    // The two aliases must DIFFER: `t2.col = t2.col` is a tautology, not a link.
+    regex::Regex::new(&format!(
+        r"\b(t\d+)\.{a} = (t\d+)\.{b}\b|\b(t\d+)\.{b} = (t\d+)\.{a}\b"
+    ))
+    .unwrap()
+    .captures_iter(sql)
+    .any(|c| {
+        let (x, y) = match (c.get(1), c.get(2), c.get(3), c.get(4)) {
+            (Some(x), Some(y), _, _) | (_, _, Some(x), Some(y)) => (x.as_str(), y.as_str()),
+            _ => return false,
+        };
+        x != y
+    })
+}
+
+async fn mixed_sql_1158(schema_file: &str, cypher: &str) -> String {
+    let schema = load_schema_from(schema_file);
+    generate_sql_inline(&schema, cypher).await
+}
+
+const MIXED_FROM_1158: &str = "schemas/test/foreign_selfloop.yaml";
+const MIXED_TO_1158: &str = "schemas/test/foreign_selfloop_end.yaml";
+
+/// The issue's repro: hop 1 ends at `b` (own table), hop 2 starts at `b` (embedded in
+/// the edge). The edges must be joined `t1.emp_id = t2.mgr_id`.
+#[tokio::test]
+async fn mixed_two_hop_chain_links_the_hops_1158() {
+    let sql = mixed_sql_1158(
+        MIXED_FROM_1158,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person) \
+         RETURN a.pid, b.pid, c.pid",
+    )
+    .await;
+    assert!(!sql.contains("1 = 1"), "#1158: cartesian join:\n{sql}");
+    assert!(
+        edges_linked_1158(&sql, "emp_id", "mgr_id"),
+        "#1158: hop 1's `emp_id` must equal hop 2's `mgr_id`:\n{sql}"
+    );
+}
+
+/// `count(*)` references no node column, so the node joins are pruned — the hops must
+/// still be linked.
+#[tokio::test]
+async fn mixed_two_hop_chain_count_links_the_hops_1158() {
+    let sql = mixed_sql_1158(
+        MIXED_FROM_1158,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person) RETURN count(*)",
+    )
+    .await;
+    assert!(!sql.contains("1 = 1"), "#1158: cartesian join:\n{sql}");
+    assert!(
+        edges_linked_1158(&sql, "emp_id", "mgr_id"),
+        "#1158: hop 1's `emp_id` must equal hop 2's `mgr_id`:\n{sql}"
+    );
+}
+
+/// Both hops share their FROM endpoint (the embedded role on this schema): the two
+/// edges are equated on `mgr_id`, and the own-table end `c` is still joined — the
+/// legacy edge-to-edge strategy linked the edges but never joined `c`
+/// (Code 47 on `c.name`).
+#[tokio::test]
+async fn mixed_fan_out_links_the_start_columns_and_joins_the_own_table_node_1158() {
+    let sql = mixed_sql_1158(
+        MIXED_FROM_1158,
+        "MATCH (a:Person)<-[:REPORTS_TO]-(b:Person)-[:REPORTS_TO]->(c:Person) \
+         RETURN a.name, b.name, c.name",
+    )
+    .await;
+    assert!(!sql.contains("1 = 1"), "#1158: cartesian join:\n{sql}");
+    assert!(
+        edges_linked_1158(&sql, "mgr_id", "mgr_id"),
+        "#1158: both hops start at `b`, so `mgr_id` must equal `mgr_id`:\n{sql}"
+    );
+    assert!(
+        regex::Regex::new(r"JOIN testdb\.people AS c ON c\.pid = t\d+\.emp_id")
+            .unwrap()
+            .is_match(&sql),
+        "#1158: the own-table node `c` must still be joined:\n{sql}"
+    );
+}
+
+/// The TO-embedded spelling of the same bug: hops that share their END endpoint.
+#[tokio::test]
+async fn mixed_to_embedded_fan_in_links_the_end_columns_1158() {
+    let sql = mixed_sql_1158(
+        MIXED_TO_1158,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)<-[:REPORTS_TO]-(c:Person) \
+         RETURN a.pid, b.pid, c.pid",
+    )
+    .await;
+    assert!(!sql.contains("1 = 1"), "#1158: cartesian join:\n{sql}");
+    assert!(
+        edges_linked_1158(&sql, "emp_id", "emp_id"),
+        "#1158: both hops end at `b`, so `emp_id` must equal `emp_id`:\n{sql}"
+    );
+}
+
+/// A hop that closes a triangle has BOTH endpoints already bound: it must be tied to
+/// the first hop through `a` and to the second through `c`.
+#[tokio::test]
+async fn mixed_triangle_binds_the_closing_edge_to_both_hops_1158() {
+    let sql = mixed_sql_1158(
+        MIXED_FROM_1158,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person), \
+         (a)-[:REPORTS_TO]->(c) RETURN a.pid, b.pid, c.pid",
+    )
+    .await;
+    assert!(!sql.contains("1 = 1"), "#1158: cartesian join:\n{sql}");
+    assert!(
+        edges_linked_1158(&sql, "mgr_id", "mgr_id"),
+        "#1158: the closing edge starts at `a` like hop 1:\n{sql}"
+    );
+    assert!(
+        edges_linked_1158(&sql, "emp_id", "emp_id"),
+        "#1158: the closing edge ends at `c` like hop 2:\n{sql}"
+    );
+}
+
+/// The chain written backwards. Hop 2's JOINED (own-table) node `b` was bound only as
+/// an embedded column of hop 1, so it has no table alias to join against: the hop is
+/// tied to hop 1's edge column. Before #1158 this rendered no JOIN at all (Code 47).
+#[tokio::test]
+async fn mixed_incoming_chain_links_the_hops_1158() {
+    for (schema, cols) in [
+        (MIXED_FROM_1158, ("emp_id", "mgr_id")),
+        (MIXED_TO_1158, ("mgr_id", "emp_id")),
+    ] {
+        let sql = mixed_sql_1158(
+            schema,
+            "MATCH (c:Person)<-[:REPORTS_TO]-(b:Person)<-[:REPORTS_TO]-(a:Person) \
+             RETURN a.pid, b.pid, c.pid",
+        )
+        .await;
+        assert!(
+            !sql.contains("1 = 1"),
+            "#1158 ({schema}): cartesian join:\n{sql}"
+        );
+        assert!(
+            edges_linked_1158(&sql, cols.0, cols.1),
+            "#1158 ({schema}): hops must be linked on `{}`/`{}`:\n{sql}",
+            cols.0,
+            cols.1
+        );
+        assert_eq!(
+            sql.matches("testdb.reports AS").count(),
+            2,
+            "#1158 ({schema}): both hops must be scanned:\n{sql}"
+        );
+    }
+}
+
+/// Three hops: every consecutive pair is linked (two `emp_id = mgr_id` equalities).
+#[tokio::test]
+async fn mixed_three_hop_chain_links_every_hop_1158() {
+    let sql = mixed_sql_1158(
+        MIXED_FROM_1158,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person)\
+         -[:REPORTS_TO]->(d:Person) RETURN a.pid, b.pid, c.pid, d.pid",
+    )
+    .await;
+    assert!(!sql.contains("1 = 1"), "#1158: cartesian join:\n{sql}");
+    let links =
+        regex::Regex::new(r"\bt\d+\.emp_id = t\d+\.mgr_id\b|\bt\d+\.mgr_id = t\d+\.emp_id\b")
+            .unwrap()
+            .find_iter(&sql)
+            .count();
+    assert_eq!(links, 2, "#1158: two hop-to-hop links expected:\n{sql}");
+}
+
+/// The comma form of the chain (`(a)->(b), (b)->(c)`) is one pattern in the planner's
+/// eyes — the second hop is joined to the first through `b` all the same.
+#[tokio::test]
+async fn mixed_comma_chain_links_the_hops_1158() {
+    let sql = mixed_sql_1158(
+        MIXED_FROM_1158,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person), (b)-[:REPORTS_TO]->(c:Person) \
+         RETURN a.pid, b.pid, c.pid",
+    )
+    .await;
+    assert!(!sql.contains("1 = 1"), "#1158: cartesian join:\n{sql}");
+    assert!(
+        edges_linked_1158(&sql, "emp_id", "mgr_id"),
+        "#1158: hop 1's `emp_id` must equal hop 2's `mgr_id`:\n{sql}"
+    );
+}
+
+/// An OPTIONAL hop off the chain end is a LEFT JOIN correlated to the first hop. (On the
+/// FROM-embedded schema this shape fails loud, see below; the TO-embedded one has no
+/// own-table-bound node to re-embed.)
+#[tokio::test]
+async fn mixed_optional_hop_is_correlated_to_the_chain_1158() {
+    let sql = mixed_sql_1158(
+        MIXED_TO_1158,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) OPTIONAL MATCH (b)-[:REPORTS_TO]->(c:Person) \
+         RETURN a.pid, b.pid, c.pid",
+    )
+    .await;
+    assert!(
+        regex::Regex::new(r"LEFT JOIN testdb\.reports AS t\d+ ON t\d+\.mgr_id = t\d+\.emp_id")
+            .unwrap()
+            .is_match(&sql),
+        "#1158: the OPTIONAL hop must be correlated to the hop before it:\n{sql}"
+    );
+}
+
+/// With a variable-length path in the pattern: the hop that closes `(a)-[*1..2]->(b)`
+/// through `c` is linked to the hop before it (the shape #1179's review found), on
+/// top of the CTE bindings #1174 added.
+#[tokio::test]
+async fn mixed_closing_edge_after_a_vlp_links_the_hop_chain_1158() {
+    let sql = mixed_sql_1158(
+        MIXED_FROM_1158,
+        "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person), (a)-[:REPORTS_TO]->(c:Person), \
+         (c)-[:REPORTS_TO]->(b) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        edges_linked_1158(&sql, "emp_id", "mgr_id"),
+        "#1158: the closing hop must start where the middle hop ends:\n{sql}"
+    );
+    assert!(
+        binds_edge_column_to_cte_1174(&sql, "mgr_id", "start_id")
+            && binds_edge_column_to_cte_1174(&sql, "emp_id", "end_id"),
+        "#1174 bindings must be kept:\n{sql}"
+    );
+}
+
+/// Two patterns with nothing in common ARE a cross product — the `1 = 1` is right
+/// there, and the edge-uniqueness filter is what keeps one edge from pairing with
+/// itself (this is NOT the correlated scan the issue's second comment feared:
+/// 2 edges give 2 pairs, not 4).
+#[tokio::test]
+async fn mixed_disconnected_commas_stay_a_cross_product_1158() {
+    let sql = mixed_sql_1158(
+        MIXED_FROM_1158,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person), (c:Person)-[:REPORTS_TO]->(d:Person) \
+         RETURN a.pid, d.pid",
+    )
+    .await;
+    assert!(
+        sql.contains("1 = 1"),
+        "disconnected patterns must stay a cross product:\n{sql}"
+    );
+}
+
+/// An OPTIONAL hop that embeds a node an earlier hop bound through its OWN table
+/// would read that node's id off the LEFT-JOINed edge — NULL for every row the hop
+/// misses. That must fail loud, not return NULLs (#1186 tracks the real fix).
+#[tokio::test]
+async fn mixed_optional_hop_embedding_an_own_table_bound_node_fails_loud_1158() {
+    let schema = load_schema_from(MIXED_FROM_1158);
+    let err = try_generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) OPTIONAL MATCH (b)-[:REPORTS_TO]->(c:Person) \
+         RETURN a.pid, b.pid, c.pid",
+    )
+    .await
+    .expect_err("must not render NULL-able ids");
+    assert!(
+        err.contains("OPTIONAL MATCH hop") && err.contains("#1186"),
+        "unexpected error: {err}"
+    );
+}
+
+/// The shapes that ARE resolvable stay supported: the node the OPTIONAL hop closes on
+/// was embedded in an earlier edge (the registry keeps that first binding), so its
+/// own-table properties are joined on THAT edge, not on the LEFT-JOINed one.
+#[tokio::test]
+async fn mixed_optional_closing_edge_joins_properties_on_the_first_binding_1158() {
+    let schema = load_schema_from(MIXED_FROM_1158);
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person) \
+         OPTIONAL MATCH (a)-[:REPORTS_TO]->(c) RETURN a.name, b.name, c.name",
+    )
+    .await;
+    let joined_on = regex::Regex::new(r"AS a ON a\.pid = (t\d+)\.mgr_id")
+        .unwrap()
+        .captures(&sql)
+        .unwrap_or_else(|| panic!("#1158: `a` must be joined on an edge column:\n{sql}"))[1]
+        .to_string();
+    assert!(
+        !sql.contains(&format!("LEFT JOIN testdb.reports AS {joined_on} ")),
+        "#1158: `a` is joined through the OPTIONAL edge {joined_on}:\n{sql}"
+    );
+}
+
+/// An undirected hop that re-uses a bound node: the two directions swap the node's
+/// role but the registry keeps one, so ids would be read off the wrong column in one
+/// arm (row count right, ids not belonging to their names). Fail loud (#1186). An
+/// undirected FIRST hop, and a directed hop after it, stay supported.
+#[tokio::test]
+async fn mixed_undirected_hop_reusing_a_bound_node_fails_loud_1158() {
+    for schema_file in [MIXED_FROM_1158, MIXED_TO_1158] {
+        let schema = load_schema_from(schema_file);
+        let err = try_generate_sql_inline(
+            &schema,
+            "MATCH (a:Person)-[:REPORTS_TO]-(c:Person)-[:REPORTS_TO]-(e:Person) \
+             RETURN a.pid, c.pid, e.pid",
+        )
+        .await
+        .expect_err("undirected re-use of a bound node must not render");
+        assert!(
+            err.contains("undirected hop") && err.contains("#1186"),
+            "{schema_file}: unexpected error: {err}"
+        );
+        let sql = generate_sql_inline(
+            &schema,
+            "MATCH (a:Person)-[:REPORTS_TO]-(b:Person)-[:REPORTS_TO]->(c:Person) \
+             RETURN a.pid, b.pid, c.pid",
+        )
+        .await;
+        assert!(
+            !sql.contains("1 = 1"),
+            "{schema_file}: cartesian join:\n{sql}"
+        );
+    }
+}
+
+/// Two relationship types over two edge tables that embed the same node. The SQL used
+/// to flip between runs (HashMap-ordered join assembly): a `t2.col = t2.col`
+/// tautology, or a duplicate FROM alias (Code 179). Generate it repeatedly — every
+/// call builds its own hash maps — and require the SAME valid, linked SQL each time.
+#[tokio::test]
+async fn mixed_two_edge_tables_chain_is_deterministic_and_linked_1158() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop_two_types.yaml");
+    let mut seen = std::collections::HashSet::new();
+    let alias_decl = regex::Regex::new(r" AS (t\d+)\b").unwrap();
+    let alias_num = regex::Regex::new(r"\bt\d+\b").unwrap();
+    for _ in 0..40 {
+        let sql = generate_sql_inline(
+            &schema,
+            "MATCH (a:Person)<-[:REPORTS_TO]-(c:Person)-[:MENTORS]->(d:Person) RETURN count(*)",
+        )
+        .await;
+        assert!(
+            edges_linked_1158(&sql, "mgr_id", "mgr_id"),
+            "not linked:\n{sql}"
+        );
+        let aliases: Vec<String> = alias_decl
+            .captures_iter(&sql)
+            .map(|c| c[1].to_string())
+            .collect();
+        let distinct: std::collections::HashSet<_> = aliases.iter().collect();
+        assert_eq!(
+            aliases.len(),
+            distinct.len(),
+            "an alias is declared twice (Code 179):\n{sql}"
+        );
+        // Normalise alias numbering (process-wide counter) before comparing runs.
+        seen.insert(alias_num.replace_all(&sql, "tN").to_string());
+    }
+    // The link may be spelled in the ON or (when a duplicate entry is folded) the WHERE;
+    // both are the same predicate, so allow at most those two spellings.
+    assert!(seen.len() <= 2, "SQL flips between runs: {seen:#?}");
+}
+
+/// A node carried through `WITH` into an OPTIONAL hop is bound just like in the
+/// single-clause form: same loud error, not NULL ids.
+#[tokio::test]
+async fn mixed_with_carried_node_in_optional_hop_fails_loud_1158() {
+    let schema = load_schema_from(MIXED_FROM_1158);
+    let err = try_generate_sql_inline(
+        &schema,
+        "MATCH (e:Person)-[:REPORTS_TO]->(b:Person) WITH e, b \
+         OPTIONAL MATCH (b)-[:REPORTS_TO]->(e) RETURN e.name, b.name",
+    )
+    .await
+    .expect_err("must not render NULL-able ids");
+    assert!(err.contains("#1186"), "unexpected error: {err}");
+}

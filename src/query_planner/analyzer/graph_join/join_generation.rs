@@ -20,7 +20,7 @@ use std::collections::HashSet;
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::graph_schema::RelationshipSchema;
 use crate::graph_catalog::pattern_schema::{
-    JoinStrategy, NodeAccessStrategy, NodePosition, PatternSchemaContext,
+    EdgeToEdgeLink, JoinStrategy, NodeAccessStrategy, NodePosition, PatternSchemaContext,
 };
 use crate::query_planner::analyzer::errors::AnalyzerError;
 use crate::query_planner::logical_expr::LogicalExpr;
@@ -70,6 +70,7 @@ pub fn generate_pattern_joins(
     plan_ctx: &PlanCtx,
     pre_filter: Option<LogicalExpr>,
     already_available: &HashSet<String>,
+    rel_is_optional: bool,
 ) -> AnalyzerResult<Vec<Join>> {
     let joins = match &ctx.join_strategy {
         JoinStrategy::Traditional {
@@ -328,6 +329,9 @@ pub fn generate_pattern_joins(
         JoinStrategy::MixedAccess {
             joined_node,
             join_col,
+            embedded_id,
+            left_prev,
+            right_prev,
         } => {
             let (node_alias, node_table, node_cte, node_strategy) = match joined_node {
                 NodePosition::Left => (t.left_alias, t.left_table, t.left_cte_name, &ctx.left_node),
@@ -370,6 +374,78 @@ pub fn generate_pattern_joins(
                 && matches!(node_id, Identifier::Single(_));
             let emb_is_vlp =
                 plan_ctx.is_vlp_endpoint(emb_alias) && matches!(emb_rel_col, Identifier::Single(_));
+
+            // #1158: an endpoint a previous hop already bound must be tied to THIS
+            // edge, or the edge is an unconstrained scan (`JOIN <edge> ON 1 = 1`,
+            // a cartesian product, with the shared node reading two different
+            // values in one row). The previous hop binds it one of two ways:
+            //   * the node is EMBEDDED in that edge (`left_prev`/`right_prev`,
+            //     the registry `register_denormalized_aliases` fills): equate the
+            //     two edges' columns, `curr.col = prev.col`;
+            //   * the node is the OWN-TABLE end of that hop (a real `<node> AS
+            //     alias` JOIN): equate this edge's column with the node's id.
+            // A VLP endpoint is bound through the CTE instead (#1174). A link is
+            // honoured only for a node this scope has actually joined.
+            let (joined_prev, emb_prev, emb_cte) = match joined_node {
+                NodePosition::Left => (left_prev, right_prev, t.right_cte_name),
+                NodePosition::Right => (right_prev, left_prev, t.left_cte_name),
+            };
+            let joined_prev = joined_prev
+                .as_ref()
+                .filter(|_| node_avail && !plan_ctx.is_vlp_endpoint(node_alias));
+            let emb_avail = already_available.contains(emb_alias) && !emb_is_vlp;
+            let emb_prev = emb_prev.as_ref().filter(|_| emb_avail);
+            let emb_own_id = embedded_id
+                .as_ref()
+                .filter(|id| {
+                    emb_avail
+                        && emb_prev.is_none()
+                        && matches!(id, Identifier::Single(_))
+                        && matches!(emb_rel_col, Identifier::Single(_))
+                })
+                .map(|id| helpers::resolve_identifier(id, emb_cte, plan_ctx));
+            // An OPTIONAL hop that embeds a node an earlier hop bound through its OWN
+            // table: the node's id column is read off the LEFT-JOINed edge by every
+            // later projection (the owning-edge registry records this hop), so it
+            // comes back NULL for each row the OPTIONAL hop misses, although the
+            // node matched. Resolving that needs the projection layers to agree on
+            // the node's FIRST binding (#1186); until then fail loud rather than
+            // return NULLs.
+            if emb_own_id.is_some() && (rel_is_optional || plan_ctx.is_optional(t.rel_alias)) {
+                return Err(AnalyzerError::UnsupportedPattern {
+                    message: format!(
+                        "OPTIONAL MATCH hop '{}' re-uses node '{}', which an earlier hop bound \
+                         through its own node table, on an edge that embeds that node's id: its \
+                         id would be read from the OPTIONAL edge and be NULL whenever the hop \
+                         misses. Not supported on mixed-access schemas yet (#1186) — match the \
+                         node's relationship in the required MATCH, or put the node on the \
+                         edge's embedded side.",
+                        t.rel_alias, emb_alias
+                    ),
+                });
+            }
+            let emb_bound = emb_prev.is_some() || emb_own_id.is_some();
+            let bind_prev = |b: JoinBuilder, link: &EdgeToEdgeLink| -> JoinBuilder {
+                b.add_condition(
+                    t.rel_alias,
+                    &link.curr_edge_col,
+                    &link.prev_edge_alias,
+                    &link.prev_edge_col,
+                )
+            };
+            let bind_embedded = |mut b: JoinBuilder| -> JoinBuilder {
+                if let Some(link) = emb_prev {
+                    b = bind_prev(b, link);
+                } else if let Some(r_emb_id) = &emb_own_id {
+                    let r_emb_col = Identifier::Single(helpers::resolve_column(
+                        emb_rel_col.first_column(),
+                        t.rel_cte_name,
+                        plan_ctx,
+                    ));
+                    b = b.add_identifier_condition(emb_alias, r_emb_id, t.rel_alias, &r_emb_col);
+                }
+                b
+            };
             let bind_vlp = |mut b: JoinBuilder, bind_joined: bool| -> JoinBuilder {
                 if bind_joined {
                     let col = joined_rel_col.first_column().to_string();
@@ -381,13 +457,13 @@ pub fn generate_pattern_joins(
                     let (va, vc) = plan_ctx.get_vlp_join_reference(emb_alias, &col);
                     b = b.add_condition(t.rel_alias, col, va, vc);
                 }
-                b
+                bind_embedded(b)
             };
 
             match (edge_avail, node_avail) {
-                (false, false) if joined_is_vlp || emb_is_vlp => {
-                    // The edge carries the VLP binding, so it is a real JOIN (not a
-                    // bare FROM marker the CTE would turn into `ON 1 = 1`).
+                (false, false) if joined_is_vlp || emb_is_vlp || emb_bound => {
+                    // The edge carries the VLP / previous-hop binding, so it is a
+                    // real JOIN (not a bare FROM marker that renders `ON 1 = 1`).
                     let edge = bind_vlp(
                         JoinBuilder::new(t.rel_table, t.rel_alias)
                             .pre_filter(pre_filter)
@@ -427,26 +503,31 @@ pub fn generate_pattern_joins(
                         .add_identifier_condition(node_alias, &r_node_id, t.rel_alias, &r_join_col)
                         .build(),
                 ],
-                (false, true) => vec![
+                (false, true) => {
                     // Node available, edge anchors on node. The EMBEDDED endpoint can
                     // still be a VLP endpoint (comma / closing-edge patterns such as
-                    // `(a)-[*1..2]->(b)-[:R]->(y), (a)-[:R]->(y)`): bind its edge
-                    // column to the CTE, or the hop floats free of the path.
-                    bind_vlp(
-                        JoinBuilder::new(t.rel_table, t.rel_alias)
-                            .add_identifier_condition(
-                                t.rel_alias,
-                                &r_join_col,
-                                node_alias,
-                                &r_node_id,
-                            )
-                            .pre_filter(pre_filter)
+                    // `(a)-[*1..2]->(b)-[:R]->(y), (a)-[:R]->(y)`) or one an earlier
+                    // hop bound (#1158): bind its edge column, or the hop floats free.
+                    let b = JoinBuilder::new(t.rel_table, t.rel_alias);
+                    let b = match joined_prev {
+                        // The joined node is bound by an earlier edge that embeds
+                        // it, not by a node-table alias of its own.
+                        Some(link) => bind_prev(b, link),
+                        None => b.add_identifier_condition(
+                            t.rel_alias,
+                            &r_join_col,
+                            node_alias,
+                            &r_node_id,
+                        ),
+                    };
+                    vec![bind_vlp(
+                        b.pre_filter(pre_filter)
                             .from_id(rel_schema.from_id.first_column().to_string())
                             .to_id(rel_schema.to_id.first_column().to_string()),
                         false,
                     )
-                    .build(),
-                ],
+                    .build()]
+                }
                 (true, true) => vec![], // Both available, nothing to add
             }
         }

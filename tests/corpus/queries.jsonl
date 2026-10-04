@@ -1297,3 +1297,32 @@
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person)-[:REPORTS_TO]->(y:Person), (a)-[:REPORTS_TO]->(y) RETURN a.pid, b.pid, y.pid", "name": "test_1174__mixed_closing_edge_on_vlp_start", "schema": "foreign_selfloop"}
 {"cypher": "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport), (a)-[:FLIGHT]->(b) RETURN count(*)", "name": "test_1174__denorm_hop_between_two_vlp_endpoints", "schema": "denormalized_flights"}
 {"cypher": "MATCH (a:Airport)-[:FLIGHT]->(a)-[:FLIGHT*1..2]->(b:Airport) RETURN count(*)", "name": "test_1174__denorm_self_loop_hop_before_vlp", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_from_two_hop_chain", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person) RETURN count(*)", "name": "test_1158__mixed_from_two_hop_chain_count", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person) RETURN a.name, b.name, c.name", "name": "test_1158__mixed_from_two_hop_chain_names", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (c:Person)<-[:REPORTS_TO]-(b:Person)<-[:REPORTS_TO]-(a:Person) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_from_incoming_chain", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person)-[:REPORTS_TO]->(d:Person) RETURN a.pid, b.pid, c.pid, d.pid", "name": "test_1158__mixed_from_three_hop_chain", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (a:Person)<-[:REPORTS_TO]-(b:Person)-[:REPORTS_TO]->(c:Person) RETURN a.name, b.name, c.name", "name": "test_1158__mixed_from_fan_out_joins_own_table_node", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person), (b)-[:REPORTS_TO]->(c:Person) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_from_comma_chain", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person), (a)-[:REPORTS_TO]->(c:Person) RETURN a.pid, b.name, c.name", "name": "test_1158__mixed_from_comma_shared_start", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person), (a)-[:REPORTS_TO]->(c) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_from_triangle", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person)-[:REPORTS_TO]->(a) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_from_cycle", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person), (c:Person)-[:REPORTS_TO]->(d:Person) RETURN a.pid, d.pid", "name": "test_1158__mixed_from_disconnected_commas_stay_a_cross_product", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person), (a)-[:REPORTS_TO]->(c:Person), (c)-[:REPORTS_TO]->(b) RETURN count(*)", "name": "test_1158__mixed_from_closing_edge_on_vlp", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) OPTIONAL MATCH (b)-[:REPORTS_TO]->(c:Person) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_from_optional_hop_after_chain", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (b:Person) OPTIONAL MATCH (a:Person)-[:REPORTS_TO]->(b) RETURN b.pid, a.pid", "name": "test_1158__mixed_from_anchor_in_optional", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_to_two_hop_chain", "schema": "foreign_selfloop_end"}
+{"cypher": "MATCH (c:Person)<-[:REPORTS_TO]-(b:Person)<-[:REPORTS_TO]-(a:Person) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_to_incoming_chain", "schema": "foreign_selfloop_end"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)<-[:REPORTS_TO]-(c:Person) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_to_fan_in", "schema": "foreign_selfloop_end"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)<-[:REPORTS_TO]-(c:Person)-[:REPORTS_TO]->(d:Person) RETURN a.pid, b.pid, c.pid, d.pid", "name": "test_1158__mixed_to_zigzag", "schema": "foreign_selfloop_end"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person), (c:Person)-[:REPORTS_TO]->(b) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_to_comma_shared_end", "schema": "foreign_selfloop_end"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person)-[:REPORTS_TO]->(a) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_to_cycle", "schema": "foreign_selfloop_end"}
+{"cypher": "MATCH (b:Person) OPTIONAL MATCH (a:Person)-[:REPORTS_TO]->(b) RETURN b.pid, a.pid", "name": "test_1158__mixed_to_anchor_in_optional", "schema": "foreign_selfloop_end"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person) OPTIONAL MATCH (a)-[:REPORTS_TO]->(c) RETURN a.name, b.name, c.name", "name": "test_1158__mixed_from_optional_closing_edge_after_chain", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person)-[:REPORTS_TO]->(c:Person) OPTIONAL MATCH (a)-[:REPORTS_TO]->(c) RETURN a.name, b.name, c.name", "name": "test_1158__mixed_to_optional_closing_edge_after_chain", "schema": "foreign_selfloop_end"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]->(b:Person) OPTIONAL MATCH (b)-[:REPORTS_TO]->(c:Person) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_to_optional_hop_after_chain", "schema": "foreign_selfloop_end"}
+{"cypher": "MATCH (a:Person)<-[:REPORTS_TO]-(b:Person)-[:REPORTS_TO]->(c:Person) OPTIONAL MATCH (a)-[:REPORTS_TO]->(c) RETURN a.name, b.name, c.name", "name": "test_1158__mixed_to_optional_fan_closing", "schema": "foreign_selfloop_end"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]-(b:Person)-[:REPORTS_TO]->(c:Person) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_from_undirected_first_hop_then_directed", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]-(b:Person)-[:REPORTS_TO]->(c:Person) RETURN a.pid, b.pid, c.pid", "name": "test_1158__mixed_to_undirected_first_hop_then_directed", "schema": "foreign_selfloop_end"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO]-(c:Person)-[:REPORTS_TO]-(e:Person) RETURN a.pid, c.pid, e.pid", "name": "test_1158__mixed_from_undirected_chain_stays_loud", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (e:Person)-[:REPORTS_TO]->(b:Person) WITH e, b OPTIONAL MATCH (b)-[:REPORTS_TO]->(e) RETURN e.name, b.name", "name": "test_1158__mixed_from_with_carried_optional_stays_loud", "schema": "foreign_selfloop"}
