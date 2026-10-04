@@ -309,7 +309,11 @@ pub fn generate_pattern_joins(
                     let (vlp_alias, vlp_col) =
                         plan_ctx.get_vlp_join_reference(t.left_alias, &from_col);
                     builder = builder.add_condition(t.rel_alias, from_col, vlp_alias, vlp_col);
-                } else if plan_ctx.is_vlp_endpoint(t.right_alias) {
+                }
+                // Not `else if`: a hop whose BOTH endpoints are VLP endpoints
+                // (`(a)-[*1..2]->(b), (a)-[:R]->(b)`, `(a)-[:R]->(a)-[*]->(b)`) binds
+                // both, as `EdgeToEdge` and `Traditional` do (#1174).
+                if plan_ctx.is_vlp_endpoint(t.right_alias) {
                     let to_col = rel_schema.to_id.first_column().to_string();
                     let (vlp_alias, vlp_col) =
                         plan_ctx.get_vlp_join_reference(t.right_alias, &to_col);
@@ -424,13 +428,24 @@ pub fn generate_pattern_joins(
                         .build(),
                 ],
                 (false, true) => vec![
-                    // Node available, edge anchors on node
-                    JoinBuilder::new(t.rel_table, t.rel_alias)
-                        .add_identifier_condition(t.rel_alias, &r_join_col, node_alias, &r_node_id)
-                        .pre_filter(pre_filter)
-                        .from_id(rel_schema.from_id.first_column().to_string())
-                        .to_id(rel_schema.to_id.first_column().to_string())
-                        .build(),
+                    // Node available, edge anchors on node. The EMBEDDED endpoint can
+                    // still be a VLP endpoint (comma / closing-edge patterns such as
+                    // `(a)-[*1..2]->(b)-[:R]->(y), (a)-[:R]->(y)`): bind its edge
+                    // column to the CTE, or the hop floats free of the path.
+                    bind_vlp(
+                        JoinBuilder::new(t.rel_table, t.rel_alias)
+                            .add_identifier_condition(
+                                t.rel_alias,
+                                &r_join_col,
+                                node_alias,
+                                &r_node_id,
+                            )
+                            .pre_filter(pre_filter)
+                            .from_id(rel_schema.from_id.first_column().to_string())
+                            .to_id(rel_schema.to_id.first_column().to_string()),
+                        false,
+                    )
+                    .build(),
                 ],
                 (true, true) => vec![], // Both available, nothing to add
             }

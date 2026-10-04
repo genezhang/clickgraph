@@ -4328,3 +4328,43 @@ async fn mixed_embedded_endpoint_after_and_incoming_is_bound_to_the_cte_1174() {
         "#1174: an incoming hop must bind `<hop>.mgr_id = t.start_id`:\n{incoming}"
     );
 }
+
+/// Mixed-access, comma / closing-edge pattern: the hop `(a)->(y)` closes onto the
+/// VLP start `a` through the node-available arm. Its embedded endpoint must bind the
+/// CTE too (`t.start_id`), otherwise the query that used to fail loudly (Code 47)
+/// runs and returns rows from a hop that floats free of the path (9 vs 2).
+#[tokio::test]
+async fn mixed_closing_edge_binds_the_embedded_vlp_endpoint_1174() {
+    let schema = load_schema_from("schemas/test/foreign_selfloop.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person)-[:REPORTS_TO]->(y:Person), \
+         (a)-[:REPORTS_TO]->(y) RETURN a.pid, b.pid, y.pid",
+    )
+    .await;
+    assert!(
+        binds_edge_column_to_cte_1174(&sql, "mgr_id", "start_id"),
+        "#1174: the closing hop must bind its embedded endpoint to `t.start_id`:\n{sql}"
+    );
+    assert!(
+        binds_edge_column_to_cte_1174(&sql, "mgr_id", "end_id"),
+        "#1174: the hop after the VLP must still bind `t.end_id`:\n{sql}"
+    );
+}
+
+/// A hop whose BOTH endpoints are VLP endpoints binds both (`SingleTableScan` used to
+/// bind only the left one: 31 rows vs 8, and 31 vs 0 for the self-loop `(a)->(a)`).
+#[tokio::test]
+async fn hop_between_two_vlp_endpoints_binds_both_denorm_1174() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport), (a)-[:FLIGHT]->(b) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        binds_edge_column_to_cte_1174(&sql, "Origin", "start_id")
+            && binds_edge_column_to_cte_1174(&sql, "Dest", "end_id"),
+        "#1174: a hop closing the VLP must bind BOTH endpoints:\n{sql}"
+    );
+}

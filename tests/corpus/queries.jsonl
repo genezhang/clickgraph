@@ -1294,3 +1294,6 @@
 {"cypher": "MATCH (c:Person)<-[:REPORTS_TO]-(a:Person)-[:REPORTS_TO*1..2]->(b:Person) RETURN count(*)", "name": "test_1174__mixed_incoming_fixed_hop_then_vlp_embedded_node", "schema": "foreign_selfloop"}
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person)-[:REPORTS_TO]->(y:Person) RETURN a.pid, y.pid", "name": "test_1174__mixed_vlp_then_fixed_hop_embedded_node", "schema": "foreign_selfloop"}
 {"cypher": "MATCH (c:Person)-[:REPORTS_TO]->(a:Person)-[:REPORTS_TO*1..2]->(b:Person) RETURN c.pid, a.pid", "name": "test_1174__mixed_end_fixed_hop_then_vlp", "schema": "foreign_selfloop_end"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person)-[:REPORTS_TO]->(y:Person), (a)-[:REPORTS_TO]->(y) RETURN a.pid, b.pid, y.pid", "name": "test_1174__mixed_closing_edge_on_vlp_start", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport), (a)-[:FLIGHT]->(b) RETURN count(*)", "name": "test_1174__denorm_hop_between_two_vlp_endpoints", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Airport)-[:FLIGHT]->(a)-[:FLIGHT*1..2]->(b:Airport) RETURN count(*)", "name": "test_1174__denorm_self_loop_hop_before_vlp", "schema": "denormalized_flights"}
