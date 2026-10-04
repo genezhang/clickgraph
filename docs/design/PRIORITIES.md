@@ -74,6 +74,17 @@ The nightly was red from ~2026-07-13. Successive triage narrowed it to zero:
   `conclusion: success` — fmt/clippy `-D warnings`/build/full `cargo test`/full live
   pytest all pass. The scheduled weekday run now validates continuously.
 Exit met: one fully green nightly run + xpass count 0.
+- **2026-10 re-triage (nightly red 09-17..10-02, 6 failures)**: (1) denorm
+  `shortestPath ... WHERE a.city <> b.city` projected `start_OriginCityName` /
+  `end_DestCityName` TWICE (ClickHouse Code 44) — the denorm collector's dedup keyed
+  on the logical alias while WHERE-seeded entries carry the physical one; fixed in
+  `cte_extraction.rs`, 4 corpus goldens that had FROZEN the duplicated SQL
+  regenerated (pure line removals) + explicit once-per-column regression test.
+  (2) 4 `test_with_property_mapping` expectations still spelled `substring(`/`lower(`/
+  `upper(` after #960 moved them to `*UTF8`. (3) 4 stale xfail markers removed;
+  `test_distinct_group_types` (intermittent, strict=False) and
+  `test_external_users_with_access` (reason documents a weak status-only oracle)
+  deliberately kept.
 - Follow-ups still open (net hygiene, not blocking): ~~prune stale
   `worktree-agent-*` branches~~ **DONE 2026-07-30** (none remained; pruned 4 stale
   remote-tracking refs); ~~refresh STATUS.md (last updated 2026-05-06)~~ **DONE

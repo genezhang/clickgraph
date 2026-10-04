@@ -107,7 +107,7 @@ class TestNestedFunctions:
         """Test: substring(u.name, 1, 5)."""
         success, msg = check_query(
             "MATCH (u:User) WITH substring(u.name, 1, 5) AS prefix RETURN prefix LIMIT 1",
-            ["substring(u.full_name"],
+            ["substringUTF8(u.full_name"],
             ["substring(u.name"]
         )
         assert success, msg
@@ -116,7 +116,7 @@ class TestNestedFunctions:
         """Test: toLower(u.name)."""
         success, msg = check_query(
             "MATCH (u:User) WITH toLower(u.name) AS lowerName RETURN lowerName LIMIT 1",
-            ["lower(u.full_name"],
+            ["lowerUTF8(u.full_name"],
             ["lower(u.name"]
         )
         assert success, msg
@@ -125,7 +125,7 @@ class TestNestedFunctions:
         """Test: toUpper(u.email)."""
         success, msg = check_query(
             "MATCH (u:User) WITH toUpper(u.email) AS upperEmail RETURN upperEmail LIMIT 1",
-            ["upper(u.email_address"],
+            ["upperUTF8(u.email_address"],
             ["upper(u.email)"]
         )
         assert success, msg
@@ -297,7 +297,7 @@ class TestEdgeCases:
         """Test: Multiple references to same property."""
         success, msg = check_query(
             "MATCH (u:User) WITH u.name AS n1, u.name AS n2, toLower(u.name) AS lower_n RETURN n1, n2, lower_n LIMIT 1",
-            ["full_name AS \"n1\"", "full_name AS \"n2\"", "lower(u.full_name"],
+            ["full_name AS \"n1\"", "full_name AS \"n2\"", "lowerUTF8(u.full_name"],
             []
         )
         assert success, msg

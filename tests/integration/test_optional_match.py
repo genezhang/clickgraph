@@ -672,7 +672,6 @@ class TestOptionalMatchEdgeCases:
         # Should respect LIMIT
         assert len(response["results"]) <= 5
     
-    @pytest.mark.xfail(reason="Self-referencing VLP with OPTIONAL MATCH has alias collision - see ROADMAP.md")
     def test_optional_match_self_reference(self, simple_graph):
         """Test OPTIONAL MATCH with self-referencing pattern."""
         response = execute_cypher(

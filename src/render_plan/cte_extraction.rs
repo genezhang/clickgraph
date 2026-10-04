@@ -5307,7 +5307,9 @@ pub fn extract_ctes_with_context(
                                         }
                                     }
                                     if !all_denorm_properties.iter().any(|p| {
-                                        p.cypher_alias == *start_conn && p.alias == *logical_prop
+                                        p.cypher_alias == *start_conn
+                                            && (p.alias == *logical_prop
+                                                || p.column_name == *physical_col)
                                     }) {
                                         all_denorm_properties.push(NodeProperty {
                                             cypher_alias: start_conn.clone(),
@@ -5335,7 +5337,9 @@ pub fn extract_ctes_with_context(
                                         }
                                     }
                                     if !all_denorm_properties.iter().any(|p| {
-                                        p.cypher_alias == *end_conn && p.alias == *logical_prop
+                                        p.cypher_alias == *end_conn
+                                            && (p.alias == *logical_prop
+                                                || p.column_name == *physical_col)
                                     }) {
                                         all_denorm_properties.push(NodeProperty {
                                             cypher_alias: end_conn.clone(),

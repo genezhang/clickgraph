@@ -448,7 +448,6 @@ class TestPathFunctionsInReturn:
 class TestPathEdgeCases:
     """Test edge cases for path variables and functions."""
     
-    @pytest.mark.xfail(reason="Zero-length VLP (*0) has SQL generation issues - KNOWN_ISSUES")
     def test_zero_length_path(self, simple_graph):
         """Test path of length zero."""
         response = execute_cypher(

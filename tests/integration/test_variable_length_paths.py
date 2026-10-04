@@ -474,7 +474,6 @@ class TestVariableLengthDistinct:
 class TestVariableLengthEdgeCases:
     """Test edge cases for variable-length patterns."""
     
-    @pytest.mark.xfail(reason="*0 pattern requires special handling - currently returns 1-hop instead of self-loop")
     def test_zero_length(self, simple_graph):
         """Test *0 pattern (returns same node)."""
         response = execute_cypher(
