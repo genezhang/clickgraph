@@ -288,6 +288,44 @@ class TestDenormalizedVariableLengthPaths:
         assert row['dest.city'] == 'Atlanta'
         assert row['hops'] == 2  # LAX -> ORD -> ATL
     
+    def test_zero_hop_start_filter_constrains_the_seed_1166(self, denormalized_flights_graph):
+        """#1166: `*0..N` must start ONLY from the filtered node.
+
+        The zero-hop seed used to drop the start predicate, so the recursion
+        started from every airport. Oracle (flights: LAX->SFO, SFO->JFK,
+        JFK->LAX, ORD->ATL, ATL->LAX, LAX->ORD; a denorm `*0..N` is
+        node-unique): from ATL -> ATL(0), LAX(1), then SFO and ORD(2).
+        """
+        response = execute_cypher(
+            """
+            MATCH (a:Airport)-[:FLIGHT*0..2]->(b:Airport)
+            WHERE a.code = 'ATL'
+            RETURN b.code AS code
+            ORDER BY code
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+
+        assert_query_success(response)
+        assert [r['code'] for r in response['results']] == ['ATL', 'LAX', 'ORD', 'SFO']
+
+    def test_zero_hop_start_filter_on_role_dependent_property_1166(self, denormalized_flights_graph):
+        """#1166: `city` is a different physical column per role (OriginCityName /
+        DestCityName); the start filter must resolve in BOTH seed scans. From
+        Chicago (ORD): ORD(0), ATL(1), LAX(2)."""
+        response = execute_cypher(
+            """
+            MATCH (a:Airport)-[:FLIGHT*0..2]->(b:Airport)
+            WHERE a.city = 'Chicago' AND a.state = 'IL'
+            RETURN b.code AS code
+            ORDER BY code
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+
+        assert_query_success(response)
+        assert [r['code'] for r in response['results']] == ['ATL', 'LAX', 'ORD']
+
     def test_variable_path_cte_uses_denormalized_props(self, denormalized_flights_graph):
         """Verify CTEs for variable paths use denormalized properties."""
         # Use sql_only mode to get SQL back

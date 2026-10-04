@@ -1105,8 +1105,12 @@ impl DenormalizedCteStrategy {
                 ))
             })?;
 
-        let mut origin_to_dest: HashMap<String, String> = HashMap::new();
-        origin_to_dest.insert(self.from_col.clone(), self.to_col.clone());
+        // `None` marks an origin column that maps to DIFFERENT destination columns
+        // (two logical properties sharing an origin column but not a destination
+        // column). That only matters if the filter actually references it, so it is
+        // reported lazily by `rewrite_origin_role_columns`, not for the whole schema.
+        let mut origin_to_dest: HashMap<String, Option<String>> = HashMap::new();
+        origin_to_dest.insert(self.from_col.clone(), Some(self.to_col.clone()));
         if let (Some(from_props), Some(to_props)) =
             (&node_schema.from_properties, &node_schema.to_properties)
         {
@@ -1115,15 +1119,12 @@ impl DenormalizedCteStrategy {
                     continue;
                 };
                 match origin_to_dest.get(origin_col) {
-                    Some(existing) if existing != dest_col => {
-                        return Err(CteError::SchemaValidationError(format!(
-                            "Start filter on '{}' is ambiguous across roles: origin column \
-                             '{}' maps to both '{}' and '{}'",
-                            logical, origin_col, existing, dest_col
-                        )));
+                    Some(Some(existing)) if existing != dest_col => {
+                        origin_to_dest.insert(origin_col.clone(), None);
                     }
+                    Some(None) => {}
                     _ => {
-                        origin_to_dest.insert(origin_col.clone(), dest_col.clone());
+                        origin_to_dest.insert(origin_col.clone(), Some(dest_col.clone()));
                     }
                 }
             }
@@ -2220,7 +2221,7 @@ fn lower_both_endpoint_filter_to_cte_columns(
 fn rewrite_origin_role_columns(
     sql: &str,
     prefix: &str,
-    origin_to_dest: &std::collections::HashMap<String, String>,
+    origin_to_dest: &std::collections::HashMap<String, Option<String>>,
 ) -> Result<String, String> {
     let error: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
     let rewritten =
@@ -2250,9 +2251,21 @@ fn rewrite_origin_role_columns(
                         .sum();
                     let ident = &after[..ident_len];
                     match origin_to_dest.get(ident) {
-                        Some(dest) if ident_len > 0 => {
+                        Some(Some(dest)) if ident_len > 0 => {
                             out.push_str(prefix);
                             out.push_str(dest);
+                        }
+                        Some(None) if ident_len > 0 => {
+                            error.borrow_mut().get_or_insert_with(|| {
+                                format!(
+                                    "start-filter column `{}{}` is ambiguous across roles: \
+                                     it maps to different destination columns for different \
+                                     properties",
+                                    prefix, ident
+                                )
+                            });
+                            out.push_str(prefix);
+                            out.push_str(ident);
                         }
                         _ => {
                             error.borrow_mut().get_or_insert_with(|| {
@@ -2287,14 +2300,14 @@ fn rewrite_origin_role_columns(
 mod tests {
     // ---- #1166: origin-role -> destination-role start-filter rewrite ----
 
-    fn origin_dest_map() -> std::collections::HashMap<String, String> {
+    fn origin_dest_map() -> std::collections::HashMap<String, Option<String>> {
         [
             ("Origin", "Dest"),
             ("OriginCityName", "DestCityName"),
             ("OriginState", "DestState"),
         ]
         .iter()
-        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .map(|(a, b)| (a.to_string(), Some(b.to_string())))
         .collect()
     }
 
@@ -2316,9 +2329,9 @@ mod tests {
     #[test]
     fn origin_role_rewrite_is_single_pass_and_literal_safe_1166() {
         // A destination column that is ALSO an origin key must not be re-mapped.
-        let chain: std::collections::HashMap<String, String> = [("A", "B"), ("B", "C")]
+        let chain: std::collections::HashMap<String, Option<String>> = [("A", "B"), ("B", "C")]
             .iter()
-            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .map(|(a, b)| (a.to_string(), Some(b.to_string())))
             .collect();
         assert_eq!(
             rewrite_origin_role_columns("t1.A = 1", "t1.", &chain).unwrap(),
@@ -2334,6 +2347,27 @@ mod tests {
         assert_eq!(
             rewrite_origin_role_columns("xt1.Origin = 1", "t1.", &origin_dest_map()).unwrap(),
             "xt1.Origin = 1"
+        );
+    }
+
+    /// Review of #1168: an ambiguous origin column must only fail a filter that
+    /// REFERENCES it — not every `*0..N` start filter on the schema.
+    #[test]
+    fn origin_role_rewrite_ambiguity_is_lazy_1166() {
+        let mut m = origin_dest_map();
+        m.insert("OriginCityName".to_string(), None);
+        // Unrelated predicate still rewrites.
+        assert_eq!(
+            rewrite_origin_role_columns("t1.Origin = 'ATL'", "t1.", &m).unwrap(),
+            "t1.Dest = 'ATL'"
+        );
+        // The ambiguous column itself fails loudly, even next to a good one.
+        let e =
+            rewrite_origin_role_columns("t1.Origin = 'A' AND t1.OriginCityName = 'X'", "t1.", &m)
+                .unwrap_err();
+        assert!(
+            e.contains("ambiguous") && e.contains("t1.OriginCityName"),
+            "{e}"
         );
     }
 
