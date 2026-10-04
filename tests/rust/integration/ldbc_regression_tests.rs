@@ -3995,3 +3995,119 @@ async fn denorm_zero_hop_seed_without_start_filter_is_unchanged_1166() {
         "#1166: no start filter -> the seed scans must stay unfiltered:\n{sql}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #1170: a FIXED hop chained in front of a CTE-backed VLP lost its WHERE filter
+//
+// `extract_filters` returned `None` for a required CTE-backed VLP on the premise
+// that "filters are already in the CTE". That holds for the VLP's OWN predicate;
+// the predicate of a chained FIXED hop (`c`, or the shared node `a`) lives only in
+// the outer query, so `WHERE c.city = 'Chicago'` silently vanished and `c` ranged
+// over every value. Not denormalized-specific: the standard schema dropped it too.
+// ---------------------------------------------------------------------------
+
+/// The relationship alias number (`t1`, `t3`, ...) comes from a process-wide
+/// counter, so it depends on test order. Collapse it for stable assertions.
+fn collapse_rel_aliases_1170(sql: &str) -> String {
+    regex::Regex::new(r"\bt\d+\b")
+        .unwrap()
+        .replace_all(sql, "t")
+        .into_owned()
+}
+
+#[tokio::test]
+async fn fixed_hop_before_vlp_keeps_its_where_filter_denorm_1170() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = collapse_rel_aliases_1170(
+        &generate_sql_inline(
+            &schema,
+            "MATCH (c:Airport)-[:FLIGHT]->(a:Airport)-[:FLIGHT*1..2]->(b:Airport) \
+             WHERE c.city = 'Chicago' RETURN c.city, b.city",
+        )
+        .await,
+    );
+    assert!(
+        sql.contains("WHERE t.OriginCityName = 'Chicago'"),
+        "#1170: the chained fixed hop's predicate must reach the outer WHERE, on the \
+         FROM-role column of the hop that owns `c`:\n{sql}"
+    );
+}
+
+/// The node SHARED by the fixed hop and the VLP is the TO endpoint of the fixed hop
+/// but the FROM endpoint of the VLP. Mapped against the VLP root it took the
+/// origin-role column while being aliased onto the fixed hop — the wrong node's value.
+#[tokio::test]
+async fn shared_node_filter_uses_the_fixed_hops_role_denorm_1170() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = collapse_rel_aliases_1170(
+        &generate_sql_inline(
+            &schema,
+            "MATCH (c:Airport)-[:FLIGHT]->(a:Airport)-[:FLIGHT*1..2]->(b:Airport) \
+             WHERE a.city = 'Denver' RETURN c.city, b.city",
+        )
+        .await,
+    );
+    assert!(
+        sql.contains("WHERE t.DestCityName = 'Denver'"),
+        "#1170: `a` is the DESTINATION of the fixed hop, so its city is `DestCityName`:\n{sql}"
+    );
+    assert!(
+        !sql.contains("t.OriginCityName = 'Denver'"),
+        "#1170: the VLP's origin-role column must not be re-aliased onto the fixed \
+         hop:\n{sql}"
+    );
+}
+
+#[tokio::test]
+async fn fixed_hop_before_vlp_keeps_its_where_filter_standard_1170() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) \
+         WHERE c.name = 'v' RETURN c.name, b.name",
+    )
+    .await;
+    assert!(
+        sql.contains("WHERE c.full_name = 'v'"),
+        "#1170: on a STANDARD schema too, `c`'s predicate must reach the outer \
+         WHERE (mapped name -> full_name):\n{sql}"
+    );
+}
+
+/// Scope guard: a VLP whose children carry no predicate must keep emitting exactly
+/// what it did — the user's end filter lives in the wrapper ONCE, never duplicated
+/// into an outer WHERE.
+#[tokio::test]
+async fn vlp_without_a_chained_hop_predicate_is_unchanged_1170() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE b.name = 'x' RETURN b.name",
+    )
+    .await;
+    assert_eq!(
+        sql.matches("end_name = 'x'").count(),
+        1,
+        "#1170: a plain VLP end filter lives in the wrapper CTE, exactly once:\n{sql}"
+    );
+    assert!(
+        !sql.contains("full_name = 'x'"),
+        "#1170: and must NOT be re-emitted against the base column in an outer WHERE:\n{sql}"
+    );
+}
+
+/// Every predicate on a chain of two fixed hops is kept, each on its own node.
+#[tokio::test]
+async fn two_chained_fixed_hops_keep_every_where_filter_1170() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (z:User)-[:FOLLOWS]->(c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) \
+         WHERE z.name = 'v' AND c.name = 'w' RETURN z.name, b.name",
+    )
+    .await;
+    assert!(
+        sql.contains("z.full_name = 'v'") && sql.contains("c.full_name = 'w'"),
+        "#1170: both chained nodes' predicates must be kept:\n{sql}"
+    );
+}

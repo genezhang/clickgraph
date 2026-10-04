@@ -326,6 +326,63 @@ class TestDenormalizedVariableLengthPaths:
         assert_query_success(response)
         assert [r['code'] for r in response['results']] == ['ATL', 'LAX', 'ORD']
 
+    def test_fixed_hop_before_vlp_keeps_its_where_filter_1170(self, denormalized_flights_graph):
+        """#1170: a FIXED hop chained in front of a CTE-backed VLP lost its WHERE
+        filter (the outer query returned `None` for "filters already in the CTE").
+
+        Oracle (flights: LAX->SFO, SFO->JFK, JFK->LAX, ORD->ATL, ATL->LAX, LAX->ORD):
+        c = Chicago (ORD); fixed ORD->ATL so a = Atlanta; VLP *1..2 from ATL reaches
+        LAX (1 hop), then SFO and ORD (2 hops).
+        """
+        response = execute_cypher(
+            """
+            MATCH (c:Airport)-[:FLIGHT]->(a:Airport)-[:FLIGHT*1..2]->(b:Airport)
+            WHERE c.city = 'Chicago'
+            RETURN a.city AS a, b.city AS b
+            ORDER BY b
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+
+        assert_query_success(response)
+        assert [(r['a'], r['b']) for r in response['results']] == [
+            ('Atlanta', 'Chicago'),
+            ('Atlanta', 'Los Angeles'),
+            ('Atlanta', 'San Francisco'),
+        ]
+
+    def test_shared_node_filter_uses_the_fixed_hops_role_1170(self, denormalized_flights_graph):
+        """#1170: `a` is the DESTINATION of the fixed hop but the ORIGIN of the VLP;
+        its city must resolve against the fixed hop's role (`DestCityName`). Mapped
+        against the VLP it became `OriginCityName` re-aliased onto the fixed hop —
+        the wrong node's value, so nothing (or the wrong rows) came back.
+
+        Oracle: a = Los Angeles is entered by JFK->LAX (c = New York) and ATL->LAX
+        (c = Atlanta); the VLP from LAX (*1..2) reaches SFO, ORD (1 hop), then JFK and
+        ATL (2 hops) — 2 starts x 4 ends = 8 rows.
+        """
+        response = execute_cypher(
+            """
+            MATCH (c:Airport)-[:FLIGHT]->(a:Airport)-[:FLIGHT*1..2]->(b:Airport)
+            WHERE a.city = 'Los Angeles'
+            RETURN c.city AS c, b.city AS b
+            ORDER BY c, b
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+
+        assert_query_success(response)
+        assert [(r['c'], r['b']) for r in response['results']] == [
+            ('Atlanta', 'Atlanta'),
+            ('Atlanta', 'Chicago'),
+            ('Atlanta', 'New York'),
+            ('Atlanta', 'San Francisco'),
+            ('New York', 'Atlanta'),
+            ('New York', 'Chicago'),
+            ('New York', 'New York'),
+            ('New York', 'San Francisco'),
+        ]
+
     def test_variable_path_cte_uses_denormalized_props(self, denormalized_flights_graph):
         """Verify CTEs for variable paths use denormalized properties."""
         # Use sql_only mode to get SQL back

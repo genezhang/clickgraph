@@ -34,6 +34,50 @@ pub trait FilterBuilder {
     fn extract_distinct(&self) -> bool;
 }
 
+/// #1170: the outer-WHERE predicates owned by the FIXED hops chained to a
+/// CTE-backed variable-length `GraphRel` (its children), as one AND-ed expression.
+///
+/// `collect_graphrel_predicates` already skips the VLP GraphRel's own
+/// `where_predicate` (it lives inside the CTE) and recurses into its children —
+/// exactly the set wanted here. Deliberately NOT a fall-through into the general
+/// path below: that would also append `collect_schema_filters` for the WHOLE
+/// subtree, including the VLP's endpoint/edge nodes whose tables are not in the
+/// outer scope (the CTE replaces them). Returns `None` when no child hop carries a
+/// predicate, so every VLP query without one renders byte-identically to before.
+///
+/// Each child's predicates are role-mapped against THAT child subtree, never the
+/// VLP root. A node shared by the fixed hop and the VLP (`a` in
+/// `(c)-[t1]->(a)-[*]->(b)`) is the TO endpoint of `t1` but the FROM endpoint of
+/// the VLP; mapped against the root it took the VLP's origin-role column while
+/// being re-aliased onto `t1` (`t1.origin_city` for what `t1` stores as
+/// `dest_city`) — silently the wrong node's value.
+fn child_hop_outer_predicates(
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+) -> Option<RenderExpr> {
+    use crate::render_plan::plan_builder_helpers::{
+        collect_graphrel_predicates, register_own_table_property_requests,
+    };
+    let mut predicates: Vec<RenderExpr> = Vec::new();
+    for child in [graph_rel.left.as_ref(), graph_rel.right.as_ref()] {
+        for mut pred in collect_graphrel_predicates(child)
+            .into_iter()
+            .filter(|p| !is_labels_predicate(p))
+        {
+            // Same two steps the general path applies before emitting (#1006
+            // registry, then denormalized/mixed property mapping).
+            register_own_table_property_requests(&pred, child);
+            apply_property_mapping_to_expr(&mut pred, child);
+            predicates.push(pred);
+        }
+    }
+    predicates.into_iter().reduce(|acc, pred| {
+        RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::And,
+            operands: vec![acc, pred],
+        })
+    })
+}
+
 impl FilterBuilder for LogicalPlan {
     fn extract_filters(&self) -> FilterBuilderResult<Option<RenderExpr>> {
         let filters = match &self {
@@ -425,17 +469,27 @@ impl FilterBuilder for LogicalPlan {
                                     graph_rel.left_connection,
                                     graph_rel.right_connection
                                 );
-                                return Ok(Some(RenderExpr::Raw(format!(
+                                let closed = RenderExpr::Raw(format!(
                                     "{a}.{s} = {a}.{e}",
                                     a = crate::server::query_context::vlp_from_alias(),
                                     s = VLP_START_ID_COLUMN,
                                     e = VLP_END_ID_COLUMN,
-                                ))));
+                                ));
+                                return Ok(Some(match child_hop_outer_predicates(graph_rel) {
+                                    Some(children) => {
+                                        RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                            operator: Operator::And,
+                                            operands: vec![children, closed],
+                                        })
+                                    }
+                                    None => closed,
+                                }));
                             }
-                            log::info!(
-                                "🔧 Required VLP with CTE: Filters already in CTE, skipping outer WHERE extraction"
-                            );
-                            return Ok(None);
+                            // #1170: the VLP's OWN predicate is in the CTE, but a FIXED
+                            // hop chained in front of it (`(c)-[:R]->(a)-[:R*1..2]->(b)
+                            // WHERE c.x = …`) owns its predicate in the OUTER query —
+                            // returning None here silently dropped it.
+                            return Ok(child_hop_outer_predicates(graph_rel));
                         }
                     } else {
                         // Fixed-length VLP.
