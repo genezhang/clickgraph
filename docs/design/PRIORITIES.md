@@ -85,6 +85,13 @@ Exit met: one fully green nightly run + xpass count 0.
   `test_distinct_group_types` (intermittent, strict=False) and
   `test_external_users_with_access` (reason documents a weak status-only oracle)
   deliberately kept.
+- **#1166 FIXED (2026-10)**: fully-denormalized `*0..N` dropped the START filter from
+  the zero-hop seed (silent-wrong: `WHERE a.city='Atlanta'` returned rows for every
+  start). The seed is a role-agnostic UNION of origin/destination scans, so the
+  origin-spelled filter is re-resolved per role (`rewrite_origin_role_columns`:
+  whole identifiers, single pass, literal-safe, loud on anything unmapped/quoted).
+  Unfiltered `*0..N` is byte-identical. Known, unrelated: `*0..N` denorm still uses
+  node-uniqueness (drops cycles back to the start) — see the #605/#625 guards.
 - Follow-ups still open (net hygiene, not blocking): ~~prune stale
   `worktree-agent-*` branches~~ **DONE 2026-07-30** (none remained; pruned 4 stale
   remote-tracking refs); ~~refresh STATUS.md (last updated 2026-05-06)~~ **DONE

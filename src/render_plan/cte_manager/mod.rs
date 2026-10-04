@@ -912,7 +912,7 @@ impl DenormalizedCteStrategy {
         // 1-hop row.
         let is_zero_hop = min_hops == 0;
         let base_case = if is_zero_hop {
-            self.generate_zero_hop_base_case_sql(context, properties)?
+            self.generate_zero_hop_base_case_sql(context, properties, filters)?
         } else {
             self.generate_base_case_sql(context, properties, filters)?
         };
@@ -1077,6 +1077,72 @@ impl DenormalizedCteStrategy {
         )
     }
 
+    /// Re-spell a start-node predicate (written against the ORIGIN-role columns
+    /// of the edge table, e.g. `t1.OriginCityName = 'X'`) for the DESTINATION-role
+    /// scan of the zero-hop node universe (`t1.DestCityName = 'X'`). A node's
+    /// property lives in a different physical column per role, and a node that
+    /// only ever appears as a destination is reachable ONLY through that scan.
+    ///
+    /// Positive allowlist, single pass: every `<rel_alias>.<ident>` reference is
+    /// read as a whole identifier (no prefix collisions), outside string
+    /// literals, and must be an id column or a declared role-dependent property.
+    /// Anything else — an unmapped column, a quoted identifier, or two logical
+    /// properties that share an origin column but not a destination column —
+    /// fails loudly, because guessing would reproduce #1166 as wrong rows.
+    fn start_filter_for_to_role(&self, start_sql: &str) -> Result<String, CteError> {
+        use std::collections::HashMap;
+
+        let rel_table_name = self.table.rsplit('.').next().unwrap_or(&self.table);
+        let node_schema = self
+            .schema
+            .all_node_schemas()
+            .values()
+            .find(|n| n.table_name.rsplit('.').next().unwrap_or(&n.table_name) == rel_table_name)
+            .ok_or_else(|| {
+                CteError::SchemaValidationError(format!(
+                    "No node schema found for table '{}'",
+                    rel_table_name
+                ))
+            })?;
+
+        // `None` marks an origin column that maps to DIFFERENT destination columns
+        // (two logical properties sharing an origin column but not a destination
+        // column). That only matters if the filter actually references it, so it is
+        // reported lazily by `rewrite_origin_role_columns`, not for the whole schema.
+        let mut origin_to_dest: HashMap<String, Option<String>> = HashMap::new();
+        origin_to_dest.insert(self.from_col.clone(), Some(self.to_col.clone()));
+        if let (Some(from_props), Some(to_props)) =
+            (&node_schema.from_properties, &node_schema.to_properties)
+        {
+            for (logical, origin_col) in from_props {
+                let Some(dest_col) = to_props.get(logical) else {
+                    continue;
+                };
+                match origin_to_dest.get(origin_col) {
+                    Some(Some(existing)) if existing != dest_col => {
+                        origin_to_dest.insert(origin_col.clone(), None);
+                    }
+                    Some(None) => {}
+                    _ => {
+                        origin_to_dest.insert(origin_col.clone(), Some(dest_col.clone()));
+                    }
+                }
+            }
+        }
+
+        rewrite_origin_role_columns(
+            start_sql,
+            &format!("{}.", self.pattern_ctx.rel_alias),
+            &origin_to_dest,
+        )
+        .map_err(|msg| {
+            CteError::SchemaValidationError(format!(
+                "Zero-hop (*0..N) start filter on a denormalized pattern: {}",
+                msg
+            ))
+        })
+    }
+
     /// Generate the zero-hop base case SQL for `*0..N` VLP on a denormalized
     /// (single-table / virtual-node) schema (#489).
     ///
@@ -1105,6 +1171,7 @@ impl DenormalizedCteStrategy {
         &self,
         context: &CteGenerationContext,
         properties: &[NodeProperty],
+        filters: &CategorizedFilters,
     ) -> Result<String, CteError> {
         let mut from_role_cols = vec![format!("{} AS __node_id", self.from_col)];
         let mut to_role_cols = vec![format!("{} AS __node_id", self.to_col)];
@@ -1136,12 +1203,32 @@ impl DenormalizedCteStrategy {
             canon_props.push((canon_alias, prop));
         }
 
+        // #1166: the START-node predicate must constrain the zero-hop SEED. The
+        // 1-hop base case applies it as `WHERE <start_sql>`; this arm used to
+        // drop it, so `*0..N` recursed from EVERY node and returned rows for
+        // starts the query excluded. The seed is the UNION of the origin-role
+        // and destination-role scans, and `start_sql` is spelled against the
+        // ORIGIN-role columns (`t1.origin_city`), so the destination-role scan
+        // needs each column re-resolved to its own role's physical column.
+        // Unfiltered queries keep the exact historical text (no alias, no WHERE).
+        let (from_scan, to_scan) = match filters.start_sql.as_deref().filter(|f| !f.is_empty()) {
+            Some(start_sql) => {
+                let alias = &self.pattern_ctx.rel_alias;
+                let to_filter = self.start_filter_for_to_role(start_sql)?;
+                (
+                    format!("{} AS {} WHERE {}", self.table, alias, start_sql),
+                    format!("{} AS {} WHERE {}", self.table, alias, to_filter),
+                )
+            }
+            None => (self.table.clone(), self.table.clone()),
+        };
+
         let node_universe = format!(
             "(\n            SELECT DISTINCT {}\n            FROM {}\n            UNION DISTINCT\n            SELECT DISTINCT {}\n            FROM {}\n        ) AS node_universe",
             from_role_cols.join(", "),
-            self.table,
+            from_scan,
             to_role_cols.join(", "),
-            self.table,
+            to_scan,
         );
 
         // Empty arrays need an explicit type cast here (unlike the ordinary
@@ -2125,8 +2212,180 @@ fn lower_both_endpoint_filter_to_cte_columns(
     Ok(crate::render_plan::cte_extraction::render_expr_to_sql_string(&lowered, &[]))
 }
 
+/// Single-pass rewrite of every `<prefix><ident>` column reference in `sql` that
+/// sits OUTSIDE a string literal, mapping the origin-role column `ident` to its
+/// destination-role column via `origin_to_dest`. Whole identifiers only (so
+/// `Origin` never matches inside `OriginCityName`), never chained (an output
+/// column is not re-mapped), and strictly an allowlist: an unmapped column or a
+/// quoted identifier is an `Err`, never passed through (#1166).
+fn rewrite_origin_role_columns(
+    sql: &str,
+    prefix: &str,
+    origin_to_dest: &std::collections::HashMap<String, Option<String>>,
+) -> Result<String, String> {
+    let error: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
+    let rewritten =
+        crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGenerator::rewrite_outside_string_literals(
+            sql,
+            |seg| {
+                let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+                let mut out = String::with_capacity(seg.len());
+                let mut rest = seg;
+                while let Some(pos) = rest.find(prefix) {
+                    let before_ok = rest[..pos]
+                        .chars()
+                        .next_back()
+                        .is_none_or(|c| !is_ident(c));
+                    out.push_str(&rest[..pos]);
+                    let after = &rest[pos + prefix.len()..];
+                    if !before_ok {
+                        // `xt1.col`: a different qualifier that merely ends in ours.
+                        out.push_str(prefix);
+                        rest = after;
+                        continue;
+                    }
+                    let ident_len: usize = after
+                        .chars()
+                        .take_while(|c| is_ident(*c))
+                        .map(char::len_utf8)
+                        .sum();
+                    let ident = &after[..ident_len];
+                    match origin_to_dest.get(ident) {
+                        Some(Some(dest)) if ident_len > 0 => {
+                            out.push_str(prefix);
+                            out.push_str(dest);
+                        }
+                        Some(None) if ident_len > 0 => {
+                            error.borrow_mut().get_or_insert_with(|| {
+                                format!(
+                                    "start-filter column `{}{}` is ambiguous across roles: \
+                                     it maps to different destination columns for different \
+                                     properties",
+                                    prefix, ident
+                                )
+                            });
+                            out.push_str(prefix);
+                            out.push_str(ident);
+                        }
+                        _ => {
+                            error.borrow_mut().get_or_insert_with(|| {
+                                let shown: String = if ident.is_empty() {
+                                    after.chars().take(12).collect()
+                                } else {
+                                    ident.to_string()
+                                };
+                                format!(
+                                    "cannot re-resolve start-filter column `{}{}` for the \
+                                     destination role",
+                                    prefix, shown
+                                )
+                            });
+                            out.push_str(prefix);
+                            out.push_str(ident);
+                        }
+                    }
+                    rest = &after[ident_len..];
+                }
+                out.push_str(rest);
+                out
+            },
+        );
+    match error.into_inner() {
+        Some(msg) => Err(msg),
+        None => Ok(rewritten),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    // ---- #1166: origin-role -> destination-role start-filter rewrite ----
+
+    fn origin_dest_map() -> std::collections::HashMap<String, Option<String>> {
+        [
+            ("Origin", "Dest"),
+            ("OriginCityName", "DestCityName"),
+            ("OriginState", "DestState"),
+        ]
+        .iter()
+        .map(|(a, b)| (a.to_string(), Some(b.to_string())))
+        .collect()
+    }
+
+    #[test]
+    fn origin_role_rewrite_maps_whole_identifiers_only_1166() {
+        let m = origin_dest_map();
+        // `Origin` is a PREFIX of `OriginCityName`: each must resolve on its own.
+        assert_eq!(
+            rewrite_origin_role_columns(
+                "(t1.OriginCityName = 'X' AND t1.Origin = 'Y') OR t1.OriginState = 'Z'",
+                "t1.",
+                &m
+            )
+            .unwrap(),
+            "(t1.DestCityName = 'X' AND t1.Dest = 'Y') OR t1.DestState = 'Z'"
+        );
+    }
+
+    #[test]
+    fn origin_role_rewrite_is_single_pass_and_literal_safe_1166() {
+        // A destination column that is ALSO an origin key must not be re-mapped.
+        let chain: std::collections::HashMap<String, Option<String>> = [("A", "B"), ("B", "C")]
+            .iter()
+            .map(|(a, b)| (a.to_string(), Some(b.to_string())))
+            .collect();
+        assert_eq!(
+            rewrite_origin_role_columns("t1.A = 1", "t1.", &chain).unwrap(),
+            "t1.B = 1"
+        );
+        // String literals are never touched, even if they spell a column ref.
+        assert_eq!(
+            rewrite_origin_role_columns("t1.Origin = 't1.Origin'", "t1.", &origin_dest_map())
+                .unwrap(),
+            "t1.Dest = 't1.Origin'"
+        );
+        // A longer qualifier that merely ENDS in ours is not our alias.
+        assert_eq!(
+            rewrite_origin_role_columns("xt1.Origin = 1", "t1.", &origin_dest_map()).unwrap(),
+            "xt1.Origin = 1"
+        );
+    }
+
+    /// Review of #1168: an ambiguous origin column must only fail a filter that
+    /// REFERENCES it — not every `*0..N` start filter on the schema.
+    #[test]
+    fn origin_role_rewrite_ambiguity_is_lazy_1166() {
+        let mut m = origin_dest_map();
+        m.insert("OriginCityName".to_string(), None);
+        // Unrelated predicate still rewrites.
+        assert_eq!(
+            rewrite_origin_role_columns("t1.Origin = 'ATL'", "t1.", &m).unwrap(),
+            "t1.Dest = 'ATL'"
+        );
+        // The ambiguous column itself fails loudly, even next to a good one.
+        let e =
+            rewrite_origin_role_columns("t1.Origin = 'A' AND t1.OriginCityName = 'X'", "t1.", &m)
+                .unwrap_err();
+        assert!(
+            e.contains("ambiguous") && e.contains("t1.OriginCityName"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn origin_role_rewrite_fails_loudly_instead_of_guessing_1166() {
+        let m = origin_dest_map();
+        // Unmapped column: guessing would keep the ORIGIN column on the dest scan.
+        let e = rewrite_origin_role_columns("t1.Carrier = 'AA'", "t1.", &m).unwrap_err();
+        assert!(e.contains("t1.Carrier"), "{e}");
+        // Quoted identifier: cannot be read as a whole identifier.
+        assert!(rewrite_origin_role_columns("t1.\"Origin\" = 'X'", "t1.", &m).is_err());
+        // One bad reference poisons the whole predicate, even after a good one.
+        assert!(
+            rewrite_origin_role_columns("t1.Origin = 'X' AND t1.Carrier = 'AA'", "t1.", &m)
+                .is_err()
+        );
+    }
+
     use super::*;
     use std::collections::HashMap;
 
