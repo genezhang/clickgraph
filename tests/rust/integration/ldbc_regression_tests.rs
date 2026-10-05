@@ -5084,6 +5084,39 @@ async fn unlabeled_outer_endpoint_uses_its_bound_label_not_the_source_role_1257(
 }
 
 // ---------------------------------------------------------------------------
+// #1205: the lower bound of a shortestPath quantifier is a PRE-filter on the candidate paths. The
+// no-end-filter arms of the ranking wrapper picked the minimum over every length from 1 and never
+// applied `hop_count >= min`; an exact depth (`*3..3`) emitted no recursion at all.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn shortest_path_lower_bound_is_applied_before_the_pick_1205() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    for cypher in [
+        "MATCH p = shortestPath((a:User)-[:FOLLOWS*2..4]->(b:User)) RETURN a.user_id, b.user_id",
+        "MATCH p = allShortestPaths((a:User)-[:FOLLOWS*2..4]->(b:User)) RETURN a.user_id, b.user_id",
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        let bound = sql.find("hop_count >= 2").unwrap_or_else(|| panic!("{cypher}\n{sql}"));
+        let pick = sql
+            .find("ROW_NUMBER()")
+            .or_else(|| sql.find("MIN(hop_count)"))
+            .unwrap_or_else(|| panic!("{cypher}\n{sql}"));
+        assert!(bound < pick, "{cypher}: bound must precede the pick\n{sql}");
+    }
+    // an exact depth recurses to reach it
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH p = shortestPath((a:User)-[:FOLLOWS*3..3]->(b:User)) RETURN a.user_id, b.user_id",
+    )
+    .await;
+    assert!(
+        sql.contains("UNION ALL") && sql.contains("hop_count < 3"),
+        "{sql}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
 // The emitter's path-variable "spurious JOIN" cleanup kept only joins whose alias was read, so

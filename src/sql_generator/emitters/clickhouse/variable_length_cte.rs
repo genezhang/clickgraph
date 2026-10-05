@@ -2175,22 +2175,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // VLP was routed here (previously it always used the flat self-join), so
         // comparing against the BASE hop count (1) instead of min_hops fixes it.
         //
-        // Scope guard: this widening applies ONLY to the non-shortestPath VLP
-        // family. shortestPath has its own exact-depth handling (BFS / ROW_NUMBER
-        // over the inner CTE) and a separate pre-existing exact-depth defect
-        // (the golden for `shortestPath(*3)` emits base-only, no recursion —
-        // tracked separately). Keep the original `max > min_hops` test there so
-        // this OPTIONAL-VLP fix does not silently alter shortestPath output.
-        let recursion_threshold = if self.shortest_path_mode.is_some() {
-            min_hops
-        } else {
-            // Non-shortestPath: recurse to reach any hop beyond the base case.
-            if min_hops == 0 {
-                0
-            } else {
-                1
-            }
-        };
+        // #1205: shortestPath used to keep the old `max > min_hops` test (base-only for an exact
+        // depth: `shortestPath(*3)` emitted no recursion). That hid behind the missing lower bound;
+        // now that the shortest pick applies `hop_count >= min`, a base-only CTE answers EMPTY for
+        // `*2..2`. The recursion must reach any hop beyond the base case for every VLP family.
+        let recursion_threshold = if min_hops == 0 { 0 } else { 1 };
         let needs_recursion = !is_shortest_self_loop
             && max_hops != Some(0)
             && (max_hops.is_none() || max_hops.unwrap() > recursion_threshold);
@@ -2251,6 +2240,21 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 None => base.to_string(),
             }
         }
+
+        // #1205: the lower bound of a shortestPath quantifier (`*2..4`) is a PRE-filter on the
+        // candidate paths — the pick is the shortest path WITHIN the bounds. The arms that carry an
+        // end filter already apply it on `_to_target`; the arms without one picked the minimum over
+        // every length from 1 and never applied the bound. (The upper bound is the recursion depth.)
+        let shortest_pre_pick_pred: Option<String> = {
+            let min_hops = self.spec.effective_min_hops();
+            let min_pred = (min_hops > 1).then(|| format!("hop_count >= {}", min_hops));
+            match (both_endpoint_pred.as_ref(), min_pred) {
+                (Some(b), Some(m)) => Some(format!("({}) AND ({})", b, m)),
+                (Some(b), None) => Some(b.clone()),
+                (None, Some(m)) => Some(m),
+                (None, None) => None,
+            }
+        };
 
         let sql = match (&self.shortest_path_mode, &self.end_node_filters) {
             (Some(ShortestPathMode::Shortest), Some(end_filters)) => {
@@ -2324,7 +2328,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 // layer to carry it, so insert one — the predicate MUST narrow the
                 // candidate set BEFORE the ROW_NUMBER pick, or ranking could select
                 // an excluded path and drop the qualifying longer one.
-                match &both_endpoint_pred {
+                match &shortest_pre_pick_pred {
                     Some(pred) => format!(
                         "{name}_inner AS (\n{body}\n),\n{name}_to_target AS (\n    SELECT * FROM {name}_inner WHERE {pred}\n),\n{name} AS (\n    SELECT * FROM (\n        SELECT *, ROW_NUMBER() OVER (PARTITION BY start_id, end_id ORDER BY {order_col} ASC) as rn\n        FROM {name}_to_target\n    ) WHERE rn = 1\n)",
                         name = self.cte_name,
@@ -2347,7 +2351,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 // MIN() subquery that defines "shortest" — otherwise the minimum
                 // is computed over paths the predicate excludes and the arm can
                 // return nothing where a qualifying longer path exists.
-                match &both_endpoint_pred {
+                match &shortest_pre_pick_pred {
                     Some(pred) => format!(
                         "{name}_inner AS (\n{body}\n),\n{name}_to_target AS (\n    SELECT * FROM {name}_inner WHERE {pred}\n),\n{name} AS (\n    SELECT * FROM (\n        SELECT *, MIN({order_col}) OVER (PARTITION BY start_id, end_id) AS min_hops_for_pair\n        FROM {name}_to_target\n    ) WHERE {order_col} = min_hops_for_pair\n)",
                         name = self.cte_name,
