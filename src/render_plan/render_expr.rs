@@ -203,6 +203,117 @@ fn generate_exists_sql(
     }
 }
 
+/// Node schema of an EXISTS / NOT-pattern endpoint, for its id column (#1246-follow-up).
+///
+/// An explicit pattern label wins. Otherwise the endpoint's type comes from the relationship
+/// schema's role (`from_node` / `to_node`). A polymorphic edge declares the wildcard `$any` there,
+/// which has no node schema; an unlabeled endpoint that is an outer-bound alias (`MATCH (u:User)
+/// WHERE EXISTS { (u)-[:FOLLOWS]->() }`) then takes the label the outer scope bound it with.
+fn endpoint_node_schema<'a>(
+    schema: &'a crate::graph_catalog::graph_schema::GraphSchema,
+    explicit_label: Option<&str>,
+    role_type: &str,
+    alias: &str,
+) -> Result<&'a crate::graph_catalog::graph_schema::NodeSchema, RenderBuildError> {
+    if let Some(label) = explicit_label {
+        return schema
+            .node_schema_opt(label)
+            .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.to_string()));
+    }
+    schema
+        .node_schema_opt(role_type)
+        .or_else(|| bound_node_label(alias).and_then(|l| schema.node_schema_opt(&l)))
+        .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(role_type.to_string()))
+}
+
+/// The label an alias was bound with: the task-local alias map / variable registry first, then
+/// the outermost plan (a fresh MATCH has neither populated while its WHERE renders).
+fn bound_node_label(alias: &str) -> Option<String> {
+    crate::server::query_context::get_node_label_for_alias(alias).or_else(|| {
+        super::cte_extraction::render_root_plan()
+            .and_then(|root| super::cte_extraction::get_node_label_for_alias(alias, &root))
+    })
+}
+
+/// The label of an EXISTS pattern endpoint: its explicit pattern label, else the label an outer
+/// scope bound the alias with, else `None` (an unlabeled, fresh endpoint matches any label).
+fn endpoint_label(pattern_node: &LogicalPlan, alias: &str) -> Option<String> {
+    match pattern_node {
+        LogicalPlan::GraphNode(n) if n.label.is_some() => n.label.clone(),
+        _ => bound_node_label(alias),
+    }
+}
+
+/// The discriminator conditions of a POLYMORPHIC edge table inside an EXISTS subquery: the
+/// relationship-type column restricted to the pattern's types, plus (per orientation) the
+/// source/target label columns when the endpoint labels are known. Empty for every other layout.
+/// Without these `EXISTS { (u)-[:FOLLOWS]->() }` asks whether the user has ANY interaction.
+struct PolymorphicEdgeConds<'a> {
+    rel_schema: &'a crate::graph_catalog::graph_schema::RelationshipSchema,
+    table: &'a str,
+    types: Vec<String>,
+}
+
+impl<'a> PolymorphicEdgeConds<'a> {
+    fn new(
+        rel_schema: &'a crate::graph_catalog::graph_schema::RelationshipSchema,
+        table: &'a str,
+        types: Vec<String>,
+    ) -> Option<Self> {
+        rel_schema.is_polymorphic().then_some(Self {
+            rel_schema,
+            table,
+            types,
+        })
+    }
+
+    /// ` AND <type> AND <labels>` for one orientation (empty string off the polymorphic layout).
+    fn suffix(this: &Option<Self>, src: Option<&str>, tgt: Option<&str>) -> String {
+        let Some(p) = this else {
+            return String::new();
+        };
+        p.type_cond()
+            .into_iter()
+            .chain(p.orientation(src, tgt))
+            .map(|c| format!(" AND {}", c))
+            .collect()
+    }
+
+    fn lit(v: &str) -> String {
+        crate::utils::sql_literal::cypher_string_to_sql_literal(v)
+    }
+
+    /// `table.type_col IN (...)` (None when no type is named: nothing to restrict).
+    fn type_cond(&self) -> Option<String> {
+        let col = self.rel_schema.type_discriminator()?;
+        match self.types.as_slice() {
+            [] => None,
+            [one] => Some(format!("{}.{} = {}", self.table, col, Self::lit(one))),
+            many => Some(format!(
+                "{}.{} IN ({})",
+                self.table,
+                col,
+                many.iter()
+                    .map(|t| Self::lit(t))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
+    /// Label conditions for ONE orientation of the edge (`src` stored in the from-side).
+    fn orientation(&self, src: Option<&str>, tgt: Option<&str>) -> Vec<String> {
+        let mut out = Vec::new();
+        if let (Some(col), Some(l)) = (self.rel_schema.from_label_discriminator(), src) {
+            out.push(format!("{}.{} = {}", self.table, col, Self::lit(l)));
+        }
+        if let (Some(col), Some(l)) = (self.rel_schema.to_label_discriminator(), tgt) {
+            out.push(format!("{}.{} = {}", self.table, col, Self::lit(l)));
+        }
+        out
+    }
+}
+
 /// Generate the correlated `SELECT 1 FROM edge WHERE ...` body for a single-hop
 /// `EXISTS { (x)-[:R]-(y) }` pattern predicate (#596).
 ///
@@ -233,6 +344,11 @@ fn generate_exists_graph_rel_sql(
     let table_name = &rel_schema.table_name;
     let from_col = &rel_schema.from_id;
     let to_col = &rel_schema.to_id;
+    let poly = PolymorphicEdgeConds::new(
+        rel_schema,
+        table_name,
+        graph_rel.labels.clone().unwrap_or_default(),
+    );
 
     let left_conn = &graph_rel.left_connection;
     let right_conn = &graph_rel.right_connection;
@@ -251,14 +367,12 @@ fn generate_exists_graph_rel_sql(
             LogicalPlan::GraphNode(n) => n.label.clone(),
             _ => None,
         };
-        let node_type = match label {
-            Some(l) => l,
-            None if is_source => rel_schema.from_node.clone(),
-            None => rel_schema.to_node.clone(),
+        let role_type = if is_source {
+            &rel_schema.from_node
+        } else {
+            &rel_schema.to_node
         };
-        let node_schema = schema
-            .node_schema_opt(&node_type)
-            .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(node_type.clone()))?;
+        let node_schema = endpoint_node_schema(schema, label.as_deref(), role_type, alias)?;
         Ok(resolve_correlation_id_sql(alias, node_schema))
     };
 
@@ -301,6 +415,13 @@ fn generate_exists_graph_rel_sql(
                 correlated.push(left_conn.clone());
             }
 
+            if let Some(poly) = &poly {
+                let src_label = endpoint_label(src_node, src_conn);
+                let tgt_label = endpoint_label(tgt_node, tgt_conn);
+                conds.extend(poly.type_cond());
+                conds.extend(poly.orientation(src_label.as_deref(), tgt_label.as_deref()));
+            }
+
             Ok((
                 format!(
                     "SELECT 1 FROM {} WHERE {}",
@@ -322,13 +443,36 @@ fn generate_exists_graph_rel_sql(
                 let l_to = endpoint_id_sql(left_conn, left_node, false)?;
                 let r_from = endpoint_id_sql(right_conn, right_node, true)?;
                 let r_to = endpoint_id_sql(right_conn, right_node, false)?;
+                let mut fwd = format!(
+                    "{}.{} = {} AND {}.{} = {}",
+                    table_name, from_col, l_from, table_name, to_col, r_to
+                );
+                let mut rev = format!(
+                    "{}.{} = {} AND {}.{} = {}",
+                    table_name, from_col, r_from, table_name, to_col, l_to
+                );
+                let mut tail = String::new();
+                if let Some(poly) = &poly {
+                    let l = endpoint_label(left_node, left_conn);
+                    let r = endpoint_label(right_node, right_conn);
+                    for c in poly.orientation(l.as_deref(), r.as_deref()) {
+                        fwd.push_str(&format!(" AND {}", c));
+                    }
+                    for c in poly.orientation(r.as_deref(), l.as_deref()) {
+                        rev.push_str(&format!(" AND {}", c));
+                    }
+                    if let Some(t) = poly.type_cond() {
+                        tail = format!(" AND {}", t);
+                    }
+                }
+                // non-polymorphic output stays byte-identical (no outer parens)
+                let body = if poly.is_some() {
+                    format!("(({}) OR ({})){}", fwd, rev, tail)
+                } else {
+                    format!("({}) OR ({})", fwd, rev)
+                };
                 Ok((
-                    format!(
-                        "SELECT 1 FROM {} WHERE ({}.{} = {} AND {}.{} = {}) OR ({}.{} = {} AND {}.{} = {})",
-                        qualified_table,
-                        table_name, from_col, l_from, table_name, to_col, r_to,
-                        table_name, from_col, r_from, table_name, to_col, l_to
-                    ),
+                    format!("SELECT 1 FROM {} WHERE {}", qualified_table, body),
                     vec![left_conn.clone(), right_conn.clone()],
                 ))
             } else {
@@ -341,10 +485,39 @@ fn generate_exists_graph_rel_sql(
                 };
                 let a_from = endpoint_id_sql(anchor_conn, anchor_node, true)?;
                 let a_to = endpoint_id_sql(anchor_conn, anchor_node, false)?;
+                let Some(poly) = &poly else {
+                    return Ok((
+                        format!(
+                            "SELECT 1 FROM {} WHERE {}.{} = {} OR {}.{} = {}",
+                            qualified_table, table_name, from_col, a_from, table_name, to_col, a_to
+                        ),
+                        vec![anchor_conn.clone()],
+                    ));
+                };
+                // the anchor sits on EITHER end; its label and the far endpoint's label follow it
+                let (other_conn, other_node) = if std::ptr::eq(anchor_conn, left_conn) {
+                    (right_conn, right_node)
+                } else {
+                    (left_conn, left_node)
+                };
+                let a = endpoint_label(anchor_node, anchor_conn);
+                let o = endpoint_label(other_node, other_conn);
+                let mut as_src = format!("{}.{} = {}", table_name, from_col, a_from);
+                for c in poly.orientation(a.as_deref(), o.as_deref()) {
+                    as_src.push_str(&format!(" AND {}", c));
+                }
+                let mut as_tgt = format!("{}.{} = {}", table_name, to_col, a_to);
+                for c in poly.orientation(o.as_deref(), a.as_deref()) {
+                    as_tgt.push_str(&format!(" AND {}", c));
+                }
+                let tail = poly
+                    .type_cond()
+                    .map(|t| format!(" AND {}", t))
+                    .unwrap_or_default();
                 Ok((
                     format!(
-                        "SELECT 1 FROM {} WHERE {}.{} = {} OR {}.{} = {}",
-                        qualified_table, table_name, from_col, a_from, table_name, to_col, a_to
+                        "SELECT 1 FROM {} WHERE (({}) OR ({})){}",
+                        qualified_table, as_src, as_tgt, tail
                     ),
                     vec![anchor_conn.clone()],
                 ))
@@ -882,9 +1055,12 @@ fn generate_multi_hop_pattern_count_sql(
         }
     };
 
-    let start_node_schema = schema
-        .node_schema_opt(&start_node_label)
-        .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(start_node_label.clone()))?;
+    let start_node_schema = endpoint_node_schema(
+        schema,
+        first_conn.start_node.label.as_deref(),
+        &start_node_label,
+        start_alias,
+    )?;
     // #613: CTE-aware correlation id (see the single-hop path). Falls back to the
     // raw `sql_tuple` for a fresh MATCH, so non-WITH multi-hop is byte-identical.
     let start_id_sql = resolve_correlation_id_sql(start_alias, start_node_schema);
@@ -1161,17 +1337,13 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                     // identifier (Code 47). `resolve_correlation_id_sql` returns the
                     // CTE column when `a` is CTE-scoped and falls back to the raw
                     // `sql_tuple` for a fresh MATCH (byte-identical to prior behavior).
-                    let start_id_sql = if let Some(label) = &conn.start_node.label {
-                        let node_schema = schema
-                            .node_schema_opt(label)
-                            .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
-                        resolve_correlation_id_sql(start_alias, node_schema)
-                    } else {
-                        // No label in pattern - infer from relationship's from_node
-                        let node_type = &rel_schema.from_node;
-                        let node_schema = schema.node_schema_opt(node_type).ok_or_else(|| {
-                            RenderBuildError::NodeSchemaNotFound(node_type.clone())
-                        })?;
+                    let start_id_sql = {
+                        let node_schema = endpoint_node_schema(
+                            schema,
+                            conn.start_node.label.as_deref(),
+                            &rel_schema.from_node,
+                            start_alias,
+                        )?;
                         resolve_correlation_id_sql(start_alias, node_schema)
                     };
 
@@ -1358,37 +1530,51 @@ fn generate_not_exists_from_path_pattern(
                         )));
                     }
 
-                    let start_id_sql = if let Some(label) = &conn.start_node.label {
-                        let node_schema = schema
-                            .node_schema_opt(label)
-                            .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
-                        node_schema.node_id.sql_tuple(start_alias)
-                    } else {
-                        // Infer from relationship's from_node
-                        let node_type = &rel_schema.from_node;
-                        let node_schema = schema.node_schema_opt(node_type).ok_or_else(|| {
-                            RenderBuildError::NodeSchemaNotFound(node_type.clone())
-                        })?;
+                    let start_id_sql = {
+                        let node_schema = endpoint_node_schema(
+                            schema,
+                            conn.start_node.label.as_deref(),
+                            &rel_schema.from_node,
+                            start_alias,
+                        )?;
                         node_schema.node_id.sql_tuple(start_alias)
                     };
 
-                    let end_id_sql = if let Some(label) = &conn.end_node.label {
-                        let node_schema = schema
-                            .node_schema_opt(label)
-                            .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
-                        end_alias
-                            .map(|alias| node_schema.node_id.sql_tuple(alias))
-                            .unwrap_or_default()
-                    } else {
-                        // Infer from relationship's to_node
-                        let node_type = &rel_schema.to_node;
-                        let node_schema = schema.node_schema_opt(node_type).ok_or_else(|| {
-                            RenderBuildError::NodeSchemaNotFound(node_type.clone())
-                        })?;
-                        end_alias
-                            .map(|alias| node_schema.node_id.sql_tuple(alias))
-                            .unwrap_or_default()
+                    // An anonymous end node correlates nothing, so its schema is never needed.
+                    let end_id_sql = match end_alias {
+                        Some(alias) => endpoint_node_schema(
+                            schema,
+                            conn.end_node.label.as_deref(),
+                            &rel_schema.to_node,
+                            alias,
+                        )?
+                        .node_id
+                        .sql_tuple(alias),
+                        None => String::new(),
                     };
+
+                    // Polymorphic edge table: restrict to the pattern's type and endpoint labels
+                    // (otherwise "no edge" means "no edge of ANY type").
+                    let poly = PolymorphicEdgeConds::new(
+                        rel_schema,
+                        table_name,
+                        conn.relationship.labels.clone().unwrap_or_default(),
+                    );
+                    let start_label = conn
+                        .start_node
+                        .label
+                        .clone()
+                        .or_else(|| bound_node_label(start_alias));
+                    let end_label = conn
+                        .end_node
+                        .label
+                        .clone()
+                        .or_else(|| end_alias.and_then(|a| bound_node_label(a)));
+                    let sl = start_label.as_deref();
+                    let el = end_label.as_deref();
+                    // start in the from-side / to-side of the edge row
+                    let start_is_src = PolymorphicEdgeConds::suffix(&poly, sl, el);
+                    let start_is_tgt = PolymorphicEdgeConds::suffix(&poly, el, sl);
 
                     // Generate the NOT EXISTS SQL
                     let exists_sql = match (end_alias, is_undirected) {
@@ -1397,21 +1583,21 @@ fn generate_not_exists_from_path_pattern(
                             // Directed with anonymous end: check FROM or TO based on direction
                             match conn.relationship.direction {
                                 Direction::Outgoing => format!(
-                                    "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {})",
-                                    full_table, table_name, from_col, start_id_sql
+                                    "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}{})",
+                                    full_table, table_name, from_col, start_id_sql, start_is_src
                                 ),
                                 Direction::Incoming => format!(
-                                    "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {})",
-                                    full_table, table_name, to_col, start_id_sql
+                                    "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}{})",
+                                    full_table, table_name, to_col, start_id_sql, start_is_tgt
                                 ),
                                 _ => {
                                     // Split into two NOT EXISTS to avoid OR inside subquery
                                     format!(
-                                    "(NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}) AND NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}))",
+                                    "(NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}{}) AND NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}{}))",
                                     full_table,
-                                    table_name, from_col, start_id_sql,
+                                    table_name, from_col, start_id_sql, start_is_src,
                                     full_table,
-                                    table_name, to_col, start_id_sql
+                                    table_name, to_col, start_id_sql, start_is_tgt
                                 )
                                 }
                             }
@@ -1420,15 +1606,17 @@ fn generate_not_exists_from_path_pattern(
                             // Undirected with anonymous end: check either direction
                             // Split into two NOT EXISTS to avoid OR inside subquery
                             format!(
-                                "(NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}) AND NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}))",
+                                "(NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}{}) AND NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}{}))",
                                 full_table,
                                 table_name,
                                 from_col,
                                 start_id_sql,
+                                start_is_src,
                                 full_table,
                                 table_name,
                                 to_col,
-                                start_id_sql
+                                start_id_sql,
+                                start_is_tgt
                             )
                         }
                         (Some(_end), true) => {
@@ -1436,33 +1624,41 @@ fn generate_not_exists_from_path_pattern(
                             // Split into two NOT EXISTS to avoid OR inside subquery —
                             // ClickHouse "Cannot clone Union plan step" with OR in correlated subqueries
                             format!(
-                                "(NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} AND {}.{} = {}) AND NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} AND {}.{} = {}))",
+                                "(NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} AND {}.{} = {}{}) AND NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} AND {}.{} = {}{}))",
                                 full_table,
                                 // Direction 1: start -> end
                                 table_name, from_col, start_id_sql,
                                 table_name, to_col, end_id_sql,
+                                start_is_src,
                                 full_table,
                                 // Direction 2: end -> start
                                 table_name, from_col, end_id_sql,
-                                table_name, to_col, start_id_sql
+                                table_name, to_col, start_id_sql,
+                                start_is_tgt
                             )
                         }
                         (Some(_end), false) => {
                             // Named end node, directed: check single direction
-                            let (from_match_sql, to_match_sql) = match conn.relationship.direction {
-                                Direction::Outgoing => (start_id_sql.clone(), end_id_sql.clone()),
-                                Direction::Incoming => (end_id_sql.clone(), start_id_sql.clone()),
-                                _ => (start_id_sql.clone(), end_id_sql.clone()),
-                            };
+                            let (from_match_sql, to_match_sql, labels) =
+                                match conn.relationship.direction {
+                                    Direction::Outgoing => {
+                                        (start_id_sql.clone(), end_id_sql.clone(), &start_is_src)
+                                    }
+                                    Direction::Incoming => {
+                                        (end_id_sql.clone(), start_id_sql.clone(), &start_is_tgt)
+                                    }
+                                    _ => (start_id_sql.clone(), end_id_sql.clone(), &start_is_src),
+                                };
                             format!(
-                                "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} AND {}.{} = {})",
+                                "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} AND {}.{} = {}{})",
                                 full_table,
                                 table_name,
                                 from_col,
                                 from_match_sql,
                                 table_name,
                                 to_col,
-                                to_match_sql
+                                to_match_sql,
+                                labels
                             )
                         }
                     };
