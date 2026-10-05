@@ -1235,11 +1235,9 @@ impl FilterBuilder for LogicalPlan {
                     .collect();
                 let mut uniqueness_predicates = uniqueness_predicates?;
                 // #1175: hops vs an adjacent CTE-backed path (the analyzer skips paths).
-                if graph_joins.cte_references.is_empty() {
-                    uniqueness_predicates.extend(crate::render_plan::hop_vlp_uniqueness::guards(
-                        &graph_joins.input,
-                    ));
-                }
+                uniqueness_predicates.extend(crate::render_plan::hop_vlp_uniqueness::guards(
+                    &graph_joins.input,
+                ));
 
                 uniqueness_predicates
                     .into_iter()

@@ -22,14 +22,15 @@ use crate::render_plan::render_expr::RenderExpr;
 use crate::sql_generator::emitters::clickhouse::variable_length_cte::spell_edge_identity;
 
 /// All `GraphRel`s of one scope, or `None` when the scope holds anything but a plain
-/// pattern: a `WITH` (the scope is rebuilt from a CTE), a comma/cartesian pattern, a UNION
-/// or an UNWIND.
+/// pattern: a `WITH` (the scope is rebuilt from a CTE), a UNION or an UNWIND.
+///
+/// A comma/cartesian pattern is descended (#1287): it only binds more nodes (an endpoint
+/// matched by an earlier clause, or carried through WITH), and `guards` pairs a hop with the
+/// path only when both are in the path's own MATCH clause — any hop of another clause in the
+/// scope still leaves the scope unguarded.
 fn collect<'a>(node: &'a LogicalPlan, rels: &mut Vec<&'a GraphRel>) -> Option<()> {
     match node {
-        LogicalPlan::WithClause(_)
-        | LogicalPlan::CartesianProduct(_)
-        | LogicalPlan::Union(_)
-        | LogicalPlan::Unwind(_) => None,
+        LogicalPlan::WithClause(_) | LogicalPlan::Union(_) | LogicalPlan::Unwind(_) => None,
         LogicalPlan::GraphRel(gr) => {
             rels.push(gr);
             node.children()
@@ -50,8 +51,8 @@ fn collect<'a>(node: &'a LogicalPlan, rels: &mut Vec<&'a GraphRel>) -> Option<()
 ///   is a required, directed (written forward), single-type recursive CTE with a recursive arm
 ///   (so its `path_edges` holds edge identities; `*0..N` included since #1230) and not
 ///   shortestPath or closed;
-/// - the hops are required, directed, single-hop, of the SAME single relationship type, in
-///   the same `MATCH` clause;
+/// - the hops of the path's own `MATCH` clause are required, directed, single-hop, of the
+///   SAME single relationship type (hops of other clauses are not bound by it and ignored);
 /// - the relationship is a standard (separate node table) or denormalized (single table)
 ///   edge with plain single-column endpoints.
 pub(super) fn guards(plan: &LogicalPlan) -> Vec<RenderExpr> {
@@ -98,7 +99,14 @@ pub(super) fn guards(plan: &LogicalPlan) -> Vec<RenderExpr> {
         return vec![];
     };
 
-    let hops: Vec<&GraphRel> = rels.iter().copied().filter(|gr| !is_path(gr)).collect();
+    // Relationship uniqueness binds only the hops of the path's own MATCH clause: a hop of
+    // another clause (an earlier comma-joined MATCH, a later OPTIONAL MATCH) may reuse the
+    // path's edges, so it is neither guarded nor a reason to leave the clause unguarded.
+    let hops: Vec<&GraphRel> = rels
+        .iter()
+        .copied()
+        .filter(|gr| !is_path(gr) && gr.match_clause_index == path.match_clause_index)
+        .collect();
     if hops.is_empty()
         || hops.iter().any(|hop| {
             // `was_undirected` is NOT excluded (#1233): a REQUIRED undirected hop is the legacy
@@ -107,7 +115,6 @@ pub(super) fn guards(plan: &LogicalPlan) -> Vec<RenderExpr> {
             // renders a doubled-edge subquery with swapped columns, and optional hops are out above.
             hop.is_optional.unwrap_or(false)
                 || hop.direction == Direction::Either
-                || hop.match_clause_index != path.match_clause_index
                 || hop.labels.as_deref() != Some(std::slice::from_ref(label))
                 || hop
                     .pattern_combinations

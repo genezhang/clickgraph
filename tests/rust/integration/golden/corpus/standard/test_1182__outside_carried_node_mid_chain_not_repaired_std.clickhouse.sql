@@ -35,3 +35,4 @@ FROM vlp_c_n2 AS t
 INNER JOIN with_c_cte_0 AS c ON toString(t.start_id) = toString(c.p1_c_user_id)
 JOIN test_integration.users_test AS n0 ON 1 = 1
 INNER JOIN test_integration.user_follows_test AS t1 ON t1.follower_id = n0.user_id AND t1.followed_id = t.start_id
+WHERE NOT has(t.path_edges, t1.follow_id)

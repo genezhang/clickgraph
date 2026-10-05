@@ -7,12 +7,11 @@ The hop `(c)-[:R]->(a)` must be tied to the WITH-carried `c` AND to the path's s
 It used to lose both (`FROM <path> AS t JOIN <with cte> AS c ON 1 = 1`), cross-joining
 the WITH CTE onto the path: 234 rows instead of 91.
 
-Compared against a brute-force enumeration over the fixture.  The engine keeps
-relationship-uniqueness inside the path and between the fixed hops of one MATCH, but
-NOT between a fixed hop and a path (#1175), so the oracle applies uniqueness inside the
-path only.  The fixture has a cycle, a branch, parallel routes and a self-loop (an
-acyclic graph cannot reuse an edge and would agree with a missing predicate by
-coincidence).
+Compared against a brute-force enumeration over the fixture, with Cypher's
+relationship-uniqueness over the whole MATCH: inside the path, between the fixed hops,
+and between a fixed hop and the path (#1175; post-WITH scopes since #1287).  The fixture
+has a cycle, a branch, parallel routes and a self-loop (an acyclic graph cannot reuse an
+edge and would agree with a missing predicate by coincidence).
 """
 
 from collections import Counter, defaultdict
@@ -109,21 +108,27 @@ for _i, (_f, _t) in enumerate(EDGES):
     _OUT[_f].append((_i, _t))
 
 
-def _paths(start, lo, hi):
-    """End nodes of every edge-unique path of lo..hi hops from `start` (one per path)."""
-    ends = []
+def _paths_e(start, lo, hi, used=frozenset()):
+    """(end node, path edges) of every edge-unique path of lo..hi hops from `start` that
+    avoids the `used` edges of the same MATCH (one per path)."""
+    out = []
 
-    def rec(node, used, depth):
+    def rec(node, path, depth):
         if depth >= lo:
-            ends.append(node)
+            out.append((node, path))
         if depth == hi:
             return
         for i, t in _OUT[node]:
-            if i not in used:
-                rec(t, used | {i}, depth + 1)
+            if i not in path and i not in used:
+                rec(t, path | {i}, depth + 1)
 
     rec(start, frozenset(), 0)
-    return ends
+    return out
+
+
+def _paths(start, lo, hi, used=frozenset()):
+    """End nodes of every edge-unique path of lo..hi hops from `start` (one per path)."""
+    return [end for end, _ in _paths_e(start, lo, hi, used)]
 
 
 def _rows(lo, hi, carried_z=False, distinct_c=False):
@@ -132,8 +137,8 @@ def _rows(lo, hi, carried_z=False, distinct_c=False):
     if distinct_c:
         firsts = [(None, c) for c in sorted({c for _, c in EDGES})]
     for z, c in firsts:
-        for _, a in _OUT[c]:
-            for b in _paths(a, lo, hi):
+        for i, a in _OUT[c]:
+            for b in _paths(a, lo, hi, {i}):
                 rows[(z, c, a, b) if carried_z else (c, a, b)] += 1
     return rows
 
@@ -202,8 +207,8 @@ def test_vlp_before_the_with_then_hop_and_vlp(schemas, which):
     expected = Counter()
     for a in sorted({f for f, _ in EDGES}):
         for b in _paths(a, 1, 2):
-            for _, d in _OUT[b]:
-                for e in _paths(d, 1, 2):
+            for i, d in _OUT[b]:
+                for e in _paths(d, 1, 2, {i}):
                     expected[(a, e)] += 1
     assert _got(schemas[which], query, 2) == expected
 
@@ -220,7 +225,7 @@ def test_two_hops_before_the_vlp(schemas, which):
             for j, a in _OUT[m]:
                 if i == j:  # fixed hops are pairwise relationship-unique
                     continue
-                for b in _paths(a, 1, 2):
+                for b in _paths(a, 1, 2, {i, j}):
                     expected[(c, m, a, b)] += 1
     assert _got(schemas[which], query, 4) == expected
 
@@ -234,9 +239,9 @@ def test_hop_after_the_vlp(schemas, which):
     expected = Counter()
     for _z, c in EDGES:
         for i, a in _OUT[c]:
-            for b in _paths(a, 1, 2):
+            for b, path in _paths_e(a, 1, 2, {i}):
                 for j, d in _OUT[b]:
-                    if i != j:  # the two fixed hops are pairwise relationship-unique
+                    if i != j and j not in path:  # relationship-unique over the MATCH
                         expected[(c, a, b, d)] += 1
     assert _got(schemas[which], query, 4) == expected
 
@@ -249,10 +254,10 @@ def test_two_hops_after_the_vlp(schemas, which):
              "d.user_id AS col3")
     expected = Counter()
     for _z, c in EDGES:
-        for a in _paths(c, 1, 2):
+        for a, path in _paths_e(c, 1, 2):
             for i, b in _OUT[a]:
                 for j, d in _OUT[b]:
-                    if i != j:
+                    if i != j and i not in path and j not in path:
                         expected[(c, a, b, d)] += 1
     assert _got(schemas[which], query, 4) == expected
 
@@ -268,8 +273,8 @@ def test_optional_hop_after_the_vlp(schemas, which):
                   for r in result["results"])
     expected = Counter()
     for _z, c in EDGES:
-        for _i, a in _OUT[c]:
-            for b in _paths(a, 1, 2):
+        for i, a in _OUT[c]:
+            for b in _paths(a, 1, 2, {i}):
                 ds = [d for _j, d in _OUT[b]] or [None]
                 for d in ds:
                     expected[(c, d)] += 1
@@ -290,8 +295,8 @@ def test_incoming_hop_after_the_vlp(schemas, which):
     expected = Counter()
     for _z, c in EDGES:
         for i, n1 in _OUT[c]:
-            for n2 in _paths(n1, 1, 2):
+            for n2, path in _paths_e(n1, 1, 2, {i}):
                 for j, n3 in inn[n2]:
-                    if i != j:
+                    if i != j and j not in path:
                         expected[(c, n1, n2, n3)] += 1
     assert _got(schemas[which], query, 4) == expected

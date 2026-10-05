@@ -9,8 +9,7 @@ vlp_n1_c AS (
         1 as hop_count,
         array(struct(t1.flight_id, t1.flight_number)) as path_edges,
         array(t1.Origin, t1.Dest) as path_nodes,
-        array() as path_relationships,
-        t1.`Origin` as `start_Origin`
+        array() as path_relationships
     FROM test_integration.flights AS t1
     WHERE 1 <= 3
     UNION ALL
@@ -20,8 +19,7 @@ vlp_n1_c AS (
         vp.hop_count + 1,
         concat(vp.path_edges, array(struct(next.flight_id, next.flight_number))),
         concat(vp.path_nodes, array(next.Dest)),
-        array() as path_relationships,
-        vp.`start_Origin` as `start_Origin`
+        array() as path_relationships
     FROM vlp_n1_c vp
     JOIN test_integration.flights next ON next.Origin = vp.end_id
     WHERE vp.hop_count < 3 AND NOT array_contains(vp.path_edges, struct(next.flight_id, next.flight_number))
@@ -32,5 +30,4 @@ SELECT
 FROM vlp_n1_c AS t
 INNER JOIN with_c_cte_1 AS c ON string(t.end_id) = string(c.p1_c_end_id)
 INNER JOIN test_integration.flights AS t2 ON t2.Dest = t.start_id
-INNER JOIN test_integration.flights AS t1 ON t1.Dest = t.end_p1_c_code
-INNER JOIN test_integration.flights AS n1 ON t.start_Origin = t1.Origin
+WHERE NOT array_contains(t.path_edges, struct(t2.flight_id, t2.flight_number))
