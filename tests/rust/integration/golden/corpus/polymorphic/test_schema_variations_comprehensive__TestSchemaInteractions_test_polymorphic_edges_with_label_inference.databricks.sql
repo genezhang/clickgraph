@@ -1,2 +1,0 @@
-SELECT 
-      count(*) AS `total`
