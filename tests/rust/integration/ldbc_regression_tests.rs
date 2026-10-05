@@ -3315,38 +3315,19 @@ async fn ldbc_1152_whole_node_denorm_undirected_vlp_binds_cte_columns() {
     );
 }
 
-/// #1152: the flat CHAINED render (#1155) has NO VLP CTE, so the rebind is
-/// inert there by construction. This is the shape PR #1153's upstream gate
-/// regressed (22 rows -> Code 47); pin that it keeps the edge-alias spelling.
+/// #1152/#1155: the flat CHAINED render has NO VLP CTE (it silently ran the path as ONE hop). It
+/// used to be pinned here as the shape PR #1153's upstream gate regressed; it is now refused
+/// loudly, so there is no flat render left to keep the edge alias for.
 #[tokio::test]
-async fn ldbc_1152_flat_chained_render_keeps_edge_alias() {
+async fn ldbc_1152_flat_chained_render_is_refused_not_silently_flat() {
     let schema = load_schema_from("schemas/test/flights_denorm_test.yaml");
-    let sql = generate_sql_inline(
+    let err = try_generate_sql_inline(
         &schema,
         "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport)-[:FLIGHT]->(e:Airport) RETURN o",
     )
-    .await;
-    assert!(
-        !sql.contains("vlp_"),
-        "#1152/#1155: this shape renders FLAT — if it ever grows a VLP CTE, \
-         this test's premise (and the rebind's inertness here) must be \
-         re-derived:\n{sql}"
-    );
-    // The edge alias is correct here: it IS the FROM. Removing it (as #1153
-    // did) makes the reference dangle. Assert STRUCTURALLY: whatever numbered
-    // alias the FROM binds, the projection must use that same alias — the
-    // anon-alias counter is query-scoped (#1088) and shared across
-    // concurrently-running tests, so a hardcoded `t1` is order-dependent.
-    let from_alias = sql
-        .split("flights_denorm AS ")
-        .nth(1)
-        .and_then(|rest| rest.split_whitespace().next())
-        .unwrap_or_else(|| panic!("#1152: expected an aliased base-table FROM:\n{sql}"));
-    assert!(
-        sql.contains(&format!("{from_alias}.origin_city")),
-        "#1152: the flat render must keep resolving through the edge alias \
-         (`{from_alias}`), which is bound by its own FROM:\n{sql}"
-    );
+    .await
+    .expect_err("an undirected path chained to a hop must not render flat");
+    assert!(err.contains("#1155"), "{err}");
 }
 
 /// #1152: the mixed-access arm (#1154) must ABSTAIN — it stays exactly as loud
@@ -4645,6 +4626,49 @@ async fn a_scalar_exported_next_to_its_node_groups_by_its_column_1227() {
     )
     .await;
     assert!(sql.contains("GROUP BY a_ag.ag"), "{sql}");
+}
+
+// ---------------------------------------------------------------------------
+// #1155: an undirected VLP chained to another hop on the denormalized layout
+//
+// The two-direction split renders the chained hop without the path's recursive CTE (generated,
+// left unreferenced, dropped as dead): the path silently ran as ONE hop whatever its bound.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn undirected_vlp_chained_on_denormalized_is_refused_1155() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    for cypher in [
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport)-[:FLIGHT]->(e:Airport) RETURN count(*)",
+        "MATCH (o:Airport)-[:FLIGHT]->(d:Airport)-[:FLIGHT*1..2]-(e:Airport) RETURN count(*)",
+    ] {
+        let err = try_generate_sql_inline(&schema, cypher)
+            .await
+            .expect_err(cypher);
+        assert!(err.contains("#1155"), "{cypher}: {err}");
+    }
+    // directed chain, and an unchained undirected path, still render with their CTE
+    for cypher in [
+        "MATCH (o:Airport)-[:FLIGHT*1..2]->(d:Airport)-[:FLIGHT]->(e:Airport) RETURN count(*)",
+        "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport) RETURN count(*)",
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(sql.contains("WITH RECURSIVE"), "{cypher}\n{sql}");
+    }
+}
+
+#[tokio::test]
+async fn undirected_vlp_chained_on_single_walk_layouts_is_unchanged_1155() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:User)-[:FOLLOWS*1..2]-(d:User)-[:FOLLOWS]->(e:User) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("WITH RECURSIVE") && sql.contains("vlp_o_d"),
+        "{sql}"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -221,3 +221,71 @@ pub(crate) fn register_composite_paths(root: &LogicalPlan) -> Result<(), RenderB
     }
     Ok(())
 }
+
+/// #1155: an UNDIRECTED variable-length path that was split into two monotone UNION arms (the
+/// legacy strategy, used where the single doubled-edge walk does not apply — the denormalized
+/// layout) and is CHAINED to another hop in the same arm.
+///
+/// The arms are rendered without the analyzer's join plan, so the chained hop pulls the path's own
+/// `GraphRel` into the outer query as a plain single hop; the path's CTE is then unreferenced and
+/// dead-CTE elimination drops it. The query silently ran as ONE hop plus the chained hop whatever
+/// the bound (`*1..1`, `*1..2` and `*1..3` all returned the same rows), ~3x off an independent
+/// oracle. Refused loudly until the single-walk strategy covers that layout.
+pub(crate) fn refuse_chained_split_undirected_vlp(
+    root: &LogicalPlan,
+) -> Result<(), RenderBuildError> {
+    let Some(schema) = crate::server::query_context::get_current_schema() else {
+        return Ok(());
+    };
+    let mut offender: Option<String> = None;
+    root.any_node(|n| {
+        let LogicalPlan::Union(u) = n else {
+            return false;
+        };
+        for arm in &u.inputs {
+            let mut rels: Vec<&GraphRel> = Vec::new();
+            collect_arm_rels(arm, &mut rels);
+            let split_vlp = rels.iter().find(|g| {
+                g.variable_length.is_some()
+                    && !crate::render_plan::from_builder::is_fixed_length_vlp(g)
+                    && g.was_undirected == Some(true)
+                    && g.shortest_path_mode.is_none()
+                    && !crate::query_planner::analyzer::bidirectional_union::undirected_vlp_single_walk_core(g, &schema)
+            });
+            if let Some(vlp) = split_vlp {
+                if rels.iter().any(|g| g.alias != vlp.alias) {
+                    offender = Some(vlp.alias.clone());
+                    return true;
+                }
+            }
+        }
+        false
+    });
+    match offender {
+        Some(alias) => Err(RenderBuildError::UnsupportedFeature(format!(
+            "an undirected variable-length path (`{alias}`) chained to another hop is not \
+             supported on this schema layout (#1155): the two-direction split renders the chained \
+             hop without the path's recursive CTE, so the path bound would be silently ignored. \
+             Write the path directed, or split the query."
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// GraphRels of one UNION arm, not descending into a nested UNION.
+fn collect_arm_rels<'a>(plan: &'a LogicalPlan, out: &mut Vec<&'a GraphRel>) {
+    match plan {
+        LogicalPlan::Union(_) => {}
+        LogicalPlan::GraphRel(gr) => {
+            out.push(gr);
+            for child in plan.children() {
+                collect_arm_rels(child, out);
+            }
+        }
+        _ => {
+            for child in plan.children() {
+                collect_arm_rels(child, out);
+            }
+        }
+    }
+}

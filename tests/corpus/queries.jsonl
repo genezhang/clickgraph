@@ -1467,3 +1467,4 @@
 {"cypher": "MATCH (a:User) WITH a.age AS ag WITH ag, count(*) AS c RETURN ag, c ORDER BY ag", "name": "test_1225__scalar_through_two_withs_std", "schema": "standard"}
 {"cypher": "MATCH (u:User) WITH u, u.name AS n RETURN n", "name": "test_1225__node_and_property_carried_std", "schema": "standard"}
 {"cypher": "MATCH (a:User) WITH a, a.age AS ag RETURN ag, count(*) AS n", "name": "test_1227__scalar_next_to_its_node_group_by_std", "schema": "standard"}
+{"cypher": "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport)-[:FLIGHT]->(e:Airport) RETURN count(*)", "name": "test_1155__undirected_vlp_chained_denorm_refused", "schema": "denormalized_flights"}
