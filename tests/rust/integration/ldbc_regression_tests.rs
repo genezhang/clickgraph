@@ -4109,6 +4109,82 @@ async fn unsupported_form_over_both_endpoints_is_refused_not_passed_through_1169
 }
 
 // ---------------------------------------------------------------------------
+// #1199: the selective-predicate FROM reorder dropped the promoted join's own
+// restrictions
+//
+// A constant predicate on an INNER-joined table promotes that table to FROM. The
+// join it replaced carried the edge's own restrictions — a polymorphic edge's
+// type/label discriminator, a compiled edge constraint — and they were removed
+// with it: `(a:User)-[:FOLLOWS]->(b:User) WHERE b.user_id = 3 RETURN count(*)`
+// counted every interaction type ending at user 3 (5 instead of 2). The
+// undirected doubled-edge CTE was also treated as a base table and database
+// prefixed (Code 60).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn promoted_polymorphic_edge_keeps_its_type_and_label_discriminator_1199() {
+    let schema = load_schema_from("schemas/dev/social_polymorphic.yaml");
+
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WHERE b.user_id = 3 RETURN a.name",
+    )
+    .await;
+    for needle in [
+        "interaction_type = 'FOLLOWS'",
+        "from_type = 'User'",
+        "to_type = 'User'",
+    ] {
+        assert!(
+            sql.contains(needle),
+            "#1199: single hop lost `{needle}`:\n{sql}"
+        );
+    }
+
+    // Both hops of the fixed-length path keep their own discriminator.
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS*2..2]->(b:User) WHERE b.user_id = 3 RETURN count(*)",
+    )
+    .await;
+    assert_eq!(
+        sql.matches("interaction_type = 'FOLLOWS'").count(),
+        2,
+        "#1199: each of the two hops needs its type filter:\n{sql}"
+    );
+}
+
+#[tokio::test]
+async fn promoted_edge_keeps_its_compiled_constraint_1199() {
+    let schema = load_schema_from("schemas/test/social_constraints.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS]->(m:User)-[:FOLLOWS]->(b:User) \
+         WHERE m.user_id = 3 RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("a.age > m.age"),
+        "#1199: the FOLLOWS constraint (`from.age > to.age`) vanished when `m` was \
+         promoted to FROM:\n{sql}"
+    );
+}
+
+#[tokio::test]
+async fn undirected_fixed_length_end_filter_reads_the_doubled_edge_cte_unprefixed_1199() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS*2..2]-(b:User) WHERE b.user_id = 3 RETURN count(*)",
+    )
+    .await;
+    assert!(
+        !sql.contains(".undir_edges_"),
+        "#1199: the generated CTE must not be database-prefixed:\n{sql}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // #1170: a FIXED hop chained in front of a CTE-backed VLP lost its WHERE filter
 //
 // `extract_filters` returned `None` for a required CTE-backed VLP on the premise
