@@ -553,6 +553,21 @@ impl RelationshipSchema {
         self.type_column.is_some()
     }
 
+    /// The column holding the relationship type on a polymorphic edge table.
+    pub fn type_discriminator(&self) -> Option<&str> {
+        self.type_column.as_deref()
+    }
+
+    /// The column holding the source node's label on a polymorphic edge table, when declared.
+    pub fn from_label_discriminator(&self) -> Option<&str> {
+        self.from_label_column.as_deref()
+    }
+
+    /// The column holding the target node's label on a polymorphic edge table, when declared.
+    pub fn to_label_discriminator(&self) -> Option<&str> {
+        self.to_label_column.as_deref()
+    }
+
     /// True for a **self-referencing FK-edge** — an FK-edge whose from- and
     /// to-node are the same table with no denormalized node properties (e.g.
     /// `(child:Object)-[:PARENT]->(parent:Object)` on one `fs_objects` table, or

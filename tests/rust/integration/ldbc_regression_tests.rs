@@ -4865,6 +4865,67 @@ async fn unresolvable_unlabeled_polymorphic_pattern_is_refused_not_emptied_1244(
 }
 
 // ---------------------------------------------------------------------------
+// #1247: EXISTS / NOT (pattern) over a POLYMORPHIC edge table must restrict the edge type
+//
+// `EXISTS { (u)<-[:FOLLOWS]-() }` rendered `SELECT 1 FROM interactions WHERE to_id = u.user_id` — "any
+// interaction reaches u" (4 users where the FOLLOWS answer is 3) — and an unlabeled `(u)` endpoint
+// failed with "Node schema not found for type '$any'".
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn polymorphic_exists_restricts_edge_type_and_endpoint_labels_1247() {
+    let schema = load_schema_from("schemas/examples/social_polymorphic.yaml");
+    let cases = [
+        (
+            "MATCH (u:User) WHERE EXISTS { (u)-[:FOLLOWS]->() } RETURN u.user_id",
+            vec![
+                "interactions.from_id = u.user_id",
+                "interactions.interaction_type = 'FOLLOWS'",
+                "interactions.from_type = 'User'",
+            ],
+        ),
+        (
+            "MATCH (u:User) WHERE EXISTS { (u)<-[:FOLLOWS]-() } RETURN u.user_id",
+            vec![
+                "interactions.to_id = u.user_id",
+                "interactions.interaction_type = 'FOLLOWS'",
+                "interactions.to_type = 'User'",
+            ],
+        ),
+        (
+            "MATCH (u:User) WHERE EXISTS { (u)-[:LIKES]->(:Post) } RETURN u.user_id",
+            vec![
+                "interactions.interaction_type = 'LIKES'",
+                "interactions.from_type = 'User'",
+                "interactions.to_type = 'Post'",
+            ],
+        ),
+        (
+            "MATCH (u:User) WHERE NOT (u)-[:AUTHORED]->() RETURN u.user_id",
+            vec![
+                "NOT EXISTS",
+                "interactions.interaction_type = 'AUTHORED'",
+                "interactions.from_type = 'User'",
+            ],
+        ),
+        (
+            "MATCH (u:User) WHERE EXISTS { (u)-[:FOLLOWS]-() } RETURN u.user_id",
+            vec![
+                "interactions.interaction_type = 'FOLLOWS'",
+                "interactions.from_type = 'User'",
+                "interactions.to_type = 'User'",
+            ],
+        ),
+    ];
+    for (cypher, needles) in cases {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        for needle in needles {
+            assert!(sql.contains(needle), "{cypher}: missing `{needle}`\n{sql}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
 // The emitter's path-variable "spurious JOIN" cleanup kept only joins whose alias was read, so
