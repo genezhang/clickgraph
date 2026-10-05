@@ -36,7 +36,8 @@ FROM vlp_u1_u2 AS t
 SELECT 
       u2.p2_u2_user_id AS "userId", 
       count(DISTINCT p.post_id) AS "postCount"
-FROM with_u2_cte_0 AS u2
+FROM test_integration.posts_test AS p
+INNER JOIN with_u2_cte_0 AS u2 ON u2.p2_u2_user_id = p.author_id
 GROUP BY u2.p2_u2_user_id
 ORDER BY postCount DESC NULLS FIRST
 LIMIT 5
