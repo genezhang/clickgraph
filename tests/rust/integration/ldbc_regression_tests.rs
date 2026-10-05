@@ -2013,23 +2013,34 @@ async fn ldbc_1120_open_pattern_untouched() {
 /// this test fails. (An unfiltered fixture would pass either way.)
 #[tokio::test]
 async fn ldbc_1118_embedded_endpoint_not_projected() {
+    // #1119: the filter this fixture declares CANNOT be applied to an embedded endpoint, so the
+    // shape is now refused (it used to render without the filter: 6 rows vs an oracle 3). The
+    // #1118 projection must still never leak a `start_active`/`end_active` column — for the
+    // shapes that DO render, i.e. the same fixture without the node filter.
     let schema = load_schema_from("schemas/test/foreign_selfloop_filtered.yaml");
     for cypher in [
         "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person) RETURN count(*)",
-        // The undirected shape is the one where the pruner does NOT strip an
-        // unreferenced projected column, so a leak here is visible.
         "MATCH (a:Person)-[:REPORTS_TO*1..2]-(b:Person) RETURN count(*)",
     ] {
-        let sql = generate_sql_inline(&schema, cypher).await;
+        let err = try_generate_sql_inline(&schema, cypher)
+            .await
+            .expect_err("a filtered embedded endpoint must be refused (#1119)");
         assert!(
-            !sql.contains("end_active") && !sql.contains("start_active"),
-            "#1118: a denormalized/mixed endpoint must NOT get a projected \
-             schema-filter column (dead weight; the filter stays in the base \
-             arm) for `{cypher}`:\n{sql}"
+            err.contains("#1119"),
+            "unexpected error for `{cypher}`: {err}"
         );
+    }
+    let plain = load_schema_from("schemas/test/foreign_selfloop.yaml");
+    for cypher in [
+        "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person) RETURN count(*)",
+        "MATCH (a:Person)-[:REPORTS_TO*1..2]-(b:Person) RETURN count(*)",
+    ] {
+        let sql = generate_sql_inline(&plain, cypher).await;
         assert!(
-            sql.contains("start_own"),
-            "#1118: the mixed-access arm must otherwise be unchanged:\n{sql}"
+            !sql.contains("end_active")
+                && !sql.contains("start_active")
+                && sql.contains("start_own"),
+            "#1118: the mixed-access arm must be unchanged for `{cypher}`:\n{sql}"
         );
     }
 }
@@ -4529,6 +4540,53 @@ async fn unverified_chain_shapes_keep_their_rendering_1181() {
             "#1181 ({why}): not verified, must not be re-bound:\n{text}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// #1119: a schema `filter:` on a node EMBEDDED in the edge table cannot be applied by a VLP
+// (no node scan to carry it; the CTE cannot project its column as for an own-table endpoint,
+// #1118) and was silently absent from the SQL. It must fail loud instead.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn vlp_over_a_filtered_embedded_endpoint_fails_loud_1119() {
+    for (schema_path, cypher, role) in [
+        (
+            "schemas/test/foreign_selfloop_filtered.yaml",
+            "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person) RETURN count(*)",
+            "start",
+        ),
+        (
+            "schemas/test/foreign_selfloop_end_filtered_endpoint.yaml",
+            "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person) RETURN count(*)",
+            "end",
+        ),
+        (
+            "schemas/test/denormalized_flights_filtered_endpoint.yaml",
+            "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport) RETURN count(*)",
+            "start",
+        ),
+    ] {
+        let schema = load_schema_from(schema_path);
+        let err = try_generate_sql_inline(&schema, cypher)
+            .await
+            .expect_err(&format!(
+                "{schema_path}: must be refused, not rendered without the filter"
+            ));
+        assert!(
+            err.contains("#1119") && err.contains(&format!("the {role} node")),
+            "{schema_path}: expected the {role}-role refusal, got: {err}"
+        );
+    }
+
+    // The same shape WITHOUT a filter still renders.
+    let plain = load_schema_from("schemas/test/foreign_selfloop.yaml");
+    assert!(try_generate_sql_inline(
+        &plain,
+        "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person) RETURN count(*)"
+    )
+    .await
+    .is_ok());
 }
 
 // ---------------------------------------------------------------------------
