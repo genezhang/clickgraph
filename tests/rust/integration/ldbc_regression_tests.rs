@@ -4584,6 +4584,46 @@ async fn vlp_over_a_filtered_embedded_endpoint_fails_loud_1119() {
 }
 
 // ---------------------------------------------------------------------------
+// #1220: a path variable must not drop a fixed hop whose alias nothing reads
+//
+// The emitter's path-variable "spurious JOIN" cleanup kept only joins whose alias was read, so
+// `RETURN count(*)` over `p=(a)-[:R*1..2]->(b)-[:OTHER]->(c)` lost the hop's edge join and
+// returned the path's own row count (55 where 90 is correct).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn path_variable_keeps_an_unread_hop_join_1220() {
+    for (schema_path, cypher, table) in [
+        (
+            "schemas/dev/social_standard.yaml",
+            "MATCH p=(a:User)-[:FOLLOWS*1..2]->(b:User)-[:AUTHORED]->(c:Post) RETURN count(*)",
+            "db_standard.posts",
+        ),
+        (
+            "schemas/test/foreign_selfloop.yaml",
+            "MATCH p=(c:Person)-[:REPORTS_TO]->(a:Person)-[:REPORTS_TO*1..2]->(b:Person) \
+             RETURN count(*)",
+            "testdb.reports AS",
+        ),
+    ] {
+        let schema = load_schema_from(schema_path);
+        let with_p = generate_sql_inline(&schema, cypher).await;
+        let without_p = generate_sql_inline(&schema, &cypher.replace("p=", "")).await;
+        let outer = |sql: &str| {
+            sql.rsplit_once("\nSELECT")
+                .map(|(_, o)| o.to_string())
+                .unwrap()
+        };
+        assert!(outer(&with_p).contains(table), "{cypher}\n{with_p}");
+        assert_eq!(
+            outer(&with_p).matches("JOIN").count(),
+            outer(&without_p).matches("JOIN").count(),
+            "{cypher}\n{with_p}\nvs\n{without_p}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // #1218: `WHERE length(p) <op> k` on a variable-length path was silently dropped
 //
 // The CTE categorizer filed the conjunct as a "path function filter" the generator never reads,

@@ -1458,3 +1458,5 @@
 {"cypher": "MATCH p=(c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN length(p) AS l, count(*) AS n", "name": "test_1202__length_of_hop_plus_path_poly", "schema": "social_polymorphic"}
 {"cypher": "MATCH p=(c:Airport)-[:FLIGHT]->(a:Airport)-[:FLIGHT*1..2]->(b:Airport) RETURN length(p) AS l, count(*) AS n", "name": "test_1202__length_of_hop_plus_path_denorm", "schema": "denormalized_flights"}
 {"cypher": "MATCH p=(c:Person)-[:REPORTS_TO]->(a:Person)-[:REPORTS_TO*1..2]->(b:Person) RETURN length(p) AS l, count(*) AS n", "name": "test_1202__length_of_hop_plus_path_mixed", "schema": "foreign_selfloop"}
+{"cypher": "MATCH p=(a:User)-[:FOLLOWS*1..2]->(b:User)-[:AUTHORED]->(c:Post) RETURN count(*)", "name": "test_1220__path_var_keeps_unread_hop_std", "schema": "standard"}
+{"cypher": "MATCH p=(c:Person)-[:REPORTS_TO]->(a:Person)-[:REPORTS_TO*1..2]->(b:Person) RETURN count(*)", "name": "test_1220__path_var_keeps_unread_hop_mixed", "schema": "foreign_selfloop"}
