@@ -2427,6 +2427,21 @@ impl LogicalPlan {
         None
     }
 
+    /// #1277: identity of a Cypher-UNION arm that survives the analyzer/render hand-off: the sorted
+    /// aliases of the GraphRels it contains.
+    pub fn arm_signature(&self) -> Vec<String> {
+        let mut aliases = Vec::new();
+        self.any_node(|n| {
+            if let LogicalPlan::GraphRel(gr) = n {
+                aliases.push(gr.alias.clone());
+            }
+            false
+        });
+        aliases.sort();
+        aliases.dedup();
+        aliases
+    }
+
     /// `true` if any node in the tree satisfies `pred`. Descends fully (never
     /// prunes) and short-circuits on the first match. Built on [`walk`].
     ///

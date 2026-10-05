@@ -86,3 +86,23 @@ def test_union_all_after_denormalized_node_scan_keeps_every_arm_row(node_first):
     node = "MATCH (x:Airport) RETURN x.code AS v"
     left, right = (node, hop) if node_first else (hop, node)
     assert _denorm_bag(f"{left} UNION ALL {right}") == _denorm_bag(left) + _denorm_bag(right)
+
+
+@pytest.mark.parametrize(
+    "left,right",
+    [
+        ("MATCH (a:Airport)-[:FLIGHT]->(b:Airport) RETURN a.code AS v",) * 2,
+        (
+            "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) RETURN a.code AS v",
+            "MATCH (a:Airport)<-[:FLIGHT]-(b:Airport) RETURN a.code AS v",
+        ),
+        (
+            "MATCH (a:Airport)-[:FLIGHT]->(b:Airport)-[:FLIGHT]->(c:Airport) RETURN a.code AS v",
+            "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) RETURN b.code AS v",
+        ),
+    ],
+)
+def test_denormalized_union_arms_reusing_node_names_keep_their_own_edge_alias(left, right):
+    """The denormalized node->edge alias registry is keyed by node NAME; the last arm's edge alias
+    used to win for every arm (`SELECT t2.origin_code FROM flights AS t1`, Code 47) (#1277)."""
+    assert _denorm_bag(f"{left} UNION ALL {right}") == _denorm_bag(left) + _denorm_bag(right)

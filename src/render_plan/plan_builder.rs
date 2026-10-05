@@ -747,6 +747,11 @@ fn build_cypher_union_render(
 
         let mut branch_render = {
             let _scope_guard = crate::server::query_context::CteScopeGenerationGuard::enter();
+            // #1277: this arm's own denormalized node->edge aliases, not the last arm's.
+            let _denorm_guard =
+                crate::server::query_context::UnionArmDenormalizedAliasesGuard::enter(
+                    &branch.arm_signature(),
+                );
             branch.to_render_plan_with_ctx(schema, arm_ctx, arm_scope)?
         };
         recover_cypher_arm_modifiers(branch, &mut branch_render)?;
@@ -3959,6 +3964,10 @@ impl RenderPlanBuilder for LogicalPlan {
                 let mut base_plan = {
                     let _scope_guard =
                         crate::server::query_context::CteScopeGenerationGuard::enter();
+                    let _denorm_guard =
+                        crate::server::query_context::UnionArmDenormalizedAliasesGuard::enter(
+                            &first_input.arm_signature(),
+                        );
                     first_input.to_render_plan(schema)?
                 };
 
@@ -3978,6 +3987,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     let branch_plan = {
                         let _scope_guard =
                             crate::server::query_context::CteScopeGenerationGuard::enter();
+                        let _denorm_guard =
+                            crate::server::query_context::UnionArmDenormalizedAliasesGuard::enter(
+                                &input.arm_signature(),
+                            );
                         input.to_render_plan(schema)?
                     };
                     union_branches.push(branch_plan);
@@ -4900,6 +4913,11 @@ impl RenderPlanBuilder for LogicalPlan {
                             let mut branch_render = {
                                 let _scope_guard =
                                     crate::server::query_context::CteScopeGenerationGuard::enter();
+                                // #1277: this arm's own denormalized node->edge aliases.
+                                let _denorm_guard =
+                                    crate::server::query_context::UnionArmDenormalizedAliasesGuard::enter(
+                                        &branch.arm_signature(),
+                                    );
                                 branch.to_render_plan_with_ctx(schema, plan_ctx, arm_scope)?
                             };
                             if union.is_cypher_union {
@@ -5995,6 +6013,11 @@ impl RenderPlanBuilder for LogicalPlan {
                     let mut branch_render = {
                         let _scope_guard =
                             crate::server::query_context::CteScopeGenerationGuard::enter();
+                        // #1277: this arm's own denormalized node->edge aliases.
+                        let _denorm_guard =
+                            crate::server::query_context::UnionArmDenormalizedAliasesGuard::enter(
+                                &branch.arm_signature(),
+                            );
                         branch.to_render_plan_with_ctx(schema, plan_ctx, arm_scope)?
                     };
                     if union.is_cypher_union {
@@ -6034,6 +6057,11 @@ impl RenderPlanBuilder for LogicalPlan {
                             let mut branch_render = {
                                 let _scope_guard =
                                     crate::server::query_context::CteScopeGenerationGuard::enter();
+                                // #1277: this arm's own denormalized node->edge aliases.
+                                let _denorm_guard =
+                                    crate::server::query_context::UnionArmDenormalizedAliasesGuard::enter(
+                                        &branch.arm_signature(),
+                                    );
                                 branch.to_render_plan_with_ctx(schema, plan_ctx, arm_scope)?
                             };
                             if union.is_cypher_union {
