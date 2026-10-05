@@ -5254,6 +5254,22 @@ async fn with_distinct_survives_pruning_and_spans_both_direction_arms() {
     assert!(!undirected.contains("UNION ALL"), "{undirected}");
 }
 
+#[tokio::test]
+async fn with_group_by_body_keeps_a_projection_when_nothing_downstream_reads_it_1269() {
+    let schema = load_schema_from("schemas/examples/orders_customers_fk.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (o:Order)-[:PLACED_BY]->(c:Customer) WITH o.order_id AS x, count(*) AS n \
+         RETURN count(*) AS g",
+    )
+    .await;
+    assert!(
+        !sql.contains("(SELECT *"),
+        "`SELECT * ... GROUP BY` is invalid:\n{sql}"
+    );
+    assert!(sql.contains("GROUP BY"), "{sql}");
+}
+
 // ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
