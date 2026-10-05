@@ -59,3 +59,34 @@ def test_multi_type_exists_is_still_refused_not_truncated():
         raise_on_error=False,
     )
     assert "results" not in result, result
+
+
+def _counts(query):
+    result = execute_cypher(query, schema_name=SCHEMA, raise_on_error=False)
+    assert "results" in result, (query, result)
+    return {int(r["id"]): int(r["n"]) for r in result["results"]}
+
+
+@pytest.mark.parametrize("rel_type", TYPES)
+@pytest.mark.parametrize("target", ["()", "(:User)", "(:Post)"])
+def test_size_pattern_matches_the_match_oracle(rel_type, target):
+    """size((u)-[:T]->X) per user == the MATCH count (zero-filled); undirected = out + in."""
+    everyone = _ids("MATCH (u:User) RETURN u.user_id AS id")
+
+    def oracle(arrow):
+        got = _counts(
+            f"MATCH (u:User){arrow.format(t=rel_type)}{target} RETURN u.user_id AS id, count(*) AS n"
+        )
+        return {uid: got.get(uid, 0) for uid in everyone}
+
+    def sized(arrow):
+        got = _counts(
+            f"MATCH (u:User) RETURN u.user_id AS id, "
+            f"size((u){arrow.format(t=rel_type)}{target}) AS n"
+        )
+        return {uid: got.get(uid, 0) for uid in everyone}
+
+    out, inc = oracle("-[:{t}]->"), oracle("<-[:{t}]-")
+    assert sized("-[:{t}]->") == out
+    assert sized("<-[:{t}]-") == inc
+    assert sized("-[:{t}]-") == {uid: out[uid] + inc[uid] for uid in everyone}

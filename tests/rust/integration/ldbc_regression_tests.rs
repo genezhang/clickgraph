@@ -4925,6 +4925,43 @@ async fn polymorphic_exists_restricts_edge_type_and_endpoint_labels_1247() {
     }
 }
 
+#[tokio::test]
+async fn polymorphic_size_pattern_restricts_edge_type_and_resolves_unlabeled_end_1247() {
+    let schema = load_schema_from("schemas/examples/social_polymorphic.yaml");
+    let cases = [
+        (
+            "MATCH (u:User) RETURN size((u)-[:FOLLOWS]->())",
+            vec![
+                "interactions.from_id = u.user_id",
+                "interactions.interaction_type = 'FOLLOWS'",
+                "interactions.from_type = 'User'",
+            ],
+        ),
+        (
+            "MATCH (u:User) RETURN size((u)<-[:LIKES]-(:User))",
+            vec![
+                "interactions.to_id = u.user_id",
+                "interactions.interaction_type = 'LIKES'",
+                "interactions.from_type = 'User'",
+                "interactions.to_type = 'User'",
+            ],
+        ),
+        (
+            "MATCH (u:User) RETURN size((u)-[:FOLLOWS]-())",
+            vec![
+                "interactions.interaction_type = 'FOLLOWS'",
+                "interactions.to_id = u.user_id",
+            ],
+        ),
+    ];
+    for (cypher, needles) in cases {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        for needle in needles {
+            assert!(sql.contains(needle), "{cypher}: missing `{needle}`\n{sql}");
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
