@@ -37,4 +37,5 @@ SELECT
 FROM vlp_b_c AS t
 JOIN test_integration.users_test AS a ON 1 = 1
 INNER JOIN test_integration.user_follows_test AS t0 ON t0.follower_id = a.user_id AND t0.followed_id = t.start_id
+WHERE NOT has(t.path_edges, t0.follow_id)
 LIMIT 10

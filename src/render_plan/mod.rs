@@ -10,6 +10,7 @@ mod filter_pipeline;
 mod from_builder;
 mod from_table;
 mod group_by_builder;
+mod hop_vlp_uniqueness;
 mod join_builder;
 mod join_deduplicator;
 pub(crate) mod pattern_comprehension_sql;

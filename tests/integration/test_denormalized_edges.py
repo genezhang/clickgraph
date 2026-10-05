@@ -457,10 +457,8 @@ class TestDenormalizedVariableLengthPaths:
     #
     # The VLP CTE was never joined to the chain (`JOIN flights AS t1 ON 1 = 1`), so
     # every chain row paired with every CTE row. Brute-force oracle over the fixture's
-    # six flights. Cypher relationship-uniqueness across a fixed hop and the VLP is
-    # not enforced yet (#1175), so the result is bracketed: it must contain every
-    # Cypher-correct row (lower) and nothing outside what the engine's contract
-    # allows (upper) — the cartesian bug breaks the upper bound.
+    # six flights, with Cypher relationship-uniqueness across a fixed hop and the VLP
+    # (#1175): the rows must equal the oracle exactly.
 
     _FLIGHTS_1174 = [('LAX', 'SFO'), ('SFO', 'JFK'), ('JFK', 'LAX'),
                      ('ORD', 'ATL'), ('ATL', 'LAX'), ('LAX', 'ORD')]
@@ -505,16 +503,16 @@ class TestDenormalizedVariableLengthPaths:
         return rows
 
     def _assert_chain_bracketed_1174(self, response, directions, ncols):
+        """The rows equal the full-Cypher oracle (a fixed hop and the VLP never share an
+        edge, #1175); this used to be a lower/upper bracket while #1175 was open."""
         from collections import Counter
         assert_query_success(response)
         names = ['n%d' % i for i in range(ncols)]
         got = Counter(tuple(r[n] for n in names) for r in response['results'])
-        lower = Counter(self._chain_rows_1174(directions, 1, 2, True))
-        upper = Counter(self._chain_rows_1174(directions, 1, 2, False))
-        assert not (lower - got), f"missing Cypher-correct rows: {sorted((lower - got).elements())}"
-        assert not (got - upper), (
-            "rows outside the chain (the VLP CTE is not joined to the fixed hops): "
-            f"{sorted((got - upper).elements())}"
+        expected = Counter(self._chain_rows_1174(directions, 1, 2, True))
+        assert got == expected, (
+            f"missing: {sorted((expected - got).elements())}; "
+            f"unexpected: {sorted((got - expected).elements())}"
         )
 
     def test_two_fixed_hops_before_vlp_are_joined_to_the_cte_1174(self, denormalized_flights_graph):

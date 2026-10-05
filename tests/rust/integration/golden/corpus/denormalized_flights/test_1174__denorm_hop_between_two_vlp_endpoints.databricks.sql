@@ -24,3 +24,4 @@ SELECT
       count(*) AS `count(*)`
 FROM vlp_a_b AS t
 INNER JOIN test_integration.flights AS t1 ON t1.Origin = t.start_id AND t1.Dest = t.end_id
+WHERE NOT array_contains(t.path_edges, struct(t1.flight_id, t1.flight_number))

@@ -4185,6 +4185,107 @@ async fn undirected_fixed_length_end_filter_reads_the_doubled_edge_cte_unprefixe
 }
 
 // ---------------------------------------------------------------------------
+// #1175: relationship uniqueness across a fixed hop and an adjacent CTE-backed path
+//
+// The path's recursive CTE only knows its own edges, so `(c)-[:R]->(a)-[:R*1..2]->(b)`
+// let the path walk back over the edge the hop had just used (49 rows, oracle 45).
+// The hop's edge identity must be kept out of the path's `path_edges` in the outer WHERE.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn hop_and_adjacent_path_get_a_cross_uniqueness_guard_1175() {
+    let std_schema = load_schema_from("schemas/dev/social_standard.yaml");
+    for (cypher, aliases) in [
+        (
+            "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN count(*)",
+            vec!["t1"],
+        ),
+        (
+            "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS]->(d:User) RETURN count(*)",
+            vec!["t2"],
+        ),
+        (
+            "MATCH (c:User)-[:FOLLOWS]->(m:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) \
+             RETURN count(*)",
+            vec!["t1", "t2"],
+        ),
+    ] {
+        let sql = strip_rel_alias_numbers(&generate_sql_inline(&std_schema, cypher).await);
+        let guards = sql
+            .matches("NOT has(t.path_edges, tuple(t.follower_id, t.followed_id))")
+            .count();
+        assert_eq!(
+            guards,
+            aliases.len(),
+            "#1175: one guard per fixed hop for `{cypher}` (hops {aliases:?}):\n{sql}"
+        );
+    }
+
+    // Denormalized: the identity is the schema's composite edge_id.
+    let denorm = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &denorm,
+        "MATCH (c:Airport)-[:FLIGHT]->(a:Airport)-[:FLIGHT*1..2]->(b:Airport) RETURN count(*)",
+    )
+    .await;
+    let sql = strip_rel_alias_numbers(&sql);
+    assert!(
+        regex::Regex::new(r"NOT has\(t\.path_edges, tuple\(t\.\w+, t\.\w+\)\)")
+            .unwrap()
+            .is_match(&sql),
+        "#1175 (denormalized): missing the hop/path guard:\n{sql}"
+    );
+}
+
+/// Shapes the guard must NOT touch: they keep the SQL they had.
+#[tokio::test]
+async fn hop_path_uniqueness_guard_is_fenced_1175() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    for (why, cypher) in [
+        // `*0..N` is node-unique: its path_edges holds no edge identities.
+        (
+            "zero lower bound",
+            "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*0..2]->(b:User) RETURN count(*)",
+        ),
+        // Uniqueness is per MATCH clause (#586).
+        (
+            "separate MATCH clauses",
+            "MATCH (c:User)-[:FOLLOWS]->(a:User) MATCH (a)-[:FOLLOWS*1..2]->(b:User) \
+             RETURN count(*)",
+        ),
+        (
+            "undirected path",
+            "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]-(b:User) RETURN count(*)",
+        ),
+        (
+            "optional path",
+            "MATCH (c:User)-[:FOLLOWS]->(a:User) OPTIONAL MATCH (a)-[:FOLLOWS*1..2]->(b:User) \
+             RETURN count(*)",
+        ),
+        (
+            "different relationship type",
+            "MATCH (c:User)-[:FRIENDS_WITH]->(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN count(*)",
+        ),
+        (
+            "no hop at all",
+            "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN count(*)",
+        ),
+        // The scope is rebuilt from a CTE after a WITH: not verified, left as it was.
+        (
+            "WITH after the pattern",
+            "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WITH b \
+             RETURN count(b)",
+        ),
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(
+            !sql.contains("NOT has(t.path_edges") && !sql.contains("NOT has(t."),
+            "#1175 ({why}): the guard must not be added:\n{sql}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // #1170: a FIXED hop chained in front of a CTE-backed VLP lost its WHERE filter
 //
 // `extract_filters` returned `None` for a required CTE-backed VLP on the premise
@@ -4215,7 +4316,7 @@ async fn fixed_hop_before_vlp_keeps_its_where_filter_denorm_1170() {
         .await,
     );
     assert!(
-        sql.contains("WHERE t.OriginCityName = 'Chicago'"),
+        sql.contains("WHERE (t.OriginCityName = 'Chicago' AND NOT has(t.path_edges"),
         "#1170: the chained fixed hop's predicate must reach the outer WHERE, on the \
          FROM-role column of the hop that owns `c`:\n{sql}"
     );
@@ -4236,7 +4337,7 @@ async fn shared_node_filter_uses_the_fixed_hops_role_denorm_1170() {
         .await,
     );
     assert!(
-        sql.contains("WHERE t.DestCityName = 'Denver'"),
+        sql.contains("WHERE (t.DestCityName = 'Denver' AND NOT has(t.path_edges"),
         "#1170: `a` is the DESTINATION of the fixed hop, so its city is `DestCityName`:\n{sql}"
     );
     assert!(
@@ -4256,7 +4357,7 @@ async fn fixed_hop_before_vlp_keeps_its_where_filter_standard_1170() {
     )
     .await;
     assert!(
-        sql.contains("WHERE c.full_name = 'v'"),
+        sql.contains("WHERE (c.full_name = 'v' AND NOT has(t.path_edges"),
         "#1170: on a STANDARD schema too, `c`'s predicate must reach the outer \
          WHERE (mapped name -> full_name):\n{sql}"
     );

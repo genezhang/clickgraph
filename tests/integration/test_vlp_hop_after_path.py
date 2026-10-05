@@ -9,7 +9,10 @@ second time (`JOIN edge AS t1 ON t1.followed_id = t.end_id`, tied to nothing els
 node-table join that mentions its own alias nowhere — so the rows were multiplied.
 
 Reuses the cyclic fixtures and the brute-force enumeration of test_with_hop_before_vlp.py.
-The engine keeps relationship-uniqueness inside a path, not between a hop and a path (#1175).
+Relationship-uniqueness covers the whole MATCH (#1175): for a path written FORWARD the hop's
+edge may not be one of the path's edges, so that oracle tracks edge ids. A path written
+BACKWARDS (`(a)<-[:R*]-(b)`) is not covered by the #1175 guard yet, and its oracle below
+still applies uniqueness inside the path only.
 """
 
 from collections import Counter, defaultdict
@@ -23,6 +26,23 @@ for _i, (_f, _t) in enumerate(EDGES):
 NODES = sorted({x for e in EDGES for x in e})
 
 
+def _trails(start, lo, hi):
+    """(end node, edge ids) of every edge-unique path of lo..hi hops from `start`."""
+    found = []
+
+    def rec(node, used, depth):
+        if depth >= lo:
+            found.append((node, used))
+        if depth == hi:
+            return
+        for i, t in _OUT[node]:
+            if i not in used:
+                rec(t, used | {i}, depth + 1)
+
+    rec(start, frozenset(), 0)
+    return found
+
+
 @pytest.mark.parametrize("which", ["std", "den"])
 @pytest.mark.parametrize("lo,hi", [(1, 2), (2, 3)])
 def test_forward_path_then_incoming_hop(schemas, which, lo, hi):  # noqa: F811
@@ -30,9 +50,10 @@ def test_forward_path_then_incoming_hop(schemas, which, lo, hi):  # noqa: F811
              f"RETURN a.user_id AS col0, b.user_id AS col1, c.user_id AS col2")
     expected = Counter()
     for a in NODES:
-        for b in _paths(a, lo, hi):
-            for _i, c in _IN[b]:
-                expected[(a, b, c)] += 1
+        for b, used in _trails(a, lo, hi):
+            for i, c in _IN[b]:
+                if i not in used:  # the hop and the path never share an edge
+                    expected[(a, b, c)] += 1
     assert _got(schemas[which], query, 3) == expected
 
 
