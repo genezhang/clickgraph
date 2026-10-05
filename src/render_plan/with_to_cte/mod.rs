@@ -5609,8 +5609,8 @@ fn build_cte_column_metadata(
 /// `original_exported_aliases` are the WithClause's own exported aliases (falling
 /// back to splitting `with_alias` on `_`). The rename map handles `WITH u AS
 /// person`: it maps the renamed alias (`person`) back to the original (`u`) —
-/// derived from each projection item whose expression is a `TableAlias` or
-/// `PropertyAccessExp` and whose output name differs from that source alias — so
+/// derived from each projection item whose expression is a `TableAlias` and
+/// whose output name differs from that source alias — so
 /// downstream lookups can find CTE columns prefixed with the original alias in
 /// `property_mapping`.
 ///
@@ -5646,9 +5646,10 @@ fn build_alias_rename_map(
                             crate::query_planner::logical_expr::LogicalExpr::TableAlias(ta) => {
                                 Some(ta.0.clone())
                             }
-                            crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(
-                                pa,
-                            ) => Some(pa.table_alias.0.clone()),
+                            // #1225/#1227: `WITH a.age AS ag` is NOT a rename of `a` — the output
+                            // is a scalar column named `ag`. Treating it as one published `ag`
+                            // with `a`'s property mapping and label (a bare `ag` then rewrote to
+                            // nothing → `GROUP BY ag`, Code 184).
                             _ => None,
                         };
                         if let Some(orig) = original {

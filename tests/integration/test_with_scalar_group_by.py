@@ -105,3 +105,30 @@ def test_property_output_named_like_its_source_node():
     rows = _rows("social_integration", "MATCH (a:User) WITH a.age AS a RETURN a ORDER BY a LIMIT 3")
     direct = _rows("social_integration", "MATCH (a:User) RETURN a.age AS a ORDER BY a LIMIT 3")
     assert rows == direct
+
+
+# ---------------------------------------------------------------------------
+# #1227: a scalar exported by the SAME WITH as the node it was read from
+# (`WITH a, a.age AS ag`): the render layer also treated it as a rename of `a` and published `ag`
+# with a's property mapping/label, so `GROUP BY ag` stayed a bare alias (Code 184).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("schema, expr", [
+    ("social_integration", "a.age"),
+    ("social_polymorphic", "a.name"),
+    ("standard", "a.name"),
+])
+def test_scalar_exported_next_to_its_node_groups_correctly(schema, expr):
+    direct = _as_dict(
+        _rows(schema, f"MATCH (a:User) RETURN {expr} AS g, count(*) AS n"), "g")
+    via_with = _as_dict(
+        _rows(schema, f"MATCH (a:User) WITH a, {expr} AS g RETURN g, count(*) AS n"), "g")
+    assert via_with == direct and len(direct) > 1
+
+
+def test_scalar_next_to_its_node_keeps_order_and_name():
+    schema = "social_integration"
+    direct = _rows(schema, "MATCH (a:User) RETURN a.age AS x, count(*) AS n ORDER BY x")
+    via = _rows(schema, "MATCH (a:User) WITH a, a.age AS ag RETURN ag AS x, count(*) AS n "
+                        "ORDER BY x")
+    assert via == direct
