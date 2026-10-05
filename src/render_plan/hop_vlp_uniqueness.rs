@@ -72,8 +72,14 @@ pub(super) fn guards(plan: &LogicalPlan) -> Vec<RenderExpr> {
     if super::from_builder::is_fixed_length_vlp(path)
         || path.is_optional.unwrap_or(false)
         || path.shortest_path_mode.is_some()
-        || path.direction != Direction::Outgoing
-        || path.was_undirected == Some(true)
+        || path.direction == Direction::Either
+        // An undirected path is one doubled-edge walk (#617) whose `path_edges` keeps each edge's
+        // ORIGINAL (from, to) — the same value the hop's own columns spell. A legacy two-arm
+        // split (denormalized layout) is not.
+        || (path.was_undirected == Some(true)
+            && !crate::query_planner::analyzer::bidirectional_union::undirected_vlp_single_walk_core(
+                path, &schema,
+            ))
         || path.left_connection == path.right_connection
         // `*0..N` is edge-unique like every other lower bound since #1230 (its zero-hop base
         // seeds a typed-empty `path_edges`); only `*0..0` has no recursion and no `path_edges`.

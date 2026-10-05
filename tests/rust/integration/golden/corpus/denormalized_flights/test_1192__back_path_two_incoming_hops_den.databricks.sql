@@ -28,4 +28,4 @@ SELECT
 FROM vlp_b_a AS t
 INNER JOIN test_integration.flights AS t2 ON t2.Dest = t.start_id
 INNER JOIN test_integration.flights AS t1 ON t1.Dest = t2.Origin
-WHERE (t1.flight_id <> t2.flight_id OR t1.flight_number <> t2.flight_number)
+WHERE (((t1.flight_id <> t2.flight_id OR t1.flight_number <> t2.flight_number) AND NOT array_contains(t.path_edges, struct(t1.flight_id, t1.flight_number))) AND NOT array_contains(t.path_edges, struct(t2.flight_id, t2.flight_number)))

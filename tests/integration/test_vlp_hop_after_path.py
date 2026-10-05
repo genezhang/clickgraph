@@ -9,10 +9,8 @@ second time (`JOIN edge AS t1 ON t1.followed_id = t.end_id`, tied to nothing els
 node-table join that mentions its own alias nowhere — so the rows were multiplied.
 
 Reuses the cyclic fixtures and the brute-force enumeration of test_with_hop_before_vlp.py.
-Relationship-uniqueness covers the whole MATCH (#1175): for a path written FORWARD the hop's
-edge may not be one of the path's edges, so that oracle tracks edge ids. A path written
-BACKWARDS (`(a)<-[:R*]-(b)`) is not covered by the #1175 guard yet, and its oracle below
-still applies uniqueness inside the path only.
+Relationship-uniqueness covers the whole MATCH (#1175, backwards paths since #1203): the hop's
+edge may not be one of the path's edges, so every oracle below tracks edge ids.
 """
 
 from collections import Counter, defaultdict
@@ -64,9 +62,10 @@ def test_backwards_path_then_incoming_hop(schemas, which, lo, hi):  # noqa: F811
              f"RETURN a.user_id AS col0, b.user_id AS col1, c.user_id AS col2")
     expected = Counter()
     for b in NODES:  # the path runs b -> ... -> a
-        for a in _paths(b, lo, hi):
-            for _i, c in _IN[b]:
-                expected[(a, b, c)] += 1
+        for a, used in _trails(b, lo, hi):
+            for i, c in _IN[b]:
+                if i not in used:  # the hop and the path never share an edge (#1203)
+                    expected[(a, b, c)] += 1
     assert _got(schemas[which], query, 3) == expected
 
 
@@ -76,9 +75,10 @@ def test_backwards_path_then_two_incoming_hops(schemas, which):  # noqa: F811
              "RETURN a.user_id AS col0, b.user_id AS col1, c.user_id AS col2, d.user_id AS col3")
     expected = Counter()
     for b in NODES:
-        for a in _paths(b, 1, 2):
+        for a, used in _trails(b, 1, 2):
             for i, c in _IN[b]:
                 for j, d in _IN[c]:
-                    if i != j:  # the two fixed hops are pairwise relationship-unique
+                    # all three relationship groups are pairwise edge-unique
+                    if i != j and i not in used and j not in used:
                         expected[(a, b, c, d)] += 1
     assert _got(schemas[which], query, 4) == expected

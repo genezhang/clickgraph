@@ -24,9 +24,8 @@ WITH RECURSIVE vlp_b_a AS (
       AND NOT array_contains(vp.path_edges, rel.follow_id)
 )
 SELECT 
-      t.end_id AS `a.user_id`, 
-      t0.follower_id AS `d.user_id`
+      count(*) AS `count(*)`
 FROM vlp_b_a AS t
-INNER JOIN test_integration.user_follows_test AS t1 ON t1.followed_id = t.start_id
-INNER JOIN test_integration.user_follows_test AS t0 ON t0.followed_id = t1.follower_id
-WHERE ((t0.follow_id <> t1.follow_id AND NOT array_contains(t.path_edges, t0.follow_id)) AND NOT array_contains(t.path_edges, t1.follow_id))
+JOIN test_integration.users_test AS c ON 1 = 1
+INNER JOIN test_integration.user_follows_test AS t0 ON t0.follower_id = c.user_id AND t0.followed_id = t.end_id
+WHERE NOT array_contains(t.path_edges, t0.follow_id)

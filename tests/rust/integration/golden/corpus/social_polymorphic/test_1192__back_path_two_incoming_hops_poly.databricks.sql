@@ -31,4 +31,4 @@ SELECT
 FROM vlp_b_a AS t
 INNER JOIN brahmand.interactions AS t1 ON t1.to_id = t.start_id AND t1.interaction_type = 'FOLLOWS' AND t1.from_type = 'User' AND t1.to_type = 'User'
 INNER JOIN brahmand.interactions AS t0 ON t0.to_id = t1.from_id AND t0.interaction_type = 'FOLLOWS' AND t0.from_type = 'User' AND t0.to_type = 'User'
-WHERE (t0.from_id <> t1.from_id OR t0.to_id <> t1.to_id OR t0.interaction_type <> t1.interaction_type OR t0.timestamp <> t1.timestamp)
+WHERE (((t0.from_id <> t1.from_id OR t0.to_id <> t1.to_id OR t0.interaction_type <> t1.interaction_type OR t0.timestamp <> t1.timestamp) AND NOT array_contains(t.path_edges, struct(t0.from_id, t0.to_id, t0.interaction_type, t0.timestamp))) AND NOT array_contains(t.path_edges, struct(t1.from_id, t1.to_id, t1.interaction_type, t1.timestamp)))
