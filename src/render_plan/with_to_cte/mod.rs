@@ -3418,8 +3418,10 @@ fn resolve_final_from_against_cte(
 /// Pushes any generated condition into `join_conditions`; a no-op when FROM is not
 /// a VLP CTE or the alias is neither the VLP start nor end. The caller gates this
 /// on `join_conditions.is_empty()`.
+#[allow(clippy::too_many_arguments)]
 fn generate_vlp_with_cte_join_conditions(
     render_plan: &RenderPlan,
+    vlp_ctes: &[Cte],
     cte_name: &str,
     cte_alias: &str,
     carried_aliases: &[String],
@@ -3430,7 +3432,7 @@ fn generate_vlp_with_cte_join_conditions(
     if let FromTableItem(Some(from_ref)) = &render_plan.from {
         if from_ref.name.starts_with("vlp_") {
             // Find which VLP CTE this is and determine if the alias is start or end
-            for vlp_cte in &render_plan.ctes.0 {
+            for vlp_cte in vlp_ctes {
                 if vlp_cte.cte_name == from_ref.name {
                     // Match when cte_alias equals or starts with the VLP alias
                     // e.g., cte_alias="a_allNeighboursCount" matches vlp start_alias="a"
@@ -4255,6 +4257,7 @@ fn resolve_cross_table_with_cte_joins(
                 if join_conditions.is_empty() {
                     generate_vlp_with_cte_join_conditions(
                         render_plan,
+                        &render_plan.ctes.0,
                         &cte_name,
                         &cte_alias,
                         &aliases,
@@ -7063,6 +7066,114 @@ fn rewrite_cte_join_conditions_and_prune_orphans(
     }
 }
 
+/// P-4b / #1283: `fix_orphan_table_aliases` CROSS JOINs every in-scope WITH CTE
+/// that the rendered WITH body does not join. That is right for a value carried
+/// into an unrelated MATCH, but when a node the CTE carries is an endpoint of a hop
+/// or path in this body's own pattern, the missing join IS the pattern's tie: a
+/// cross join returns every combination (a path off a carried node in a WITH body:
+/// 1100 rows vs 111; LDBC IC1 gave every friend the distance to the nearest one).
+///
+/// When the body (or a UNION arm of it) reads a variable-length path CTE whose
+/// endpoints the CTE carries, tie them exactly as the final scope does
+/// (`generate_vlp_with_cte_join_conditions`). Otherwise refuse, unless a filter
+/// of the body mentions the CTE alias (the tie may live there).
+fn tie_or_reject_cross_joined_pattern_endpoint(
+    rendered: &mut RenderPlan,
+    joined_before: &HashSet<String>,
+    body_plan: &LogicalPlan,
+    with_scope: &WithBarrierScope,
+    cte_schemas: &crate::render_plan::CteSchemas,
+    all_ctes: &[Cte],
+) -> RenderPlanBuilderResult<()> {
+    fn is_endpoint(plan: &LogicalPlan, alias: &str) -> bool {
+        match plan {
+            LogicalPlan::GraphRel(gr)
+                if gr.left_connection == alias || gr.right_connection == alias =>
+            {
+                true
+            }
+            other => other.children().iter().any(|c| is_endpoint(c, alias)),
+        }
+    }
+    let carried_by = |cte_name: &str| -> Vec<String> {
+        let mut carried: Vec<String> = with_scope
+            .scope_cte_variables()
+            .iter()
+            .filter(|(_, info)| info.cte_name == cte_name)
+            .map(|(alias, _)| alias.clone())
+            .collect();
+        carried.sort();
+        carried
+    };
+    // Tie an untied WITH-CTE join to the arm's variable-length path, when it can.
+    let tie = |arm: &mut RenderPlan, is_new: &dyn Fn(&str) -> bool| {
+        for i in 0..arm.joins.0.len() {
+            let join = &arm.joins.0[i];
+            if !is_new(&join.table_alias)
+                || !join.joining_on.is_empty()
+                || !crate::utils::cte_naming::is_generated_cte_name(&join.table_name)
+            {
+                continue;
+            }
+            let (cte_name, cte_alias) = (join.table_name.clone(), join.table_alias.clone());
+            let mut conditions = Vec::new();
+            generate_vlp_with_cte_join_conditions(
+                arm,
+                all_ctes,
+                &cte_name,
+                &cte_alias,
+                &carried_by(&cte_name),
+                cte_schemas,
+                &mut conditions,
+                false,
+            );
+            if !conditions.is_empty() {
+                let join = &mut arm.joins.0[i];
+                join.joining_on = conditions;
+                join.join_type = JoinType::Inner;
+            }
+        }
+    };
+    tie(rendered, &|alias: &str| !joined_before.contains(alias));
+    if let UnionItems(Some(union)) = &mut rendered.union {
+        for arm in union.input.iter_mut() {
+            tie(arm, &|_: &str| true);
+        }
+    }
+
+    let arms: Vec<&RenderPlan> = std::iter::once(&*rendered)
+        .chain(rendered.union.0.iter().flat_map(|u| u.input.iter()))
+        .collect();
+    for (n, arm) in arms.iter().enumerate() {
+        let mut filter_aliases = HashSet::new();
+        if let FilterItems(Some(filter)) = &arm.filters {
+            collect_aliases_from_single_render_expr(filter, &mut filter_aliases);
+        }
+        for join in &arm.joins.0 {
+            if (n == 0 && joined_before.contains(&join.table_alias))
+                || !join.joining_on.is_empty()
+                || !crate::utils::cte_naming::is_generated_cte_name(&join.table_name)
+                || filter_aliases.contains(&join.table_alias)
+            {
+                continue;
+            }
+            if let Some(endpoint) = carried_by(&join.table_name)
+                .into_iter()
+                .find(|a| is_endpoint(body_plan, a))
+            {
+                return Err(RenderBuildError::InvalidRenderPlan(format!(
+                    "node '{endpoint}' is carried through WITH into the next WITH's MATCH, but \
+                     the WITH CTE '{}' could not be tied to that pattern; refusing to cross \
+                     join it (every combination would be returned). Not supported yet (#1283 \
+                     follow-up).",
+                    join.table_name
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Rewrite orphaned composite alias references and apply the augmented CTE scope
 /// to a rendered WITH-CTE body (a STEP of the main loop's inner render-loop in
 /// `build_chained_with_match_cte_plan`, Phase-4 §7.1 extraction).
@@ -9522,6 +9633,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                 // Rewrite orphaned composite alias references + apply the augmented
                 // CTE scope. See `fix_composite_alias_refs_and_augment_scope`.
+                let joined_before: HashSet<String> = rendered
+                    .joins
+                    .0
+                    .iter()
+                    .map(|j| j.table_alias.clone())
+                    .collect();
                 fix_composite_alias_refs_and_augment_scope(
                     &mut rendered,
                     &all_ctes,
@@ -9531,6 +9648,14 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     schema,
                     body_scope_ref,
                 );
+                tie_or_reject_cross_joined_pattern_endpoint(
+                    &mut rendered,
+                    &joined_before,
+                    plan_to_render,
+                    &with_scope,
+                    &cte_schemas,
+                    &all_ctes,
+                )?;
                 rendered_plans.push(rendered);
             }
 

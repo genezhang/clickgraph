@@ -31,11 +31,6 @@ const KNOWN_VIOLATIONS: &[(&str, &str, &str)] = &[
         "#1189",
     ),
     (
-        "corpus/denormalized_flights/test_1188__carry_both_then_vlp_den.clickhouse.sql",
-        "c.code not in with_c_cte_0",
-        "P-4b (denorm id spelled as the bare Cypher property)",
-    ),
-    (
         "corpus/denormalized_flights/test_1189__two_carried_path_between_them_not_repaired_den.clickhouse.sql",
         "c_z.p1_c_end_id not in with_c_z_cte_0",
         "#1189",

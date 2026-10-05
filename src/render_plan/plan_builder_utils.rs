@@ -3079,11 +3079,44 @@ pub(crate) fn expand_table_alias_to_select_items(
                 // VLP CTE columns are named: start_id, end_id, start_city, end_city, etc.
                 let mut items = Vec::new();
 
+                // P-4b: a COMPOSITE node id has no single VLP column: `start_id`/`end_id`
+                // is the `|`-joined concat of its components, so mapping the first
+                // component onto it exported 'BANK|ACCT' as `bank_id` (silently wrong
+                // values, and no join could match it). Map every component onto its own
+                // `start_<col>`/`end_<col>` column (projected as an ordinary property,
+                // #1123); where the VLP CTE does not project it, ClickHouse fails loudly.
+                let composite_id_columns: Vec<String> = {
+                    use crate::query_planner::logical_expr::expression_rewriter::find_label_for_alias_in_plan;
+                    find_label_for_alias_in_plan(plan, alias)
+                        .and_then(|label| {
+                            crate::server::query_context::get_current_schema().and_then(|schema| {
+                                schema.node_schema_opt(&label).map(|ns| {
+                                    ns.node_id.columns().iter().map(|c| c.to_string()).collect()
+                                })
+                            })
+                        })
+                        .filter(|cols: &Vec<String>| cols.len() > 1)
+                        .unwrap_or_default()
+                };
+                for id_col in &composite_id_columns {
+                    items.push(SelectItem {
+                        expression: RenderExpr::Column(Column(PropertyValue::Column(format!(
+                            "{}_{}",
+                            col_prefix, id_col
+                        )))),
+                        col_alias: Some(ColumnAlias(cte_column_name(alias, id_col))),
+                    });
+                }
+
                 // First, add ID column
                 // For VLP endpoints, find_id_column_for_alias returns "start_id" or "end_id" directly
                 // (these are the VLP CTE column names, not raw DB column names)
                 // So we should NOT prefix them again - use them directly
-                if let Ok(id_col) = plan.find_id_column_for_alias(alias) {
+                if let Some(id_col) = plan
+                    .find_id_column_for_alias(alias)
+                    .ok()
+                    .filter(|_| composite_id_columns.is_empty())
+                {
                     // 🔧 FIX: Don't double-prefix VLP ID columns.
                     // The VLP recursive CTE ALWAYS names the identity column `start_id`/`end_id`
                     // (generic `_id` suffix), regardless of the schema's node_id property name —
@@ -3108,7 +3141,10 @@ pub(crate) fn expand_table_alias_to_select_items(
 
                 // Add property columns (e.g., end_city AS u2_city)
                 for (prop_name, _) in &properties {
-                    // Skip ID column (already added above)
+                    // Skip ID column(s) (already added above)
+                    if composite_id_columns.contains(prop_name) {
+                        continue;
+                    }
                     if let Ok(id_col) = plan.find_id_column_for_alias(alias) {
                         if prop_name == &id_col {
                             continue;

@@ -149,7 +149,12 @@ fn find_fresh_table_scan_aliases_in_plan(plan: &LogicalPlan) -> std::collections
 fn collect_fresh_scan_aliases(plan: &LogicalPlan, aliases: &mut std::collections::HashSet<String>) {
     match plan {
         LogicalPlan::GraphNode(gn) => {
-            if matches!(gn.input.as_ref(), LogicalPlan::ViewScan(_)) {
+            // A node scanning a WITH CTE is CTE-backed, not fresh: it must keep its
+            // CTE reference, or a hop off a node carried into a second WITH's body
+            // loses its tie to the CTE (cross-joined, #1283).
+            if matches!(gn.input.as_ref(), LogicalPlan::ViewScan(scan)
+                if !crate::utils::cte_naming::is_generated_cte_name(&scan.source_table))
+            {
                 aliases.insert(gn.alias.clone());
             }
             collect_fresh_scan_aliases(&gn.input, aliases);

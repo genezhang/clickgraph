@@ -4040,7 +4040,11 @@ pub fn extract_ctes_with_context(
                                 node_schema.property_mappings.iter().collect();
                             sorted_props.sort_by_key(|(k, _)| k.as_str());
                             for (prop_name, prop_value) in sorted_props {
-                                if id_columns.contains(&prop_value.raw()) {
+                                // A SINGLE id is projected as `start_id`/`end_id`; a
+                                // COMPOSITE id's components have no other target and are
+                                // projected as ordinary properties (#1123), or a downstream
+                                // `WITH` of the endpoint cannot export them.
+                                if id_columns.len() == 1 && id_columns.contains(&prop_value.raw()) {
                                     continue;
                                 }
                                 if !include_all {
