@@ -3960,6 +3960,7 @@ fn reject_with_cte_joined_twice_under_vlp(render_plan: &RenderPlan) -> RenderPla
 fn resolve_cross_table_with_cte_joins(
     render_plan: &mut RenderPlan,
     cte_references: &HashMap<String, String>,
+    last_with_cte: Option<&str>,
     cte_schemas: &crate::render_plan::CteSchemas,
     original_correlation_predicates: &[LogicalExpr],
     current_plan: &LogicalPlan,
@@ -3989,6 +3990,12 @@ fn resolve_cross_table_with_cte_joins(
             // Group by CTE name since multiple aliases can come from the same CTE
             let mut cte_join_needed: HashMap<String, Vec<String>> = HashMap::new();
             for (alias, cte_name) in cte_references {
+                // #1188: only the LAST WITH's output is in scope here. An earlier WITH's
+                // CTE was consumed by the next scope's CTE body, and its aliases are out of
+                // scope — joining it again is a cross join that multiplies the rows.
+                if last_with_cte.is_some_and(|last| last != cte_name) {
+                    continue;
+                }
                 cte_join_needed
                     .entry(cte_name.clone())
                     .or_default()
@@ -9707,6 +9714,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
     resolve_cross_table_with_cte_joins(
         &mut render_plan,
         &cte_references,
+        all_ctes.last().map(|c| c.cte_name.as_str()),
         &cte_schemas,
         &original_correlation_predicates,
         &current_plan,
