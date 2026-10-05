@@ -205,10 +205,9 @@ fn generate_exists_sql(
 
 /// Node schema of an EXISTS / NOT-pattern endpoint, for its id column (#1246-follow-up).
 ///
-/// An explicit pattern label wins. Otherwise the endpoint's type comes from the relationship
-/// schema's role (`from_node` / `to_node`). A polymorphic edge declares the wildcard `$any` there,
-/// which has no node schema; an unlabeled endpoint that is an outer-bound alias (`MATCH (u:User)
-/// WHERE EXISTS { (u)-[:FOLLOWS]->() }`) then takes the label the outer scope bound it with.
+/// An explicit pattern label wins, then the label the outer scope bound the alias with, then the
+/// relationship schema's role type (`from_node` / `to_node`; a polymorphic edge declares the
+/// wildcard `$any` there, which has no node schema).
 fn endpoint_node_schema<'a>(
     schema: &'a crate::graph_catalog::graph_schema::GraphSchema,
     explicit_label: Option<&str>,
@@ -220,9 +219,12 @@ fn endpoint_node_schema<'a>(
             .node_schema_opt(label)
             .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.to_string()));
     }
-    schema
-        .node_schema_opt(role_type)
-        .or_else(|| bound_node_label(alias).and_then(|l| schema.node_schema_opt(&l)))
+    // The label the outer scope bound the alias with is what the alias IS; the relationship's
+    // role type is only a guess for a pattern that cannot say which side the node sits on
+    // (`NOT (c)<-[:PLACED_BY]-()` read `c`'s id through the SOURCE role, `Order`: Code 47).
+    bound_node_label(alias)
+        .and_then(|l| schema.node_schema_opt(&l))
+        .or_else(|| schema.node_schema_opt(role_type))
         .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(role_type.to_string()))
 }
 

@@ -5061,6 +5061,29 @@ async fn undirected_pattern_over_a_one_way_relationship_uses_only_the_feasible_l
 }
 
 // ---------------------------------------------------------------------------
+// #1257: an unlabeled outer-bound endpoint read its id through the relationship's SOURCE role
+// whatever the arrow said, so `NOT (c)<-[:PLACED_BY]-()` correlated the Customer `c` through the
+// Order id column (`c.order_id`, Code 47). The label the outer scope bound the alias with wins.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn unlabeled_outer_endpoint_uses_its_bound_label_not_the_source_role_1257() {
+    let schema = load_schema_from("schemas/examples/orders_customers_fk.yaml");
+    for cypher in [
+        "MATCH (c:Customer) WHERE NOT (c)<-[:PLACED_BY]-() RETURN c.customer_id",
+        "MATCH (c:Customer) WHERE EXISTS { (c)<-[:PLACED_BY]-() } RETURN c.customer_id",
+        "MATCH (c:Customer) RETURN size((c)<-[:PLACED_BY]-())",
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(
+            !sql.contains("c.order_id"),
+            "{cypher}: Customer `c` must not be read through Order's id\n{sql}"
+        );
+        assert!(sql.contains("= c.customer_id"), "{cypher}\n{sql}");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
 // The emitter's path-variable "spurious JOIN" cleanup kept only joins whose alias was read, so
