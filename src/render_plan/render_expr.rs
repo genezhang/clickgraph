@@ -267,6 +267,26 @@ impl<'a> PolymorphicEdgeConds<'a> {
         })
     }
 
+    /// ` AND <labels>` for one orientation (no type condition; empty off the polymorphic layout).
+    fn orientation_suffix(this: &Option<Self>, src: Option<&str>, tgt: Option<&str>) -> String {
+        this.as_ref()
+            .map(|p| {
+                p.orientation(src, tgt)
+                    .into_iter()
+                    .map(|c| format!(" AND {}", c))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// ` AND <type>` (empty when not polymorphic or no type is named).
+    fn type_suffix(this: &Option<Self>) -> String {
+        this.as_ref()
+            .and_then(|p| p.type_cond())
+            .map(|c| format!(" AND {}", c))
+            .unwrap_or_default()
+    }
+
     /// ` AND <type> AND <labels>` for one orientation (empty string off the polymorphic layout).
     fn suffix(this: &Option<Self>, src: Option<&str>, tgt: Option<&str>) -> String {
         let Some(p) = this else {
@@ -1268,9 +1288,6 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
             }
 
             // Single-hop pattern from here on
-            // Get the end node alias (can be anonymous/None)
-            let end_alias = conn.end_node.name.as_ref().map(|s| s.to_string());
-
             // Get relationship type
             let rel_type = conn
                 .relationship
@@ -1347,26 +1364,29 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                         resolve_correlation_id_sql(start_alias, node_schema)
                     };
 
-                    // Get end node's ID column
-                    let _end_id_sql = if let Some(label) = &conn.end_node.label {
-                        let node_schema = schema
+                    // The end node is internal to the pattern (never correlated), so only an
+                    // EXPLICIT label is looked at, and only to reject an unknown one.
+                    if let Some(label) = &conn.end_node.label {
+                        schema
                             .node_schema_opt(label)
                             .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(label.clone()))?;
-                        end_alias
-                            .as_ref()
-                            .map(|alias| node_schema.node_id.sql_tuple(alias))
-                            .unwrap_or_default()
-                    } else {
-                        // No label in pattern - infer from relationship's to_node
-                        let node_type = &rel_schema.to_node;
-                        let node_schema = schema.node_schema_opt(node_type).ok_or_else(|| {
-                            RenderBuildError::NodeSchemaNotFound(node_type.clone())
-                        })?;
-                        end_alias
-                            .as_ref()
-                            .map(|alias| node_schema.node_id.sql_tuple(alias))
-                            .unwrap_or_default()
-                    };
+                    }
+
+                    // Polymorphic edge table: restrict to the pattern's type and endpoint labels.
+                    let poly = PolymorphicEdgeConds::new(
+                        rel_schema,
+                        table_name,
+                        conn.relationship.labels.clone().unwrap_or_default(),
+                    );
+                    let start_label = conn
+                        .start_node
+                        .label
+                        .clone()
+                        .or_else(|| bound_node_label(start_alias));
+                    let sl = start_label.as_deref();
+                    let el = conn.end_node.label.as_deref();
+                    let start_is_src = PolymorphicEdgeConds::suffix(&poly, sl, el);
+                    let start_is_tgt = PolymorphicEdgeConds::suffix(&poly, el, sl);
 
                     // Generate COUNT SQL based on direction
                     // NOTE: For size() patterns, named end nodes are INTERNAL to the pattern,
@@ -1380,29 +1400,45 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                         (false, Direction::Outgoing) => {
                             // Directed outgoing: start_node -> end_node
                             format!(
-                                "(SELECT COUNT(*) FROM {} WHERE {}.{} = {})",
-                                full_table, table_name, from_col, start_id_sql
+                                "(SELECT COUNT(*) FROM {} WHERE {}.{} = {}{})",
+                                full_table, table_name, from_col, start_id_sql, start_is_src
                             )
                         }
                         (false, Direction::Incoming) => {
                             // Directed incoming: start_node <- end_node
                             format!(
-                                "(SELECT COUNT(*) FROM {} WHERE {}.{} = {})",
-                                full_table, table_name, to_col, start_id_sql
+                                "(SELECT COUNT(*) FROM {} WHERE {}.{} = {}{})",
+                                full_table, table_name, to_col, start_id_sql, start_is_tgt
                             )
                         }
                         (true, _) | (false, Direction::Either) => {
                             // Undirected: count both directions from start node
-                            format!(
-                                "(SELECT COUNT(*) FROM {} WHERE {}.{} = {} OR {}.{} = {})",
-                                full_table,
-                                table_name,
-                                from_col,
-                                start_id_sql,
-                                table_name,
-                                to_col,
-                                start_id_sql
-                            )
+                            if poly.is_some() {
+                                format!(
+                                    "(SELECT COUNT(*) FROM {} WHERE (({}.{} = {}{}) OR ({}.{} = {}{})){})",
+                                    full_table,
+                                    table_name,
+                                    from_col,
+                                    start_id_sql,
+                                    PolymorphicEdgeConds::orientation_suffix(&poly, sl, el),
+                                    table_name,
+                                    to_col,
+                                    start_id_sql,
+                                    PolymorphicEdgeConds::orientation_suffix(&poly, el, sl),
+                                    PolymorphicEdgeConds::type_suffix(&poly)
+                                )
+                            } else {
+                                format!(
+                                    "(SELECT COUNT(*) FROM {} WHERE {}.{} = {} OR {}.{} = {})",
+                                    full_table,
+                                    table_name,
+                                    from_col,
+                                    start_id_sql,
+                                    table_name,
+                                    to_col,
+                                    start_id_sql
+                                )
+                            }
                         }
                     };
 
