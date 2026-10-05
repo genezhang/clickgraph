@@ -4051,6 +4051,7 @@ fn resolve_cross_table_with_cte_joins(
             }
 
             let from_alias = from_ref.alias.clone();
+            let from_is_a_vlp_cte = from_ref.name.starts_with("vlp_");
             let from_is_vlp_cte = from_ref.name.starts_with("vlp_")
                 && crate::query_planner::logical_plan::is_supported_with_vlp_chain(
                     current_plan,
@@ -4078,6 +4079,38 @@ fn resolve_cross_table_with_cte_joins(
                     "🔧 build_chained_with_match_cte_plan: Creating JOIN to CTE '{}' AS '{}' for aliases {:?}",
                     cte_name, cte_alias, aliases
                 );
+
+                // #1214: the scope's own hop may already have joined this CTE under a carried
+                // alias (`INNER JOIN with_b_c_cte_0 AS b ON t3.follower_id = b_c.p1_b_user_id`,
+                // its tie written against the composite alias). Adding a second copy as `b_c ON
+                // 1 = 1` multiplied every row by the CTE's size (153 where 17 is correct).
+                // One CTE, one join: keep the existing one and point the composite alias at it.
+                //
+                // Not next to a path as FROM: there the two copies are the symptom of a shape
+                // whose node joins are untied too (`reject_with_cte_joined_twice_under_vlp`
+                // refuses it loudly; merging the copies would render 25x too many rows).
+                if let Some(existing_alias) = render_plan
+                    .joins
+                    .0
+                    .iter()
+                    .find(|j| {
+                        j.table_name == cte_name && j.table_alias != cte_alias && !from_is_a_vlp_cte
+                    })
+                    .map(|j| j.table_alias.clone())
+                {
+                    log::info!(
+                        "🔧 #1214: CTE '{}' already joined as '{}'; mapping '{}' onto it",
+                        cte_name,
+                        existing_alias,
+                        cte_alias
+                    );
+                    crate::render_plan::plan_builder_utils::rewrite_table_alias_in_render_plan(
+                        render_plan,
+                        &cte_alias,
+                        &existing_alias,
+                    );
+                    continue;
+                }
 
                 // Use the correlation predicates that were extracted from the ORIGINAL plan
                 // BEFORE transformations (stored in original_correlation_predicates)

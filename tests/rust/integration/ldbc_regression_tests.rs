@@ -4584,6 +4584,50 @@ async fn vlp_over_a_filtered_embedded_endpoint_fails_loud_1119() {
 }
 
 // ---------------------------------------------------------------------------
+// #1214: a WITH CTE joined twice after a multi-alias WITH
+//
+// `WITH a, count(b) AS n MATCH (a)-[:R]->(f)` rendered the CTE twice — `AS a_n ON 1 = 1` and
+// `AS a ON t.follower_id = a_n.col` — a cross multiplication by the CTE's row count (200 where
+// 20 is correct on the social_integration fixture).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn multi_alias_with_cte_is_joined_once_1214() {
+    let schema = load_schema_from("schemas/test/social_integration.yaml");
+    for cypher in [
+        "MATCH (a)-[:AUTHORED]->(b) WITH a, count(b) AS n MATCH (a)-[:FOLLOWS]->(f) \
+         RETURN count(*)",
+        "MATCH (c:User)-[:FOLLOWS]->(b:User) WITH c, b MATCH (b)-[:FOLLOWS]->(z:User) \
+         RETURN count(*)",
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        let joins_of_cte = sql
+            .lines()
+            .filter(|l| l.contains("JOIN with_") && l.contains("_cte_0 AS"))
+            .count();
+        assert!(
+            joins_of_cte <= 1 && !sql.contains("ON 1 = 1"),
+            "#1214: the WITH CTE must be joined once, tied to the node:\n{sql}"
+        );
+    }
+}
+
+/// Next to a path CTE as FROM the two copies belong to a shape whose node joins are untied too
+/// (25x too many rows once merged), so it stays refused.
+#[tokio::test]
+async fn doubly_joined_with_cte_next_to_a_path_stays_refused_1214() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let result = try_generate_sql_inline(
+        &schema,
+        "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c, z \
+         MATCH (z)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User)<-[:FOLLOWS]-(c) \
+         RETURN count(*)",
+    )
+    .await;
+    assert!(result.is_err(), "must stay refused, got: {result:?}");
+}
+
+// ---------------------------------------------------------------------------
 // #1170: a FIXED hop chained in front of a CTE-backed VLP lost its WHERE filter
 //
 // `extract_filters` returned `None` for a required CTE-backed VLP on the premise

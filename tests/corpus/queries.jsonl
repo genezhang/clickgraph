@@ -1445,3 +1445,6 @@
 {"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WITH b.name AS n RETURN count(n)", "name": "test_1177__with_after_chain_projection_std", "schema": "standard"}
 {"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WHERE c.user_id = 1 WITH count(*) AS k RETURN k", "name": "test_1177__with_after_filtered_chain_poly", "schema": "social_polymorphic"}
 {"cypher": "MATCH (c:Airport)-[:FLIGHT]->(a:Airport)-[:FLIGHT*1..2]->(b:Airport) WITH count(*) AS k RETURN k", "name": "test_1177__with_after_chain_den", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a)-[:AUTHORED]->(b) WITH a, count(b) AS n MATCH (a)-[:FOLLOWS]->(f) RETURN count(*)", "name": "test_1214__with_node_and_count_then_match_social", "schema": "social_integration"}
+{"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WITH c, b MATCH (b)-[:FOLLOWS]->(z:User) RETURN count(*)", "name": "test_1214__with_two_carried_after_path_std", "schema": "standard"}
+{"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WITH c, b MATCH (b)-[:FOLLOWS]->(z:User) RETURN count(*)", "name": "test_1214__with_two_carried_after_path_poly", "schema": "social_polymorphic"}
