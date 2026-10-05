@@ -1,9 +1,4 @@
-WITH RECURSIVE undir_edges_a_b_test_integration_user_follows_test AS (
-    SELECT e.follower_id, e.followed_id, e.follow_date, e.follow_id, e.follower_id AS __cg_orig_from, e.followed_id AS __cg_orig_to FROM test_integration.user_follows_test AS e
-    UNION ALL
-    SELECT e.followed_id AS follower_id, e.follower_id AS followed_id, e.follow_date, e.follow_id, e.follower_id AS __cg_orig_from, e.followed_id AS __cg_orig_to FROM test_integration.user_follows_test AS e
-),
-vlp_a_b AS (
+WITH RECURSIVE vlp_a_b AS (
     SELECT 
         start_node.user_id as start_id,
         start_node.user_id as end_id,
@@ -12,7 +7,7 @@ vlp_a_b AS (
         [start_node.user_id] as path_nodes,
         (
             SELECT arraySlice([__seed_edge.follow_id], 1, 0)
-            FROM undir_edges_a_b_test_integration_user_follows_test AS __seed_edge
+            FROM test_integration.user_follows_test AS __seed_edge
             LIMIT 1
         ) as path_edges,
         start_node.age as start_age,
@@ -53,7 +48,7 @@ vlp_a_b AS (
         end_node.full_name as end_name,
         end_node.registration_date as end_registration_date
     FROM vlp_a_b vp
-    JOIN undir_edges_a_b_test_integration_user_follows_test AS rel ON vp.end_id = rel.follower_id
+    JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 2
       AND NOT has(vp.path_edges, rel.follow_id)
@@ -61,3 +56,6 @@ vlp_a_b AS (
 SELECT 
       count(*) AS "count(*)"
 FROM vlp_a_b AS t
+JOIN test_integration.users_test AS c ON 1 = 1
+INNER JOIN test_integration.user_follows_test AS t0 ON t0.follower_id = c.user_id AND t0.followed_id = t.start_id
+WHERE NOT has(t.path_edges, t0.follow_id)

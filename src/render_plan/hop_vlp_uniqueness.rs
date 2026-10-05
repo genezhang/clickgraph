@@ -47,9 +47,9 @@ fn collect<'a>(node: &'a LogicalPlan, rels: &mut Vec<&'a GraphRel>) -> Option<()
 ///
 /// Verified shape — anything else returns no guard and renders as before:
 /// - one plain pattern (no WITH / comma / UNION / UNWIND) with EXACTLY ONE path, and that path
-///   is a required, directed (written forward), single-type recursive CTE with a lower bound
-///   of at least 1 (so its `path_edges` holds edge identities; a `*0..N` walk is
-///   node-unique) and not shortestPath or closed;
+///   is a required, directed (written forward), single-type recursive CTE with a recursive arm
+///   (so its `path_edges` holds edge identities; `*0..N` included since #1230) and not
+///   shortestPath or closed;
 /// - the hops are required, directed, single-hop, of the SAME single relationship type, in
 ///   the same `MATCH` clause;
 /// - the relationship is a standard (separate node table) or denormalized (single table)
@@ -75,10 +75,12 @@ pub(super) fn guards(plan: &LogicalPlan) -> Vec<RenderExpr> {
         || path.direction != Direction::Outgoing
         || path.was_undirected == Some(true)
         || path.left_connection == path.right_connection
+        // `*0..N` is edge-unique like every other lower bound since #1230 (its zero-hop base
+        // seeds a typed-empty `path_edges`); only `*0..0` has no recursion and no `path_edges`.
         || path
             .variable_length
             .as_ref()
-            .is_none_or(|spec| spec.effective_min_hops() < 1)
+            .is_none_or(|spec| spec.max_hops == Some(0))
         || path
             .pattern_combinations
             .as_ref()

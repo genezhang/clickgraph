@@ -294,32 +294,31 @@ pub struct EdgeUniquenessPolicy {
 }
 
 impl EdgeUniquenessPolicy {
-    /// Compute the uniqueness decision from the same terms the inline copies
-    /// used: EDGE iff not shortestPath, not a heterogeneous-polymorphic path,
-    /// and either a `>= 1` lower bound OR a CLOSED zero-hop pattern.
+    /// Compute the uniqueness decision: EDGE unless shortestPath or a
+    /// heterogeneous-polymorphic path.
     ///
-    /// Node-uniqueness is kept (EDGE `false`) for shortestPath (revisiting a
-    /// node can never shorten a path), for heterogeneous-polymorphic paths
-    /// (which never reach the standard/denorm arms — a separate two-CTE builder
-    /// that does not project `path_edges`; cf. #469), and for an OPEN zero-hop
-    /// `*0..N` (its base row has no edge to seed a 1-hop `path_edges` literal).
-    /// The one zero-hop exception is the CLOSED `*0..N` pattern
-    /// (`(a)-[*0..N]->(a)`): counting real cycles REQUIRES edge-uniqueness —
-    /// node-uniqueness structurally forbids returning to the start, so every
-    /// cycle is dropped and only the zero-length self rows survive (#628; the
-    /// zero-hop base seeds a typed-empty `path_edges` via `typed_empty_edges_seed`,
-    /// #887). `is_hetero_poly` is always `false` on the denorm path (a denorm
-    /// VLP requires both endpoints embedded-in-edge, never hetero) — passing it
-    /// keeps the CM predicate byte-identical.
+    /// Cypher's relationship-uniqueness rule makes a `*N..M` match a TRAIL: an edge may not repeat,
+    /// but a NODE may — a walk can return to its start through a cycle. That holds for every lower
+    /// bound including zero. Until #1230 an OPEN zero-hop `*0..N` kept node-uniqueness ("its base
+    /// row has no edge to seed a 1-hop `path_edges` literal"); the zero-hop base now seeds a
+    /// typed-empty `path_edges` via `typed_empty_edges_seed` (the closed pattern already relied on
+    /// it, #628/#887), so there is no reason left to forbid revisiting a node, and node-uniqueness
+    /// silently DROPPED every trail that does (standard: `*0..3` returned 100 rows where 149 is
+    /// correct on `social_integration`).
+    ///
+    /// Node-uniqueness stays for shortestPath (revisiting a node can never shorten a path), for
+    /// heterogeneous-polymorphic paths (a separate two-CTE builder that does not project
+    /// `path_edges`; cf. #469), and where the caller passes `node_unique_zero_hop`: a zero-hop
+    /// walk with NO recursive arm (`*0..0`: nothing to dedupe, and the seed would only drag the
+    /// edge table in) or an FK-edge arm (its zero-hop seed is not verified, #902).
+    /// `is_hetero_poly` is always `false` on the denorm path.
     pub fn new(
         shortest_path: bool,
         is_hetero_poly: bool,
-        min_hops: u32,
-        is_closed: bool,
+        node_unique_zero_hop: bool,
         identity: EdgeIdentity,
     ) -> Self {
-        let is_edge =
-            !shortest_path && !is_hetero_poly && (min_hops >= 1 || (min_hops == 0 && is_closed));
+        let is_edge = !shortest_path && !is_hetero_poly && !node_unique_zero_hop;
         Self {
             kind: if is_edge {
                 UniquenessKind::Edge
@@ -520,6 +519,10 @@ pub struct VariableLengthCteGenerator<'a> {
     /// Default `None`; only the standard/mixed/FK-edge generator honors it —
     /// denormalized VLP is intercepted by `DenormalizedCteStrategy` upstream.
     pub both_endpoint_filters: Option<String>,
+    /// #1230: keep NODE-uniqueness for a zero-lower-bound walk on this arm. Set by `CteManager`
+    /// (which knows the schema pattern) for the layouts whose zero-hop edge seed is not verified
+    /// (FK-edge, #902). Default `false`: every lower bound dedupes on edges.
+    pub zero_hop_keeps_node_uniqueness: bool,
     pub path_variable: Option<String>, // Path variable name from MATCH clause (e.g., "p" in "MATCH p = ...")
     pub relationship_types: Option<Vec<String>>, // Relationship type labels (e.g., ["FOLLOWS", "FRIENDS_WITH"])
     pub edge_id: Option<Identifier>, // Edge ID columns for relationship uniqueness (None = use from_id, to_id)
@@ -769,6 +772,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             // #1103: set post-construction by the CteManager (mirrors
             // `needs_path_relationships` / `use_bfs_mode`).
             both_endpoint_filters: None,
+            zero_hop_keeps_node_uniqueness: false,
             path_variable,
             relationship_types,
             edge_id,
@@ -848,6 +852,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             // #1103: set post-construction by the CteManager (mirrors
             // `needs_path_relationships` / `use_bfs_mode`).
             both_endpoint_filters: None,
+            zero_hop_keeps_node_uniqueness: false,
             path_variable,
             relationship_types,
             edge_id,
@@ -1299,17 +1304,16 @@ impl<'a> VariableLengthCteGenerator<'a> {
         EdgeUniquenessPolicy::new(
             self.shortest_path_mode.is_some(),
             self.is_heterogeneous_polymorphic_path(),
-            self.spec.effective_min_hops(),
-            self.is_closed_pattern(),
+            // `*0..0` has no recursive arm; some layouts' zero-hop seed is unverified (#902)
+            self.spec.effective_min_hops() == 0
+                && (self.spec.max_hops == Some(0) || self.zero_hop_keeps_node_uniqueness),
             self.edge_identity(),
         )
     }
 
-    /// Whether this VLP is a CLOSED pattern — the same Cypher variable on both
-    /// endpoints (`(a)-[*..]->(a)`). The planner leaves the two connection
-    /// aliases equal for a same-variable pattern (never renaming one), so the
-    /// generator sees `start_cypher_alias == end_cypher_alias`. A closed pattern
-    /// counts cycles (the outer query adds `start_id = end_id`); see #625/#628.
+    /// Whether this VLP is a CLOSED pattern (`(a)-[*..]->(a)`: equal endpoint aliases). Edge
+    /// uniqueness no longer depends on it (#1230); kept for the tests that pin the closed shape.
+    #[cfg(test)]
     fn is_closed_pattern(&self) -> bool {
         self.start_cypher_alias == self.end_cypher_alias
     }
@@ -4718,7 +4722,7 @@ mod tests {
 
     /// #887 Phase 1–2: the `EdgeUniquenessPolicy` decision truth-table — the
     /// single authority both `uses_edge_uniqueness` copies delegate to. EDGE iff
-    /// not shortestPath, not hetero-poly, and (min>=1 OR closed zero-hop).
+    /// not shortestPath and not hetero-poly (every lower bound, #1230).
     #[test]
     fn edge_uniqueness_policy_decision_table_887() {
         let id = || EdgeIdentity::EdgeIdColumns {
@@ -4726,20 +4730,17 @@ mod tests {
             from_col: "from_id".to_string(),
             to_col: "to_id".to_string(),
         };
-        let uses = |sp: bool, hp: bool, min: u32, closed: bool| {
-            EdgeUniquenessPolicy::new(sp, hp, min, closed, id()).uses_edge_uniqueness()
+        let uses = |sp: bool, hp: bool| {
+            EdgeUniquenessPolicy::new(sp, hp, false, id()).uses_edge_uniqueness()
         };
-        // min>=1 → EDGE, unless shortestPath or hetero-poly.
-        assert!(uses(false, false, 1, false), "*1.. open → edge");
-        assert!(uses(false, false, 2, true), "*2.. closed → edge");
-        assert!(!uses(true, false, 1, false), "shortestPath → node");
-        assert!(!uses(false, true, 1, false), "hetero-poly → node");
-        // zero-hop: EDGE only when closed (#628), else NODE.
-        assert!(uses(false, false, 0, true), "*0.. closed → edge (#628)");
-        assert!(!uses(false, false, 0, false), "*0.. open → node");
+        // EDGE for every lower bound (zero included, #1230) unless shortestPath or hetero-poly.
+        assert!(uses(false, false), "any lower bound → edge");
+        assert!(!uses(true, false), "shortestPath → node");
+        assert!(!uses(false, true), "hetero-poly → node");
+        assert!(!uses(true, true), "shortestPath + hetero-poly → node");
         assert!(
-            !uses(true, false, 0, true),
-            "shortestPath wins over closed zero-hop"
+            !EdgeUniquenessPolicy::new(false, false, true, id()).uses_edge_uniqueness(),
+            "a zero-hop arm with no recursion / FK-edge zero-hop stays node-unique"
         );
     }
 
@@ -4755,13 +4756,13 @@ mod tests {
             to_col: "to_id".to_string(),
         };
         // Edge kind (min>=1): NOT has(vp.path_edges, rel.follow_id).
-        let edge = EdgeUniquenessPolicy::new(false, false, 1, false, id.clone());
+        let edge = EdgeUniquenessPolicy::new(false, false, false, id.clone());
         assert_eq!(
             edge.recursive_cycle_predicate("rel", "next.node_id"),
             "NOT has(vp.path_edges, rel.follow_id)"
         );
-        // Node kind (open zero-hop): NOT has(vp.path_nodes, <id expr>).
-        let node = EdgeUniquenessPolicy::new(false, false, 0, false, id);
+        // Node kind (shortestPath): NOT has(vp.path_nodes, <id expr>).
+        let node = EdgeUniquenessPolicy::new(true, false, false, id);
         assert_eq!(
             node.recursive_cycle_predicate("rel", "next.node_id"),
             "NOT has(vp.path_nodes, next.node_id)"
@@ -5020,21 +5021,23 @@ mod tests {
             "closed *0..N must NOT use node-uniqueness; got:\n{closed_sql}"
         );
 
-        // OPEN: distinct aliases → stays node-unique, no path_edges seed.
+        // OPEN: distinct aliases → edge-unique too since #1230 (a `*0..N` trail may revisit a
+        // node; node-uniqueness silently dropped every such trail), same typed-empty seed.
         let open = make("a", "b");
         assert!(!open.is_closed_pattern());
         assert!(
-            !open.uses_edge_uniqueness(),
-            "open *0..N must stay node-unique"
+            open.uses_edge_uniqueness(),
+            "open *0..N must be edge-unique (#1230)"
         );
         let open_sql = open.generate_recursive_sql();
         assert!(
-            !open_sql.contains("path_edges"),
-            "open *0..N must not project path_edges; got:\n{open_sql}"
+            !open_sql.contains("[] as path_edges"),
+            "open *0..N must not seed a bare `[] as path_edges`; got:\n{open_sql}"
         );
         assert!(
-            open_sql.contains("NOT has(vp.path_nodes,"),
-            "open *0..N must use node-uniqueness; got:\n{open_sql}"
+            open_sql.contains("NOT has(vp.path_edges,")
+                && !open_sql.contains("NOT has(vp.path_nodes,"),
+            "open *0..N must use edge-uniqueness (#1230); got:\n{open_sql}"
         );
     }
 

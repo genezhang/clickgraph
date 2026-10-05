@@ -10767,9 +10767,9 @@ async fn denormalized_vlp_range_uses_edge_uniqueness_606() {
         );
     }
 
-    // Zero-hop (*0..N) stays NODE-unique: its base row is a node paired with
-    // itself and carries no edge to seed a 1-hop tuple, so switching it would
-    // create a base/recursive column-shape mismatch (#469).
+    // Zero-hop (*0..N) is edge-unique too (#1230): a trail may revisit a node, and node-uniqueness
+    // silently dropped every such trail. The zero-hop base seeds a typed-empty `path_edges`
+    // (`typed_empty_edges_seed`), so there is no base/recursive column-shape mismatch (#469).
     let zero = render(
         &schema,
         "MATCH (a:Airport)-[:FLIGHT*0..3]->(b:Airport) RETURN a.code, b.code",
@@ -10777,9 +10777,9 @@ async fn denormalized_vlp_range_uses_edge_uniqueness_606() {
     )
     .await;
     assert!(
-        zero.contains("NOT has(vp.path_nodes, next.dest_code)")
-            && !zero.contains("NOT has(vp.path_edges, tuple("),
-        "#606: denorm zero-hop VLP must stay node-unique; got:\n{zero}"
+        zero.contains("NOT has(vp.path_edges, tuple(")
+            && !zero.contains("NOT has(vp.path_nodes, next.dest_code)"),
+        "#1230: denorm zero-hop VLP must be edge-unique; got:\n{zero}"
     );
 
     // shortestPath stays NODE-unique: revisiting a node can never shorten a path.

@@ -4,7 +4,12 @@ WITH RECURSIVE vlp_a_b AS (
         start_node.mgr_id as end_id,
         0 as hop_count,
         CAST(array() AS ARRAY<STRING>) as path_relationships,
-        array(start_node.mgr_id) as path_nodes
+        array(start_node.mgr_id) as path_nodes,
+        (
+            SELECT slice(array(struct(__seed_edge.mgr_id, __seed_edge.emp_id)), 1, 0)
+            FROM testdb.reports AS __seed_edge
+            LIMIT 1
+        ) as path_edges
     FROM testdb.reports AS start_node
     WHERE start_node.mgr_id = 2
     UNION ALL
@@ -13,12 +18,13 @@ WITH RECURSIVE vlp_a_b AS (
         end_node.pid as end_id,
         vp.hop_count + 1 as hop_count,
         CAST(array() AS ARRAY<STRING>) as path_relationships,
-        concat(vp.path_nodes, array(end_node.pid)) as path_nodes
+        concat(vp.path_nodes, array(end_node.pid)) as path_nodes,
+        concat(vp.path_edges, array(struct(rel.mgr_id, rel.emp_id))) as path_edges
     FROM vlp_a_b vp
     JOIN testdb.reports rel ON vp.end_id = rel.mgr_id
     JOIN testdb.people end_node ON rel.emp_id = end_node.pid
     WHERE vp.hop_count < 2
-      AND NOT array_contains(vp.path_nodes, end_node.pid)
+      AND NOT array_contains(vp.path_edges, struct(rel.mgr_id, rel.emp_id))
 )
 SELECT 
       t.end_id AS `b.pid`
