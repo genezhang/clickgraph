@@ -2437,10 +2437,29 @@ pub(super) fn rewrite_logical_path_functions(
                             // Generate a bare PropertyAccess without table alias
                             // This will be converted to RenderExpr::Column later,
                             // which the SQL renderer recognizes as a VLP column
-                            return LogicalExpr::PropertyAccessExp(PropertyAccess {
+                            let column = LogicalExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias("__vlp_bare_col".to_string()), // Special marker for bare column
                                 column: PropertyValue::Column(col_name.to_string()),
                             });
+                            // #1202: add back the path's fixed hops (the CTE counts its own).
+                            let fixed =
+                                crate::server::query_context::path_fixed_hops(path_var_name);
+                            if fn_call.name == "length" && fixed > 0 {
+                                return LogicalExpr::OperatorApplicationExp(
+                                    crate::query_planner::logical_expr::OperatorApplication {
+                                        operator: crate::query_planner::logical_expr::Operator::Addition,
+                                        operands: vec![
+                                            column,
+                                            LogicalExpr::Literal(
+                                                crate::query_planner::logical_expr::Literal::Integer(
+                                                    fixed as i64,
+                                                ),
+                                            ),
+                                        ],
+                                    },
+                                );
+                            }
+                            return column;
                         }
                     }
                 }

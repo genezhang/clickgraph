@@ -126,8 +126,8 @@ def test_path_predicate_under_an_aggregate_and_order():
 
 
 @pytest.mark.parametrize("query, why", [
-    ("MATCH p=(c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WHERE length(p) > 2 "
+    ("MATCH p=(c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WHERE size(nodes(p)) > 3 "
      "RETURN count(*)", "other hops"),
 ])
 def test_unanswerable_shapes_fail_loudly(query, why):
-    assert "path function" in _err("social_integration", query)
+    assert "path variable `p`" in _err("social_integration", query)

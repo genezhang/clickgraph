@@ -13,6 +13,7 @@ mod group_by_builder;
 mod hop_vlp_uniqueness;
 mod join_builder;
 mod join_deduplicator;
+mod path_segments;
 pub(crate) mod pattern_comprehension_sql;
 pub mod plan_builder_helpers; // Made public for JOIN dependency sorting in SQL generation
 mod plan_builder_utils;

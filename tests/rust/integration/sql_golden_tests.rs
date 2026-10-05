@@ -12852,18 +12852,18 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
              unbound one: {sql}"
         );
 
-        // RETURN p: the path tuple's metadata columns must also be backed by
-        // a real JOIN.
-        let sql = render(
+        // RETURN p: #1202 — the path tuple is built from the recursive CTE's columns, which
+        // describe the variable-length part ONLY (the trailing hop's node and edge would be
+        // silently missing from the returned path), so the bare path is refused. The trailing
+        // JOIN itself is exercised by the node-returning forms above.
+        let err = try_render(
             &schema,
             "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User)-[:AUTHORED]->(c) RETURN p",
             SqlDialect::ClickHouse,
         )
-        .await;
-        assert!(
-            sql.contains("INNER JOIN") && sql.matches("JOIN").count() >= 2,
-            "expected the VLP CTE plus at least one real trailing JOIN: {sql}"
-        );
+        .await
+        .expect_err("a bare path over a variable-length part plus a hop must be refused");
+        assert!(err.contains("path variable `p`"), "{err}");
     }
 
     /// #521: a fixed hop adjacent to a VLP hop on a fully DENORMALIZED
