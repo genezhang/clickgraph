@@ -71,7 +71,7 @@ def _edges():
     return list(EDGES)
 
 
-def _oracle(edges, mode, hi, starts=None, ends=None):
+def _oracle(edges, mode, hi, starts=None, ends=None, lo=1):
     out = collections.defaultdict(list)
     for a, b in edges:
         out[a].append(b)
@@ -82,7 +82,7 @@ def _oracle(edges, mode, hi, starts=None, ends=None):
         lengths = collections.defaultdict(list)
 
         def rec(node, seen, k):
-            if k >= 1 and node != a:
+            if k >= lo and node != a:
                 lengths[node].append(k)
             if k < hi:
                 for m in out[node]:
@@ -154,3 +154,20 @@ def test_single_hop_shortest_path_keeps_its_endpoint_filters_1205(spec, mode, wh
     plain hop; the endpoint predicates the path pattern had moved onto the relationship were
     dropped, so every edge came back."""
     assert _got(mode, 1, where, spec) == _oracle(_edges(), mode, 1, starts=starts, ends=ends)
+
+
+@pytest.mark.parametrize("mode", ["shortestPath", "allShortestPaths"])
+@pytest.mark.parametrize("lo, hi", [(2, 4), (2, 3), (3, 4), (2, 2)])
+@pytest.mark.parametrize("where, starts, ends", [
+    ("", None, None),
+    ("WHERE a.user_id = 1", {1}, None),
+    ("WHERE b.user_id = 4", None, {4}),
+    ("WHERE a.user_id = 1 AND b.user_id = 4", {1}, {4}),
+    ("WHERE a.user_id = 1 AND b.user_id = 2", {1}, {2}),
+])
+def test_lower_bound_is_applied_before_the_shortest_pick_1205(mode, lo, hi, where, starts, ends):
+    """`shortestPath((a)-[*2..4]->(b))` is the shortest path WITHIN the bounds (the quantifier is a
+    pre-filter on the candidate paths — Neo4j Cypher manual, shortest-path planning): a pair whose
+    direct edge is 1 hop long must report its shortest 2..4-hop path, not the 1-hop one."""
+    got = _got(mode, hi, where, f"*{lo}..{hi}")
+    assert got == _oracle(_edges(), mode, hi, starts=starts, ends=ends, lo=lo)

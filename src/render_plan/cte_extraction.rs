@@ -5591,6 +5591,13 @@ pub fn extract_ctes_with_context(
                         graph_rel.shortest_path_mode,
                         Some(crate::query_planner::logical_plan::ShortestPathMode::Shortest)
                     ) && weight_cte_config.is_none()
+                        // #1205: the BFS yields the unbounded shortest distance; a lower bound > 1
+                        // (`*2..4`) needs the shortest path WITHIN the bounds, which only the
+                        // enumerating CTE (with `hop_count >= min` before the pick) can answer.
+                        && graph_rel
+                            .variable_length
+                            .as_ref()
+                            .is_none_or(|spec| spec.effective_min_hops() <= 1)
                         && !plan_needs_endpoint_properties
                         && start_has_id_filter
                         && end_has_id_filter
