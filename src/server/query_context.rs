@@ -240,6 +240,14 @@ pub struct QueryContext {
     /// MATCH branches, ...) by hand.
     pub cte_scope_for_correlation: HashMap<String, (u64, String, HashMap<String, String>)>,
 
+    /// P-4b WITH export contract (`docs/design/WITH_EXPORT_CONTRACT.md`): the
+    /// CTE column(s) holding the identity of each node a WITH CTE exports, keyed
+    /// by the exported alias and tagged with the generation that published it
+    /// (same scoping as `cte_scope_for_correlation`). Read by `join_builder` for
+    /// a CTE-backed endpoint, which renders the scope AFTER the WITH and so cannot
+    /// see the CTE's schema directly.
+    pub with_cte_identity: HashMap<String, (u64, Vec<String>)>,
+
     /// Current "CTE scope generation" — see `enter_cte_scope_generation`.
     /// `0` is the sentinel meaning "no `build_chained_with_match_cte_plan`
     /// invocation is currently active" (i.e. we're between independent
@@ -1153,6 +1161,7 @@ pub fn enter_cte_scope_generation() -> u64 {
             let prev = ctx.cte_scope_generation;
             if prev == 0 {
                 ctx.cte_scope_for_correlation.clear();
+                ctx.with_cte_identity.clear();
             }
             ctx.cte_scope_generation = new_gen;
             prev
@@ -1227,6 +1236,31 @@ pub fn set_cte_scope_for_correlation(
         ctx.cte_scope_for_correlation
             .insert(alias, (generation, sql_alias, property_mapping));
     });
+}
+
+/// Publish the identity columns of a node a WITH CTE exports (P-4b export
+/// contract), tagged with the currently active generation. See the
+/// `with_cte_identity` field doc.
+pub fn set_with_cte_identity(alias: String, columns: Vec<String>) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        let mut ctx = ctx.borrow_mut();
+        let generation = ctx.cte_scope_generation;
+        ctx.with_cte_identity.insert(alias, (generation, columns));
+    });
+}
+
+/// The CTE column(s) holding the identity of WITH-exported node `alias`, when
+/// published by the `build_chained_with_match_cte_plan` invocation still in
+/// progress (a stale entry from a finished, independent subplan never matches).
+pub fn with_cte_identity(alias: &str) -> Option<Vec<String>> {
+    QUERY_CONTEXT
+        .try_with(|ctx| {
+            let ctx = ctx.borrow();
+            let (generation, columns) = ctx.with_cte_identity.get(alias)?;
+            (*generation == ctx.cte_scope_generation).then(|| columns.clone())
+        })
+        .ok()
+        .flatten()
 }
 
 /// Resolve `alias`'s CTE-scoped SQL reference for `property` (a Cypher

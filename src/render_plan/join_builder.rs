@@ -748,6 +748,23 @@ fn cte_safe_identifier(alias: &str, id: &Identifier) -> Identifier {
     }
 }
 
+/// P-4b: the identity of `alias` as the WITH export contract published it, when
+/// `alias` is a CTE-backed endpoint of `graph_rel`. Already CTE column names.
+fn cte_endpoint_identity(
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+    alias: &str,
+) -> Option<Identifier> {
+    if !graph_rel.cte_references.contains_key(alias) {
+        return None;
+    }
+    let mut columns = crate::server::query_context::with_cte_identity(alias)?;
+    match columns.len() {
+        0 => None,
+        1 => Some(Identifier::Single(columns.remove(0))),
+        _ => Some(Identifier::Composite(columns)),
+    }
+}
+
 /// Join Builder trait for extracting JOIN-related information from logical plans
 pub trait JoinBuilder {
     /// Extract JOIN clauses from the logical plan
@@ -3723,16 +3740,31 @@ impl JoinBuilder for LogicalPlan {
                 // Resolve full node Identifiers for composite ID support.
                 // start_id_col/end_id_col are String (first column only for composite).
                 // For composite nodes, look up the schema to get the full Identifier.
-                let start_node_id: Identifier = start_label
-                    .as_ref()
-                    .and_then(|lbl| schema.node_schema_opt(lbl))
-                    .map(|ns| ns.node_id.id.clone())
-                    .unwrap_or_else(|| Identifier::Single(start_id_col.clone()));
-                let end_node_id: Identifier = end_label
-                    .as_ref()
-                    .and_then(|lbl| schema.node_schema_opt(lbl))
-                    .map(|ns| ns.node_id.id.clone())
-                    .unwrap_or_else(|| Identifier::Single(end_id_col.clone()));
+                //
+                // P-4b: a CTE-backed endpoint's identity is the CTE column(s) the WITH
+                // export contract found in what the CTE emits. Without it the endpoint's
+                // label is often gone after the barrier and the id fell back to a single
+                // `id` column (`t2.from_bank_id = c.id` for a composite node).
+                let start_node_id: Identifier =
+                    cte_endpoint_identity(graph_rel, &graph_rel.left_connection).unwrap_or_else(
+                        || {
+                            start_label
+                                .as_ref()
+                                .and_then(|lbl| schema.node_schema_opt(lbl))
+                                .map(|ns| ns.node_id.id.clone())
+                                .unwrap_or_else(|| Identifier::Single(start_id_col.clone()))
+                        },
+                    );
+                let end_node_id: Identifier =
+                    cte_endpoint_identity(graph_rel, &graph_rel.right_connection).unwrap_or_else(
+                        || {
+                            end_label
+                                .as_ref()
+                                .and_then(|lbl| schema.node_schema_opt(lbl))
+                                .map(|ns| ns.node_id.id.clone())
+                                .unwrap_or_else(|| Identifier::Single(end_id_col.clone()))
+                        },
+                    );
 
                 // JOIN ORDER: For standard patterns like (a)-[:R]->(b), we join:
                 // 1. Relationship table (can reference anchor `a` from FROM clause)
