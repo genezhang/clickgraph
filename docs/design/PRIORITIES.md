@@ -691,6 +691,12 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-10-05: **#1294: a hop between two WITH-carried nodes is kept** (P-4b root B).
+  - `WITH c, z MATCH (z)-[:R]->(c)-[:R*1..2]->(b)`: the hop's join referenced only CTE-backed aliases, so `clear_stale_joins_for_cte_aliases` dropped it (111 vs 99, silent).
+  - #1182's verified-chain allowlist now admits the two carried ends of the chain's first fixed hop (path chains only).
+  - The #1175 guard no longer bails when such a hop's context cannot be rebuilt (no endpoint labels after the barrier): it has the path's relationship type, so the path's layout verdict stands for it.
+  - standard / denormalized / polymorphic: 10 shapes ERR→OK, 0 regressions.
+
 - 2026-10-05: **#1287: a path ending at an earlier-bound node** (P-4b root B / #1203 partial).
   - A path whose endpoint side is a CartesianProduct (a comma-bound or WITH-carried endpoint) had no VLP context, so it was expanded as a hop: its own relationship was joined as an extra, untied edge table (427 vs 167).
   - The #1175 hop-vs-path uniqueness guard now also covers comma/cartesian scopes and post-WITH scopes. It binds only hops of the path's own MATCH clause; hops of other clauses are ignored instead of bailing.
