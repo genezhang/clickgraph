@@ -2545,9 +2545,24 @@ pub(crate) fn rewrite_expr_for_vlp(
                                     path_var,
                                     col_name
                                 );
-                                return RenderExpr::Column(Column(PropertyValue::Column(format!(
-                                    "{vlp_alias}.{col_name}"
-                                ))));
+                                let column = RenderExpr::Column(Column(PropertyValue::Column(
+                                    format!("{vlp_alias}.{col_name}"),
+                                )));
+                                // #1202: the CTE counts its own hops only; the path's fixed hops
+                                // (registered by `path_segments`) are added back.
+                                let fixed = crate::server::query_context::path_fixed_hops(path_var);
+                                if func.name == "length" && fixed > 0 {
+                                    return RenderExpr::OperatorApplicationExp(
+                                        OperatorApplication {
+                                            operator: Operator::Addition,
+                                            operands: vec![
+                                                column,
+                                                RenderExpr::Literal(Literal::Integer(fixed as i64)),
+                                            ],
+                                        },
+                                    );
+                                }
+                                return column;
                             }
                         }
                     }

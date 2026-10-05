@@ -1341,6 +1341,9 @@ impl RenderPlanBuilder for LogicalPlan {
         // projection where `[n IN nodes(p) | n.<prop>]` lives.
         let _root_plan_guard =
             super::cte_extraction::scoped_render_root_plan(std::sync::Arc::new(self.clone()));
+        if _root_plan_guard.is_outermost() {
+            super::path_segments::register_composite_paths(self)?;
+        }
 
         // CRITICAL: If the plan contains WITH clauses, use the specialized handler
         // build_chained_with_match_cte_plan handles chained/nested WITH correctly
@@ -4081,6 +4084,9 @@ impl RenderPlanBuilder for LogicalPlan {
         // (outermost wins; restored on drop) — see `to_render_plan`.
         let _root_plan_guard =
             super::cte_extraction::scoped_render_root_plan(std::sync::Arc::new(self.clone()));
+        if _root_plan_guard.is_outermost() {
+            super::path_segments::register_composite_paths(self)?;
+        }
 
         let mut render_plan = (|| -> RenderPlanBuilderResult<RenderPlan> {
             log::debug!(

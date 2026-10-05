@@ -7680,6 +7680,13 @@ thread_local! {
 
 /// Restores the previous outermost-plan value when dropped.
 pub struct RenderRootPlanGuard(Option<std::sync::Arc<LogicalPlan>>);
+impl RenderRootPlanGuard {
+    /// Did this guard install the outermost plan (rather than nest inside another)?
+    pub fn is_outermost(&self) -> bool {
+        self.0.is_none()
+    }
+}
+
 impl Drop for RenderRootPlanGuard {
     fn drop(&mut self) {
         RENDER_ROOT_PLAN.with(|c| *c.borrow_mut() = self.0.take());

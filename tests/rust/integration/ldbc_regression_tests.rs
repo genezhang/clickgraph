@@ -4612,20 +4612,89 @@ async fn where_on_path_length_reaches_the_outer_query_1218() {
     }
 }
 
+/// #1202: a path of one VLP plus fixed hops answers `length(p)` as `hop_count + k`; every other
+/// use of that path variable is refused (the CTE describes its own hops only).
 #[tokio::test]
-async fn where_on_path_length_is_refused_when_hop_count_is_not_the_whole_path_1218() {
+async fn length_of_a_path_with_fixed_hops_adds_the_hops_1202() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    for (cypher, expected) in [
+        (
+            "MATCH p=(c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) \
+             RETURN length(p) AS l, count(*) AS n",
+            "t.hop_count + 1 AS \"l\"",
+        ),
+        (
+            "MATCH p=(a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS]->(c:User) \
+             WHERE length(p) > 2 RETURN count(*)",
+            "t.hop_count + 1 > 2",
+        ),
+        (
+            "MATCH p=(x:User)-[:FOLLOWS]->(c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) \
+             RETURN length(p) AS l",
+            "t.hop_count + 2 AS \"l\"",
+        ),
+        (
+            "MATCH p=(c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) \
+             WITH length(p) AS len RETURN len",
+            "hop_count + 1 AS \"len\"",
+        ),
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(sql.contains(expected), "{cypher}\n{sql}");
+    }
+    // a plain VLP is untouched
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH p=(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN length(p) AS l",
+    )
+    .await;
+    assert!(sql.contains("t.hop_count AS \"l\""), "{sql}");
+}
+
+/// The same path-variable name in two UNION branches is two different paths: a plain path in one
+/// branch must not inherit (or be confused by) the other's fixed hops.
+#[tokio::test]
+async fn path_variable_scopes_are_per_union_branch_1202() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH p=(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN length(p) AS l \
+         UNION ALL \
+         MATCH p=(a:User)-[:FOLLOWS*1..3]->(b:User) RETURN length(p) AS l",
+    )
+    .await;
+    assert!(
+        !sql.contains("hop_count +  1") && !sql.contains("hop_count + 1 AS"),
+        "{sql}"
+    );
+    // a composite path whose name is bound again elsewhere is ambiguous: refused
+    let err = try_generate_sql_inline(
+        &schema,
+        "MATCH p=(c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN length(p) AS l \
+         UNION ALL \
+         MATCH p=(a:User)-[:FOLLOWS*1..3]->(b:User) RETURN length(p) AS l",
+    )
+    .await
+    .expect_err("ambiguous path variable");
+    assert!(err.contains("path variable `p`"), "{err}");
+}
+
+#[tokio::test]
+async fn other_uses_of_a_path_with_fixed_hops_are_refused_1202() {
     let schema = load_schema_from("schemas/dev/social_standard.yaml");
     for cypher in [
-        // a fixed hop belongs to the same path (#1202)
-        "MATCH p=(c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WHERE length(p) > 2 \
-         RETURN count(*)",
-        "MATCH p=(a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS]->(c:User) WHERE length(p) > 2 \
-         RETURN count(*)",
+        "MATCH p=(c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN nodes(p)",
+        "MATCH p=(c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN relationships(p)",
+        "MATCH p=(c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN p",
+        "MATCH p=(a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS]->(c:User) \
+         WHERE size(nodes(p)) > 3 RETURN count(*)",
+        // same-end fan-in of two paths: length(p) would count one of them (#1210)
+        "MATCH p=(a:User)-[:FOLLOWS*1..2]->(c:User)<-[:FOLLOWS*1..2]-(b:User) RETURN length(p)",
     ] {
         let err = try_generate_sql_inline(&schema, cypher)
             .await
             .expect_err(cypher);
-        assert!(err.contains("path function"), "{cypher}: {err}");
+        assert!(err.contains("path variable `p`"), "{cypher}: {err}");
     }
 }
 

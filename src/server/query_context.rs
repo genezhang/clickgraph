@@ -157,6 +157,11 @@ pub struct QueryContext {
     /// shared FROM alias. Empty ⇒ every endpoint uses `vlp_from_alias()`.
     pub vlp_endpoint_render_aliases: HashMap<String, (String, bool)>,
 
+    /// #1202: path variable → number of FIXED single hops that belong to a path whose only
+    /// other segment is one CTE-backed VLP. `length(p)` is `hop_count + k` there (the CTE counts
+    /// its own hops only). Absent ⇒ `length(p)` is the CTE's `hop_count` as before.
+    pub path_fixed_hops: HashMap<String, usize>,
+
     /// #1136: composite node_id COMPONENT columns per VLP endpoint cypher alias.
     /// The late SELECT/ORDER BY/GROUP BY rewriter (`rewrite_expr_for_vlp`)
     /// collapses anything id-shaped (`ends_with("_id")` heuristic) onto the
@@ -879,6 +884,28 @@ pub fn register_vlp_endpoint_render_alias(endpoint_alias: &str, render_alias: &s
     });
 }
 
+/// #1202: record that `path_var`'s `length()` is the VLP CTE's `hop_count` plus `k` fixed hops.
+pub fn register_path_fixed_hops(path_var: &str, k: usize) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut()
+            .path_fixed_hops
+            .insert(path_var.to_string(), k);
+    });
+}
+
+pub fn clear_path_fixed_hops() {
+    let _ = QUERY_CONTEXT.try_with(|ctx| ctx.borrow_mut().path_fixed_hops.clear());
+}
+
+/// #1202: fixed hops to add to `length(path_var)` (0 when none registered).
+pub fn path_fixed_hops(path_var: &str) -> usize {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().path_fixed_hops.get(path_var).copied())
+        .ok()
+        .flatten()
+        .unwrap_or(0)
+}
+
 /// #1181: drop the per-endpoint bindings (each scope's pre-registration starts fresh).
 pub fn clear_vlp_endpoint_render_aliases() {
     let _ = QUERY_CONTEXT.try_with(|ctx| ctx.borrow_mut().vlp_endpoint_render_aliases.clear());
@@ -1319,6 +1346,7 @@ pub fn clear_all_render_contexts() {
         // from the default `"t"` and re-registers its own value if it collides.
         ctx.vlp_from_alias = None;
         ctx.vlp_endpoint_render_aliases.clear();
+        ctx.path_fixed_hops.clear();
         // #1136: reset composite id component registrations.
         ctx.vlp_composite_id_components.clear();
     });
