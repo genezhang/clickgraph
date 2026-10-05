@@ -5229,6 +5229,32 @@ async fn with_scalar_named_like_a_node_reads_only_the_scalar_column_1263() {
 }
 
 // ---------------------------------------------------------------------------
+// `WITH DISTINCT` must survive CTE column pruning (it de-duplicates over ALL columns) and, over an undirected
+// hop, must de-duplicate ACROSS the direction arms (UNION DISTINCT, not UNION ALL).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn with_distinct_survives_pruning_and_spans_both_direction_arms() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let directed = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH DISTINCT a.user_id AS x RETURN count(*) AS n",
+    )
+    .await;
+    assert!(
+        directed.contains("SELECT DISTINCT"),
+        "the DISTINCT was lost:\n{directed}"
+    );
+    let undirected = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS]-(b:User) WITH DISTINCT a.user_id AS x RETURN count(*) AS n",
+    )
+    .await;
+    assert!(undirected.contains("UNION DISTINCT"), "{undirected}");
+    assert!(!undirected.contains("UNION ALL"), "{undirected}");
+}
+
+// ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
 // The emitter's path-variable "spurious JOIN" cleanup kept only joins whose alias was read, so

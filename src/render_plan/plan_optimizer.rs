@@ -540,6 +540,13 @@ fn prune_cte_columns(plan: &mut RenderPlan) {
         };
 
         if let CteContent::Structured(ref mut inner_plan) = cte.content {
+            // #1267: a DISTINCT body de-duplicates over ALL its columns. Pruning the ones
+            // nothing reads changes which rows survive (`WITH DISTINCT a.p AS x, b.q AS y RETURN
+            // count(*)` counted distinct x), and an emptied select lost the DISTINCT altogether
+            // (`SELECT *`: 20 rows where 15 distinct values exist).
+            if inner_plan.select.distinct {
+                continue;
+            }
             let original_count = inner_plan.select.items.len();
             let all_cols: Vec<String> = inner_plan
                 .select
