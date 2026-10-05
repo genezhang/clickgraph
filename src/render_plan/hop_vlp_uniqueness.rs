@@ -101,9 +101,12 @@ pub(super) fn guards(plan: &LogicalPlan) -> Vec<RenderExpr> {
     let hops: Vec<&GraphRel> = rels.iter().copied().filter(|gr| !is_path(gr)).collect();
     if hops.is_empty()
         || hops.iter().any(|hop| {
+            // `was_undirected` is NOT excluded (#1233): a REQUIRED undirected hop is the legacy
+            // two-arm split, each arm a directed hop over the SAME edge row (its from/to columns
+            // spell the same identity the path stored). Only the OPTIONAL single-hop rewrite
+            // renders a doubled-edge subquery with swapped columns, and optional hops are out above.
             hop.is_optional.unwrap_or(false)
                 || hop.direction == Direction::Either
-                || hop.was_undirected == Some(true)
                 || hop.match_clause_index != path.match_clause_index
                 || hop.labels.as_deref() != Some(std::slice::from_ref(label))
                 || hop

@@ -1344,6 +1344,7 @@ impl RenderPlanBuilder for LogicalPlan {
         if _root_plan_guard.is_outermost() {
             super::path_segments::register_composite_paths(self)?;
             super::path_segments::refuse_chained_split_undirected_vlp(self)?;
+            super::path_segments::refuse_unguarded_undirected_hop_next_to_path(self)?;
         }
 
         // CRITICAL: If the plan contains WITH clauses, use the specialized handler
@@ -4088,6 +4089,7 @@ impl RenderPlanBuilder for LogicalPlan {
         if _root_plan_guard.is_outermost() {
             super::path_segments::register_composite_paths(self)?;
             super::path_segments::refuse_chained_split_undirected_vlp(self)?;
+            super::path_segments::refuse_unguarded_undirected_hop_next_to_path(self)?;
         }
 
         let mut render_plan = (|| -> RenderPlanBuilderResult<RenderPlan> {
