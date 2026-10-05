@@ -456,6 +456,22 @@ bug-driven, not lane work. Per-shape patching of this class stays forbidden
 (§1.6). Remaining Phase-1 pass migrations (P1.4+) and Phase-3 §6.2 slices are
 fill-in work alongside, not blockers.
 
+### P-4b — WITH export contract (identity / join-key columns)  ☐ (S0 plan landed; next S1)
+**Plan: `docs/design/WITH_EXPORT_CONTRACT.md`.** A 2026-10-05 audit of the WITH bug
+family (about 100 closed and 11 open issues; 67 of 116 WITH-fix PRs touched
+`with_to_cte` or `plan_builder_utils`) found three structural roots: (A) no single
+contract for which columns a WITH CTE exports, so nine readers guess a carried
+node's identity column from five naming conventions, including a hard-coded
+`{alias}_user_id` fallback; (B) the post-WITH scope is joined blind and then
+repaired by render heuristics; (C) the union-body arm-0 vs `union.input`
+asymmetry. This entry sequences **A**, the prerequisite for B. P-4 covers
+property resolution; this covers identity and join keys.
+Slices: S1 test-only ratchet (5 frozen invalid CTE-column refs in the corpus) →
+S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composite
+`c.id`, FK-edge refusals) → S6 FK-side join columns (#1279 residue). Per-shape
+patching of guessed CTE columns is discouraged while this is open; route new
+fixes through the contract once S2 lands.
+
 ### P-5 — Stats-informed SQL generation  ◐ (S1 implemented on branch; S2/S3 open)
 New. Today all planning is rules/heuristics; the concrete gap is
 `select_anchor()` (`analyzer/graph_join/join_generation.rs:550`) breaking
@@ -674,6 +690,13 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-05: **P-4b S0: WITH export contract plan** (branch
+  `docs/with-export-contract`). Root-cause audit of the WITH bug family →
+  `docs/design/WITH_EXPORT_CONTRACT.md`. Evidence: 5 corpus goldens freeze
+  references to CTE columns the CTE does not export; live probes show composite
+  `c.id` (Code 47), FK-edge post-WITH hop refused, and denorm silent 36 vs 8 (filed
+  #1283). Docs only.
 
 - 2026-09-06: **Correctness — mixed-access whole-node RETURN silently dropped
   an endpoint** (branch `fix/1154-mixed-access-whole-node-endpoint`, PR #1159,
