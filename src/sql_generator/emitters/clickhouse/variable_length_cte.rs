@@ -4292,7 +4292,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
         while let Some(c) = chars.next() {
             if in_literal {
                 out.push(c);
-                if c == '\'' {
+                if c == '\\' {
+                    // Backslash escapes the next char (`\'`).
+                    if let Some(next) = chars.next() {
+                        out.push(next);
+                    }
+                } else if c == '\'' {
                     if chars.peek() == Some(&'\'') {
                         // Escaped quote ('') — consume the pair, stay in literal.
                         out.push(chars.next().unwrap());
@@ -4714,6 +4719,15 @@ impl<'a> VariableLengthCteGenerator<'a> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn rewrite_outside_literals_honours_backslash_escaped_quote_1217() {
+        let out = VariableLengthCteGenerator::rewrite_outside_string_literals(
+            "a = 'it\\'s a' AND a = 'b''c a'",
+            |span| span.replace('a', "Z").replace("AND", "and"),
+        );
+        assert_eq!(out, "Z = 'it\\'s a' and Z = 'b''c a'");
+    }
 
     /// Helper to create a minimal test schema for VLC tests
     fn create_test_schema() -> GraphSchema {

@@ -277,6 +277,10 @@ impl FunctionMapper for DatabricksFunctionMapper {
         " NULLS LAST"
     }
 
+    fn string_literal_quote_escape(&self) -> &'static str {
+        "\\'"
+    }
+
     fn order_by_nulls_clause(&self, descending: bool) -> &'static str {
         // Spark/Databricks defaults to NULLS FIRST for ASC and NULLS LAST for
         // DESC (ANSI). Neo4j is the opposite on BOTH: nulls-last on ASC,

@@ -191,6 +191,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         " NULLS LAST"
     }
 
+    fn string_literal_quote_escape(&self) -> &'static str {
+        "''"
+    }
+
     fn order_by_nulls_clause(&self, descending: bool) -> &'static str {
         // CH sorts NULL last for BOTH ASC and DESC by default. Neo4j wants
         // nulls-last on ASC (already matches → stay bare) and nulls-first on

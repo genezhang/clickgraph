@@ -5,23 +5,33 @@
 //! pass through unchanged; the ones whose SQL spelling differs are translated here so the
 //! literal stays valid and keeps the Cypher value:
 //!
-//! - `\'` → `''` (the quote-doubling every SQL scanner in this crate already understands)
+//! - `\'` → the active dialect's quote spelling (`FunctionMapper::string_literal_quote_escape`:
+//!   `''` for ClickHouse, `\'` for Spark, where `'it''s'` is two adjacent literals reading `its`)
 //! - `\"` → `"`
 //! - `\uXXXX` / `\UXXXXXXXX` → the character itself (ClickHouse has no `\u` escape)
-//! - a bare `'` (from a double-quoted literal) → `''`
+//! - a bare `'` (from a double-quoted literal) → the same quote spelling
 //!
 //! An escaped backslash is consumed as a pair, so `\\'` is a backslash followed by a bare quote.
 
 /// Render the raw body of a Cypher string literal as a quoted SQL literal.
 pub fn cypher_string_to_sql_literal(raw: &str) -> String {
+    let quote = crate::sql_generator::function_mapper::for_dialect(
+        crate::server::query_context::get_current_dialect(),
+    )
+    .string_literal_quote_escape();
+    cypher_string_to_sql_literal_with(raw, quote)
+}
+
+/// [`cypher_string_to_sql_literal`] with an explicit spelling for an embedded quote.
+pub fn cypher_string_to_sql_literal_with(raw: &str, quote: &str) -> String {
     let mut out = String::with_capacity(raw.len() + 2);
     out.push('\'');
     let mut chars = raw.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
-            '\'' => out.push_str("''"),
+            '\'' => out.push_str(quote),
             '\\' => match chars.next() {
-                Some('\'') => out.push_str("''"),
+                Some('\'') => out.push_str(quote),
                 Some('"') => out.push('"'),
                 Some('\\') => out.push_str("\\\\"),
                 Some(u @ ('u' | 'U')) => {
@@ -35,7 +45,7 @@ pub fn cypher_string_to_sql_literal(raw: &str) -> String {
                         Some(ch) => {
                             chars.nth(width - 1);
                             match ch {
-                                '\'' => out.push_str("''"),
+                                '\'' => out.push_str(quote),
                                 '\\' => out.push_str("\\\\"),
                                 other => out.push(other),
                             }
@@ -114,6 +124,16 @@ mod tests {
     fn plain_and_bare_quote() {
         assert_eq!(lit("abc"), "'abc'");
         assert_eq!(lit("it's"), "'it''s'");
+    }
+
+    #[test]
+    fn quote_spelling_is_a_parameter_1217() {
+        use super::cypher_string_to_sql_literal_with as lit_with;
+        assert_eq!(lit_with("it's", r"\'"), r"'it\'s'");
+        assert_eq!(lit_with(r"it\'s", r"\'"), r"'it\'s'");
+        assert_eq!(lit_with(r"a\\'b", r"\'"), r"'a\\\'b'");
+        assert_eq!(lit_with(r"\u0027", r"\'"), r"'\''");
+        assert_eq!(lit_with("it's", "''"), "'it''s'");
     }
 
     #[test]
