@@ -5117,6 +5117,24 @@ async fn shortest_path_lower_bound_is_applied_before_the_pick_1205() {
 }
 
 // ---------------------------------------------------------------------------
+// #1261: `WITH a.user_id AS x RETURN count(*)` over an undirected hop kept ONE direction. The CTE
+// column pruner left a union CTE body with no SELECT items; the emitter then rendered only
+// `union.input`, dropping the plan's own (first-direction) arm.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn with_over_an_undirected_hop_keeps_both_direction_arms_1261() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS]-(b:User) WITH a.user_id AS x RETURN count(*) AS n",
+    )
+    .await;
+    assert_eq!(sql.matches("UNION ALL").count(), 1, "{sql}");
+    assert!(sql.contains("with_x_cte_0"), "{sql}");
+}
+
+// ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
 // The emitter's path-variable "spurious JOIN" cleanup kept only joins whose alias was read, so
