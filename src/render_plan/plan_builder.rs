@@ -768,6 +768,31 @@ fn build_cypher_union_render(
     if !branch_renders.is_empty() {
         let render_union_type =
             super::UnionType::try_from(union.union_type.clone()).unwrap_or(super::UnionType::All);
+        // #1281: an arm that carries its own union (an undirected hop's direction arms, a
+        // denormalized node scan's from/to arms) keeps it only while it is an ordinary entry of
+        // `union.input`; installing the Cypher union on the base arm overwrote that inner union
+        // and silently dropped every direction but the first. Move the arm into `input` and leave
+        // a shell (its select, for the column names) as the base.
+        if base_render.union.0.is_some() {
+            let shell = RenderPlan {
+                ctes: CteItems(vec![]),
+                select: base_render.select.clone(),
+                from: FromTableItem(None),
+                joins: JoinItems(vec![]),
+                array_join: ArrayJoinItem(vec![]),
+                filters: FilterItems(None),
+                group_by: GroupByExpressions(vec![]),
+                having_clause: None,
+                order_by: OrderByItems(vec![]),
+                skip: SkipItem(None),
+                limit: LimitItem(None),
+                union: UnionItems(None),
+                fixed_path_info: None,
+                is_multi_label_scan: false,
+                variable_registry: base_render.variable_registry.clone(),
+            };
+            branch_renders.insert(0, std::mem::replace(&mut base_render, shell));
+        }
         base_render.union = UnionItems(Some(super::Union {
             input: branch_renders,
             union_type: render_union_type,
