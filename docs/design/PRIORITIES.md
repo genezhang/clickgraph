@@ -456,7 +456,7 @@ bug-driven, not lane work. Per-shape patching of this class stays forbidden
 (§1.6). Remaining Phase-1 pass migrations (P1.4+) and Phase-3 §6.2 slices are
 fill-in work alongside, not blockers.
 
-### P-4b — WITH export contract (identity / join-key columns)  ◐ (S0 #1284, S1 #1285, S2 #1288 merged; S3 blocked on #1287; next S4: join_builder readers, composite #1286)
+### P-4b — WITH export contract (identity / join-key columns)  ◐ (S0 #1284, S1 #1285, S2 #1288, S4 merged; S3 blocked on #1287; next: S5 producer cleanup / S6 FK-side join columns)
 **Plan: `docs/design/WITH_EXPORT_CONTRACT.md`.** A 2026-10-05 audit of the WITH bug
 family (about 100 closed and 11 open issues; 67 of 116 WITH-fix PRs touched
 `with_to_cte` or `plan_builder_utils`) found three structural roots: (A) no single
@@ -690,6 +690,11 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-05: **P-4b S4: composite carried-node identity** (closes #1286).
+  - `join_builder` takes a CTE-backed endpoint's identity from the WITH export contract instead of the label-derived `node_id`, which is lost after the barrier (a composite node fell back to `c.id`, Code 47).
+  - The VLP↔CTE composite tie concatenates the contract's columns instead of `{alias}_{col}` names a WITH CTE never emits (0 rows vs 16, silent).
+  - The 42 corpus goldens through the new read are byte-identical; 4 composite corpus entries were added.
 
 - 2026-10-05: **P-4b S1 + S2** (#1285, #1288).
   - S1: a test-only ratchet over the ClickHouse goldens. Each `with_* AS a` → `a.col` reference must name an exported column; the known violations are allowlisted with their issue.

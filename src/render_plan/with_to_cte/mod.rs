@@ -3560,9 +3560,23 @@ fn generate_vlp_with_cte_join_conditions(
                                 None
                             });
 
-                            if let Some(cols) = composite_cols {
+                            // P-4b: the export contract names the CTE columns holding a
+                            // composite identity; the schema scan above spells them
+                            // `{alias}_{col}`, which a WITH CTE (`p1_c_bank_id`) never emits,
+                            // so it fell through to a single column (0 rows, #1286).
+                            let contract_cols = cte_schemas
+                                .get(cte_name)
+                                .and_then(|m| m.exports.get(vlp_alias))
+                                .and_then(|export| export.identity.clone())
+                                .filter(|cols| cols.len() > 1);
+                            let composite_cols = match contract_cols {
+                                Some(cols) => Some((cols, String::new())),
+                                None => {
+                                    composite_cols.map(|cols| (cols, format!("{}_", vlp_alias)))
+                                }
+                            };
+                            if let Some((cols, prefix)) = composite_cols {
                                 // Composite ID: concat(toString(cte.a_col1), '|', toString(cte.a_col2))
-                                let prefix = format!("{}_", vlp_alias);
                                 let parts: Vec<RenderExpr> = cols.iter().enumerate().flat_map(|(i, col)| {
                                         let cte_col = format!("{}{}", prefix, col);
                                         let mut items = Vec::new();
@@ -6709,6 +6723,31 @@ fn publish_cte_alias_scopes(
 
         let per_alias_mapping = per_alias_property_mapping(property_mapping, lookup_alias);
         let labels = export_labels_from_plans(alias, lookup_alias, current_plan, with_plans);
+
+        // P-4b: publish the node's identity columns from the export contract for the
+        // scope after this WITH (`join_builder` cannot see `cte_schemas`). Derived
+        // before `publish_alias` records the labels, with the same effective labels.
+        if let Some(schema) = crate::server::query_context::get_current_schema() {
+            let emitted: Vec<String> = select_items_for_schema
+                .iter()
+                .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.replace('.', "_")))
+                .collect();
+            let emitted: HashSet<&str> = emitted.iter().map(String::as_str).collect();
+            let effective =
+                with_scope.effective_labels(alias, lookup_alias, &per_alias_mapping, &labels);
+            let export = crate::render_plan::cte_export::CteExport::derive(
+                alias,
+                &effective,
+                &per_alias_mapping,
+                &emitted,
+                &schema,
+            );
+            if let (crate::render_plan::cte_export::CteExportKind::Node, Some(identity)) =
+                (&export.kind, export.identity)
+            {
+                crate::server::query_context::set_with_cte_identity(alias.clone(), identity);
+            }
+        }
 
         with_scope.publish_alias(alias, lookup_alias, cte_name, &per_alias_mapping, &labels);
 

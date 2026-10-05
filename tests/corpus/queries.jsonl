@@ -1479,3 +1479,7 @@
 {"cypher": "MATCH (a:Airport) WHERE a.state = 'CA' RETURN count(*) AS n", "name": "test_1240__denorm_count_star_filter", "schema": "denormalized_flights"}
 {"cypher": "MATCH (a:Airport) RETURN a.state AS s, count(*) AS n", "name": "test_1242__virtual_node_group_by_alias", "schema": "denormalized_flights"}
 {"cypher": "MATCH (a)-[r]->(b) RETURN count(*) AS n", "name": "test_1244__unlabeled_untyped_poly_refused", "schema": "social_polymorphic"}
+{"cypher": "MATCH (z:Account)-[:TRANSFERRED]->(c:Account) WITH c MATCH (c)-[:TRANSFERRED]->(a:Account) RETURN c.account_number AS x, a.account_number AS y", "name": "test_p4b__composite_carried_hop", "schema": "composite_id"}
+{"cypher": "MATCH (z:Account)-[:TRANSFERRED]->(c:Account) WITH c MATCH (a:Account)-[:TRANSFERRED]->(c) RETURN count(*) AS k", "name": "test_p4b__composite_carried_hop_count", "schema": "composite_id"}
+{"cypher": "MATCH (z:Account)-[:TRANSFERRED]->(c:Account) WITH c MATCH (c)-[:TRANSFERRED*1..2]->(a:Account) RETURN c.account_number AS x, a.account_number AS y", "name": "test_p4b__composite_carried_path_1286", "schema": "composite_id"}
+{"cypher": "MATCH (z:Account)-[:TRANSFERRED]->(c:Account) WITH c, z MATCH (z)-[:TRANSFERRED*1..2]->(c) RETURN z.account_number AS x, c.account_number AS y", "name": "test_p4b__composite_two_carried_path_1286", "schema": "composite_id"}

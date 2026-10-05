@@ -1,6 +1,6 @@
 # WITH export contract: one answer to "which columns does this WITH CTE expose?"
 
-Status: **in progress**. S0 (#1284), S1 (#1285) and S2 (#1288) merged; see the §5
+Status: **in progress**. S0 (#1284), S1 (#1285), S2 (#1288) and S4 merged; see the §5
 checklist and the §3.1 audit.
 Grounded in `main` at `764fcd7f` (2026-10-05). Line numbers drift, so
 re-verify each one before editing.
@@ -216,7 +216,8 @@ switched reader.
 - [x] S1 ratchet (#1285; allowlist 5 → 6 in #1288: the second guessed tie of the still-loud `test_1189_den`)
 - [x] S2 contract + first readers (#1288); audit in §3.1
 - [ ] S3 #1189 at the producer (blocked on #1287 and the denormalized hop tie, §3.1)
-- [ ] S4 R2/R3/R4 (composite `c.id`, FK-edge refusals)
+- [x] S4 R2/R3 + the composite VLP tie: `join_builder` reads the contract for a CTE-backed endpoint (task-local `with_cte_identity`, generation-scoped like `cte_scope_for_correlation`); composite `c.id` and #1286 (0 rows) fixed.
+  - Not covered by this slice: the FK-edge `count(*)` refusals (`WITH c MATCH (o:Order)-[:PLACED_BY]->(c) RETURN count(*)`). They are root B (the unreferenced fresh node's joins are pruned); the property form renders correctly. R4 (`rewrite_operator_application_for_cte`) is unchanged.
 - [ ] S5 R6/R1 cleanup
 - [ ] S6 FK-side join columns (#1279 residue)
 
