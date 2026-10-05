@@ -4384,6 +4384,9 @@ async fn bfs_shortcut_is_only_for_shortest_path_1183() {
 #[tokio::test]
 async fn single_hop_shortest_path_keeps_its_endpoint_filters_1205() {
     let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let predicate_in_where =
+        regex::Regex::new(r"WHERE [^\n]*\b(a|b|t1)\.\w*(user_id|followed_id|follower_id) = \d")
+            .unwrap();
     for (shape, cypher) in [
         (
             "*1..1, WHERE start",
@@ -4408,9 +4411,7 @@ async fn single_hop_shortest_path_keeps_its_endpoint_filters_1205() {
     ] {
         let sql = generate_sql_inline(&schema, cypher).await;
         assert!(
-            regex::Regex::new(r"WHERE [^\n]*\b(a|b|t1)\.\w*(user_id|followed_id|follower_id) = \d")
-                .unwrap()
-                .is_match(&sql),
+            predicate_in_where.is_match(&sql),
             "#1205 ({shape}): the endpoint predicate must reach the WHERE of the flat hop:\n{sql}"
         );
     }
