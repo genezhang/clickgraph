@@ -479,14 +479,9 @@ impl DenormalizedCteStrategy {
         self.edge_uniqueness_policy(context).uses_edge_uniqueness()
     }
 
-    /// Whether this VLP is a CLOSED pattern — the same Cypher variable on both
-    /// endpoints (`(a)-[*..]->(a)`). The planner leaves the two connection
-    /// aliases equal for a same-variable pattern (never renaming one), so the
-    /// strategy sees `left_node_alias == right_node_alias` — the same
-    /// alias-equality invariant the standard emitter's
-    /// [`VariableLengthCteGenerator::is_closed_pattern`] relies on (#625/#628).
-    /// A closed pattern counts cycles (the outer query adds `start_id =
-    /// end_id`); see #625/#628/#980.
+    /// Whether this VLP is a CLOSED pattern (`(a)-[*..]->(a)`: equal endpoint aliases). Edge
+    /// uniqueness no longer depends on it (#1230); kept for the tests that pin the closed shape.
+    #[cfg(test)]
     fn is_closed_pattern(&self) -> bool {
         self.pattern_ctx.left_node_alias == self.pattern_ctx.right_node_alias
     }
@@ -524,8 +519,8 @@ impl DenormalizedCteStrategy {
         EdgeUniquenessPolicy::new(
             context.shortest_path_mode.is_some(),
             false,
-            context.spec.effective_min_hops(),
-            self.is_closed_pattern(),
+            // `*0..0` has no recursive arm: nothing to dedupe
+            context.spec.effective_min_hops() == 0 && context.spec.max_hops == Some(0),
             self.identity.clone(),
         )
     }
@@ -1885,6 +1880,13 @@ impl VariableLengthCteStrategy {
             )
         };
 
+        // #1230: a zero-lower-bound walk dedupes on edges (typed-empty `path_edges` seed); the
+        // FK-edge layout's zero-hop seed is unverified (#902), so it keeps node-uniqueness.
+        generator.zero_hop_keeps_node_uniqueness = matches!(
+            self.pattern_ctx.join_strategy,
+            JoinStrategy::FkEdgeJoin { .. }
+        );
+
         // For heterogeneous polymorphic paths (different start/end labels with to_label_column),
         // set intermediate node info to enable proper recursive traversal.
         // The intermediate type is the same as start type (e.g., Group→Group recursion).
@@ -2693,7 +2695,7 @@ mod tests {
     /// #887), so the seed is instead a typed-empty slice of a real
     /// edge-identity tuple pulled from the edge table; the recursive arm's
     /// `NOT has(path_edges, …)` then dedupes edges from hop 1 onward.
-    /// An OPEN `*0..N` stays node-unique and byte-unchanged.
+    /// An OPEN `*0..N` is edge-unique as well (#1230).
     #[test]
     fn denorm_closed_zero_hop_vlp_uses_edge_uniqueness_628_mirror() {
         let schema = Arc::new(GraphSchema::build(
@@ -2745,12 +2747,13 @@ mod tests {
             "closed *0..N must NOT use node-uniqueness; got:\n{closed_sql}"
         );
 
-        // OPEN: distinct aliases → stays node-unique, typed empty-string seed.
+        // OPEN: distinct aliases → edge-unique too since #1230 (a `*0..N` trail may revisit a
+        // node; node-uniqueness silently dropped every such trail), same typed-empty seed.
         let open_strategy =
             DenormalizedCteStrategy::new(&denormalized_flights_pattern_ctx(), schema).unwrap();
         assert!(
-            !open_strategy.uses_edge_uniqueness(&context),
-            "open *0..N must stay node-unique"
+            open_strategy.uses_edge_uniqueness(&context),
+            "open *0..N must be edge-unique (#1230)"
         );
         let open_sql = open_strategy
             .generate_sql(&context, &[], &empty_filters())
@@ -2758,11 +2761,12 @@ mod tests {
             .sql;
         assert!(
             !open_sql.contains("[] as path_edges"),
-            "open *0..N must not seed `[] as path_edges`; got:\n{open_sql}"
+            "open *0..N must not seed a bare `[] as path_edges`; got:\n{open_sql}"
         );
         assert!(
-            open_sql.contains("NOT has(vp.path_nodes,"),
-            "open *0..N must use node-uniqueness; got:\n{open_sql}"
+            open_sql.contains("NOT has(vp.path_edges,")
+                && !open_sql.contains("NOT has(vp.path_nodes,"),
+            "open *0..N must use edge-uniqueness (#1230); got:\n{open_sql}"
         );
     }
 

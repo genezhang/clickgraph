@@ -4235,10 +4235,6 @@ async fn hop_path_uniqueness_guard_is_fenced_1175() {
     let schema = load_schema_from("schemas/dev/social_standard.yaml");
     for (why, cypher) in [
         // `*0..N` is node-unique: its path_edges holds no edge identities.
-        (
-            "zero lower bound",
-            "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*0..2]->(b:User) RETURN count(*)",
-        ),
         // Uniqueness is per MATCH clause (#586).
         (
             "separate MATCH clauses",
@@ -4669,6 +4665,67 @@ async fn undirected_vlp_chained_on_single_walk_layouts_is_unchanged_1155() {
         sql.contains("WITH RECURSIVE") && sql.contains("vlp_o_d"),
         "{sql}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// #1230: `*0..N` is a trail (edge-unique), not a node-unique walk
+//
+// The open zero-lower-bound CTE cycle-checked on `path_nodes`, silently dropping every trail that
+// revisits a node (standard `*0..3`: 100 rows where 149 is correct). Its zero-hop base now seeds a
+// typed-empty `path_edges`, so it dedupes on edges like every other lower bound.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn zero_lower_bound_vlp_is_edge_unique_1230() {
+    for (schema_path, cypher) in [
+        (
+            "schemas/dev/social_standard.yaml",
+            "MATCH (a:User)-[:FOLLOWS*0..3]->(b:User) RETURN count(*)",
+        ),
+        (
+            "schemas/test/denormalized_flights.yaml",
+            "MATCH (a:Airport)-[:FLIGHT*0..3]->(b:Airport) RETURN count(*)",
+        ),
+    ] {
+        let schema = load_schema_from(schema_path);
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(
+            sql.contains("NOT has(vp.path_edges, ")
+                && !sql.contains("NOT has(vp.path_nodes,")
+                && sql.contains("__seed_edge"),
+            "{cypher}\n{sql}"
+        );
+    }
+    // `*0..0` has no recursive arm: no edge table, no `path_edges`
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS*0..0]->(b:User) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        !sql.contains("path_edges") && !sql.contains("__seed_edge"),
+        "{sql}"
+    );
+    // shortestPath stays node-unique
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH p = shortestPath((a:User)-[:FOLLOWS*1..3]->(b:User)) RETURN length(p)",
+    )
+    .await;
+    assert!(sql.contains("NOT has(vp.path_nodes,"), "{sql}");
+}
+
+/// The #1175 hop-vs-path guard now covers a zero lower bound (the CTE has `path_edges` since #1230).
+#[tokio::test]
+async fn hop_next_to_a_zero_lower_bound_path_gets_the_uniqueness_guard_1230() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*0..2]->(b:User) RETURN count(*)",
+    )
+    .await;
+    assert!(sql.contains("NOT has(t.path_edges, tuple("), "{sql}");
 }
 
 // ---------------------------------------------------------------------------

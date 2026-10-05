@@ -2,7 +2,7 @@
 #1180: a zero-lower-bound path whose START is embedded in the edge table (mixed access: the node
 has its own table, but its id/properties are declared on the edge) seeds the recursion from the
 EDGE table, one row per edge. A node that starts N edges was seeded N times and every path from
-it was returned N times. Brute-force oracle below: node-unique walks of 0..N hops from every node.
+it was returned N times. Brute-force oracle below: edge-unique trails of 0..N hops from every node.
 """
 
 import collections
@@ -61,23 +61,25 @@ def _graph(clickhouse_client):
 
 
 def _oracle(lo, hi, start=None):
+    """Cypher TRAIL semantics (#1230): an edge may not repeat, a node may — a walk can return to
+    its start through a cycle (the original node-unique oracle dropped those)."""
     out = collections.defaultdict(list)
-    for a, b in EDGES:
-        out[a].append(b)
+    for i, (a, b) in enumerate(EDGES):
+        out[a].append((i, b))
     rows = collections.Counter()
     for a in range(1, 6):
         if start is not None and a != start:
             continue
 
-        def rec(n, seen, k):
+        def rec(n, used, k):
             if k >= lo:
                 rows[(a, n)] += 1
             if k < hi:
-                for m in out[n]:
-                    if m not in seen:
-                        rec(m, seen | {m}, k + 1)
+                for i, m in out[n]:
+                    if i not in used:
+                        rec(m, used | {i}, k + 1)
 
-        rec(a, {a}, 0)
+        rec(a, frozenset(), 0)
     return rows
 
 

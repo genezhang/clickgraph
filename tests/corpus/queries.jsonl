@@ -1425,7 +1425,7 @@
 {"cypher": "MATCH (c:User)<-[:FOLLOWS]-(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN count(*)", "name": "test_1175__incoming_hop_then_path_std", "schema": "standard"}
 {"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN count(*)", "name": "test_1175__hop_then_path_poly", "schema": "social_polymorphic"}
 {"cypher": "MATCH (c:Airport)-[:FLIGHT]->(a:Airport)-[:FLIGHT*1..2]->(b:Airport) RETURN count(*)", "name": "test_1175__hop_then_path_den", "schema": "denormalized_flights"}
-{"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*0..2]->(b:User) RETURN count(*)", "name": "test_1175__zero_lower_bound_not_repaired_std", "schema": "standard"}
+{"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*0..2]->(b:User) RETURN count(*)", "name": "test_1175__zero_lower_bound_hop_guard_std", "schema": "standard"}
 {"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]-(b:User) RETURN count(*)", "name": "test_1175__undirected_path_not_repaired_std", "schema": "standard"}
 {"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WITH b RETURN count(b)", "name": "test_1175__with_after_pattern_std", "schema": "standard"}
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO*0..2]->(b:Person) RETURN a.pid, b.pid", "name": "test_1180__from_embedded_zero_hop", "schema": "foreign_selfloop"}
@@ -1468,3 +1468,7 @@
 {"cypher": "MATCH (u:User) WITH u, u.name AS n RETURN n", "name": "test_1225__node_and_property_carried_std", "schema": "standard"}
 {"cypher": "MATCH (a:User) WITH a, a.age AS ag RETURN ag, count(*) AS n", "name": "test_1227__scalar_next_to_its_node_group_by_std", "schema": "standard"}
 {"cypher": "MATCH (o:Airport)-[:FLIGHT*1..2]-(d:Airport)-[:FLIGHT]->(e:Airport) RETURN count(*)", "name": "test_1155__undirected_vlp_chained_denorm_refused", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*0..3]->(b:User) RETURN count(*)", "name": "test_1230__zero_lower_bound_edge_unique_std", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*0..3]->(b:User) RETURN count(*)", "name": "test_1230__zero_lower_bound_edge_unique_poly", "schema": "social_polymorphic"}
+{"cypher": "MATCH (a:Airport)-[:FLIGHT*0..3]->(b:Airport) RETURN count(*)", "name": "test_1230__zero_lower_bound_edge_unique_denorm", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Object)-[:PARENT*0..3]->(b:Object) RETURN count(*)", "name": "test_1230__zero_lower_bound_fk_edge_stays_node_unique", "schema": "fk_edge_self_ref"}
