@@ -374,6 +374,12 @@ impl PlanCtx {
         &self.optional_aliases
     }
 
+    /// Keep only the optional aliases in `keep` (#1273: a UNION arm's own PlanCtx must not inherit
+    /// the optionality other arms gave the same alias NAME).
+    pub fn retain_optional_aliases(&mut self, keep: &HashSet<String>) {
+        self.optional_aliases.retain(|a| keep.contains(a));
+    }
+
     pub fn get_alias_table_ctx_map(&self) -> &HashMap<String, TableCtx> {
         &self.alias_table_ctx_map
     }
