@@ -5303,3 +5303,24 @@ async fn only_the_last_with_cte_joins_the_final_query_1188() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// #1189: a WITH-carried DENORMALIZED node that starts a path is tied to the path CTE through the
+// column the WITH CTE really exports (`p1_c_code`, the id PROPERTY), not a guessed name
+// (`p1_c_start_id`, which is not a column: Code 47).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn carried_denormalized_path_start_is_tied_through_its_id_property_1189() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (z:Airport)-[:FLIGHT]->(c:Airport) WITH c \
+         MATCH (c)-[:FLIGHT*1..2]->(a:Airport)-[:FLIGHT]->(b:Airport) RETURN c.code, b.code",
+    )
+    .await;
+    assert!(
+        sql.contains("toString(c.p1_c_code)") && !sql.contains("p1_c_start_id"),
+        "#1189: the WITH CTE must be joined on its exported id column:\n{sql}"
+    );
+}

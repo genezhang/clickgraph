@@ -2266,6 +2266,15 @@ fn supported_chain(
     let [bottom] = bottoms.as_slice() else {
         return false;
     };
+    // ... and only ONE carried node: a hop between two carried nodes is a different shape.
+    let carried_in_chain: std::collections::HashSet<&String> = rels
+        .iter()
+        .flat_map(|r| [&r.left_connection, &r.right_connection])
+        .filter(|a| is_carried(a))
+        .collect();
+    if carried_in_chain.len() > 1 {
+        return false;
+    }
     for gr in &rels {
         for alias in [&gr.left_connection, &gr.right_connection] {
             if is_carried(alias) {

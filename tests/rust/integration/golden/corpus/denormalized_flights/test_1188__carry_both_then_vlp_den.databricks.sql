@@ -37,4 +37,4 @@ SELECT
       a_c.p1_a_code AS `a.code`, 
       t.end_Dest AS `b.code`
 FROM vlp_a_b AS t
-INNER JOIN with_a_c_cte_1 AS a_c ON string(t.start_id) = string(a_c.p1_a_start_id)
+INNER JOIN with_a_c_cte_1 AS a_c ON string(t.start_id) = string(a_c.p1_a_code)
