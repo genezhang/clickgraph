@@ -272,6 +272,63 @@ pub(crate) fn refuse_chained_split_undirected_vlp(
     }
 }
 
+/// #1233: a REQUIRED undirected hop (the legacy two-arm split) next to a CTE-backed variable-length
+/// path is answered correctly only when the hop-vs-path edge guard (`NOT has(path_edges, hop edge)`,
+/// `hop_vlp_uniqueness`) is emitted for every hop of the arm — the path's CTE tracks only its own
+/// edges, so without the guard the path may walk back over the hop's edge and the count is silently
+/// too high (271 where 204 is right). The guard's verified shape excludes WITH scopes, comma patterns,
+/// a second path, shortestPath, optional hops/paths and other layouts; those arms are refused loudly
+/// instead of answered wrongly.
+pub(crate) fn refuse_unguarded_undirected_hop_next_to_path(
+    root: &LogicalPlan,
+) -> Result<(), RenderBuildError> {
+    let mut offender: Option<String> = None;
+    root.any_node(|n| {
+        let LogicalPlan::Union(u) = n else {
+            return false;
+        };
+        for arm in &u.inputs {
+            let mut rels: Vec<&GraphRel> = Vec::new();
+            collect_arm_rels(arm, &mut rels);
+            let is_path = |g: &&GraphRel| {
+                g.variable_length.is_some()
+                    && !crate::render_plan::from_builder::is_fixed_length_vlp(g)
+            };
+            // Cypher's relationship uniqueness spans ONE `MATCH` clause: a hop and a path in
+            // different clauses may share an edge, so no guard is owed (nor emitted).
+            let path_clauses: Vec<_> = rels
+                .iter()
+                .filter(|g| is_path(g))
+                .map(|g| g.match_clause_index)
+                .collect();
+            let split_hop = rels.iter().find(|g| {
+                !is_path(g)
+                    && g.was_undirected == Some(true)
+                    && !g.is_optional.unwrap_or(false)
+                    && path_clauses.contains(&g.match_clause_index)
+            });
+            if let Some(hop) = split_hop {
+                let hops = rels.iter().filter(|g| !is_path(g)).count();
+                if super::hop_vlp_uniqueness::guards(arm).len() != hops {
+                    offender = Some(hop.alias.clone());
+                    return true;
+                }
+            }
+        }
+        false
+    });
+    match offender {
+        Some(alias) => Err(RenderBuildError::UnsupportedFeature(format!(
+            "an undirected hop (`{alias}`) next to a variable-length path is not supported in this \
+             shape (#1233, #1203): the path's recursive CTE tracks only its own edges, so the hop's \
+             edge could be reused by the path and the count would be silently too high. Write the \
+             hop with an explicit direction, or match it in a pattern with no WITH / comma part / \
+             second path."
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// GraphRels of one UNION arm, not descending into a nested UNION.
 fn collect_arm_rels<'a>(plan: &'a LogicalPlan, out: &mut Vec<&'a GraphRel>) {
     match plan {

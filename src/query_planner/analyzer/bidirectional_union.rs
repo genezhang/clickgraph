@@ -1660,8 +1660,16 @@ fn collect_relationship_info_inner(
 ) {
     match plan.as_ref() {
         LogicalPlan::GraphRel(graph_rel) => {
-            // Get from_id/to_id from the center ViewScan
-            if let LogicalPlan::ViewScan(scan) = graph_rel.center.as_ref() {
+            // Get from_id/to_id from the center ViewScan.
+            //
+            // #1233: a variable-length path is NOT a single relationship instance — it is a CTE
+            // that tracks its own edges (`path_edges`). Pairing it here pushed `NOT (rel.id = t1.id)`
+            // into the path CTE body (and the outer WHERE) where `t1` does not exist (Code 47). The
+            // hop-vs-path uniqueness is the render layer's `NOT has(path_edges, hop edge)` (#1175).
+            if let (None, LogicalPlan::ViewScan(scan)) = (
+                graph_rel.variable_length.as_ref(),
+                graph_rel.center.as_ref(),
+            ) {
                 let from_id = scan
                     .from_id
                     .as_ref()

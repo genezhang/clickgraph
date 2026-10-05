@@ -928,12 +928,17 @@ impl GraphJoinInference {
                         );
 
                         // Build GraphJoins for this branch with combined joins
+                        // #1233: the branch's own PlanCtx — it carries the VLP endpoints just
+                        // registered for THIS branch (`pre_register_vlp_endpoints`). With the outer
+                        // ctx the `t1 -> t` dependency of a hop next to a path was unresolvable, the
+                        // error aborted the whole union and was swallowed upstream, and the arms
+                        // rendered with no join plan at all.
                         let result = Self::build_graph_joins(
                             branch.clone(),
                             &mut branch_joins,
                             &mut Vec::new(),
                             optional_aliases.clone(),
-                            plan_ctx,
+                            &branch_plan_ctx,
                             graph_schema,
                             captured_cte_refs,
                         )?;

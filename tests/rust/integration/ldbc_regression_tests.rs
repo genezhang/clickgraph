@@ -5172,6 +5172,41 @@ async fn with_over_a_three_hop_pattern_with_an_undirected_hop_plans_every_arm_12
 }
 
 // ---------------------------------------------------------------------------
+// #1233: an UNDIRECTED hop next to a variable-length path. The split's arms carried no join plan (the
+// branch's own PlanCtx — with its VLP endpoints — was not used, so `t1 needs t` was unresolvable and the
+// swallowed error left every arm bare), the pairwise uniqueness filter pushed `NOT (rel.id = t1.id)` into
+// the path CTE (Code 47), and the hop-vs-path guard skipped `was_undirected` hops.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn undirected_hop_next_to_a_path_joins_the_hop_and_guards_edge_reuse_in_every_arm_1233() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (c:User)-[:FOLLOWS]-(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN count(*) AS n",
+    )
+    .await;
+    let arms: Vec<&str> = sql.split("SELECT 1 AS __dummy").skip(1).collect();
+    assert_eq!(arms.len(), 2, "{sql}");
+    for arm in arms {
+        assert!(
+            arm.contains("JOIN"),
+            "the hop join is missing from an arm:\n{arm}"
+        );
+        assert!(
+            arm.contains("NOT has(t.path_edges"),
+            "the hop edge must not be reused by the path:\n{arm}"
+        );
+    }
+    // the path CTE body must not mention the hop's alias
+    let cte = sql.split("SELECT count(*)").next().unwrap();
+    assert!(
+        !cte.contains("t1."),
+        "hop alias leaked into the path CTE:\n{cte}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
 // The emitter's path-variable "spurious JOIN" cleanup kept only joins whose alias was read, so
