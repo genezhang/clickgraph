@@ -334,8 +334,13 @@ impl FilterBuilder for LogicalPlan {
                             );
                         !is_fixed_length // CTE used if NOT fixed-length
                     } else {
-                        // Shortest path always uses CTE
-                        true
+                        // A shortest path with a spec always uses a CTE. Without one it is a
+                        // single hop that collapsed to a plain relationship —
+                        // `shortestPath((a)-[*1]->(b))`, or a bare `shortestPath((a)-[:R]->(b))` —
+                        // and renders as flat joins, which must apply the endpoint predicates here
+                        // (#1205: they were dropped, every edge returned). The unlabeled-relationship
+                        // collapse (`pattern_combinations`) is its own `pattern_union` CTE.
+                        graph_rel.pattern_combinations.is_some()
                     };
 
                     if uses_cte {
