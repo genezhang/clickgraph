@@ -67,3 +67,22 @@ def test_union_all_is_the_bag_sum_of_the_arms(left, right):
 def test_union_is_the_set_union_of_the_arms(left, right):
     want = set(_bag(left)) | set(_bag(right))
     assert _bag(f"{left} UNION {right}") == collections.Counter(want)
+
+
+DENORM = "denormalized_flights"
+
+
+def _denorm_bag(query):
+    result = execute_cypher(query, schema_name=DENORM, raise_on_error=False)
+    assert "results" in result, (query, result)
+    return collections.Counter(str(r["v"]) for r in result["results"])
+
+
+@pytest.mark.parametrize("node_first", [True, False])
+def test_union_all_after_denormalized_node_scan_keeps_every_arm_row(node_first):
+    """A denormalized node scan is itself a DISTINCT union of its from/to columns; as a later arm of a
+    `UNION ALL` its connector must not de-duplicate the arms before it."""
+    hop = "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) RETURN a.code AS v"
+    node = "MATCH (x:Airport) RETURN x.code AS v"
+    left, right = (node, hop) if node_first else (hop, node)
+    assert _denorm_bag(f"{left} UNION ALL {right}") == _denorm_bag(left) + _denorm_bag(right)

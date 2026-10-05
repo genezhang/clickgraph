@@ -5868,7 +5868,20 @@ fn render_cypher_union_arm(arm: &RenderPlan, outer_distinct: bool) -> String {
 
     // Per-arm ORDER BY / SKIP / LIMIT bind to this arm only: wrap the core in a
     // subselect so ClickHouse doesn't attach them to the whole UNION.
-    let needs_wrap = !arm.order_by.0.is_empty() || arm.limit.0.is_some() || arm.skip.0.is_some();
+    // An arm whose own direction/label union is DISTINCT (a denormalized node scan) sits in a
+    // `UNION ALL` chain: left unwrapped its DISTINCT connector de-duplicates everything BEFORE it
+    // (`A UNION ALL x1 UNION DISTINCT x2` is `((A + x1) distinct) + x2`).
+    let isolates_distinct_inner = !outer_distinct
+        && !has_aggregation
+        && arm
+            .union
+            .0
+            .as_ref()
+            .is_some_and(|u| matches!(u.union_type, UnionType::Distinct));
+    let needs_wrap = !arm.order_by.0.is_empty()
+        || arm.limit.0.is_some()
+        || arm.skip.0.is_some()
+        || isolates_distinct_inner;
     let result = if needs_wrap {
         let mut wrapped = String::new();
         wrapped.push_str("SELECT * FROM (\n");
