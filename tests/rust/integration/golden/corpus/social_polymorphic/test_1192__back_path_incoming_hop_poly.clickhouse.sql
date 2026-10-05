@@ -31,3 +31,4 @@ SELECT
       t0.from_id AS "c.user_id"
 FROM vlp_b_a AS t
 INNER JOIN brahmand.interactions AS t0 ON t0.to_id = t.start_id AND t0.interaction_type = 'FOLLOWS' AND t0.from_type = 'User' AND t0.to_type = 'User'
+WHERE NOT has(t.path_edges, tuple(t0.from_id, t0.to_id, t0.interaction_type, t0.timestamp))

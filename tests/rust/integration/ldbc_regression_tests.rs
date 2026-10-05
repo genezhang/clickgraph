@@ -4242,10 +4242,6 @@ async fn hop_path_uniqueness_guard_is_fenced_1175() {
              RETURN count(*)",
         ),
         (
-            "undirected path",
-            "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]-(b:User) RETURN count(*)",
-        ),
-        (
             "optional path",
             "MATCH (c:User)-[:FOLLOWS]->(a:User) OPTIONAL MATCH (a)-[:FOLLOWS*1..2]->(b:User) \
              RETURN count(*)",
@@ -4726,6 +4722,30 @@ async fn hop_next_to_a_zero_lower_bound_path_gets_the_uniqueness_guard_1230() {
     )
     .await;
     assert!(sql.contains("NOT has(t.path_edges, tuple("), "{sql}");
+}
+
+// ---------------------------------------------------------------------------
+// #1203: the hop-vs-path uniqueness guard for backwards and undirected paths
+//
+// The #1175 guard was fenced to forward-written paths. A backwards `(a)<-[:R*1..2]-(b)` records the
+// same edge identities in `path_edges`, and an undirected path is one doubled-edge walk keeping
+// each edge's ORIGINAL (from, to) — both spell the value the hop's own columns spell.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn hop_guard_covers_backwards_and_undirected_paths_1203() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    for cypher in [
+        "MATCH (c:User)-[:FOLLOWS]->(a:User)<-[:FOLLOWS*1..2]-(b:User) RETURN count(*)",
+        "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]-(b:User) RETURN count(*)",
+        "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User)-[:FOLLOWS]->(c:User) RETURN count(*)",
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(
+            sql.contains("NOT has(t.path_edges, tuple("),
+            "{cypher}\n{sql}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
