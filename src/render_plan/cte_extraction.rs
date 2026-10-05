@@ -1828,7 +1828,9 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
         RenderExpr::TableAlias(alias) => alias.0.clone(),
         RenderExpr::ColumnAlias(alias) => alias.0.clone(),
         RenderExpr::Literal(lit) => match lit {
-            super::render_expr::Literal::String(s) => format!("'{}'", s.replace("'", "''")),
+            super::render_expr::Literal::String(s) => {
+                crate::utils::sql_literal::cypher_string_to_sql_literal(s)
+            }
             super::render_expr::Literal::Integer(i) => i.to_string(),
             super::render_expr::Literal::Float(f) => f.to_string(),
             super::render_expr::Literal::Boolean(b) => b.to_string(),

@@ -2051,7 +2051,7 @@ fn render_logical_expr_to_sql(
             crate::query_planner::logical_expr::Literal::Integer(i) => i.to_string(),
             crate::query_planner::logical_expr::Literal::Float(f) => f.to_string(),
             crate::query_planner::logical_expr::Literal::String(s) => {
-                format!("'{}'", s.replace('\'', "\\'"))
+                crate::utils::sql_literal::cypher_string_to_sql_literal(s)
             }
             crate::query_planner::logical_expr::Literal::Boolean(b) => {
                 if *b {
