@@ -547,12 +547,22 @@ fn prune_cte_columns(plan: &mut RenderPlan) {
                 .iter()
                 .filter_map(|item| item.col_alias.as_ref().map(|ca| ca.0.clone()))
                 .collect();
+            let first_item = inner_plan.select.items.first().cloned();
             inner_plan.select.items.retain(|item| {
                 match &item.col_alias {
                     Some(ca) => needed.contains(&ca.0),
                     None => true, // Keep items without alias (computed columns, etc.)
                 }
             });
+            // #1261: a CTE body that is itself a UNION (an undirected hop under a WITH: the plan
+            // is the first arm, `union.input` the rest) must keep a projection. With none left the
+            // emitter falls into its "union branches only" form and the plan's own arm — the first
+            // direction — silently vanishes (`WITH a.user_id AS x RETURN count(*)` over an
+            // undirected hop answered one direction: 20 where 40). One column keeps every arm
+            // projected consistently and the row multiplicity intact.
+            if inner_plan.select.items.is_empty() && inner_plan.union.0.is_some() {
+                inner_plan.select.items.extend(first_item);
+            }
             let pruned = original_count - inner_plan.select.items.len();
             if pruned > 0 {
                 let removed: Vec<&String> =
