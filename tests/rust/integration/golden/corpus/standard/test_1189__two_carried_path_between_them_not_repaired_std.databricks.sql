@@ -33,4 +33,4 @@ SELECT
       c_z.p1_z_user_id AS `z.user_id`, 
       c_z.p1_c_user_id AS `c.user_id`
 FROM vlp_z_c AS t
-INNER JOIN with_c_z_cte_0 AS c_z ON string(t.end_id) = string(c_z.p1_c_user_id)
+INNER JOIN with_c_z_cte_0 AS c_z ON string(t.end_id) = string(c_z.p1_c_user_id) AND string(t.start_id) = string(c_z.p1_z_user_id)

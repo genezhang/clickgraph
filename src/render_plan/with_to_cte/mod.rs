@@ -2594,6 +2594,30 @@ impl WithBarrierScope {
         self.var_registry.clear();
     }
 
+    /// The labels `publish_alias` records for `alias`: this barrier's freshly
+    /// computed `labels`, else (only for a node passthrough, i.e. a non-empty
+    /// `per_alias_mapping`) the label carried from an earlier barrier under the
+    /// published or the source name. See `publish_alias` for why (#602/#662).
+    fn effective_labels(
+        &self,
+        alias: &str,
+        source_alias: &str,
+        per_alias_mapping: &HashMap<String, String>,
+        labels: &[String],
+    ) -> Vec<String> {
+        if !labels.is_empty() {
+            labels.to_vec()
+        } else if !per_alias_mapping.is_empty() {
+            self.carried_labels
+                .get(alias)
+                .or_else(|| self.carried_labels.get(source_alias))
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Record one exported alias's property mapping into both the CTE variable
     /// map and the unified variable registry (scalar-vs-node branch preserved).
     ///
@@ -2633,26 +2657,16 @@ impl WithBarrierScope {
         // (`u`). Look up the carried label under BOTH the published name and the
         // `source_alias`, and record the carried-forward label under the new name
         // too so a further barrier keeps finding it.
-        let effective_labels: Vec<String> = if !labels.is_empty() {
+        let effective_labels =
+            self.effective_labels(alias, source_alias, per_alias_mapping, labels);
+        if !labels.is_empty() {
             self.carried_labels
                 .insert(alias.to_string(), labels.to_vec());
-            labels.to_vec()
-        } else if !per_alias_mapping.is_empty() {
-            let carried = self
-                .carried_labels
-                .get(alias)
-                .or_else(|| self.carried_labels.get(source_alias))
-                .cloned()
-                .unwrap_or_default();
-            if !carried.is_empty() && alias != source_alias {
-                // Re-key under the new published name for subsequent barriers.
-                self.carried_labels
-                    .insert(alias.to_string(), carried.clone());
-            }
-            carried
-        } else {
-            Vec::new()
-        };
+        } else if !effective_labels.is_empty() && alias != source_alias {
+            // Re-key under the new published name for subsequent barriers.
+            self.carried_labels
+                .insert(alias.to_string(), effective_labels.clone());
+        }
         let labels: &[String] = &effective_labels;
 
         self.scope_cte_variables.insert(
@@ -3408,6 +3422,7 @@ fn generate_vlp_with_cte_join_conditions(
     render_plan: &RenderPlan,
     cte_name: &str,
     cte_alias: &str,
+    carried_aliases: &[String],
     cte_schemas: &crate::render_plan::CteSchemas,
     join_conditions: &mut Vec<OperatorApplication>,
     verified_chain: bool,
@@ -3425,7 +3440,33 @@ fn generate_vlp_with_cte_join_conditions(
                     let is_end = vlp_cte.vlp_cypher_end_alias.as_deref().is_some_and(|a| {
                         cte_alias == a || cte_alias.starts_with(&format!("{}_", a))
                     });
-                    if is_start || is_end {
+                    // The endpoint the CTE alias names (the start when it names both).
+                    let mut endpoints: Vec<bool> = if is_start {
+                        vec![true]
+                    } else if is_end {
+                        vec![false]
+                    } else {
+                        Vec::new()
+                    };
+                    // P-4b: a CTE that carries BOTH ends of the path (`WITH c, z MATCH
+                    // (z)-[*1..2]->(c)`, CTE alias `c_z`) must tie both, or the path runs
+                    // from every node to the tied one (18 rows vs 6). Only completes a
+                    // tie already found: when the alias names neither end, no tie is made
+                    // here and `carried_vlp_endpoint` refuses the shape (its other pattern
+                    // edges may not be rendered).
+                    if !endpoints.is_empty() {
+                        for (endpoint_is_start, endpoint) in [
+                            (true, vlp_cte.vlp_cypher_start_alias.as_deref()),
+                            (false, vlp_cte.vlp_cypher_end_alias.as_deref()),
+                        ] {
+                            if endpoint.is_some_and(|a| carried_aliases.iter().any(|c| c == a))
+                                && !endpoints.contains(&endpoint_is_start)
+                            {
+                                endpoints.push(endpoint_is_start);
+                            }
+                        }
+                    }
+                    for is_start in endpoints {
                         let vlp_id_col = if is_start { "start_id" } else { "end_id" };
                         let from_alias = from_ref.alias.as_deref().unwrap_or("t");
                         // Find the ID column name in the WITH CTE
@@ -3471,7 +3512,11 @@ fn generate_vlp_with_cte_join_conditions(
                         // id property was looked up on the wrong plan. In the chains #1182
                         // verified, take the column the CTE exports for the node's id property.
                         let id_col_name = if verified_chain {
-                            denorm_id_column_in_cte(cte_schemas.get(cte_name), vlp_alias)
+                            cte_schemas
+                                .get(cte_name)
+                                .and_then(|m| m.exports.get(vlp_alias))
+                                .and_then(|export| export.single_identity())
+                                .map(str::to_string)
                                 .filter(|_| {
                                     cte_schemas
                                         .get(cte_name)
@@ -3942,37 +3987,6 @@ fn apply_hop_uniqueness_after_with(
     });
 }
 
-/// The column a WITH CTE exports for `alias`'s node-id PROPERTY (`p1_c_code` for `c.code`),
-/// when exactly one column does: `property_mapping` is keyed `(alias, property)` and holds both
-/// the id property and the edge column it maps to (`code`, `dest_code`); only the former is the
-/// id property of a node schema.
-fn denorm_id_column_in_cte(
-    meta: Option<&crate::render_plan::CteSchemaMetadata>,
-    alias: &str,
-) -> Option<String> {
-    let schema = crate::server::query_context::get_current_schema()?;
-    let id_props: HashSet<String> = schema
-        .all_node_schemas()
-        .values()
-        .filter_map(|ns| match &ns.node_id.id {
-            crate::graph_catalog::config::Identifier::Single(p) => Some(p.clone()),
-            _ => None,
-        })
-        .collect();
-    let mut cols: Vec<&String> = meta?
-        .property_mapping
-        .iter()
-        .filter(|((a, prop), _)| a == alias && id_props.contains(prop))
-        .map(|(_, col)| col)
-        .collect();
-    cols.sort();
-    cols.dedup();
-    match cols.as_slice() {
-        [only] => Some((*only).clone()),
-        _ => None,
-    }
-}
-
 /// The first of `aliases` that is the start or end node of the VLP CTE in FROM.
 fn carried_vlp_endpoint<'a>(render_plan: &RenderPlan, aliases: &'a [String]) -> Option<&'a str> {
     let FromTableItem(Some(from_ref)) = &render_plan.from else {
@@ -4229,6 +4243,7 @@ fn resolve_cross_table_with_cte_joins(
                         render_plan,
                         &cte_name,
                         &cte_alias,
+                        &aliases,
                         cte_schemas,
                         &mut join_conditions,
                         crate::query_planner::logical_plan::is_supported_with_vlp_chain(
@@ -6576,6 +6591,90 @@ fn register_cte_alias_references(
     log::debug!("🔧 build_chained_with_match_cte_plan: Updated cte_references_for_rendering with {} entries", cte_references_for_rendering.len());
 }
 
+/// One exported alias's `cypher_property → cte_column` map, out of the CTE's
+/// `(alias, property) → column` mapping. `lookup_alias` is the ORIGINAL name of a
+/// renamed alias (`WITH u AS person` → `u`): CTE columns are prefixed with it.
+fn per_alias_property_mapping(
+    property_mapping: &HashMap<(String, String), String>,
+    lookup_alias: &str,
+) -> HashMap<String, String> {
+    property_mapping
+        .iter()
+        .filter(|((a, _), _)| a == lookup_alias)
+        .map(|((_, prop), col)| (prop.clone(), col.clone()))
+        .collect()
+}
+
+/// An exported alias's node label, from the plan tree: the renamed alias first,
+/// then the original. After the WITH→CTE rewrite `current_plan` may no longer
+/// expose the source node (e.g. a graph-rel MATCH gets restructured), so fall
+/// back to the WITH bodies (`with_plans`), which still contain the source
+/// GraphNode and its label. Missing labels break generic `.id` resolution for
+/// renamed node_ids. (issue #411)
+fn export_labels_from_plans(
+    alias: &str,
+    lookup_alias: &str,
+    current_plan: &LogicalPlan,
+    with_plans: &[LogicalPlan],
+) -> Vec<String> {
+    use crate::query_planner::logical_expr::expression_rewriter::find_label_for_alias_in_plan;
+    find_label_for_alias_in_plan(current_plan, alias)
+        .or_else(|| find_label_for_alias_in_plan(current_plan, lookup_alias))
+        .or_else(|| {
+            with_plans.iter().find_map(|p| {
+                find_label_for_alias_in_plan(p, alias)
+                    .or_else(|| find_label_for_alias_in_plan(p, lookup_alias))
+            })
+        })
+        .map(|l| vec![l])
+        .unwrap_or_default()
+}
+
+/// P-4b (`docs/design/WITH_EXPORT_CONTRACT.md`): the export contract of every
+/// alias a WITH CTE exports, derived from what the CTE emits (its SELECT columns
+/// and each alias's property → column map), with the labels `publish_alias` will
+/// record. Readers take a carried node's identity column from here instead of
+/// reconstructing it from a naming convention.
+#[allow(clippy::too_many_arguments)]
+fn derive_cte_exports(
+    aliases: &[String],
+    property_mapping: &HashMap<(String, String), String>,
+    select_items_for_schema: &[SelectItem],
+    alias_rename_map: &HashMap<String, String>,
+    current_plan: &LogicalPlan,
+    with_plans: &[LogicalPlan],
+    with_scope: &WithBarrierScope,
+    schema: &GraphSchema,
+) -> HashMap<String, crate::render_plan::cte_export::CteExport> {
+    let emitted: Vec<String> = select_items_for_schema
+        .iter()
+        .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.replace('.', "_")))
+        .collect();
+    let emitted: HashSet<&str> = emitted.iter().map(String::as_str).collect();
+    aliases
+        .iter()
+        .filter(|alias| !alias.is_empty())
+        .map(|alias| {
+            let lookup_alias = alias_rename_map.get(alias).unwrap_or(alias);
+            let per_alias_mapping = per_alias_property_mapping(property_mapping, lookup_alias);
+            let labels = with_scope.effective_labels(
+                alias,
+                lookup_alias,
+                &per_alias_mapping,
+                &export_labels_from_plans(alias, lookup_alias, current_plan, with_plans),
+            );
+            let export = crate::render_plan::cte_export::CteExport::derive(
+                alias,
+                &labels,
+                &per_alias_mapping,
+                &emitted,
+                schema,
+            );
+            (alias.clone(), export)
+        })
+        .collect()
+}
+
 /// Publish each exported alias's CTE scope for downstream resolution (a STEP of
 /// the main loop's `'alias_loop` in `build_chained_with_match_cte_plan`,
 /// Phase-4 §7.1 extraction).
@@ -6608,31 +6707,8 @@ fn publish_cte_alias_scopes(
         // CTE columns are prefixed with the original alias (p1_u_*).
         let lookup_alias = alias_rename_map.get(alias).unwrap_or(alias);
 
-        // Extract per-alias property mapping: cypher_prop → cte_column
-        let per_alias_mapping: HashMap<String, String> = property_mapping
-            .iter()
-            .filter(|((a, _), _)| a == lookup_alias)
-            .map(|((_, prop), col)| (prop.clone(), col.clone()))
-            .collect();
-
-        // Get labels from current plan tree — try renamed alias first,
-        // then fall back to original alias (for renamed variables).
-        // After the WITH→CTE rewrite, `current_plan` may no longer expose the
-        // source node (e.g. a graph-rel MATCH gets restructured), so also fall
-        // back to the WITH bodies (`with_plans`), which still contain the source
-        // GraphNode and its label. Missing labels break generic `.id` resolution
-        // for renamed node_ids. (issue #411)
-        use crate::query_planner::logical_expr::expression_rewriter::find_label_for_alias_in_plan;
-        let labels = find_label_for_alias_in_plan(current_plan, alias)
-            .or_else(|| find_label_for_alias_in_plan(current_plan, lookup_alias))
-            .or_else(|| {
-                with_plans.iter().find_map(|p| {
-                    find_label_for_alias_in_plan(p, alias)
-                        .or_else(|| find_label_for_alias_in_plan(p, lookup_alias))
-                })
-            })
-            .map(|l| vec![l])
-            .unwrap_or_default();
+        let per_alias_mapping = per_alias_property_mapping(property_mapping, lookup_alias);
+        let labels = export_labels_from_plans(alias, lookup_alias, current_plan, with_plans);
 
         with_scope.publish_alias(alias, lookup_alias, cte_name, &per_alias_mapping, &labels);
 
@@ -8693,6 +8769,7 @@ fn register_vlp_cte_schemas(
                     column_names: union_property_names,
                     alias_to_id: union_alias_to_id.clone(),
                     property_mapping: union_property_mapping,
+                    exports: HashMap::new(),
                 },
             );
 
@@ -8835,6 +8912,7 @@ fn register_vlp_cte_schemas(
                             column_names: property_names,
                             alias_to_id: alias_to_id_column,
                             property_mapping,
+                            exports: HashMap::new(),
                         },
                     );
                     log::debug!("STEP 6: SUCCESS - Schema populated for '{}'", from_name);
@@ -8928,6 +9006,7 @@ fn extract_nested_cte_schemas(
                     column_names: property_names,
                     alias_to_id: alias_to_id_column,
                     property_mapping,
+                    exports: HashMap::new(),
                 },
             );
         }
@@ -9535,6 +9614,16 @@ pub(crate) fn build_chained_with_match_cte_plan(
             );
 
             // Store CTE schema with full property mapping
+            let exports = derive_cte_exports(
+                &exported_aliases,
+                &property_mapping,
+                &select_items_for_schema,
+                &alias_rename_map,
+                &current_plan,
+                &with_plans,
+                &with_scope,
+                schema,
+            );
             cte_schemas.insert(
                 cte_name.clone(),
                 crate::render_plan::CteSchemaMetadata {
@@ -9542,6 +9631,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     column_names: property_names_for_schema.clone(),
                     alias_to_id: alias_to_id_column,
                     property_mapping: property_mapping.clone(),
+                    exports,
                 },
             );
 

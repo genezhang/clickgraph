@@ -1,4 +1,5 @@
 pub(crate) mod clause_extractors;
+pub(crate) mod cte_export;
 pub mod cte_extraction;
 pub mod cte_generation;
 pub(crate) mod cte_graph_joins_rewrite;
@@ -53,6 +54,9 @@ pub struct CteSchemaMetadata {
     pub alias_to_id: HashMap<String, String>,
     /// Maps (alias, property) → CTE column name (for property resolution)
     pub property_mapping: HashMap<(String, String), String>,
+    /// P-4b export contract per exported alias (`cte_export.rs`); empty for the
+    /// VLP / UNION pseudo-schemas, which are not WITH CTEs.
+    pub exports: HashMap<String, cte_export::CteExport>,
 }
 pub type CteSchemas = HashMap<String, CteSchemaMetadata>;
 

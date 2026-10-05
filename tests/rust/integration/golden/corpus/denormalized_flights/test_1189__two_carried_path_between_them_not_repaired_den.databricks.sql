@@ -29,4 +29,4 @@ SELECT
       c_z.p1_z_code AS `z.code`, 
       c_z.p1_c_code AS `c.code`
 FROM vlp_z_c AS t
-INNER JOIN with_c_z_cte_0 AS c_z ON string(t.end_id) = string(c_z.p1_c_end_id)
+INNER JOIN with_c_z_cte_0 AS c_z ON string(t.end_id) = string(c_z.p1_c_end_id) AND string(t.start_id) = string(c_z.p1_z_start_id)

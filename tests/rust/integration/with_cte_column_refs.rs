@@ -41,6 +41,12 @@ const KNOWN_VIOLATIONS: &[(&str, &str, &str)] = &[
         "#1189",
     ),
     (
+        // The start-endpoint tie (P-4b), spelled with the same #1189 guess as the end tie.
+        "corpus/denormalized_flights/test_1189__two_carried_path_between_them_not_repaired_den.clickhouse.sql",
+        "c_z.p1_z_start_id not in with_c_z_cte_0",
+        "#1189",
+    ),
+    (
         "corpus/standard/test_636_shared_anchor_comma_interleaved_stays_loud.clickhouse.sql",
         "p.post_id not in with_p_cte_0",
         "#933",
