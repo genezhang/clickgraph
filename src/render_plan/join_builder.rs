@@ -1936,7 +1936,43 @@ impl JoinBuilder for LogicalPlan {
                     })
                 };
 
+                // #1182: a node a CTE-backed VLP ends at is bound through the CTE
+                // (`t.start_id` / `t.end_id`), never through a table scan of its own. The
+                // plan walk below regenerates a hop's node join even for such a node, and
+                // `apply_vlp_rewrites` has already turned its condition into
+                // `t.<col> = <edge>.<col>` — a join that mentions the node's alias nowhere,
+                // i.e. a cross join with the node table (8 × 8 = 64× over-count).
+                let vlp_bound_nodes: std::collections::HashSet<String> =
+                    if crate::query_planner::logical_plan::is_supported_with_vlp_chain(
+                        &graph_joins.input,
+                        &|alias| graph_joins.cte_references.contains_key(alias),
+                        &|gr| !super::from_builder::is_fixed_length_vlp(gr),
+                    ) {
+                        let mut rels = Vec::new();
+                        collect_graph_rels(&graph_joins.input, &mut rels);
+                        rels.into_iter()
+                            .filter(|gr| {
+                                gr.variable_length.is_some()
+                                    && !super::from_builder::is_fixed_length_vlp(gr)
+                                    && !gr.is_optional.unwrap_or(false)
+                            })
+                            .flat_map(|gr| {
+                                [gr.left_connection.clone(), gr.right_connection.clone()]
+                            })
+                            .collect()
+                    } else {
+                        // Not a shape this is verified for (nor a post-WITH scope): unchanged.
+                        std::collections::HashSet::new()
+                    };
+
                 for input_join in input_joins {
+                    // A node join (no from/to id columns) for a VLP-bound node: see above.
+                    if input_join.from_id_column.is_none()
+                        && input_join.to_id_column.is_none()
+                        && vlp_bound_nodes.contains(&input_join.table_alias)
+                    {
+                        continue;
+                    }
                     // Skip if alias already exists
                     if existing_aliases.contains(&input_join.table_alias) {
                         // Check if the skipped join's conditions reference CTE aliases

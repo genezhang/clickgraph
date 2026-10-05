@@ -126,6 +126,9 @@ pub struct PlanCtx {
     /// (e.g., `t.end_id` instead of `u2.user_id`)
     /// Populated by graph_join_inference.rs when VLP patterns are detected
     vlp_endpoints: HashMap<String, VlpEndpointInfo>,
+    /// The query's final scope is a post-`WITH` chain the #1182 repair is verified for
+    /// (see `is_supported_with_vlp_chain`). Set once, before join inference.
+    with_vlp_chain_supported: bool,
     /// Counter for generating unique per-VLP CTE outer aliases (vt0, vt1, vt2, ...).
     /// Scoped to this PlanCtx (per-query), avoiding global static race conditions.
     vlp_alias_counter: usize,
@@ -549,6 +552,7 @@ impl PlanCtx {
             max_inferred_types: 20, // Increased for Neo4j Browser node expansion
             pattern_contexts: HashMap::new(),
             vlp_endpoints: HashMap::new(),
+            with_vlp_chain_supported: false,
             vlp_alias_counter: 0,
             reserved_aliases: Arc::new(HashSet::new()),
             variables: VariableRegistry::new(),
@@ -583,6 +587,7 @@ impl PlanCtx {
             max_inferred_types: 20, // Increased for Neo4j Browser node expansion
             pattern_contexts: HashMap::new(),
             vlp_endpoints: HashMap::new(),
+            with_vlp_chain_supported: false,
             vlp_alias_counter: 0,
             reserved_aliases: Arc::new(HashSet::new()),
             variables: VariableRegistry::new(),
@@ -647,6 +652,7 @@ impl PlanCtx {
             max_inferred_types,
             pattern_contexts: HashMap::new(),
             vlp_endpoints: HashMap::new(),
+            with_vlp_chain_supported: false,
             vlp_alias_counter: 0,
             reserved_aliases: Arc::new(HashSet::new()),
             variables: VariableRegistry::new(),
@@ -693,6 +699,7 @@ impl PlanCtx {
             max_inferred_types: parent.max_inferred_types,
             pattern_contexts: HashMap::new(), // New scope - patterns computed fresh
             vlp_endpoints: parent.vlp_endpoints.clone(), // Inherit VLP endpoint info from parent
+            with_vlp_chain_supported: parent.with_vlp_chain_supported,
             vlp_alias_counter: parent.vlp_alias_counter, // Continue counter from parent scope
             // #1084: inherit the query-scoped reserved-alias set (cheap Arc clone) so
             // anonymous-alias generation after a WITH barrier still avoids user vars.
@@ -732,6 +739,7 @@ impl PlanCtx {
             max_inferred_types: 4,
             pattern_contexts: HashMap::new(),
             vlp_endpoints: HashMap::new(),
+            with_vlp_chain_supported: false,
             vlp_alias_counter: 0,
             reserved_aliases: Arc::new(HashSet::new()),
             variables: VariableRegistry::new(),
@@ -1310,6 +1318,15 @@ impl PlanCtx {
     /// Check if an alias is a VLP endpoint (needs CTE reference translation).
     pub fn is_vlp_endpoint(&self, alias: &str) -> bool {
         self.vlp_endpoints.contains_key(alias)
+    }
+
+    /// See [`PlanCtx::with_vlp_chain_supported`] (the field).
+    pub fn with_vlp_chain_supported(&self) -> bool {
+        self.with_vlp_chain_supported
+    }
+
+    pub fn set_with_vlp_chain_supported(&mut self, supported: bool) {
+        self.with_vlp_chain_supported = supported;
     }
 
     /// Get VLP endpoint info for an alias.

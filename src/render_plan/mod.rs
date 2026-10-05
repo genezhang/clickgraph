@@ -36,6 +36,7 @@ pub use cte_manager::{
     CteColumnMetadata, CteError, CteGenerationResult, CteManager, VlpEndpointInfo,
 };
 pub use filter_pipeline::CategorizedFilters;
+pub(crate) use from_builder::is_fixed_length_vlp;
 pub use from_table::FromTable;
 pub use view_table_ref::ViewTableRef;
 

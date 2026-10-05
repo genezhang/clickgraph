@@ -134,6 +134,26 @@ pub fn generate_pattern_joins(
             let right_is_vlp =
                 plan_ctx.is_vlp_endpoint(t.right_alias) && rel_to_single && right_id_single;
 
+            // A VLP endpoint the single-column fold above does not cover (a COMPOSITE
+            // key: the CTE column is a `concat(...)`) falls through to a plain node
+            // JOIN whose condition `apply_vlp_rewrites` turns into
+            // `t.start_id = <edge>.<col> AND t.start_id = <edge>.<col2>`: the
+            // concatenated key against each single column, which matches nothing — an
+            // empty result for a pattern that has rows (#604, #623). Refuse it.
+            for (alias, covered) in [(t.left_alias, left_is_vlp), (t.right_alias, right_is_vlp)] {
+                if plan_ctx.is_vlp_endpoint(alias) && !covered {
+                    return Err(AnalyzerError::UnsupportedPattern {
+                        message: format!(
+                            "a fixed hop '{}' next to a variable-length path binds node '{}' \
+                             through a composite key, which the path's CTE cannot be joined on \
+                             column by column (#604/#623). Match the hop and the path with a \
+                             single-column node id, or in separate clauses.",
+                            t.rel_alias, alias
+                        ),
+                    });
+                }
+            }
+
             // Edge join, optionally binding one/both endpoints to the VLP CTE
             // instead of to a node table. `bind_left`/`bind_right` add the
             // edge↔node equality; when the endpoint is a VLP endpoint the RHS
@@ -319,6 +339,53 @@ pub fn generate_pattern_joins(
                     let (vlp_alias, vlp_col) =
                         plan_ctx.get_vlp_join_reference(t.right_alias, &to_col);
                     builder = builder.add_condition(t.rel_alias, to_col, vlp_alias, vlp_col);
+                }
+
+                // #1182: an endpoint a `WITH` already bound (a CTE column, not a node
+                // scan) must be tied to THIS edge too. An ordinary post-WITH hop gets
+                // that tie from the render layer, which regenerates the hop from the
+                // plan; in a scope holding a CTE-backed VLP nothing regenerates it (the
+                // VLP `GraphRel` emits no joins of its own), so without the tie the edge
+                // is bound to the VLP CTE alone and the WITH CTE is cross-joined.
+                if !rel_is_optional
+                    && !plan_ctx.is_optional(t.rel_alias)
+                    && plan_ctx.with_vlp_chain_supported()
+                {
+                    for (alias, cte_name, node, col) in [
+                        (
+                            t.left_alias,
+                            t.left_cte_name,
+                            &ctx.left_node,
+                            rel_schema.from_id.first_column(),
+                        ),
+                        (
+                            t.right_alias,
+                            t.right_cte_name,
+                            &ctx.right_node,
+                            rel_schema.to_id.first_column(),
+                        ),
+                    ] {
+                        if plan_ctx.is_vlp_endpoint(alias) || !plan_ctx.is_cte(cte_name) {
+                            continue;
+                        }
+                        // The CTE exports the node under its id PROPERTY; the edge
+                        // column is what the node's role maps that property to.
+                        if let NodeAccessStrategy::EmbeddedInEdge { properties, .. } = node {
+                            if let Some(id_prop) = properties
+                                .iter()
+                                .filter(|(_, mapped)| mapped.as_str() == col)
+                                .map(|(prop, _)| prop.as_str())
+                                .min()
+                            {
+                                builder = builder.add_condition(
+                                    t.rel_alias,
+                                    col.to_string(),
+                                    alias,
+                                    id_prop.to_string(),
+                                );
+                            }
+                        }
+                    }
                 }
 
                 vec![builder.build()]

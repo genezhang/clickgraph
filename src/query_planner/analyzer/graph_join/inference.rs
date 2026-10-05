@@ -131,6 +131,20 @@ impl AnalyzerPass for GraphJoinInference {
             query_unsafe_for_chaining,
         );
         Self::pre_register_vlp_endpoints(&logical_plan, plan_ctx)?;
+        // #1182: whether the final scope is a post-WITH chain the repair is verified for.
+        {
+            let carried: HashSet<String> = plan_ctx
+                .iter_table_contexts()
+                .filter(|(_, ctx)| ctx.get_cte_name().is_some())
+                .map(|(alias, _)| alias.clone())
+                .collect();
+            let supported = crate::query_planner::logical_plan::is_supported_with_vlp_chain(
+                &logical_plan,
+                &|alias| carried.contains(alias),
+                &|gr| !crate::render_plan::is_fixed_length_vlp(gr),
+            );
+            plan_ctx.set_with_vlp_chain_supported(supported);
+        }
 
         self.collect_graph_joins(
             logical_plan.clone(),
@@ -1053,6 +1067,18 @@ impl GraphJoinInference {
                     .collect();
                 if !vlp_available.is_empty() {
                     vlp_available.insert(crate::server::query_context::vlp_from_alias());
+                    // #1182 (only next to a REQUIRED path: an OPTIONAL path's layout is
+                    // not repaired by it, see `scope_has_required_cte_backed_vlp`): a node a `WITH` carried into this scope is a CTE column,
+                    // available from the start even when no join of this scope scans
+                    // it (a denormalized node has no table of its own, hence no FROM
+                    // marker). A hop adjacent to the VLP ties itself to it.
+                    if plan_ctx.with_vlp_chain_supported() {
+                        for (alias, table_ctx) in plan_ctx.iter_table_contexts() {
+                            if table_ctx.get_cte_name().is_some() {
+                                vlp_available.insert(alias.clone());
+                            }
+                        }
+                    }
                 }
 
                 // Reorder JOINs using clean topological sort

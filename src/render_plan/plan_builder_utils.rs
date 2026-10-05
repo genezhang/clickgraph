@@ -3948,6 +3948,12 @@ pub(crate) fn clear_stale_joins_for_cte_aliases(
         match plan {
             LogicalPlan::GraphJoins(gj) => {
                 let new_input = clear_recursive(&gj.input, cte_aliases, live_aliases);
+                let scope_has_cte_backed_vlp =
+                    crate::query_planner::logical_plan::is_supported_with_vlp_chain(
+                        &gj.input,
+                        &|alias| cte_aliases.contains(alias),
+                        &|gr| !super::from_builder::is_fixed_length_vlp(gr),
+                    );
 
                 let cleaned_joins: Vec<Join> = gj
                     .joins
@@ -3979,7 +3985,37 @@ pub(crate) fn clear_stale_joins_for_cte_aliases(
                                 }
                             })
                         });
-                        if alias_is_stale || condition_refs_cte || condition_refs_dead {
+                        // #1182: a post-WITH hop in a scope that holds a CTE-backed VLP —
+                        // `WITH c MATCH (c)-[:R]->(a)-[:R*1..2]->(b)` — is tied to the
+                        // WITH CTE (`t2.follower_id = c.id`) and, for the hop next to the
+                        // VLP, to the VLP CTE (`t2.followed_id = t.start_id`). Its only
+                        // "stale" signal is the CTE reference, but unlike an ordinary
+                        // post-WITH hop it cannot be regenerated from the plan: the
+                        // `GraphRel` arm of `extract_joins` emits no joins for a
+                        // CTE-backed VLP and never descends into its left hops, so
+                        // dropping it silently cross-joins the WITH CTE onto the VLP.
+                        // An alias the WITH carried in is "dead" in the plan tree when
+                        // several variables share one composite CTE alias
+                        // (`WITH c, z` → `c_z`); the render's orphan-alias pass maps
+                        // it onto that alias, so it is not a dead reference here.
+                        let condition_refs_dead_non_cte = j.joining_on.iter().any(|op| {
+                            op.operands.iter().any(|operand| {
+                                if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) = operand {
+                                    let alias = &pa.table_alias.0;
+                                    !crate::query_planner::join_context::is_vlp_or_cte_alias(alias)
+                                        && !cte_aliases.contains(alias.as_str())
+                                        && !live_aliases.contains(alias.as_str())
+                                } else {
+                                    false
+                                }
+                            })
+                        });
+                        let keep_vlp_scope_hop = scope_has_cte_backed_vlp
+                            && !alias_is_stale
+                            && !condition_refs_dead_non_cte;
+                        if !keep_vlp_scope_hop
+                            && (alias_is_stale || condition_refs_cte || condition_refs_dead)
+                        {
                             log::debug!(
                                 "🔧 clear_stale_joins: Removing stale join for '{}' (alias_stale={}, cond_refs_cte={}, cond_refs_dead={})",
                                 j.table_alias, alias_is_stale, condition_refs_cte, condition_refs_dead

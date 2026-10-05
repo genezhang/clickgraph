@@ -1,0 +1,1 @@
+plan error: AnalyzerError: Unsupported pattern: a fixed hop 't0' next to a variable-length path binds node 'n1' through a composite key, which the path's CTE cannot be joined on column by column (#604/#623). Match the hop and the path with a single-column node id, or in separate clauses.

@@ -1,0 +1,36 @@
+WITH RECURSIVE with_c_cte_1 AS (SELECT 
+      t0.Dest AS "p1_c_code"
+FROM test_integration.flights AS t0
+), 
+vlp_n1_c AS (
+    SELECT
+        t1.Origin as start_id,
+        t1.Dest as end_id,
+        1 as hop_count,
+        [tuple(t1.flight_id, t1.flight_number)] as path_edges,
+        [t1.Origin, t1.Dest] as path_nodes,
+        [] as path_relationships,
+        t1."Origin" as "start_Origin"
+    FROM test_integration.flights AS t1
+    WHERE 1 <= 3
+    UNION ALL
+    SELECT
+        vp.start_id as start_id,
+        next.Dest as end_id,
+        vp.hop_count + 1,
+        arrayConcat(vp.path_edges, [tuple(next.flight_id, next.flight_number)]),
+        arrayConcat(vp.path_nodes, [next.Dest]),
+        [] as path_relationships,
+        vp."start_Origin" as "start_Origin"
+    FROM vlp_n1_c vp
+    JOIN test_integration.flights next ON next.Origin = vp.end_id
+    WHERE vp.hop_count < 3 AND NOT has(vp.path_edges, tuple(next.flight_id, next.flight_number))
+)
+SELECT 
+      c.p1_c_code AS "c.code", 
+      t2.Origin AS "n0.code"
+FROM vlp_n1_c AS t
+INNER JOIN with_c_cte_1 AS c ON toString(t.end_id) = toString(c.p1_c_end_id)
+INNER JOIN test_integration.flights AS t2 ON t2.Dest = t.start_id
+INNER JOIN test_integration.flights AS t1 ON t1.Dest = t.end_p1_c_code
+INNER JOIN test_integration.flights AS n1 ON t.start_Origin = t1.Origin
