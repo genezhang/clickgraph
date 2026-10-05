@@ -111,16 +111,52 @@ impl From<open_cypher_parser::ast::Direction> for Direction {
 // Operator Application Conversions
 // =============================================================================
 
+/// #588 guardrail for a bare pattern used as a boolean: a hop bound or OR'd relationship types would
+/// be silently narrowed by the NOT-pattern lowering, so they are rejected loudly.
+fn check_bare_pattern_guardrail(
+    pp: &open_cypher_parser::ast::PathPattern<'_>,
+) -> Result<(), errors::LogicalExprError> {
+    if let Some(reason) = path_pattern_has_vlp_or_multi_type(pp) {
+        return Err(errors::LogicalExprError::UnsupportedExpression(format!(
+            "(#588) this boolean pattern predicate {reason}. ClickGraph \
+             does not yet convert a bare/NOT pattern-existence check \
+             through a pipeline that can carry a hop bound or enumerate \
+             every OR'd relationship type, so the predicate would \
+             silently narrow to a smaller pattern than the one written \
+             — returning wrong results. Workaround: express the check \
+             via a top-level (OPTIONAL) MATCH, or an EXISTS {{ ... }} \
+             subquery, instead of a bare pattern in WHERE."
+        )));
+    }
+    Ok(())
+}
+
+/// The legacy lowering of a bare pattern: `LogicalExpr::PathPattern` (consumed by the NOT-pattern
+/// anti-join path).
+fn bare_path_pattern_expr(
+    pp: open_cypher_parser::ast::PathPattern<'_>,
+) -> Result<LogicalExpr, errors::LogicalExprError> {
+    check_bare_pattern_guardrail(&pp)?;
+    Ok(LogicalExpr::PathPattern(PathPattern::try_from(pp)?))
+}
+
 impl<'a> TryFrom<open_cypher_parser::ast::OperatorApplication<'a>> for OperatorApplication {
     type Error = errors::LogicalExprError;
 
     fn try_from(
         value: open_cypher_parser::ast::OperatorApplication<'a>,
     ) -> Result<Self, Self::Error> {
+        let is_not = matches!(value.operator, open_cypher_parser::ast::Operator::Not);
         let operands = value
             .operands
             .into_iter()
-            .map(LogicalExpr::try_from)
+            .map(|operand| match operand {
+                // `NOT (a)-[:R]->(b)`: the established anti-join lowering
+                open_cypher_parser::ast::Expression::PathPattern(pp) if is_not => {
+                    bare_path_pattern_expr(pp)
+                }
+                other => LogicalExpr::try_from(other),
+            })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(OperatorApplication {
             operator: Operator::from(value.operator),
@@ -655,35 +691,23 @@ impl<'a> std::convert::TryFrom<open_cypher_parser::ast::Expression<'a>> for Logi
                 OperatorApplication::try_from(oa)?,
             )),
             Expression::PathPattern(pp) => {
-                // GUARDRAIL (#588, mirrors #578): a bare pattern used as a
-                // boolean — `WHERE NOT (a)-[:A|B]->(b)` / `WHERE NOT
-                // (a)-[:R*1..3]->(b)` — bottoms out at `logical_expr::PathPattern`
-                // / `RelationshipPattern`, which has NO `variable_length` field,
-                // so a `*1..N` hop bound is silently dropped here, and multi-type
-                // OR'd labels are then silently narrowed to the FIRST type by the
-                // render-layer `generate_not_exists_from_path_pattern` (which only
-                // reads `labels.first()` and emits a single-hop NOT EXISTS). Both
-                // silently evaluate a NARROWER predicate than written — e.g. `NOT
-                // (a)-[:FOLLOWS|FRIENDS_WITH]->(b)` checks only FOLLOWS, and `NOT
-                // (a)-[:FOLLOWS*1..3]->(a)` checks only a single hop — returning
-                // wrong rows (ground rule 1 violation). Until this shape routes
-                // through a pipeline that carries a hop bound and enumerates every
-                // OR'd type, reject both loudly instead of silently narrowing.
-                // Single-type non-VLP patterns return None here and are
-                // unaffected (the working `NOT (a)-[:FOLLOWS]->(b)` form).
-                if let Some(reason) = path_pattern_has_vlp_or_multi_type(&pp) {
-                    return Err(errors::LogicalExprError::UnsupportedExpression(format!(
-                        "(#588) this boolean pattern predicate {reason}. ClickGraph \
-                         does not yet convert a bare/NOT pattern-existence check \
-                         through a pipeline that can carry a hop bound or enumerate \
-                         every OR'd relationship type, so the predicate would \
-                         silently narrow to a smaller pattern than the one written \
-                         — returning wrong results. Workaround: express the check \
-                         via a top-level (OPTIONAL) MATCH, or an EXISTS {{ ... }} \
-                         subquery, instead of a bare pattern in WHERE."
-                    )));
+                // A bare relationship pattern used as a boolean (`WHERE (a)-[:R]->()`) is an
+                // existence test (#1238): lower it to `EXISTS { pattern }`, which is supported
+                // everywhere a scalar predicate is. `NOT (pattern)` keeps its own lowering
+                // (see the `Not` arm of `OperatorApplication::try_from`).
+                if matches!(
+                    pp,
+                    open_cypher_parser::ast::PathPattern::ConnectedPattern(_)
+                ) {
+                    check_bare_pattern_guardrail(&pp)?;
+                    return Ok(LogicalExpr::ExistsSubquery(ExistsSubquery::try_from(
+                        open_cypher_parser::ast::ExistsSubquery {
+                            pattern: pp,
+                            where_clause: None,
+                        },
+                    )?));
                 }
-                Ok(LogicalExpr::PathPattern(PathPattern::try_from(pp)?))
+                bare_path_pattern_expr(pp)
             }
             Expression::Case(case) => Ok(LogicalExpr::Case(LogicalCase::try_from(case)?)),
             Expression::ExistsExpression(exists) => Ok(LogicalExpr::ExistsSubquery(

@@ -4770,6 +4770,38 @@ async fn optional_where_count_keeps_the_folded_subquery_1236() {
 }
 
 // ---------------------------------------------------------------------------
+// #1238: a positive bare pattern predicate lowers to EXISTS
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn positive_pattern_predicate_lowers_to_exists_1238() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    for cypher in [
+        "MATCH (a:User) WHERE (a)-[:FOLLOWS]->() RETURN count(*)",
+        "MATCH (a:User) WHERE (a)-[:FOLLOWS]->() AND a.age > 30 RETURN count(*)",
+        "MATCH (a:User), (b:User) WHERE (a)-[:FOLLOWS]->(b) RETURN count(*)",
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(sql.to_uppercase().contains("EXISTS"), "{cypher}\n{sql}");
+    }
+    // the negation keeps working, and bounded / OR'd-type patterns stay refused
+    generate_sql_inline(
+        &schema,
+        "MATCH (a:User) WHERE NOT (a)-[:FOLLOWS]->() RETURN count(*)",
+    )
+    .await;
+    for cypher in [
+        "MATCH (a:User) WHERE (a)-[:FOLLOWS*1..2]->() RETURN count(*)",
+        "MATCH (a:User) WHERE (a)-[:FOLLOWS|FRIENDS_WITH]->() RETURN count(*)",
+    ] {
+        let err = try_generate_sql_inline(&schema, cypher)
+            .await
+            .expect_err(cypher);
+        assert!(err.contains("#588"), "{cypher}: {err}");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
 // The emitter's path-variable "spurious JOIN" cleanup kept only joins whose alias was read, so
