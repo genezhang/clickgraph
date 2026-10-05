@@ -456,7 +456,7 @@ bug-driven, not lane work. Per-shape patching of this class stays forbidden
 (§1.6). Remaining Phase-1 pass migrations (P1.4+) and Phase-3 §6.2 slices are
 fill-in work alongside, not blockers.
 
-### P-4b — WITH export contract (identity / join-key columns)  ☐ (S0 plan landed; next S1)
+### P-4b — WITH export contract (identity / join-key columns)  ◐ (S0 #1284, S1 #1285, S2 #1288 merged; S3 blocked on #1287; next S4: join_builder readers, composite #1286)
 **Plan: `docs/design/WITH_EXPORT_CONTRACT.md`.** A 2026-10-05 audit of the WITH bug
 family (about 100 closed and 11 open issues; 67 of 116 WITH-fix PRs touched
 `with_to_cte` or `plan_builder_utils`) found three structural roots: (A) no single
@@ -690,6 +690,13 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-05: **P-4b S1 + S2** (#1285, #1288).
+  - S1: a test-only ratchet over the ClickHouse goldens. Each `with_* AS a` → `a.col` reference must name an exported column; the known violations are allowlisted with their issue.
+  - S2: `render_plan/cte_export.rs` WITH export contract, stored in `CteSchemaMetadata.exports`. A path between two WITH-carried nodes is now tied at both ends. It was silently wrong: 95 vs 20 standard, 10 vs 5 polymorphic.
+  - `denorm_id_column_in_cte` was replaced by the contract, byte-identical.
+  - The #1189 producer fix is deliberately deferred (loud→silent on 4 denormalized shapes, `WITH_EXPORT_CONTRACT.md` §3.1).
+  - Filed #1286 (composite carried path, 0 rows) and #1287 (extra untied edge join, 427 vs 167).
 
 - 2026-10-05: **P-4b S0: WITH export contract plan** (branch
   `docs/with-export-contract`). Root-cause audit of the WITH bug family →
