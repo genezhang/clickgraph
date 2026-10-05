@@ -1,0 +1,1 @@
+render error: Unsupported feature: an undirected variable-length path (`t0`) chained to another hop is not supported on this schema layout (#1155): the two-direction split renders the chained hop without the path's recursive CTE, so the path bound would be silently ignored. Write the path directed, or split the query.

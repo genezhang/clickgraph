@@ -1343,6 +1343,7 @@ impl RenderPlanBuilder for LogicalPlan {
             super::cte_extraction::scoped_render_root_plan(std::sync::Arc::new(self.clone()));
         if _root_plan_guard.is_outermost() {
             super::path_segments::register_composite_paths(self)?;
+            super::path_segments::refuse_chained_split_undirected_vlp(self)?;
         }
 
         // CRITICAL: If the plan contains WITH clauses, use the specialized handler
@@ -4086,6 +4087,7 @@ impl RenderPlanBuilder for LogicalPlan {
             super::cte_extraction::scoped_render_root_plan(std::sync::Arc::new(self.clone()));
         if _root_plan_guard.is_outermost() {
             super::path_segments::register_composite_paths(self)?;
+            super::path_segments::refuse_chained_split_undirected_vlp(self)?;
         }
 
         let mut render_plan = (|| -> RenderPlanBuilderResult<RenderPlan> {
