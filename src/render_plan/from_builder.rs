@@ -1379,7 +1379,24 @@ impl LogicalPlan {
                     }
                 }
 
-                if let Some(left_node) = find_leftmost_graph_node(&graph_rel.left) {
+                // `WITH a MATCH (a)-[:E]->(p)` where `p` is a FRESH endpoint that owns the edge's FK
+                // (the edge table IS p's table): the pruned join plan leaves no FROM marker, and
+                // the CTE-backed left node must not become the FROM — that dropped `p` entirely
+                // (rows lost or multiplied, `p.x` unresolved). `p` is the FROM; the CTE is joined
+                // back by the correlation `prune_joins_covered_by_cte` captured. A FK held by the
+                // CTE-side node (many-to-one) needs the CTE to export that column and is not
+                // handled here.
+                let fresh_right_owns_edge =
+                    match (graph_rel.center.as_ref(), graph_rel.right.as_ref()) {
+                        (LogicalPlan::ViewScan(edge), LogicalPlan::GraphNode(right)) => matches!(
+                            right.input.as_ref(),
+                            LogicalPlan::ViewScan(scan) if scan.source_table == edge.source_table
+                        ),
+                        _ => false,
+                    };
+                if let Some(left_node) = find_leftmost_graph_node(&graph_rel.left).filter(|n| {
+                    !(fresh_right_owns_edge && graph_joins.cte_references.contains_key(&n.alias))
+                }) {
                     if let LogicalPlan::ViewScan(scan) = left_node.input.as_ref() {
                         log::info!(
                             "🎯 POLYMORPHIC: Using left node '{}' as FROM",

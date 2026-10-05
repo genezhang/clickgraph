@@ -3793,13 +3793,23 @@ fn restructure_post_with_optional_or_insert_cte_join(
         let mut optional_joining_on = join_conditions.to_vec();
         optional_joining_on.extend(extra_on_conditions);
 
+        // When the demoted table IS the relationship's table (FK-edge: the optional node's table
+        // carries the edge), a LEFT JOIN on it is one-to-many from the anchor: dropping it as
+        // "unreferenced" (`RETURN a.id` only) collapses the fan-out (20 rows where 40 are right).
+        // Mark it as an edge table so `remove_unreferenced_joins` keeps it.
+        let optional_from_edge_marker = opt_graphrel
+            .and_then(|gr| gr.labels.as_ref())
+            .and_then(|ls| ls.first())
+            .and_then(|rel_type| schema.get_relationships_schema_opt(rel_type))
+            .filter(|rel_schema| rel_schema.full_table_name() == old_from.name)
+            .map(|rel_schema| rel_schema.from_id.to_string());
         let optional_from_join = super::Join {
             table_name: old_from.name.clone(),
             table_alias: optional_from_alias.clone(),
             joining_on: optional_joining_on,
             join_type: super::JoinType::Left,
             pre_filter: optional_pre_filter,
-            from_id_column: None,
+            from_id_column: optional_from_edge_marker,
             to_id_column: None,
             graph_rel: None,
             is_cartesian: false,
