@@ -4584,6 +4584,29 @@ async fn vlp_over_a_filtered_embedded_endpoint_fails_loud_1119() {
 }
 
 // ---------------------------------------------------------------------------
+// #1222: a scalar carried through a WITH and then grouped
+//
+// `WITH a.age AS ag RETURN ag, count(*)` rendered `GROUP BY ag.user_id` (Code 47): the CTE-backed
+// alias of a scalar was treated like a node and given a placeholder id.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn grouping_a_with_scalar_groups_by_its_own_column_1222() {
+    let schema = load_schema_from("schemas/test/social_integration.yaml");
+    for cypher in [
+        "MATCH (a:User) WITH a.age AS ag RETURN ag, count(*) AS n",
+        "MATCH p=(a:User)-[:FOLLOWS*1..2]->(b:User) WITH length(p) AS ag RETURN ag, count(*) AS n",
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(sql.contains("GROUP BY ag.ag"), "{cypher}\n{sql}");
+        assert!(
+            !sql.contains("ag.user_id") && !sql.contains("ag.post_id"),
+            "{cypher}\n{sql}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
 // The emitter's path-variable "spurious JOIN" cleanup kept only joins whose alias was read, so

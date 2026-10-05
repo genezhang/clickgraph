@@ -633,6 +633,21 @@ fn handle_table_alias_group_by(
 
     let table_alias_to_use = actual_table_alias.unwrap_or_else(|| alias.to_string());
 
+    // #1222: a SCALAR carried through a WITH (`WITH a.age AS ag RETURN ag, count(*)`) is a
+    // CTE-backed "node" whose only property is the alias itself. It has no node id — the column
+    // IS the value — so group by it; falling through reached the `id` placeholder below
+    // (`GROUP BY ag.user_id`, Code 47).
+    if let [(name, column)] = properties.as_slice() {
+        if name == alias && column == alias && !seen_aliases.contains(&table_alias_to_use) {
+            seen_aliases.insert(table_alias_to_use.clone());
+            result.push(RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(table_alias_to_use),
+                column: PropertyValue::Column(column.clone()),
+            }));
+            return Ok(true);
+        }
+    }
+
     // Skip if we've already added this alias (avoid duplicates)
     if seen_aliases.contains(&table_alias_to_use) {
         return Ok(true); // Already handled
