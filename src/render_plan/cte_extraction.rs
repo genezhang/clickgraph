@@ -5494,6 +5494,31 @@ pub fn extract_ctes_with_context(
                         Vec::new()
                     };
 
+                    // #1119: an endpoint read off the EDGE row has no node scan to carry its YAML
+                    // `filter:`, and the CTE cannot project the filter's column the way an own-table
+                    // endpoint can (#1118). Left alone the predicate is absent from the SQL and the
+                    // rows it excludes come back. Refuse rather than over-return.
+                    for (strategy, label, role) in [
+                        (&pattern_ctx.left_node, &start_label, "start"),
+                        (&pattern_ctx.right_node, &end_label, "end"),
+                    ] {
+                        let embedded = matches!(
+                            strategy,
+                            crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { .. }
+                        );
+                        let filter = schema
+                            .node_schema_opt(label)
+                            .and_then(|ns| ns.filter.as_ref());
+                        if let (true, Some(filter)) = (embedded, filter) {
+                            return Err(RenderBuildError::UnsupportedFeature(format!(
+                                "variable-length path: the {role} node `{label}` is embedded in the edge \
+                                 table and its schema `filter:` (`{}`) cannot be applied there, so \
+                                 rows the filter excludes would be returned. Not supported (#1119).",
+                                filter.raw
+                            )));
+                        }
+                    }
+
                     // Detect lightweight BFS mode for shortestPath + length(path)-only queries.
                     // BFS tracks only distinct reachable node_ids per hop level instead of
                     // per-path visited arrays, reducing memory from ~500M rows to ~180K rows.

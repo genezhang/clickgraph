@@ -1,0 +1,1 @@
+render error: Unsupported feature: variable-length path: the end node `Person` is embedded in the edge table and its schema `filter:` (`pid > 0`) cannot be applied there, so rows the filter excludes would be returned. Not supported (#1119).

@@ -8,9 +8,9 @@
 # weight that no predicate references, and on the UNDIRECTED shape
 # `prune_vlp_columns` does not strip it, so it would leak into the SQL.
 #
-# NOTE: this schema's filter is NOT applied at all today — that is #1119
-# (silent-wrong: 6 vs an oracle 3 on a populated fixture). This file exists to
-# pin the #1118 scope boundary, NOT to assert that behavior is correct.
+# NOTE: the filter cannot be applied to an EMBEDDED endpoint (#1119: it used to be
+# silently absent, 6 rows vs an oracle 3), so a VLP over this schema is now refused
+# loudly. The fixture pins that refusal.
 name: foreign_selfloop_filtered_test
 version: "1.0"
 description: "Foreign-embedded self-loop WITH a node schema filter (#1118 scope-boundary fixture; the filter itself is #1119)"

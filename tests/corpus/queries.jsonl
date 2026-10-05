@@ -1437,3 +1437,7 @@
 {"cypher": "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport)-[:FLIGHT*1..2]->(c:Airport)-[:FLIGHT]->(y:Airport) RETURN count(*)", "name": "test_1181__chain_then_hop_den", "schema": "denormalized_flights"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User)<-[:FOLLOWS]-(y:User) RETURN count(*)", "name": "test_1181__chain_then_incoming_hop_not_repaired_std", "schema": "standard"}
 {"cypher": "MATCH (h:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User)-[:FOLLOWS]->(y:User) RETURN count(*)", "name": "test_1181__hop_before_chain_not_repaired_std", "schema": "standard"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person) RETURN count(*)", "name": "test_1119__to_embedded_filtered_endpoint_loud", "schema": "foreign_selfloop_end_filtered_endpoint"}
+{"cypher": "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport) RETURN count(*)", "name": "test_1119__fully_denorm_filtered_endpoint_loud", "schema": "denormalized_flights_filtered_endpoint"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person) RETURN count(*)", "name": "test_1119__unfiltered_mixed_still_renders", "schema": "foreign_selfloop"}
+{"cypher": "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person) RETURN count(*)", "name": "test_1119__from_embedded_filtered_endpoint_loud", "schema": "foreign_selfloop_filtered"}
