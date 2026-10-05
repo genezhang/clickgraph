@@ -197,12 +197,34 @@ impl AnalyzerPass for GraphJoinInference {
             }
         }
 
+        // #1273: the arms of a Cypher `UNION` are INDEPENDENT queries. The root metadata merges
+        // them, so a node NAME shared by two arms (`b`) looked like one node shared across
+        // branches: cross-branch joins invented the OTHER arm's edge join (`t3`) inside this arm
+        // (`FROM .. JOIN t3 ..`, rows lost / Code 47) and uniqueness constraints paired edges of
+        // different arms. Each arm gets its own constraints in the Union branch loop below.
+        let root_is_cypher_union = {
+            let mut node = logical_plan.as_ref();
+            loop {
+                match node {
+                    LogicalPlan::Union(u) => break u.is_cypher_union,
+                    LogicalPlan::Limit(l) => node = l.input.as_ref(),
+                    LogicalPlan::Skip(sk) => node = sk.input.as_ref(),
+                    LogicalPlan::OrderBy(o) => node = o.input.as_ref(),
+                    _ => break false,
+                }
+            }
+        };
+
         log::debug!("🔍 Phase 2: Generating cross-branch joins from metadata...");
-        let cross_branch_joins = super::cross_branch::generate_cross_branch_joins_from_metadata(
-            &pattern_metadata,
-            plan_ctx,
-            graph_schema,
-        )?;
+        let cross_branch_joins = if root_is_cypher_union {
+            vec![]
+        } else {
+            super::cross_branch::generate_cross_branch_joins_from_metadata(
+                &pattern_metadata,
+                plan_ctx,
+                graph_schema,
+            )?
+        };
 
         if !cross_branch_joins.is_empty() {
             log::info!(
@@ -214,8 +236,11 @@ impl AnalyzerPass for GraphJoinInference {
 
         // Phase 4: Generate relationship uniqueness constraints
         // Prevents duplicate traversal of same relationship in multi-hop patterns
-        let uniqueness_constraints =
-            crate::query_planner::analyzer::graph_join::cross_branch::generate_relationship_uniqueness_constraints(&pattern_metadata, graph_schema);
+        let uniqueness_constraints = if root_is_cypher_union {
+            vec![]
+        } else {
+            crate::query_planner::analyzer::graph_join::cross_branch::generate_relationship_uniqueness_constraints(&pattern_metadata, graph_schema)
+        };
 
         // CRITICAL: Always wrap in GraphJoins, even if empty!
         // Empty joins vector = fully denormalized pattern (no JOINs needed)
@@ -895,6 +920,31 @@ impl GraphJoinInference {
                         // Each Union branch is a complete pattern (created by BidirectionalUnion)
                         // and needs its own metadata for proper reference tracking
                         let mut branch_plan_ctx = plan_ctx.clone();
+                        // #1273: the shared plan context knows optional aliases BY NAME across every
+                        // arm: `b` optional in one arm made the same-named `b` of an inner-pattern
+                        // arm a LEFT JOIN. Keep only the aliases optional in THIS arm's own GraphRels.
+                        let branch_optional_aliases: HashSet<String> = {
+                            let mut own: HashSet<String> = HashSet::new();
+                            branch.any_node(|n| {
+                                if let LogicalPlan::GraphRel(gr) = n {
+                                    if gr.is_optional.unwrap_or(false) {
+                                        own.insert(gr.alias.clone());
+                                        for conn in [&gr.left_connection, &gr.right_connection] {
+                                            if gr.anchor_connection.as_ref() != Some(conn) {
+                                                own.insert(conn.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                                false
+                            });
+                            optional_aliases
+                                .iter()
+                                .filter(|a| own.contains(*a))
+                                .cloned()
+                                .collect()
+                        };
+                        branch_plan_ctx.retain_optional_aliases(&branch_optional_aliases);
                         let branch_metadata =
                             Self::build_pattern_metadata(branch.as_ref(), &branch_plan_ctx)
                                 .unwrap_or_default();
@@ -933,11 +983,24 @@ impl GraphJoinInference {
                         // ctx the `t1 -> t` dependency of a hop next to a path was unresolvable, the
                         // error aborted the whole union and was swallowed upstream, and the arms
                         // rendered with no join plan at all.
+                        // #1273: each arm is a complete pattern with its OWN relationship-uniqueness
+                        // constraints (they were generated once from the ROOT metadata and the arm
+                        // got an empty list: `a->b<-c` inside a UNION lost its `t2.id <> t1.id`).
+                        // Direction arms of a BidirectionalUnion are not separate patterns.
+                        let mut branch_correlation_predicates: Vec<LogicalExpr> = if union.is_cypher_union {
+                            super::cross_branch::generate_relationship_uniqueness_constraints(
+                                &branch_metadata,
+                                graph_schema,
+                            )
+                        } else {
+                            // BidirectionalUnion direction arms get their uniqueness from the root.
+                            Vec::new()
+                        };
                         let result = Self::build_graph_joins(
                             branch.clone(),
                             &mut branch_joins,
-                            &mut Vec::new(),
-                            optional_aliases.clone(),
+                            &mut branch_correlation_predicates,
+                            branch_optional_aliases,
                             &branch_plan_ctx,
                             graph_schema,
                             captured_cte_refs,

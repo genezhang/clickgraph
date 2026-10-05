@@ -5757,7 +5757,7 @@ fn build_branch_inner_select_with_own_items(
     branch_inner
 }
 
-fn render_cypher_union_arm(arm: &RenderPlan) -> String {
+fn render_cypher_union_arm(arm: &RenderPlan, outer_distinct: bool) -> String {
     // Isolate this arm's alias context, exactly like render_union_branch_sql.
     let snapshot = snapshot_branch_context();
     activate_scope_context(&arm.from, &arm.joins);
@@ -5770,9 +5770,12 @@ fn render_cypher_union_arm(arm: &RenderPlan) -> String {
 
     let mut core = String::new();
     if let Some(inner) = &arm.union.0 {
-        let inner_type_str = match inner.union_type {
-            UnionType::Distinct => "UNION DISTINCT \n",
-            UnionType::All => "UNION ALL \n",
+        // #1273: inside a Cypher `UNION` (DISTINCT) the arm's own direction arms are flattened into
+        // the same chain, and `A UNION DISTINCT fwd UNION ALL rev` keeps `rev`'s duplicates. The
+        // whole result must be distinct, so the connectors are DISTINCT too.
+        let inner_type_str = match (&inner.union_type, outer_distinct) {
+            (UnionType::Distinct, _) | (_, true) => "UNION DISTINCT \n",
+            (UnionType::All, false) => "UNION ALL \n",
         };
         if has_aggregation {
             // Aggregate OVER the arm's internal union: outer aggregate SELECT
@@ -6665,6 +6668,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                     sql.push_str("SELECT * FROM (\n");
                 }
 
+                let outer_distinct = matches!(union.union_type, UnionType::Distinct);
                 let mut first = true;
                 // When the base plan still holds the first arm's fields (it was
                 // not consolidated into union.input), render it as an arm too.
@@ -6686,7 +6690,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                         is_multi_label_scan: false,
                         variable_registry: None,
                     };
-                    sql.push_str(&render_cypher_union_arm(&base_arm));
+                    sql.push_str(&render_cypher_union_arm(&base_arm, outer_distinct));
                     first = false;
                 }
                 for arm in &union.input {
@@ -6694,7 +6698,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                         sql.push_str(union_type_str);
                     }
                     first = false;
-                    sql.push_str(&render_cypher_union_arm(arm));
+                    sql.push_str(&render_cypher_union_arm(arm, outer_distinct));
                 }
                 if wrap_for_recursive_ctes {
                     sql.push_str("\n) AS __cypher_union");
