@@ -1431,3 +1431,9 @@
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO*0..2]->(b:Person) RETURN a.pid, b.pid", "name": "test_1180__from_embedded_zero_hop", "schema": "foreign_selfloop"}
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO*0..2]->(b:Person) WHERE a.pid = 2 RETURN b.pid", "name": "test_1180__from_embedded_zero_hop_start_filter", "schema": "foreign_selfloop"}
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO*0..2]->(b:Person) RETURN a.pid, b.pid", "name": "test_1180__to_embedded_zero_hop_unchanged", "schema": "foreign_selfloop_end"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User)-[:FOLLOWS]->(y:User) RETURN a.user_id, c.user_id, y.user_id", "name": "test_1181__chain_then_hop_std", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User)-[:FOLLOWS]->(y:User)-[:FOLLOWS]->(z:User) RETURN count(*)", "name": "test_1181__chain_then_two_hops_std", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User)-[:FOLLOWS]->(y:User) RETURN count(*)", "name": "test_1181__chain_then_hop_poly", "schema": "social_polymorphic"}
+{"cypher": "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport)-[:FLIGHT*1..2]->(c:Airport)-[:FLIGHT]->(y:Airport) RETURN count(*)", "name": "test_1181__chain_then_hop_den", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User)<-[:FOLLOWS]-(y:User) RETURN count(*)", "name": "test_1181__chain_then_incoming_hop_not_repaired_std", "schema": "standard"}
+{"cypher": "MATCH (h:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User)-[:FOLLOWS]->(y:User) RETURN count(*)", "name": "test_1181__hop_before_chain_not_repaired_std", "schema": "standard"}

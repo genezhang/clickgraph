@@ -3675,6 +3675,62 @@ impl GraphJoinInference {
     // Phase 3: Extracted Helper Methods (Breaking Up God Method)
     // ========================================================================
 
+    /// #1181: whether every fixed hop of the scope is a directed, required hop that starts at
+    /// the END of the last path or at the end of the previous such hop (`(a)-[*]->(b)-[*]->(c)
+    /// -[:R]->(y)-[:R]->(z)`). No hop precedes a path, none is incoming or optional.
+    fn trailing_hops_only(
+        plan: &LogicalPlan,
+        vlps: &[(String, String, String)],
+    ) -> Option<Vec<(String, String)>> {
+        use crate::query_planner::logical_expr::Direction;
+        fn collect<'a>(
+            p: &'a LogicalPlan,
+            out: &mut Vec<&'a crate::query_planner::logical_plan::GraphRel>,
+        ) -> bool {
+            match p {
+                LogicalPlan::WithClause(_)
+                | LogicalPlan::CartesianProduct(_)
+                | LogicalPlan::Union(_)
+                | LogicalPlan::Unwind(_) => false,
+                LogicalPlan::GraphRel(gr) => {
+                    out.push(gr);
+                    p.children().into_iter().all(|c| collect(c, out))
+                }
+                _ => p.children().into_iter().all(|c| collect(c, out)),
+            }
+        }
+        let mut rels = Vec::new();
+        if !collect(plan, &mut rels) {
+            return None;
+        }
+        let vlp_rel_aliases: std::collections::HashSet<&str> =
+            vlps.iter().map(|(_, _, rel)| rel.as_str()).collect();
+        let mut tail = vlps.last().map(|(_, right, _)| right.clone())?;
+        let mut hops: Vec<&crate::query_planner::logical_plan::GraphRel> = rels
+            .into_iter()
+            .filter(|gr| !vlp_rel_aliases.contains(gr.alias.as_str()))
+            .collect();
+        // Fixed-length (`*2..2`) paths fold into the flat rendering: not a plain hop.
+        if hops.iter().any(|gr| {
+            gr.variable_length.is_some()
+                || gr.is_optional.unwrap_or(false)
+                || gr.direction != Direction::Outgoing
+                || gr.was_undirected == Some(true)
+        }) {
+            return None;
+        }
+        // Each hop must continue from the current tail. Returns (hop alias, the node it hangs
+        // off).
+        let mut ties = Vec::new();
+        while !hops.is_empty() {
+            let pos = hops.iter().position(|gr| gr.left_connection == tail)?;
+            let hop = hops.remove(pos);
+            ties.push((hop.alias.clone(), hop.left_connection.clone()));
+            tail = hop.right_connection.clone();
+        }
+        Some(ties)
+    }
+
     /// Pre-scan a pattern tree for required (non-optional, non-fixed-length) VLP
     /// relationships and register their start/end endpoints in `plan_ctx` BEFORE
     /// the main left-to-right `collect_graph_joins` traversal begins.
@@ -3789,6 +3845,10 @@ impl GraphJoinInference {
             }
         }
 
+        // #1181: set once the chained shape is vetted, so each endpoint binds the render alias of
+        // ITS OWN CTE.
+        let mut chained_scope = false;
+        let mut hop_ties: Vec<(String, String)> = Vec::new();
         if required_vlps.len() > 1 {
             let all_same_end = required_vlps
                 .windows(2)
@@ -3827,6 +3887,15 @@ impl GraphJoinInference {
             // must materialize. If render can't build the full chain (a hop
             // degenerated — e.g. a type-incompatible VLP built fewer CTEs), it
             // must fail LOUD rather than silently drop the missing hop constraint.
+            // Verified against a brute-force oracle: ONLY directed hops hanging off the END of
+            // the chain. A hop before the first path, an incoming hop, or one between two paths
+            // keep their old rendering (see `trailing_hops_only`).
+            if is_chained_forward {
+                if let Some(ties) = Self::trailing_hops_only(plan, &required_vlps) {
+                    chained_scope = true;
+                    hop_ties = ties;
+                }
+            }
             if is_chained_forward {
                 crate::server::query_context::register_expected_chained_vlp_count(
                     required_vlps.len(),
@@ -3886,7 +3955,30 @@ impl GraphJoinInference {
         };
         crate::server::query_context::register_vlp_from_alias(&vlp_from_alias);
 
-        for (left_alias, right_alias, rel_alias) in required_vlps {
+        crate::server::query_context::clear_vlp_endpoint_render_aliases();
+
+        for (i, (left_alias, right_alias, rel_alias)) in required_vlps.into_iter().enumerate() {
+            if chained_scope {
+                // Mirrors the render/emit phases' aliasing: the FIRST CTE is the FROM (default
+                // alias); chained CTE i is `t_ch_{i-1}`. The shared intermediate is bound last as
+                // the NEXT CTE's start (same value on either side of `t_ch_i.start_id =
+                // prev.end_id`).
+                let alias = if i == 0 {
+                    vlp_from_alias.clone()
+                } else {
+                    format!("t_ch_{}", i - 1)
+                };
+                crate::server::query_context::register_vlp_endpoint_render_alias(
+                    &left_alias,
+                    &alias,
+                    false,
+                );
+                crate::server::query_context::register_vlp_endpoint_render_alias(
+                    &right_alias,
+                    &alias,
+                    true,
+                );
+            }
             plan_ctx.register_vlp_endpoint(
                 left_alias.clone(),
                 VlpEndpointInfo {
@@ -3905,6 +3997,18 @@ impl GraphJoinInference {
                     vlp_alias: PRE_PASS_VLP_ALIAS_PLACEHOLDER.to_string(),
                 },
             );
+        }
+        // The hops hanging off the chain's end: tie each hop's join to its endpoint's OWN CTE.
+        for (hop_alias, tail_alias) in hop_ties {
+            if let Some((own_alias, is_end)) =
+                crate::server::query_context::vlp_endpoint_render_binding(&tail_alias)
+            {
+                crate::server::query_context::register_vlp_endpoint_render_alias(
+                    &format!("hop:{hop_alias}"),
+                    &own_alias,
+                    is_end,
+                );
+            }
         }
         Ok(())
     }
