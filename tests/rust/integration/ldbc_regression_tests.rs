@@ -4418,6 +4418,38 @@ async fn single_hop_shortest_path_keeps_its_endpoint_filters_1205() {
 }
 
 // ---------------------------------------------------------------------------
+// #1180: a from-EMBEDDED start (mixed access) seeds `*0..N` from the EDGE table — one row per
+// edge — so a node starting N edges was seeded N times and each of its paths came out N times
+// (23 rows, oracle 18).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mixed_access_zero_hop_seed_is_one_row_per_node_1180() {
+    let from_embedded = load_schema_from("schemas/test/foreign_selfloop.yaml");
+    let sql = generate_sql_inline(
+        &from_embedded,
+        "MATCH (a:Person)-[:REPORTS_TO*0..2]->(b:Person) RETURN a.pid, b.pid",
+    )
+    .await;
+    assert!(
+        sql.contains("SELECT DISTINCT \n        start_node.mgr_id as start_id"),
+        "#1180: the edge-table seed must be DISTINCT:\n{sql}"
+    );
+
+    // An own-table start is one row per node already: byte-unchanged.
+    let to_embedded = load_schema_from("schemas/test/foreign_selfloop_end.yaml");
+    let sql = generate_sql_inline(
+        &to_embedded,
+        "MATCH (a:Person)-[:REPORTS_TO*0..2]->(b:Person) RETURN a.pid, b.pid",
+    )
+    .await;
+    assert!(
+        !sql.contains("SELECT DISTINCT"),
+        "#1180: an own-table seed needs no DISTINCT:\n{sql}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // #1170: a FIXED hop chained in front of a CTE-backed VLP lost its WHERE filter
 //
 // `extract_filters` returned `None` for a required CTE-backed VLP on the premise

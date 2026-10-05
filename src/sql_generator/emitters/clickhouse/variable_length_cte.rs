@@ -2842,9 +2842,25 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let select_clause = select_items.join(",\n        ");
 
-        // Build the zero-hop query - just select from start table
+        // Build the zero-hop query - just select from start table.
+        //
+        // #1180: a from-EMBEDDED start (mixed access: the seed reads the EDGE table) has no node scan to seed from — its id
+        // lives on the EDGE table, one row per edge — so a node that starts N edges was seeded
+        // N times and every path from it came out N times. Collapse the seed to one row per
+        // node (the denormalized strategy's `node_universe` seed is DISTINCT for the same
+        // reason). An own-table start is one row per node already: unchanged.
+        // (An FK-edge node table IS its edge table, one row per node — nothing to collapse;
+        // there the end node reads it too, which a from-embedded start's end node does not.)
+        let seeds_from_edge_table = self.start_node_table == self.relationship_table
+            && self.end_node_table != self.relationship_table;
+        let distinct = if seeds_from_edge_table {
+            "DISTINCT "
+        } else {
+            ""
+        };
         let mut query = format!(
-            "    SELECT \n        {}\n    FROM {} AS {}",
+            "    SELECT {}\n        {}\n    FROM {} AS {}",
+            distinct,
             select_clause,
             self.format_table_name(&self.start_node_table),
             self.start_node_alias
