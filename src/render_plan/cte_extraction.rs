@@ -165,7 +165,7 @@ fn discover_derived_cte_names(sql: &str, base: &str) -> Vec<String> {
     while i < sql.len() {
         let b = bytes[i];
         if in_string {
-            // A backslash escapes the next byte (`\'` — the Databricks spelling of a quote).
+            // A backslash escapes the next byte (`\'` is a quote).
             if b == b'\\' && i + 1 < sql.len() {
                 i += 2;
                 continue;
@@ -250,7 +250,7 @@ fn rewrite_cte_name_structural(sql: &str, old: &str, new: &str) -> String {
                 continue;
             }
             out.push(b as char);
-            // A backslash escapes the next byte (`\'` — the Databricks spelling of a quote).
+            // A backslash escapes the next byte (`\'` is a quote).
             if b == b'\\' && i + 1 < sql.len() {
                 // sql is indexed by bytes here; copy the escaped char whole
                 let ch = sql[i + 1..].chars().next().unwrap();
@@ -9956,7 +9956,7 @@ mod tests {
 
     #[test]
     fn cte_rewrite_scanner_honours_backslash_escaped_quote_and_multibyte_1217() {
-        // Databricks spells a literal quote `\'`; the literal does not end there, so the
+        // Spark spells a literal quote `\'`; the literal does not end there, so the
         // `vlp_a_b` after it is still INSIDE the string and must stay intact.
         let sql = "FROM vlp_a_b WHERE x = 'it\\'s vlp_a_b é' AND y IN (SELECT 1 FROM vlp_a_b)";
         assert_eq!(

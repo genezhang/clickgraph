@@ -4293,7 +4293,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             if in_literal {
                 out.push(c);
                 if c == '\\' {
-                    // Backslash escapes the next char (`\'` — the Databricks quote spelling).
+                    // Backslash escapes the next char (`\'`).
                     if let Some(next) = chars.next() {
                         out.push(next);
                     }

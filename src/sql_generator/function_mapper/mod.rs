@@ -340,6 +340,12 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// verified live). `descending` is `true` for `DESC`, `false` for `ASC`.
     fn order_by_nulls_clause(&self, descending: bool) -> &'static str;
 
+    /// How a single quote INSIDE a single-quoted string literal is spelled (#1217).
+    ///
+    /// ClickHouse reads a doubled quote (`''`) as one quote. Spark/Databricks parses `''` as two
+    /// ADJACENT literals (`'it''s'` → `its`, silently wrong); its documented escape is `\'`.
+    fn string_literal_quote_escape(&self) -> &'static str;
+
     /// Render an openCypher percentile aggregate — `percentileCont(expr, p)` or
     /// `percentileDisc(expr, p)` — honoring the percentile argument `p` (#639).
     ///
