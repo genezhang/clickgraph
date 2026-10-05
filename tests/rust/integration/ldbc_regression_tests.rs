@@ -5207,6 +5207,28 @@ async fn undirected_hop_next_to_a_path_joins_the_hop_and_guards_edge_reuse_in_ev
 }
 
 // ---------------------------------------------------------------------------
+// #1263: `WITH a.user_id AS a ... RETURN a` over an undirected hop expanded the NODE's columns
+// (`a_b.a_age`) from a CTE that only exposes the scalar `a`: the union CTE's column metadata was read
+// from the first arm's own whole-node items instead of the plan's projection.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn with_scalar_named_like_a_node_reads_only_the_scalar_column_1263() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS]-(b:User) WITH a.user_id AS a, b.user_id AS b RETURN a, b",
+    )
+    .await;
+    assert!(
+        !sql.contains("a_b.a_age") && !sql.contains("a_b.a_user_id"),
+        "{sql}"
+    );
+    assert!(sql.contains("a_b.a AS \"a\""), "{sql}");
+    assert!(sql.contains("a_b.b AS \"b\""), "{sql}");
+}
+
+// ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
 // The emitter's path-variable "spurious JOIN" cleanup kept only joins whose alias was read, so

@@ -5505,8 +5505,15 @@ fn build_cte_column_metadata(
     Vec<String>,
     Vec<crate::render_plan::cte_manager::CteColumnMetadata>,
 ) {
+    // #1263: a union body with its OWN FROM and a custom SELECT (the first direction arm IS the plan;
+    // `union.input` holds the rest) is emitted with the plan's select projected onto EVERY arm
+    // (`to_sql_query`, `has_custom_select && plan.from`), so the CTE's real columns are the plan's.
+    // Reading arm 0's own whole-node items instead registered columns the CTE never emits, and a
+    // WITH scalar that reuses a node's name (`WITH a.user_id AS a ... RETURN a`) expanded them.
+    let plan_projects_every_arm =
+        with_cte_render.from.0.is_some() && !with_cte_render.select.items.is_empty();
     let (select_items_for_schema, property_names_for_schema) = match &with_cte_render.union {
-        UnionItems(Some(union)) if !union.input.is_empty() => {
+        UnionItems(Some(union)) if !union.input.is_empty() && !plan_projects_every_arm => {
             // For UNION, take schema from first branch (all branches must have same schema)
             let mut items = union.input[0].select.items.clone();
             // Also include any wrapping SELECT items (e.g., pattern comprehension results)
