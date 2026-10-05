@@ -9,7 +9,7 @@ WITH RECURSIVE vlp_a_b AS (
     FROM social.users_bench AS start_node
     JOIN social.user_follows_bench AS rel ON start_node.user_id = rel.follower_id
     JOIN social.users_bench AS end_node ON rel.followed_id = end_node.user_id
-    WHERE concat(toString(a.user_id), toString(a.user_id)) = 'x'
+    WHERE concat(toString(start_node.user_id), toString(start_node.user_id)) = 'x'
     UNION ALL
     SELECT
         vp.start_id,
@@ -23,7 +23,6 @@ WITH RECURSIVE vlp_a_b AS (
     JOIN social.users_bench AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 3
       AND NOT has(vp.path_edges, tuple(rel.follower_id, rel.followed_id))
-      AND concat(toString(a.user_id), toString(a.user_id)) = 'x'
 )
 SELECT 
       t.end_id AS "b.user_id"

@@ -687,6 +687,7 @@ impl DenormalizedCteStrategy {
         use crate::render_plan::render_expr::RenderExpr;
 
         let start_alias = self.pattern_ctx.left_node_alias.clone();
+        let end_alias = self.pattern_ctx.right_node_alias.clone();
         let id_prop = self.denorm_node_id_property_name();
 
         // Resolve one endpoint reference to its CTE column, or explain why not.
@@ -722,7 +723,12 @@ impl DenormalizedCteStrategy {
             )))
         };
 
-        fn rewrite<F>(e: &RenderExpr, resolve: &F) -> Result<RenderExpr, CteError>
+        fn rewrite<F>(
+            e: &RenderExpr,
+            resolve: &F,
+            start_alias: &str,
+            end_alias: &str,
+        ) -> Result<RenderExpr, CteError>
         where
             F: Fn(&str, &str) -> Result<String, CteError>,
         {
@@ -739,15 +745,41 @@ impl DenormalizedCteStrategy {
                     new_op.operands = op
                         .operands
                         .iter()
-                        .map(|o| rewrite(o, resolve))
+                        .map(|o| rewrite(o, resolve, start_alias, end_alias))
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(RenderExpr::OperatorApplicationExp(new_op))
                 }
-                other => Ok(other.clone()),
+                // #1169: `toLower(a.city) = toLower(b.city)` — retarget the call's
+                // arguments exactly like bare operands.
+                RenderExpr::ScalarFnCall(fn_call) => {
+                    let mut new_call = fn_call.clone();
+                    new_call.args = fn_call
+                        .args
+                        .iter()
+                        .map(|a| rewrite(a, resolve, start_alias, end_alias))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(RenderExpr::ScalarFnCall(new_call))
+                }
+                // Passed through untouched, which is only right when the node names
+                // neither endpoint; one that does would reach the wrapper with a bare
+                // `a.col` it cannot resolve, so refuse it up front.
+                other => {
+                    for alias in [start_alias, end_alias] {
+                        if crate::render_plan::expression_utils::references_alias(other, alias) {
+                            return Err(CteError::SchemaValidationError(format!(
+                                "denormalized variable-length path: a WHERE predicate that \
+                                 references both endpoints uses an expression form that \
+                                 cannot be evaluated on the path CTE's final endpoint pair \
+                                 (it names `{alias}`)."
+                            )));
+                        }
+                    }
+                    Ok(other.clone())
+                }
             }
         }
 
-        let lowered = rewrite(expr, &resolve)?;
+        let lowered = rewrite(expr, &resolve, &start_alias, &end_alias)?;
         Ok(crate::render_plan::cte_extraction::render_expr_to_sql_string(&lowered, &[]))
     }
 
@@ -2197,7 +2229,42 @@ fn lower_both_endpoint_filter_to_cte_columns(
                 }
                 Ok(RenderExpr::OperatorApplicationExp(new_op))
             }
-            other => Ok(other.clone()),
+            // #1169: `toString(a.id) = toString(b.id)` — a function call whose
+            // arguments name the endpoints. Retarget each argument exactly like a
+            // bare operand.
+            RenderExpr::ScalarFnCall(fn_call) => {
+                let mut new_call = fn_call.clone();
+                new_call.args = fn_call
+                    .args
+                    .iter()
+                    .map(|a| {
+                        rewrite(
+                            a,
+                            start_cypher_alias,
+                            end_cypher_alias,
+                            start_id_cols,
+                            end_id_cols,
+                            properties,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(RenderExpr::ScalarFnCall(new_call))
+            }
+            // Any other node is passed through untouched, which is only right when
+            // it names neither endpoint. One that does would reach the wrapper
+            // with a bare `a.col` it cannot resolve, so refuse it up front.
+            other => {
+                for alias in [start_cypher_alias, end_cypher_alias] {
+                    if crate::render_plan::expression_utils::references_alias(other, alias) {
+                        return Err(CteError::SchemaValidationError(format!(
+                            "variable-length path: a WHERE predicate that references both \
+                             endpoints uses an expression form that cannot be evaluated on \
+                             the path CTE's final endpoint pair (it names `{alias}`)."
+                        )));
+                    }
+                }
+                Ok(other.clone())
+            }
         }
     }
 

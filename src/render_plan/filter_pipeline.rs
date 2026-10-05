@@ -165,6 +165,32 @@ pub fn categorize_filters(
                 .operands
                 .iter()
                 .any(|operand| references_alias(operand, cypher_alias, sql_alias)),
+            // #1169: a property access nested in a function call
+            // (`toLower(a.city) = 'x'`) still binds the predicate to that
+            // endpoint. Without this it fell through to "no alias matched" and
+            // was filed as a relationship filter: dropped on `*0..N`, and
+            // spelled with the unresolved node alias on `*N..M`.
+            RenderExpr::ScalarFnCall(fn_call) => fn_call
+                .args
+                .iter()
+                .any(|arg| references_alias(arg, cypher_alias, sql_alias)),
+            RenderExpr::List(items) => items
+                .iter()
+                .any(|item| references_alias(item, cypher_alias, sql_alias)),
+            RenderExpr::Case(case_expr) => {
+                case_expr
+                    .expr
+                    .as_ref()
+                    .is_some_and(|e| references_alias(e, cypher_alias, sql_alias))
+                    || case_expr.when_then.iter().any(|(when, then)| {
+                        references_alias(when, cypher_alias, sql_alias)
+                            || references_alias(then, cypher_alias, sql_alias)
+                    })
+                    || case_expr
+                        .else_expr
+                        .as_ref()
+                        .is_some_and(|e| references_alias(e, cypher_alias, sql_alias))
+            }
             _ => false,
         }
     }
@@ -341,6 +367,7 @@ pub fn categorize_filters(
                 }
                 None
             }
+            // #1169: `toLower(f.OriginCity) = 'x'` — the column sits in the call's args
             _ => None,
         }
     }

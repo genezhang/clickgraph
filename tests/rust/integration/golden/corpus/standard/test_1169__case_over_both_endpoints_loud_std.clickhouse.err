@@ -1,0 +1,1 @@
+render error: Unsupported feature: CteManager VLP generation failed: Schema validation failed: variable-length path: a WHERE predicate that references both endpoints uses an expression form that cannot be evaluated on the path CTE's final endpoint pair (it names `a`).. Falling back to direct generator may be needed.
