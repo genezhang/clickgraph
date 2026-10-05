@@ -1415,3 +1415,7 @@
 {"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE toString(a.user_id) = '1' RETURN b.user_id", "name": "test_1169__fn_start_std", "schema": "standard"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE toString(a.user_id) = toString(b.user_id) RETURN a.user_id", "name": "test_1169__fn_both_endpoints_std", "schema": "standard"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE CASE WHEN a.user_id = b.user_id THEN true ELSE false END RETURN a.user_id", "name": "test_1169__case_over_both_endpoints_loud_std", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS]->(b:User) WHERE b.user_id = 3 RETURN a.name", "name": "test_1199__poly_single_hop_end_filter", "schema": "social_polymorphic"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*2..2]->(b:User) WHERE b.user_id = 3 RETURN count(*)", "name": "test_1199__poly_fixed_length_end_filter", "schema": "social_polymorphic"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS]->(m:User)-[:FOLLOWS]->(b:User) WHERE m.user_id = 3 RETURN count(*)", "name": "test_1199__poly_mid_chain_filter", "schema": "social_polymorphic"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*2..2]-(b:User) WHERE b.user_id = 3 RETURN count(*)", "name": "test_1199__undirected_fixed_length_end_filter_std", "schema": "standard"}

@@ -44,6 +44,10 @@ fn is_cte_table(table_name: &str) -> bool {
         || table_name.starts_with("vlp_")
         || table_name.starts_with("pc_")
         || table_name.starts_with("bidi_")
+        // #1199: the doubled-edge CTE an undirected hop reads (`undir_edges_a_b_<table>`).
+        // Unrecognised, the FROM reorder prefixed it with the database name
+        // (`db.undir_edges_...`, Code 60).
+        || table_name.starts_with("undir_edges_")
 }
 
 /// Check if an ON condition is a tautology (always true), e.g., `1 = 1`.
@@ -4220,6 +4224,98 @@ mod tests {
         }
     }
 
+    /// #1199: the promoted join stops being a JOIN, so its own restrictions (a
+    /// polymorphic edge's discriminator `pre_filter`, a compiled constraint or
+    /// schema filter riding its ON) must land in WHERE rather than vanish with
+    /// the removed join.
+    #[test]
+    fn test_selective_predicate_reorder_keeps_promoted_joins_own_restrictions() {
+        let mut plan = make_plan(vec![], vec![prop("tag", "name")]);
+        plan.from = make_from("Message", "message");
+        let mut edge = inner_join(
+            "edge",
+            "Message_hasTag_Tag",
+            vec![eq_on(prop("edge", "MessageId"), prop("message", "id"))],
+        );
+        edge.pre_filter = Some(RenderExpr::Raw("edge.kind = 'HAS_TAG'".to_string()));
+        let mut tag = inner_join(
+            "tag",
+            "Tag",
+            vec![eq_on(prop("tag", "id"), prop("edge", "TagId"))],
+        );
+        tag.pre_filter = Some(RenderExpr::Raw("tag.visible = 1".to_string()));
+        tag.joining_on.push(eq_on(
+            prop("tag", "deleted"),
+            RenderExpr::Literal(Literal::Integer(0)),
+        ));
+        plan.joins = JoinItems(vec![edge, tag]);
+        plan.filters = make_filter(RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Equal,
+            operands: vec![
+                prop("tag", "name"),
+                RenderExpr::Literal(Literal::String("Databases".to_string())),
+            ],
+        }));
+
+        reorder_from_for_selective_predicate(&mut plan);
+
+        assert_eq!(
+            plan.from.0.as_ref().unwrap().alias.as_deref(),
+            Some("tag"),
+            "tag must have been promoted for this test to mean anything"
+        );
+        let where_text = format!("{:?}", plan.filters.0);
+        for needle in ["tag.visible = 1", "deleted", "Databases"] {
+            assert!(
+                where_text.contains(needle),
+                "promoted join's `{needle}` was dropped from WHERE: {where_text}"
+            );
+        }
+        // The edge is still a JOIN: its own pre_filter must stay on it.
+        let edge_join = plan
+            .joins
+            .0
+            .iter()
+            .find(|j| j.table_alias == "edge")
+            .expect("edge stays a JOIN");
+        assert!(edge_join.pre_filter.is_some());
+    }
+
+    /// #1199: a doubled-edge CTE (`undir_edges_...`) is a generated CTE, not a
+    /// base table; promoting it to FROM prefixed it with the database name.
+    #[test]
+    fn test_selective_predicate_reorder_never_promotes_undirected_edge_cte() {
+        let mut plan = make_plan(vec![], vec![prop("r2", "to_id")]);
+        plan.from = make_from("db.users", "a");
+        plan.joins = JoinItems(vec![
+            inner_join(
+                "r1",
+                "undir_edges_a_b_db_follows",
+                vec![eq_on(prop("r1", "from_id"), prop("a", "id"))],
+            ),
+            inner_join(
+                "r2",
+                "undir_edges_a_b_db_follows",
+                vec![eq_on(prop("r2", "from_id"), prop("r1", "to_id"))],
+            ),
+        ]);
+        plan.filters = make_filter(RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Equal,
+            operands: vec![
+                prop("r2", "to_id"),
+                RenderExpr::Literal(Literal::Integer(3)),
+            ],
+        }));
+
+        reorder_from_for_selective_predicate(&mut plan);
+
+        assert_eq!(
+            plan.from.0.as_ref().unwrap().name,
+            "db.users",
+            "an undir_edges_ CTE must not be promoted to FROM"
+        );
+    }
+
     #[test]
     fn test_selective_predicate_skips_when_from_already_filtered() {
         // FROM tag WHERE tag.name = 'Databases' → INNER JOIN edge
@@ -4460,6 +4556,41 @@ fn reorder_from_for_selective_predicate(plan: &mut RenderPlan) {
         None => return,
     };
     let target_join = plan.joins.0.remove(target_idx);
+
+    // #1199: the promoted join stops being a JOIN, so everything its ON/pre_filter
+    // asserted about its own rows must move to WHERE or it is silently dropped.
+    // Step 4 already moved the path-edge conditions to their new owners; what is
+    // left is the table's own restrictions — a polymorphic edge's type/label
+    // discriminator (`pre_filter`), a schema `filter:` or compiled edge constraint,
+    // and any non-path ON conjunct. For an INNER join these are exactly WHERE
+    // conjuncts. Without this `(a)-[:FOLLOWS]->(b) WHERE b.id = 3` counted every
+    // interaction type that ends at 3.
+    let mut carried: Vec<RenderExpr> = Vec::new();
+    if let Some(pf) = target_join.pre_filter.clone() {
+        carried.push(pf);
+    }
+    carried.extend(
+        target_join
+            .joining_on
+            .iter()
+            .cloned()
+            .map(RenderExpr::OperatorApplicationExp),
+    );
+    if !carried.is_empty() {
+        let existing = plan.filters.0.take();
+        plan.filters.0 = Some(
+            carried
+                .into_iter()
+                .chain(existing)
+                .reduce(|acc, e| {
+                    RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::And,
+                        operands: vec![acc, e],
+                    })
+                })
+                .expect("non-empty"),
+        );
+    }
 
     // Compute FROM name with database prefix (match the old FROM's prefix)
     let new_from_name = if target_join.table_name.contains('.') {
