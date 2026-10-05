@@ -4377,6 +4377,46 @@ async fn bfs_shortcut_is_only_for_shortest_path_1183() {
 }
 
 // ---------------------------------------------------------------------------
+// #1205: `shortestPath((a)-[*1]->(b))` / a bare hop collapse to a plain relationship; the
+// endpoint predicates were handed to the (never rendered) VLP wrapper and dropped.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn single_hop_shortest_path_keeps_its_endpoint_filters_1205() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    for (shape, cypher) in [
+        (
+            "*1..1, WHERE start",
+            "MATCH p = shortestPath((a:User)-[:FOLLOWS*1..1]->(b:User)) \
+             WHERE a.user_id = 1 RETURN a.user_id, b.user_id",
+        ),
+        (
+            "*1, WHERE end",
+            "MATCH p = shortestPath((a:User)-[:FOLLOWS*1]->(b:User)) \
+             WHERE b.user_id = 4 RETURN a.user_id, b.user_id",
+        ),
+        (
+            "inline property map",
+            "MATCH p = shortestPath((a:User {user_id: 1})-[:FOLLOWS*1..1]->(b:User)) \
+             RETURN a.user_id, b.user_id",
+        ),
+        (
+            "bare hop",
+            "MATCH p = allShortestPaths((a:User)-[:FOLLOWS]->(b:User)) \
+             WHERE a.user_id = 1 AND b.user_id = 4 RETURN a.user_id, b.user_id",
+        ),
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(
+            regex::Regex::new(r"WHERE [^\n]*\b(a|b|t1)\.\w*(user_id|followed_id|follower_id) = \d")
+                .unwrap()
+                .is_match(&sql),
+            "#1205 ({shape}): the endpoint predicate must reach the WHERE of the flat hop:\n{sql}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // #1170: a FIXED hop chained in front of a CTE-backed VLP lost its WHERE filter
 //
 // `extract_filters` returned `None` for a required CTE-backed VLP on the premise

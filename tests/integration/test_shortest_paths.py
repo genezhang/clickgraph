@@ -314,7 +314,6 @@ class TestShortestPathDepth:
         # Nodes exactly 3 hops away
         assert isinstance(response["results"], list)
     
-    @pytest.mark.xfail(reason="Code bug: shortest path with filters/properties generates invalid SQL")
     def test_shortest_path_max_depth_exceeded(self, simple_graph):
         """Test shortest path when max depth is too low."""
         response = execute_cypher(

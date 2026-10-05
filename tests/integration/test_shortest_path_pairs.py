@@ -98,9 +98,10 @@ def _oracle(edges, mode, hi, starts=None, ends=None):
     return rows
 
 
-def _got(mode, hi, where=""):
+def _got(mode, hi, where="", spec=None):
+    spec = spec if spec is not None else f"*1..{hi}"
     response = execute_cypher(
-        f"MATCH p = {mode}((a:User)-[:FOLLOWS*1..{hi}]->(b:User)) {where} "
+        f"MATCH p = {mode}((a:User)-[:FOLLOWS{spec}]->(b:User)) {where} "
         "RETURN a.user_id AS a, b.user_id AS b, length(p) AS l",
         schema_name=SCHEMA,
     )
@@ -137,3 +138,19 @@ def test_both_ends_pinned_1183(mode):
     got = _got(mode, 4, "WHERE a.user_id = 1 AND b.user_id = 4")
     assert got == expected
     assert sum(got.values()) == (2 if mode == "allShortestPaths" else 1)
+
+
+@pytest.mark.parametrize("spec", ["*1..1", "*1", ""])
+@pytest.mark.parametrize("mode", ["shortestPath", "allShortestPaths"])
+@pytest.mark.parametrize("where, starts, ends", [
+    ("WHERE a.user_id = 1", {1}, None),
+    ("WHERE b.user_id = 4", None, {4}),
+    ("WHERE b.user_id IN [4, 5]", None, {4, 5}),
+    ("WHERE a.user_id = 1 AND b.user_id = 4", {1}, {4}),
+    ("WHERE a.user_id = 1 AND b.user_id = 5", {1}, {5}),  # 1 and 5 are not adjacent: no row
+])
+def test_single_hop_shortest_path_keeps_its_endpoint_filters_1205(spec, mode, where, starts, ends):
+    """`shortestPath((a)-[*1]->(b))` and a bare `shortestPath((a)-[:R]->(b))` collapse to a
+    plain hop; the endpoint predicates the path pattern had moved onto the relationship were
+    dropped, so every edge came back."""
+    assert _got(mode, 1, where, spec) == _oracle(_edges(), mode, 1, starts=starts, ends=ends)
