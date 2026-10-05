@@ -3410,6 +3410,7 @@ fn generate_vlp_with_cte_join_conditions(
     cte_alias: &str,
     cte_schemas: &crate::render_plan::CteSchemas,
     join_conditions: &mut Vec<OperatorApplication>,
+    verified_chain: bool,
 ) {
     if let FromTableItem(Some(from_ref)) = &render_plan.from {
         if from_ref.name.starts_with("vlp_") {
@@ -3463,6 +3464,22 @@ fn generate_vlp_with_cte_join_conditions(
                                 })
                         } else {
                             find_id_column_in_cte(cte_name, vlp_alias, &render_plan.ctes)
+                        };
+
+                        // #1189: the id column recorded for a carried DENORMALIZED node can be a
+                        // name that is not a column of the CTE (`p1_c_start_id` for `code`): its
+                        // id property was looked up on the wrong plan. In the chains #1182
+                        // verified, take the column the CTE exports for the node's id property.
+                        let id_col_name = if verified_chain {
+                            denorm_id_column_in_cte(cte_schemas.get(cte_name), vlp_alias)
+                                .filter(|_| {
+                                    cte_schemas
+                                        .get(cte_name)
+                                        .is_some_and(|m| !m.column_names.contains(&id_col_name))
+                                })
+                                .unwrap_or(id_col_name)
+                        } else {
+                            id_col_name
                         };
 
                         // Check if this node has a composite ID — if so, generate
@@ -3915,6 +3932,37 @@ fn apply_hop_uniqueness_after_with(
     });
 }
 
+/// The column a WITH CTE exports for `alias`'s node-id PROPERTY (`p1_c_code` for `c.code`),
+/// when exactly one column does: `property_mapping` is keyed `(alias, property)` and holds both
+/// the id property and the edge column it maps to (`code`, `dest_code`); only the former is the
+/// id property of a node schema.
+fn denorm_id_column_in_cte(
+    meta: Option<&crate::render_plan::CteSchemaMetadata>,
+    alias: &str,
+) -> Option<String> {
+    let schema = crate::server::query_context::get_current_schema()?;
+    let id_props: HashSet<String> = schema
+        .all_node_schemas()
+        .values()
+        .filter_map(|ns| match &ns.node_id.id {
+            crate::graph_catalog::config::Identifier::Single(p) => Some(p.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut cols: Vec<&String> = meta?
+        .property_mapping
+        .iter()
+        .filter(|((a, prop), _)| a == alias && id_props.contains(prop))
+        .map(|(_, col)| col)
+        .collect();
+    cols.sort();
+    cols.dedup();
+    match cols.as_slice() {
+        [only] => Some((*only).clone()),
+        _ => None,
+    }
+}
+
 /// The first of `aliases` that is the start or end node of the VLP CTE in FROM.
 fn carried_vlp_endpoint<'a>(render_plan: &RenderPlan, aliases: &'a [String]) -> Option<&'a str> {
     let FromTableItem(Some(from_ref)) = &render_plan.from else {
@@ -4140,6 +4188,11 @@ fn resolve_cross_table_with_cte_joins(
                         &cte_alias,
                         cte_schemas,
                         &mut join_conditions,
+                        crate::query_planner::logical_plan::is_supported_with_vlp_chain(
+                            current_plan,
+                            &|alias| cte_references.contains_key(alias),
+                            &|gr| !super::from_builder::is_fixed_length_vlp(gr),
+                        ),
                     );
                 }
 

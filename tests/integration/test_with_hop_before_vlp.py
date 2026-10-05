@@ -241,11 +241,7 @@ def test_hop_after_the_vlp(schemas, which):
     assert _got(schemas[which], query, 4) == expected
 
 
-# Standard schema only: with the VLP FIRST and a WITH-carried start on a denormalized
-# schema the join key of the WITH CTE is guessed as `p1_c_start_id` (Code 47) — a
-# separate defect in `generate_vlp_with_cte_join_conditions`. It used to return wrong
-# rows (272 vs 46) because a hop-uniqueness predicate stood in for that join key.
-@pytest.mark.parametrize("which", ["std"])
+@pytest.mark.parametrize("which", ["std", "den"])
 def test_two_hops_after_the_vlp(schemas, which):
     query = ("MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c "
              "MATCH (c)-[:FOLLOWS*1..2]->(a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(d:User) "
