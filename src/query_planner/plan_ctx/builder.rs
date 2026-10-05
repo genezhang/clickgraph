@@ -209,6 +209,7 @@ impl PlanCtxBuilder {
             max_inferred_types: self.max_inferred_types,
             pattern_contexts: self.pattern_contexts,
             vlp_endpoints: self.vlp_endpoints,
+            with_vlp_chain_supported: false,
             vlp_alias_counter: 0,
             reserved_aliases: std::sync::Arc::new(std::collections::HashSet::new()),
             variables: self.variables,

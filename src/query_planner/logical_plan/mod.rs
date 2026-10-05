@@ -2194,6 +2194,93 @@ pub enum Descend {
     Skip,
 }
 
+/// The shape of post-`WITH` scope the "keep the hop's join" repair of #1182 is verified
+/// for (against a brute-force oracle on the standard, polymorphic and denormalized
+/// fixtures): ONE left-deep chain of directed hops, at least one of them a CTE-backed
+/// variable-length path written in its own direction, with a WITH-carried node only as
+/// the chain's FIRST node. Anything else — a comma pattern, an undirected hop, a path
+/// written backwards, a carried node in the middle or at the end of the chain (a closed
+/// pattern included) — runs into other, older defects that the repair would turn from a
+/// loud error into silently wrong rows, so it is left exactly as it was.
+///
+/// `is_carried` says whether an alias is bound by a `WITH` CTE; `is_cte_backed_vlp`
+/// whether a variable-length `GraphRel` renders as a recursive CTE (a render-layer
+/// decision, hence a parameter). An inner `WITH` scope is not looked into.
+pub fn is_supported_with_vlp_chain(
+    plan: &LogicalPlan,
+    is_carried: &dyn Fn(&str) -> bool,
+    is_cte_backed_vlp: &dyn Fn(&GraphRel) -> bool,
+) -> bool {
+    fn collect<'a>(node: &'a LogicalPlan, rels: &mut Vec<&'a GraphRel>) -> bool {
+        match node {
+            LogicalPlan::WithClause(_) => true,
+            LogicalPlan::CartesianProduct(_) | LogicalPlan::Union(_) | LogicalPlan::Unwind(_) => {
+                false
+            }
+            LogicalPlan::GraphRel(gr) => {
+                rels.push(gr);
+                node.children().into_iter().all(|c| collect(c, rels))
+            }
+            _ => node.children().into_iter().all(|c| collect(c, rels)),
+        }
+    }
+    let mut rels: Vec<&GraphRel> = Vec::new();
+    let broke = if collect(plan, &mut rels) {
+        None
+    } else {
+        Some(())
+    };
+    if broke.is_some() || rels.is_empty() {
+        return false;
+    }
+    let mut has_vlp = false;
+    let mut bottoms: Vec<&GraphRel> = Vec::new();
+    for gr in &rels {
+        if gr.direction == Direction::Either || gr.was_undirected == Some(true) {
+            return false;
+        }
+        if gr.variable_length.is_some() {
+            if gr.is_optional.unwrap_or(false) {
+                return false;
+            }
+            // `(a)<-[*]-(b)` is normalized to a path starting at `b`; a hop after it
+            // renders an extra, untied edge join even without a WITH.
+            if gr.direction == Direction::Incoming {
+                return false;
+            }
+            has_vlp |= is_cte_backed_vlp(gr);
+        }
+        // A chain nests on one side only: at most one child is itself a hop.
+        let nested = |p: &LogicalPlan| matches!(p, LogicalPlan::GraphRel(_));
+        match (nested(&gr.left), nested(&gr.right)) {
+            (true, true) => return false,
+            (false, false) => bottoms.push(gr),
+            _ => {}
+        }
+    }
+    // One chain, and a carried node only at its far end: in exactly one connection slot
+    // of the chain, that of its first hop.
+    let [bottom] = bottoms.as_slice() else {
+        return false;
+    };
+    for gr in &rels {
+        for alias in [&gr.left_connection, &gr.right_connection] {
+            if is_carried(alias) {
+                let in_bottom = std::ptr::eq(*gr, *bottom);
+                let slots = rels
+                    .iter()
+                    .flat_map(|r| [&r.left_connection, &r.right_connection])
+                    .filter(|a| *a == alias)
+                    .count();
+                if !in_bottom || slots != 1 {
+                    return false;
+                }
+            }
+        }
+    }
+    has_vlp
+}
+
 impl LogicalPlan {
     /// Return references to all direct `LogicalPlan` children of this node.
     ///

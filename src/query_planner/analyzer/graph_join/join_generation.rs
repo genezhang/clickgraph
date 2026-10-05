@@ -134,6 +134,26 @@ pub fn generate_pattern_joins(
             let right_is_vlp =
                 plan_ctx.is_vlp_endpoint(t.right_alias) && rel_to_single && right_id_single;
 
+            // A VLP endpoint the single-column fold above does not cover (a COMPOSITE
+            // key: the CTE column is a `concat(...)`) falls through to a plain node
+            // JOIN whose condition `apply_vlp_rewrites` turns into
+            // `t.start_id = <edge>.<col> AND t.start_id = <edge>.<col2>`: the
+            // concatenated key against each single column, which matches nothing — an
+            // empty result for a pattern that has rows (#604, #623). Refuse it.
+            for (alias, covered) in [(t.left_alias, left_is_vlp), (t.right_alias, right_is_vlp)] {
+                if plan_ctx.is_vlp_endpoint(alias) && !covered {
+                    return Err(AnalyzerError::UnsupportedPattern {
+                        message: format!(
+                            "a fixed hop '{}' next to a variable-length path binds node '{}' \
+                             through a composite key, which the path's CTE cannot be joined on \
+                             column by column (#604/#623). Match the hop and the path with a \
+                             single-column node id, or in separate clauses.",
+                            t.rel_alias, alias
+                        ),
+                    });
+                }
+            }
+
             // Edge join, optionally binding one/both endpoints to the VLP CTE
             // instead of to a node table. `bind_left`/`bind_right` add the
             // edge↔node equality; when the endpoint is a VLP endpoint the RHS
@@ -329,7 +349,7 @@ pub fn generate_pattern_joins(
                 // is bound to the VLP CTE alone and the WITH CTE is cross-joined.
                 if !rel_is_optional
                     && !plan_ctx.is_optional(t.rel_alias)
-                    && plan_ctx.has_required_vlp()
+                    && plan_ctx.with_vlp_chain_supported()
                 {
                     for (alias, cte_name, node, col) in [
                         (

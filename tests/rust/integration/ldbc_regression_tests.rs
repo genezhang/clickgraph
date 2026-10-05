@@ -5061,3 +5061,63 @@ async fn optional_hop_after_the_path_keeps_the_required_hop_tied_1182() {
         );
     }
 }
+
+/// An incoming hop AFTER the path: the path's end node is bound through the CTE, so no
+/// node table is scanned for it. The plan walk used to regenerate `JOIN users AS n2 ON
+/// t.end_id = <edge>.followed_id` (a join that mentions `n2` nowhere — a cross join,
+/// 8 × 8 = 64× the rows).
+#[tokio::test]
+async fn vlp_bound_nodes_get_no_node_table_join_after_with_1182() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c \
+         MATCH (c)-[:FOLLOWS]->(n1:User)-[:FOLLOWS*1..2]->(n2:User)<-[:FOLLOWS]-(n3:User) \
+         RETURN c.user_id, n1.user_id, n2.user_id, n3.user_id",
+    )
+    .await;
+    let outer = sql
+        .rsplit_once("\nFROM vlp_")
+        .expect("VLP is the outer FROM")
+        .1;
+    assert!(
+        !outer.contains("social.users_bench AS n1") && !outer.contains("social.users_bench AS n2"),
+        "#1182: the path's endpoints are bound through its CTE, not a node scan:\n{sql}"
+    );
+}
+
+/// `WITH c, z` + a hop that closes on `c` after the path: the WITH CTE ends up joined
+/// twice (`c_z` and `c`) with nothing tying the copies — 65408 rows against 73. Loud.
+#[tokio::test]
+async fn two_carried_nodes_closing_hop_after_vlp_fails_loud_1182() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let err = try_generate_sql_inline(
+        &schema,
+        "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c, z \
+         MATCH (z)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User)<-[:FOLLOWS]-(c) \
+         RETURN z.user_id, c.user_id, a.user_id, b.user_id",
+    )
+    .await
+    .expect_err("must not return a self-joined WITH CTE");
+    assert!(err.contains("joined twice"), "unexpected error: {err}");
+}
+
+/// A fixed hop next to a path through a COMPOSITE-key node: the path CTE's id is a
+/// `concat(...)`, and the node join compared it to each key column (0 rows for a
+/// pattern that has rows). Loud, with and without a WITH.
+#[tokio::test]
+async fn composite_key_hop_next_to_vlp_fails_loud_1182() {
+    let schema = load_schema_from("schemas/examples/composite_node_id_test.yaml");
+    for query in [
+        "MATCH (c:Account)-[:TRANSFERRED]->(n1:Account)-[:TRANSFERRED*1..2]->(n2:Account) \
+         RETURN c.account_number",
+        "MATCH (z:Account)-[:TRANSFERRED]->(c:Account) WITH c \
+         MATCH (c)-[:TRANSFERRED]->(n1:Account)-[:TRANSFERRED*1..2]->(n2:Account) \
+         RETURN c.account_number, n2.account_number",
+    ] {
+        let err = try_generate_sql_inline(&schema, query)
+            .await
+            .expect_err("must not render a node join that matches nothing");
+        assert!(err.contains("composite key"), "unexpected error: {err}");
+    }
+}

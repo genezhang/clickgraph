@@ -278,3 +278,24 @@ def test_optional_hop_after_the_vlp(schemas, which):
                 for d in ds:
                     expected[(c, d)] += 1
     assert got == expected
+
+
+# Standard schema only: on the denormalized schema this shape is still loud (the WITH
+# CTE join is ordered before the hop it depends on).
+@pytest.mark.parametrize("which", ["std"])
+def test_incoming_hop_after_the_vlp(schemas, which):
+    query = ("MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c "
+             "MATCH (c)-[:FOLLOWS]->(n1:User)-[:FOLLOWS*1..2]->(n2:User)<-[:FOLLOWS]-(n3:User) "
+             "RETURN c.user_id AS col0, n1.user_id AS col1, n2.user_id AS col2, "
+             "n3.user_id AS col3")
+    inn = defaultdict(list)
+    for i, (f, t) in enumerate(EDGES):
+        inn[t].append((i, f))
+    expected = Counter()
+    for _z, c in EDGES:
+        for i, n1 in _OUT[c]:
+            for n2 in _paths(n1, 1, 2):
+                for j, n3 in inn[n2]:
+                    if i != j:
+                        expected[(c, n1, n2, n3)] += 1
+    assert _got(schemas[which], query, 4) == expected

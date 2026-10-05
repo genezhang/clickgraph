@@ -1,0 +1,1 @@
+render error: Invalid render plan: the WITH CTE 'with_c_z_cte_0' is joined twice (as 'c_z' and 'c') next to a variable-length path: the two copies are not tied to each other, so the rows would be silently multiplied. Not supported yet (#1182 follow-up).

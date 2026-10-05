@@ -2,7 +2,7 @@ WITH RECURSIVE with_c_cte_0 AS (SELECT
       t0.Dest AS "p1_c_code"
 FROM test_integration.flights AS t0
 ), 
-vlp_b_e AS (
+vlp_a_b AS (
     SELECT
         t1.Origin as start_id,
         t1.Dest as end_id,
@@ -10,10 +10,9 @@ vlp_b_e AS (
         [tuple(t1.flight_id, t1.flight_number)] as path_edges,
         [t1.Origin, t1.Dest] as path_nodes,
         [] as path_relationships,
-        t1."Origin" as "start_Origin",
         t1."Dest" as "end_Dest"
     FROM test_integration.flights AS t1
-    WHERE 1 <= 2
+    WHERE NOT ((rel.flight_id = t2.flight_id AND rel.flight_number = t2.flight_number)) AND 1 <= 2
     UNION ALL
     SELECT
         vp.start_id as start_id,
@@ -22,16 +21,21 @@ vlp_b_e AS (
         arrayConcat(vp.path_edges, [tuple(next.flight_id, next.flight_number)]),
         arrayConcat(vp.path_nodes, [next.Dest]),
         [] as path_relationships,
-        vp."start_Origin" as "start_Origin",
         next."Dest" as "end_Dest"
-    FROM vlp_b_e vp
+    FROM vlp_a_b vp
     JOIN test_integration.flights next ON next.Origin = vp.end_id
     WHERE vp.hop_count < 2 AND NOT has(vp.path_edges, tuple(next.flight_id, next.flight_number))
 )
+SELECT `c.code` AS `c.code`, `b.code` AS `b.code` FROM (
 SELECT 
       c.p1_c_code AS "c.code", 
-      vt1.end_Dest AS "e.code"
-FROM vlp_b_e AS t
+      t.end_Dest AS "b.code"
+FROM vlp_a_b AS t
 INNER JOIN with_c_cte_0 AS c ON 1 = 1
-INNER JOIN test_integration.flights AS t2 ON t2.Dest = t.start_id
-LEFT JOIN vlp_b_e AS vt1 ON t.start_Origin = t.start_id
+UNION ALL 
+SELECT 
+      c.p1_c_code AS "c.code", 
+      t.end_Dest AS "b.code"
+FROM vlp_a_b AS t
+INNER JOIN with_c_cte_0 AS c ON 1=1
+) AS __union

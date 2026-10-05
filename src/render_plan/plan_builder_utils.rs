@@ -3940,29 +3940,6 @@ pub(crate) fn clear_stale_joins_for_cte_aliases(
     // Collect all live table aliases from the plan tree
     let live_aliases = collect_live_table_aliases(plan);
 
-    /// True when this scope holds a variable-length hop that renders as a
-    /// recursive CTE (anything but an exact `*N` expanded inline) and none of its
-    /// variable-length hops is OPTIONAL: an OPTIONAL path renders through a
-    /// different (LEFT JOIN anchored) layout that keeping the hop's join does not
-    /// repair — it would turn a loud error into rows that are silently wrong. Does
-    /// not look into an inner `WITH` scope: that one has its own joins.
-    fn scope_has_required_cte_backed_vlp(plan: &LogicalPlan) -> bool {
-        use std::ops::ControlFlow;
-        let (mut has_vlp, mut has_optional_vlp) = (false, false);
-        let _ = plan.walk::<()>(&mut |node| match node {
-            LogicalPlan::WithClause(_) => ControlFlow::Continue(Descend::Skip),
-            LogicalPlan::GraphRel(gr) => {
-                if gr.variable_length.is_some() {
-                    has_optional_vlp |= gr.is_optional.unwrap_or(false);
-                    has_vlp |= !super::from_builder::is_fixed_length_vlp(gr);
-                }
-                ControlFlow::Continue(Descend::Yes)
-            }
-            _ => ControlFlow::Continue(Descend::Yes),
-        });
-        has_vlp && !has_optional_vlp
-    }
-
     fn clear_recursive(
         plan: &LogicalPlan,
         cte_aliases: &std::collections::HashSet<&str>,
@@ -3971,7 +3948,12 @@ pub(crate) fn clear_stale_joins_for_cte_aliases(
         match plan {
             LogicalPlan::GraphJoins(gj) => {
                 let new_input = clear_recursive(&gj.input, cte_aliases, live_aliases);
-                let scope_has_cte_backed_vlp = scope_has_required_cte_backed_vlp(&gj.input);
+                let scope_has_cte_backed_vlp =
+                    crate::query_planner::logical_plan::is_supported_with_vlp_chain(
+                        &gj.input,
+                        &|alias| cte_aliases.contains(alias),
+                        &|gr| !super::from_builder::is_fixed_length_vlp(gr),
+                    );
 
                 let cleaned_joins: Vec<Join> = gj
                     .joins

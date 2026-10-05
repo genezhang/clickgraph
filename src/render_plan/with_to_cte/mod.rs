@@ -3842,6 +3842,47 @@ fn restructure_post_with_optional_or_insert_cte_join(
 /// `is_cypher_union_plan`) — that FROM is the first arm's own independent scan
 /// and must never be cross-joined to another arm's WITH-CTE, since the
 /// accumulated `cte_references` belongs to that other arm.
+/// The first of `aliases` that is the start or end node of the VLP CTE in FROM.
+fn carried_vlp_endpoint<'a>(render_plan: &RenderPlan, aliases: &'a [String]) -> Option<&'a str> {
+    let FromTableItem(Some(from_ref)) = &render_plan.from else {
+        return None;
+    };
+    let vlp = render_plan
+        .ctes
+        .0
+        .iter()
+        .find(|cte| cte.cte_name == from_ref.name)?;
+    aliases.iter().map(String::as_str).find(|alias| {
+        vlp.vlp_cypher_start_alias.as_deref() == Some(*alias)
+            || vlp.vlp_cypher_end_alias.as_deref() == Some(*alias)
+    })
+}
+
+/// See the call site. Only inspects a plan whose FROM is a VLP CTE.
+fn reject_with_cte_joined_twice_under_vlp(render_plan: &RenderPlan) -> RenderPlanBuilderResult<()> {
+    let FromTableItem(Some(from_ref)) = &render_plan.from else {
+        return Ok(());
+    };
+    if !from_ref.name.starts_with("vlp_") {
+        return Ok(());
+    }
+    let mut seen: HashMap<&str, &str> = HashMap::new();
+    for join in &render_plan.joins.0 {
+        if !join.table_name.starts_with("with_") {
+            continue;
+        }
+        if let Some(first) = seen.insert(join.table_name.as_str(), join.table_alias.as_str()) {
+            return Err(RenderBuildError::InvalidRenderPlan(format!(
+                "the WITH CTE '{}' is joined twice (as '{}' and '{}') next to a variable-length \
+                 path: the two copies are not tied to each other, so the rows would be silently \
+                 multiplied. Not supported yet (#1182 follow-up).",
+                join.table_name, first, join.table_alias
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn resolve_cross_table_with_cte_joins(
     render_plan: &mut RenderPlan,
@@ -3881,7 +3922,12 @@ fn resolve_cross_table_with_cte_joins(
                     .push(alias.clone());
             }
 
-            let from_is_vlp_cte = from_ref.name.starts_with("vlp_");
+            let from_is_vlp_cte = from_ref.name.starts_with("vlp_")
+                && crate::query_planner::logical_plan::is_supported_with_vlp_chain(
+                    current_plan,
+                    &|alias| cte_references.contains_key(alias),
+                    &|gr| !super::from_builder::is_fixed_length_vlp(gr),
+                );
 
             // For each CTE that's referenced, create a JOIN
             // Sort for deterministic ordering
@@ -4004,6 +4050,24 @@ fn resolve_cross_table_with_cte_joins(
                         cte_schemas,
                         &mut join_conditions,
                     );
+                }
+
+                // #1182: a carried node that is ALSO an endpoint of the VLP CTE in FROM
+                // must be tied to the CTE's `start_id` / `end_id`. With no tie the CTE
+                // join is `ON 1 = 1` and the path starts/ends anywhere — silently
+                // multiplying the rows (546 vs 36). The tie above is only found for a
+                // WITH CTE named after the node; a CTE shared by several carried nodes
+                // (`WITH c, z` -> `c_z`) never matches it.
+                if join_conditions.is_empty() {
+                    if let Some(endpoint) = carried_vlp_endpoint(render_plan, &aliases) {
+                        return Err(RenderBuildError::InvalidRenderPlan(format!(
+                            "node '{endpoint}' is carried through WITH and is also an endpoint \
+                             of the variable-length path next to it, but the WITH CTE '{cte_name}' \
+                             (shared by {aliases:?}) cannot be tied to the path's endpoint column: \
+                             the path would start/end at every node. Not supported yet (#1182 \
+                             follow-up) — match the path in the clause that binds the node."
+                        )));
+                    }
                 }
 
                 // Create the JOIN. `ON 1 = 1` (cartesian) is only correct for a
@@ -9582,6 +9646,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
     if !with_scope.is_empty() {
         apply_final_outer_scope_passes(&mut render_plan, &final_scope, is_cypher_union_plan);
     }
+
+    // #1182: with a VLP CTE as FROM, one WITH CTE joined under two aliases (`c_z` and
+    // `c`, from the two places that add a CTE join) leaves the second copy tied to
+    // the first by an equality of the SAME CTE's columns — a self-join that multiplies
+    // the rows (65408 vs 73). Refuse rather than return those rows.
+    reject_with_cte_joined_twice_under_vlp(&render_plan)?;
 
     // Weighted shortestPath fix: restructure outer query to use VLP CTE as FROM.
     // When weight CTE is detected and VLP CTEs exist, the outer query incorrectly
