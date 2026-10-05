@@ -73,6 +73,11 @@ pub struct QueryContext {
     /// For denormalized edges where the edge table serves as both edge and target node
     pub denormalized_aliases: HashMap<String, String>,
 
+    /// #1277: per-arm snapshots of `denormalized_aliases` for a Cypher UNION, keyed by the arm's
+    /// GraphRel-alias signature (`LogicalPlan::arm_signature`). The registry above is keyed by node
+    /// NAME, so independent arms that reuse a name overwrite each other (last arm wins).
+    pub union_arm_denormalized_aliases: HashMap<Vec<String>, HashMap<String, String>>,
+
     /// Relationship columns: alias → (from_id_column, to_id_column)
     /// Used for IS NULL checks on relationship aliases
     pub relationship_columns: HashMap<String, (String, String)>,
@@ -546,6 +551,69 @@ pub fn get_denormalized_alias_mapping(target_node_alias: &str) -> Option<String>
         })
         .ok()
         .flatten()
+}
+
+/// Copy of the whole denormalized alias registry.
+pub fn denormalized_aliases_snapshot() -> HashMap<String, String> {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().denormalized_aliases.clone())
+        .unwrap_or_default()
+}
+
+/// Replace the whole denormalized alias registry.
+pub fn set_denormalized_aliases(map: HashMap<String, String>) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().denormalized_aliases = map;
+    });
+}
+
+/// #1277: remember the alias registry a Cypher-UNION arm produced (see
+/// `QueryContext::union_arm_denormalized_aliases`).
+pub fn record_union_arm_denormalized_aliases(signature: Vec<String>, map: HashMap<String, String>) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut()
+            .union_arm_denormalized_aliases
+            .insert(signature, map);
+    });
+}
+
+/// #1277: the alias registry recorded for the arm with this signature, if any.
+pub fn union_arm_denormalized_aliases(signature: &[String]) -> Option<HashMap<String, String>> {
+    QUERY_CONTEXT
+        .try_with(|ctx| {
+            ctx.borrow()
+                .union_arm_denormalized_aliases
+                .get(signature)
+                .cloned()
+        })
+        .ok()
+        .flatten()
+}
+
+/// #1277: while alive, the denormalized alias registry is the one recorded for a Cypher-UNION arm
+/// (see `QueryContext::union_arm_denormalized_aliases`); the previous registry is restored on drop.
+/// An arm with no recorded registry leaves the current one untouched.
+pub struct UnionArmDenormalizedAliasesGuard {
+    previous: Option<HashMap<String, String>>,
+}
+
+impl UnionArmDenormalizedAliasesGuard {
+    pub fn enter(arm_signature: &[String]) -> Self {
+        let previous = union_arm_denormalized_aliases(arm_signature).map(|arm_map| {
+            let previous = denormalized_aliases_snapshot();
+            set_denormalized_aliases(arm_map);
+            previous
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for UnionArmDenormalizedAliasesGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            set_denormalized_aliases(previous);
+        }
+    }
 }
 
 /// Clear all denormalized alias mappings

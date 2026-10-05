@@ -908,6 +908,11 @@ impl GraphJoinInference {
                 let mut any_transformed = false;
                 let graph_join_inference = GraphJoinInference::new();
 
+                // #1277: the denormalized node->edge alias registry is keyed by node NAME, so
+                // independent Cypher-UNION arms that reuse a name overwrite each other. Give every
+                // arm a registry that starts from the pre-union state and snapshot what it produced
+                // (keyed by the arm's GraphRel aliases) for the render phase to re-activate.
+                let denorm_before = crate::server::query_context::denormalized_aliases_snapshot();
                 let transformed_branches: Result<Vec<Arc<LogicalPlan>>, _> = union
                     .inputs
                     .iter()
@@ -919,6 +924,11 @@ impl GraphJoinInference {
                         // Build pattern metadata for THIS branch (critical for is_referenced checks)
                         // Each Union branch is a complete pattern (created by BidirectionalUnion)
                         // and needs its own metadata for proper reference tracking
+                        if union.is_cypher_union {
+                            crate::server::query_context::set_denormalized_aliases(
+                                denorm_before.clone(),
+                            );
+                        }
                         let mut branch_plan_ctx = plan_ctx.clone();
                         // #1273: the shared plan context knows optional aliases BY NAME across every
                         // arm: `b` optional in one arm made the same-named `b` of an inner-pattern
@@ -1008,6 +1018,12 @@ impl GraphJoinInference {
 
                         let was_transformed = matches!(result, Transformed::Yes(_));
                         let branch_plan = result.get_plan();
+                        if union.is_cypher_union {
+                            crate::server::query_context::record_union_arm_denormalized_aliases(
+                                branch.arm_signature(),
+                                crate::server::query_context::denormalized_aliases_snapshot(),
+                            );
+                        }
 
                         // If the branch has no Projection (and thus no GraphJoins wrapper),
                         // but we collected joins, we need to wrap it with GraphJoins explicitly.
@@ -1094,6 +1110,21 @@ impl GraphJoinInference {
                     .collect();
 
                 let branches = transformed_branches?;
+                if union.is_cypher_union {
+                    // Outside an arm the registry keeps its pre-#1277 meaning: every arm's entries,
+                    // later arms winning.
+                    let mut merged = denorm_before;
+                    for arm in union.inputs.iter() {
+                        if let Some(map) =
+                            crate::server::query_context::union_arm_denormalized_aliases(
+                                &arm.arm_signature(),
+                            )
+                        {
+                            merged.extend(map);
+                        }
+                    }
+                    crate::server::query_context::set_denormalized_aliases(merged);
+                }
                 if any_transformed {
                     Transformed::Yes(Arc::new(LogicalPlan::Union(
                         crate::query_planner::logical_plan::Union {
