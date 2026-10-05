@@ -2161,6 +2161,12 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                                 &plan,
                                 &join.table_alias,
                             )
+                            // #1220: an edge-table join of a fixed hop chained to the path is
+                            // cardinality-significant even when nothing selects its columns
+                            // (`RETURN count(*)`): dropping it returned the path's row count
+                            // alone (55 where 90 is correct).
+                            || join.from_id_column.is_some()
+                            || join.to_id_column.is_some()
                     })
                     .map(|join| join.table_alias.clone())
                     .collect();

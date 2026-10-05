@@ -24,8 +24,6 @@ WITH RECURSIVE vlp_a_b AS (
       AND NOT array_contains(vp.path_edges, struct(rel.mgr_id, rel.emp_id))
 )
 SELECT 
-      t.hop_count + 1 AS `l`, 
-      count(*) AS `n`
+      count(*) AS `count(*)`
 FROM vlp_a_b AS t
 INNER JOIN testdb.reports AS t0 ON t0.emp_id = t.start_id
-GROUP BY t.hop_count + 1

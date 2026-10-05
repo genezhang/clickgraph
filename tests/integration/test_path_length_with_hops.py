@@ -11,7 +11,54 @@ Everything else that would read the CTE's path columns (nodes/relationships/bare
 import collections
 
 import pytest
-from conftest import execute_cypher
+import requests
+from conftest import CLICKGRAPH_URL, execute_cypher
+
+MIXED = "mixed_path_len_1202"
+MIXED_YAML = """
+name: mixed_path_len_1202
+version: "1.0"
+graph_schema:
+  nodes:
+    - label: Person
+      database: test_integration
+      table: pl1202_people
+      node_id: pid
+      is_denormalized: true
+      property_mappings: {pid: pid, name: name}
+      from_node_properties: {pid: mgr_id}
+  edges:
+    - type: REPORTS_TO
+      database: test_integration
+      table: pl1202_reports
+      from_node: Person
+      to_node: Person
+      from_id: mgr_id
+      to_id: emp_id
+      property_mappings: {}
+"""
+MIXED_EDGES = [(1, 2), (2, 3), (5, 3), (3, 4), (2, 4), (4, 5), (4, 1)]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _mixed_graph(clickhouse_client):
+    c = clickhouse_client
+    for t in ("pl1202_people", "pl1202_reports"):
+        c.command(f"DROP TABLE IF EXISTS test_integration.{t}")
+    c.command("CREATE TABLE test_integration.pl1202_people (pid UInt32, name String) "
+              "ENGINE = MergeTree ORDER BY pid")
+    c.command("CREATE TABLE test_integration.pl1202_reports (emp_id UInt32, mgr_id UInt32) "
+              "ENGINE = MergeTree ORDER BY emp_id")
+    c.insert("test_integration.pl1202_people", [[i, f"p{i}"] for i in range(1, 6)],
+             column_names=["pid", "name"])
+    c.insert("test_integration.pl1202_reports", [[e, m] for m, e in MIXED_EDGES],
+             column_names=["emp_id", "mgr_id"])
+    response = requests.post(f"{CLICKGRAPH_URL}/schemas/load",
+                             json={"schema_name": MIXED, "config_content": MIXED_YAML})
+    assert response.status_code == 200, f"schema load failed: {response.text}"
+    yield
+    for t in ("pl1202_people", "pl1202_reports"):
+        c.command(f"DROP TABLE IF EXISTS test_integration.{t}")
 
 def _rows(schema, query):
     result = execute_cypher(query, schema_name=schema, raise_on_error=False)
@@ -41,7 +88,7 @@ def _trail_histogram(edges, max_len):
 
 def _graphs():
     """(schema, label, relationship type, edge list). Own-table (standard) and denormalized
-    layouts; the mixed-access layout drops the hop when a path variable is declared (#1220)."""
+    layouts plus the mixed-access one (whose hop a declared path variable used to drop, #1220)."""
     social = [(int(r["a"]), int(r["b"])) for r in _rows(
         "social_integration",
         "MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN a.user_id AS a, b.user_id AS b")]
@@ -51,6 +98,7 @@ def _graphs():
     return [
         ("social_integration", "User", "FOLLOWS", social),
         ("denormalized_flights", "Airport", "FLIGHT", flights),
+        (MIXED, "Person", "REPORTS_TO", MIXED_EDGES),
     ]
 
 
@@ -66,7 +114,14 @@ def _shapes(label, rel):
     }
 
 
-CASES = [(g, s) for g in range(2) for s in ("hop+vlp", "vlp+hop", "hop+hop+vlp", "hop+vlp+hop")]
+CASES = [
+    pytest.param(g, s, marks=pytest.mark.xfail(
+        strict=True,
+        reason="#1203: two fixed hops before a path are not pairwise edge-unique with it in the "
+               "mixed-access layout (the plain pattern over-counts too, 33 vs 27)"))
+    if (g, s) == (2, "hop+hop+vlp") else (g, s)
+    for g in range(3) for s in ("hop+vlp", "vlp+hop", "hop+hop+vlp", "hop+vlp+hop")
+]
 
 
 @pytest.mark.parametrize("graph_idx, shape", CASES)
