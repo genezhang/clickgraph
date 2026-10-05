@@ -1448,3 +1448,5 @@
 {"cypher": "MATCH (a)-[:AUTHORED]->(b) WITH a, count(b) AS n MATCH (a)-[:FOLLOWS]->(f) RETURN count(*)", "name": "test_1214__with_node_and_count_then_match_social", "schema": "social_integration"}
 {"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WITH c, b MATCH (b)-[:FOLLOWS]->(z:User) RETURN count(*)", "name": "test_1214__with_two_carried_after_path_std", "schema": "standard"}
 {"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WITH c, b MATCH (b)-[:FOLLOWS]->(z:User) RETURN count(*)", "name": "test_1214__with_two_carried_after_path_poly", "schema": "social_polymorphic"}
+{"cypher": "RETURN 'it\\'s' AS r", "name": "test_1173__escaped_single_quote_literal_std", "schema": "standard"}
+{"cypher": "MATCH (u:User) WHERE u.name STARTS WITH 'O\\'' OR u.name IN ['a\\'b', \"say \\\"hi\\\"\"] RETURN u.name", "name": "test_1173__escaped_quotes_in_predicates_std", "schema": "standard"}

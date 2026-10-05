@@ -4584,6 +4584,46 @@ async fn vlp_over_a_filtered_embedded_endpoint_fails_loud_1119() {
 }
 
 // ---------------------------------------------------------------------------
+// #1173: backslash escapes inside string literals
+//
+// `'it\'s'` ended the literal at the escaped quote and failed to parse. The literal body stays
+// raw and the emitter translates it: `\'` -> `''`, `\"` -> `"`, `\uXXXX` -> the character.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn escaped_quotes_in_string_literals_render_valid_sql_1173() {
+    let schema = load_schema_from("schemas/test/social_integration.yaml");
+    for (cypher, literal) in [
+        (r"RETURN 'it\'s' AS r", r"'it''s'"),
+        (r#"RETURN "say \"hi\"" AS r"#, r#"'say "hi"'"#),
+        (r"RETURN 'a\\b' AS r", r"'a\\b'"),
+        (r"RETURN 'café' AS r", "'caf\u{e9}'"),
+        // a backslash right before the closing quote is a literal backslash, not an escape
+        (r"RETURN 'it\\' AS r", r"'it\\'"),
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(sql.contains(&format!("{literal} AS")), "{cypher}\n{sql}");
+    }
+    // the escaped quote reaches predicate operands intact too
+    let sql = generate_sql_inline(
+        &schema,
+        r"MATCH (u:User) WHERE u.name STARTS WITH 'O\'' OR u.name IN ['a\'b'] RETURN u.name",
+    )
+    .await;
+    assert!(sql.contains("startsWith(u.full_name, 'O''')"), "{sql}");
+    assert!(sql.contains("['a''b']"), "{sql}");
+
+    // two spellings of one value fold equal; a different value (escaped backslash) does not
+    let folded = |rhs: &str| {
+        let q = format!("MATCH (u:User) WHERE {rhs} RETURN count(*) AS n");
+        let schema = &schema;
+        async move { generate_sql_inline(schema, &q).await }
+    };
+    assert!(folded(r#"'it\'s' = "it's""#).await.contains("WHERE true"));
+    assert!(folded(r"'it\\' = 'it'").await.contains("WHERE false"));
+}
+
+// ---------------------------------------------------------------------------
 // #1214: a WITH CTE joined twice after a multi-alias WITH
 //
 // `WITH a, count(b) AS n MATCH (a)-[:R]->(f)` rendered the CTE twice — `AS a_n ON 1 = 1` and

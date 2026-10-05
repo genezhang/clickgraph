@@ -1,6 +1,6 @@
 use nom::{
     branch::alt,
-    bytes::complete::{tag, tag_no_case, take_until, take_while1},
+    bytes::complete::{tag, tag_no_case, take_while1},
     character::complete::{alphanumeric1, multispace0},
     combinator::{map, not, opt, peek},
     error::{Error, ErrorKind},
@@ -1363,14 +1363,31 @@ pub fn parse_literal_or_variable_expression(input: &'_ str) -> IResult<&'_ str, 
     .parse(input)
 }
 
+/// Body of a quoted Cypher string literal: everything up to the first `quote` that is not
+/// escaped. A backslash escapes the next character, so `\'` (and `\"`, `\\`) never ends the
+/// literal. The body stays RAW (escapes undecoded) — the SQL emitter translates it
+/// (`cypher_string_to_sql_literal`).
+fn quoted_string_body(input: &str, quote: char) -> IResult<&str, &str> {
+    let (rest, _) = char(quote).parse(input)?;
+    let mut chars = rest.char_indices();
+    while let Some((i, c)) = chars.next() {
+        if c == '\\' {
+            chars.next(); // the escaped character, whatever it is
+        } else if c == quote {
+            return Ok((&rest[i + c.len_utf8()..], &rest[..i]));
+        }
+    }
+    Err(nom::Err::Error(Error::new(input, ErrorKind::TakeUntil)))
+}
+
 pub fn parse_string_literal(input: &'_ str) -> IResult<&'_ str, Literal<'_>> {
-    let (input, s) = delimited(char('\''), take_until("\'"), char('\'')).parse(input)?;
+    let (input, s) = quoted_string_body(input, '\'')?;
 
     Ok((input, Literal::String(s)))
 }
 
 pub fn parse_double_quoted_string_literal(input: &'_ str) -> IResult<&'_ str, Literal<'_>> {
-    let (input, s) = delimited(char('"'), take_until("\""), char('"')).parse(input)?;
+    let (input, s) = quoted_string_body(input, '"')?;
 
     Ok((input, Literal::String(s)))
 }
@@ -1378,6 +1395,38 @@ pub fn parse_double_quoted_string_literal(input: &'_ str) -> IResult<&'_ str, Li
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn string_literal_escaped_quote_does_not_end_the_literal_1173() {
+        // the body stays raw; the SQL emitter translates the escapes
+        for (input, body) in [
+            (r"'it\'s' AS r", r"it\'s"),
+            (r#""say \"hi\"" AS r"#, r#"say \"hi\""#),
+            (r"'a\\b' AS r", r"a\\b"),
+            (r"'tab\there' AS r", r"tab\there"),
+            // an escaped backslash right before the closing quote does not escape it
+            (r"'it\\' AS r", r"it\\"),
+        ] {
+            let lit = if input.starts_with('"') {
+                parse_double_quoted_string_literal(input)
+            } else {
+                parse_string_literal(input)
+            };
+            let (rest, lit) = lit.unwrap_or_else(|e| panic!("{input}: {e:?}"));
+            assert_eq!(rest, " AS r", "{input}");
+            assert!(
+                matches!(lit, Literal::String(b) if b == body),
+                "{input}: {lit:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unterminated_string_literal_still_fails_1173() {
+        assert!(parse_string_literal(r"'it\'").is_err());
+        assert!(parse_string_literal("'abc").is_err());
+        assert!(parse_double_quoted_string_literal(r#""abc\""#).is_err());
+    }
 
     #[test]
     fn test_parse_expression_pattern_comp_standalone() {

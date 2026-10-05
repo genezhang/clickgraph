@@ -179,7 +179,9 @@ fn cypher_literal_eq(lhs: &RenderExpr, rhs: &RenderExpr) -> Option<CypherTriBool
             })
         }
         (RenderExpr::Literal(Literal::String(a)), RenderExpr::Literal(Literal::String(b))) => {
-            Some(if a == b {
+            // bodies are raw (escapes undecoded): `'it\'s'` and `"it's"` are the same value
+            use crate::utils::sql_literal::cypher_string_value;
+            Some(if cypher_string_value(a) == cypher_string_value(b) {
                 CypherTriBool::True
             } else {
                 CypherTriBool::False
@@ -8264,7 +8266,7 @@ impl RenderExpr {
                         "false".into()
                     }
                 }
-                Literal::String(s) => format!("'{}'", s.replace('\'', "''")),
+                Literal::String(s) => crate::utils::sql_literal::cypher_string_to_sql_literal(s),
                 Literal::Null => "NULL".into(),
             },
             RenderExpr::Parameter(name) => format!("${}", name),
