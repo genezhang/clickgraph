@@ -5271,6 +5271,24 @@ async fn with_group_by_body_keeps_a_projection_when_nothing_downstream_reads_it_
 }
 
 // ---------------------------------------------------------------------------
+// #1271: `WITH collect(x) AS xs UNWIND xs AS y` plans as Unwind(WithClause(..)); the chained WITH
+// builder's loop predicate did not see through Unwind, so the plan was re-dispatched to the builder
+// forever (stack overflow: the SERVER ABORTED). If this regresses the test PROCESS aborts.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn with_collect_then_unwind_renders_instead_of_recursing_forever_1271() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User) WITH collect(a.user_id) AS xs UNWIND xs AS x RETURN x",
+    )
+    .await;
+    assert!(sql.contains("groupArray(a.user_id)"), "{sql}");
+    assert!(sql.contains("ARRAY JOIN"), "{sql}");
+}
+
+// ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
 // The emitter's path-variable "spurious JOIN" cleanup kept only joins whose alias was read, so

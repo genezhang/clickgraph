@@ -4617,6 +4617,11 @@ pub(super) fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
         LogicalPlan::Limit(limit) => has_with_clause_in_graph_rel(&limit.input),
         LogicalPlan::OrderBy(order_by) => has_with_clause_in_graph_rel(&order_by.input),
         LogicalPlan::Skip(skip) => has_with_clause_in_graph_rel(&skip.input),
+        // #1271: `WITH collect(x) AS xs UNWIND xs AS y` plans as Unwind(WithClause(..)). This copy
+        // returned false for it while the dispatcher's `plan_predicates` copy returned true, so the
+        // chained builder's `while` never ran and the final render re-entered the builder with the
+        // same plan — an unbounded recursion that overflowed the stack and ABORTED the server.
+        LogicalPlan::Unwind(unwind) => has_with_clause_in_graph_rel(&unwind.input),
         // Check Union at top level - WITH clauses might be inside Union branches
         LogicalPlan::Union(union) => union
             .inputs
