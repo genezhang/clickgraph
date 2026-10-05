@@ -5628,7 +5628,26 @@ fn build_branch_inner_select_with_own_items(
         if !render_expr_contains_aggregate(&outer_item.expression) {
             if let Some(ref alias) = outer_item.col_alias {
                 if !branch_aliases.contains(&alias.0) {
-                    merged_select.items.push(outer_item.clone());
+                    // #1242: an outer item that merely REFERENCES one of this arm's own columns
+                    // (`a.code AS c` over the arm's `a.Origin AS "a.code"` — the planner rewrote
+                    // the property to a ColumnAlias) is exported under its outer alias from THAT
+                    // column. Pushing the outer item verbatim re-evaluated the unmapped Cypher
+                    // name `a.code` inside the arm (Code 47).
+                    let referenced = match &outer_item.expression {
+                        RenderExpr::ColumnAlias(ca) => merged_select
+                            .items
+                            .iter()
+                            .find(|i| i.col_alias.as_ref().is_some_and(|b| b.0 == ca.0))
+                            .map(|i| i.expression.clone()),
+                        _ => None,
+                    };
+                    match referenced {
+                        Some(expression) => merged_select.items.push(SelectItem {
+                            expression,
+                            col_alias: outer_item.col_alias.clone(),
+                        }),
+                        None => merged_select.items.push(outer_item.clone()),
+                    }
                 }
             }
         }

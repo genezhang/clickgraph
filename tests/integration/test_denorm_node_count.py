@@ -33,3 +33,26 @@ def test_count_star_with_a_filter():
         listed = ", ".join(f"'{c}'" for c in subset)
         got = int(_rows(f"MATCH (a:Airport) WHERE a.code IN [{listed}] RETURN count(*) AS n")[0]["n"])
         assert got == len(subset), subset
+
+
+def test_grouping_by_a_non_unique_property_counts_nodes_not_distinct_values():
+    airports = _airports()
+    by_state = {}
+    for a in airports.values():
+        by_state[a["s"]] = by_state.get(a["s"], 0) + 1
+    assert max(by_state.values()) > 1, "need a state with several airports"
+    for query in [
+        "MATCH (a:Airport) RETURN a.state AS s, count(*) AS n",
+        "MATCH (a:Airport) RETURN a.state AS s, count(a) AS n",
+    ]:
+        got = {r["s"]: int(r["n"]) for r in _rows(query)}
+        assert got == by_state, query
+    unaliased = {r["a.state"]: int(r["n"]) for r in _rows(
+        "MATCH (a:Airport) RETURN a.state, count(*) AS n")}
+    assert unaliased == by_state
+
+
+def test_grouping_by_the_id_itself_with_an_alias():
+    airports = _airports()
+    rows = _rows("MATCH (a:Airport) RETURN a.code AS c, count(*) AS n")
+    assert {r["c"] for r in rows} == set(airports) and all(int(r["n"]) == 1 for r in rows)

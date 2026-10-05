@@ -4820,6 +4820,23 @@ async fn bare_count_star_over_denormalized_nodes_carries_the_id_1240() {
     }
 }
 
+#[tokio::test]
+async fn virtual_node_aggregation_arms_carry_the_id_and_alias_from_the_arm_1242() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Airport) RETURN a.state AS s, count(*) AS n",
+    )
+    .await;
+    // each arm carries the node identity (so UNION DISTINCT dedups per node)...
+    assert!(
+        sql.contains("a.Origin AS \"a.code\"") && sql.contains("a.Dest AS \"a.code\""),
+        "{sql}"
+    );
+    // ...and exports the aliased grouping key from its OWN column, never the unmapped `a.state`
+    assert!(!sql.contains("a.state AS"), "{sql}");
+}
+
 // ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
