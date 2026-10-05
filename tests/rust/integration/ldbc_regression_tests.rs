@@ -4584,6 +4584,65 @@ async fn vlp_over_a_filtered_embedded_endpoint_fails_loud_1119() {
 }
 
 // ---------------------------------------------------------------------------
+// #1218: `WHERE length(p) <op> k` on a variable-length path was silently dropped
+//
+// The CTE categorizer filed the conjunct as a "path function filter" the generator never reads,
+// and the outer query skips the VLP's own predicate (it is "in the CTE"). It now lands in the
+// outer WHERE over the CTE's `hop_count`; shapes that cannot be answered from `hop_count` alone
+// are refused.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn where_on_path_length_reaches_the_outer_query_1218() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    for (cypher, pred) in [
+        (
+            "MATCH p=(a:User)-[:FOLLOWS*1..2]->(b:User) WHERE length(p) > 1 RETURN count(*)",
+            "t.hop_count > 1",
+        ),
+        (
+            "MATCH p=(a:User)-[:FOLLOWS*1..3]->(b:User) WHERE length(p) >= 2 AND length(p) <> 3 \
+             RETURN count(*)",
+            "t.hop_count >= 2",
+        ),
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        let outer = sql.rsplit_once("\nSELECT").map(|(_, o)| o).unwrap_or(&sql);
+        assert!(outer.contains(pred), "{cypher}\n{sql}");
+    }
+}
+
+#[tokio::test]
+async fn where_on_path_length_is_refused_when_hop_count_is_not_the_whole_path_1218() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    for cypher in [
+        // a fixed hop belongs to the same path (#1202)
+        "MATCH p=(c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WHERE length(p) > 2 \
+         RETURN count(*)",
+        "MATCH p=(a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS]->(c:User) WHERE length(p) > 2 \
+         RETURN count(*)",
+    ] {
+        let err = try_generate_sql_inline(&schema, cypher)
+            .await
+            .expect_err(cypher);
+        assert!(err.contains("path function"), "{cypher}: {err}");
+    }
+}
+
+/// A denormalized undirected path renders as two mirrored arms of ONE relationship; they are not
+/// "other segments" of the path.
+#[tokio::test]
+async fn where_on_undirected_path_length_is_not_mistaken_for_a_second_segment_1218() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH p=(a:Airport)-[:FLIGHT*1..3]-(b:Airport) WHERE length(p) >= 2 RETURN count(*)",
+    )
+    .await;
+    assert!(sql.contains("hop_count >= 2"), "{sql}");
+}
+
+// ---------------------------------------------------------------------------
 // #1173: backslash escapes inside string literals
 //
 // `'it\'s'` ended the literal at the escaped quote and failed to parse. The literal body stays

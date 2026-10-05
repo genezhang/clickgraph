@@ -1450,3 +1450,7 @@
 {"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WITH c, b MATCH (b)-[:FOLLOWS]->(z:User) RETURN count(*)", "name": "test_1214__with_two_carried_after_path_poly", "schema": "social_polymorphic"}
 {"cypher": "RETURN 'it\\'s' AS r", "name": "test_1173__escaped_single_quote_literal_std", "schema": "standard"}
 {"cypher": "MATCH (u:User) WHERE u.name STARTS WITH 'O\\'' OR u.name IN ['a\\'b', \"say \\\"hi\\\"\"] RETURN u.name", "name": "test_1173__escaped_quotes_in_predicates_std", "schema": "standard"}
+{"cypher": "MATCH p=(a:User)-[:FOLLOWS*1..3]->(b:User) WHERE length(p) >= 2 RETURN count(*)", "name": "test_1218__where_length_path_std", "schema": "standard"}
+{"cypher": "MATCH p=(a:User)-[:FOLLOWS*1..3]->(b:User) WHERE length(p) >= 2 RETURN count(*)", "name": "test_1218__where_length_path_poly", "schema": "social_polymorphic"}
+{"cypher": "MATCH p=(a:Airport)-[:FLIGHT*1..3]->(b:Airport) WHERE length(p) = 2 RETURN count(*)", "name": "test_1218__where_length_path_denorm", "schema": "denormalized_flights"}
+{"cypher": "MATCH p=(a:Person)-[:REPORTS_TO*1..3]->(b:Person) WHERE length(p) > 1 RETURN count(*)", "name": "test_1218__where_length_path_mixed", "schema": "foreign_selfloop"}

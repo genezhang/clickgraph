@@ -4,6 +4,46 @@ use super::render_expr::{Operator, OperatorApplication, RenderExpr};
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 
+/// Split an AND-connected predicate into its conjuncts.
+fn split_and_conjuncts(expr: &RenderExpr) -> Vec<RenderExpr> {
+    match expr {
+        RenderExpr::OperatorApplicationExp(op) if matches!(op.operator, Operator::And) => {
+            op.operands.iter().flat_map(split_and_conjuncts).collect()
+        }
+        _ => vec![expr.clone()],
+    }
+}
+
+/// Does `expr` call `length` / `nodes` / `relationships` on the path variable `path_var`
+/// anywhere inside it?
+fn calls_path_function_on(expr: &RenderExpr, path_var: &str) -> bool {
+    match expr {
+        RenderExpr::ScalarFnCall(f) => {
+            let on_path = matches!(
+                f.name.to_lowercase().as_str(),
+                "length" | "nodes" | "relationships"
+            ) && matches!(f.args.as_slice(), [RenderExpr::TableAlias(a)] if a.0 == path_var);
+            on_path || f.args.iter().any(|a| calls_path_function_on(a, path_var))
+        }
+        RenderExpr::OperatorApplicationExp(op) => op
+            .operands
+            .iter()
+            .any(|o| calls_path_function_on(o, path_var)),
+        _ => false,
+    }
+}
+
+/// #1218: the conjuncts of `predicate` that are about the PATH itself (`length(p) > 1`,
+/// `size(nodes(p)) = 3`). They are not endpoint/edge filters and have no home inside the
+/// recursive CTE (its `hop_count` is only meaningful after the recursion), so the CTE categorizer
+/// ignores them; the outer WHERE must carry them.
+pub(super) fn path_function_conjuncts(predicate: &RenderExpr, path_var: &str) -> Vec<RenderExpr> {
+    split_and_conjuncts(predicate)
+        .into_iter()
+        .filter(|c| calls_path_function_on(c, path_var))
+        .collect()
+}
+
 /// Represents categorized filters for different parts of a query
 ///
 /// This struct supports two modes:
