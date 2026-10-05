@@ -97,3 +97,15 @@ def test_hops_before_with_do_not_reuse_a_relationship(schemas, which, dirs):  # 
         pattern += (f"-[:FOLLOWS]->({last}:User)" if d == ">" else f"<-[:FOLLOWS]-({last}:User)")
     query = f"MATCH {pattern} WITH c RETURN c.user_id AS col0"
     assert _got(schemas[which], query, 1) == _expected_inner(dirs)
+
+
+# #1195: a hop nested on the right of the first one (`(c)->(n1)<-(n2)`) lost the first hop's
+# tie to the WITH CTE (`ON t2.followed_id = t2.followed_id`, a cross join).  Standard schema
+# only: on the denormalized one these mixes are still wrong (a separate, older defect).
+RIGHT_NESTED = ["><", "><>", "><<", "><><", "><>>"]
+
+
+@pytest.mark.parametrize("dirs", RIGHT_NESTED)
+def test_incoming_hop_after_the_first_hop_is_tied_to_the_with_cte(schemas, dirs):  # noqa: F811
+    query, width = _query(dirs)
+    assert _got(schemas["std"], query, width) == _expected(dirs)

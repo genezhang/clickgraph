@@ -3953,6 +3953,11 @@ pub(crate) fn clear_stale_joins_for_cte_aliases(
                         &gj.input,
                         &|alias| cte_aliases.contains(alias),
                         &|gr| !super::from_builder::is_fixed_length_vlp(gr),
+                    )
+                    // #1195: ... or a chain of fixed hops with a hop nested on the right.
+                    || crate::query_planner::logical_plan::is_supported_right_nested_hop_chain(
+                        &gj.input,
+                        &|alias| cte_aliases.contains(alias),
                     );
 
                 let cleaned_joins: Vec<Join> = gj

@@ -5226,3 +5226,47 @@ async fn pre_with_hop_chain_guard_stays_inside_the_cte_1187() {
         "#1187: the single post-WITH hop has nothing to be unique against:\n{sql}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #1195: after a WITH, a hop nested on the right of the first one
+// (`WITH c MATCH (c)-[:R]->(n1)<-[:R]-(n2)`) kept the first hop's edge join without its tie to
+// the WITH CTE (a cross join: `ON t2.followed_id = t2.followed_id`) — and, on a polymorphic
+// edge table, without its type/label filter.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn first_hop_before_a_right_nested_hop_stays_tied_to_the_with_cte_1195() {
+    for (path, query, tie, type_filter) in [
+        (
+            "benchmarks/social_network/schemas/social_benchmark.yaml",
+            "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c \
+             MATCH (c)-[:FOLLOWS]->(n1:User)<-[:FOLLOWS]-(n2:User) RETURN c.user_id, n2.user_id",
+            "follower_id = c.p1_c_user_id",
+            None,
+        ),
+        (
+            "schemas/dev/social_polymorphic.yaml",
+            "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c \
+             MATCH (c)-[:FOLLOWS]->(n1:User)<-[:FOLLOWS]-(n2:User) RETURN c.user_id, n2.user_id",
+            "from_id = c.p1_c_user_id",
+            Some("interaction_type = 'FOLLOWS'"),
+        ),
+    ] {
+        let schema = load_schema_from(path);
+        let sql = generate_sql_inline(&schema, query).await;
+        let outer = sql
+            .rsplit_once("\nFROM with_c_cte_")
+            .expect("outer FROM is the CTE")
+            .1;
+        let first_hop = outer
+            .lines()
+            .find(|l| l.contains(tie))
+            .unwrap_or_else(|| panic!("#1195 ({path}): no edge join tied to the CTE:\n{sql}"));
+        if let Some(filter) = type_filter {
+            assert!(
+                first_hop.contains(filter),
+                "#1195 ({path}): lost its type filter:\n{sql}"
+            );
+        }
+    }
+}
