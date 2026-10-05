@@ -226,6 +226,30 @@ fn endpoint_node_schema<'a>(
         .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(role_type.to_string()))
 }
 
+/// Which orientations of an UNDIRECTED single-hop pattern the endpoint labels allow.
+///
+/// `(u:User)-[:AUTHORED]-()` over `AUTHORED: User -> Post` can only have `u` on the source side;
+/// the `to_id = u.id` leg of the usual `from = u OR to = u` correlation compares a POST id with a
+/// user id, so it matches whatever post happens to share the number (users 11-20 "authored" a post
+/// each). Returns `Some(direction)` when exactly one of the two orientations is label-feasible, so
+/// the caller can render it as that DIRECTED pattern; `None` keeps the undirected form (both feasible,
+/// or an endpoint label is unknown).
+fn undirected_feasible_direction(
+    rel_schema: &crate::graph_catalog::graph_schema::RelationshipSchema,
+    left_label: Option<&str>,
+    right_label: Option<&str>,
+) -> Option<Direction> {
+    let forward = left_label.is_none_or(|l| rel_schema.node_label_fits(true, l))
+        && right_label.is_none_or(|l| rel_schema.node_label_fits(false, l));
+    let reverse = right_label.is_none_or(|l| rel_schema.node_label_fits(true, l))
+        && left_label.is_none_or(|l| rel_schema.node_label_fits(false, l));
+    match (forward, reverse) {
+        (true, false) => Some(Direction::Outgoing),
+        (false, true) => Some(Direction::Incoming),
+        _ => None,
+    }
+}
+
 /// The label an alias was bound with: the task-local alias map / variable registry first, then
 /// the outermost plan (a fresh MATCH has neither populated while its WHERE renders).
 fn bound_node_label(alias: &str) -> Option<String> {
@@ -361,6 +385,18 @@ fn generate_exists_graph_rel_sql(
     use crate::server::query_context::{is_correlation_cte_alias, is_exists_outer_alias};
 
     let qualified_table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+    if graph_rel.direction == Direction::Either {
+        let left_label = endpoint_label(graph_rel.left.as_ref(), &graph_rel.left_connection);
+        let right_label = endpoint_label(graph_rel.right.as_ref(), &graph_rel.right_connection);
+        if let Some(direction) =
+            undirected_feasible_direction(rel_schema, left_label.as_deref(), right_label.as_deref())
+        {
+            let mut directed = graph_rel.clone();
+            directed.direction = direction;
+            return generate_exists_graph_rel_sql(&directed, rel_schema, schema);
+        }
+    }
+
     let table_name = &rel_schema.table_name;
     let from_col = &rel_schema.from_id;
     let to_col = &rel_schema.to_id;
@@ -1307,6 +1343,24 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
             // Look up the relationship table and columns
             if let Some(schema) = schema {
                 if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_type) {
+                    // Undirected over a relationship whose endpoint labels allow one orientation
+                    // only: count that directed pattern (see `undirected_feasible_direction`).
+                    let direction = if is_undirected {
+                        undirected_feasible_direction(
+                            rel_schema,
+                            conn.start_node
+                                .label
+                                .clone()
+                                .or_else(|| bound_node_label(start_alias))
+                                .as_deref(),
+                            conn.end_node.label.as_deref(),
+                        )
+                        .unwrap_or(Direction::Either)
+                    } else {
+                        conn.relationship.direction.clone()
+                    };
+                    let is_undirected = matches!(direction, Direction::Either);
+
                     let table_name = &rel_schema.table_name;
                     let full_table = if !rel_schema.database.is_empty() {
                         format!("{}.{}", rel_schema.database, table_name)
@@ -1326,7 +1380,7 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                     // correlation predicate matter, so a single-column facing side
                     // (e.g. `(c:Customer)-[:OWNS]->()` on a single `from_id`) keeps
                     // working even when the OPPOSITE side is composite.
-                    let correlation_is_composite = match conn.relationship.direction {
+                    let correlation_is_composite = match direction {
                         Direction::Outgoing => from_col.columns().len() != 1,
                         Direction::Incoming => to_col.columns().len() != 1,
                         // Undirected references BOTH facing columns in the OR.
@@ -1396,7 +1450,7 @@ fn generate_pattern_count_sql(pattern: &PathPattern) -> Result<String, RenderBui
                     //     => COUNT all Person nodes connected to tag, regardless of which persons
                     //   size((tag)<-[:HAS_TAG]-(message:Message))
                     //     => COUNT all Message nodes connected to tag, not correlating on specific message
-                    let count_sql = match (is_undirected, &conn.relationship.direction) {
+                    let count_sql = match (is_undirected, &direction) {
                         (false, Direction::Outgoing) => {
                             // Directed outgoing: start_node -> end_node
                             format!(
@@ -1532,6 +1586,28 @@ fn generate_not_exists_from_path_pattern(
             // Look up the relationship table and columns
             if let Some(schema) = schema {
                 if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_type) {
+                    // Undirected over a relationship whose endpoint labels allow one orientation
+                    // only: negate that directed pattern (see `undirected_feasible_direction`).
+                    let direction = if is_undirected {
+                        undirected_feasible_direction(
+                            rel_schema,
+                            conn.start_node
+                                .label
+                                .clone()
+                                .or_else(|| bound_node_label(start_alias))
+                                .as_deref(),
+                            conn.end_node
+                                .label
+                                .clone()
+                                .or_else(|| end_alias.and_then(|a| bound_node_label(a)))
+                                .as_deref(),
+                        )
+                        .unwrap_or(Direction::Either)
+                    } else {
+                        conn.relationship.direction.clone()
+                    };
+                    let is_undirected = matches!(direction, Direction::Either);
+
                     let db_name = &rel_schema.database;
                     let table_name = &rel_schema.table_name;
                     let full_table = format!("{}.{}", db_name, table_name);
@@ -1550,10 +1626,8 @@ fn generate_not_exists_from_path_pattern(
                     // or undirected) references BOTH. Guard exactly the used column(s) so
                     // a single-column facing side still renders when the other is
                     // composite (direction-aware, like #921).
-                    let from_used = !(end_alias.is_none()
-                        && conn.relationship.direction == Direction::Incoming);
-                    let to_used = !(end_alias.is_none()
-                        && conn.relationship.direction == Direction::Outgoing);
+                    let from_used = !(end_alias.is_none() && direction == Direction::Incoming);
+                    let to_used = !(end_alias.is_none() && direction == Direction::Outgoing);
                     if (from_used && from_col.columns().len() != 1)
                         || (to_used && to_col.columns().len() != 1)
                     {
@@ -1617,7 +1691,7 @@ fn generate_not_exists_from_path_pattern(
                         // Anonymous end node: just check if any relationship exists from start node
                         (None, false) => {
                             // Directed with anonymous end: check FROM or TO based on direction
-                            match conn.relationship.direction {
+                            match direction {
                                 Direction::Outgoing => format!(
                                     "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}{})",
                                     full_table, table_name, from_col, start_id_sql, start_is_src
@@ -1675,16 +1749,15 @@ fn generate_not_exists_from_path_pattern(
                         }
                         (Some(_end), false) => {
                             // Named end node, directed: check single direction
-                            let (from_match_sql, to_match_sql, labels) =
-                                match conn.relationship.direction {
-                                    Direction::Outgoing => {
-                                        (start_id_sql.clone(), end_id_sql.clone(), &start_is_src)
-                                    }
-                                    Direction::Incoming => {
-                                        (end_id_sql.clone(), start_id_sql.clone(), &start_is_tgt)
-                                    }
-                                    _ => (start_id_sql.clone(), end_id_sql.clone(), &start_is_src),
-                                };
+                            let (from_match_sql, to_match_sql, labels) = match direction {
+                                Direction::Outgoing => {
+                                    (start_id_sql.clone(), end_id_sql.clone(), &start_is_src)
+                                }
+                                Direction::Incoming => {
+                                    (end_id_sql.clone(), start_id_sql.clone(), &start_is_tgt)
+                                }
+                                _ => (start_id_sql.clone(), end_id_sql.clone(), &start_is_src),
+                            };
                             format!(
                                 "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} AND {}.{} = {}{})",
                                 full_table,
