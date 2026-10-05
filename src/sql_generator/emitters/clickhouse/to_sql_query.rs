@@ -6987,7 +6987,35 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                         (None, None)
                     };
 
-                    for (i, union_branch) in union.input.iter().enumerate() {
+                    // An arm can carry its own inner UNION ALL (the forward/reverse split of an
+                    // undirected hop inside one arm of a per-label expansion). Only the arm's own
+                    // FROM/JOIN/WHERE is emitted below, so its inner arms are lifted into this
+                    // list or the reverse direction silently vanishes (#1250). ALL-in-ALL is a pure
+                    // concatenation; an inner DISTINCT keeps the old behavior.
+                    fn lift_inner_all<'a>(
+                        arm: &'a RenderPlan,
+                        outer_is_all: bool,
+                        out: &mut Vec<&'a RenderPlan>,
+                    ) {
+                        out.push(arm);
+                        if let Some(inner) = &arm.union.0 {
+                            if outer_is_all && matches!(inner.union_type, UnionType::All) {
+                                for b in &inner.input {
+                                    lift_inner_all(b, outer_is_all, out);
+                                }
+                            }
+                        }
+                    }
+                    let mut lifted_branches: Vec<&RenderPlan> = Vec::new();
+                    for arm in &union.input {
+                        lift_inner_all(
+                            arm,
+                            matches!(union.union_type, UnionType::All),
+                            &mut lifted_branches,
+                        );
+                    }
+
+                    for (i, union_branch) in lifted_branches.iter().copied().enumerate() {
                         if i > 0 {
                             sql.push_str(union_type_str);
                         }
