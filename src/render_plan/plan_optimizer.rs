@@ -566,8 +566,11 @@ fn prune_cte_columns(plan: &mut RenderPlan) {
             // emitter falls into its "union branches only" form and the plan's own arm — the first
             // direction — silently vanishes (`WITH a.user_id AS x RETURN count(*)` over an
             // undirected hop answered one direction: 20 where 40). One column keeps every arm
-            // projected consistently and the row multiplicity intact.
-            if inner_plan.select.items.is_empty() && inner_plan.union.0.is_some() {
+            // projected consistently and the row multiplicity intact. Same for a GROUP BY body:
+            // `SELECT * ... GROUP BY k` is invalid (Code 215), so one column is kept (#1269).
+            if inner_plan.select.items.is_empty()
+                && (inner_plan.union.0.is_some() || !inner_plan.group_by.0.is_empty())
+            {
                 inner_plan.select.items.extend(first_item);
             }
             let pruned = original_count - inner_plan.select.items.len();

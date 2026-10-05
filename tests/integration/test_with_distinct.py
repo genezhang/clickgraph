@@ -45,3 +45,18 @@ def test_with_distinct_over_an_undirected_hop_is_distinct_across_both_directions
         raise_on_error=False)["results"]
     values = [r["a"] for r in result]
     assert len(values) == len(set(values)), values
+
+
+# --- `WITH <key>, count(*) AS n` followed by a clause that reads neither column ----------------------
+
+@pytest.mark.parametrize("schema, pattern, key", [
+    ("social_integration", "(a:User)-[:FOLLOWS]->(b:User)", "a.user_id"),
+    ("social_integration", "(a:User)-[:FOLLOWS]-(b:User)", "a.user_id"),
+    ("social_polymorphic", "(a:User)-[:FOLLOWS]-(b:User)", "a.user_id"),
+    ("fk_edge", "(o:Order)-[:PLACED_BY]->(c:Customer)", "o.order_id"),
+    ("fk_edge", "(o:Order)-[:PLACED_BY]->(c:Customer)", "c.customer_id"),
+])
+def test_number_of_groups_after_a_with_aggregate(schema, pattern, key):
+    want = _scalar(schema, f"MATCH {pattern} RETURN count(DISTINCT {key}) AS n")
+    got = _scalar(schema, f"MATCH {pattern} WITH {key} AS x, count(*) AS c RETURN count(*) AS n")
+    assert got == want
