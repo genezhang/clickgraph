@@ -7988,9 +7988,12 @@ impl ToSql for Cte {
                             cte_body.push_str(&plan.filters.to_sql());
 
                             if let Some(union) = &plan.union.0 {
-                                let union_type_str = match union.union_type {
-                                    UnionType::Distinct => "UNION DISTINCT \n",
-                                    UnionType::All => "UNION ALL \n",
+                                // #1267: `WITH DISTINCT x ...` over a union body must
+                                // de-duplicate ACROSS the arms, not just inside each.
+                                let union_type_str = match (&union.union_type, plan.select.distinct)
+                                {
+                                    (UnionType::Distinct, _) | (_, true) => "UNION DISTINCT \n",
+                                    (UnionType::All, false) => "UNION ALL \n",
                                 };
                                 for branch in &union.input {
                                     cte_body.push_str(union_type_str);
