@@ -1,6 +1,7 @@
 # WITH export contract: one answer to "which columns does this WITH CTE expose?"
 
-Status: **plan**, with slice S0 (this doc) and S1 (the ratchet) planned next.
+Status: **in progress**. S0 (#1284), S1 (#1285) and S2 (#1288) merged; see the §5
+checklist and the §3.1 audit.
 Grounded in `main` at `764fcd7f` (2026-10-05). Line numbers drift, so
 re-verify each one before editing.
 
@@ -150,11 +151,45 @@ pub struct CteExport {
 |---|---|---|
 | **S0** | This doc + `PRIORITIES.md` P-4b. | none (docs) |
 | **S1** | **Ratchet.** Test-only `with_cte_column_refs` check over every corpus ClickHouse golden (scope-aware: `with_* AS a` binding → `a.<col>` refs in the same scope must be exported). The violation set must equal an allowlist of the 5 in §1.1, each tagged with its issue. A new violation fails the test; fixing one forces removal from the allowlist. No production change. | none |
-| **S2** | **Contract data.** Add `kind`/`identity` and populate them in `publish_alias`. Mirror to `CteSchemaMetadata` and the task-local registry. Transition-assert (debug builds, env-gated so a live debug server is not killed): every legacy answer (R6 `alias_to_id`, R7, R8, R9) vs the contract over the whole corpus, with the disagreements listed in this doc. | none |
-| **S3** | **Readers R7/R8 → contract** (`find_id_column_in_cte` deleted, VLP-join branch block). Targets #1189: 4 of the 5 allowlist entries. | denorm goldens for #1189 (intended) |
+| **S2** ✅ #1288 | **Contract data + first readers.** `render_plan/cte_export.rs` (`CteExport::derive`), stored in `CteSchemaMetadata.exports`. Readers: the VLP↔WITH-CTE tie now completes the tie for a path between two carried nodes (silent 95 vs 20 fixed), and the verified-chain denorm correction reads the contract (`denorm_id_column_in_cte` deleted). One-off audit instead of a permanent transition-assert: see §3.1. | `test_1189_two_carried_*` |
+| **S3** | **#1189 at the producer** (`compute_alias_id_columns` → contract). **Blocked**: §3.1 shows it turns 4 denormalized shapes from loud to silently wrong. Do it together with #1287 and the denormalized hop tie to a second carried node, or with a deliberate refusal outside #1182's verified chains. | denorm goldens for #1189 (intended) |
 | **S4** | **Readers R2/R3/R4 → contract**: `join_builder` emits the CTE identity column directly for a CTE-backed endpoint, composite-aware. Targets composite `c.id` and the FK-edge refusals in §1.2, and removes the join-condition dependency on R5's later rewrite. | composite / FK-edge goldens (intended) |
 | **S5** | **Producer cleanup**: `alias_to_id` derived from the contract (R6 deleted); R1 deleted or documented as plan-time-only (audit `cte_column_resolver.rs` callers first). | byte-identical |
 | **S6** | **Extension**: non-identity join columns (FK side), #1279 residue. | FK-edge goldens (intended) |
+
+### 3.1 S2 audit (2026-10-05, temporary instrumentation, not committed)
+
+The contract was compared with the legacy producer R6 (`alias_to_id`) for every
+WITH CTE the corpus renders: **129 agree, 13 disagree, 176 both none**. All 13
+disagreements are denormalized: R6 spells a carried path endpoint `p1_c_start_id`
+/ `p1_c_end_id`. In 6 of them that column is not emitted (#1189). In the other 7
+both columns exist and hold the same value. R7 (`find_id_column_in_cte`) is
+**never reached** by the corpus.
+
+A permanent transition-assert was dropped from the plan: the legacy answers are
+*expected* to disagree exactly at the known bugs, so an assert would fail the
+corpus.
+
+**Producer correction is not safe alone.** Replacing R6's unemitted answers with
+the contract fixed 9 denormalized carried-node shapes, but turned 4 from loud to
+silently wrong:
+
+| Shape | Result | Cause |
+|---|---|---|
+| `WITH c, z MATCH (z)-[:FLIGHT]->(c)-[:FLIGHT*1..2]->(b)` | 26 vs 18 | the hop's tie to the carried `z` is not rendered |
+| `WITH c, z MATCH (a)-[:FLIGHT]->(b)-[:FLIGHT*1..2]->(c)` | 60 vs 22 | #1287 |
+
+The #1182 `verified_chain` fence lives at the consumer, so the contract stays
+behind it.
+
+Carried-node sweep (scratchpad `carry_sweep.py`; 4 layouts × 14 shapes × 3 WITH
+forms; `main` vs PR vs a brute-force trail oracle). After S2: 12 WRONG→OK and 0
+regressions. Remaining failures, all filed:
+
+- composite: 0 rows (#1286)
+- extra untied edge join (#1287)
+- hop/path uniqueness after WITH (#1203)
+- denormalized two-WITH CROSS JOIN (#1283)
 
 Each reader-switch slice must (1) shrink the S1 allowlist or stay
 byte-identical, (2) run a live generator sweep over the 5 layouts × {carry
@@ -177,10 +212,10 @@ switched reader.
 
 ## 5. Checklist
 
-- [ ] S0 doc + P-4b
-- [ ] S1 ratchet (allowlist = 5)
-- [ ] S2 contract + transition-assert, disagreements recorded here
-- [ ] S3 R7/R8 (#1189)
+- [x] S0 doc + P-4b (#1284)
+- [x] S1 ratchet (#1285; allowlist 5 → 6 in #1288: the second guessed tie of the still-loud `test_1189_den`)
+- [x] S2 contract + first readers (#1288); audit in §3.1
+- [ ] S3 #1189 at the producer (blocked on #1287 and the denormalized hop tie, §3.1)
 - [ ] S4 R2/R3/R4 (composite `c.id`, FK-edge refusals)
 - [ ] S5 R6/R1 cleanup
 - [ ] S6 FK-side join columns (#1279 residue)
