@@ -19,7 +19,7 @@ GROUP BY `folder_name`
 HAVING (item_count >= 1 AND item_count <= 10)
 )
 SELECT 
-      folder_name_item_count.folder_name AS "folder_name.name", 
+      folder_name_item_count.folder_name AS "folder_name", 
       folder_name_item_count.item_count AS "item_count"
 FROM with_folder_name_item_count_cte_0 AS folder_name_item_count
 ORDER BY folder_name_item_count.item_count DESC NULLS FIRST

@@ -435,8 +435,19 @@ fn process_with_clause_chain<'a>(
     // This handles variable renaming: WITH u AS person maps "person" -> "u"
     let mut alias_source_map: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
+    // #1225: outputs that are a PROPERTY of a variable (`WITH a.age AS ag`) are scalars. They
+    // used to be registered as a rename of `a` — the node's labels were copied onto `ag`, so it
+    // was typed as a Node and `RETURN ag AS x` came back as `ag` (alias dropped), `ag.id`, ...
+    let mut property_outputs: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let LogicalPlan::WithClause(ref with_node) = *logical_plan {
         for item in &with_node.items {
+            if let (
+                Some(col_alias),
+                crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(_),
+            ) = (&item.col_alias, &item.expression)
+            {
+                property_outputs.insert(col_alias.0.clone());
+            }
             // Get the output alias
             if let Some(col_alias) = &item.col_alias {
                 let output_alias = &col_alias.0;
@@ -459,7 +470,10 @@ fn process_with_clause_chain<'a>(
     // These aliases reference the WITH output (will be CTE columns)
     for alias in &exported_aliases {
         // Check if this alias is a renaming of another alias
-        if let Some(source_alias) = alias_source_map.get(alias) {
+        if let Some(source_alias) = alias_source_map
+            .get(alias)
+            .filter(|_| !property_outputs.contains(alias))
+        {
             // This is a renaming like WITH u AS person
             // Try to copy type info from source alias
             if let Ok(source_table_ctx) = plan_ctx.get_table_ctx(source_alias) {
@@ -497,7 +511,12 @@ fn process_with_clause_chain<'a>(
         }
 
         // Check if we can get table context from parent scope by name
-        if let Ok(parent_table_ctx) = plan_ctx.get_table_ctx(alias) {
+        // (never for a property output: `WITH a.age AS a` must not inherit the node `a`)
+        if let Some(parent_table_ctx) = plan_ctx
+            .get_table_ctx(alias)
+            .ok()
+            .filter(|_| !property_outputs.contains(alias))
+        {
             // Clone the table context into child scope
             // This preserves labels, properties, etc. from parent scope
             log::debug!(
