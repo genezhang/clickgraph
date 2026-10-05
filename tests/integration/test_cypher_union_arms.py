@@ -106,3 +106,31 @@ def test_denormalized_union_arms_reusing_node_names_keep_their_own_edge_alias(le
     """The denormalized node->edge alias registry is keyed by node NAME; the last arm's edge alias
     used to win for every arm (`SELECT t2.origin_code FROM flights AS t1`, Code 47) (#1277)."""
     assert _denorm_bag(f"{left} UNION ALL {right}") == _denorm_bag(left) + _denorm_bag(right)
+
+
+WITH_HOP = "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a RETURN a.user_id AS v"
+WITH_AGG = "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, count(*) AS n RETURN a.user_id AS v"
+UNDIRECTED_WITH_AGG = "MATCH (a:User)-[:FOLLOWS]-(b:User) WITH a, count(*) AS n RETURN a.user_id AS v"
+
+
+@pytest.mark.parametrize(
+    "left,right",
+    [
+        (UNDIRECTED, WITH_HOP),
+        (WITH_HOP, UNDIRECTED),
+        (UNDIRECTED, WITH_AGG),
+        (UNDIRECTED_WITH_AGG, HOP),
+        (UNDIRECTED_WITH_AGG, WITH_HOP),
+    ],
+)
+def test_union_with_a_with_arm_keeps_every_direction_of_an_undirected_arm(left, right):
+    """A WITH-carrying arm routes the union through `build_cypher_union_render`, which used to install
+    the Cypher union over the first arm's own direction union (#1281)."""
+    assert _bag(f"{left} UNION ALL {right}") == _bag(left) + _bag(right)
+    assert _bag(f"{left} UNION {right}") == collections.Counter(set(_bag(left)) | set(_bag(right)))
+
+
+def test_denormalized_node_scan_first_arm_with_a_with_arm():
+    node = "MATCH (x:Airport) RETURN x.code AS v"
+    with_hop = "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) WITH a RETURN a.code AS v"
+    assert _denorm_bag(f"{node} UNION ALL {with_hop}") == _denorm_bag(node) + _denorm_bag(with_hop)
