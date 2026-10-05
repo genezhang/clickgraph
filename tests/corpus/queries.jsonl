@@ -1408,3 +1408,10 @@
 {"cypher": "MATCH (z:Airport)-[:FLIGHT]->(c:Airport) WITH c MATCH (c)-[:FLIGHT]->(a:Airport) WITH c, a MATCH (a)-[:FLIGHT*1..2]->(b:Airport) RETURN c.code, a.code, b.code", "name": "test_1188__carry_both_then_vlp_den", "schema": "denormalized_flights"}
 {"cypher": "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c, z MATCH (z)-[:FOLLOWS*1..2]->(c) RETURN z.user_id, c.user_id", "name": "test_1189__two_carried_path_between_them_not_repaired_std", "schema": "standard"}
 {"cypher": "MATCH (z:Airport)-[:FLIGHT]->(c:Airport) WITH c, z MATCH (z)-[:FLIGHT*1..2]->(c) RETURN z.code, c.code", "name": "test_1189__two_carried_path_between_them_not_repaired_den", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Airport)-[:FLIGHT*0..2]->(b:Airport) WHERE toLower(a.city) = 'atlanta' RETURN b.code", "name": "test_1169__fn_start_zero_hop_den", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport) WHERE toLower(a.city) = 'atlanta' RETURN b.code", "name": "test_1169__fn_start_range_den", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Airport)-[:FLIGHT*0..2]->(b:Airport) WHERE a.city = 'Atlanta' AND toLower(a.state) = 'xx' RETURN b.code", "name": "test_1169__fn_conjunct_beside_plain_den", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:Airport)-[:FLIGHT*1..3]->(b:Airport) WHERE toLower(a.city) = toLower(b.city) RETURN a.code, b.code", "name": "test_1169__fn_both_endpoints_den", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE toString(a.user_id) = '1' RETURN b.user_id", "name": "test_1169__fn_start_std", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE toString(a.user_id) = toString(b.user_id) RETURN a.user_id", "name": "test_1169__fn_both_endpoints_std", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE CASE WHEN a.user_id = b.user_id THEN true ELSE false END RETURN a.user_id", "name": "test_1169__case_over_both_endpoints_loud_std", "schema": "standard"}

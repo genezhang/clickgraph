@@ -326,6 +326,76 @@ class TestDenormalizedVariableLengthPaths:
         assert_query_success(response)
         assert [r['code'] for r in response['results']] == ['ATL', 'LAX', 'ORD']
 
+    @pytest.mark.parametrize("rng, expected", [
+        ("*0..2", ['ATL', 'LAX', 'ORD', 'SFO']),
+        ("*1..2", ['LAX', 'ORD', 'SFO']),
+        ("*2..2", ['ORD', 'SFO']),
+    ])
+    def test_function_call_start_predicate_1169(self, denormalized_flights_graph, rng, expected):
+        """#1169: a function call around the start node's property
+        (`toLower(a.city) = 'atlanta'`) must constrain the start exactly as the
+        plain predicate does, for every hop range. `*0..N` used to drop it
+        (every airport started a path) and `*N..M` spelled the unresolved node
+        alias (`a.OriginCityName`, Code 47). From ATL: ATL(0), LAX(1), SFO and
+        ORD(2)."""
+        response = execute_cypher(
+            f"""
+            MATCH (a:Airport)-[:FLIGHT{rng}]->(b:Airport)
+            WHERE toLower(a.city) = 'atlanta'
+            RETURN b.code AS code
+            ORDER BY code
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+
+        assert_query_success(response)
+        assert [r['code'] for r in response['results']] == expected
+
+    def test_function_call_conjunct_is_not_dropped_1169(self, denormalized_flights_graph):
+        """#1169: `a.city = 'Atlanta' AND toLower(a.state) = 'xx'` is empty; the
+        function conjunct used to vanish while the plain one stayed (4 rows)."""
+        response = execute_cypher(
+            """
+            MATCH (a:Airport)-[:FLIGHT*0..2]->(b:Airport)
+            WHERE a.city = 'Atlanta' AND toLower(a.state) = 'xx'
+            RETURN b.code AS code
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+
+        assert_query_success(response)
+        assert response['results'] == []
+
+    def test_function_call_on_both_endpoints_1169(self, denormalized_flights_graph):
+        """#1169: a function call over BOTH endpoints is a whole-path predicate;
+        it must resolve on the final endpoint pair (it used to spell the unresolved
+        `a.OriginCityName`). Closed 3-cycles in the fixture: LAX->SFO->JFK->LAX,
+        LAX->ORD->ATL->LAX and their rotations; no shorter path returns to its
+        own city."""
+        plain = execute_cypher(
+            """
+            MATCH (a:Airport)-[:FLIGHT*1..3]->(b:Airport)
+            WHERE a.city = b.city
+            RETURN a.code AS a, b.code AS b
+            ORDER BY a, b
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+        fn = execute_cypher(
+            """
+            MATCH (a:Airport)-[:FLIGHT*1..3]->(b:Airport)
+            WHERE toLower(a.city) = toLower(b.city)
+            RETURN a.code AS a, b.code AS b
+            ORDER BY a, b
+            """,
+            schema_name=denormalized_flights_graph["schema_name"]
+        )
+
+        assert_query_success(plain)
+        assert_query_success(fn)
+        assert len(plain['results']) == 6
+        assert fn['results'] == plain['results']
+
     def test_fixed_hop_before_vlp_keeps_its_where_filter_1170(self, denormalized_flights_graph):
         """#1170: a FIXED hop chained in front of a CTE-backed VLP lost its WHERE
         filter (the outer query returned `None` for "filters already in the CTE").

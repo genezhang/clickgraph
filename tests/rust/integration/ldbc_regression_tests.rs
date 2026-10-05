@@ -3997,6 +3997,118 @@ async fn denorm_zero_hop_seed_without_start_filter_is_unchanged_1166() {
 }
 
 // ---------------------------------------------------------------------------
+// #1169: a function call around a VLP endpoint's property
+//
+// `toLower(a.city) = 'x'` named the start node only inside a function call, and
+// the categorizer looked through operators but not calls — so the predicate was
+// filed as an alias-less relationship filter: dropped on `*0..N` (every airport
+// started a path, 22 rows vs 4) and spelled with the unresolved node alias on
+// `*N..M` (Code 47). A predicate over both endpoints then reached the wrapper
+// lowering, which passed calls through unrewritten.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn denorm_function_call_start_predicate_reaches_the_seed_and_base_case_1169() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+
+    // `*0..N`: both seed scans carry it, each in its own role's column.
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Airport)-[:FLIGHT*0..2]->(b:Airport) \
+         WHERE toLower(a.city) = 'atlanta' RETURN count(*)",
+    )
+    .await;
+    let sql = strip_rel_alias_numbers(&sql);
+    assert!(
+        sql.contains("AS t WHERE lowerUTF8(t.OriginCityName) = 'atlanta'")
+            && sql.contains("AS t WHERE lowerUTF8(t.DestCityName) = 'atlanta'"),
+        "#1169: the zero-hop seed must filter on the function call in both roles:\n{sql}"
+    );
+
+    // `*1..N`: the base case spells the edge alias, never the node alias.
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport) \
+         WHERE toLower(a.city) = 'atlanta' RETURN count(*)",
+    )
+    .await;
+    let sql = strip_rel_alias_numbers(&sql);
+    assert!(
+        sql.contains("WHERE lowerUTF8(t.OriginCityName) = 'atlanta'"),
+        "#1169: the base case must filter on the edge alias:\n{sql}"
+    );
+    assert!(
+        !sql.contains("(a.") && !sql.contains("lowerUTF8(a"),
+        "#1169: the node alias is not in scope inside the path CTE:\n{sql}"
+    );
+}
+
+#[tokio::test]
+async fn denorm_function_call_conjunct_is_kept_beside_a_plain_one_1169() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:Airport)-[:FLIGHT*0..2]->(b:Airport) \
+         WHERE a.city = 'Atlanta' AND toLower(a.state) = 'xx' RETURN count(*)",
+    )
+    .await;
+    let sql = strip_rel_alias_numbers(&sql);
+    assert!(
+        sql.contains("t.OriginCityName = 'Atlanta'")
+            && sql.contains("lowerUTF8(t.OriginState) = 'xx'"),
+        "#1169: the function conjunct must not vanish beside the plain one:\n{sql}"
+    );
+}
+
+/// A function over BOTH endpoints is a whole-path predicate: it belongs on the
+/// wrapper, spelled in the CTE's own role-resolved columns, on every layout.
+#[tokio::test]
+async fn function_call_over_both_endpoints_is_lowered_onto_the_wrapper_1169() {
+    let denorm = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &denorm,
+        "MATCH (a:Airport)-[:FLIGHT*1..3]->(b:Airport) \
+         WHERE toLower(a.city) = toLower(b.city) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("WHERE (lowerUTF8(start_OriginCityName) = lowerUTF8(end_DestCityName))"),
+        "#1169 (denormalized): wrapper must use the CTE's role columns:\n{sql}"
+    );
+
+    let std_schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql = generate_sql_inline(
+        &std_schema,
+        "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) \
+         WHERE toString(a.user_id) = toString(b.user_id) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        sql.contains("WHERE (toString(start_id) = toString(end_id))"),
+        "#1169 (standard): wrapper must compare the CTE's id columns:\n{sql}"
+    );
+}
+
+/// A both-endpoint predicate in a form the wrapper lowering cannot rewrite must
+/// fail loudly instead of reaching ClickHouse with an unresolved `a.col`.
+#[tokio::test]
+async fn unsupported_form_over_both_endpoints_is_refused_not_passed_through_1169() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let result = try_generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) \
+         WHERE CASE WHEN a.user_id = b.user_id THEN true ELSE false END RETURN count(*)",
+    )
+    .await;
+    let msg =
+        result.expect_err("#1169: must be refused, not emitted with an unresolved `a.user_id`");
+    assert!(
+        msg.contains("references both endpoints") && msg.contains("expression form"),
+        "#1169: expected the planned both-endpoint refusal, got: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // #1170: a FIXED hop chained in front of a CTE-backed VLP lost its WHERE filter
 //
 // `extract_filters` returned `None` for a required CTE-backed VLP on the premise
