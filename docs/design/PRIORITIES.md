@@ -691,6 +691,13 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-10-05: **#1287: a path ending at an earlier-bound node** (P-4b root B / #1203 partial).
+  - A path whose endpoint side is a CartesianProduct (a comma-bound or WITH-carried endpoint) had no VLP context, so it was expanded as a hop: its own relationship was joined as an extra, untied edge table (427 vs 167).
+  - The #1175 hop-vs-path uniqueness guard now also covers comma/cartesian scopes and post-WITH scopes. It binds only hops of the path's own MATCH clause; hops of other clauses are ignored instead of bailing.
+  - Standard carried-node sweep: 12 WRONG→OK.
+  - The #1182 tests' oracle had locked the missing hop-vs-path uniqueness; it now applies Cypher's full per-MATCH uniqueness.
+  - Filed #1294: a hop between two carried nodes is pruned. It is loud only by accident now and pinned in the corpus.
+
 - 2026-10-05: **#1283: WITH body ties a carried node** (P-4b root B; `WITH_EXPORT_CONTRACT.md` §3.2). Fixed:
   - denormalized 2-WITH hop (36 vs 8);
   - a path off a carried node in a WITH body (1100 vs 111);

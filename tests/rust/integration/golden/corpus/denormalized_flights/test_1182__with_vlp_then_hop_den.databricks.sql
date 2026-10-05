@@ -31,4 +31,4 @@ FROM vlp_a_b AS t
 INNER JOIN with_c_cte_0 AS c ON 1 = 1
 INNER JOIN test_integration.flights AS t3 ON t3.Dest = t.start_id AND t3.Origin = c.p1_c_code
 INNER JOIN test_integration.flights AS t2 ON t2.Origin = t.end_id
-WHERE (t2.flight_id <> t3.flight_id OR t2.flight_number <> t3.flight_number)
+WHERE ((NOT array_contains(t.path_edges, struct(t2.flight_id, t2.flight_number)) AND NOT array_contains(t.path_edges, struct(t3.flight_id, t3.flight_number))) AND (t2.flight_id <> t3.flight_id OR t2.flight_number <> t3.flight_number))

@@ -39,3 +39,4 @@ SELECT
 FROM vlp_b_d AS t
 INNER JOIN with_a_cte_1 AS a ON 1 = 1
 INNER JOIN test_integration.user_follows_test AS t2 ON t2.follower_id = a.p1_a_user_id AND t2.followed_id = t.start_id
+WHERE NOT has(t.path_edges, t2.follow_id)

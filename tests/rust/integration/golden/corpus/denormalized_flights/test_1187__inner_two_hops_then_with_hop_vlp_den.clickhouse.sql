@@ -33,3 +33,4 @@ SELECT
 FROM vlp_a_b AS t
 INNER JOIN with_c_cte_0 AS c ON 1 = 1
 INNER JOIN test_integration.flights AS t3 ON t3.Dest = t.start_id AND t3.Origin = c.p1_c_code
+WHERE NOT has(t.path_edges, tuple(t3.flight_id, t3.flight_number))

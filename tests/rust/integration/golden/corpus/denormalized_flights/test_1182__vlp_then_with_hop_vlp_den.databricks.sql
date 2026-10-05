@@ -61,3 +61,4 @@ SELECT
 FROM vlp_d_e AS t
 INNER JOIN with_a_b_cte_0 AS a_b ON 1 = 1
 INNER JOIN test_integration.flights AS t2 ON t2.Dest = t.start_id AND t2.Origin = a_b.p1_b_code
+WHERE NOT array_contains(t.path_edges, struct(t2.flight_id, t2.flight_number))

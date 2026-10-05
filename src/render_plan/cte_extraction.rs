@@ -8734,13 +8734,21 @@ pub fn build_vlp_context(
         }
     }
 
+    // #1287: when the path's endpoint was bound by an earlier, comma-joined pattern
+    // (`MATCH (c) MATCH (a)-[:R]->(b)-[:R*1..2]->(c)`, or a WITH-carried `c`), the
+    // endpoint side is a CartesianProduct. Without its node info the context was None
+    // and the required path fell through to hop expansion: the path's own relationship
+    // joined as an ordinary, untied edge table (427 rows vs 167).
+    let left_plan = endpoint_in_cartesian(&graph_rel.left, &graph_rel.left_connection);
+    let right_plan = endpoint_in_cartesian(&graph_rel.right, &graph_rel.right_connection);
+
     // Extract start node info
     let (start_alias, start_table, start_id_col) =
-        extract_node_info(&graph_rel.left, schema_type, &graph_rel.center, schema)?;
+        extract_node_info(left_plan, schema_type, &graph_rel.center, schema)?;
 
     // Extract end node info
     let (end_alias, end_table, end_id_col) =
-        extract_node_info(&graph_rel.right, schema_type, &graph_rel.center, schema)?;
+        extract_node_info(right_plan, schema_type, &graph_rel.center, schema)?;
 
     // Extract relationship info
     let rel_alias = graph_rel.alias.clone();
@@ -8923,6 +8931,29 @@ pub fn build_vlp_context(
 /// (`vlp_join_eq_conditions`) parses the comma-separated form back into an
 /// `Identifier` and zips per-column, so a composite endpoint joins on every
 /// column; single-column ids are unaffected (comma-free string round-trips).
+/// #1287: the plan of the node `alias` inside a CartesianProduct endpoint side of a
+/// path (a GraphNode, or the GraphRel whose right end it is); any other plan as is.
+fn endpoint_in_cartesian<'a>(plan: &'a LogicalPlan, alias: &str) -> &'a LogicalPlan {
+    fn find<'a>(plan: &'a LogicalPlan, alias: &str) -> Option<&'a LogicalPlan> {
+        match plan {
+            LogicalPlan::GraphNode(node) if node.alias == alias => Some(plan),
+            LogicalPlan::GraphRel(rel) if rel.right_connection == alias => Some(plan),
+            LogicalPlan::GraphRel(rel) => {
+                find(&rel.left, alias).or_else(|| find(&rel.right, alias))
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                find(&cp.left, alias).or_else(|| find(&cp.right, alias))
+            }
+            LogicalPlan::Filter(f) => find(&f.input, alias),
+            _ => None,
+        }
+    }
+    match plan {
+        LogicalPlan::CartesianProduct(_) => find(plan, alias).unwrap_or(plan),
+        _ => plan,
+    }
+}
+
 fn extract_node_info(
     node_plan: &LogicalPlan,
     schema_type: VlpSchemaType,

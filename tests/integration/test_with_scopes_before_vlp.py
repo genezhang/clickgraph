@@ -22,8 +22,8 @@ def test_two_with_scopes_then_hop_and_path(schemas, lo, hi):  # noqa: F811
     expected = Counter()
     for _z, c in EDGES:
         for _i, a in _OUT[c]:
-            for _j, b in _OUT[a]:
-                for d in _paths(b, lo, hi):
+            for j, b in _OUT[a]:  # the last MATCH: hop and path are relationship-unique
+                for d in _paths(b, lo, hi, {j}):
                     expected[(a, d)] += 1
     assert _got(schemas["std"], query, 2) == expected
 
@@ -37,8 +37,8 @@ def test_three_with_scopes(schemas):  # noqa: F811
     for _z, c in EDGES:
         for _i, a in _OUT[c]:
             for _j, b in _OUT[a]:
-                for _k, d in _OUT[b]:
-                    for e in _paths(d, 1, 2):
+                for k, d in _OUT[b]:
+                    for e in _paths(d, 1, 2, {k}):
                         expected[(b, e)] += 1
     assert _got(schemas["std"], query, 2) == expected
 

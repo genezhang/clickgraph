@@ -240,6 +240,7 @@ Remaining (filed):
 - [x] S4 R2/R3 + the composite VLP tie: `join_builder` reads the contract for a CTE-backed endpoint (task-local `with_cte_identity`, generation-scoped like `cte_scope_for_correlation`); composite `c.id` and #1286 (0 rows) fixed.
   - Not covered by this slice: the FK-edge `count(*)` refusals (`WITH c MATCH (o:Order)-[:PLACED_BY]->(c) RETURN count(*)`). They are root B (the unreferenced fresh node's joins are pruned); the property form renders correctly. R4 (`rewrite_operator_application_for_cte`) is unchanged.
 - [x] #1283 (root B in WITH bodies): see §3.2
+- [x] #1287: a path ending at a comma-bound or WITH-carried node expanded as a hop; hop-vs-path uniqueness in post-WITH and comma scopes (#1203 partial). Open: #1294 (a hop between two carried nodes is pruned).
 - [ ] S5 R6/R1 cleanup
 - [ ] S6 FK-side join columns (#1279 residue)
 

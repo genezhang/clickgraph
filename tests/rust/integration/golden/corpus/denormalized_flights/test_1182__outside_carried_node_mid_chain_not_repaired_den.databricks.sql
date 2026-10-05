@@ -32,3 +32,4 @@ SELECT
 FROM vlp_c_n2 AS t
 INNER JOIN with_c_cte_0 AS c ON string(t.start_id) = string(c.p1_c_start_id)
 INNER JOIN test_integration.flights AS t2 ON t2.Dest = t.start_id
+WHERE NOT array_contains(t.path_edges, struct(t2.flight_id, t2.flight_number))

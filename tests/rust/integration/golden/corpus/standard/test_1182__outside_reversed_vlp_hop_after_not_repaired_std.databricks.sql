@@ -38,3 +38,4 @@ INNER JOIN test_integration.user_follows_test AS t1 ON t1.followed_id = t.start_
 INNER JOIN test_integration.users_test AS n2 ON t.start_id = t1.followed_id
 INNER JOIN with_c_cte_0 AS c ON t1.follow_id <> t3.follow_id
 INNER JOIN test_integration.user_follows_test AS t3 ON t3.follower_id = c.p1_c_user_id
+WHERE (NOT array_contains(t.path_edges, t1.follow_id) AND NOT array_contains(t.path_edges, t3.follow_id))
