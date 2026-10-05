@@ -738,11 +738,12 @@ fn build_union_with_aggregation(
         }
     }
 
-    // #1240: a bare `count(*)` over a virtual-node union (`MATCH (a:Airport) RETURN count(*)` —
-    // one row per distinct node, deduplicated by the UNION DISTINCT of the from-/to-role arms)
-    // projected a CONSTANT, so the UNION DISTINCT collapsed every row into one (count 1 for 7
-    // airports). The union must carry the node's identity to deduplicate on.
-    if all_properties.is_empty() && !union.is_cypher_union {
+    // #1240/#1242: the arms of a virtual-node union (the from-/to-role views of one denormalized
+    // node) are deduplicated by the UNION DISTINCT, so each arm must carry the node's IDENTITY.
+    // Without it the dedup runs on whatever else is projected: a bare `count(*)` projected a
+    // constant (1 row for 7 airports) and `RETURN a.state, count(*)` deduplicated on the state
+    // alone (CA: 1 where LAX and SFO make 2). Not for a user-written Cypher UNION.
+    if !union.is_cypher_union {
         let mut aliases: Vec<String> = Vec::new();
         for branch in &union.inputs {
             collect_graph_node_aliases(branch, &mut aliases);
@@ -751,10 +752,14 @@ fn build_union_with_aggregation(
         aliases.dedup();
         if let [alias] = aliases.as_slice() {
             if let Some(id_prop) = lookup_node_id_property(alias, union) {
-                all_properties.push(PropertyAccess {
-                    table_alias: TableAlias(alias.clone()),
-                    column: PropertyValue::Column(id_prop),
-                });
+                let key = format!("{}.{}", alias, id_prop);
+                if !seen_keys.contains(&key) {
+                    seen_keys.insert(key);
+                    all_properties.push(PropertyAccess {
+                        table_alias: TableAlias(alias.clone()),
+                        column: PropertyValue::Column(id_prop),
+                    });
+                }
             }
         }
     }
