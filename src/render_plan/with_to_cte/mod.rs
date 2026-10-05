@@ -4059,6 +4059,9 @@ fn resolve_cross_table_with_cte_joins(
                 // WITH CTE named after the node; a CTE shared by several carried nodes
                 // (`WITH c, z` -> `c_z`) never matches it.
                 if join_conditions.is_empty() {
+                    // (sorted: `aliases` comes out of a HashMap, and the message is pinned)
+                    let mut aliases = aliases.clone();
+                    aliases.sort();
                     if let Some(endpoint) = carried_vlp_endpoint(render_plan, &aliases) {
                         return Err(RenderBuildError::InvalidRenderPlan(format!(
                             "node '{endpoint}' is carried through WITH and is also an endpoint \
