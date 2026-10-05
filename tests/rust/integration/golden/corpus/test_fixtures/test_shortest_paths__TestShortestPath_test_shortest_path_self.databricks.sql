@@ -11,7 +11,7 @@ WITH RECURSIVE vlp_a_a_inner AS (
 ),
 vlp_a_a AS (
     SELECT * FROM (
-        SELECT *, ROW_NUMBER() OVER (PARTITION BY end_id ORDER BY hop_count ASC) as rn
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY start_id, end_id ORDER BY hop_count ASC) as rn
         FROM vlp_a_a_inner
     ) WHERE rn = 1
 )

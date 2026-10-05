@@ -26,7 +26,10 @@ WITH RECURSIVE vlp_a_b_inner AS (
       AND NOT has(vp.path_nodes, end_node.user_id)
 ),
 vlp_a_b AS (
-    SELECT * FROM vlp_a_b_inner WHERE hop_count = (SELECT MIN(hop_count) FROM vlp_a_b_inner)
+    SELECT * FROM (
+        SELECT *, MIN(hop_count) OVER (PARTITION BY start_id, end_id) AS min_hops_for_pair
+        FROM vlp_a_b_inner
+    ) WHERE hop_count = min_hops_for_pair
 )
 SELECT 
       t.start_name AS "a.name", 

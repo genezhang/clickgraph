@@ -4286,6 +4286,97 @@ async fn hop_path_uniqueness_guard_is_fenced_1175() {
 }
 
 // ---------------------------------------------------------------------------
+// #1183: shortestPath / allShortestPaths pick one answer per (start, end) PAIR
+//
+// `ROW_NUMBER() OVER (PARTITION BY end_id)` kept ONE start per end node (and
+// `PARTITION BY start_id` one end per start), and `allShortestPaths` took the
+// GLOBAL minimum length (or, with an end filter, a single row per start), so every
+// pair beyond the globally closest was missing. With both ends pinned by id the
+// BFS optimisation returned one row for `allShortestPaths` although a pair can
+// have several shortest paths.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn shortest_path_picks_per_start_end_pair_1183() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+
+    for (why, cypher) in [
+        (
+            "no filters",
+            "MATCH p = shortestPath((a:User)-[:FOLLOWS*1..3]->(b:User)) RETURN a.user_id, b.user_id",
+        ),
+        (
+            "multi-valued end filter",
+            "MATCH p = shortestPath((a:User)-[:FOLLOWS*1..3]->(b:User)) \
+             WHERE b.user_id IN [3, 4] RETURN a.user_id, b.user_id",
+        ),
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(
+            sql.contains("ROW_NUMBER() OVER (PARTITION BY start_id, end_id ORDER BY"),
+            "#1183 ({why}): rank per (start, end) pair:\n{sql}"
+        );
+        assert!(
+            !sql.contains("PARTITION BY end_id") && !sql.contains("PARTITION BY start_id ORDER"),
+            "#1183 ({why}): a one-sided partition drops pairs:\n{sql}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn all_shortest_paths_take_the_minimum_per_pair_1183() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    for (why, cypher) in [
+        (
+            "no filters",
+            "MATCH p = allShortestPaths((a:User)-[:FOLLOWS*1..3]->(b:User)) \
+             RETURN a.user_id, b.user_id",
+        ),
+        (
+            "end filter",
+            "MATCH p = allShortestPaths((a:User)-[:FOLLOWS*1..3]->(b:User)) \
+             WHERE b.user_id IN [3, 4] RETURN a.user_id, b.user_id",
+        ),
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(
+            sql.contains("MIN(hop_count) OVER (PARTITION BY start_id, end_id)"),
+            "#1183 ({why}): the shortest length is per (start, end) pair:\n{sql}"
+        );
+        assert!(
+            !sql.contains("SELECT MIN(hop_count) FROM") && !sql.contains("ROW_NUMBER()"),
+            "#1183 ({why}): a global MIN / single row per start loses paths:\n{sql}"
+        );
+    }
+}
+
+/// The BFS CTE yields one `(start, end, distance)` row — right for `shortestPath`,
+/// wrong for `allShortestPaths` (one row per shortest path).
+#[tokio::test]
+async fn bfs_shortcut_is_only_for_shortest_path_1183() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let pinned = "WHERE a.user_id = 5 AND b.user_id = 3 RETURN length(p) AS l";
+    let one = generate_sql_inline(
+        &schema,
+        &format!("MATCH p = shortestPath((a:User)-[:FOLLOWS*1..4]->(b:User)) {pinned}"),
+    )
+    .await;
+    assert!(
+        one.contains("vlp_a_b_bfs"),
+        "shortestPath with both ends pinned keeps its BFS shortcut:\n{one}"
+    );
+    let all = generate_sql_inline(
+        &schema,
+        &format!("MATCH p = allShortestPaths((a:User)-[:FOLLOWS*1..4]->(b:User)) {pinned}"),
+    )
+    .await;
+    assert!(
+        !all.contains("vlp_a_b_bfs"),
+        "#1183: allShortestPaths must enumerate its paths, not collapse to one BFS row:\n{all}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // #1170: a FIXED hop chained in front of a CTE-backed VLP lost its WHERE filter
 //
 // `extract_filters` returned `None` for a required CTE-backed VLP on the premise

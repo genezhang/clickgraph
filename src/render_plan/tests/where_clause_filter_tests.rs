@@ -563,8 +563,9 @@ mod edge_cases {
 
         // Check for allShortestPaths-specific patterns (MIN filtering to get ALL paths with minimum length)
         assert!(
-            sql.contains("WHERE hop_count = (SELECT MIN(hop_count) FROM"),
-            "allShortestPaths should use MIN filtering to get ALL paths with minimum hop count"
+            sql.contains("MIN(hop_count) OVER (PARTITION BY start_id, end_id)"),
+            "allShortestPaths should keep ALL paths with the minimum hop count of their \
+             (start, end) pair (#1183)"
         );
     }
 
@@ -575,10 +576,12 @@ mod edge_cases {
 
         println!("allShortestPaths with filters SQL:\n{}", sql);
 
-        // With end filters, uses ROW_NUMBER instead of MIN to handle filtered target nodes
+        // #1183: with end filters too, ALL shortest paths of each (start, end) pair are kept
+        // (it used to ROW_NUMBER down to a single path per start).
         assert!(
-            sql.contains("ROW_NUMBER()") || sql.contains("WHERE hop_count = (SELECT MIN(hop_count) FROM"),
-            "allShortestPaths should use either ROW_NUMBER() or MIN filtering depending on filter placement"
+            sql.contains("MIN(hop_count) OVER (PARTITION BY start_id, end_id)")
+                && !sql.contains("ROW_NUMBER()"),
+            "allShortestPaths should keep every path of the minimum length per pair"
         );
         assert!(
             sql.contains("Alice Johnson") && sql.contains("David Lee"),

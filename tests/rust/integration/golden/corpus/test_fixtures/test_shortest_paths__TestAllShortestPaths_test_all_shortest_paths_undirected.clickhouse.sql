@@ -31,9 +31,9 @@ vlp_a_b_to_target AS (
 ),
 vlp_a_b AS (
     SELECT * FROM (
-        SELECT *, ROW_NUMBER() OVER (PARTITION BY start_id ORDER BY hop_count ASC) as rn
+        SELECT *, MIN(hop_count) OVER (PARTITION BY start_id, end_id) AS min_hops_for_pair
         FROM vlp_a_b_to_target
-    ) WHERE rn = 1
+    ) WHERE hop_count = min_hops_for_pair
 ), 
 vlp_b_a_inner AS (
     SELECT 
@@ -68,9 +68,9 @@ vlp_b_a_to_target AS (
 ),
 vlp_b_a AS (
     SELECT * FROM (
-        SELECT *, ROW_NUMBER() OVER (PARTITION BY start_id ORDER BY hop_count ASC) as rn
+        SELECT *, MIN(hop_count) OVER (PARTITION BY start_id, end_id) AS min_hops_for_pair
         FROM vlp_b_a_to_target
-    ) WHERE rn = 1
+    ) WHERE hop_count = min_hops_for_pair
 )
 SELECT count(*) AS "path_count" FROM (
 SELECT 1 AS __dummy
