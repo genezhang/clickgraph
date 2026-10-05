@@ -553,6 +553,17 @@ impl RelationshipSchema {
         self.type_column.is_some()
     }
 
+    /// True when a node labeled `label` can sit on the source (`as_source`) / target side of this
+    /// relationship. A wildcard (`$any`) side accepts every label.
+    pub fn node_label_fits(&self, as_source: bool, label: &str) -> bool {
+        let declared = if as_source {
+            &self.from_node
+        } else {
+            &self.to_node
+        };
+        declared == "$any" || declared.eq_ignore_ascii_case(label)
+    }
+
     /// The column holding the relationship type on a polymorphic edge table.
     pub fn type_discriminator(&self) -> Option<&str> {
         self.type_column.as_deref()

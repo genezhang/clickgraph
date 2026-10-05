@@ -5027,6 +5027,40 @@ async fn where_filter_reaches_every_direction_arm_of_an_undirected_aggregate_125
 }
 
 // ---------------------------------------------------------------------------
+// #1255: an UNDIRECTED single-hop `size()` / EXISTS / NOT pattern over a one-way relationship
+// (`AUTHORED: User -> Post`) emitted `from = u OR to = u`; the `to` leg compares a POST id with a
+// user id, so users 11-20 "authored" a post each (the post sharing their number). The labels allow
+// one orientation only, so the pattern is rendered as that directed pattern.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn undirected_pattern_over_a_one_way_relationship_uses_only_the_feasible_leg() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    for cypher in [
+        "MATCH (u:User) RETURN size((u)-[:AUTHORED]-())",
+        "MATCH (u:User) WHERE EXISTS { (u)-[:AUTHORED]-() } RETURN u.user_id",
+        "MATCH (u:User) WHERE NOT (u)-[:AUTHORED]-() RETURN u.user_id",
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(
+            sql.contains("authored_bench.user_id = u.user_id"),
+            "{cypher}: source leg missing\n{sql}"
+        );
+        assert!(
+            !sql.contains(".post_id = u.user_id"),
+            "{cypher}: the target leg must not be correlated to a User\n{sql}"
+        );
+        assert!(!sql.contains(" OR "), "{cypher}: no OR leg expected\n{sql}");
+    }
+    // a relationship that CAN hold either way keeps both legs
+    let sql = generate_sql_inline(&schema, "MATCH (u:User) RETURN size((u)-[:FOLLOWS]-())").await;
+    assert!(
+        sql.contains(" OR "),
+        "FOLLOWS (User->User) keeps both legs\n{sql}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
 // The emitter's path-variable "spurious JOIN" cleanup kept only joins whose alias was read, so
