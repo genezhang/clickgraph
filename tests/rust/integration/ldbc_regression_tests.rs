@@ -4988,6 +4988,45 @@ async fn aggregate_over_undirected_unlabeled_target_keeps_the_reverse_arms_1250(
 }
 
 // ---------------------------------------------------------------------------
+// #1252: an arm that exports the properties of BOTH endpoints carried two `user_id` items (the
+// start node and an anonymous target that are both Users); the by-alias normalization kept the
+// target's, so an aggregate over `u.user_id` read the TARGET's ids.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn aggregate_arg_stays_bound_to_its_own_node_when_both_endpoints_export_the_same_name_1252() {
+    let schema = load_schema_from("schemas/examples/social_polymorphic.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (u:User)-[:FOLLOWS]->() WHERE u.user_id = 1 RETURN count(DISTINCT u.user_id) AS n",
+    )
+    .await;
+    let helper = regex::Regex::new(r#"\((\w+)\.user_id\) AS "u\.user_id""#).unwrap();
+    let owners: Vec<String> = helper
+        .captures_iter(&sql)
+        .map(|c| c[1].to_string())
+        .collect();
+    assert!(!owners.is_empty(), "no `u.user_id` helper column:\n{sql}");
+    assert!(
+        owners.iter().all(|o| o == "u"),
+        "`u.user_id` must read u's column in every arm, got {owners:?}:\n{sql}"
+    );
+}
+
+#[tokio::test]
+async fn where_filter_reaches_every_direction_arm_of_an_undirected_aggregate_1252() {
+    let schema = load_schema_from("schemas/examples/social_polymorphic.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (u:User)-[:FOLLOWS]-() WHERE u.user_id = 2 RETURN count(*) AS n",
+    )
+    .await;
+    // (Post, User) target arms x (forward, reverse): 4 arms, each filtered
+    assert_eq!(sql.matches("UNION ALL").count(), 3, "{sql}");
+    assert_eq!(sql.matches("WHERE u.user_id = 2").count(), 4, "{sql}");
+}
+
+// ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
 // The emitter's path-variable "spurious JOIN" cleanup kept only joins whose alias was read, so

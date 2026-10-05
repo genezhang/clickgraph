@@ -1009,6 +1009,36 @@ fn transform_bidirectional(
         LogicalPlan::Filter(filter) => {
             let transformed = transform_bidirectional(&filter.input, plan_ctx, graph_schema)?;
             match transformed {
+                // #1252: the split replaced the filtered GraphRel with a UNION ALL of direction
+                // branches. A Filter left ABOVE that union is applied by the renderer to the
+                // first branch only, so the reverse branches would match unfiltered. σ distributes
+                // over UNION ALL, so push it into every branch.
+                Transformed::Yes(new_input)
+                    if matches!(
+                        new_input.as_ref(),
+                        LogicalPlan::Union(u)
+                            if !u.is_cypher_union && matches!(u.union_type, UnionType::All)
+                    ) =>
+                {
+                    let LogicalPlan::Union(u) = new_input.as_ref() else {
+                        unreachable!("guarded by the match above")
+                    };
+                    let inputs = u
+                        .inputs
+                        .iter()
+                        .map(|b| {
+                            Arc::new(LogicalPlan::Filter(Filter {
+                                input: b.clone(),
+                                predicate: filter.predicate.clone(),
+                            }))
+                        })
+                        .collect();
+                    Ok(Transformed::Yes(Arc::new(LogicalPlan::Union(Union {
+                        inputs,
+                        union_type: u.union_type.clone(),
+                        is_cypher_union: false,
+                    }))))
+                }
                 Transformed::Yes(new_input) => {
                     let new_filter = Filter {
                         input: new_input,

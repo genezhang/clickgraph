@@ -1,5 +1,11 @@
 SELECT `a.name` AS "a.name", count(`r.from_id`) AS "rel_count" FROM (
 SELECT 
+      toString(a.email_address) AS "a.email",
+      toString(a.full_name) AS "a.name",
+      toString(a.user_id) AS "a.user_id",
+      NULL AS "b.email",
+      NULL AS "b.name",
+      NULL AS "b.user_id",
       toString(b.content) AS "content",
       toString(b.created_at) AS "created",
       toString(a.email_address) AS "email",
@@ -7,7 +13,6 @@ SELECT
       toString(b.post_id) AS "post_id",
       toString(b.content) AS "title",
       toString(a.user_id) AS "user_id",
-      a.full_name AS "a.name",
       a.full_name AS "a.full_name",
       r.from_id AS "r.from_id"
 FROM brahmand.users_bench AS a
@@ -15,6 +20,12 @@ LEFT JOIN (SELECT * FROM brahmand.interactions WHERE (interaction_type = 'LIKES'
 LEFT JOIN brahmand.posts_bench AS b ON b.post_id = r.to_id
 UNION ALL 
 SELECT 
+      toString(a.email_address) AS "a.email",
+      toString(a.full_name) AS "a.name",
+      toString(a.user_id) AS "a.user_id",
+      toString(b.email_address) AS "b.email",
+      toString(b.full_name) AS "b.name",
+      toString(b.user_id) AS "b.user_id",
       NULL AS "content",
       NULL AS "created",
       toString(b.email_address) AS "email",
@@ -22,7 +33,6 @@ SELECT
       NULL AS "post_id",
       NULL AS "title",
       toString(b.user_id) AS "user_id",
-      a.full_name AS "a.name",
       a.full_name AS "a.full_name",
       r.from_id AS "r.from_id"
 FROM brahmand.users_bench AS a
