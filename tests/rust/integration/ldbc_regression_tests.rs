@@ -4749,6 +4749,27 @@ async fn hop_guard_covers_backwards_and_undirected_paths_1203() {
 }
 
 // ---------------------------------------------------------------------------
+// #1236: the folded OPTIONAL edge+node LEFT JOIN subquery survives `RETURN count(*)`
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn optional_where_count_keeps_the_folded_subquery_1236() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    for cypher in [
+        "MATCH (n0:User) OPTIONAL MATCH (n0)-[:FOLLOWS]->(n1:User) WHERE n1.age > 30 \
+         RETURN count(*) AS n",
+        "MATCH (n0:User) OPTIONAL MATCH (n0)<-[:FOLLOWS]-(n1:User) WHERE n1.age > 30 \
+         RETURN count(*) AS n",
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(
+            sql.contains("LEFT JOIN (SELECT") && sql.contains("n1.age > 30"),
+            "{cypher}\n{sql}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
 // The emitter's path-variable "spurious JOIN" cleanup kept only joins whose alias was read, so

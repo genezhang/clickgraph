@@ -2296,6 +2296,11 @@ fn extract_aliases_from_sql(sql: &str, aliases: &mut HashSet<String>) {
 ///
 /// INNER JOINs are NOT removed because they can filter rows (if the ON condition
 /// eliminates non-matching rows), which would change Cypher bag semantics.
+/// A join whose table is a derived subquery (`(SELECT …)`), e.g. the folded optional pattern.
+fn is_subquery_join(join: &Join) -> bool {
+    join.table_name.trim_start().starts_with('(')
+}
+
 fn remove_unreferenced_joins(plan: &mut RenderPlan, protected_aliases: &HashSet<String>) {
     // Collect indices to remove (in reverse order for safe removal)
     let mut to_remove = Vec::new();
@@ -2337,6 +2342,17 @@ fn remove_unreferenced_joins(plan: &mut RenderPlan, protected_aliases: &HashSet<
 
         // Never remove VLP joins
         if join.graph_rel.is_some() {
+            continue;
+        }
+
+        // Never remove a LEFT JOIN subquery (the folded optional edge+node pattern of #479:
+        // `LEFT JOIN (SELECT t1.follower_id AS __cg_combined_anchor_key, n1.* FROM … ) AS n1`).
+        // It is keyed on the edge's anchor column, NOT a unique key, so each anchor row matches
+        // 0..N subquery rows: dropping it when nothing projects `n1` (`RETURN count(*)`) silently
+        // collapsed the fan-out AND the `WHERE n1.age > 30` folded into it (30 rows where 32 is
+        // right). Only a join on a unique key is provably 1:1 (this pass's "never changes row
+        // cardinality" holds for those alone).
+        if is_subquery_join(join) {
             continue;
         }
 
@@ -2469,6 +2485,12 @@ fn find_bridge_candidates(
 
         // Guard: must not have a pre-filter (schema/view filter)
         if join.pre_filter.is_some() {
+            continue;
+        }
+
+        // Guard: a derived-subquery join (the folded optional pattern, #479) is keyed on the
+        // edge's anchor column, not a unique key — it is no pass-through bridge (#1236).
+        if is_subquery_join(join) {
             continue;
         }
 

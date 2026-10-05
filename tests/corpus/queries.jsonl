@@ -1474,3 +1474,4 @@
 {"cypher": "MATCH (a:Object)-[:PARENT*0..3]->(b:Object) RETURN count(*)", "name": "test_1230__zero_lower_bound_fk_edge_stays_node_unique", "schema": "fk_edge_self_ref"}
 {"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)<-[:FOLLOWS*1..2]-(b:User) RETURN count(*)", "name": "test_1203__hop_backwards_path_std", "schema": "standard"}
 {"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]-(b:User) RETURN count(*)", "name": "test_1203__hop_undirected_path_std", "schema": "standard"}
+{"cypher": "MATCH (n0:User) OPTIONAL MATCH (n0)-[:FOLLOWS]->(n1:User) WHERE n1.age > 30 RETURN count(*) AS n", "name": "test_1236__optional_where_count_keeps_fold_std", "schema": "standard"}
