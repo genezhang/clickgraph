@@ -207,6 +207,7 @@ fn find_node_id_in_plan(alias: &str, plan: &Arc<LogicalPlan>) -> Option<String> 
             find_node_id_in_plan(alias, &gn.input)
         }
         LogicalPlan::Projection(proj) => find_node_id_in_plan(alias, &proj.input),
+        LogicalPlan::Filter(f) => find_node_id_in_plan(alias, &f.input),
         LogicalPlan::ViewScan(_) => None,
         LogicalPlan::Union(u) => {
             for branch in &u.inputs {
@@ -217,6 +218,23 @@ fn find_node_id_in_plan(alias: &str, plan: &Arc<LogicalPlan>) -> Option<String> 
             None
         }
         _ => None,
+    }
+}
+
+/// Every GraphNode alias reachable in `plan` (through projections, filters, unions and node inputs).
+fn collect_graph_node_aliases(plan: &Arc<LogicalPlan>, out: &mut Vec<String>) {
+    match plan.as_ref() {
+        LogicalPlan::GraphNode(gn) => {
+            out.push(gn.alias.clone());
+            collect_graph_node_aliases(&gn.input, out);
+        }
+        LogicalPlan::Projection(p) => collect_graph_node_aliases(&p.input, out),
+        LogicalPlan::Filter(f) => collect_graph_node_aliases(&f.input, out),
+        LogicalPlan::Union(u) => u
+            .inputs
+            .iter()
+            .for_each(|b| collect_graph_node_aliases(b, out)),
+        _ => {}
     }
 }
 
@@ -712,6 +730,27 @@ fn build_union_with_aggregation(
                     alias
                 );
                 seen_keys.insert(key);
+                all_properties.push(PropertyAccess {
+                    table_alias: TableAlias(alias.clone()),
+                    column: PropertyValue::Column(id_prop),
+                });
+            }
+        }
+    }
+
+    // #1240: a bare `count(*)` over a virtual-node union (`MATCH (a:Airport) RETURN count(*)` —
+    // one row per distinct node, deduplicated by the UNION DISTINCT of the from-/to-role arms)
+    // projected a CONSTANT, so the UNION DISTINCT collapsed every row into one (count 1 for 7
+    // airports). The union must carry the node's identity to deduplicate on.
+    if all_properties.is_empty() && !union.is_cypher_union {
+        let mut aliases: Vec<String> = Vec::new();
+        for branch in &union.inputs {
+            collect_graph_node_aliases(branch, &mut aliases);
+        }
+        aliases.sort();
+        aliases.dedup();
+        if let [alias] = aliases.as_slice() {
+            if let Some(id_prop) = lookup_node_id_property(alias, union) {
                 all_properties.push(PropertyAccess {
                     table_alias: TableAlias(alias.clone()),
                     column: PropertyValue::Column(id_prop),

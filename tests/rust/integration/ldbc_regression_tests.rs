@@ -4802,6 +4802,25 @@ async fn positive_pattern_predicate_lowers_to_exists_1238() {
 }
 
 // ---------------------------------------------------------------------------
+// #1240: bare `count(*)` over a virtual-node union carries the node id
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn bare_count_star_over_denormalized_nodes_carries_the_id_1240() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    for cypher in [
+        "MATCH (a:Airport) RETURN count(*) AS n",
+        "MATCH (a:Airport) WHERE a.state = 'CA' RETURN count(*) AS n",
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(
+            !sql.contains("__const") && sql.contains("a.Origin AS \"a.code\""),
+            "{cypher}\n{sql}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
 // The emitter's path-variable "spurious JOIN" cleanup kept only joins whose alias was read, so

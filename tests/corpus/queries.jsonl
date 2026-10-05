@@ -1476,3 +1476,4 @@
 {"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]-(b:User) RETURN count(*)", "name": "test_1203__hop_undirected_path_std", "schema": "standard"}
 {"cypher": "MATCH (n0:User) OPTIONAL MATCH (n0)-[:FOLLOWS]->(n1:User) WHERE n1.age > 30 RETURN count(*) AS n", "name": "test_1236__optional_where_count_keeps_fold_std", "schema": "standard"}
 {"cypher": "MATCH (a:User) WHERE (a)-[:FOLLOWS]->() RETURN count(*)", "name": "test_1238__positive_pattern_predicate_std", "schema": "standard"}
+{"cypher": "MATCH (a:Airport) WHERE a.state = 'CA' RETURN count(*) AS n", "name": "test_1240__denorm_count_star_filter", "schema": "denormalized_flights"}
