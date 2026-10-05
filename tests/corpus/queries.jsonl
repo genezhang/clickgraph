@@ -1463,3 +1463,6 @@
 {"cypher": "MATCH (a:User) WITH a.age AS ag RETURN ag, count(*) AS n", "name": "test_1222__with_scalar_group_by_std", "schema": "standard"}
 {"cypher": "MATCH (a:User) WITH a.age AS ag RETURN ag, count(*) AS n", "name": "test_1222__with_scalar_group_by_poly", "schema": "social_polymorphic"}
 {"cypher": "MATCH p=(a:User)-[:FOLLOWS*1..2]->(b:User) WITH length(p) AS len RETURN len, count(*) AS n", "name": "test_1222__with_path_length_group_by_std", "schema": "standard"}
+{"cypher": "MATCH (a:User) WITH a.age AS ag RETURN ag AS x ORDER BY x", "name": "test_1225__return_alias_of_with_scalar_std", "schema": "standard"}
+{"cypher": "MATCH (a:User) WITH a.age AS ag WITH ag, count(*) AS c RETURN ag, c ORDER BY ag", "name": "test_1225__scalar_through_two_withs_std", "schema": "standard"}
+{"cypher": "MATCH (u:User) WITH u, u.name AS n RETURN n", "name": "test_1225__node_and_property_carried_std", "schema": "standard"}

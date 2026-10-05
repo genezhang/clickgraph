@@ -3,7 +3,7 @@ WITH with_ag_cte_0 AS (SELECT
 FROM brahmand.users_bench AS a
 )
 SELECT 
-      ag.ag AS `ag`, 
+      any_value(ag.ag) AS `ag`, 
       count(*) AS `n`
 FROM with_ag_cte_0 AS ag
 GROUP BY ag.ag

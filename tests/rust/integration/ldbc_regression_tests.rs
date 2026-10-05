@@ -4607,6 +4607,36 @@ async fn grouping_a_with_scalar_groups_by_its_own_column_1222() {
 }
 
 // ---------------------------------------------------------------------------
+// #1225: a property carried through WITH is a scalar, not a renamed node
+//
+// `WITH a.age AS ag` was registered as a rename of the node `a` (labels copied), so `ag` was typed
+// as a Node: `RETURN ag AS x` dropped the alias, a chained `WITH ag, count(*)` keyed the column
+// `ag.id`, and `WITH u, u.name AS n RETURN n` rendered three `n.*` columns.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_property_carried_through_with_keeps_its_names_1225() {
+    let schema = load_schema_from("schemas/test/social_integration.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User) WITH a.age AS ag RETURN ag AS x ORDER BY x",
+    )
+    .await;
+    assert!(sql.contains("AS \"x\""), "{sql}");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User) WITH a.age AS ag WITH ag, count(*) AS c RETURN ag, c",
+    )
+    .await;
+    assert!(sql.contains("AS \"ag\"") && !sql.contains("ag.id"), "{sql}");
+    let sql = generate_sql_inline(&schema, "MATCH (u:User) WITH u, u.name AS n RETURN n").await;
+    assert!(
+        sql.contains("AS \"n\"") && !sql.contains("\"n.name\"") && !sql.contains("\"n.user_id\""),
+        "{sql}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
 // The emitter's path-variable "spurious JOIN" cleanup kept only joins whose alias was read, so

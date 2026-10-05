@@ -1,9 +1,8 @@
 WITH with_ag_cte_0 AS (SELECT 
-      a.age AS `ag`
+      a.age AS "ag"
 FROM test_integration.users_test AS a
 )
 SELECT 
-      any_value(ag.ag) AS `ag`, 
-      count(*) AS `n`
+      ag.ag AS "x"
 FROM with_ag_cte_0 AS ag
-GROUP BY ag.ag
+ORDER BY x ASC
