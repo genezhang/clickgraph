@@ -1885,6 +1885,15 @@ impl GraphJoinInference {
                         _ => {}
                     }
 
+                    // #1187: the scope's own fixed hops are pairwise relationship-unique
+                    // too (`MATCH (x)-[:R]->(y)-[:R]->(c) WITH c ...`); the root-level
+                    // constraints below only see the final scope's patterns.
+                    let inner_uniqueness =
+                        super::cross_branch::generate_relationship_uniqueness_constraints(
+                            &inner_metadata,
+                            graph_schema,
+                        );
+
                     // Topological sort and anchor selection
                     // Don't use property-based anchor preference for inner scope —
                     // the structural ordering takes priority here.
@@ -1907,7 +1916,7 @@ impl GraphJoinInference {
                                 optional_aliases: HashSet::new(),
                                 anchor_table,
                                 cte_references: std::collections::HashMap::new(),
-                                correlation_predicates: vec![],
+                                correlation_predicates: inner_uniqueness,
                             }));
 
                             // Return modified WithClause with GraphJoins-wrapped input

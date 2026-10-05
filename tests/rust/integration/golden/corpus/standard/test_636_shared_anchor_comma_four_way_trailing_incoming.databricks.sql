@@ -10,3 +10,4 @@ INNER JOIN test_integration.posts_test AS t0 ON t0.author_id = p.p1_p_user_id
 INNER JOIN test_integration.post_likes_test AS t1 ON t1.user_id = p.p1_p_user_id
 INNER JOIN test_integration.user_follows_test AS t2 ON t2.follower_id = p.p1_p_user_id
 INNER JOIN test_integration.user_follows_test AS t3 ON t3.followed_id = p.p1_p_user_id
+WHERE t3.follow_id <> t2.follow_id

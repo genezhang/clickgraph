@@ -3842,6 +3842,79 @@ fn restructure_post_with_optional_or_insert_cte_join(
 /// `is_cypher_union_plan`) — that FROM is the first arm's own independent scan
 /// and must never be cross-joined to another arm's WITH-CTE, since the
 /// accumulated `cte_references` belongs to that other arm.
+/// #1187: within one MATCH two fixed hops must not traverse the same relationship. The
+/// analyzer records that as `correlation_predicates` (`t3 <> t2 ...`); a plain query renders
+/// them as WHERE conjuncts, but once a `WITH` has been replaced by its CTE the rebuilt
+/// `GraphJoins` carries none — `WITH c MATCH (c)-[:R]->(m)-[:R]->(a)` silently allowed the
+/// same edge twice (count 1 instead of 0 over one self-loop edge).
+///
+/// The predicates that mention no WITH-carried alias are exactly these guards (a genuine
+/// cross-CTE correlation names a carried alias, and is a JOIN condition elsewhere). They are
+/// added to the WHERE — unless a VLP CTE is the FROM (handled with the CTE join, see
+/// `resolve_cross_table_with_cte_joins`), the plan is a UNION shell, or one is already there.
+fn apply_hop_uniqueness_after_with(
+    render_plan: &mut RenderPlan,
+    cte_references: &HashMap<String, String>,
+    original_correlation_predicates: &[LogicalExpr],
+    is_cypher_union_plan: bool,
+) {
+    if is_cypher_union_plan || cte_references.is_empty() || render_plan.union.0.is_some() {
+        return;
+    }
+    let FromTableItem(Some(from_ref)) = &render_plan.from else {
+        return;
+    };
+    if from_ref.name.starts_with("vlp_") {
+        return;
+    }
+    // Only guards between hops THIS scope renders: the list also carries the inner
+    // scopes' guards (they apply inside their CTE bodies), whose aliases are not bound here.
+    let mut bound: HashSet<String> = render_plan
+        .joins
+        .0
+        .iter()
+        .map(|j| j.table_alias.clone())
+        .collect();
+    if let Some(alias) = &from_ref.alias {
+        bound.insert(alias.clone());
+    }
+    let mut conjuncts = render_plan
+        .filters
+        .0
+        .take()
+        .map(crate::render_plan::plan_builder_utils::split_render_and_conjuncts)
+        .unwrap_or_default();
+    for pred in original_correlation_predicates {
+        let Ok(whole @ RenderExpr::OperatorApplicationExp(_)) = RenderExpr::try_from(pred.clone())
+        else {
+            continue;
+        };
+        if cte_references
+            .keys()
+            .any(|alias| super::expression_utils::references_alias(&whole, alias))
+        {
+            continue;
+        }
+        let mut referenced = HashSet::new();
+        collect_aliases_from_single_render_expr(&whole, &mut referenced);
+        if !referenced.iter().all(|a| bound.contains(a)) {
+            continue;
+        }
+        if !conjuncts
+            .iter()
+            .any(|c| format!("{c:?}") == format!("{whole:?}"))
+        {
+            conjuncts.push(whole);
+        }
+    }
+    render_plan.filters.0 = conjuncts.into_iter().reduce(|acc, e| {
+        RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::And,
+            operands: vec![acc, e],
+        })
+    });
+}
+
 /// The first of `aliases` that is the start or end node of the VLP CTE in FROM.
 fn carried_vlp_endpoint<'a>(render_plan: &RenderPlan, aliases: &'a [String]) -> Option<&'a str> {
     let FromTableItem(Some(from_ref)) = &render_plan.from else {
@@ -3922,6 +3995,7 @@ fn resolve_cross_table_with_cte_joins(
                     .push(alias.clone());
             }
 
+            let from_alias = from_ref.alias.clone();
             let from_is_vlp_cte = from_ref.name.starts_with("vlp_")
                 && crate::query_planner::logical_plan::is_supported_with_vlp_chain(
                     current_plan,
@@ -3982,7 +4056,17 @@ fn resolve_cross_table_with_cte_joins(
                         // these predicates alone. With any other FROM the join already
                         // exists with its own condition and this list is not applied.
                         if !mentions_cte && from_is_vlp_cte {
-                            uncorrelated_predicates.push(whole);
+                            // (an inner scope's guard — see `apply_hop_uniqueness_after_with`
+                            // — names aliases this scope never renders: not applicable here)
+                            let mut referenced = HashSet::new();
+                            collect_aliases_from_single_render_expr(&whole, &mut referenced);
+                            let bound = |a: &String| {
+                                render_plan.joins.0.iter().any(|j| &j.table_alias == a)
+                                    || from_alias.as_ref() == Some(a)
+                            };
+                            if referenced.iter().all(bound) {
+                                uncorrelated_predicates.push(whole);
+                            }
                             continue;
                         }
                         // Rewrite the operands to use CTE column names
@@ -9630,6 +9714,14 @@ pub(crate) fn build_chained_with_match_cte_plan(
         scope,
         is_cypher_union_plan,
     )?;
+
+    // #1187: the pairwise relationship-uniqueness guard of the scope's fixed hops.
+    apply_hop_uniqueness_after_with(
+        &mut render_plan,
+        &cte_references,
+        &original_correlation_predicates,
+        is_cypher_union_plan,
+    );
 
     // When FROM is None (Union shell) but CTE references exist, add CTE cross-joins
     // to each Union branch directly. This handles the case where Direct Union rendering
