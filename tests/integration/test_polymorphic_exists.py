@@ -90,3 +90,20 @@ def test_size_pattern_matches_the_match_oracle(rel_type, target):
     assert sized("-[:{t}]->") == out
     assert sized("<-[:{t}]-") == inc
     assert sized("-[:{t}]-") == {uid: out[uid] + inc[uid] for uid in everyone}
+
+
+@pytest.mark.parametrize("rel_type", TYPES)
+def test_undirected_unlabeled_target_aggregate_is_out_plus_in_1250(rel_type):
+    """`(u)-[:T]-()` per user == `->()` + `<-()` (the directed forms were already right)."""
+    everyone = _ids("MATCH (u:User) RETURN u.user_id AS id")
+
+    def counts(arrow):
+        got = _counts(
+            f"MATCH (u:User){arrow.format(t=rel_type)}() RETURN u.user_id AS id, count(*) AS n"
+        )
+        return {uid: got.get(uid, 0) for uid in everyone}
+
+    out, inc, both = counts("-[:{t}]->"), counts("<-[:{t}]-"), counts("-[:{t}]-")
+    assert both == {uid: out[uid] + inc[uid] for uid in everyone}
+    total = _counts(f"MATCH (u:User)-[:{rel_type}]-() RETURN 1 AS id, count(*) AS n")
+    assert total[1] == sum(out.values()) + sum(inc.values())

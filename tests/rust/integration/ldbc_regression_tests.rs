@@ -4963,6 +4963,31 @@ async fn polymorphic_size_pattern_restricts_edge_type_and_resolves_unlabeled_end
 }
 
 // ---------------------------------------------------------------------------
+// #1250: an AGGREGATE over an undirected hop whose target is unlabeled (so it expands into one
+// UNION arm per label, each splitting into forward/reverse) lost every reverse arm: the emitter
+// rendered only each arm's own FROM/JOIN/WHERE, dropping the arm's inner UNION ALL.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn aggregate_over_undirected_unlabeled_target_keeps_the_reverse_arms_1250() {
+    let schema = load_schema_from("schemas/examples/social_polymorphic.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (u:User)-[:FOLLOWS]-() RETURN u.user_id AS id, count(*) AS n",
+    )
+    .await;
+    // Post arm + User arm, each forward and reverse
+    assert_eq!(sql.matches("UNION ALL").count(), 3, "{sql}");
+    // the edge alias number depends on how many queries ran before in the process
+    let from_u = regex::Regex::new(r"\w+\.from_id = u\.user_id").unwrap();
+    let to_u = regex::Regex::new(r"u\.user_id = \w+\.to_id").unwrap();
+    assert!(
+        from_u.is_match(&sql) && to_u.is_match(&sql),
+        "both orientations must be present:\n{sql}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
 // The emitter's path-variable "spurious JOIN" cleanup kept only joins whose alias was read, so
