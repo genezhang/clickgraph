@@ -3962,6 +3962,77 @@ pub(crate) fn is_empty_placeholder(p: &super::RenderPlan) -> bool {
         )
 }
 
+/// See the `#1252` note in [`normalize_union_branches`]: when any arm exports one bare alias for
+/// two different expressions, add `<table alias>.<alias>` copies of the property items (in every
+/// arm, so the column sets stay equal) for the colliding names.
+fn qualify_colliding_bare_aliases(union_plans: Vec<super::RenderPlan>) -> Vec<super::RenderPlan> {
+    use super::{RenderPlan, SelectItem};
+    use std::collections::BTreeSet;
+
+    fn collisions(plan: &RenderPlan, out: &mut BTreeSet<String>) {
+        let mut seen: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+        for item in &plan.select.items {
+            if let Some(alias) = item.col_alias.as_ref() {
+                let expr = item.expression.to_sql();
+                match seen.get(alias.0.as_str()) {
+                    Some(prev) if *prev != expr => {
+                        out.insert(alias.0.clone());
+                    }
+                    Some(_) => {}
+                    None => {
+                        seen.insert(alias.0.as_str(), expr);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut colliding: BTreeSet<String> = BTreeSet::new();
+    for plan in &union_plans {
+        collisions(plan, &mut colliding);
+    }
+    if colliding.is_empty() {
+        return union_plans;
+    }
+
+    fn add_qualified(plan: &mut RenderPlan, colliding: &BTreeSet<String>) {
+        let mut extra: Vec<SelectItem> = Vec::new();
+        for item in &plan.select.items {
+            let (Some(alias), RenderExpr::PropertyAccessExp(pa)) =
+                (item.col_alias.as_ref(), &item.expression)
+            else {
+                continue;
+            };
+            if colliding.contains(&alias.0) {
+                extra.push(SelectItem {
+                    expression: item.expression.clone(),
+                    col_alias: Some(super::render_expr::ColumnAlias(format!(
+                        "{}.{}",
+                        pa.table_alias.0, alias.0
+                    ))),
+                });
+            }
+        }
+        plan.select.items.extend(extra);
+        // the arm's own inner UNION ALL arms (forward/reverse) carry their own select items
+        if let Some(inner) = plan.union.0.as_mut() {
+            for b in inner.input.iter_mut() {
+                if !b.select.items.is_empty() {
+                    add_qualified(b, colliding);
+                }
+            }
+        }
+    }
+
+    union_plans
+        .into_iter()
+        .map(|mut plan| {
+            add_qualified(&mut plan, &colliding);
+            plan
+        })
+        .collect()
+}
+
 /// Normalize UNION branch SELECT items so all branches have the same columns.
 /// For denormalized node queries where from_node_properties and to_node_properties
 /// might have different property sets, we need to:
@@ -3985,6 +4056,14 @@ pub(super) fn normalize_union_branches(
     if union_plans.iter().all(is_empty_placeholder) {
         return union_plans;
     }
+
+    // #1252: an arm that exports the properties of BOTH endpoints can carry the same bare alias
+    // twice (`u` and an anonymous target that are both Users → two `user_id` items). The
+    // by-alias map below keeps one of them, so an aggregate argument naming `u.user_id` could
+    // read the OTHER node's column. Where such a collision exists, every arm also exports its
+    // items under the qualified `<table alias>.<alias>` name — the exact alias the aggregate
+    // path looks up first — so each reference stays bound to its own node.
+    let union_plans = qualify_colliding_bare_aliases(union_plans);
 
     // Collect the unified column aliases from the REAL (non-placeholder) branches
     // only (sorted for deterministic order). Pruned placeholder branches then adopt

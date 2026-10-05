@@ -107,3 +107,29 @@ def test_undirected_unlabeled_target_aggregate_is_out_plus_in_1250(rel_type):
     assert both == {uid: out[uid] + inc[uid] for uid in everyone}
     total = _counts(f"MATCH (u:User)-[:{rel_type}]-() RETURN 1 AS id, count(*) AS n")
     assert total[1] == sum(out.values()) + sum(inc.values())
+
+
+def _scalar(query, column="n"):
+    result = execute_cypher(query, schema_name=SCHEMA, raise_on_error=False)
+    assert "results" in result, (query, result)
+    return result["results"][0][column]
+
+
+@pytest.mark.parametrize("uid", [1, 2, 3, 4, 5])
+@pytest.mark.parametrize("arrow", ["-[:FOLLOWS]->", "<-[:FOLLOWS]-", "-[:FOLLOWS]-"])
+def test_aggregate_argument_reads_the_anchor_not_the_anonymous_target_1252(uid, arrow):
+    matches = len(
+        _ids(f"MATCH (u:User){arrow}(:User) WHERE u.user_id = {uid} RETURN u.user_id AS id")
+    )
+    exists = matches > 0
+    q = f"MATCH (u:User){arrow}() WHERE u.user_id = {uid} RETURN "
+    assert int(_scalar(q + "count(DISTINCT u) AS n")) == (1 if exists else 0)
+    assert int(_scalar(q + "count(DISTINCT u.user_id) AS n")) == (1 if exists else 0)
+    if exists:
+        assert int(_scalar(q + "max(u.user_id) AS n")) == uid
+        assert int(_scalar(q + "min(u.user_id) AS n")) == uid
+
+
+def test_undirected_distinct_anchor_count_includes_target_only_users_1252():
+    # user 4 is only ever followed: the reverse direction must contribute it
+    assert int(_scalar("MATCH (u:User)-[:FOLLOWS]-() RETURN count(DISTINCT u) AS n")) == 4
