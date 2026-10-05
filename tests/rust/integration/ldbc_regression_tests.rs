@@ -5086,20 +5086,30 @@ async fn vlp_bound_nodes_get_no_node_table_join_after_with_1182() {
     );
 }
 
-/// `WITH c, z` + a hop that closes on `c` after the path: the WITH CTE ends up joined
-/// twice (`c_z` and `c`) with nothing tying the copies — 65408 rows against 73. Loud.
+/// `WITH c, z` + a hop that closes on `c` after the path: the WITH CTE must not be joined
+/// twice (`c_z` and `c`, nothing tying the copies: 65408 rows against 73). The shape is
+/// still broken (the hop from `z` is not rendered, so ClickHouse rejects the unbound `t2`) —
+/// it must at least not return rows.
 #[tokio::test]
-async fn two_carried_nodes_closing_hop_after_vlp_fails_loud_1182() {
+async fn two_carried_nodes_closing_hop_after_vlp_does_not_double_join_the_cte_1182() {
     let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
-    let err = try_generate_sql_inline(
+    let result = try_generate_sql_inline(
         &schema,
         "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c, z \
          MATCH (z)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User)<-[:FOLLOWS]-(c) \
          RETURN z.user_id, c.user_id, a.user_id, b.user_id",
     )
-    .await
-    .expect_err("must not return a self-joined WITH CTE");
-    assert!(err.contains("joined twice"), "unexpected error: {err}");
+    .await;
+    if let Ok(sql) = result {
+        let outer = sql
+            .rsplit_once("\nFROM vlp_")
+            .expect("VLP is the outer FROM")
+            .1;
+        assert!(
+            outer.matches("with_c_z_cte_").count() <= 1,
+            "#1182: the WITH CTE is joined twice, with nothing tying the copies:\n{sql}"
+        );
+    }
 }
 
 /// A fixed hop next to a path through a COMPOSITE-key node: the path CTE's id is a
@@ -5119,5 +5129,48 @@ async fn composite_key_hop_next_to_vlp_fails_loud_1182() {
             .await
             .expect_err("must not render a node join that matches nothing");
         assert!(err.contains("composite key"), "unexpected error: {err}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #1192: a required path nested on the RIGHT of a hop (`(a)-[*]->(b)<-[:R]-(c)`, or a path
+// written backwards followed by a hop) was expanded by the nested-pattern code as if it were a
+// hop: its relationship came out a second time as an ordinary edge join, tied to nothing else,
+// plus a node-table join that mentions its own alias nowhere.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn path_nested_on_the_right_is_not_expanded_as_a_hop_1192() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let edge_join = regex::Regex::new(r"JOIN social\.user_follows_bench AS t\d+ ON").unwrap();
+    for (query, hops) in [
+        (
+            "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)<-[:FOLLOWS]-(c:User) RETURN c.user_id",
+            1,
+        ),
+        (
+            "MATCH (a:User)<-[:FOLLOWS*1..2]-(b:User)<-[:FOLLOWS]-(c:User) RETURN c.user_id",
+            1,
+        ),
+        (
+            "MATCH (a:User)<-[:FOLLOWS*1..2]-(b:User)<-[:FOLLOWS]-(c:User)<-[:FOLLOWS]-(d:User) \
+             RETURN a.user_id, d.user_id",
+            2,
+        ),
+    ] {
+        let sql = generate_sql_inline(&schema, query).await;
+        let outer = sql
+            .rsplit_once("\nFROM vlp_")
+            .expect("VLP is the outer FROM")
+            .1;
+        assert_eq!(
+            edge_join.find_iter(outer).count(),
+            hops,
+            "#1192: one edge join per fixed hop, none for the path itself:\n{sql}"
+        );
+        assert!(
+            !outer.contains("social.users_bench AS"),
+            "#1192: no node-table join for a node the path binds:\n{sql}"
+        );
     }
 }

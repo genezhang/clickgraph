@@ -42,6 +42,28 @@ use crate::render_plan::utils::alias_utils::get_anchor_alias_from_plan;
 // Additional types
 use crate::render_plan::cte_extraction::RelationshipColumns;
 
+thread_local! {
+    /// #1192: set by the `GraphJoins` arm while it extracts the joins of its input, when that
+    /// input is a shape a path nested on a hop's right can safely be left unexpanded in
+    /// (a plain scope, or a post-WITH chain `is_supported_with_vlp_chain` verifies).
+    static SKIP_NESTED_RIGHT_VLP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Restores [`SKIP_NESTED_RIGHT_VLP`] to its previous value when dropped.
+struct SkipNestedRightVlpGuard(bool);
+
+impl SkipNestedRightVlpGuard {
+    fn set(value: bool) -> Self {
+        Self(SKIP_NESTED_RIGHT_VLP.with(|c| c.replace(value)))
+    }
+}
+
+impl Drop for SkipNestedRightVlpGuard {
+    fn drop(&mut self) {
+        SKIP_NESTED_RIGHT_VLP.with(|c| c.set(self.0));
+    }
+}
+
 /// Helper function to find multi-type relationship patterns in a logical plan
 /// Returns the GraphRel with multiple relationship types if found
 /// IMPORTANT: Excludes true VLP patterns, but includes implicit *1 for multi-type
@@ -1798,8 +1820,19 @@ impl JoinBuilder for LogicalPlan {
                     existing_aliases
                 );
 
-                let input_joins =
-                    <LogicalPlan as JoinBuilder>::extract_joins(&graph_joins.input, schema)?;
+                let input_joins = {
+                    // #1192: a path nested on a hop's right is not a hop to expand — in a
+                    // plain scope, or a post-WITH chain verified for it.
+                    let _skip = SkipNestedRightVlpGuard::set(
+                        graph_joins.cte_references.is_empty()
+                            || crate::query_planner::logical_plan::is_supported_with_vlp_chain(
+                                &graph_joins.input,
+                                &|alias| graph_joins.cte_references.contains_key(alias),
+                                &|gr| !super::from_builder::is_fixed_length_vlp(gr),
+                            ),
+                    );
+                    <LogicalPlan as JoinBuilder>::extract_joins(&graph_joins.input, schema)?
+                };
 
                 // CRITICAL FIX: For FK-edge patterns, detect duplicate table joins
                 // Build a map of alias -> table_name from joins and FROM markers
@@ -1942,28 +1975,28 @@ impl JoinBuilder for LogicalPlan {
                 // `apply_vlp_rewrites` has already turned its condition into
                 // `t.<col> = <edge>.<col>` — a join that mentions the node's alias nowhere,
                 // i.e. a cross join with the node table (8 × 8 = 64× over-count).
-                let vlp_bound_nodes: std::collections::HashSet<String> =
-                    if crate::query_planner::logical_plan::is_supported_with_vlp_chain(
+                let vlp_bound_nodes: std::collections::HashSet<String> = if graph_joins
+                    .cte_references
+                    .is_empty()
+                    || crate::query_planner::logical_plan::is_supported_with_vlp_chain(
                         &graph_joins.input,
                         &|alias| graph_joins.cte_references.contains_key(alias),
                         &|gr| !super::from_builder::is_fixed_length_vlp(gr),
                     ) {
-                        let mut rels = Vec::new();
-                        collect_graph_rels(&graph_joins.input, &mut rels);
-                        rels.into_iter()
-                            .filter(|gr| {
-                                gr.variable_length.is_some()
-                                    && !super::from_builder::is_fixed_length_vlp(gr)
-                                    && !gr.is_optional.unwrap_or(false)
-                            })
-                            .flat_map(|gr| {
-                                [gr.left_connection.clone(), gr.right_connection.clone()]
-                            })
-                            .collect()
-                    } else {
-                        // Not a shape this is verified for (nor a post-WITH scope): unchanged.
-                        std::collections::HashSet::new()
-                    };
+                    let mut rels = Vec::new();
+                    collect_graph_rels(&graph_joins.input, &mut rels);
+                    rels.into_iter()
+                        .filter(|gr| {
+                            gr.variable_length.is_some()
+                                && !super::from_builder::is_fixed_length_vlp(gr)
+                                && !gr.is_optional.unwrap_or(false)
+                        })
+                        .flat_map(|gr| [gr.left_connection.clone(), gr.right_connection.clone()])
+                        .collect()
+                } else {
+                    // A post-WITH scope of a shape this is not verified for: unchanged.
+                    std::collections::HashSet::new()
+                };
 
                 for input_join in input_joins {
                     // A node join (no from/to id columns) for a VLP-bound node: see above.
@@ -2571,6 +2604,23 @@ impl JoinBuilder for LogicalPlan {
                         <LogicalPlan as JoinBuilder>::extract_joins(&graph_rel.left, schema)?;
                     log::debug!("  ↳ Got {} joins from left GraphRel", left_joins.len());
                     joins.append(&mut left_joins);
+                }
+
+                // #1192: a required CTE-backed path nested on the RIGHT (`(a)-[*]->(b)<-[:R]-(c)`
+                // is normalized to a hop whose right child is the path) is not a hop to expand:
+                // the nested-pattern code below would emit the path's own relationship as an
+                // ordinary edge join (`followed_id = t.end_id`), a second, untied copy of the
+                // edge table. The path is the CTE in FROM and the analyzer's joins already tie
+                // this hop to it — the same as when the path is nested on the left, where the
+                // recursion above yields no joins for it.
+                if let LogicalPlan::GraphRel(inner_rel) = graph_rel.right.as_ref() {
+                    if SKIP_NESTED_RIGHT_VLP.with(|c| c.get())
+                        && inner_rel.variable_length.is_some()
+                        && !inner_rel.is_optional.unwrap_or(false)
+                        && !super::from_builder::is_fixed_length_vlp(inner_rel)
+                    {
+                        return Ok(joins);
+                    }
                 }
 
                 // Also check right side for nested GraphRel (e.g., (a)-[r1]->(b)-[r2]->(c))
