@@ -1013,6 +1013,33 @@ pub fn select_anchor(joins: &[Join], plan_ctx: Option<&PlanCtx>) -> Option<Strin
     optional.first().map(|(alias, _)| alias.to_string())
 }
 
+/// The single anchor alias a FROM-marker-less join set hangs off (#1234).
+///
+/// A UNION branch's joins are collected on their own; when the branch's anchor is the plan's FROM
+/// table (rendered from the pattern, not from a join) the set has NO FROM marker and its first
+/// join depends on an alias no join defines (`t1 needs n0`). Returns that alias when there is no
+/// marker and exactly ONE alias is depended on without being defined; empty otherwise (a set with
+/// several free aliases is genuinely unresolvable and keeps failing loudly in the sort).
+pub fn unanchored_base_alias(joins: &[Join]) -> HashSet<String> {
+    if joins.iter().any(|j| j.joining_on.is_empty()) {
+        return HashSet::new();
+    }
+    let defined: HashSet<&str> = joins.iter().map(|j| j.table_alias.as_str()).collect();
+    let mut free: HashSet<String> = HashSet::new();
+    for j in joins {
+        for dep in extract_join_dependencies(j) {
+            if !defined.contains(dep.as_str()) {
+                free.insert(dep);
+            }
+        }
+    }
+    if free.len() == 1 {
+        free
+    } else {
+        HashSet::new()
+    }
+}
+
 /// Topological sort of joins ensuring each JOIN only references already-available tables.
 ///
 /// FROM markers (empty conditions) are placed first — they have no dependencies.
