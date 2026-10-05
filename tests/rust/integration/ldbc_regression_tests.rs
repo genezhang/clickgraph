@@ -4636,6 +4636,17 @@ async fn a_property_carried_through_with_keeps_its_names_1225() {
     );
 }
 
+#[tokio::test]
+async fn a_scalar_exported_next_to_its_node_groups_by_its_column_1227() {
+    let schema = load_schema_from("schemas/test/social_integration.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User) WITH a, a.age AS ag RETURN ag, count(*) AS n",
+    )
+    .await;
+    assert!(sql.contains("GROUP BY a_ag.ag"), "{sql}");
+}
+
 // ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
