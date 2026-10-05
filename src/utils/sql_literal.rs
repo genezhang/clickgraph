@@ -5,23 +5,36 @@
 //! pass through unchanged; the ones whose SQL spelling differs are translated here so the
 //! literal stays valid and keeps the Cypher value:
 //!
-//! - `\'` → `''` (the quote-doubling every SQL scanner in this crate already understands)
+//! - `\'` → `''` on ClickHouse, `\'` on Databricks (Spark's documented escape: `'it''s'` is two
+//!   adjacent literals there and reads as `its`; ClickHouse reads backslash escapes too, but `''`
+//!   stays the ClickHouse spelling so existing output is unchanged)
 //! - `\"` → `"`
 //! - `\uXXXX` / `\UXXXXXXXX` → the character itself (ClickHouse has no `\u` escape)
-//! - a bare `'` (from a double-quoted literal) → `''`
+//! - a bare `'` (from a double-quoted literal) → the same quote spelling
 //!
 //! An escaped backslash is consumed as a pair, so `\\'` is a backslash followed by a bare quote.
 
+use crate::sql_generator::SqlDialect;
+
 /// Render the raw body of a Cypher string literal as a quoted SQL literal.
 pub fn cypher_string_to_sql_literal(raw: &str) -> String {
+    cypher_string_to_sql_literal_for(raw, crate::server::query_context::get_current_dialect())
+}
+
+/// [`cypher_string_to_sql_literal`] for an explicit dialect.
+pub fn cypher_string_to_sql_literal_for(raw: &str, dialect: SqlDialect) -> String {
+    let quote = match dialect {
+        SqlDialect::Databricks => "\\'",
+        _ => "''",
+    };
     let mut out = String::with_capacity(raw.len() + 2);
     out.push('\'');
     let mut chars = raw.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
-            '\'' => out.push_str("''"),
+            '\'' => out.push_str(quote),
             '\\' => match chars.next() {
-                Some('\'') => out.push_str("''"),
+                Some('\'') => out.push_str(quote),
                 Some('"') => out.push('"'),
                 Some('\\') => out.push_str("\\\\"),
                 Some(u @ ('u' | 'U')) => {
@@ -35,7 +48,7 @@ pub fn cypher_string_to_sql_literal(raw: &str) -> String {
                         Some(ch) => {
                             chars.nth(width - 1);
                             match ch {
-                                '\'' => out.push_str("''"),
+                                '\'' => out.push_str(quote),
                                 '\\' => out.push_str("\\\\"),
                                 other => out.push(other),
                             }
@@ -114,6 +127,18 @@ mod tests {
     fn plain_and_bare_quote() {
         assert_eq!(lit("abc"), "'abc'");
         assert_eq!(lit("it's"), "'it''s'");
+    }
+
+    #[test]
+    fn databricks_escapes_a_quote_with_a_backslash_1217() {
+        use super::{cypher_string_to_sql_literal_for as lit_for, SqlDialect::Databricks};
+        // `'it''s'` is two adjacent literals in Spark (reads `its`)
+        assert_eq!(lit_for("it's", Databricks), r"'it\'s'");
+        assert_eq!(lit_for(r"it\'s", Databricks), r"'it\'s'");
+        assert_eq!(lit_for(r"a\\'b", Databricks), r"'a\\\'b'");
+        assert_eq!(lit_for(r"\u0027", Databricks), r"'\''");
+        // ClickHouse spelling unchanged
+        assert_eq!(lit_for("it's", super::SqlDialect::ClickHouse), "'it''s'");
     }
 
     #[test]

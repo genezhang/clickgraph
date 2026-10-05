@@ -165,6 +165,11 @@ fn discover_derived_cte_names(sql: &str, base: &str) -> Vec<String> {
     while i < sql.len() {
         let b = bytes[i];
         if in_string {
+            // A backslash escapes the next byte (`\'` — the Databricks spelling of a quote).
+            if b == b'\\' && i + 1 < sql.len() {
+                i += 2;
+                continue;
+            }
             if b == b'\'' {
                 if i + 1 < sql.len() && bytes[i + 1] == b'\'' {
                     i += 2;
@@ -237,7 +242,22 @@ fn rewrite_cte_name_structural(sql: &str, old: &str, new: &str) -> String {
         let b = bytes[i];
         if in_string {
             // Copy verbatim until the closing quote (handle '' escape).
+            if !b.is_ascii() {
+                // multi-byte char: copy it whole (a per-byte `as char` would mangle it)
+                let ch = sql[i..].chars().next().unwrap();
+                out.push(ch);
+                i += ch.len_utf8();
+                continue;
+            }
             out.push(b as char);
+            // A backslash escapes the next byte (`\'` — the Databricks spelling of a quote).
+            if b == b'\\' && i + 1 < sql.len() {
+                // sql is indexed by bytes here; copy the escaped char whole
+                let ch = sql[i + 1..].chars().next().unwrap();
+                out.push(ch);
+                i += 1 + ch.len_utf8();
+                continue;
+            }
             if b == b'\'' {
                 if i + 1 < sql.len() && bytes[i + 1] == b'\'' {
                     out.push('\'');
@@ -9931,6 +9951,17 @@ mod tests {
         assert_eq!(
             render_expr_to_sql_string(&expr, &[]),
             "a.user_id != b.user_id"
+        );
+    }
+
+    #[test]
+    fn cte_rewrite_scanner_honours_backslash_escaped_quote_and_multibyte_1217() {
+        // Databricks spells a literal quote `\'`; the literal does not end there, so the
+        // `vlp_a_b` after it is still INSIDE the string and must stay intact.
+        let sql = "FROM vlp_a_b WHERE x = 'it\\'s vlp_a_b é' AND y IN (SELECT 1 FROM vlp_a_b)";
+        assert_eq!(
+            rewrite_cte_name_structural(sql, "vlp_a_b", "z"),
+            "FROM z WHERE x = 'it\\'s vlp_a_b é' AND y IN (SELECT 1 FROM z)"
         );
     }
 

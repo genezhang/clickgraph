@@ -1,2 +1,2 @@
 SELECT 
-      'it''s' AS `r`
+      'it\'s' AS `r`
