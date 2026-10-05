@@ -978,6 +978,23 @@ impl GraphJoinInference {
                                 branch_joins.len()
                             );
                             let deduped = helpers::deduplicate_joins(branch_joins);
+                            let mut deduped = deduped;
+                            // #1234: a branch whose anchor is the plan's own FROM table has no
+                            // FROM marker (its first join depends on an alias no join defines);
+                            // give that single base alias its marker.
+                            for base_alias in super::join_generation::unanchored_base_alias(&deduped)
+                            {
+                                let table = plan_ctx
+                                    .get_table_ctx(&base_alias)
+                                    .ok()
+                                    .and_then(|t| t.get_label_opt())
+                                    .and_then(|l| graph_schema.node_schema_opt(&l))
+                                    .map(|n| n.full_table_name());
+                                if let Some(table) = table {
+                                    helpers::JoinBuilder::from_marker(table, &base_alias)
+                                        .build_and_insert_at(&mut deduped, 0);
+                                }
+                            }
                             // Don't use property-based anchor preference for UNION branches —
                             // BidirectionalUnion branches have direction-specific join chains
                             // where the anchor must match the branch direction.

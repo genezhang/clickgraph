@@ -5135,6 +5135,43 @@ async fn with_over_an_undirected_hop_keeps_both_direction_arms_1261() {
 }
 
 // ---------------------------------------------------------------------------
+// #1234: the WITH body of a 3-hop pattern with an undirected hop is a UNION of direction arms; each
+// arm's joins have no FROM marker for the anchor, so the topological sort found nothing to start
+// from (swallowed as a WARN) and the reverse arm rendered unplanned: `t1` used before it is joined.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn with_over_a_three_hop_pattern_with_an_undirected_hop_plans_every_arm_1234() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (n0:User)-[:FOLLOWS]->(n1:User)-[:FOLLOWS]->(n2:User)-[:FOLLOWS]-(n3:User) \
+         WITH n0, count(*) AS k RETURN sum(k) AS n",
+    )
+    .await;
+    // both direction arms start FROM the anchor and chain n0 -> n1 -> n2 -> n3 with an edge
+    // alias between each node (edge aliases drift with how many queries ran before: t1 / t201)
+    let alias = regex::Regex::new(r"(?:FROM|JOIN) \S+ AS (\w+)").unwrap();
+    let arms: Vec<&str> = sql.split("UNION ALL").collect();
+    assert_eq!(arms.len(), 2, "{sql}");
+    for arm in arms {
+        let order: Vec<&str> = alias
+            .captures_iter(arm)
+            .map(|c| c.get(1).unwrap().as_str())
+            .collect();
+        let nodes: Vec<&&str> = order.iter().filter(|a| a.starts_with('n')).collect();
+        assert_eq!(nodes, vec![&"n0", &"n1", &"n2", &"n3"], "{arm}");
+        assert_eq!(order[0], "n0", "anchor must be the FROM table:\n{arm}");
+        for pair in order.windows(2) {
+            assert!(
+                !(pair[0].starts_with('n') && pair[1].starts_with('n')),
+                "two node tables joined without an edge between:\n{arm}"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
 // The emitter's path-variable "spurious JOIN" cleanup kept only joins whose alias was read, so
