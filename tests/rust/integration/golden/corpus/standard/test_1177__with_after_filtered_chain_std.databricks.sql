@@ -23,10 +23,13 @@ WITH RECURSIVE vlp_a_b AS (
     WHERE vp.hop_count < 2
       AND NOT array_contains(vp.path_edges, rel.follow_id)
 ), 
-with_b_cte_0 AS (SELECT 
-      end_id AS `p1_b_user_id`
+with_k_cte_0 AS (SELECT 
+      count(*) AS `k`
 FROM vlp_a_b AS t
+JOIN test_integration.users_test AS c ON 1 = 1
+INNER JOIN test_integration.user_follows_test AS t0 ON t0.follower_id = c.user_id AND t0.followed_id = t.start_id
+WHERE (c.full_name = 'Alice Smith' AND NOT array_contains(t.path_edges, t0.follow_id))
 )
 SELECT 
-      count(b.p1_b_user_id) AS `count(b)`
-FROM with_b_cte_0 AS b
+      k.k AS `k`
+FROM with_k_cte_0 AS k

@@ -1898,8 +1898,20 @@ impl GraphJoinInference {
                     // Don't use property-based anchor preference for inner scope —
                     // the structural ordering takes priority here.
                     let anchor_table = super::join_generation::select_anchor(&inner_joins, None);
+                    // #1177: a hop next to a path in this scope's body ties itself to the path's
+                    // CTE (`t1 ... = t.start_id`); like the outer scope, treat the VLP FROM alias
+                    // as available. Without it the sort failed and the scope silently lost EVERY
+                    // join (`... WITH count(*)` counted the path alone: 26 where 45 is correct).
+                    let mut inner_vlp_available: HashSet<String> = inner_plan_ctx_mut
+                        .get_vlp_endpoints()
+                        .values()
+                        .map(|info| info.vlp_alias.clone())
+                        .collect();
+                    if !inner_vlp_available.is_empty() {
+                        inner_vlp_available.insert(crate::server::query_context::vlp_from_alias());
+                    }
                     let topo_result =
-                        super::join_generation::topo_sort_joins(inner_joins, &HashSet::new());
+                        super::join_generation::topo_sort_joins(inner_joins, &inner_vlp_available);
 
                     match topo_result {
                         Ok(reordered_joins) => {

@@ -58,7 +58,13 @@ fn child_hop_predicates_are_safe_to_emit(
         Some(root) => has_with_clause_in_tree(&root) || has_with_clause_in_tree(&subtree),
         None => has_with_clause_in_tree(&subtree),
     };
-    if has_with {
+    // #1177: a WITH AFTER the chain (this scope is the WITH body, nothing carried in) is safe —
+    // the chained node's own join is kept because the predicate references it. Only a scope
+    // that consumes a WITH-carried node (a CTE alias) stays gated.
+    let consumes_with_cte = subtree
+        .any_node(|n| matches!(n, LogicalPlan::GraphRel(g) if !g.cte_references.is_empty()))
+        || subtree.any_node(|n| matches!(n, LogicalPlan::WithClause(_)));
+    if has_with && consumes_with_cte {
         return false;
     }
     let optional_child = [graph_rel.left.as_ref(), graph_rel.right.as_ref()]

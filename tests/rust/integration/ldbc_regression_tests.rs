@@ -4281,12 +4281,6 @@ async fn hop_path_uniqueness_guard_is_fenced_1175() {
             "no hop at all",
             "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN count(*)",
         ),
-        // The scope is rebuilt from a CTE after a WITH: not verified, left as it was.
-        (
-            "WITH after the pattern",
-            "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WITH b \
-             RETURN count(b)",
-        ),
     ] {
         let sql = generate_sql_inline(&schema, cypher).await;
         assert!(
@@ -4726,10 +4720,11 @@ async fn with_carried_node_filter_keeps_the_loud_refusal_1170() {
     );
 }
 
-/// Inside a WITH body the chained node's join is pruned when the WITH projection does
-/// not name it, so a `WHERE c.full_name` there is an unresolvable alias (Code 47).
+/// #1177: a WITH AFTER the chain. The body's join sort failed (`t1 needs ["t"]`) and the scope
+/// silently lost every join, so `WITH count(*)` counted the path alone and a `c` predicate
+/// referenced an unjoined alias (Code 47). The body now keeps the hop and its predicate.
 #[tokio::test]
-async fn with_after_a_filtered_chain_emits_no_unjoined_reference_1170() {
+async fn with_after_a_filtered_chain_keeps_the_hop_and_its_predicate_1177() {
     let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
     let sql = generate_sql_inline(
         &schema,
@@ -4737,9 +4732,43 @@ async fn with_after_a_filtered_chain_emits_no_unjoined_reference_1170() {
          WHERE c.name = 'v' WITH count(*) AS k RETURN k",
     )
     .await;
+    let body = sql.split("with_k_cte_0 AS").nth(1).expect("WITH body");
     assert!(
-        !sql.contains("c.full_name"),
-        "#1170: the WITH body has no `c` in scope; referencing it is Code 47:\n{sql}"
+        body.contains("AS c") && body.contains("c.full_name = 'v'"),
+        "#1177: the WITH body must join `c` and apply its predicate:\n{sql}"
+    );
+    assert!(
+        body.matches("user_follows_bench AS t").count() >= 1 && body.contains("t.start_id"),
+        "#1177: the body must keep the fixed hop tied to the path:\n{sql}"
+    );
+    // Unfiltered: still the hop (the count used to be the path alone).
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) \
+         WITH count(*) AS k RETURN k",
+    )
+    .await;
+    assert!(
+        sql.contains("t.start_id"),
+        "#1177: the hop's tie to the path was lost from the WITH body:\n{sql}"
+    );
+}
+
+/// A node a WITH CARRIED into the chain's scope is a CTE alias: its post-WITH predicate is still
+/// misread as a join key (#1177's other half), so that shape stays refused instead of rendering
+/// silently wrong rows.
+#[tokio::test]
+async fn with_carried_node_in_a_filtered_chain_stays_refused_1177() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let result = try_generate_sql_inline(
+        &schema,
+        "MATCH (c:User) WITH c MATCH (c)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) \
+         WHERE c.name = 'Alice Smith' RETURN count(*)",
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "#1177: a carried-node predicate in a chain scope must stay refused, got:\n{result:?}"
     );
 }
 
