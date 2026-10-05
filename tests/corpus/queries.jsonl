@@ -1419,3 +1419,12 @@
 {"cypher": "MATCH (a:User)-[:FOLLOWS*2..2]->(b:User) WHERE b.user_id = 3 RETURN count(*)", "name": "test_1199__poly_fixed_length_end_filter", "schema": "social_polymorphic"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS]->(m:User)-[:FOLLOWS]->(b:User) WHERE m.user_id = 3 RETURN count(*)", "name": "test_1199__poly_mid_chain_filter", "schema": "social_polymorphic"}
 {"cypher": "MATCH (a:User)-[:FOLLOWS*2..2]-(b:User) WHERE b.user_id = 3 RETURN count(*)", "name": "test_1199__undirected_fixed_length_end_filter_std", "schema": "standard"}
+{"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN count(*)", "name": "test_1175__hop_then_path_std", "schema": "standard"}
+{"cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS]->(d:User) RETURN count(*)", "name": "test_1175__path_then_hop_std", "schema": "standard"}
+{"cypher": "MATCH (c:User)-[:FOLLOWS]->(m:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN count(*)", "name": "test_1175__two_hops_then_path_std", "schema": "standard"}
+{"cypher": "MATCH (c:User)<-[:FOLLOWS]-(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN count(*)", "name": "test_1175__incoming_hop_then_path_std", "schema": "standard"}
+{"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN count(*)", "name": "test_1175__hop_then_path_poly", "schema": "social_polymorphic"}
+{"cypher": "MATCH (c:Airport)-[:FLIGHT]->(a:Airport)-[:FLIGHT*1..2]->(b:Airport) RETURN count(*)", "name": "test_1175__hop_then_path_den", "schema": "denormalized_flights"}
+{"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*0..2]->(b:User) RETURN count(*)", "name": "test_1175__zero_lower_bound_not_repaired_std", "schema": "standard"}
+{"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]-(b:User) RETURN count(*)", "name": "test_1175__undirected_path_not_repaired_std", "schema": "standard"}
+{"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WITH b RETURN count(b)", "name": "test_1175__with_after_pattern_not_repaired_std", "schema": "standard"}

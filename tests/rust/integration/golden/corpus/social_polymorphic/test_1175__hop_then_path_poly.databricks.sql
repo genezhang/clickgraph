@@ -26,9 +26,8 @@ WITH RECURSIVE vlp_a_b AS (
       AND rel.interaction_type = 'FOLLOWS' AND rel.from_type = 'User' AND rel.to_type = 'User'
 )
 SELECT 
-      t.start_id AS `a.user_id`, 
-      t.end_id AS `b.user_id`, 
-      t0.from_id AS `c.user_id`
+      count(*) AS `count(*)`
 FROM vlp_a_b AS t
-INNER JOIN brahmand.interactions AS t0 ON t0.to_id = t.end_id AND t0.interaction_type = 'FOLLOWS' AND t0.from_type = 'User' AND t0.to_type = 'User'
+JOIN brahmand.users_bench AS c ON 1 = 1
+INNER JOIN brahmand.interactions AS t0 ON t0.from_id = c.user_id AND t0.to_id = t.start_id AND t0.interaction_type = 'FOLLOWS' AND t0.from_type = 'User' AND t0.to_type = 'User'
 WHERE NOT array_contains(t.path_edges, struct(t0.from_id, t0.to_id, t0.interaction_type, t0.timestamp))

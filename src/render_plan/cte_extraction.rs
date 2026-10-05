@@ -299,7 +299,7 @@ fn rewrite_cte_name_structural(sql: &str, old: &str, new: &str) -> String {
 /// This helper recreates the context from the GraphRel's information + GraphSchema.
 ///
 /// This is part of Phase 2 of schema consolidation (replacing scattered is_denormalized/is_fk_edge checks).
-fn recreate_pattern_schema_context(
+pub(super) fn recreate_pattern_schema_context(
     graph_rel: &crate::query_planner::logical_plan::GraphRel,
     schema: &GraphSchema,
     plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,

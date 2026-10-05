@@ -30,3 +30,4 @@ SELECT
       t.end_dest_code AS `b.code`
 FROM vlp_a_b AS t
 INNER JOIN db_denormalized.flights_denorm AS t1 ON t1.dest_code = t.start_id
+WHERE NOT array_contains(t.path_edges, struct(t1.flight_id, t1.flight_number))

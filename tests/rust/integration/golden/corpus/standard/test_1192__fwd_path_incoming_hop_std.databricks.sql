@@ -29,3 +29,4 @@ SELECT
       t0.follower_id AS `c.user_id`
 FROM vlp_a_b AS t
 INNER JOIN test_integration.user_follows_test AS t0 ON t0.followed_id = t.end_id
+WHERE NOT array_contains(t.path_edges, t0.follow_id)

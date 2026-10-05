@@ -1,4 +1,4 @@
-WITH RECURSIVE vlp_b_c AS (
+WITH RECURSIVE vlp_a_b AS (
     SELECT 
         start_node.user_id as start_id,
         end_node.user_id as end_id,
@@ -17,7 +17,7 @@ WITH RECURSIVE vlp_b_c AS (
         CAST(array() AS ARRAY<STRING>) as path_relationships,
         concat(vp.path_nodes, array(end_node.user_id)) as path_nodes,
         concat(vp.path_edges, array(rel.follow_id)) as path_edges
-    FROM vlp_b_c vp
+    FROM vlp_a_b vp
     JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 2
@@ -25,7 +25,6 @@ WITH RECURSIVE vlp_b_c AS (
 )
 SELECT 
       count(*) AS `count(*)`
-FROM vlp_b_c AS t
-JOIN test_integration.users_test AS a ON 1 = 1
-INNER JOIN test_integration.user_follows_test AS t0 ON t0.follower_id = a.user_id AND t0.followed_id = t.start_id
+FROM vlp_a_b AS t
+INNER JOIN test_integration.user_follows_test AS t0 ON t0.follower_id = t.start_id
 WHERE NOT array_contains(t.path_edges, t0.follow_id)
