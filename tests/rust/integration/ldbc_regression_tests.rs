@@ -5270,3 +5270,36 @@ async fn first_hop_before_a_right_nested_hop_stays_tied_to_the_with_cte_1195() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// #1188: with a path as the final FROM, only the LAST WITH's CTE is joined. An earlier WITH's
+// CTE was consumed by the next scope's CTE body; joining it again was a cross join.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn only_the_last_with_cte_joins_the_final_query_1188() {
+    for path in [
+        "benchmarks/social_network/schemas/social_benchmark.yaml",
+        "schemas/dev/social_polymorphic.yaml",
+    ] {
+        let schema = load_schema_from(path);
+        let sql = generate_sql_inline(
+            &schema,
+            "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c MATCH (c)-[:FOLLOWS]->(a:User) WITH a \
+             MATCH (a)-[:FOLLOWS]->(b:User)-[:FOLLOWS*1..2]->(d:User) RETURN a.user_id, d.user_id",
+        )
+        .await;
+        let outer = sql
+            .rsplit_once("\nFROM vlp_")
+            .expect("VLP is the outer FROM")
+            .1;
+        assert!(
+            outer.contains("with_a_cte_"),
+            "the last WITH's CTE is joined:\n{sql}"
+        );
+        assert!(
+            !outer.contains("with_c_cte_"),
+            "#1188 ({path}): an out-of-scope earlier WITH CTE must not be joined again:\n{sql}"
+        );
+    }
+}
