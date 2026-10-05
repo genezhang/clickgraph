@@ -29,4 +29,5 @@ WITH RECURSIVE vlp_a_b AS (
 SELECT DISTINCT 
       t.end_name AS `b.name`
 FROM vlp_a_b AS t
+WHERE length(t.path_nodes) = 3
 ORDER BY t.end_name ASC NULLS LAST

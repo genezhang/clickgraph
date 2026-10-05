@@ -124,6 +124,121 @@ fn child_hop_outer_predicates(
     })
 }
 
+/// Does `plan` contain a GraphRel that is part of `path_var`'s pattern but is not `vlp` itself?
+/// (a fixed hop or a second path sharing the path variable). Compared by relationship alias: an
+/// undirected path is two mirrored arms of the SAME relationship, not another segment.
+fn path_has_other_segments(
+    plan: &LogicalPlan,
+    vlp: &crate::query_planner::logical_plan::GraphRel,
+    path_var: &str,
+) -> bool {
+    plan.any_node(|n| {
+        matches!(n, LogicalPlan::GraphRel(g)
+            if g.path_variable.as_deref() == Some(path_var) && g.alias != vlp.alias)
+    })
+}
+
+/// #1218/#1202: a path-function predicate on a path made of a CTE-backed VLP PLUS other hops or
+/// paths cannot be answered from the VLP's `hop_count` alone — wherever in the plan the predicate
+/// ended up (on the VLP, or on a hop chained before/after it). Refused loudly for any GraphRel of
+/// such a path; before, a trailing hop's copy of the predicate rendered `t.hop_count > 2` for a
+/// path one hop longer.
+fn refuse_path_function_on_composite_path(
+    root: &LogicalPlan,
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+) -> FilterBuilderResult<()> {
+    let (Some(path_var), Some(predicate)) = (
+        graph_rel.path_variable.as_deref(),
+        graph_rel.where_predicate.as_ref(),
+    ) else {
+        return Ok(());
+    };
+    let expr: RenderExpr = predicate.clone().try_into()?;
+    if crate::render_plan::filter_pipeline::path_function_conjuncts(&expr, path_var).is_empty() {
+        return Ok(());
+    }
+    let mut composite = false;
+    root.any_node(|n| {
+        if let LogicalPlan::GraphRel(g) = n {
+            if g.path_variable.as_deref() == Some(path_var)
+                && g.variable_length.is_some()
+                && !crate::render_plan::from_builder::is_fixed_length_vlp(g)
+                && path_has_other_segments(root, g, path_var)
+            {
+                composite = true;
+            }
+        }
+        false
+    });
+    if composite {
+        return Err(RenderBuildError::UnsupportedFeature(format!(
+            "a WHERE predicate on a path function (`length({path_var})`, `nodes({path_var})`, \
+             `relationships({path_var})`) is not supported for a path made of a variable-length \
+             part plus other hops or paths (#1202): it would be answered from the \
+             variable-length part alone."
+        )));
+    }
+    Ok(())
+}
+
+/// #1218: the path-function conjuncts of a CTE-backed VLP's `WHERE` (`WHERE length(p) > 1`),
+/// as one outer-WHERE predicate over the CTE's `hop_count` / `path_nodes` /
+/// `path_relationships` columns.
+///
+/// They used to be dropped: the CTE categorizer filed them as "path function filters", which
+/// the recursive-CTE generator never reads, and the outer query skips the VLP GraphRel's own
+/// predicate (it is "in the CTE") — so `WHERE length(p) = 2` returned every path.
+///
+/// A shortestPath's CTE has already picked its shortest path(s), so the outer WHERE is the
+/// post-filter Neo4j applies to a path-function predicate (it cannot steer the search). A path
+/// with other segments is refused by [`refuse_path_function_on_composite_path`] before this runs;
+/// an OPTIONAL one would filter its NULL rows: refused.
+fn path_function_outer_predicate(
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+) -> FilterBuilderResult<Option<RenderExpr>> {
+    let (Some(path_var), Some(predicate)) = (
+        graph_rel.path_variable.as_deref(),
+        graph_rel.where_predicate.as_ref(),
+    ) else {
+        return Ok(None);
+    };
+    let expr: RenderExpr = predicate.clone().try_into()?;
+    let conjuncts = crate::render_plan::filter_pipeline::path_function_conjuncts(&expr, path_var);
+    if conjuncts.is_empty() {
+        return Ok(None);
+    }
+    let unsupported = if graph_rel.is_optional.unwrap_or(false) {
+        Some("an OPTIONAL MATCH")
+    } else {
+        None
+    };
+    if let Some(what) = unsupported {
+        return Err(RenderBuildError::UnsupportedFeature(format!(
+            "a WHERE predicate on a path function (`length({path_var})`, `nodes({path_var})`, \
+             `relationships({path_var})`) is not supported for {what}: it would be answered \
+             from the variable-length part alone."
+        )));
+    }
+    Ok(conjuncts.into_iter().reduce(|acc, pred| {
+        RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::And,
+            operands: vec![acc, pred],
+        })
+    }))
+}
+
+/// AND two optional predicates.
+fn and_optional(a: Option<RenderExpr>, b: Option<RenderExpr>) -> Option<RenderExpr> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::And,
+            operands: vec![a, b],
+        })),
+        (a, None) => a,
+        (None, b) => b,
+    }
+}
+
 impl FilterBuilder for LogicalPlan {
     fn extract_filters(&self) -> FilterBuilderResult<Option<RenderExpr>> {
         let filters = match &self {
@@ -224,6 +339,8 @@ impl FilterBuilder for LogicalPlan {
                 log::trace!(
                     "GraphRel node detected, collecting filters from ALL nested where_predicates"
                 );
+                let root = crate::render_plan::cte_extraction::render_root_plan();
+                refuse_path_function_on_composite_path(root.as_deref().unwrap_or(self), graph_rel)?;
 
                 // 🔧 VLP FILTER FIX (Feb 17, 2026): Different handling based on whether CTE is used
                 //
@@ -362,6 +479,8 @@ impl FilterBuilder for LogicalPlan {
                                 "🔧 OPTIONAL VLP: Falling through to collect child filters for outer WHERE"
                             );
                             // Fall through to collect_graphrel_predicates below
+                            // (#1218: a path-function predicate is refused loudly here)
+                            path_function_outer_predicate(graph_rel)?;
                         } else {
                             // #625: a CLOSED VLP pattern pins both endpoints to
                             // the SAME variable (`(a)-[*min..max]-(a)` /
@@ -531,7 +650,11 @@ impl FilterBuilder for LogicalPlan {
                             // hop chained in front of it (`(c)-[:R]->(a)-[:R*1..2]->(b)
                             // WHERE c.x = …`) owns its predicate in the OUTER query —
                             // returning None here silently dropped it.
-                            return Ok(child_hop_outer_predicates(graph_rel));
+                            let path_fn = path_function_outer_predicate(graph_rel)?;
+                            return Ok(and_optional(
+                                child_hop_outer_predicates(graph_rel),
+                                path_fn,
+                            ));
                         }
                     } else {
                         // Fixed-length VLP.
