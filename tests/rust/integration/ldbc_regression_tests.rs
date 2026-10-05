@@ -4838,6 +4838,33 @@ async fn virtual_node_aggregation_arms_carry_the_id_and_alias_from_the_arm_1242(
 }
 
 // ---------------------------------------------------------------------------
+// #1244: a graph pattern must not render to a query with nothing to select from
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn unresolvable_unlabeled_polymorphic_pattern_is_refused_not_emptied_1244() {
+    let schema = load_schema_from("schemas/examples/social_polymorphic.yaml");
+    for cypher in [
+        "MATCH (a)-[r]->(b) RETURN count(*) AS n",
+        "MATCH (a)-[r:FOLLOWS|LIKES]->(b) RETURN count(*) AS n",
+        "MATCH (a)-[r:FOLLOWS]->(b) RETURN count(*) AS n",
+    ] {
+        let err = try_generate_sql_inline(&schema, cypher)
+            .await
+            .expect_err(cypher);
+        assert!(err.contains("#1244"), "{cypher}: {err}");
+    }
+    // the labeled forms keep rendering
+    for cypher in [
+        "MATCH (a:User)-[r]->(b) RETURN count(*) AS n",
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN count(*) AS n",
+    ] {
+        let sql = generate_sql_inline(&schema, cypher).await;
+        assert!(sql.to_uppercase().contains("FROM"), "{cypher}\n{sql}");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // #1220: a path variable must not drop a fixed hop whose alias nothing reads
 //
 // The emitter's path-variable "spurious JOIN" cleanup kept only joins whose alias was read, so

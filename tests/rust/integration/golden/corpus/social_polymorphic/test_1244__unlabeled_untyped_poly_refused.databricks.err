@@ -1,0 +1,1 @@
+render error: Unsupported feature: this pattern rendered to a query with no table to select from (an unlabeled pattern over several node/relationship types that could not be resolved to a concrete source, #1244). Add a node label or a relationship type.

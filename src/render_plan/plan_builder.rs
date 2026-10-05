@@ -6473,6 +6473,24 @@ impl RenderPlanBuilder for LogicalPlan {
             self.to_render_plan(schema)
         })()?;
 
+        // #1244: a plan that scans graph tables must render SOMETHING to select from. A render
+        // with no FROM, no JOIN and no UNION (whatever CTEs it built) is a plan the renderer
+        // silently emptied — an unlabeled pattern over a polymorphic edge, `MATCH (a)-[r]->(b)
+        // RETURN count(*)`, rendered as `SELECT count(*)` and answered 1. Refuse instead.
+        if _root_plan_guard.is_outermost()
+            && render_plan.from.0.is_none()
+            && render_plan.joins.0.is_empty()
+            && render_plan.union.0.is_none()
+            && self.any_node(|n| matches!(n, LogicalPlan::GraphRel(_) | LogicalPlan::GraphNode(_)))
+        {
+            return Err(RenderBuildError::UnsupportedFeature(
+                "this pattern rendered to a query with no table to select from (an unlabeled \
+                 pattern over several node/relationship types that could not be resolved to a \
+                 concrete source, #1244). Add a node label or a relationship type."
+                    .to_string(),
+            ));
+        }
+
         // #497/#498: populate fixed-path metadata (path variable, hop count,
         // node/rel aliases, ID columns, relationship type names) from the
         // LogicalPlan when the branch above didn't already set it. This is

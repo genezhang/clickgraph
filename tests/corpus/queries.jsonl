@@ -1478,3 +1478,4 @@
 {"cypher": "MATCH (a:User) WHERE (a)-[:FOLLOWS]->() RETURN count(*)", "name": "test_1238__positive_pattern_predicate_std", "schema": "standard"}
 {"cypher": "MATCH (a:Airport) WHERE a.state = 'CA' RETURN count(*) AS n", "name": "test_1240__denorm_count_star_filter", "schema": "denormalized_flights"}
 {"cypher": "MATCH (a:Airport) RETURN a.state AS s, count(*) AS n", "name": "test_1242__virtual_node_group_by_alias", "schema": "denormalized_flights"}
+{"cypher": "MATCH (a)-[r]->(b) RETURN count(*) AS n", "name": "test_1244__unlabeled_untyped_poly_refused", "schema": "social_polymorphic"}
