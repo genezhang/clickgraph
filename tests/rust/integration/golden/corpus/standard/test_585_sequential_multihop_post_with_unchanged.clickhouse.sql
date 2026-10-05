@@ -10,3 +10,4 @@ FROM with_p_cte_0 AS p
 INNER JOIN test_integration.user_follows_test AS t0 ON t0.follower_id = p.p1_p_user_id
 INNER JOIN test_integration.user_follows_test AS t1 ON t1.follower_id = t0.followed_id
 INNER JOIN test_integration.users_test AS c ON c.user_id = t1.followed_id
+WHERE t1.follow_id <> t0.follow_id

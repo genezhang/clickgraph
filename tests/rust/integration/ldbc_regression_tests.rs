@@ -5174,3 +5174,55 @@ async fn path_nested_on_the_right_is_not_expanded_as_a_hop_1192() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// #1187: fixed hops of one MATCH are pairwise relationship-unique, also around a WITH.
+// ---------------------------------------------------------------------------
+
+/// After the WITH the chain is rendered from the WITH CTE; the guard used to be dropped
+/// (a self-loop edge could be walked twice).
+#[tokio::test]
+async fn post_with_hop_chain_keeps_the_pairwise_uniqueness_guard_1187() {
+    for (path, query) in [
+        (
+            "benchmarks/social_network/schemas/social_benchmark.yaml",
+            "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c \
+             MATCH (c)-[:FOLLOWS]->(m:User)-[:FOLLOWS]->(a:User) RETURN c.user_id, a.user_id",
+        ),
+        (
+            "schemas/test/denormalized_flights.yaml",
+            "MATCH (z:Airport)-[:FLIGHT]->(c:Airport) WITH c \
+             MATCH (c)-[:FLIGHT]->(m:Airport)-[:FLIGHT]->(a:Airport) RETURN c.code, a.code",
+        ),
+    ] {
+        let schema = load_schema_from(path);
+        let sql = generate_sql_inline(&schema, query).await;
+        let outer = sql.rsplit_once("\nSELECT").expect("outer SELECT").1;
+        assert!(
+            outer.contains("WHERE") && outer.contains("<>"),
+            "#1187 ({path}): the two post-WITH hops must be unique:\n{sql}"
+        );
+    }
+}
+
+/// The hops BEFORE the WITH are the CTE body: they carry the guard there, and it must not
+/// leak into the outer query (whose scope does not render those aliases).
+#[tokio::test]
+async fn pre_with_hop_chain_guard_stays_inside_the_cte_1187() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (x:User)-[:FOLLOWS]->(y:User)-[:FOLLOWS]->(c:User) WITH c \
+         MATCH (c)-[:FOLLOWS]->(a:User) RETURN c.user_id, a.user_id",
+    )
+    .await;
+    let (cte, outer) = sql.rsplit_once("\nSELECT").expect("outer SELECT");
+    assert!(
+        cte.contains("<>"),
+        "#1187: the CTE body must carry the guard:\n{sql}"
+    );
+    assert!(
+        !outer.contains("<>"),
+        "#1187: the single post-WITH hop has nothing to be unique against:\n{sql}"
+    );
+}
