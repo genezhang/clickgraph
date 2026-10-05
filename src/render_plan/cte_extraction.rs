@@ -5537,8 +5537,13 @@ pub fn extract_ctes_with_context(
                         ).is_some()
                     });
 
-                    let needs_bfs_mode = graph_rel.shortest_path_mode.is_some()
-                        && weight_cte_config.is_none()
+                    // #1183: the BFS CTE yields ONE (start, end, distance) row, which is
+                    // exactly `shortestPath`; `allShortestPaths` returns one row per shortest
+                    // path, so it needs the enumerating CTE (5 -> 3 has two: 5-1-3, 5-2-3).
+                    let needs_bfs_mode = matches!(
+                        graph_rel.shortest_path_mode,
+                        Some(crate::query_planner::logical_plan::ShortestPathMode::Shortest)
+                    ) && weight_cte_config.is_none()
                         && !plan_needs_endpoint_properties
                         && start_has_id_filter
                         && end_has_id_filter

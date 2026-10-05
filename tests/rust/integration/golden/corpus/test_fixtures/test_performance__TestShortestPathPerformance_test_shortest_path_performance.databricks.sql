@@ -29,7 +29,7 @@ vlp_a_b_to_target AS (
 ),
 vlp_a_b AS (
     SELECT * FROM (
-        SELECT *, ROW_NUMBER() OVER (PARTITION BY start_id ORDER BY hop_count ASC) as rn
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY start_id, end_id ORDER BY hop_count ASC) as rn
         FROM vlp_a_b_to_target
     ) WHERE rn = 1
 )

@@ -2276,7 +2276,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 // CORRECT ORDER: Filter to target FIRST (with min/max_hops), then find shortest path from EACH start node
                 // This ensures we get the shortest path TO THE TARGET within hop bounds from each source
                 format!(
-                    "{name}_inner AS (\n{body}\n),\n{name}_to_target AS (\n    SELECT * FROM {name}_inner WHERE {filter}\n),\n{name} AS (\n    SELECT * FROM (\n        SELECT *, ROW_NUMBER() OVER (PARTITION BY start_id ORDER BY {order_col} ASC) as rn\n        FROM {name}_to_target\n    ) WHERE rn = 1\n)",
+                    "{name}_inner AS (\n{body}\n),\n{name}_to_target AS (\n    SELECT * FROM {name}_inner WHERE {filter}\n),\n{name} AS (\n    SELECT * FROM (\n        SELECT *, ROW_NUMBER() OVER (PARTITION BY start_id, end_id ORDER BY {order_col} ASC) as rn\n        FROM {name}_to_target\n    ) WHERE rn = 1\n)",
                     name = self.cte_name,
                     body = query_body,
                     filter = filter_with_bounds,
@@ -2305,7 +2305,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
                 // CORRECT ORDER: Filter to target FIRST (with min/max_hops), then find shortest path from EACH start node
                 format!(
-                    "{name}_inner AS (\n{body}\n),\n{name}_to_target AS (\n    SELECT * FROM {name}_inner WHERE {filter}\n),\n{name} AS (\n    SELECT * FROM (\n        SELECT *, ROW_NUMBER() OVER (PARTITION BY start_id ORDER BY {order_col} ASC) as rn\n        FROM {name}_to_target\n    ) WHERE rn = 1\n)",
+                    "{name}_inner AS (\n{body}\n),\n{name}_to_target AS (\n    SELECT * FROM {name}_inner WHERE {filter}\n),\n{name} AS (\n    SELECT * FROM (\n        SELECT *, MIN({order_col}) OVER (PARTITION BY start_id, end_id) AS min_hops_for_pair\n        FROM {name}_to_target\n    ) WHERE {order_col} = min_hops_for_pair\n)",
                     name = self.cte_name,
                     body = query_body,
                     filter = filter_with_bounds,
@@ -2322,14 +2322,14 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 // an excluded path and drop the qualifying longer one.
                 match &both_endpoint_pred {
                     Some(pred) => format!(
-                        "{name}_inner AS (\n{body}\n),\n{name}_to_target AS (\n    SELECT * FROM {name}_inner WHERE {pred}\n),\n{name} AS (\n    SELECT * FROM (\n        SELECT *, ROW_NUMBER() OVER (PARTITION BY end_id ORDER BY {order_col} ASC) as rn\n        FROM {name}_to_target\n    ) WHERE rn = 1\n)",
+                        "{name}_inner AS (\n{body}\n),\n{name}_to_target AS (\n    SELECT * FROM {name}_inner WHERE {pred}\n),\n{name} AS (\n    SELECT * FROM (\n        SELECT *, ROW_NUMBER() OVER (PARTITION BY start_id, end_id ORDER BY {order_col} ASC) as rn\n        FROM {name}_to_target\n    ) WHERE rn = 1\n)",
                         name = self.cte_name,
                         body = query_body,
                         pred = pred,
                         order_col = order_by_column,
                     ),
                     None => format!(
-                        "{name}_inner AS (\n{body}\n),\n{name} AS (\n    SELECT * FROM (\n        SELECT *, ROW_NUMBER() OVER (PARTITION BY end_id ORDER BY {order_col} ASC) as rn\n        FROM {name}_inner\n    ) WHERE rn = 1\n)",
+                        "{name}_inner AS (\n{body}\n),\n{name} AS (\n    SELECT * FROM (\n        SELECT *, ROW_NUMBER() OVER (PARTITION BY start_id, end_id ORDER BY {order_col} ASC) as rn\n        FROM {name}_inner\n    ) WHERE rn = 1\n)",
                         name = self.cte_name,
                         body = query_body,
                         order_col = order_by_column,
@@ -2345,14 +2345,14 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 // return nothing where a qualifying longer path exists.
                 match &both_endpoint_pred {
                     Some(pred) => format!(
-                        "{name}_inner AS (\n{body}\n),\n{name}_to_target AS (\n    SELECT * FROM {name}_inner WHERE {pred}\n),\n{name} AS (\n    SELECT * FROM {name}_to_target WHERE {order_col} = (SELECT MIN({order_col}) FROM {name}_to_target)\n)",
+                        "{name}_inner AS (\n{body}\n),\n{name}_to_target AS (\n    SELECT * FROM {name}_inner WHERE {pred}\n),\n{name} AS (\n    SELECT * FROM (\n        SELECT *, MIN({order_col}) OVER (PARTITION BY start_id, end_id) AS min_hops_for_pair\n        FROM {name}_to_target\n    ) WHERE {order_col} = min_hops_for_pair\n)",
                         name = self.cte_name,
                         body = query_body,
                         pred = pred,
                         order_col = order_by_column,
                     ),
                     None => format!(
-                        "{name}_inner AS (\n{body}\n),\n{name} AS (\n    SELECT * FROM {name}_inner WHERE {order_col} = (SELECT MIN({order_col}) FROM {name}_inner)\n)",
+                        "{name}_inner AS (\n{body}\n),\n{name} AS (\n    SELECT * FROM (\n        SELECT *, MIN({order_col}) OVER (PARTITION BY start_id, end_id) AS min_hops_for_pair\n        FROM {name}_inner\n    ) WHERE {order_col} = min_hops_for_pair\n)",
                         name = self.cte_name,
                         body = query_body,
                         order_col = order_by_column,
@@ -5505,7 +5505,7 @@ mod tests {
 
         // AllShortest with no end filter should use total_weight (not hop_count) for weighted mode
         assert!(
-            sql.contains("WHERE total_weight = (SELECT MIN(total_weight)"),
+            sql.contains("MIN(total_weight) OVER (PARTITION BY start_id, end_id)"),
             "Expected AllShortest to filter by total_weight, not hop_count. SQL: {}",
             sql
         );
