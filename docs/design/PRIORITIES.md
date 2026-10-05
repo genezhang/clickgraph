@@ -691,6 +691,14 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-10-05: **#1283: WITH body ties a carried node** (P-4b root B; `WITH_EXPORT_CONTRACT.md` §3.2). Fixed:
+  - denormalized 2-WITH hop (36 vs 8);
+  - a path off a carried node in a WITH body (1100 vs 111);
+  - LDBC IC1 `shortestPath` between carried nodes (distance to the nearest friend for all);
+  - composite path endpoint exported through WITH (`bank_id` = `'BANK|ACCT'`).
+
+  Any untied carried endpoint in a WITH body is now refused loudly instead of CROSS JOINed. Filed #1291 (chained paths across WITH) and #1292 (undirected path between comma-bound nodes).
+
 - 2026-10-05: **P-4b S4: composite carried-node identity** (closes #1286).
   - `join_builder` takes a CTE-backed endpoint's identity from the WITH export contract instead of the label-derived `node_id`, which is lost after the barrier (a composite node fell back to `c.id`, Code 47).
   - The VLP↔CTE composite tie concatenates the contract's columns instead of `{alias}_{col}` names a WITH CTE never emits (0 rows vs 16, silent).

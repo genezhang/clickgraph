@@ -101,3 +101,35 @@ def test_path_between_two_carried_composite_nodes(carried):
         if n:
             expected[(z[1], c[1])] += n
     assert _bag(q) == expected, q
+
+
+# --- a composite node that ENDS a variable-length path, then carried through WITH ------------------
+# The path's `end_id` is the `bank|account` concat; the WITH projected it as `bank_id` (values
+# 'CHASE|CHK-003'), so the identity was wrong and a hop off the carried node matched nothing.
+
+
+def test_path_endpoint_carried_through_with_keeps_its_id_columns():
+    edges = _edges()
+    nodes = {n for e in edges for n in e}
+    expected = collections.Counter()
+    for src in nodes:
+        for end in _trails(edges, src, 1, 2):
+            expected[end[0]] += 1
+    rows = _rows(
+        "MATCH (c:Account)-[:TRANSFERRED*1..2]->(a:Account) WITH a "
+        "RETURN a.bank_id AS x, count(*) AS k"
+    )
+    assert {r["x"]: r["k"] for r in rows} == dict(expected)
+
+
+def test_hop_off_a_carried_path_endpoint():
+    edges = _edges()
+    nodes = {n for e in edges for n in e}
+    expected = sum(
+        1 for src in nodes for end in _trails(edges, src, 1, 2) for (s, _) in edges if s == end
+    )
+    rows = _rows(
+        "MATCH (c:Account)-[:TRANSFERRED*1..2]->(a:Account) WITH a "
+        "MATCH (a)-[:TRANSFERRED]->(b:Account) RETURN count(*) AS k"
+    )
+    assert rows[0]["k"] == expected

@@ -210,6 +210,27 @@ switched reader.
 - Root B's passes are **not** removed here. S4 only makes the key they need
   correct. The deletion plan is the follow-up doc.
 
+### 3.2 Root-B finding from #1283 (2026-10-05)
+
+A WITH *body* never got the repair the final scope gets. `update_graph_joins_cte_refs` stripped a carried node's CTE reference from the body: `collect_fresh_scan_aliases` treated a `GraphNode` over a WITH-CTE `ViewScan` as a fresh table scan. Then `fix_orphan_table_aliases` CROSS JOINed the untied CTE. Effects:
+
+- a denormalized hop off a carried node: 36 vs 8;
+- a path off a carried node: 1100 vs 111 (standard);
+- LDBC IC1's `shortestPath` between two carried nodes: every friend got the distance to the nearest one.
+
+Fixed in three parts:
+
+1. A WITH-CTE scan is no longer "fresh".
+2. The orphan CROSS JOIN of a CTE whose carried node is a path endpoint is tied with the same `generate_vlp_with_cte_join_conditions` the final scope uses.
+3. Any other orphan CROSS JOIN of a carried pattern endpoint is refused loudly (`tie_or_reject_cross_joined_pattern_endpoint`).
+
+Exposed and fixed in the same slice: a composite path endpoint exported through WITH mapped `bank_id` onto the path's `bank|account` concat (silently wrong on `main`, and reachable through S4's contract read).
+
+Remaining (filed):
+
+- chained paths across WITH, all layouts (#1291);
+- undirected path between comma-bound nodes (#1292).
+
 ## 5. Checklist
 
 - [x] S0 doc + P-4b (#1284)
@@ -218,6 +239,7 @@ switched reader.
 - [ ] S3 #1189 at the producer (blocked on #1287 and the denormalized hop tie, §3.1)
 - [x] S4 R2/R3 + the composite VLP tie: `join_builder` reads the contract for a CTE-backed endpoint (task-local `with_cte_identity`, generation-scoped like `cte_scope_for_correlation`); composite `c.id` and #1286 (0 rows) fixed.
   - Not covered by this slice: the FK-edge `count(*)` refusals (`WITH c MATCH (o:Order)-[:PLACED_BY]->(c) RETURN count(*)`). They are root B (the unreferenced fresh node's joins are pruned); the property form renders correctly. R4 (`rewrite_operator_application_for_cte`) is unchanged.
+- [x] #1283 (root B in WITH bodies): see §3.2
 - [ ] S5 R6/R1 cleanup
 - [ ] S6 FK-side join columns (#1279 residue)
 
