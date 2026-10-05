@@ -4450,6 +4450,88 @@ async fn mixed_access_zero_hop_seed_is_one_row_per_node_1180() {
 }
 
 // ---------------------------------------------------------------------------
+// #1181: a hop after chained VLPs binds the CTE of the node it hangs off
+//
+// `(a)-[*]->(b)-[*]->(c)-[:R]->(y)` rendered `FROM vlp_a_b AS t JOIN vlp_b_c AS t_ch_0 ...`
+// with the hop tied to `t.end_id` (= b) instead of `t_ch_0.end_id` (= c): 77 rows, oracle 50.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn hop_after_chained_paths_binds_the_last_paths_own_cte_1181() {
+    let chained = "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User)";
+    let tie = regex::Regex::new(r"\.follower_id = t_ch_0\.end_id").unwrap();
+
+    let std_schema = load_schema_from("schemas/dev/social_standard.yaml");
+    let sql = generate_sql_inline(
+        &std_schema,
+        &format!("{chained}-[:FOLLOWS]->(y:User) RETURN count(*)"),
+    )
+    .await;
+    assert!(
+        tie.is_match(&sql),
+        "#1181 (standard): the hop must hang off the SECOND path's end:\n{sql}"
+    );
+    // The chain's CTE joins come first, so the hop's `t_ch_0` reference is already defined.
+    let chain_at = sql.find("AS t_ch_0 ON").expect("chain join");
+    let hop_at = sql.find("user_follows AS t").expect("hop join");
+    assert!(
+        chain_at < hop_at,
+        "#1181: `t_ch_0` must be joined before the hop:\n{sql}"
+    );
+
+    // Two trailing hops: the second hangs off the first, not off a path.
+    let sql = generate_sql_inline(
+        &std_schema,
+        &format!("{chained}-[:FOLLOWS]->(y:User)-[:FOLLOWS]->(z:User) RETURN count(*)"),
+    )
+    .await;
+    assert!(tie.is_match(&sql), "#1181 (two hops):\n{sql}");
+
+    let denorm = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &denorm,
+        "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport)-[:FLIGHT*1..2]->(c:Airport)\
+         -[:FLIGHT]->(y:Airport) RETURN count(*)",
+    )
+    .await;
+    assert!(
+        regex::Regex::new(r"= t_ch_0\.end_id")
+            .unwrap()
+            .is_match(&sql),
+        "#1181 (denormalized): the embedded endpoint reads the second path's CTE:\n{sql}"
+    );
+}
+
+/// Shapes the binding is NOT verified for keep their rendering: a hop before the first path,
+/// an incoming hop, a hop between two paths.
+#[tokio::test]
+async fn unverified_chain_shapes_keep_their_rendering_1181() {
+    let schema = load_schema_from("schemas/dev/social_standard.yaml");
+    for (why, cypher) in [
+        (
+            "incoming hop after the chain",
+            "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User)\
+             <-[:FOLLOWS]-(y:User) RETURN count(*)",
+        ),
+        (
+            "hop before the first path",
+            "MATCH (h:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User)\
+             -[:FOLLOWS*1..2]->(c:User)-[:FOLLOWS]->(y:User) RETURN count(*)",
+        ),
+    ] {
+        let sql = try_generate_sql_inline(&schema, cypher).await;
+        let text = match sql {
+            Ok(s) => s,
+            Err(e) => e,
+        };
+        assert!(
+            !text.contains("= t_ch_0.end_id"),
+            "#1181 ({why}): not verified, must not be re-bound:\n{text}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // #1170: a FIXED hop chained in front of a CTE-backed VLP lost its WHERE filter
 //
 // `extract_filters` returned `None` for a required CTE-backed VLP on the premise

@@ -1660,6 +1660,7 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
             // over-count paths that reuse an edge across segments (#544 finding B).
             let mut prev_alias = vlp_from_alias();
             let mut placed_aliases: Vec<String> = vec![vlp_from_alias()];
+            let mut chain_joins: Vec<Join> = Vec::new();
             for (i, cte) in chain_ctes[1..].iter().enumerate() {
                 let this_alias = format!("t_ch_{}", i);
                 let mut joining_on = vec![OperatorApplication {
@@ -1703,10 +1704,47 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                     graph_rel: None,
                     is_cartesian: false,
                 };
-                plan.joins.0.push(join);
+                chain_joins.push(join);
                 placed_aliases.push(this_alias.clone());
                 prev_alias = this_alias;
             }
+            // #1181: a hop hanging off the chain's END was tied by the analyzer to the FROM alias
+            // (`t3.follower_id = t.end_id`); re-point that tie at the CTE of the node it hangs
+            // off, and join the chain's CTEs BEFORE the hops that now reference them.
+            let from_alias = vlp_from_alias();
+            for join in plan.joins.0.iter_mut() {
+                let Some((own_alias, is_end)) =
+                    crate::server::query_context::vlp_endpoint_render_binding(&format!(
+                        "hop:{}",
+                        join.table_alias
+                    ))
+                else {
+                    continue;
+                };
+                for operand in join
+                    .joining_on
+                    .iter_mut()
+                    .flat_map(|condition| condition.operands.iter_mut())
+                {
+                    let RenderExpr::Column(Column(
+                        crate::graph_catalog::expression_parser::PropertyValue::Column(text),
+                    )) = &*operand
+                    else {
+                        continue;
+                    };
+                    if text == &format!("{from_alias}.end_id")
+                        || text == &format!("{from_alias}.start_id")
+                    {
+                        *operand = RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(own_alias.clone()),
+                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                if is_end { "end_id" } else { "start_id" }.to_string(),
+                            ),
+                        });
+                    }
+                }
+            }
+            plan.joins.0.splice(0..0, chain_joins);
 
             // SELECT/WHERE/ORDER already rewritten to the `t`/`t_ch_N` aliases in
             // the render phase — return without the single-CTE rewrite below.

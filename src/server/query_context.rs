@@ -151,6 +151,12 @@ pub struct QueryContext {
     /// the ~100 string-protocol sites. Reset per query in `clear_all_render_contexts`.
     pub vlp_from_alias: Option<String>,
 
+    /// #1181: VLP endpoint Cypher alias → the render alias of ITS OWN CTE, for chained
+    /// (`t_ch_N`) / fan-in (`t_fi_N`) scopes whose 2nd+ CTEs are not the FROM alias. The
+    /// emit-phase rewriter binds a hop's `c.<id>` to `<this alias>.end_id` instead of the
+    /// shared FROM alias. Empty ⇒ every endpoint uses `vlp_from_alias()`.
+    pub vlp_endpoint_render_aliases: HashMap<String, (String, bool)>,
+
     /// #1136: composite node_id COMPONENT columns per VLP endpoint cypher alias.
     /// The late SELECT/ORDER BY/GROUP BY rewriter (`rewrite_expr_for_vlp`)
     /// collapses anything id-shaped (`ends_with("_id")` heuristic) onto the
@@ -862,6 +868,36 @@ pub fn is_vlp_composite_id_component(cypher_alias: &str, column: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// #1181: bind a VLP endpoint's references to the render alias of its own CTE, and to
+/// that CTE's `end_id` (`is_end`) or `start_id` column.
+pub fn register_vlp_endpoint_render_alias(endpoint_alias: &str, render_alias: &str, is_end: bool) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().vlp_endpoint_render_aliases.insert(
+            endpoint_alias.to_string(),
+            (render_alias.to_string(), is_end),
+        );
+    });
+}
+
+/// #1181: drop the per-endpoint bindings (each scope's pre-registration starts fresh).
+pub fn clear_vlp_endpoint_render_aliases() {
+    let _ = QUERY_CONTEXT.try_with(|ctx| ctx.borrow_mut().vlp_endpoint_render_aliases.clear());
+}
+
+/// #1181: the (render alias, is-end) of the CTE `endpoint_alias` belongs to in a chained /
+/// fan-in scope, or `None` (single path: every endpoint is on the FROM alias).
+pub fn vlp_endpoint_render_binding(endpoint_alias: &str) -> Option<(String, bool)> {
+    QUERY_CONTEXT
+        .try_with(|ctx| {
+            ctx.borrow()
+                .vlp_endpoint_render_aliases
+                .get(endpoint_alias)
+                .cloned()
+        })
+        .ok()
+        .flatten()
+}
+
 /// #544: record that the current scope is a chained-forward multi-VLP path of
 /// `count` VLPs. Called from the analyzer's `pre_register_vlp_endpoints` gate.
 pub fn register_expected_chained_vlp_count(count: usize) {
@@ -1282,6 +1318,7 @@ pub fn clear_all_render_contexts() {
         // #1088: reset the query-scoped VLP FROM alias so the next query starts
         // from the default `"t"` and re-registers its own value if it collides.
         ctx.vlp_from_alias = None;
+        ctx.vlp_endpoint_render_aliases.clear();
         // #1136: reset composite id component registrations.
         ctx.vlp_composite_id_components.clear();
     });
