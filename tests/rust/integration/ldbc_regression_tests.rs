@@ -4758,3 +4758,306 @@ async fn mixed_with_carried_node_in_optional_hop_fails_loud_1158() {
     .expect_err("must not render NULL-able ids");
     assert!(err.contains("#1186"), "unexpected error: {err}");
 }
+
+// ---------------------------------------------------------------------------
+// #1182: a fixed hop after `WITH`, chained in front of a CTE-backed VLP, kept only
+// the VLP binding (or nothing at all): `FROM vlp AS t JOIN <with cte> AS c ON 1 = 1`
+// cross-joined the WITH CTE onto the VLP (234 rows vs 91 on the standard schema,
+// 200 vs 34 on denormalized flights). The hop's edge join must carry BOTH ties:
+// to the WITH CTE (`<edge>.<from> = c.<cte col>`) and to the VLP CTE.
+// ---------------------------------------------------------------------------
+
+/// `true` when the edge join `<alias>` binds `edge_a = <cte_alias>.<cte_col>` and
+/// `edge_b = t.<vlp_col>` — i.e. the hop is tied to both CTEs. Alias numbers come
+/// from a process-wide counter, so they are matched, not hard-coded.
+fn hop_ties_with_cte_and_vlp_1182(
+    sql: &str,
+    with_alias: &str,
+    with_cte_col: &str,
+    edge_to_with: &str,
+    edge_to_vlp: &str,
+) -> bool {
+    // Rust's `regex` has no back-references, so take each edge JOIN's ON clause and test
+    // both ties inside the SAME clause.
+    let join = regex::Regex::new(r"JOIN \S+ AS (t\d+) ON ([^\n]*)").unwrap();
+    let to_with = regex::Regex::new(&format!(
+        r"\b(t\d+)\.{} = {}\.{}\b",
+        regex::escape(edge_to_with),
+        regex::escape(with_alias),
+        regex::escape(with_cte_col)
+    ))
+    .unwrap();
+    let to_vlp = regex::Regex::new(&format!(
+        r"\b(t\d+)\.{} = t\.start_id\b",
+        regex::escape(edge_to_vlp)
+    ))
+    .unwrap();
+    let found = join.captures_iter(sql).any(|c| {
+        let (alias, on) = (&c[1], &c[2]);
+        let tied = |re: &regex::Regex| re.captures_iter(on).any(|m| &m[1] == alias);
+        tied(&to_with) && tied(&to_vlp)
+    });
+    found
+}
+
+#[tokio::test]
+async fn with_carried_node_hop_before_vlp_ties_both_ctes_standard_1182() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c \
+         MATCH (c)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) \
+         RETURN c.user_id, a.user_id, b.user_id",
+    )
+    .await;
+    assert!(
+        hop_ties_with_cte_and_vlp_1182(&sql, "c", "p1_c_user_id", "follower_id", "followed_id"),
+        "#1182: the hop's edge join must tie the WITH CTE and the VLP CTE:\n{sql}"
+    );
+}
+
+/// Denormalized: the WITH-carried node is embedded in the hop's own edge row, so the
+/// tie is `<edge>.<origin col> = c.<cte col>` (no node table to scan).
+#[tokio::test]
+async fn with_carried_node_hop_before_vlp_ties_both_ctes_denorm_1182() {
+    let schema = load_schema_from("schemas/test/denormalized_flights.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (z:Airport)-[:FLIGHT]->(c:Airport) WITH c \
+         MATCH (c)-[:FLIGHT]->(a:Airport)-[:FLIGHT*1..2]->(b:Airport) \
+         RETURN c.code, a.code, b.code",
+    )
+    .await;
+    assert!(
+        hop_ties_with_cte_and_vlp_1182(&sql, "c", "p1_c_code", "Origin", "Dest"),
+        "#1182: the denormalized hop must tie the WITH CTE and the VLP CTE:\n{sql}"
+    );
+}
+
+/// Several variables exported by one `WITH` share a composite CTE alias (`c_z`); the
+/// hop's tie must land on that alias, not on the (unbound) `c`.
+#[tokio::test]
+async fn with_two_carried_nodes_hop_before_vlp_ties_composite_alias_1182() {
+    for (path, label, rel, prop, edge_to_with, edge_to_vlp, cte_col) in [
+        (
+            "benchmarks/social_network/schemas/social_benchmark.yaml",
+            "User",
+            "FOLLOWS",
+            "user_id",
+            "follower_id",
+            "followed_id",
+            "p1_c_user_id",
+        ),
+        (
+            "schemas/test/denormalized_flights.yaml",
+            "Airport",
+            "FLIGHT",
+            "code",
+            "Origin",
+            "Dest",
+            "p1_c_code",
+        ),
+    ] {
+        let schema = load_schema_from(path);
+        let sql = generate_sql_inline(
+            &schema,
+            &format!(
+                "MATCH (z:{label})-[:{rel}]->(c:{label}) WITH c, z \
+                 MATCH (c)-[:{rel}]->(a:{label})-[:{rel}*1..2]->(b:{label}) \
+                 RETURN z.{prop}, a.{prop}, b.{prop}"
+            ),
+        )
+        .await;
+        assert!(
+            hop_ties_with_cte_and_vlp_1182(&sql, "c_z", cte_col, edge_to_with, edge_to_vlp),
+            "#1182 ({path}): the hop must tie the composite WITH alias and the VLP CTE:\n{sql}"
+        );
+    }
+}
+
+/// An exact `*2..2` next to a hop is rerouted to the recursive CTE (#623); the same
+/// hop must be kept there too.
+#[tokio::test]
+async fn with_carried_node_hop_before_adjacent_exact_vlp_is_kept_1182() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c \
+         MATCH (c)-[:FOLLOWS]->(a:User)-[:FOLLOWS*2..2]->(b:User) RETURN c.user_id, b.user_id",
+    )
+    .await;
+    assert!(
+        hop_ties_with_cte_and_vlp_1182(&sql, "c", "p1_c_user_id", "follower_id", "followed_id"),
+        "#1182: the hop before a rerouted exact VLP must keep both ties:\n{sql}"
+    );
+}
+
+/// The hop BEHIND a VLP that was matched before the `WITH`: the CTE-carried node is
+/// the VLP's end, and the hop after the `WITH` is a plain post-WITH hop (no VLP in its
+/// own scope) — it must stay regenerated by the render layer, exactly once.
+#[tokio::test]
+async fn post_with_hop_without_vlp_in_scope_is_unchanged_1182() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WITH b \
+         MATCH (b)-[:FOLLOWS]->(d:User) RETURN b.user_id, d.user_id",
+    )
+    .await;
+    let edge_joins = regex::Regex::new(r"JOIN social\.user_follows_bench AS t\d+ ON")
+        .unwrap()
+        .find_iter(&sql)
+        .count();
+    assert_eq!(
+        edge_joins, 1,
+        "the post-WITH hop must be joined once:\n{sql}"
+    );
+}
+
+/// Two fixed hops of one MATCH are pairwise relationship-unique: `t3 <> t2`. After a
+/// `WITH`, with a VLP as the FROM, that predicate was used as the ON of the WITH CTE's
+/// join — which made the CTE join depend on the hops that themselves depend on it
+/// (Code 47). It mentions no alias of the CTE, so it is a WHERE conjunct.
+#[tokio::test]
+async fn hop_uniqueness_predicate_is_not_the_with_cte_join_condition_1182() {
+    let cte_join_on = regex::Regex::new(r"JOIN with_c_cte_\d+ AS c ON ([^\n]*)").unwrap();
+    for (path, query) in [
+        (
+            "benchmarks/social_network/schemas/social_benchmark.yaml",
+            "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c \
+             MATCH (c)-[:FOLLOWS]->(m:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) \
+             RETURN c.user_id, b.user_id",
+        ),
+        (
+            "benchmarks/social_network/schemas/social_benchmark.yaml",
+            "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c \
+             MATCH (c)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS]->(d:User) \
+             RETURN c.user_id, d.user_id",
+        ),
+        (
+            "schemas/test/denormalized_flights.yaml",
+            "MATCH (z:Airport)-[:FLIGHT]->(c:Airport) WITH c \
+             MATCH (c)-[:FLIGHT]->(m:Airport)-[:FLIGHT]->(a:Airport)-[:FLIGHT*1..2]->(b:Airport) \
+             RETURN c.code, b.code",
+        ),
+    ] {
+        let schema = load_schema_from(path);
+        let sql = generate_sql_inline(&schema, query).await;
+        let on = cte_join_on
+            .captures(&sql)
+            .unwrap_or_else(|| panic!("no WITH CTE join in:\n{sql}"))[1]
+            .to_string();
+        assert!(
+            !on.contains("<>"),
+            "#1182: the uniqueness predicate must not be the CTE join's ON ({on}):\n{sql}"
+        );
+        let where_clause = sql
+            .split("\nWHERE ")
+            .nth(1)
+            .unwrap_or_else(|| panic!("the uniqueness predicate must reach the WHERE:\n{sql}"));
+        assert!(
+            where_clause.contains("<>"),
+            "#1182: the uniqueness predicate is missing from the WHERE:\n{sql}"
+        );
+    }
+}
+
+/// Both hops before the VLP are kept, each tied to what precedes it: the first to the
+/// WITH CTE, the second to the first AND to the VLP start.
+#[tokio::test]
+async fn two_post_with_hops_before_vlp_are_all_kept_1182() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let sql = generate_sql_inline(
+        &schema,
+        "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c \
+         MATCH (c)-[:FOLLOWS]->(m:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) \
+         RETURN c.user_id, m.user_id, a.user_id, b.user_id",
+    )
+    .await;
+    // The outer query only: the WITH CTE's own body joins an edge table too.
+    let outer = sql
+        .rsplit_once("\nFROM vlp_")
+        .expect("VLP is the outer FROM")
+        .1;
+    let hops = regex::Regex::new(r"JOIN social\.user_follows_bench AS t\d+ ON ([^\n]*)")
+        .unwrap()
+        .captures_iter(outer)
+        .map(|c| c[1].to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(hops.len(), 2, "both hops must be joined:\n{sql}");
+    assert!(
+        hops.iter().any(|on| on.contains("= c.p1_c_user_id")),
+        "the first hop must be tied to the WITH CTE:\n{sql}"
+    );
+    assert!(
+        hops.iter().any(|on| on.contains("= t.start_id")),
+        "the hop next to the VLP must be tied to its start:\n{sql}"
+    );
+}
+
+/// An OPTIONAL PATH renders through a different layout (LEFT JOIN anchored on the
+/// path) that keeping the hop's join does not repair: it would turn a loud error into
+/// rows that are silently wrong (an 11830-row cartesian on the standard fixture). The
+/// hop's join must stay out of that scope — no outer join tied to the WITH CTE.
+#[tokio::test]
+async fn optional_path_keeps_the_old_render_1182() {
+    let schema = load_schema_from("benchmarks/social_network/schemas/social_benchmark.yaml");
+    let tied_to_with =
+        regex::Regex::new(r"JOIN social\.user_follows_bench AS t\d+ ON [^\n]*= c\.p1_c_user_id")
+            .unwrap();
+    for query in [
+        "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c \
+         OPTIONAL MATCH (c)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) \
+         RETURN c.user_id, b.user_id",
+        "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c MATCH (c)-[:FOLLOWS]->(a:User) \
+         OPTIONAL MATCH (a)-[:FOLLOWS*1..2]->(b:User) RETURN c.user_id, b.user_id",
+    ] {
+        let sql = generate_sql_inline(&schema, query).await;
+        let outer = sql.rsplit_once("\nFROM ").expect("outer FROM").1;
+        assert!(
+            !tied_to_with.is_match(outer),
+            "#1182: the hop must stay out of an OPTIONAL path's scope:\n{sql}"
+        );
+    }
+}
+
+/// An OPTIONAL hop AFTER a required path is just a LEFT JOIN on the path's end: the
+/// required hop in front of the path is still tied to both CTEs.
+#[tokio::test]
+async fn optional_hop_after_the_path_keeps_the_required_hop_tied_1182() {
+    for (path, label, rel, prop, to_with, to_vlp, cte_col) in [
+        (
+            "benchmarks/social_network/schemas/social_benchmark.yaml",
+            "User",
+            "FOLLOWS",
+            "user_id",
+            "follower_id",
+            "followed_id",
+            "p1_c_user_id",
+        ),
+        (
+            "schemas/test/denormalized_flights.yaml",
+            "Airport",
+            "FLIGHT",
+            "code",
+            "Origin",
+            "Dest",
+            "p1_c_code",
+        ),
+    ] {
+        let schema = load_schema_from(path);
+        let sql = generate_sql_inline(
+            &schema,
+            &format!(
+                "MATCH (z:{label})-[:{rel}]->(c:{label}) WITH c \
+                 MATCH (c)-[:{rel}]->(a:{label})-[:{rel}*1..2]->(b:{label}) \
+                 OPTIONAL MATCH (b)-[:{rel}]->(d:{label}) RETURN c.{prop}, d.{prop}"
+            ),
+        )
+        .await;
+        assert!(
+            hop_ties_with_cte_and_vlp_1182(&sql, "c", cte_col, to_with, to_vlp),
+            "#1182 ({path}): the required hop must stay tied to both CTEs:\n{sql}"
+        );
+    }
+}

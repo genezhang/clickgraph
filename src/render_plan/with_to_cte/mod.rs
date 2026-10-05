@@ -3881,6 +3881,8 @@ fn resolve_cross_table_with_cte_joins(
                     .push(alias.clone());
             }
 
+            let from_is_vlp_cte = from_ref.name.starts_with("vlp_");
+
             // For each CTE that's referenced, create a JOIN
             // Sort for deterministic ordering
             let mut sorted_cte_joins: Vec<_> = cte_join_needed.into_iter().collect();
@@ -3911,6 +3913,7 @@ fn resolve_cross_table_with_cte_joins(
 
                 // Convert correlation predicates to join conditions using CTE column names
                 let mut join_conditions: Vec<OperatorApplication> = Vec::new();
+                let mut uncorrelated_predicates: Vec<RenderExpr> = Vec::new();
 
                 // If we found correlation predicates, convert them to JOIN ON conditions
                 for pred in original_correlation_predicates {
@@ -3918,6 +3921,24 @@ fn resolve_cross_table_with_cte_joins(
                     if let Ok(RenderExpr::OperatorApplicationExp(op_app)) =
                         RenderExpr::try_from(pred.clone())
                     {
+                        // #1182: only a predicate that mentions this CTE can be one of
+                        // its JOIN conditions. One that does not — the relationship-
+                        // uniqueness predicate between two fixed hops of the pattern,
+                        // `t4.follower_id <> t2.follower_id OR …` — used as the ON of
+                        // the CTE join made that join depend on the very hops that
+                        // depend on it (Code 47). It still has to hold, so it is a
+                        // WHERE conjunct.
+                        let whole = RenderExpr::OperatorApplicationExp(op_app.clone());
+                        let mentions_cte = std::iter::once(cte_alias.as_str())
+                            .chain(aliases.iter().map(String::as_str))
+                            .any(|a| super::expression_utils::references_alias(&whole, a));
+                        // Scoped to a VLP CTE as FROM: there the CTE join is built from
+                        // these predicates alone. With any other FROM the join already
+                        // exists with its own condition and this list is not applied.
+                        if !mentions_cte && from_is_vlp_cte {
+                            uncorrelated_predicates.push(whole);
+                            continue;
+                        }
                         // Rewrite the operands to use CTE column names
                         let rewritten = rewrite_operator_application_for_cte_join(
                             &op_app,
@@ -3930,6 +3951,29 @@ fn resolve_cross_table_with_cte_joins(
                         );
                         join_conditions.push(rewritten);
                     }
+                }
+
+                if !uncorrelated_predicates.is_empty() {
+                    let mut conjuncts = render_plan
+                        .filters
+                        .0
+                        .take()
+                        .map(crate::render_plan::plan_builder_utils::split_render_and_conjuncts)
+                        .unwrap_or_default();
+                    for pred in uncorrelated_predicates {
+                        if !conjuncts
+                            .iter()
+                            .any(|c| format!("{c:?}") == format!("{pred:?}"))
+                        {
+                            conjuncts.push(pred);
+                        }
+                    }
+                    render_plan.filters.0 = conjuncts.into_iter().reduce(|acc, e| {
+                        RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::And,
+                            operands: vec![acc, e],
+                        })
+                    });
                 }
 
                 // If we have no correlation conditions but have filter predicates, try those

@@ -1053,6 +1053,18 @@ impl GraphJoinInference {
                     .collect();
                 if !vlp_available.is_empty() {
                     vlp_available.insert(crate::server::query_context::vlp_from_alias());
+                    // #1182 (only next to a REQUIRED path: an OPTIONAL path's layout is
+                    // not repaired by it, see `scope_has_required_cte_backed_vlp`): a node a `WITH` carried into this scope is a CTE column,
+                    // available from the start even when no join of this scope scans
+                    // it (a denormalized node has no table of its own, hence no FROM
+                    // marker). A hop adjacent to the VLP ties itself to it.
+                    if plan_ctx.has_required_vlp() {
+                        for (alias, table_ctx) in plan_ctx.iter_table_contexts() {
+                            if table_ctx.get_cte_name().is_some() {
+                                vlp_available.insert(alias.clone());
+                            }
+                        }
+                    }
                 }
 
                 // Reorder JOINs using clean topological sort

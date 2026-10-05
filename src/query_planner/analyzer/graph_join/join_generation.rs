@@ -321,6 +321,53 @@ pub fn generate_pattern_joins(
                     builder = builder.add_condition(t.rel_alias, to_col, vlp_alias, vlp_col);
                 }
 
+                // #1182: an endpoint a `WITH` already bound (a CTE column, not a node
+                // scan) must be tied to THIS edge too. An ordinary post-WITH hop gets
+                // that tie from the render layer, which regenerates the hop from the
+                // plan; in a scope holding a CTE-backed VLP nothing regenerates it (the
+                // VLP `GraphRel` emits no joins of its own), so without the tie the edge
+                // is bound to the VLP CTE alone and the WITH CTE is cross-joined.
+                if !rel_is_optional
+                    && !plan_ctx.is_optional(t.rel_alias)
+                    && plan_ctx.has_required_vlp()
+                {
+                    for (alias, cte_name, node, col) in [
+                        (
+                            t.left_alias,
+                            t.left_cte_name,
+                            &ctx.left_node,
+                            rel_schema.from_id.first_column(),
+                        ),
+                        (
+                            t.right_alias,
+                            t.right_cte_name,
+                            &ctx.right_node,
+                            rel_schema.to_id.first_column(),
+                        ),
+                    ] {
+                        if plan_ctx.is_vlp_endpoint(alias) || !plan_ctx.is_cte(cte_name) {
+                            continue;
+                        }
+                        // The CTE exports the node under its id PROPERTY; the edge
+                        // column is what the node's role maps that property to.
+                        if let NodeAccessStrategy::EmbeddedInEdge { properties, .. } = node {
+                            if let Some(id_prop) = properties
+                                .iter()
+                                .filter(|(_, mapped)| mapped.as_str() == col)
+                                .map(|(prop, _)| prop.as_str())
+                                .min()
+                            {
+                                builder = builder.add_condition(
+                                    t.rel_alias,
+                                    col.to_string(),
+                                    alias,
+                                    id_prop.to_string(),
+                                );
+                            }
+                        }
+                    }
+                }
+
                 vec![builder.build()]
             }
         }

@@ -1312,6 +1312,15 @@ impl PlanCtx {
         self.vlp_endpoints.contains_key(alias)
     }
 
+    /// True when a REQUIRED path (variable-length, CTE-backed) is registered: it marks
+    /// both its endpoints, while an OPTIONAL path marks only its END (the start stays
+    /// a regular table reference).
+    pub fn has_required_vlp(&self) -> bool {
+        self.vlp_endpoints
+            .values()
+            .any(|info| info.position == crate::query_planner::join_context::VlpPosition::Start)
+    }
+
     /// Get VLP endpoint info for an alias.
     pub fn get_vlp_endpoint(&self, alias: &str) -> Option<&VlpEndpointInfo> {
         self.vlp_endpoints.get(alias)
