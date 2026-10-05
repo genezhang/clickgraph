@@ -1427,7 +1427,7 @@
 {"cypher": "MATCH (c:Airport)-[:FLIGHT]->(a:Airport)-[:FLIGHT*1..2]->(b:Airport) RETURN count(*)", "name": "test_1175__hop_then_path_den", "schema": "denormalized_flights"}
 {"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*0..2]->(b:User) RETURN count(*)", "name": "test_1175__zero_lower_bound_not_repaired_std", "schema": "standard"}
 {"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]-(b:User) RETURN count(*)", "name": "test_1175__undirected_path_not_repaired_std", "schema": "standard"}
-{"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WITH b RETURN count(b)", "name": "test_1175__with_after_pattern_not_repaired_std", "schema": "standard"}
+{"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WITH b RETURN count(b)", "name": "test_1175__with_after_pattern_std", "schema": "standard"}
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO*0..2]->(b:Person) RETURN a.pid, b.pid", "name": "test_1180__from_embedded_zero_hop", "schema": "foreign_selfloop"}
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO*0..2]->(b:Person) WHERE a.pid = 2 RETURN b.pid", "name": "test_1180__from_embedded_zero_hop_start_filter", "schema": "foreign_selfloop"}
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO*0..2]->(b:Person) RETURN a.pid, b.pid", "name": "test_1180__to_embedded_zero_hop_unchanged", "schema": "foreign_selfloop_end"}
@@ -1441,3 +1441,7 @@
 {"cypher": "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport) RETURN count(*)", "name": "test_1119__fully_denorm_filtered_endpoint_loud", "schema": "denormalized_flights_filtered_endpoint"}
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person) RETURN count(*)", "name": "test_1119__unfiltered_mixed_still_renders", "schema": "foreign_selfloop"}
 {"cypher": "MATCH (a:Person)-[:REPORTS_TO*1..2]->(b:Person) RETURN count(*)", "name": "test_1119__from_embedded_filtered_endpoint_loud", "schema": "foreign_selfloop_filtered"}
+{"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WHERE c.name = 'Alice Smith' WITH count(*) AS k RETURN k", "name": "test_1177__with_after_filtered_chain_std", "schema": "standard"}
+{"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WITH b.name AS n RETURN count(n)", "name": "test_1177__with_after_chain_projection_std", "schema": "standard"}
+{"cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WHERE c.user_id = 1 WITH count(*) AS k RETURN k", "name": "test_1177__with_after_filtered_chain_poly", "schema": "social_polymorphic"}
+{"cypher": "MATCH (c:Airport)-[:FLIGHT]->(a:Airport)-[:FLIGHT*1..2]->(b:Airport) WITH count(*) AS k RETURN k", "name": "test_1177__with_after_chain_den", "schema": "denormalized_flights"}
