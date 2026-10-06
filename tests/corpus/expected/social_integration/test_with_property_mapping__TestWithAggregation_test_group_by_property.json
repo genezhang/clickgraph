@@ -1,0 +1,12 @@
+{
+ "cypher": "MATCH (u:User) WITH u.country AS country, count(*) AS cnt RETURN country, cnt LIMIT 5",
+ "kinds": {},
+ "rows": [
+  "{\"cnt\": 1.0, \"country\": \"Germany\"}",
+  "{\"cnt\": 13.0, \"country\": \"USA\"}",
+  "{\"cnt\": 2.0, \"country\": \"Australia\"}",
+  "{\"cnt\": 4.0, \"country\": \"Canada\"}",
+  "{\"cnt\": 4.0, \"country\": \"UK\"}"
+ ],
+ "schema": "social_integration"
+}

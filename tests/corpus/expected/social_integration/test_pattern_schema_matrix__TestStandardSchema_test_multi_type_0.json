@@ -1,0 +1,6 @@
+{
+ "cypher": "MATCH (a:Post)-[r:FOLLOWS|AUTHORED]->(b:Post) RETURN type(r), count(*) AS cnt",
+ "kinds": {},
+ "rows": [],
+ "schema": "social_integration"
+}

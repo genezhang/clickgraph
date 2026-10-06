@@ -1,0 +1,10 @@
+{
+ "cypher": "MATCH (a:User)\n            WITH a AS person\n            RETURN person\n            LIMIT 1",
+ "kinds": {
+  "person": "node"
+ },
+ "rows": [
+  "{\"person.age\": 28.0, \"person.city\": \"New York\", \"person.country\": \"USA\", \"person.email\": \"alice@example.com\", \"person.is_active\": 1.0, \"person.name\": \"Alice Johnson\", \"person.registration_date\": \"2020-01-15\", \"person.user_id\": 1.0}"
+ ],
+ "schema": "social_integration"
+}

@@ -1,0 +1,9 @@
+{
+ "cypher": "MATCH (u:User) WHERE u.user_id = 1\n    RETURN u.name AS name\n    UNION ALL\n    MATCH (u:User) WHERE u.user_id = 2\n    RETURN u.name AS name",
+ "kinds": {},
+ "rows": [
+  "{\"name\": \"Alice Johnson\"}",
+  "{\"name\": \"Bob Smith\"}"
+ ],
+ "schema": "social_integration"
+}

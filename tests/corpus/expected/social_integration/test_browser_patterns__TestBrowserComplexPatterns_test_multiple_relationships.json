@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (u:User)-[r1:AUTHORED]->(p:Post)\n            MATCH (u)-[r2:FOLLOWS]->(f:User)\n            RETURN count(*) as count",
+ "kinds": {},
+ "rows": [
+  "{\"count\": 40.0}"
+ ],
+ "schema": "social_integration"
+}

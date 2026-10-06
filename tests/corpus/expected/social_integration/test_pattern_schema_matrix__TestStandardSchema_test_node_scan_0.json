@@ -1,0 +1,17 @@
+{
+ "cypher": "MATCH (n:User) RETURN n.is_active LIMIT 10",
+ "kinds": {},
+ "rows": [
+  "{\"n.is_active\": 1.0}",
+  "{\"n.is_active\": 1.0}",
+  "{\"n.is_active\": 1.0}",
+  "{\"n.is_active\": 1.0}",
+  "{\"n.is_active\": 1.0}",
+  "{\"n.is_active\": 1.0}",
+  "{\"n.is_active\": 1.0}",
+  "{\"n.is_active\": 1.0}",
+  "{\"n.is_active\": 1.0}",
+  "{\"n.is_active\": 1.0}"
+ ],
+ "schema": "social_integration"
+}

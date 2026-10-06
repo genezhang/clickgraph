@@ -1,0 +1,6 @@
+{
+ "cypher": "MATCH ()-[r:NONEXISTENT]->() RETURN r",
+ "kinds": {},
+ "rows": [],
+ "schema": "social_integration"
+}

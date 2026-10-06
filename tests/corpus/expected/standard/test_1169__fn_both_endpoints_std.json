@@ -1,0 +1,19 @@
+{
+ "cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE toString(a.user_id) = toString(b.user_id) RETURN a.user_id",
+ "kinds": {},
+ "rows": [
+  "{\"a.user_id\": 1.0}",
+  "{\"a.user_id\": 1.0}",
+  "{\"a.user_id\": 1.0}",
+  "{\"a.user_id\": 2.0}",
+  "{\"a.user_id\": 2.0}",
+  "{\"a.user_id\": 2.0}",
+  "{\"a.user_id\": 3.0}",
+  "{\"a.user_id\": 3.0}",
+  "{\"a.user_id\": 4.0}",
+  "{\"a.user_id\": 5.0}",
+  "{\"a.user_id\": 6.0}",
+  "{\"a.user_id\": 7.0}"
+ ],
+ "schema": "standard"
+}

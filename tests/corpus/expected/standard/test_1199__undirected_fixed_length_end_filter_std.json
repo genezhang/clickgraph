@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (a:User)-[:FOLLOWS*2..2]-(b:User) WHERE b.user_id = 3 RETURN count(*)",
+ "kinds": {},
+ "rows": [
+  "{\"count(*)\": 14.0}"
+ ],
+ "schema": "standard"
+}

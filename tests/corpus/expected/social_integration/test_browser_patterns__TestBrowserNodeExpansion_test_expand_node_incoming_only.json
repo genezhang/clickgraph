@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (n:User)<-[r]-(m) WHERE n.user_id = 1 RETURN count(*) as count",
+ "kinds": {},
+ "rows": [
+  "{\"count\": 3.0}"
+ ],
+ "schema": "social_integration"
+}

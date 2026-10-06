@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (a:User)\n        WHERE EXISTS {\n            MATCH (a)-[:AUTHORED]->(p)\n        }\n        RETURN count(*) as total",
+ "kinds": {},
+ "rows": [
+  "{\"total\": 10.0}"
+ ],
+ "schema": "social_integration"
+}

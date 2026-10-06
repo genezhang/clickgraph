@@ -1,0 +1,11 @@
+{
+ "cypher": "MATCH (a:User)\n            OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)\n            WITH a, b\n            RETURN a, b\n            LIMIT 1",
+ "kinds": {
+  "a": "node",
+  "b": "node"
+ },
+ "rows": [
+  "{\"a.age\": 28.0, \"a.city\": \"New York\", \"a.country\": \"USA\", \"a.email\": \"alice@example.com\", \"a.is_active\": 1.0, \"a.name\": \"Alice Johnson\", \"a.registration_date\": \"2020-01-15\", \"a.user_id\": 1.0, \"b.age\": 29.0, \"b.city\": \"San Francisco\", \"b.country\": \"USA\", \"b.email\": \"eve@example.com\", \"b.is_active\": 1.0, \"b.name\": \"Eve Davis\", \"b.registration_date\": \"2020-07-08\", \"b.user_id\": 5.0}"
+ ],
+ "schema": "social_integration"
+}

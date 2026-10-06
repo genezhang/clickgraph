@@ -1,0 +1,14 @@
+{
+ "cypher": "MATCH (a:User)-[:FOLLOWS]->(b) WITH a.city AS city, percentileDisc(b.user_id, 0.95) AS p RETURN city, p",
+ "kinds": {},
+ "rows": [
+  "{\"city\": \"Berlin\", \"p\": 14.0}",
+  "{\"city\": \"London\", \"p\": 6.0}",
+  "{\"city\": \"New York\", \"p\": 5.0}",
+  "{\"city\": \"San Francisco\", \"p\": 12.0}",
+  "{\"city\": \"Seoul\", \"p\": 15.0}",
+  "{\"city\": \"Sydney\", \"p\": 10.0}",
+  "{\"city\": \"Toronto\", \"p\": 8.0}"
+ ],
+ "schema": "standard"
+}

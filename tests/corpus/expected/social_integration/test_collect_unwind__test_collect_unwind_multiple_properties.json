@@ -1,0 +1,10 @@
+{
+ "cypher": "MATCH (u:User)\n        WITH u, collect(u) as users\n        UNWIND users as user\n        RETURN user.name, user.email, user.city\n        LIMIT 3",
+ "kinds": {},
+ "rows": [
+  "{\"user.city\": \"London\", \"user.email\": \"bob@example.com\", \"user.name\": \"Bob Smith\"}",
+  "{\"user.city\": \"New York\", \"user.email\": \"alice@example.com\", \"user.name\": \"Alice Johnson\"}",
+  "{\"user.city\": \"Toronto\", \"user.email\": \"carol@example.com\", \"user.name\": \"Carol White\"}"
+ ],
+ "schema": "social_integration"
+}

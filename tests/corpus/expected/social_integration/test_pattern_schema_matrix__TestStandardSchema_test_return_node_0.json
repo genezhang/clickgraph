@@ -1,0 +1,14 @@
+{
+ "cypher": "MATCH (n:Post) RETURN n LIMIT 5",
+ "kinds": {
+  "n": "node"
+ },
+ "rows": [
+  "{\"n.author_id\": 1.0, \"n.content\": \"Hello everyone!\", \"n.created_at\": \"2023-01-01\", \"n.post_id\": 1.0, \"n.title\": \"Introduction\"}",
+  "{\"n.author_id\": 2.0, \"n.content\": \"My first post here\", \"n.created_at\": \"2023-01-02\", \"n.post_id\": 2.0, \"n.title\": \"First Post\"}",
+  "{\"n.author_id\": 3.0, \"n.content\": \"Latest in technology\", \"n.created_at\": \"2023-01-03\", \"n.post_id\": 3.0, \"n.title\": \"Tech News\"}",
+  "{\"n.author_id\": 4.0, \"n.content\": \"My trip to Europe\", \"n.created_at\": \"2023-01-04\", \"n.post_id\": 4.0, \"n.title\": \"Travel Blog\"}",
+  "{\"n.author_id\": 5.0, \"n.content\": \"Best pasta recipe\", \"n.created_at\": \"2023-01-05\", \"n.post_id\": 5.0, \"n.title\": \"Cooking Tips\"}"
+ ],
+ "schema": "social_integration"
+}

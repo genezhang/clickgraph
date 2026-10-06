@@ -1,0 +1,16 @@
+{
+ "cypher": "MATCH (u:User)-[r:FOLLOWS]->(f:User) RETURN u, r, f LIMIT 5",
+ "kinds": {
+  "f": "node",
+  "r": "relationship",
+  "u": "node"
+ },
+ "rows": [
+  "{\"f.age\": 25.0, \"f.city\": \"Toronto\", \"f.country\": \"Canada\", \"f.email\": \"carol@example.com\", \"f.is_active\": 1.0, \"f.name\": \"Carol White\", \"f.registration_date\": \"2021-03-10\", \"f.user_id\": 3.0, \"r.follow_date\": \"2023-01-02\", \"u.age\": 28.0, \"u.city\": \"New York\", \"u.country\": \"USA\", \"u.email\": \"alice@example.com\", \"u.is_active\": 1.0, \"u.name\": \"Alice Johnson\", \"u.registration_date\": \"2020-01-15\", \"u.user_id\": 1.0}",
+  "{\"f.age\": 28.0, \"f.city\": \"New York\", \"f.country\": \"USA\", \"f.email\": \"alice@example.com\", \"f.is_active\": 1.0, \"f.name\": \"Alice Johnson\", \"f.registration_date\": \"2020-01-15\", \"f.user_id\": 1.0, \"r.follow_date\": \"2023-01-04\", \"u.age\": 32.0, \"u.city\": \"London\", \"u.country\": \"UK\", \"u.email\": \"bob@example.com\", \"u.is_active\": 1.0, \"u.name\": \"Bob Smith\", \"u.registration_date\": \"2019-05-20\", \"u.user_id\": 2.0}",
+  "{\"f.age\": 29.0, \"f.city\": \"San Francisco\", \"f.country\": \"USA\", \"f.email\": \"eve@example.com\", \"f.is_active\": 1.0, \"f.name\": \"Eve Davis\", \"f.registration_date\": \"2020-07-08\", \"f.user_id\": 5.0, \"r.follow_date\": \"2023-01-03\", \"u.age\": 28.0, \"u.city\": \"New York\", \"u.country\": \"USA\", \"u.email\": \"alice@example.com\", \"u.is_active\": 1.0, \"u.name\": \"Alice Johnson\", \"u.registration_date\": \"2020-01-15\", \"u.user_id\": 1.0}",
+  "{\"f.age\": 32.0, \"f.city\": \"London\", \"f.country\": \"UK\", \"f.email\": \"bob@example.com\", \"f.is_active\": 1.0, \"f.name\": \"Bob Smith\", \"f.registration_date\": \"2019-05-20\", \"f.user_id\": 2.0, \"r.follow_date\": \"2023-01-01\", \"u.age\": 28.0, \"u.city\": \"New York\", \"u.country\": \"USA\", \"u.email\": \"alice@example.com\", \"u.is_active\": 1.0, \"u.name\": \"Alice Johnson\", \"u.registration_date\": \"2020-01-15\", \"u.user_id\": 1.0}",
+  "{\"f.age\": 35.0, \"f.city\": \"Sydney\", \"f.country\": \"Australia\", \"f.email\": \"david@example.com\", \"f.is_active\": 1.0, \"f.name\": \"David Brown\", \"f.registration_date\": \"2018-11-25\", \"f.user_id\": 4.0, \"r.follow_date\": \"2023-01-05\", \"u.age\": 32.0, \"u.city\": \"London\", \"u.country\": \"UK\", \"u.email\": \"bob@example.com\", \"u.is_active\": 1.0, \"u.name\": \"Bob Smith\", \"u.registration_date\": \"2019-05-20\", \"u.user_id\": 2.0}"
+ ],
+ "schema": "social_integration"
+}

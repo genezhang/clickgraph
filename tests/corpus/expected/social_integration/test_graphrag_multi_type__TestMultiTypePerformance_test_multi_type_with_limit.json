@@ -1,0 +1,19 @@
+{
+ "cypher": "MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)\n            WHERE u.user_id = 1\n            RETURN x\n            LIMIT 10",
+ "kinds": {
+  "x": "node"
+ },
+ "rows": [
+  "{\"x.age\": 25.0, \"x.city\": \"Toronto\", \"x.country\": \"Canada\", \"x.email\": \"carol@example.com\", \"x.is_active\": 1.0, \"x.name\": \"Carol White\", \"x.registration_date\": \"2021-03-10\", \"x.user_id\": 3.0}",
+  "{\"x.age\": 27.0, \"x.city\": \"Seoul\", \"x.country\": \"South Korea\", \"x.email\": \"grace@example.com\", \"x.is_active\": 1.0, \"x.name\": \"Grace Lee\", \"x.registration_date\": \"2020-12-01\", \"x.user_id\": 7.0}",
+  "{\"x.age\": 28.0, \"x.city\": \"New York\", \"x.country\": \"USA\", \"x.email\": \"alice@example.com\", \"x.is_active\": 1.0, \"x.name\": \"Alice Johnson\", \"x.registration_date\": \"2020-01-15\", \"x.user_id\": 1.0}",
+  "{\"x.age\": 28.0, \"x.city\": \"New York\", \"x.country\": \"USA\", \"x.email\": \"alice@example.com\", \"x.is_active\": 1.0, \"x.name\": \"Alice Johnson\", \"x.registration_date\": \"2020-01-15\", \"x.user_id\": 1.0}",
+  "{\"x.age\": 31.0, \"x.city\": \"Berlin\", \"x.country\": \"Germany\", \"x.email\": \"frank@example.com\", \"x.is_active\": 1.0, \"x.name\": \"Frank Miller\", \"x.registration_date\": \"2019-09-14\", \"x.user_id\": 6.0}",
+  "{\"x.age\": 32.0, \"x.city\": \"London\", \"x.country\": \"UK\", \"x.email\": \"bob@example.com\", \"x.is_active\": 1.0, \"x.name\": \"Bob Smith\", \"x.registration_date\": \"2019-05-20\", \"x.user_id\": 2.0}",
+  "{\"x.age\": 33.0, \"x.city\": \"Chicago\", \"x.country\": \"USA\", \"x.email\": \"henry@example.com\", \"x.is_active\": 1.0, \"x.name\": \"Henry Wilson\", \"x.registration_date\": \"2019-02-18\", \"x.user_id\": 8.0}",
+  "{\"x.age\": 35.0, \"x.city\": \"Sydney\", \"x.country\": \"Australia\", \"x.email\": \"david@example.com\", \"x.is_active\": 1.0, \"x.name\": \"David Brown\", \"x.registration_date\": \"2018-11-25\", \"x.user_id\": 4.0}",
+  "{\"x.author_id\": 2.0, \"x.content\": \"Home improvement\", \"x.created_at\": \"2023-01-12\", \"x.post_id\": 12.0, \"x.title\": \"DIY Projects\"}",
+  "{\"x.author_id\": 2.0, \"x.content\": \"My first post here\", \"x.created_at\": \"2023-01-02\", \"x.post_id\": 2.0, \"x.title\": \"First Post\"}"
+ ],
+ "schema": "social_integration"
+}

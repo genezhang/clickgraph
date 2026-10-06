@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (u:User) WITH toUpper(u.email) AS upperEmail RETURN upperEmail LIMIT 1",
+ "kinds": {},
+ "rows": [
+  "{\"upperEmail\": \"ALICE@EXAMPLE.COM\"}"
+ ],
+ "schema": "social_integration"
+}

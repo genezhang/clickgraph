@@ -1,0 +1,17 @@
+{
+ "cypher": "MATCH (n:Post) WHERE n.post_id IS NOT NULL RETURN n.post_id LIMIT 10",
+ "kinds": {},
+ "rows": [
+  "{\"n.post_id\": 1.0}",
+  "{\"n.post_id\": 10.0}",
+  "{\"n.post_id\": 2.0}",
+  "{\"n.post_id\": 3.0}",
+  "{\"n.post_id\": 4.0}",
+  "{\"n.post_id\": 5.0}",
+  "{\"n.post_id\": 6.0}",
+  "{\"n.post_id\": 7.0}",
+  "{\"n.post_id\": 8.0}",
+  "{\"n.post_id\": 9.0}"
+ ],
+ "schema": "social_integration"
+}

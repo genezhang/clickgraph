@@ -1,0 +1,10 @@
+{
+ "cypher": "MATCH (u:User)-[:FOLLOWS*1..2]->(x:User)\n                    WHERE u.user_id = 1\n                    RETURN x.name, x.city\n                    LIMIT 3",
+ "kinds": {},
+ "rows": [
+  "{\"x.city\": \"London\", \"x.name\": \"Bob Smith\"}",
+  "{\"x.city\": \"New York\", \"x.name\": \"Alice Johnson\"}",
+  "{\"x.city\": \"Sydney\", \"x.name\": \"David Brown\"}"
+ ],
+ "schema": "social_integration"
+}

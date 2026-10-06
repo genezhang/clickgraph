@@ -1,0 +1,17 @@
+{
+ "cypher": "MATCH (a:User)-[:FOLLOWS*1..3]->(b:User) RETURN a.country, b.country LIMIT 10",
+ "kinds": {},
+ "rows": [
+  "{\"a.country\": \"USA\", \"b.country\": \"Australia\"}",
+  "{\"a.country\": \"USA\", \"b.country\": \"Canada\"}",
+  "{\"a.country\": \"USA\", \"b.country\": \"Germany\"}",
+  "{\"a.country\": \"USA\", \"b.country\": \"Spain\"}",
+  "{\"a.country\": \"USA\", \"b.country\": \"UK\"}",
+  "{\"a.country\": \"USA\", \"b.country\": \"UK\"}",
+  "{\"a.country\": \"USA\", \"b.country\": \"UK\"}",
+  "{\"a.country\": \"USA\", \"b.country\": \"USA\"}",
+  "{\"a.country\": \"USA\", \"b.country\": \"USA\"}",
+  "{\"a.country\": \"USA\", \"b.country\": \"USA\"}"
+ ],
+ "schema": "social_integration"
+}

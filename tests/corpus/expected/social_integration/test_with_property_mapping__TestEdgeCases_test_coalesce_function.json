@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (u:User) WITH coalesce(u.name, 'default') AS userName RETURN userName LIMIT 1",
+ "kinds": {},
+ "rows": [
+  "{\"userName\": \"Alice Johnson\"}"
+ ],
+ "schema": "social_integration"
+}

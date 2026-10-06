@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (a:User)-[r:AUTHORED]->(b)\n        WHERE b.post_id > 0\n        RETURN count(*) as total",
+ "kinds": {},
+ "rows": [
+  "{\"total\": 20.0}"
+ ],
+ "schema": "social_integration"
+}

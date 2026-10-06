@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (u:User) WITH toLower(u.name) AS lowerName RETURN lowerName LIMIT 1",
+ "kinds": {},
+ "rows": [
+  "{\"lowerName\": \"alice johnson\"}"
+ ],
+ "schema": "social_integration"
+}

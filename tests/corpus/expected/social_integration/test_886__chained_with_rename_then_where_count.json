@@ -1,0 +1,8 @@
+{
+ "cypher": "UNWIND [1, 2, 3] AS x\n            WITH x AS y\n            WITH y AS z\n            WHERE z > 0\n            RETURN count(z) AS c",
+ "kinds": {},
+ "rows": [
+  "{\"c\": 3.0}"
+ ],
+ "schema": "social_integration"
+}

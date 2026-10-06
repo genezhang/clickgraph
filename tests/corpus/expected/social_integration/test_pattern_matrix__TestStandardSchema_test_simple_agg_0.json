@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (n:User) RETURN count(n)",
+ "kinds": {},
+ "rows": [
+  "{\"count(n)\": 30.0}"
+ ],
+ "schema": "social_integration"
+}

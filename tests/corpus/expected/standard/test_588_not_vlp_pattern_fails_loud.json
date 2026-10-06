@@ -1,0 +1,30 @@
+{
+ "cypher": "MATCH (a:User) WHERE NOT (a)-[:FOLLOWS*1..3]->(a) RETURN a.user_id",
+ "kinds": {},
+ "rows": [
+  "{\"a.user_id\": 10.0}",
+  "{\"a.user_id\": 11.0}",
+  "{\"a.user_id\": 12.0}",
+  "{\"a.user_id\": 13.0}",
+  "{\"a.user_id\": 14.0}",
+  "{\"a.user_id\": 15.0}",
+  "{\"a.user_id\": 16.0}",
+  "{\"a.user_id\": 17.0}",
+  "{\"a.user_id\": 18.0}",
+  "{\"a.user_id\": 19.0}",
+  "{\"a.user_id\": 20.0}",
+  "{\"a.user_id\": 21.0}",
+  "{\"a.user_id\": 22.0}",
+  "{\"a.user_id\": 23.0}",
+  "{\"a.user_id\": 24.0}",
+  "{\"a.user_id\": 25.0}",
+  "{\"a.user_id\": 26.0}",
+  "{\"a.user_id\": 27.0}",
+  "{\"a.user_id\": 28.0}",
+  "{\"a.user_id\": 29.0}",
+  "{\"a.user_id\": 30.0}",
+  "{\"a.user_id\": 8.0}",
+  "{\"a.user_id\": 9.0}"
+ ],
+ "schema": "standard"
+}

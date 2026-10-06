@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (u:User) WITH substring(u.name, 1, 5) AS prefix RETURN prefix LIMIT 1",
+ "kinds": {},
+ "rows": [
+  "{\"prefix\": \"lice \"}"
+ ],
+ "schema": "social_integration"
+}

@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (n0:User) OPTIONAL MATCH (n0)-[:FOLLOWS]->(n1:User) WHERE n1.age > 30 RETURN count(*) AS n",
+ "kinds": {},
+ "rows": [
+  "{\"n\": 32.0}"
+ ],
+ "schema": "standard"
+}

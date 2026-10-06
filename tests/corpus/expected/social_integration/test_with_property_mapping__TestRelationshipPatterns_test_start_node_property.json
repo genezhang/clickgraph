@@ -1,0 +1,10 @@
+{
+ "cypher": "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a.name AS followerName RETURN followerName LIMIT 3",
+ "kinds": {},
+ "rows": [
+  "{\"followerName\": \"Alice Johnson\"}",
+  "{\"followerName\": \"Alice Johnson\"}",
+  "{\"followerName\": \"Alice Johnson\"}"
+ ],
+ "schema": "social_integration"
+}

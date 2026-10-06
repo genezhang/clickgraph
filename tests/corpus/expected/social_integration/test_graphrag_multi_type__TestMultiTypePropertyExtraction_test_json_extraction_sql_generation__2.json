@@ -1,0 +1,10 @@
+{
+ "cypher": "MATCH (u:User)-[:FOLLOWS|AUTHORED*1]->(x)\n                    WHERE u.user_id = 1\n                    RETURN x.name, x.content\n                    LIMIT 3",
+ "kinds": {},
+ "rows": [
+  "{\"x.content\": null, \"x.name\": \"Bob Smith\"}",
+  "{\"x.content\": null, \"x.name\": \"Carol White\"}",
+  "{\"x.content\": null, \"x.name\": \"Eve Davis\"}"
+ ],
+ "schema": "social_integration"
+}

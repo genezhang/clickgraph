@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (a)-[:AUTHORED]->(b)\n        WITH a, count(b) as post_count\n        MATCH (a)-[:FOLLOWS]->(f)\n        RETURN count(*) as total",
+ "kinds": {},
+ "rows": [
+  "{\"total\": 20.0}"
+ ],
+ "schema": "social_integration"
+}

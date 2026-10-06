@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (a:User)-[:FOLLOWS]->(b) WITH a, count(b) AS fc RETURN min(fc), max(fc), sum(fc), stDev(fc)",
+ "kinds": {},
+ "rows": [
+  "{\"max(fc)\": 3.0, \"min(fc)\": 2.0, \"stDev(fc)\": 0.377964473, \"sum(fc)\": 20.0}"
+ ],
+ "schema": "standard"
+}

@@ -1,0 +1,25 @@
+{
+ "cypher": "MATCH (u1:User {user_id: 1})-[:FOLLOWS*1..2]-(u2:User)-[:AUTHORED]->(p:Post)\n        RETURN u2.user_id AS userId,\n               u2.name AS userName,\n               SUM(1) AS postCount\n        ORDER BY postCount DESC\n        LIMIT 5",
+ "full": {
+  "kinds": {},
+  "rows": [
+   "{\"postCount\": 12.0, \"userId\": 1.0, \"userName\": \"Alice Johnson\"}",
+   "{\"postCount\": 4.0, \"userId\": 2.0, \"userName\": \"Bob Smith\"}",
+   "{\"postCount\": 4.0, \"userId\": 3.0, \"userName\": \"Carol White\"}",
+   "{\"postCount\": 4.0, \"userId\": 5.0, \"userName\": \"Eve Davis\"}",
+   "{\"postCount\": 4.0, \"userId\": 8.0, \"userName\": \"Henry Wilson\"}",
+   "{\"postCount\": 8.0, \"userId\": 4.0, \"userName\": \"David Brown\"}",
+   "{\"postCount\": 8.0, \"userId\": 6.0, \"userName\": \"Frank Miller\"}",
+   "{\"postCount\": 8.0, \"userId\": 7.0, \"userName\": \"Grace Lee\"}"
+  ]
+ },
+ "kinds": {},
+ "rows": [
+  "{\"postCount\": 12.0, \"userId\": 1.0, \"userName\": \"Alice Johnson\"}",
+  "{\"postCount\": 4.0, \"userId\": 3.0, \"userName\": \"Carol White\"}",
+  "{\"postCount\": 8.0, \"userId\": 4.0, \"userName\": \"David Brown\"}",
+  "{\"postCount\": 8.0, \"userId\": 6.0, \"userName\": \"Frank Miller\"}",
+  "{\"postCount\": 8.0, \"userId\": 7.0, \"userName\": \"Grace Lee\"}"
+ ],
+ "schema": "social_integration"
+}

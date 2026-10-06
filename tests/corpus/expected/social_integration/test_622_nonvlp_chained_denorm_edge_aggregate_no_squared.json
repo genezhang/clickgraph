@@ -1,0 +1,17 @@
+{
+ "cypher": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:AUTHORED]->(p:Post) RETURN u2.user_id, count(*)",
+ "kinds": {},
+ "rows": [
+  "{\"count(*)\": 2.0, \"u2.user_id\": 10.0}",
+  "{\"count(*)\": 2.0, \"u2.user_id\": 4.0}",
+  "{\"count(*)\": 2.0, \"u2.user_id\": 5.0}",
+  "{\"count(*)\": 2.0, \"u2.user_id\": 6.0}",
+  "{\"count(*)\": 2.0, \"u2.user_id\": 7.0}",
+  "{\"count(*)\": 2.0, \"u2.user_id\": 8.0}",
+  "{\"count(*)\": 2.0, \"u2.user_id\": 9.0}",
+  "{\"count(*)\": 4.0, \"u2.user_id\": 3.0}",
+  "{\"count(*)\": 6.0, \"u2.user_id\": 1.0}",
+  "{\"count(*)\": 6.0, \"u2.user_id\": 2.0}"
+ ],
+ "schema": "social_integration"
+}

@@ -1,0 +1,17 @@
+{
+ "cypher": "MATCH (n:User) WHERE n.email IS NOT NULL RETURN n.email LIMIT 10",
+ "kinds": {},
+ "rows": [
+  "{\"n.email\": \"alice@example.com\"}",
+  "{\"n.email\": \"bob@example.com\"}",
+  "{\"n.email\": \"carol@example.com\"}",
+  "{\"n.email\": \"david@example.com\"}",
+  "{\"n.email\": \"eve@example.com\"}",
+  "{\"n.email\": \"frank@example.com\"}",
+  "{\"n.email\": \"grace@example.com\"}",
+  "{\"n.email\": \"henry@example.com\"}",
+  "{\"n.email\": \"iris@example.com\"}",
+  "{\"n.email\": \"jack@example.com\"}"
+ ],
+ "schema": "social_integration"
+}

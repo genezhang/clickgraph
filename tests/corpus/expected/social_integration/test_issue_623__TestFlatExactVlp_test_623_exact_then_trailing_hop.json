@@ -1,0 +1,17 @@
+{
+ "cypher": "MATCH (a:User)-[:FOLLOWS*2..2]->(b:User)-[:FOLLOWS]->(c:User) RETURN a.name, b.name, c.name LIMIT 10",
+ "kinds": {},
+ "rows": [
+  "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Alice Johnson\", \"c.name\": \"Bob Smith\"}",
+  "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Alice Johnson\", \"c.name\": \"Carol White\"}",
+  "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Alice Johnson\", \"c.name\": \"Eve Davis\"}",
+  "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Alice Johnson\", \"c.name\": \"Eve Davis\"}",
+  "{\"a.name\": \"David Brown\", \"b.name\": \"Alice Johnson\", \"c.name\": \"Bob Smith\"}",
+  "{\"a.name\": \"David Brown\", \"b.name\": \"Alice Johnson\", \"c.name\": \"Carol White\"}",
+  "{\"a.name\": \"David Brown\", \"b.name\": \"Alice Johnson\", \"c.name\": \"Eve Davis\"}",
+  "{\"a.name\": \"Frank Miller\", \"b.name\": \"Alice Johnson\", \"c.name\": \"Bob Smith\"}",
+  "{\"a.name\": \"Frank Miller\", \"b.name\": \"Alice Johnson\", \"c.name\": \"Carol White\"}",
+  "{\"a.name\": \"Frank Miller\", \"b.name\": \"Alice Johnson\", \"c.name\": \"Eve Davis\"}"
+ ],
+ "schema": "social_integration"
+}

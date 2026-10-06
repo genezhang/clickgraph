@@ -1,0 +1,6 @@
+{
+ "cypher": "MATCH (a:Post)-[r:LIKED]->(b:User) RETURN a.content, b.is_active LIMIT 10",
+ "kinds": {},
+ "rows": [],
+ "schema": "social_integration"
+}

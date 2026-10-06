@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (u:User)\n    WHERE u.user_id = 1\n    RETURN u.name, u.email",
+ "kinds": {},
+ "rows": [
+  "{\"u.email\": \"alice@example.com\", \"u.name\": \"Alice Johnson\"}"
+ ],
+ "schema": "social_integration"
+}

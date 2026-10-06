@@ -1,0 +1,14 @@
+{
+ "cypher": "MATCH (u:User)-[:FOLLOWS]->(f:User)\n    WITH f, u.user_id AS user_id\n    WHERE f.country = 'USA'\n    RETURN f.name, f.email",
+ "kinds": {},
+ "rows": [
+  "{\"f.email\": \"alice@example.com\", \"f.name\": \"Alice Johnson\"}",
+  "{\"f.email\": \"alice@example.com\", \"f.name\": \"Alice Johnson\"}",
+  "{\"f.email\": \"alice@example.com\", \"f.name\": \"Alice Johnson\"}",
+  "{\"f.email\": \"eve@example.com\", \"f.name\": \"Eve Davis\"}",
+  "{\"f.email\": \"henry@example.com\", \"f.name\": \"Henry Wilson\"}",
+  "{\"f.email\": \"jack@example.com\", \"f.name\": \"Jack Taylor\"}",
+  "{\"f.email\": \"mia@example.com\", \"f.name\": \"Mia Jackson\"}"
+ ],
+ "schema": "social_integration"
+}

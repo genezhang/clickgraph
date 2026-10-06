@@ -1,0 +1,10 @@
+{
+ "cypher": "MATCH (u:User)-[:FOLLOWS]->(neighbor:User) WHERE u.user_id = 1 RETURN neighbor.user_id, neighbor.name LIMIT 10",
+ "kinds": {},
+ "rows": [
+  "{\"neighbor.name\": \"Bob Smith\", \"neighbor.user_id\": 2.0}",
+  "{\"neighbor.name\": \"Carol White\", \"neighbor.user_id\": 3.0}",
+  "{\"neighbor.name\": \"Eve Davis\", \"neighbor.user_id\": 5.0}"
+ ],
+ "schema": "standard"
+}

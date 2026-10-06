@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (u:User) WITH u.user_id + 100 AS offsetId RETURN offsetId LIMIT 1",
+ "kinds": {},
+ "rows": [
+  "{\"offsetId\": 101.0}"
+ ],
+ "schema": "social_integration"
+}

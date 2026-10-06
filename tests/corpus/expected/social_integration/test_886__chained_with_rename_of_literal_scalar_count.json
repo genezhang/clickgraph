@@ -1,0 +1,8 @@
+{
+ "cypher": "WITH 1 AS one\n            WITH one AS two\n            RETURN count(two) AS c",
+ "kinds": {},
+ "rows": [
+  "{\"c\": 1.0}"
+ ],
+ "schema": "social_integration"
+}

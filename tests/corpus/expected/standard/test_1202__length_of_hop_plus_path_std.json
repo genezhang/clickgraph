@@ -1,0 +1,9 @@
+{
+ "cypher": "MATCH p=(c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN length(p) AS l, count(*) AS n",
+ "kinds": {},
+ "rows": [
+  "{\"l\": 2.0, \"n\": 35.0}",
+  "{\"l\": 3.0, \"n\": 64.0}"
+ ],
+ "schema": "standard"
+}

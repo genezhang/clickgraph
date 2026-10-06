@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (u:User) WITH [u.name, u.email] AS info RETURN info LIMIT 1",
+ "kinds": {},
+ "rows": [
+  "{\"info\": [\"Alice Johnson\", \"alice@example.com\"]}"
+ ],
+ "schema": "social_integration"
+}

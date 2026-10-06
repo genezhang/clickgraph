@@ -1,0 +1,10 @@
+{
+ "cypher": "MATCH (u1:User {user_id: 1})-[:FOLLOWS*1..2]-(u2:User),\n              (u2)-[:AUTHORED]->(p:Post),\n              (u2)<-[:LIKED]-(like:Post)\n        RETURN u2.user_id AS userId,\n               COUNT(DISTINCT p) AS postCount,\n               COUNT(DISTINCT like) AS likeCount\n        ORDER BY postCount DESC\n        LIMIT 5",
+ "full": {
+  "kinds": {},
+  "rows": []
+ },
+ "kinds": {},
+ "rows": [],
+ "schema": "social_integration"
+}

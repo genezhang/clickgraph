@@ -1,0 +1,10 @@
+{
+ "cypher": "MATCH (a:User) WHERE EXISTS { MATCH (a)-[:FOLLOWS]->(b:User) WHERE b.name = 'Bob Smith' } RETURN a.name",
+ "kinds": {},
+ "rows": [
+  "{\"a.name\": \"Alice Johnson\"}",
+  "{\"a.name\": \"David Brown\"}",
+  "{\"a.name\": \"Frank Miller\"}"
+ ],
+ "schema": "standard"
+}

@@ -1,0 +1,17 @@
+{
+ "cypher": "MATCH (u1:User)-[:FOLLOWS*1..2]->(u2:User)\n        WHERE u1.user_id = 1\n        RETURN u2.user_id\n        LIMIT 10",
+ "kinds": {},
+ "rows": [
+  "{\"u2.user_id\": 1.0}",
+  "{\"u2.user_id\": 1.0}",
+  "{\"u2.user_id\": 1.0}",
+  "{\"u2.user_id\": 2.0}",
+  "{\"u2.user_id\": 3.0}",
+  "{\"u2.user_id\": 4.0}",
+  "{\"u2.user_id\": 5.0}",
+  "{\"u2.user_id\": 6.0}",
+  "{\"u2.user_id\": 7.0}",
+  "{\"u2.user_id\": 8.0}"
+ ],
+ "schema": "social_integration"
+}

@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH p = shortestPath((a {user_id: 1})-[*]-(b {user_id: 10}))\n        RETURN length(p) as hops",
+ "kinds": {},
+ "rows": [
+  "{\"hops\": 3.0}"
+ ],
+ "schema": "social_integration"
+}

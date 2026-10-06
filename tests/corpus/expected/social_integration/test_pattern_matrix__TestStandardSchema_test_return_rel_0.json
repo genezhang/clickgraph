@@ -1,0 +1,14 @@
+{
+ "cypher": "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN r LIMIT 5",
+ "kinds": {
+  "r": "relationship"
+ },
+ "rows": [
+  "{\"r.follow_date\": \"2023-01-01\"}",
+  "{\"r.follow_date\": \"2023-01-02\"}",
+  "{\"r.follow_date\": \"2023-01-03\"}",
+  "{\"r.follow_date\": \"2023-01-04\"}",
+  "{\"r.follow_date\": \"2023-01-05\"}"
+ ],
+ "schema": "social_integration"
+}

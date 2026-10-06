@@ -1,0 +1,14 @@
+{
+ "cypher": "MATCH (u:User) RETURN u LIMIT 5",
+ "kinds": {
+  "u": "node"
+ },
+ "rows": [
+  "{\"u.age\": 25.0, \"u.city\": \"Toronto\", \"u.country\": \"Canada\", \"u.email\": \"carol@example.com\", \"u.is_active\": 1.0, \"u.name\": \"Carol White\", \"u.registration_date\": \"2021-03-10\", \"u.user_id\": 3.0}",
+  "{\"u.age\": 28.0, \"u.city\": \"New York\", \"u.country\": \"USA\", \"u.email\": \"alice@example.com\", \"u.is_active\": 1.0, \"u.name\": \"Alice Johnson\", \"u.registration_date\": \"2020-01-15\", \"u.user_id\": 1.0}",
+  "{\"u.age\": 29.0, \"u.city\": \"San Francisco\", \"u.country\": \"USA\", \"u.email\": \"eve@example.com\", \"u.is_active\": 1.0, \"u.name\": \"Eve Davis\", \"u.registration_date\": \"2020-07-08\", \"u.user_id\": 5.0}",
+  "{\"u.age\": 32.0, \"u.city\": \"London\", \"u.country\": \"UK\", \"u.email\": \"bob@example.com\", \"u.is_active\": 1.0, \"u.name\": \"Bob Smith\", \"u.registration_date\": \"2019-05-20\", \"u.user_id\": 2.0}",
+  "{\"u.age\": 35.0, \"u.city\": \"Sydney\", \"u.country\": \"Australia\", \"u.email\": \"david@example.com\", \"u.is_active\": 1.0, \"u.name\": \"David Brown\", \"u.registration_date\": \"2018-11-25\", \"u.user_id\": 4.0}"
+ ],
+ "schema": "social_integration"
+}

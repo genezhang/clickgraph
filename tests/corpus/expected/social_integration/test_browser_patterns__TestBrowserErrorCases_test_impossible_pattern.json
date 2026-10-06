@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (p:Post)-[r]->(n) RETURN count(*) as count",
+ "kinds": {},
+ "rows": [
+  "{\"count\": 0.0}"
+ ],
+ "schema": "social_integration"
+}

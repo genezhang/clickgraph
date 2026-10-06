@@ -1,0 +1,11 @@
+{
+ "cypher": "MATCH (n:User) WHERE n.user_id < 5\n    RETURN DISTINCT \"node\" as entity, n.name AS name LIMIT 2\n    UNION ALL\n    MATCH (p:Post) WHERE p.post_id < 5\n    RETURN DISTINCT \"post\" AS entity, p.content AS name LIMIT 2",
+ "kinds": {},
+ "rows": [
+  "{\"entity\": \"node\", \"name\": \"Alice Johnson\"}",
+  "{\"entity\": \"node\", \"name\": \"Bob Smith\"}",
+  "{\"entity\": \"post\", \"name\": \"Hello everyone!\"}",
+  "{\"entity\": \"post\", \"name\": \"My first post here\"}"
+ ],
+ "schema": "social_integration"
+}

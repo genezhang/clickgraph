@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (n) RETURN count(n) as total",
+ "kinds": {},
+ "rows": [
+  "{\"total\": 50.0}"
+ ],
+ "schema": "social_integration"
+}

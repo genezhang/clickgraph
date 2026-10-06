@@ -1,0 +1,10 @@
+{
+ "cypher": "MATCH (p:Post)\n            WITH p\n            RETURN p\n            LIMIT 1",
+ "kinds": {
+  "p": "node"
+ },
+ "rows": [
+  "{\"p.author_id\": 1.0, \"p.content\": \"Hello everyone!\", \"p.created_at\": \"2023-01-01\", \"p.post_id\": 1.0, \"p.title\": \"Introduction\"}"
+ ],
+ "schema": "social_integration"
+}

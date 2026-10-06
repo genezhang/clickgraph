@@ -1,0 +1,31 @@
+{
+ "cypher": "MATCH (u:User)-[r]->(target)\n        RETURN u.user_id, type(r), count(*) as action_count",
+ "kinds": {},
+ "rows": [
+  "{\"action_count\": 2.0, \"type(r)\": \"AUTHORED\", \"u.user_id\": 1.0}",
+  "{\"action_count\": 2.0, \"type(r)\": \"AUTHORED\", \"u.user_id\": 10.0}",
+  "{\"action_count\": 2.0, \"type(r)\": \"AUTHORED\", \"u.user_id\": 2.0}",
+  "{\"action_count\": 2.0, \"type(r)\": \"AUTHORED\", \"u.user_id\": 3.0}",
+  "{\"action_count\": 2.0, \"type(r)\": \"AUTHORED\", \"u.user_id\": 4.0}",
+  "{\"action_count\": 2.0, \"type(r)\": \"AUTHORED\", \"u.user_id\": 5.0}",
+  "{\"action_count\": 2.0, \"type(r)\": \"AUTHORED\", \"u.user_id\": 6.0}",
+  "{\"action_count\": 2.0, \"type(r)\": \"AUTHORED\", \"u.user_id\": 7.0}",
+  "{\"action_count\": 2.0, \"type(r)\": \"AUTHORED\", \"u.user_id\": 8.0}",
+  "{\"action_count\": 2.0, \"type(r)\": \"AUTHORED\", \"u.user_id\": 9.0}",
+  "{\"action_count\": 2.0, \"type(r)\": \"FOLLOWS\", \"u.user_id\": 7.0}",
+  "{\"action_count\": 2.0, \"type(r)\": \"LIKED\", \"u.user_id\": 7.0}",
+  "{\"action_count\": 3.0, \"type(r)\": \"FOLLOWS\", \"u.user_id\": 1.0}",
+  "{\"action_count\": 3.0, \"type(r)\": \"FOLLOWS\", \"u.user_id\": 2.0}",
+  "{\"action_count\": 3.0, \"type(r)\": \"FOLLOWS\", \"u.user_id\": 3.0}",
+  "{\"action_count\": 3.0, \"type(r)\": \"FOLLOWS\", \"u.user_id\": 4.0}",
+  "{\"action_count\": 3.0, \"type(r)\": \"FOLLOWS\", \"u.user_id\": 5.0}",
+  "{\"action_count\": 3.0, \"type(r)\": \"FOLLOWS\", \"u.user_id\": 6.0}",
+  "{\"action_count\": 3.0, \"type(r)\": \"LIKED\", \"u.user_id\": 1.0}",
+  "{\"action_count\": 3.0, \"type(r)\": \"LIKED\", \"u.user_id\": 2.0}",
+  "{\"action_count\": 3.0, \"type(r)\": \"LIKED\", \"u.user_id\": 3.0}",
+  "{\"action_count\": 3.0, \"type(r)\": \"LIKED\", \"u.user_id\": 4.0}",
+  "{\"action_count\": 3.0, \"type(r)\": \"LIKED\", \"u.user_id\": 5.0}",
+  "{\"action_count\": 3.0, \"type(r)\": \"LIKED\", \"u.user_id\": 6.0}"
+ ],
+ "schema": "social_integration"
+}

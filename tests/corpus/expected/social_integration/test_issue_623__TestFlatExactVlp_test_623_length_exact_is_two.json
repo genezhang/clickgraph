@@ -1,0 +1,17 @@
+{
+ "cypher": "MATCH p = (a:User)-[:FOLLOWS*2..2]->(b:User) RETURN b.name, length(p) LIMIT 10",
+ "kinds": {},
+ "rows": [
+  "{\"b.name\": \"Alice Johnson\", \"length(p)\": 2.0}",
+  "{\"b.name\": \"Alice Johnson\", \"length(p)\": 2.0}",
+  "{\"b.name\": \"Alice Johnson\", \"length(p)\": 2.0}",
+  "{\"b.name\": \"Bob Smith\", \"length(p)\": 2.0}",
+  "{\"b.name\": \"David Brown\", \"length(p)\": 2.0}",
+  "{\"b.name\": \"Frank Miller\", \"length(p)\": 2.0}",
+  "{\"b.name\": \"Grace Lee\", \"length(p)\": 2.0}",
+  "{\"b.name\": \"Henry Wilson\", \"length(p)\": 2.0}",
+  "{\"b.name\": \"Kate Anderson\", \"length(p)\": 2.0}",
+  "{\"b.name\": \"Liam Thomas\", \"length(p)\": 2.0}"
+ ],
+ "schema": "social_integration"
+}

@@ -1,0 +1,17 @@
+{
+ "cypher": "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN a.city, b.city LIMIT 10",
+ "kinds": {},
+ "rows": [
+  "{\"a.city\": \"London\", \"b.city\": \"Berlin\"}",
+  "{\"a.city\": \"London\", \"b.city\": \"New York\"}",
+  "{\"a.city\": \"London\", \"b.city\": \"Sydney\"}",
+  "{\"a.city\": \"New York\", \"b.city\": \"London\"}",
+  "{\"a.city\": \"New York\", \"b.city\": \"San Francisco\"}",
+  "{\"a.city\": \"New York\", \"b.city\": \"Toronto\"}",
+  "{\"a.city\": \"Sydney\", \"b.city\": \"London\"}",
+  "{\"a.city\": \"Toronto\", \"b.city\": \"Chicago\"}",
+  "{\"a.city\": \"Toronto\", \"b.city\": \"New York\"}",
+  "{\"a.city\": \"Toronto\", \"b.city\": \"Seoul\"}"
+ ],
+ "schema": "social_integration"
+}

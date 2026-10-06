@@ -1,0 +1,8 @@
+{
+ "cypher": "RETURN 'it\\'s' AS r",
+ "kinds": {},
+ "rows": [
+  "{\"r\": \"it's\"}"
+ ],
+ "schema": "standard"
+}

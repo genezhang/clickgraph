@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (a)-[r]->(b)\n        WHERE a.created_date > '2024-01-01'\n        AND b.status = 'active'\n        RETURN count(*) as total",
+ "kinds": {},
+ "rows": [
+  "{\"total\": 0.0}"
+ ],
+ "schema": "social_integration"
+}

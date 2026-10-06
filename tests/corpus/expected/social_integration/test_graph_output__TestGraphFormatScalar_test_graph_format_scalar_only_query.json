@@ -1,0 +1,12 @@
+{
+ "cypher": "MATCH (u:User) RETURN u.name LIMIT 5",
+ "kinds": {},
+ "rows": [
+  "{\"u.name\": \"Alice Johnson\"}",
+  "{\"u.name\": \"Bob Smith\"}",
+  "{\"u.name\": \"Carol White\"}",
+  "{\"u.name\": \"David Brown\"}",
+  "{\"u.name\": \"Eve Davis\"}"
+ ],
+ "schema": "social_integration"
+}

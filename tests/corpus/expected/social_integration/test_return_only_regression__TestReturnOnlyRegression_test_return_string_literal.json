@@ -1,0 +1,8 @@
+{
+ "cypher": "RETURN 'hello' AS greeting",
+ "kinds": {},
+ "rows": [
+  "{\"greeting\": \"hello\"}"
+ ],
+ "schema": "social_integration"
+}

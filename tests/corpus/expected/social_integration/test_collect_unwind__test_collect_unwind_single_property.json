@@ -1,0 +1,10 @@
+{
+ "cypher": "MATCH (u:User)\n        WITH u, collect(u) as users\n        UNWIND users as user\n        RETURN user.name\n        LIMIT 3",
+ "kinds": {},
+ "rows": [
+  "{\"user.name\": \"Alice Johnson\"}",
+  "{\"user.name\": \"Bob Smith\"}",
+  "{\"user.name\": \"Carol White\"}"
+ ],
+ "schema": "social_integration"
+}

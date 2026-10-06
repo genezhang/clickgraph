@@ -1,0 +1,12 @@
+{
+ "cypher": "MATCH (a:User)-[r1:FOLLOWS]->(b:User)-[r2:FOLLOWS]->(c:User) RETURN a.email, c.email LIMIT 5",
+ "kinds": {},
+ "rows": [
+  "{\"a.email\": \"bob@example.com\", \"c.email\": \"bob@example.com\"}",
+  "{\"a.email\": \"carol@example.com\", \"c.email\": \"bob@example.com\"}",
+  "{\"a.email\": \"carol@example.com\", \"c.email\": \"carol@example.com\"}",
+  "{\"a.email\": \"eve@example.com\", \"c.email\": \"bob@example.com\"}",
+  "{\"a.email\": \"eve@example.com\", \"c.email\": \"carol@example.com\"}"
+ ],
+ "schema": "social_integration"
+}

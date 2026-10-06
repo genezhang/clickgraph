@@ -1,0 +1,6 @@
+{
+ "cypher": "MATCH (u:User) WHERE u.name STARTS WITH 'O\\'' OR u.name IN ['a\\'b', \"say \\\"hi\\\"\"] RETURN u.name",
+ "kinds": {},
+ "rows": [],
+ "schema": "standard"
+}

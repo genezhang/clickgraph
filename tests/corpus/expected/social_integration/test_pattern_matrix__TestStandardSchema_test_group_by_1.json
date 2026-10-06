@@ -1,0 +1,52 @@
+{
+ "cypher": "MATCH (n:User) RETURN n.email, count(n) AS cnt ORDER BY cnt DESC LIMIT 10",
+ "full": {
+  "kinds": {},
+  "rows": [
+   "{\"cnt\": 1.0, \"n.email\": \"alice@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"amy@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"ben@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"bob@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"carol@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"chloe@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"dan@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"david@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"eve@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"frank@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"grace@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"henry@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"iris@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"jack@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"kate@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"liam@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"mia@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"noah@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"olivia@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"paul@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"quinn@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"rachel@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"sam@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"tina@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"uma@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"victor@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"wendy@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"xavier@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"yara@example.com\"}",
+   "{\"cnt\": 1.0, \"n.email\": \"zack@example.com\"}"
+  ]
+ },
+ "kinds": {},
+ "rows": [
+  "{\"cnt\": 1.0, \"n.email\": \"alice@example.com\"}",
+  "{\"cnt\": 1.0, \"n.email\": \"bob@example.com\"}",
+  "{\"cnt\": 1.0, \"n.email\": \"carol@example.com\"}",
+  "{\"cnt\": 1.0, \"n.email\": \"david@example.com\"}",
+  "{\"cnt\": 1.0, \"n.email\": \"eve@example.com\"}",
+  "{\"cnt\": 1.0, \"n.email\": \"frank@example.com\"}",
+  "{\"cnt\": 1.0, \"n.email\": \"grace@example.com\"}",
+  "{\"cnt\": 1.0, \"n.email\": \"henry@example.com\"}",
+  "{\"cnt\": 1.0, \"n.email\": \"iris@example.com\"}",
+  "{\"cnt\": 1.0, \"n.email\": \"jack@example.com\"}"
+ ],
+ "schema": "social_integration"
+}

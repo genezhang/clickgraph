@@ -1,0 +1,12 @@
+{
+ "cypher": "MATCH (u:User)\n            OPTIONAL MATCH (u)-[r:FOLLOWS]->(f:User)\n            RETURN u.user_id, count(r) as follow_count\n            LIMIT 5",
+ "kinds": {},
+ "rows": [
+  "{\"follow_count\": 3.0, \"u.user_id\": 1.0}",
+  "{\"follow_count\": 3.0, \"u.user_id\": 2.0}",
+  "{\"follow_count\": 3.0, \"u.user_id\": 3.0}",
+  "{\"follow_count\": 3.0, \"u.user_id\": 4.0}",
+  "{\"follow_count\": 3.0, \"u.user_id\": 5.0}"
+ ],
+ "schema": "social_integration"
+}

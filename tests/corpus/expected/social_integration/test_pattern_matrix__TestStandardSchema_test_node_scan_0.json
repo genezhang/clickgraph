@@ -1,0 +1,17 @@
+{
+ "cypher": "MATCH (n:User) RETURN n.country LIMIT 10",
+ "kinds": {},
+ "rows": [
+  "{\"n.country\": \"Australia\"}",
+  "{\"n.country\": \"Canada\"}",
+  "{\"n.country\": \"Germany\"}",
+  "{\"n.country\": \"South Korea\"}",
+  "{\"n.country\": \"Spain\"}",
+  "{\"n.country\": \"UK\"}",
+  "{\"n.country\": \"USA\"}",
+  "{\"n.country\": \"USA\"}",
+  "{\"n.country\": \"USA\"}",
+  "{\"n.country\": \"USA\"}"
+ ],
+ "schema": "social_integration"
+}

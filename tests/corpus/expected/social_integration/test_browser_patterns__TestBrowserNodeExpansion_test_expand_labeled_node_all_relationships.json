@@ -1,0 +1,18 @@
+{
+ "cypher": "MATCH (n:User)-[r]-(m) WHERE n.user_id = 1 RETURN type(r) as rel_type, labels(m)[0] as target_label",
+ "kinds": {},
+ "rows": [
+  "{\"rel_type\": \"AUTHORED\", \"target_label\": \"Post\"}",
+  "{\"rel_type\": \"AUTHORED\", \"target_label\": \"Post\"}",
+  "{\"rel_type\": \"FOLLOWS\", \"target_label\": \"User\"}",
+  "{\"rel_type\": \"FOLLOWS\", \"target_label\": \"User\"}",
+  "{\"rel_type\": \"FOLLOWS\", \"target_label\": \"User\"}",
+  "{\"rel_type\": \"FOLLOWS\", \"target_label\": \"User\"}",
+  "{\"rel_type\": \"FOLLOWS\", \"target_label\": \"User\"}",
+  "{\"rel_type\": \"FOLLOWS\", \"target_label\": \"User\"}",
+  "{\"rel_type\": \"LIKED\", \"target_label\": \"Post\"}",
+  "{\"rel_type\": \"LIKED\", \"target_label\": \"Post\"}",
+  "{\"rel_type\": \"LIKED\", \"target_label\": \"Post\"}"
+ ],
+ "schema": "social_integration"
+}

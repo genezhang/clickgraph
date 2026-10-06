@@ -1,0 +1,15 @@
+{
+ "cypher": "MATCH (u1:User {user_id: 1})-[:FOLLOWS*1..2]-(u2:User)-[:AUTHORED]->(p:Post)\n        RETURN u2.user_id, COUNT(DISTINCT p) AS postCount",
+ "kinds": {},
+ "rows": [
+  "{\"postCount\": 2.0, \"u2.user_id\": 1.0}",
+  "{\"postCount\": 2.0, \"u2.user_id\": 2.0}",
+  "{\"postCount\": 2.0, \"u2.user_id\": 3.0}",
+  "{\"postCount\": 2.0, \"u2.user_id\": 4.0}",
+  "{\"postCount\": 2.0, \"u2.user_id\": 5.0}",
+  "{\"postCount\": 2.0, \"u2.user_id\": 6.0}",
+  "{\"postCount\": 2.0, \"u2.user_id\": 7.0}",
+  "{\"postCount\": 2.0, \"u2.user_id\": 8.0}"
+ ],
+ "schema": "social_integration"
+}

@@ -1,0 +1,12 @@
+{
+ "cypher": "MATCH (a:User)-[r1:FOLLOWS]->(b:User)-[r2:FOLLOWS]->(c:User) RETURN a.is_active, c.is_active LIMIT 5",
+ "kinds": {},
+ "rows": [
+  "{\"a.is_active\": 1.0, \"c.is_active\": 1.0}",
+  "{\"a.is_active\": 1.0, \"c.is_active\": 1.0}",
+  "{\"a.is_active\": 1.0, \"c.is_active\": 1.0}",
+  "{\"a.is_active\": 1.0, \"c.is_active\": 1.0}",
+  "{\"a.is_active\": 1.0, \"c.is_active\": 1.0}"
+ ],
+ "schema": "social_integration"
+}

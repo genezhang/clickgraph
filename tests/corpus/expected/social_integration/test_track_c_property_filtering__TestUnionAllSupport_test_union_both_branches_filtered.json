@@ -1,0 +1,17 @@
+{
+ "cypher": "MATCH (n) WHERE n.user_id IS NOT NULL\n        RETURN DISTINCT \"node\" AS entity, n.user_id AS value LIMIT 5\n        UNION ALL\n        MATCH ()-[r]->() WHERE r.follow_date IS NOT NULL\n        RETURN DISTINCT \"relationship\" AS entity, r.follow_date AS value LIMIT 5",
+ "kinds": {},
+ "rows": [
+  "{\"entity\": \"node\", \"value\": 1.0}",
+  "{\"entity\": \"node\", \"value\": 2.0}",
+  "{\"entity\": \"node\", \"value\": 3.0}",
+  "{\"entity\": \"node\", \"value\": 4.0}",
+  "{\"entity\": \"node\", \"value\": 5.0}",
+  "{\"entity\": \"relationship\", \"value\": \"2023-01-01\"}",
+  "{\"entity\": \"relationship\", \"value\": \"2023-01-02\"}",
+  "{\"entity\": \"relationship\", \"value\": \"2023-01-03\"}",
+  "{\"entity\": \"relationship\", \"value\": \"2023-01-04\"}",
+  "{\"entity\": \"relationship\", \"value\": \"2023-01-05\"}"
+ ],
+ "schema": "social_integration"
+}

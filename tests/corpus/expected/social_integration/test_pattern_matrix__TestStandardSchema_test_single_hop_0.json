@@ -1,0 +1,17 @@
+{
+ "cypher": "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN a.is_active, b.is_active LIMIT 10",
+ "kinds": {},
+ "rows": [
+  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}",
+  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}",
+  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}",
+  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}",
+  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}",
+  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}",
+  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}",
+  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}",
+  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}",
+  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}"
+ ],
+ "schema": "social_integration"
+}

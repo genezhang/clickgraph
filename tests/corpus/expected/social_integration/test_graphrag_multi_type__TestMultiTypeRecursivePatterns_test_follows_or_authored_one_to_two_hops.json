@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)\n            WHERE u.user_id = 1\n            RETURN DISTINCT labels(x)[1] as node_type, count(*) as cnt\n            ORDER BY node_type",
+ "kinds": {},
+ "rows": [
+  "{\"cnt\": 20.0, \"node_type\": null}"
+ ],
+ "schema": "social_integration"
+}

@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (u:User) WITH count(u.name) AS nameCount RETURN nameCount",
+ "kinds": {},
+ "rows": [
+  "{\"nameCount\": 30.0}"
+ ],
+ "schema": "social_integration"
+}

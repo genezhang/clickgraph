@@ -1,0 +1,17 @@
+{
+ "cypher": "MATCH (n:User) WHERE n.user_id IS NOT NULL RETURN n.user_id LIMIT 10",
+ "kinds": {},
+ "rows": [
+  "{\"n.user_id\": 1.0}",
+  "{\"n.user_id\": 10.0}",
+  "{\"n.user_id\": 2.0}",
+  "{\"n.user_id\": 3.0}",
+  "{\"n.user_id\": 4.0}",
+  "{\"n.user_id\": 5.0}",
+  "{\"n.user_id\": 6.0}",
+  "{\"n.user_id\": 7.0}",
+  "{\"n.user_id\": 8.0}",
+  "{\"n.user_id\": 9.0}"
+ ],
+ "schema": "social_integration"
+}

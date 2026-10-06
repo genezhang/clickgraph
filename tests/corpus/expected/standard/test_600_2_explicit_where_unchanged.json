@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (a:User) WHERE a.name = 'Alice Johnson' RETURN count(*)",
+ "kinds": {},
+ "rows": [
+  "{\"count(*)\": 1.0}"
+ ],
+ "schema": "standard"
+}

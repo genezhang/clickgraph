@@ -1,0 +1,19 @@
+{
+ "cypher": "MATCH (a:User)-[:FOLLOWS*2..2]->(a) RETURN a.name, a.country",
+ "kinds": {},
+ "rows": [
+  "{\"a.country\": \"Australia\", \"a.name\": \"David Brown\"}",
+  "{\"a.country\": \"Canada\", \"a.name\": \"Carol White\"}",
+  "{\"a.country\": \"Canada\", \"a.name\": \"Carol White\"}",
+  "{\"a.country\": \"Germany\", \"a.name\": \"Frank Miller\"}",
+  "{\"a.country\": \"South Korea\", \"a.name\": \"Grace Lee\"}",
+  "{\"a.country\": \"UK\", \"a.name\": \"Bob Smith\"}",
+  "{\"a.country\": \"UK\", \"a.name\": \"Bob Smith\"}",
+  "{\"a.country\": \"UK\", \"a.name\": \"Bob Smith\"}",
+  "{\"a.country\": \"USA\", \"a.name\": \"Alice Johnson\"}",
+  "{\"a.country\": \"USA\", \"a.name\": \"Alice Johnson\"}",
+  "{\"a.country\": \"USA\", \"a.name\": \"Alice Johnson\"}",
+  "{\"a.country\": \"USA\", \"a.name\": \"Eve Davis\"}"
+ ],
+ "schema": "standard"
+}

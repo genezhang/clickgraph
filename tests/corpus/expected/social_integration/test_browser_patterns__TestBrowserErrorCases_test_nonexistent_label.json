@@ -1,0 +1,6 @@
+{
+ "cypher": "MATCH (n:NonExistent) RETURN n",
+ "kinds": {},
+ "rows": [],
+ "schema": "social_integration"
+}

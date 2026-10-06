@@ -1,0 +1,8 @@
+{
+ "cypher": "RETURN toUpper('hello') AS upper",
+ "kinds": {},
+ "rows": [
+  "{\"upper\": \"HELLO\"}"
+ ],
+ "schema": "social_integration"
+}

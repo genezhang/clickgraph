@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (u:User) WITH u.name + '@' + u.email AS combo RETURN combo LIMIT 1",
+ "kinds": {},
+ "rows": [
+  "{\"combo\": \"Alice Johnson@alice@example.com\"}"
+ ],
+ "schema": "social_integration"
+}

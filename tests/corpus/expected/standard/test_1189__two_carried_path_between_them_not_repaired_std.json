@@ -1,0 +1,27 @@
+{
+ "cypher": "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c, z MATCH (z)-[:FOLLOWS*1..2]->(c) RETURN z.user_id, c.user_id",
+ "kinds": {},
+ "rows": [
+  "{\"c.user_id\": 1.0, \"z.user_id\": 2.0}",
+  "{\"c.user_id\": 1.0, \"z.user_id\": 3.0}",
+  "{\"c.user_id\": 1.0, \"z.user_id\": 5.0}",
+  "{\"c.user_id\": 10.0, \"z.user_id\": 4.0}",
+  "{\"c.user_id\": 11.0, \"z.user_id\": 5.0}",
+  "{\"c.user_id\": 12.0, \"z.user_id\": 5.0}",
+  "{\"c.user_id\": 13.0, \"z.user_id\": 6.0}",
+  "{\"c.user_id\": 14.0, \"z.user_id\": 6.0}",
+  "{\"c.user_id\": 15.0, \"z.user_id\": 7.0}",
+  "{\"c.user_id\": 2.0, \"z.user_id\": 1.0}",
+  "{\"c.user_id\": 2.0, \"z.user_id\": 4.0}",
+  "{\"c.user_id\": 2.0, \"z.user_id\": 6.0}",
+  "{\"c.user_id\": 3.0, \"z.user_id\": 1.0}",
+  "{\"c.user_id\": 3.0, \"z.user_id\": 7.0}",
+  "{\"c.user_id\": 4.0, \"z.user_id\": 2.0}",
+  "{\"c.user_id\": 5.0, \"z.user_id\": 1.0}",
+  "{\"c.user_id\": 6.0, \"z.user_id\": 2.0}",
+  "{\"c.user_id\": 7.0, \"z.user_id\": 3.0}",
+  "{\"c.user_id\": 8.0, \"z.user_id\": 3.0}",
+  "{\"c.user_id\": 9.0, \"z.user_id\": 4.0}"
+ ],
+ "schema": "standard"
+}

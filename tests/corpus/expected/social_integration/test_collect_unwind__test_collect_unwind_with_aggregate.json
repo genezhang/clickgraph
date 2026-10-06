@@ -1,0 +1,26 @@
+{
+ "cypher": "MATCH (u:User)\n        WITH u, collect(u) as users\n        UNWIND users as user\n        RETURN user.country, count(*) as user_count\n        ORDER BY user_count DESC\n        LIMIT 3",
+ "full": {
+  "kinds": {},
+  "rows": [
+   "{\"user.country\": \"Australia\", \"user_count\": 2.0}",
+   "{\"user.country\": \"Canada\", \"user_count\": 4.0}",
+   "{\"user.country\": \"Germany\", \"user_count\": 1.0}",
+   "{\"user.country\": \"India\", \"user_count\": 1.0}",
+   "{\"user.country\": \"Ireland\", \"user_count\": 1.0}",
+   "{\"user.country\": \"Mexico\", \"user_count\": 1.0}",
+   "{\"user.country\": \"South Korea\", \"user_count\": 1.0}",
+   "{\"user.country\": \"Spain\", \"user_count\": 1.0}",
+   "{\"user.country\": \"UAE\", \"user_count\": 1.0}",
+   "{\"user.country\": \"UK\", \"user_count\": 4.0}",
+   "{\"user.country\": \"USA\", \"user_count\": 13.0}"
+  ]
+ },
+ "kinds": {},
+ "rows": [
+  "{\"user.country\": \"Canada\", \"user_count\": 4.0}",
+  "{\"user.country\": \"UK\", \"user_count\": 4.0}",
+  "{\"user.country\": \"USA\", \"user_count\": 13.0}"
+ ],
+ "schema": "social_integration"
+}

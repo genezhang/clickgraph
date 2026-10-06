@@ -1,0 +1,17 @@
+{
+ "cypher": "MATCH (n:User) WHERE n.name IS NOT NULL RETURN n.name LIMIT 10",
+ "kinds": {},
+ "rows": [
+  "{\"n.name\": \"Alice Johnson\"}",
+  "{\"n.name\": \"Bob Smith\"}",
+  "{\"n.name\": \"Carol White\"}",
+  "{\"n.name\": \"David Brown\"}",
+  "{\"n.name\": \"Eve Davis\"}",
+  "{\"n.name\": \"Frank Miller\"}",
+  "{\"n.name\": \"Grace Lee\"}",
+  "{\"n.name\": \"Henry Wilson\"}",
+  "{\"n.name\": \"Iris Martinez\"}",
+  "{\"n.name\": \"Jack Taylor\"}"
+ ],
+ "schema": "social_integration"
+}

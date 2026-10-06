@@ -1,0 +1,6 @@
+{
+ "cypher": "MATCH (a:Post)-[r1:FOLLOWS]->(b:Post)-[r2:AUTHORED]->(c:Post) RETURN a.created_at, c.created_at LIMIT 5",
+ "kinds": {},
+ "rows": [],
+ "schema": "social_integration"
+}

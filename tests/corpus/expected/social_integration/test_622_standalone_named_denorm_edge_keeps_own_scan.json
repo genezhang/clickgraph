@@ -1,0 +1,27 @@
+{
+ "cypher": "MATCH (u:User)-[r:AUTHORED]->(p:Post) RETURN r.post_id ORDER BY r.post_id",
+ "kinds": {},
+ "rows": [
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}"
+ ],
+ "schema": "social_integration"
+}

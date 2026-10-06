@@ -1,0 +1,12 @@
+{
+ "cypher": "MATCH (a:User)\n            WITH a\n            MATCH (b:User)\n            WITH a, b\n            MATCH (c:User)\n            WITH a, b, c\n            RETURN a, b, c\n            LIMIT 1",
+ "kinds": {
+  "a": "node",
+  "b": "node",
+  "c": "node"
+ },
+ "rows": [
+  "{\"a.age\": 28.0, \"a.city\": \"New York\", \"a.country\": \"USA\", \"a.email\": \"alice@example.com\", \"a.is_active\": 1.0, \"a.name\": \"Alice Johnson\", \"a.registration_date\": \"2020-01-15\", \"a.user_id\": 1.0, \"b.age\": 28.0, \"b.city\": \"New York\", \"b.country\": \"USA\", \"b.email\": \"alice@example.com\", \"b.is_active\": 1.0, \"b.name\": \"Alice Johnson\", \"b.registration_date\": \"2020-01-15\", \"b.user_id\": 1.0, \"c.age\": 28.0, \"c.city\": \"New York\", \"c.country\": \"USA\", \"c.email\": \"alice@example.com\", \"c.is_active\": 1.0, \"c.name\": \"Alice Johnson\", \"c.registration_date\": \"2020-01-15\", \"c.user_id\": 1.0}"
+ ],
+ "schema": "social_integration"
+}

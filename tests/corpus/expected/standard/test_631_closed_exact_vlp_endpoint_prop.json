@@ -1,0 +1,19 @@
+{
+ "cypher": "MATCH (a:User)-[:FOLLOWS*2..2]->(a) RETURN a.name",
+ "kinds": {},
+ "rows": [
+  "{\"a.name\": \"Alice Johnson\"}",
+  "{\"a.name\": \"Alice Johnson\"}",
+  "{\"a.name\": \"Alice Johnson\"}",
+  "{\"a.name\": \"Bob Smith\"}",
+  "{\"a.name\": \"Bob Smith\"}",
+  "{\"a.name\": \"Bob Smith\"}",
+  "{\"a.name\": \"Carol White\"}",
+  "{\"a.name\": \"Carol White\"}",
+  "{\"a.name\": \"David Brown\"}",
+  "{\"a.name\": \"Eve Davis\"}",
+  "{\"a.name\": \"Frank Miller\"}",
+  "{\"a.name\": \"Grace Lee\"}"
+ ],
+ "schema": "standard"
+}

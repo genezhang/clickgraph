@@ -1,0 +1,8 @@
+{
+ "cypher": "RETURN 1 + 1 AS sum",
+ "kinds": {},
+ "rows": [
+  "{\"sum\": 2.0}"
+ ],
+ "schema": "social_integration"
+}

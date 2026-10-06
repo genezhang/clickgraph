@@ -1,0 +1,11 @@
+{
+ "cypher": "MATCH (a:User)-[:FOLLOWS]->(b:User)\n            WITH a AS follower, b AS followed\n            RETURN follower, followed\n            LIMIT 1",
+ "kinds": {
+  "followed": "node",
+  "follower": "node"
+ },
+ "rows": [
+  "{\"followed.age\": 32.0, \"followed.city\": \"London\", \"followed.country\": \"UK\", \"followed.email\": \"bob@example.com\", \"followed.is_active\": 1.0, \"followed.name\": \"Bob Smith\", \"followed.registration_date\": \"2019-05-20\", \"followed.user_id\": 2.0, \"follower.age\": 28.0, \"follower.city\": \"New York\", \"follower.country\": \"USA\", \"follower.email\": \"alice@example.com\", \"follower.is_active\": 1.0, \"follower.name\": \"Alice Johnson\", \"follower.registration_date\": \"2020-01-15\", \"follower.user_id\": 1.0}"
+ ],
+ "schema": "social_integration"
+}

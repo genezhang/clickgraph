@@ -1,0 +1,12 @@
+{
+ "cypher": "MATCH (u:User) WITH DISTINCT u.name AS userName RETURN userName LIMIT 5",
+ "kinds": {},
+ "rows": [
+  "{\"userName\": \"Alice Johnson\"}",
+  "{\"userName\": \"Bob Smith\"}",
+  "{\"userName\": \"Carol White\"}",
+  "{\"userName\": \"David Brown\"}",
+  "{\"userName\": \"Eve Davis\"}"
+ ],
+ "schema": "social_integration"
+}

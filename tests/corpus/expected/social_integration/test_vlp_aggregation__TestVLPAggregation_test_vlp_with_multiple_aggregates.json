@@ -1,0 +1,25 @@
+{
+ "cypher": "MATCH (u1:User {user_id: 1})-[:FOLLOWS*1..2]-(u2:User)-[:AUTHORED]->(p:Post)\n        RETURN u2.user_id AS userId,\n               COUNT(DISTINCT p) AS postCount,\n               COUNT(p) AS totalPosts\n        ORDER BY postCount DESC\n        LIMIT 5",
+ "full": {
+  "kinds": {},
+  "rows": [
+   "{\"postCount\": 2.0, \"totalPosts\": 12.0, \"userId\": 1.0}",
+   "{\"postCount\": 2.0, \"totalPosts\": 4.0, \"userId\": 2.0}",
+   "{\"postCount\": 2.0, \"totalPosts\": 4.0, \"userId\": 3.0}",
+   "{\"postCount\": 2.0, \"totalPosts\": 4.0, \"userId\": 5.0}",
+   "{\"postCount\": 2.0, \"totalPosts\": 4.0, \"userId\": 8.0}",
+   "{\"postCount\": 2.0, \"totalPosts\": 8.0, \"userId\": 4.0}",
+   "{\"postCount\": 2.0, \"totalPosts\": 8.0, \"userId\": 6.0}",
+   "{\"postCount\": 2.0, \"totalPosts\": 8.0, \"userId\": 7.0}"
+  ]
+ },
+ "kinds": {},
+ "rows": [
+  "{\"postCount\": 2.0, \"totalPosts\": 12.0, \"userId\": 1.0}",
+  "{\"postCount\": 2.0, \"totalPosts\": 4.0, \"userId\": 2.0}",
+  "{\"postCount\": 2.0, \"totalPosts\": 4.0, \"userId\": 3.0}",
+  "{\"postCount\": 2.0, \"totalPosts\": 8.0, \"userId\": 4.0}",
+  "{\"postCount\": 2.0, \"totalPosts\": 8.0, \"userId\": 6.0}"
+ ],
+ "schema": "social_integration"
+}

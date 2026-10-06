@@ -1,0 +1,10 @@
+{
+ "cypher": "MATCH (u:User)-[:FOLLOWS*1..2]->(x:User)\n                    WHERE u.user_id = 1\n                    RETURN x.name, x.email\n                    LIMIT 3",
+ "kinds": {},
+ "rows": [
+  "{\"x.email\": \"alice@example.com\", \"x.name\": \"Alice Johnson\"}",
+  "{\"x.email\": \"bob@example.com\", \"x.name\": \"Bob Smith\"}",
+  "{\"x.email\": \"david@example.com\", \"x.name\": \"David Brown\"}"
+ ],
+ "schema": "social_integration"
+}

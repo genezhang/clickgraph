@@ -1,0 +1,6 @@
+{
+ "cypher": "MATCH (u:PatternCompUser)\n        WHERE u.user_id = 1\n        RETURN u.name, [(u)-[:PATTERN_COMP_FOLLOWS]->(f) | f.name] AS friends",
+ "kinds": {},
+ "rows": [],
+ "schema": "social_integration"
+}

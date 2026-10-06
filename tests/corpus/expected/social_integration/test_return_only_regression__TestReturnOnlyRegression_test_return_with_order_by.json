@@ -1,0 +1,8 @@
+{
+ "cypher": "RETURN 42 AS x ORDER BY x",
+ "kinds": {},
+ "rows": [
+  "{\"x\": 42.0}"
+ ],
+ "schema": "social_integration"
+}

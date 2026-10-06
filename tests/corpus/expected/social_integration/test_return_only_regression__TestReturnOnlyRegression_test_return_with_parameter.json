@@ -1,0 +1,8 @@
+{
+ "cypher": "RETURN 'test_value' AS value",
+ "kinds": {},
+ "rows": [
+  "{\"value\": \"test_value\"}"
+ ],
+ "schema": "social_integration"
+}

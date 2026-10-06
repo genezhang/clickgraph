@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (a:User)-[:FOLLOWS*2..2]->(b:User) RETURN count(*)",
+ "kinds": {},
+ "rows": [
+  "{\"count(*)\": 35.0}"
+ ],
+ "schema": "social_integration"
+}

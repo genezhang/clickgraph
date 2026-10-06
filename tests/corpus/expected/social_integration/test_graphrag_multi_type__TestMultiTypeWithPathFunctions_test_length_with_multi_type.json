@@ -1,0 +1,9 @@
+{
+ "cypher": "MATCH p = (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)\n            WHERE u.user_id = 1\n            RETURN length(p) as path_length, count(*) as cnt\n            ORDER BY path_length",
+ "kinds": {},
+ "rows": [
+  "{\"cnt\": 15.0, \"path_length\": 2.0}",
+  "{\"cnt\": 5.0, \"path_length\": 1.0}"
+ ],
+ "schema": "social_integration"
+}

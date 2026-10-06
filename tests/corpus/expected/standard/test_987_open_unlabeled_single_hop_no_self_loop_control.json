@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (a)-[r]->(b) RETURN count(*)",
+ "kinds": {},
+ "rows": [
+  "{\"count(*)\": 60.0}"
+ ],
+ "schema": "standard"
+}

@@ -1,0 +1,17 @@
+{
+ "cypher": "MATCH (a:User)-[r:LIKED]->(b:Post) RETURN a.name, b.post_id LIMIT 10",
+ "kinds": {},
+ "rows": [
+  "{\"a.name\": \"Alice Johnson\", \"b.post_id\": 2.0}",
+  "{\"a.name\": \"Alice Johnson\", \"b.post_id\": 3.0}",
+  "{\"a.name\": \"Alice Johnson\", \"b.post_id\": 5.0}",
+  "{\"a.name\": \"Bob Smith\", \"b.post_id\": 1.0}",
+  "{\"a.name\": \"Bob Smith\", \"b.post_id\": 3.0}",
+  "{\"a.name\": \"Carol White\", \"b.post_id\": 1.0}",
+  "{\"a.name\": \"David Brown\", \"b.post_id\": 2.0}",
+  "{\"a.name\": \"Eve Davis\", \"b.post_id\": 1.0}",
+  "{\"a.name\": \"Frank Miller\", \"b.post_id\": 2.0}",
+  "{\"a.name\": \"Grace Lee\", \"b.post_id\": 3.0}"
+ ],
+ "schema": "social_integration"
+}

@@ -1,0 +1,12 @@
+{
+ "cypher": "MATCH (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User)\n            WITH a, b, c\n            RETURN a, b, c\n            LIMIT 1",
+ "kinds": {
+  "a": "node",
+  "b": "node",
+  "c": "node"
+ },
+ "rows": [
+  "{\"a.age\": 29.0, \"a.city\": \"San Francisco\", \"a.country\": \"USA\", \"a.email\": \"eve@example.com\", \"a.is_active\": 1.0, \"a.name\": \"Eve Davis\", \"a.registration_date\": \"2020-07-08\", \"a.user_id\": 5.0, \"b.age\": 28.0, \"b.city\": \"New York\", \"b.country\": \"USA\", \"b.email\": \"alice@example.com\", \"b.is_active\": 1.0, \"b.name\": \"Alice Johnson\", \"b.registration_date\": \"2020-01-15\", \"b.user_id\": 1.0, \"c.age\": 32.0, \"c.city\": \"London\", \"c.country\": \"UK\", \"c.email\": \"bob@example.com\", \"c.is_active\": 1.0, \"c.name\": \"Bob Smith\", \"c.registration_date\": \"2019-05-20\", \"c.user_id\": 2.0}"
+ ],
+ "schema": "social_integration"
+}

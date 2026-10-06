@@ -1,0 +1,14 @@
+{
+ "cypher": "MATCH (a:User)-[:FOLLOWS]->(b) RETURN a.name, stDev(b.user_id)",
+ "kinds": {},
+ "rows": [
+  "{\"a.name\": \"Alice Johnson\", \"stDev(b.user_id)\": 1.52752523}",
+  "{\"a.name\": \"Bob Smith\", \"stDev(b.user_id)\": 2.51661148}",
+  "{\"a.name\": \"Carol White\", \"stDev(b.user_id)\": 3.7859389}",
+  "{\"a.name\": \"David Brown\", \"stDev(b.user_id)\": 4.35889894}",
+  "{\"a.name\": \"Eve Davis\", \"stDev(b.user_id)\": 6.08276253}",
+  "{\"a.name\": \"Frank Miller\", \"stDev(b.user_id)\": 6.65832812}",
+  "{\"a.name\": \"Grace Lee\", \"stDev(b.user_id)\": 8.48528137}"
+ ],
+ "schema": "standard"
+}

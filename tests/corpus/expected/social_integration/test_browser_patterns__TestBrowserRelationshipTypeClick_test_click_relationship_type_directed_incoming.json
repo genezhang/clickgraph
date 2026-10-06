@@ -1,0 +1,29 @@
+{
+ "cypher": "MATCH ()<-[r:FOLLOWS]-() RETURN r LIMIT 25",
+ "kinds": {
+  "r": "relationship"
+ },
+ "rows": [
+  "{\"r.follow_date\": \"2023-01-01\"}",
+  "{\"r.follow_date\": \"2023-01-02\"}",
+  "{\"r.follow_date\": \"2023-01-03\"}",
+  "{\"r.follow_date\": \"2023-01-04\"}",
+  "{\"r.follow_date\": \"2023-01-05\"}",
+  "{\"r.follow_date\": \"2023-01-06\"}",
+  "{\"r.follow_date\": \"2023-01-07\"}",
+  "{\"r.follow_date\": \"2023-01-08\"}",
+  "{\"r.follow_date\": \"2023-01-09\"}",
+  "{\"r.follow_date\": \"2023-01-10\"}",
+  "{\"r.follow_date\": \"2023-01-11\"}",
+  "{\"r.follow_date\": \"2023-01-12\"}",
+  "{\"r.follow_date\": \"2023-01-13\"}",
+  "{\"r.follow_date\": \"2023-01-14\"}",
+  "{\"r.follow_date\": \"2023-01-15\"}",
+  "{\"r.follow_date\": \"2023-01-16\"}",
+  "{\"r.follow_date\": \"2023-01-17\"}",
+  "{\"r.follow_date\": \"2023-01-18\"}",
+  "{\"r.follow_date\": \"2023-01-19\"}",
+  "{\"r.follow_date\": \"2023-01-20\"}"
+ ],
+ "schema": "social_integration"
+}

@@ -1,0 +1,12 @@
+{
+ "cypher": "MATCH (u1:User)-[:FOLLOWS*1..2]->(u2:User)-[:AUTHORED]->(p:Post)\n        WHERE u1.user_id = 1\n        RETURN u1.name AS starter, u2.name AS author, p.post_id\n        LIMIT 5",
+ "kinds": {},
+ "rows": [
+  "{\"author\": \"Alice Johnson\", \"p.post_id\": 1.0, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Alice Johnson\", \"p.post_id\": 11.0, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Bob Smith\", \"p.post_id\": 12.0, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Bob Smith\", \"p.post_id\": 2.0, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"David Brown\", \"p.post_id\": 14.0, \"starter\": \"Alice Johnson\"}"
+ ],
+ "schema": "social_integration"
+}

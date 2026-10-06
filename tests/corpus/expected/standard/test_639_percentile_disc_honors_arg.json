@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (a:User)-[:FOLLOWS]->(b) RETURN percentileDisc(b.user_id, 0.9)",
+ "kinds": {},
+ "rows": [
+  "{\"percentileDisc(b.user_id, 0.9)\": 13.0}"
+ ],
+ "schema": "standard"
+}

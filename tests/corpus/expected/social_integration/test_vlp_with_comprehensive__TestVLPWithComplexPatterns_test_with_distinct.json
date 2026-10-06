@@ -1,0 +1,10 @@
+{
+ "cypher": "MATCH path = (u1:TestUser)-[:TEST_FOLLOWS*1..2]->(u2:TestUser)\n        WHERE u1.user_id = 1\n        WITH DISTINCT u2, length(path) as hops\n        RETURN u2.name, hops\n        ORDER BY u2.name\n        LIMIT 5",
+ "full": {
+  "kinds": {},
+  "rows": []
+ },
+ "kinds": {},
+ "rows": [],
+ "schema": "social_integration"
+}

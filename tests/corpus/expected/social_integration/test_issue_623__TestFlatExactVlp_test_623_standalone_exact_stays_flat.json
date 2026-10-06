@@ -1,0 +1,17 @@
+{
+ "cypher": "MATCH (a:User)-[:FOLLOWS*2..2]->(b:User) RETURN a.name, b.name LIMIT 10",
+ "kinds": {},
+ "rows": [
+  "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Alice Johnson\"}",
+  "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Alice Johnson\"}",
+  "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Alice Johnson\"}",
+  "{\"a.name\": \"Alice Johnson\", \"b.name\": \"David Brown\"}",
+  "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Frank Miller\"}",
+  "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Grace Lee\"}",
+  "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Henry Wilson\"}",
+  "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Kate Anderson\"}",
+  "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Liam Thomas\"}",
+  "{\"a.name\": \"Bob Smith\", \"b.name\": \"Bob Smith\"}"
+ ],
+ "schema": "social_integration"
+}

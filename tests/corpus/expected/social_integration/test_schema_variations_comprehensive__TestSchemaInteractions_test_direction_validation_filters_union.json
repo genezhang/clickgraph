@@ -1,0 +1,8 @@
+{
+ "cypher": "MATCH (p:Post)--(u)\n        RETURN count(DISTINCT u) as total",
+ "kinds": {},
+ "rows": [
+  "{\"total\": 10.0}"
+ ],
+ "schema": "social_integration"
+}
