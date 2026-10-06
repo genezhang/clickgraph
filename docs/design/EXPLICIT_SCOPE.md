@@ -947,6 +947,10 @@ slice that will handle it.
     - `/query/sql` shared `/query`'s cache key (same text, no tenant or
       view params), so its SQL could be served as `/query`'s cached SQL.
       It now has its own route-scoped key that includes the view parameters.
+    - `/query/sql` and the HTTP `apoc.export` path translated with no query
+      context, so their counters, schema, stats and dialect came from
+      process-global state. They now set up a context like `/query` does,
+      and `translate_read` opens one for any caller without one.
 - [ ] S1 Neo4j oracle + result goldens (standard)
 - [ ] S2 clause-list parser
 - [ ] S3 binder + scope + labels
