@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 Neo4j oracle done; next: S2 clause-list parser)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 clause-list parser done; next: S3 binder)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,17 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-06: **P-4c S2: clause-list parser** (`src/open_cypher_parser/clause_list.rs`).
+  - `parse_clause_statement` gives each query, and each UNION arm, as clauses in source order. The legacy parser and pipeline are unchanged; the two share the clause and expression parsers, and the WITH head is factored out as `parse_with_head`.
+  - The grammar follows Neo4j 5.26, with each rule tested both ways:
+    - a WITH owns ORDER BY, SKIP/OFFSET, LIMIT, WHERE in that fixed order, and its WHERE filters after the LIMIT (#1311);
+    - an out-of-order or post-clause ORDER BY / SKIP / LIMIT is a free-standing clause that sees only the previous clause's output;
+    - there is no free-standing WHERE;
+    - RETURN ends the query.
+  - `clause_list_parity.rs`: both parsers agree on all 1482 corpus queries the legacy parser accepts that end with RETURN. The new parser rejects every corpus query the legacy one rejects, plus the 2 with no RETURN. The tests are mutation-checked.
+  - Newly parsed: `WITH a MATCH .. MATCH ..` (Neo4j: 35), several UNWINDs after a WITH, MATCH after OPTIONAL MATCH after a WITH, and OFFSET.
+  - The review caught three problems in the first cut: clauses accepted after RETURN, a free-standing WHERE, and WITH modifiers modelled as "written order" (wrong scope rules). All are fixed.
 
 - 2026-10-06: **P-4c S1: Neo4j result oracle and result goldens (standard layout)** (#1316 tracks the findings).
   - `scripts/oracle/` loads a schema's logical graph from its YAML and ClickHouse tables into Neo4j 5.26, runs corpus queries on both, and compares rows exactly (`compare.py`):

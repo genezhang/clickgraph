@@ -47,9 +47,13 @@ fn parse_with_item(input: &'_ str) -> IResult<&'_ str, WithItem<'_>> {
     Ok((input, with_item))
 }
 
-pub fn parse_with_clause(
+/// `WITH [DISTINCT] items` or `WITH [DISTINCT] * [, items]`: the projection
+/// head shared by the legacy WITH parser (below) and the clause-list parser
+/// (`clause_list.rs`). Returns (distinct, items, is_star).
+#[allow(clippy::type_complexity)]
+pub(crate) fn parse_with_head(
     input: &'_ str,
-) -> IResult<&'_ str, WithClause<'_>, OpenCypherParsingError<'_>> {
+) -> IResult<&'_ str, (bool, Vec<WithItem<'_>>, bool), OpenCypherParsingError<'_>> {
     // Parse the WITH keyword
     let (input, _) = ws(tag_no_case("WITH")).parse(input)?;
 
@@ -92,6 +96,13 @@ pub fn parse_with_clause(
         .parse(input)?;
         (rest, items, false)
     };
+    Ok((input, (distinct, with_items, is_star)))
+}
+
+pub fn parse_with_clause(
+    input: &'_ str,
+) -> IResult<&'_ str, WithClause<'_>, OpenCypherParsingError<'_>> {
+    let (input, (distinct, with_items, is_star)) = parse_with_head(input)?;
 
     // Parse optional ORDER BY clause (part of WITH syntax per OpenCypher spec)
     let (input, order_by) = opt(parse_order_by_clause).parse(input)?;

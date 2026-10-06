@@ -5,6 +5,7 @@
 mod browser_expand_tests;
 mod browser_interaction_tests;
 pub(crate) mod browser_test_schemas;
+mod clause_list_parity;
 mod complex_feature_tests;
 mod corpus_sweep;
 mod cross_schema_pattern_tests;
