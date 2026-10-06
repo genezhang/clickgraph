@@ -14,13 +14,17 @@ acceptance test for P-4c slices; rows are.
 
 Generated files (commit them):
 - `tests/corpus/expected/<schema>/<name>.json`: Neo4j's rows for each query.
-- `tests/corpus/expected/scorecard.json`: today's verdict for each query.
+- `tests/corpus/expected/scorecard.json`: today's verdict for each query, plus a signature of each wrong outcome.
+- `tests/corpus/expected/<schema>/_graph.json`: the data fingerprint (node and relationship counts).
 - `tests/corpus/expected/triage.json`: the category and issue for each known-wrong entry (tracking issue #1316).
 
 `tests/integration/test_neo4j_result_goldens.py` checks ClickGraph against the
 goldens in the live suite, with no Neo4j needed there. A known-wrong entry
-(MISMATCH / CG_ERROR) is a strict xfail. When a fix makes one correct, rerun
-the scorecard so the flip is recorded.
+(MISMATCH / CG_ERROR) must keep its recorded wrong outcome, checked through its
+signature. When a fix makes one correct, or it drifts to another wrong answer,
+the test fails until the scorecard is regenerated, so every change is recorded.
+Each schema's `_graph.json` (node and relationship counts) is checked first,
+so a change in the fixture data is reported as such.
 
 ## Regenerate
 

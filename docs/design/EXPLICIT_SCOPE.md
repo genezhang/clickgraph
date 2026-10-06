@@ -954,9 +954,14 @@ slice that will handle it.
 - [x] S1 Neo4j oracle + result goldens (standard): `scripts/oracle/`,
   `tests/corpus/expected/`, `tests/integration/test_neo4j_result_goldens.py`.
   - The corpus queries tagged `social_integration` and `standard` score
-    353 correct and 94 known-wrong.
-  - The 94 are categorized in `triage.json`; the new bugs are tracked in
+    343 correct and 101 known-wrong.
+  - The 101 are categorized in `triage.json`; the new bugs are tracked in
     #1316.
+  - The comparator is exact: ORDER BY key sequences are checked, a LIMIT
+    answer must be a valid subset of Neo4j's full answer, relationship
+    endpoints are compared, and integers compare exactly.
+  - Every non-bug category is confirmed by re-running a rewritten query on
+    Neo4j.
   - Findings that change later slices:
     - `#1181`'s hand oracle enforces less relationship uniqueness than
       Cypher (S6 must use Neo4j);

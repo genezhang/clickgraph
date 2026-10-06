@@ -1,8 +1,11 @@
 {
+ "columns": [
+  "c"
+ ],
  "cypher": "UNWIND [1, 2, 3] AS x\n            WITH x AS y\n            RETURN count(y) AS c",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"c\": 3.0}"
+  "{\"c\": 3}"
  ],
  "schema": "social_integration"
 }

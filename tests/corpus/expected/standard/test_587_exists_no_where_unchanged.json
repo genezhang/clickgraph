@@ -1,6 +1,9 @@
 {
+ "columns": [
+  "a.name"
+ ],
  "cypher": "MATCH (a:User) WHERE EXISTS { MATCH (a)-[:FOLLOWS]->(b:User) } RETURN a.name",
- "kinds": {},
+ "order_keys": null,
  "rows": [
   "{\"a.name\": \"Alice Johnson\"}",
   "{\"a.name\": \"Bob Smith\"}",

@@ -1,8 +1,11 @@
 {
+ "columns": [
+  "count"
+ ],
  "cypher": "MATCH (u:User)-[r:FOLLOWS]->() RETURN count(*) as count",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"count\": 20.0}"
+  "{\"count\": 20}"
  ],
  "schema": "social_integration"
 }

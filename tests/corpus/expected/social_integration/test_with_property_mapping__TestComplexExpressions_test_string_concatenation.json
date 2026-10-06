@@ -1,6 +1,42 @@
 {
+ "columns": [
+  "combo"
+ ],
  "cypher": "MATCH (u:User) WITH u.name + '@' + u.email AS combo RETURN combo LIMIT 1",
- "kinds": {},
+ "full_rows": [
+  "{\"combo\": \"Alice Johnson@alice@example.com\"}",
+  "{\"combo\": \"Amy Adams@amy@example.com\"}",
+  "{\"combo\": \"Ben Baker@ben@example.com\"}",
+  "{\"combo\": \"Bob Smith@bob@example.com\"}",
+  "{\"combo\": \"Carol White@carol@example.com\"}",
+  "{\"combo\": \"Chloe Carter@chloe@example.com\"}",
+  "{\"combo\": \"Dan Foster@dan@example.com\"}",
+  "{\"combo\": \"David Brown@david@example.com\"}",
+  "{\"combo\": \"Eve Davis@eve@example.com\"}",
+  "{\"combo\": \"Frank Miller@frank@example.com\"}",
+  "{\"combo\": \"Grace Lee@grace@example.com\"}",
+  "{\"combo\": \"Henry Wilson@henry@example.com\"}",
+  "{\"combo\": \"Iris Martinez@iris@example.com\"}",
+  "{\"combo\": \"Jack Taylor@jack@example.com\"}",
+  "{\"combo\": \"Kate Anderson@kate@example.com\"}",
+  "{\"combo\": \"Liam Thomas@liam@example.com\"}",
+  "{\"combo\": \"Mia Jackson@mia@example.com\"}",
+  "{\"combo\": \"Noah Harris@noah@example.com\"}",
+  "{\"combo\": \"Olivia Clark@olivia@example.com\"}",
+  "{\"combo\": \"Paul Lewis@paul@example.com\"}",
+  "{\"combo\": \"Quinn Walker@quinn@example.com\"}",
+  "{\"combo\": \"Rachel Hall@rachel@example.com\"}",
+  "{\"combo\": \"Sam Allen@sam@example.com\"}",
+  "{\"combo\": \"Tina Young@tina@example.com\"}",
+  "{\"combo\": \"Uma King@uma@example.com\"}",
+  "{\"combo\": \"Victor Wright@victor@example.com\"}",
+  "{\"combo\": \"Wendy Lopez@wendy@example.com\"}",
+  "{\"combo\": \"Xavier Hill@xavier@example.com\"}",
+  "{\"combo\": \"Yara Scott@yara@example.com\"}",
+  "{\"combo\": \"Zack Green@zack@example.com\"}"
+ ],
+ "limit": 1,
+ "order_keys": null,
  "rows": [
   "{\"combo\": \"Alice Johnson@alice@example.com\"}"
  ],

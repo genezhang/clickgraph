@@ -1,6 +1,14 @@
 {
+ "columns": [
+  "u.name",
+  "u.email"
+ ],
  "cypher": "MATCH (u:User)\n    WHERE u.user_id = 1\n    RETURN u.name, u.email\n    LIMIT 1",
- "kinds": {},
+ "full_rows": [
+  "{\"u.email\": \"alice@example.com\", \"u.name\": \"Alice Johnson\"}"
+ ],
+ "limit": 1,
+ "order_keys": null,
  "rows": [
   "{\"u.email\": \"alice@example.com\", \"u.name\": \"Alice Johnson\"}"
  ],

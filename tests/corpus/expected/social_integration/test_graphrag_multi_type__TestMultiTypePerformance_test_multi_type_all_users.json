@@ -1,8 +1,11 @@
 {
+ "columns": [
+  "total_paths"
+ ],
  "cypher": "MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)\n            RETURN count(*) as total_paths",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"total_paths\": 105.0}"
+  "{\"total_paths\": 105}"
  ],
  "schema": "social_integration"
 }

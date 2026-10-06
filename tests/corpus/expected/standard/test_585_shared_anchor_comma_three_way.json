@@ -1,6 +1,9 @@
 {
+ "columns": [
+  "p.name"
+ ],
  "cypher": "MATCH (p:User) WITH p MATCH (p)-[:AUTHORED]->(x:Post), (p)-[:LIKED]->(y:Post), (p)-[:FOLLOWS]->(z:User) RETURN p.name",
- "kinds": {},
+ "order_keys": null,
  "rows": [
   "{\"p.name\": \"Alice Johnson\"}",
   "{\"p.name\": \"Alice Johnson\"}",

@@ -1,10 +1,44 @@
 {
+ "columns": [
+  "u"
+ ],
  "cypher": "MATCH (u:User) RETURN u LIMIT 1",
- "kinds": {
-  "u": "node"
- },
+ "full_rows": [
+  "{\"u.age\": 24, \"u.city\": \"Austin\", \"u.country\": \"USA\", \"u.email\": \"mia@example.com\", \"u.is_active\": 1, \"u.name\": \"Mia Jackson\", \"u.registration_date\": \"2021-01-30\", \"u.user_id\": 13}",
+  "{\"u.age\": 25, \"u.city\": \"Portland\", \"u.country\": \"USA\", \"u.email\": \"rachel@example.com\", \"u.is_active\": 1, \"u.name\": \"Rachel Hall\", \"u.registration_date\": \"2021-02-16\", \"u.user_id\": 18}",
+  "{\"u.age\": 25, \"u.city\": \"Toronto\", \"u.country\": \"Canada\", \"u.email\": \"carol@example.com\", \"u.is_active\": 1, \"u.name\": \"Carol White\", \"u.registration_date\": \"2021-03-10\", \"u.user_id\": 3}",
+  "{\"u.age\": 26, \"u.city\": \"Calgary\", \"u.country\": \"Canada\", \"u.email\": \"chloe@example.com\", \"u.is_active\": 1, \"u.name\": \"Chloe Carter\", \"u.registration_date\": \"2021-04-08\", \"u.user_id\": 29}",
+  "{\"u.age\": 26, \"u.city\": \"Madrid\", \"u.country\": \"Spain\", \"u.email\": \"iris@example.com\", \"u.is_active\": 1, \"u.name\": \"Iris Martinez\", \"u.registration_date\": \"2021-06-22\", \"u.user_id\": 9}",
+  "{\"u.age\": 26, \"u.city\": \"Mumbai\", \"u.country\": \"India\", \"u.email\": \"uma@example.com\", \"u.is_active\": 1, \"u.name\": \"Uma King\", \"u.registration_date\": \"2021-05-17\", \"u.user_id\": 21}",
+  "{\"u.age\": 27, \"u.city\": \"Dubai\", \"u.country\": \"UAE\", \"u.email\": \"yara@example.com\", \"u.is_active\": 1, \"u.name\": \"Yara Scott\", \"u.registration_date\": \"2020-10-20\", \"u.user_id\": 25}",
+  "{\"u.age\": 27, \"u.city\": \"Edinburgh\", \"u.country\": \"UK\", \"u.email\": \"quinn@example.com\", \"u.is_active\": 1, \"u.name\": \"Quinn Walker\", \"u.registration_date\": \"2020-11-08\", \"u.user_id\": 17}",
+  "{\"u.age\": 27, \"u.city\": \"Seoul\", \"u.country\": \"South Korea\", \"u.email\": \"grace@example.com\", \"u.is_active\": 1, \"u.name\": \"Grace Lee\", \"u.registration_date\": \"2020-12-01\", \"u.user_id\": 7}",
+  "{\"u.age\": 28, \"u.city\": \"Atlanta\", \"u.country\": \"USA\", \"u.email\": \"ben@example.com\", \"u.is_active\": 1, \"u.name\": \"Ben Baker\", \"u.registration_date\": \"2020-07-25\", \"u.user_id\": 28}",
+  "{\"u.age\": 28, \"u.city\": \"Denver\", \"u.country\": \"USA\", \"u.email\": \"tina@example.com\", \"u.is_active\": 1, \"u.name\": \"Tina Young\", \"u.registration_date\": \"2020-09-03\", \"u.user_id\": 20}",
+  "{\"u.age\": 28, \"u.city\": \"Manchester\", \"u.country\": \"UK\", \"u.email\": \"kate@example.com\", \"u.is_active\": 1, \"u.name\": \"Kate Anderson\", \"u.registration_date\": \"2020-08-19\", \"u.user_id\": 11}",
+  "{\"u.age\": 28, \"u.city\": \"New York\", \"u.country\": \"USA\", \"u.email\": \"alice@example.com\", \"u.is_active\": 1, \"u.name\": \"Alice Johnson\", \"u.registration_date\": \"2020-01-15\", \"u.user_id\": 1}",
+  "{\"u.age\": 29, \"u.city\": \"Melbourne\", \"u.country\": \"Australia\", \"u.email\": \"olivia@example.com\", \"u.is_active\": 1, \"u.name\": \"Olivia Clark\", \"u.registration_date\": \"2020-05-25\", \"u.user_id\": 15}",
+  "{\"u.age\": 29, \"u.city\": \"Phoenix\", \"u.country\": \"USA\", \"u.email\": \"zack@example.com\", \"u.is_active\": 1, \"u.name\": \"Zack Green\", \"u.registration_date\": \"2020-02-14\", \"u.user_id\": 26}",
+  "{\"u.age\": 29, \"u.city\": \"San Francisco\", \"u.country\": \"USA\", \"u.email\": \"eve@example.com\", \"u.is_active\": 1, \"u.name\": \"Eve Davis\", \"u.registration_date\": \"2020-07-08\", \"u.user_id\": 5}",
+  "{\"u.age\": 30, \"u.city\": \"Boston\", \"u.country\": \"USA\", \"u.email\": \"jack@example.com\", \"u.is_active\": 1, \"u.name\": \"Jack Taylor\", \"u.registration_date\": \"2020-04-11\", \"u.user_id\": 10}",
+  "{\"u.age\": 30, \"u.city\": \"Mexico City\", \"u.country\": \"Mexico\", \"u.email\": \"wendy@example.com\", \"u.is_active\": 1, \"u.name\": \"Wendy Lopez\", \"u.registration_date\": \"2020-03-12\", \"u.user_id\": 23}",
+  "{\"u.age\": 31, \"u.city\": \"Berlin\", \"u.country\": \"Germany\", \"u.email\": \"frank@example.com\", \"u.is_active\": 1, \"u.name\": \"Frank Miller\", \"u.registration_date\": \"2019-09-14\", \"u.user_id\": 6}",
+  "{\"u.age\": 31, \"u.city\": \"Bristol\", \"u.country\": \"UK\", \"u.email\": \"amy@example.com\", \"u.is_active\": 1, \"u.name\": \"Amy Adams\", \"u.registration_date\": \"2019-11-30\", \"u.user_id\": 27}",
+  "{\"u.age\": 31, \"u.city\": \"Seattle\", \"u.country\": \"USA\", \"u.email\": \"paul@example.com\", \"u.is_active\": 1, \"u.name\": \"Paul Lewis\", \"u.registration_date\": \"2019-07-14\", \"u.user_id\": 16}",
+  "{\"u.age\": 32, \"u.city\": \"London\", \"u.country\": \"UK\", \"u.email\": \"bob@example.com\", \"u.is_active\": 1, \"u.name\": \"Bob Smith\", \"u.registration_date\": \"2019-05-20\", \"u.user_id\": 2}",
+  "{\"u.age\": 32, \"u.city\": \"Montreal\", \"u.country\": \"Canada\", \"u.email\": \"sam@example.com\", \"u.is_active\": 1, \"u.name\": \"Sam Allen\", \"u.registration_date\": \"2019-04-22\", \"u.user_id\": 19}",
+  "{\"u.age\": 33, \"u.city\": \"Chicago\", \"u.country\": \"USA\", \"u.email\": \"henry@example.com\", \"u.is_active\": 1, \"u.name\": \"Henry Wilson\", \"u.registration_date\": \"2019-02-18\", \"u.user_id\": 8}",
+  "{\"u.age\": 33, \"u.city\": \"Dallas\", \"u.country\": \"USA\", \"u.email\": \"xavier@example.com\", \"u.is_active\": 1, \"u.name\": \"Xavier Hill\", \"u.registration_date\": \"2019-06-05\", \"u.user_id\": 24}",
+  "{\"u.age\": 34, \"u.city\": \"Detroit\", \"u.country\": \"USA\", \"u.email\": \"dan@example.com\", \"u.is_active\": 0, \"u.name\": \"Dan Foster\", \"u.registration_date\": \"2018-09-16\", \"u.user_id\": 30}",
+  "{\"u.age\": 34, \"u.city\": \"Dublin\", \"u.country\": \"Ireland\", \"u.email\": \"liam@example.com\", \"u.is_active\": 1, \"u.name\": \"Liam Thomas\", \"u.registration_date\": \"2018-10-05\", \"u.user_id\": 12}",
+  "{\"u.age\": 35, \"u.city\": \"Miami\", \"u.country\": \"USA\", \"u.email\": \"victor@example.com\", \"u.is_active\": 1, \"u.name\": \"Victor Wright\", \"u.registration_date\": \"2018-08-29\", \"u.user_id\": 22}",
+  "{\"u.age\": 35, \"u.city\": \"Sydney\", \"u.country\": \"Australia\", \"u.email\": \"david@example.com\", \"u.is_active\": 1, \"u.name\": \"David Brown\", \"u.registration_date\": \"2018-11-25\", \"u.user_id\": 4}",
+  "{\"u.age\": 36, \"u.city\": \"Vancouver\", \"u.country\": \"Canada\", \"u.email\": \"noah@example.com\", \"u.is_active\": 1, \"u.name\": \"Noah Harris\", \"u.registration_date\": \"2017-12-12\", \"u.user_id\": 14}"
+ ],
+ "limit": 1,
+ "order_keys": null,
  "rows": [
-  "{\"u.age\": 28.0, \"u.city\": \"New York\", \"u.country\": \"USA\", \"u.email\": \"alice@example.com\", \"u.is_active\": 1.0, \"u.name\": \"Alice Johnson\", \"u.registration_date\": \"2020-01-15\", \"u.user_id\": 1.0}"
+  "{\"u.age\": 28, \"u.city\": \"New York\", \"u.country\": \"USA\", \"u.email\": \"alice@example.com\", \"u.is_active\": 1, \"u.name\": \"Alice Johnson\", \"u.registration_date\": \"2020-01-15\", \"u.user_id\": 1}"
  ],
  "schema": "social_integration"
 }

@@ -1,6 +1,103 @@
 {
+ "columns": [
+  "user.city"
+ ],
  "cypher": "MATCH (u:User)\n        WITH u, collect(u) as users\n        UNWIND users as user\n        RETURN DISTINCT user.city\n        ORDER BY user.city",
- "kinds": {},
+ "key_sequence": [
+  [
+   "Atlanta"
+  ],
+  [
+   "Austin"
+  ],
+  [
+   "Berlin"
+  ],
+  [
+   "Boston"
+  ],
+  [
+   "Bristol"
+  ],
+  [
+   "Calgary"
+  ],
+  [
+   "Chicago"
+  ],
+  [
+   "Dallas"
+  ],
+  [
+   "Denver"
+  ],
+  [
+   "Detroit"
+  ],
+  [
+   "Dubai"
+  ],
+  [
+   "Dublin"
+  ],
+  [
+   "Edinburgh"
+  ],
+  [
+   "London"
+  ],
+  [
+   "Madrid"
+  ],
+  [
+   "Manchester"
+  ],
+  [
+   "Melbourne"
+  ],
+  [
+   "Mexico City"
+  ],
+  [
+   "Miami"
+  ],
+  [
+   "Montreal"
+  ],
+  [
+   "Mumbai"
+  ],
+  [
+   "New York"
+  ],
+  [
+   "Phoenix"
+  ],
+  [
+   "Portland"
+  ],
+  [
+   "San Francisco"
+  ],
+  [
+   "Seattle"
+  ],
+  [
+   "Seoul"
+  ],
+  [
+   "Sydney"
+  ],
+  [
+   "Toronto"
+  ],
+  [
+   "Vancouver"
+  ]
+ ],
+ "order_keys": [
+  "user.city"
+ ],
  "rows": [
   "{\"user.city\": \"Atlanta\"}",
   "{\"user.city\": \"Austin\"}",

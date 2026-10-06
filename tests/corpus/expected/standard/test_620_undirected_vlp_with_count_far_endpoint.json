@@ -1,22 +1,26 @@
 {
+ "columns": [
+  "a.user_id",
+  "c"
+ ],
  "cypher": "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User) WITH a, count(b) AS c RETURN a.user_id, c",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"a.user_id\": 1.0, \"c\": 30.0}",
-  "{\"a.user_id\": 10.0, \"c\": 4.0}",
-  "{\"a.user_id\": 11.0, \"c\": 4.0}",
-  "{\"a.user_id\": 12.0, \"c\": 4.0}",
-  "{\"a.user_id\": 13.0, \"c\": 4.0}",
-  "{\"a.user_id\": 14.0, \"c\": 4.0}",
-  "{\"a.user_id\": 15.0, \"c\": 3.0}",
-  "{\"a.user_id\": 2.0, \"c\": 28.0}",
-  "{\"a.user_id\": 3.0, \"c\": 19.0}",
-  "{\"a.user_id\": 4.0, \"c\": 14.0}",
-  "{\"a.user_id\": 5.0, \"c\": 14.0}",
-  "{\"a.user_id\": 6.0, \"c\": 14.0}",
-  "{\"a.user_id\": 7.0, \"c\": 11.0}",
-  "{\"a.user_id\": 8.0, \"c\": 5.0}",
-  "{\"a.user_id\": 9.0, \"c\": 4.0}"
+  "{\"a.user_id\": 1, \"c\": 30}",
+  "{\"a.user_id\": 10, \"c\": 4}",
+  "{\"a.user_id\": 11, \"c\": 4}",
+  "{\"a.user_id\": 12, \"c\": 4}",
+  "{\"a.user_id\": 13, \"c\": 4}",
+  "{\"a.user_id\": 14, \"c\": 4}",
+  "{\"a.user_id\": 15, \"c\": 3}",
+  "{\"a.user_id\": 2, \"c\": 28}",
+  "{\"a.user_id\": 3, \"c\": 19}",
+  "{\"a.user_id\": 4, \"c\": 14}",
+  "{\"a.user_id\": 5, \"c\": 14}",
+  "{\"a.user_id\": 6, \"c\": 14}",
+  "{\"a.user_id\": 7, \"c\": 11}",
+  "{\"a.user_id\": 8, \"c\": 5}",
+  "{\"a.user_id\": 9, \"c\": 4}"
  ],
  "schema": "standard"
 }

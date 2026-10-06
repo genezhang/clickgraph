@@ -5,10 +5,14 @@ Deliberately small and declarative: it is a second implementation of the
 layout rules, so every rule here must be obvious from the YAML. Supported
 layouts are listed in LAYOUT_RULES; anything else raises Unsupported.
 
-Rules (standard / separate-edge-table layout):
+Rules (standard / separate-edge-table layout; anything else raises
+Unsupported, decided by an ALLOWLIST of schema keys):
   * one node per row of a node table, labelled with the node's label, with
     every mapped property (Cypher name -> column value) and an internal
-    `__cg_id` = the node_id column value(s);
+    `__cg_id` = the node id value(s). `node_id` names a PROPERTY; its column
+    is resolved through `property_mappings`;
+  * relationships carry internal `__cg_from` / `__cg_to` keys (the endpoint
+    node ids) so the comparator can check endpoints;
   * one relationship per row of an edge table, from the node whose id equals
     the row's from_id to the node whose id equals the row's to_id, typed with
     the edge type, with every mapped edge property;
@@ -30,8 +34,10 @@ class Unsupported(Exception):
 
 
 def ch_rows(ch_url, user, password, sql):
+    # 64-bit integers as JSON numbers (exact in Python), whatever the server default
+    sep = "&" if "?" in ch_url else "?"
     req = urllib.request.Request(
-        ch_url,
+        f"{ch_url}{sep}output_format_json_quote_64bit_integers=0",
         data=(sql + " FORMAT JSONEachRow").encode(),
         headers={"X-ClickHouse-User": user, "X-ClickHouse-Key": password},
     )
@@ -67,6 +73,8 @@ def _typed(value, declared):
         return value
     t = declared.lower()
     if t in ("boolean", "bool"):
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true")
         return bool(value)
     if t in ("integer", "int", "int64", "long"):
         return int(value)
@@ -80,23 +88,30 @@ def _id_cols(spec):
     return [c if isinstance(c, str) else c["column"] for c in v]
 
 
+NODE_KEYS = {"label", "database", "table", "node_id", "property_mappings", "property_types"}
+EDGE_KEYS = {
+    "type", "database", "table", "from_id", "to_id", "edge_id", "from_node", "to_node",
+    "property_mappings", "property_types",
+    # Not a schema field (serde ignores it): documents that the edge lives in
+    # a node table (an FK edge). Loading it row by row is the same rule.
+    "is_denormalized",
+}
+SCHEMA_KEYS = {"nodes", "edges"}
+
+
 def _check_standard(gs):
+    """Allowlist: any schema key this loader has no rule for is Unsupported."""
+    extra = set(gs) - SCHEMA_KEYS
+    if extra:
+        raise Unsupported(f"graph_schema keys {sorted(extra)}")
     for n in gs.get("nodes", []):
-        for key in ("filter", "view_parameters", "label_column", "type_column"):
-            if n.get(key):
-                raise Unsupported(f"node {n['label']}: {key}")
+        extra = set(n) - NODE_KEYS
+        if extra:
+            raise Unsupported(f"node {n.get('label')}: {sorted(extra)}")
     for e in gs.get("edges", []):
-        for key in (
-            "from_node_properties",
-            "to_node_properties",
-            "type_column",
-            "from_label_column",
-            "to_label_column",
-            "filter",
-            "view_parameters",
-        ):
-            if e.get(key):
-                raise Unsupported(f"edge {e['type']}: {key}")
+        extra = set(e) - EDGE_KEYS
+        if extra:
+            raise Unsupported(f"edge {e.get('type')}: {sorted(extra)}")
         if e.get("from_node") in (None, "$any") or e.get("to_node") in (None, "$any"):
             raise Unsupported(f"edge {e['type']}: polymorphic endpoints")
 
@@ -108,8 +123,8 @@ def build_graph(gs, ch):
     nodes, index = [], {}
     report = {"nodes": {}, "rels": {}, "dangling": {}}
     for n in gs.get("nodes", []):
-        idc = _id_cols(n["node_id"])
         pm = n.get("property_mappings") or {}
+        idc = [pm.get(p, p) for p in _id_cols(n["node_id"])]
         cols = sorted(set(idc) | set(pm.values()))
         rows = ch(f"SELECT {', '.join(f'`{c}`' for c in cols)} FROM `{n['database']}`.`{n['table']}`")
         for r in rows:
@@ -134,8 +149,10 @@ def build_graph(gs, ch):
                 dangling += 1
                 continue
             pt = e.get("property_types") or {}
-            rels.append((e["type"], e["from_node"], fk, e["to_node"], tk,
-                         {p: _typed(r[c], pt.get(p)) for p, c in pm.items()}))
+            props = {p: _typed(r[c], pt.get(p)) for p, c in pm.items()}
+            props["__cg_from"] = json.dumps(list(fk))
+            props["__cg_to"] = json.dumps(list(tk))
+            rels.append((e["type"], e["from_node"], fk, e["to_node"], tk, props))
         report["rels"][e["type"]] = len(rows) - dangling
         if dangling:
             report["dangling"][e["type"]] = dangling

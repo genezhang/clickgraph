@@ -1,6 +1,42 @@
 {
+ "columns": [
+  "upperEmail"
+ ],
  "cypher": "MATCH (u:User) WITH toUpper(u.email) AS upperEmail RETURN upperEmail LIMIT 1",
- "kinds": {},
+ "full_rows": [
+  "{\"upperEmail\": \"ALICE@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"AMY@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"BEN@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"BOB@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"CAROL@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"CHLOE@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"DAN@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"DAVID@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"EVE@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"FRANK@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"GRACE@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"HENRY@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"IRIS@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"JACK@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"KATE@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"LIAM@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"MIA@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"NOAH@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"OLIVIA@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"PAUL@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"QUINN@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"RACHEL@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"SAM@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"TINA@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"UMA@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"VICTOR@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"WENDY@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"XAVIER@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"YARA@EXAMPLE.COM\"}",
+  "{\"upperEmail\": \"ZACK@EXAMPLE.COM\"}"
+ ],
+ "limit": 1,
+ "order_keys": null,
  "rows": [
   "{\"upperEmail\": \"ALICE@EXAMPLE.COM\"}"
  ],

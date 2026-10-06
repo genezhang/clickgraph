@@ -1,6 +1,16 @@
 {
+ "columns": [
+  "a.user_id",
+  "z.post_id",
+  "b.user_id"
+ ],
  "cypher": "MATCH (a:User)-[:AUTHORED]->(z:Post)\n        WHERE a.is_active = true OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)\n        WHERE a.is_active = true\n        RETURN a.user_id, z.post_id, b.user_id\n        ORDER BY a.user_id, z.post_id, b.user_id",
- "kinds": {},
+ "key_sequence": [],
+ "order_keys": [
+  "a.user_id",
+  "z.post_id",
+  "b.user_id"
+ ],
  "rows": [],
  "schema": "social_integration"
 }

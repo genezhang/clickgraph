@@ -1,21 +1,27 @@
 {
+ "columns": [
+  "z.user_id",
+  "c.user_id",
+  "a.user_id",
+  "b.user_id"
+ ],
  "cypher": "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c, z MATCH (z)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User)<-[:FOLLOWS]-(c) RETURN z.user_id, c.user_id, a.user_id, b.user_id",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"a.user_id\": 1.0, \"b.user_id\": 2.0, \"c.user_id\": 4.0, \"z.user_id\": 2.0}",
-  "{\"a.user_id\": 1.0, \"b.user_id\": 2.0, \"c.user_id\": 6.0, \"z.user_id\": 2.0}",
-  "{\"a.user_id\": 1.0, \"b.user_id\": 3.0, \"c.user_id\": 7.0, \"z.user_id\": 3.0}",
-  "{\"a.user_id\": 2.0, \"b.user_id\": 1.0, \"c.user_id\": 3.0, \"z.user_id\": 1.0}",
-  "{\"a.user_id\": 2.0, \"b.user_id\": 1.0, \"c.user_id\": 5.0, \"z.user_id\": 1.0}",
-  "{\"a.user_id\": 3.0, \"b.user_id\": 1.0, \"c.user_id\": 2.0, \"z.user_id\": 1.0}",
-  "{\"a.user_id\": 3.0, \"b.user_id\": 1.0, \"c.user_id\": 5.0, \"z.user_id\": 1.0}",
-  "{\"a.user_id\": 4.0, \"b.user_id\": 2.0, \"c.user_id\": 1.0, \"z.user_id\": 2.0}",
-  "{\"a.user_id\": 4.0, \"b.user_id\": 2.0, \"c.user_id\": 6.0, \"z.user_id\": 2.0}",
-  "{\"a.user_id\": 5.0, \"b.user_id\": 1.0, \"c.user_id\": 2.0, \"z.user_id\": 1.0}",
-  "{\"a.user_id\": 5.0, \"b.user_id\": 1.0, \"c.user_id\": 3.0, \"z.user_id\": 1.0}",
-  "{\"a.user_id\": 6.0, \"b.user_id\": 2.0, \"c.user_id\": 1.0, \"z.user_id\": 2.0}",
-  "{\"a.user_id\": 6.0, \"b.user_id\": 2.0, \"c.user_id\": 4.0, \"z.user_id\": 2.0}",
-  "{\"a.user_id\": 7.0, \"b.user_id\": 3.0, \"c.user_id\": 1.0, \"z.user_id\": 3.0}"
+  "{\"a.user_id\": 1, \"b.user_id\": 2, \"c.user_id\": 4, \"z.user_id\": 2}",
+  "{\"a.user_id\": 1, \"b.user_id\": 2, \"c.user_id\": 6, \"z.user_id\": 2}",
+  "{\"a.user_id\": 1, \"b.user_id\": 3, \"c.user_id\": 7, \"z.user_id\": 3}",
+  "{\"a.user_id\": 2, \"b.user_id\": 1, \"c.user_id\": 3, \"z.user_id\": 1}",
+  "{\"a.user_id\": 2, \"b.user_id\": 1, \"c.user_id\": 5, \"z.user_id\": 1}",
+  "{\"a.user_id\": 3, \"b.user_id\": 1, \"c.user_id\": 2, \"z.user_id\": 1}",
+  "{\"a.user_id\": 3, \"b.user_id\": 1, \"c.user_id\": 5, \"z.user_id\": 1}",
+  "{\"a.user_id\": 4, \"b.user_id\": 2, \"c.user_id\": 1, \"z.user_id\": 2}",
+  "{\"a.user_id\": 4, \"b.user_id\": 2, \"c.user_id\": 6, \"z.user_id\": 2}",
+  "{\"a.user_id\": 5, \"b.user_id\": 1, \"c.user_id\": 2, \"z.user_id\": 1}",
+  "{\"a.user_id\": 5, \"b.user_id\": 1, \"c.user_id\": 3, \"z.user_id\": 1}",
+  "{\"a.user_id\": 6, \"b.user_id\": 2, \"c.user_id\": 1, \"z.user_id\": 2}",
+  "{\"a.user_id\": 6, \"b.user_id\": 2, \"c.user_id\": 4, \"z.user_id\": 2}",
+  "{\"a.user_id\": 7, \"b.user_id\": 3, \"c.user_id\": 1, \"z.user_id\": 3}"
  ],
  "schema": "standard"
 }

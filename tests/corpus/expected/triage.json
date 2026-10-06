@@ -49,6 +49,11 @@
   "ref": "#1316",
   "verdict": "CG_ERROR"
  },
+ "social_integration/test_graphrag_multi_type__TestMultiTypePropertyExtraction_test_json_extraction_sql_generation__2": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
  "social_integration/test_graphrag_multi_type__TestMultiTypePropertyExtraction_test_missing_property_returns_empty": {
   "category": "EXTENSION",
   "ref": "#1316",
@@ -100,7 +105,7 @@
   "verdict": "MISMATCH"
  },
  "social_integration/test_optional_match__TestOptionalWhereMandatoryVar_test_undirected_excluded_from_gate_597": {
-  "category": "UNTYPED_BOOLEAN",
+  "category": "BUG",
   "ref": "#1316",
   "verdict": "MISMATCH"
  },
@@ -304,7 +309,37 @@
   "ref": "#1316",
   "verdict": "CG_ERROR"
  },
+ "social_integration/test_with_cte_node_expansion__TestWithBasicNodeExpansion_test_with_single_node_export": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithChaining_test_with_chaining_three_levels": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithChaining_test_with_chaining_two_levels": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
  "social_integration/test_with_cte_node_expansion__TestWithCrossTable_test_with_where_filter": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithPolymorphicLabels_test_with_multi_label_node__2": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithPropertyRename_test_with_multi_rename": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithPropertyRename_test_with_node_rename": {
   "category": "BUG",
   "ref": "#1316",
   "verdict": "MISMATCH"

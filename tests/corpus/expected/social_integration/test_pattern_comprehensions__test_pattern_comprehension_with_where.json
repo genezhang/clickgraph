@@ -1,6 +1,10 @@
 {
+ "columns": [
+  "u.name",
+  "us_friends"
+ ],
  "cypher": "MATCH (u:PatternCompUser)\n        WHERE u.user_id = 1\n        RETURN u.name, [(u)-[:PATTERN_COMP_FOLLOWS]->(f) WHERE f.country = 'USA' | f.name] AS us_friends",
- "kinds": {},
+ "order_keys": null,
  "rows": [],
  "schema": "social_integration"
 }

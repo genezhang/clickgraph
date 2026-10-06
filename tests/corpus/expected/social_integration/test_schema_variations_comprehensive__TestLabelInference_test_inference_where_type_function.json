@@ -1,8 +1,11 @@
 {
+ "columns": [
+  "total"
+ ],
  "cypher": "MATCH (a)-[r]->(b)\n        WHERE type(r) IN ['FOLLOWS', 'AUTHORED']\n        RETURN count(*) as total",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"total\": 40.0}"
+  "{\"total\": 40}"
  ],
  "schema": "social_integration"
 }

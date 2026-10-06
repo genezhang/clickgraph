@@ -1,6 +1,10 @@
 {
+ "columns": [
+  "f.name",
+  "f.email"
+ ],
  "cypher": "MATCH (u:User)-[:FOLLOWS]->(f:User)\n    WITH f, u.user_id AS user_id\n    WHERE f.country = 'USA'\n    RETURN f.name, f.email",
- "kinds": {},
+ "order_keys": null,
  "rows": [
   "{\"f.email\": \"alice@example.com\", \"f.name\": \"Alice Johnson\"}",
   "{\"f.email\": \"alice@example.com\", \"f.name\": \"Alice Johnson\"}",

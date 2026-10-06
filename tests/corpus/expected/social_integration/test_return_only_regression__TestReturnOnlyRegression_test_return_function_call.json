@@ -1,6 +1,9 @@
 {
+ "columns": [
+  "upper"
+ ],
  "cypher": "RETURN toUpper('hello') AS upper",
- "kinds": {},
+ "order_keys": null,
  "rows": [
   "{\"upper\": \"HELLO\"}"
  ],

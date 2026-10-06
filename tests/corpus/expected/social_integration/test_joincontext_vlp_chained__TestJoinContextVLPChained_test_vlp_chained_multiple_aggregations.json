@@ -1,15 +1,30 @@
 {
+ "columns": [
+  "u2.user_id",
+  "post_count"
+ ],
  "cypher": "MATCH (u1:User)-[:FOLLOWS*1..2]->(u2:User)-[:AUTHORED]->(p:Post)\n        WHERE u1.user_id = 1\n        RETURN u2.user_id, COUNT(p) as post_count\n        LIMIT 10",
- "kinds": {},
+ "full_rows": [
+  "{\"post_count\": 2, \"u2.user_id\": 2}",
+  "{\"post_count\": 2, \"u2.user_id\": 3}",
+  "{\"post_count\": 2, \"u2.user_id\": 4}",
+  "{\"post_count\": 2, \"u2.user_id\": 5}",
+  "{\"post_count\": 2, \"u2.user_id\": 6}",
+  "{\"post_count\": 2, \"u2.user_id\": 7}",
+  "{\"post_count\": 2, \"u2.user_id\": 8}",
+  "{\"post_count\": 6, \"u2.user_id\": 1}"
+ ],
+ "limit": 10,
+ "order_keys": null,
  "rows": [
-  "{\"post_count\": 2.0, \"u2.user_id\": 2.0}",
-  "{\"post_count\": 2.0, \"u2.user_id\": 3.0}",
-  "{\"post_count\": 2.0, \"u2.user_id\": 4.0}",
-  "{\"post_count\": 2.0, \"u2.user_id\": 5.0}",
-  "{\"post_count\": 2.0, \"u2.user_id\": 6.0}",
-  "{\"post_count\": 2.0, \"u2.user_id\": 7.0}",
-  "{\"post_count\": 2.0, \"u2.user_id\": 8.0}",
-  "{\"post_count\": 6.0, \"u2.user_id\": 1.0}"
+  "{\"post_count\": 2, \"u2.user_id\": 2}",
+  "{\"post_count\": 2, \"u2.user_id\": 3}",
+  "{\"post_count\": 2, \"u2.user_id\": 4}",
+  "{\"post_count\": 2, \"u2.user_id\": 5}",
+  "{\"post_count\": 2, \"u2.user_id\": 6}",
+  "{\"post_count\": 2, \"u2.user_id\": 7}",
+  "{\"post_count\": 2, \"u2.user_id\": 8}",
+  "{\"post_count\": 6, \"u2.user_id\": 1}"
  ],
  "schema": "social_integration"
 }

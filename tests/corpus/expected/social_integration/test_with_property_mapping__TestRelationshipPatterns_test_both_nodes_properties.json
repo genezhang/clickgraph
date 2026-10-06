@@ -1,6 +1,33 @@
 {
+ "columns": [
+  "aName",
+  "bName"
+ ],
  "cypher": "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a.name AS aName, b.name AS bName RETURN aName, bName LIMIT 3",
- "kinds": {},
+ "full_rows": [
+  "{\"aName\": \"Alice Johnson\", \"bName\": \"Bob Smith\"}",
+  "{\"aName\": \"Alice Johnson\", \"bName\": \"Carol White\"}",
+  "{\"aName\": \"Alice Johnson\", \"bName\": \"Eve Davis\"}",
+  "{\"aName\": \"Bob Smith\", \"bName\": \"Alice Johnson\"}",
+  "{\"aName\": \"Bob Smith\", \"bName\": \"David Brown\"}",
+  "{\"aName\": \"Bob Smith\", \"bName\": \"Frank Miller\"}",
+  "{\"aName\": \"Carol White\", \"bName\": \"Alice Johnson\"}",
+  "{\"aName\": \"Carol White\", \"bName\": \"Grace Lee\"}",
+  "{\"aName\": \"Carol White\", \"bName\": \"Henry Wilson\"}",
+  "{\"aName\": \"David Brown\", \"bName\": \"Bob Smith\"}",
+  "{\"aName\": \"David Brown\", \"bName\": \"Iris Martinez\"}",
+  "{\"aName\": \"David Brown\", \"bName\": \"Jack Taylor\"}",
+  "{\"aName\": \"Eve Davis\", \"bName\": \"Alice Johnson\"}",
+  "{\"aName\": \"Eve Davis\", \"bName\": \"Kate Anderson\"}",
+  "{\"aName\": \"Eve Davis\", \"bName\": \"Liam Thomas\"}",
+  "{\"aName\": \"Frank Miller\", \"bName\": \"Bob Smith\"}",
+  "{\"aName\": \"Frank Miller\", \"bName\": \"Mia Jackson\"}",
+  "{\"aName\": \"Frank Miller\", \"bName\": \"Noah Harris\"}",
+  "{\"aName\": \"Grace Lee\", \"bName\": \"Carol White\"}",
+  "{\"aName\": \"Grace Lee\", \"bName\": \"Olivia Clark\"}"
+ ],
+ "limit": 3,
+ "order_keys": null,
  "rows": [
   "{\"aName\": \"Alice Johnson\", \"bName\": \"Bob Smith\"}",
   "{\"aName\": \"Alice Johnson\", \"bName\": \"Carol White\"}",

@@ -1,6 +1,9 @@
 {
+ "columns": [
+  "a.name"
+ ],
  "cypher": "MATCH (a:User)-[:FOLLOWS*2..3]->(a) RETURN a.name",
- "kinds": {},
+ "order_keys": null,
  "rows": [
   "{\"a.name\": \"Alice Johnson\"}",
   "{\"a.name\": \"Alice Johnson\"}",

@@ -1,6 +1,9 @@
 {
+ "columns": [
+  "n"
+ ],
  "cypher": "MATCH (u:User) WITH u, u.name AS n RETURN n",
- "kinds": {},
+ "order_keys": null,
  "rows": [
   "{\"n\": \"Alice Johnson\"}",
   "{\"n\": \"Amy Adams\"}",

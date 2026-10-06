@@ -1,8 +1,11 @@
 {
+ "columns": [
+  "total"
+ ],
  "cypher": "MATCH (a:User)-[r:FOLLOWS]->(b:User)\n        RETURN count(*) as total",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"total\": 20.0}"
+  "{\"total\": 20}"
  ],
  "schema": "social_integration"
 }

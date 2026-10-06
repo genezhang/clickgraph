@@ -1,6 +1,10 @@
 {
+ "columns": [
+  "a.id",
+  "b.id"
+ ],
  "cypher": "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) WHERE b.country = 'USA' RETURN a.id, b.id",
- "kinds": {},
+ "order_keys": null,
  "rows": [
   "{\"a.id\": null, \"b.id\": null}",
   "{\"a.id\": null, \"b.id\": null}",

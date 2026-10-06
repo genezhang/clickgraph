@@ -1,6 +1,503 @@
 {
+ "columns": [
+  "a.name",
+  "b.name"
+ ],
  "cypher": "MATCH (a:User)-[:FOLLOWS*2..2]-(b:User) RETURN a.name, b.name ORDER BY a.name, b.name",
- "kinds": {},
+ "key_sequence": [
+  [
+   "Alice Johnson",
+   "Alice Johnson"
+  ],
+  [
+   "Alice Johnson",
+   "Alice Johnson"
+  ],
+  [
+   "Alice Johnson",
+   "Alice Johnson"
+  ],
+  [
+   "Alice Johnson",
+   "Alice Johnson"
+  ],
+  [
+   "Alice Johnson",
+   "Alice Johnson"
+  ],
+  [
+   "Alice Johnson",
+   "Alice Johnson"
+  ],
+  [
+   "Alice Johnson",
+   "David Brown"
+  ],
+  [
+   "Alice Johnson",
+   "David Brown"
+  ],
+  [
+   "Alice Johnson",
+   "David Brown"
+  ],
+  [
+   "Alice Johnson",
+   "David Brown"
+  ],
+  [
+   "Alice Johnson",
+   "Frank Miller"
+  ],
+  [
+   "Alice Johnson",
+   "Frank Miller"
+  ],
+  [
+   "Alice Johnson",
+   "Frank Miller"
+  ],
+  [
+   "Alice Johnson",
+   "Frank Miller"
+  ],
+  [
+   "Alice Johnson",
+   "Grace Lee"
+  ],
+  [
+   "Alice Johnson",
+   "Grace Lee"
+  ],
+  [
+   "Alice Johnson",
+   "Grace Lee"
+  ],
+  [
+   "Alice Johnson",
+   "Grace Lee"
+  ],
+  [
+   "Alice Johnson",
+   "Henry Wilson"
+  ],
+  [
+   "Alice Johnson",
+   "Henry Wilson"
+  ],
+  [
+   "Alice Johnson",
+   "Kate Anderson"
+  ],
+  [
+   "Alice Johnson",
+   "Kate Anderson"
+  ],
+  [
+   "Alice Johnson",
+   "Liam Thomas"
+  ],
+  [
+   "Alice Johnson",
+   "Liam Thomas"
+  ],
+  [
+   "Bob Smith",
+   "Bob Smith"
+  ],
+  [
+   "Bob Smith",
+   "Bob Smith"
+  ],
+  [
+   "Bob Smith",
+   "Bob Smith"
+  ],
+  [
+   "Bob Smith",
+   "Bob Smith"
+  ],
+  [
+   "Bob Smith",
+   "Bob Smith"
+  ],
+  [
+   "Bob Smith",
+   "Bob Smith"
+  ],
+  [
+   "Bob Smith",
+   "Carol White"
+  ],
+  [
+   "Bob Smith",
+   "Carol White"
+  ],
+  [
+   "Bob Smith",
+   "Carol White"
+  ],
+  [
+   "Bob Smith",
+   "Carol White"
+  ],
+  [
+   "Bob Smith",
+   "Eve Davis"
+  ],
+  [
+   "Bob Smith",
+   "Eve Davis"
+  ],
+  [
+   "Bob Smith",
+   "Eve Davis"
+  ],
+  [
+   "Bob Smith",
+   "Eve Davis"
+  ],
+  [
+   "Bob Smith",
+   "Iris Martinez"
+  ],
+  [
+   "Bob Smith",
+   "Iris Martinez"
+  ],
+  [
+   "Bob Smith",
+   "Jack Taylor"
+  ],
+  [
+   "Bob Smith",
+   "Jack Taylor"
+  ],
+  [
+   "Bob Smith",
+   "Mia Jackson"
+  ],
+  [
+   "Bob Smith",
+   "Mia Jackson"
+  ],
+  [
+   "Bob Smith",
+   "Noah Harris"
+  ],
+  [
+   "Bob Smith",
+   "Noah Harris"
+  ],
+  [
+   "Carol White",
+   "Bob Smith"
+  ],
+  [
+   "Carol White",
+   "Bob Smith"
+  ],
+  [
+   "Carol White",
+   "Bob Smith"
+  ],
+  [
+   "Carol White",
+   "Bob Smith"
+  ],
+  [
+   "Carol White",
+   "Carol White"
+  ],
+  [
+   "Carol White",
+   "Carol White"
+  ],
+  [
+   "Carol White",
+   "Carol White"
+  ],
+  [
+   "Carol White",
+   "Carol White"
+  ],
+  [
+   "Carol White",
+   "Eve Davis"
+  ],
+  [
+   "Carol White",
+   "Eve Davis"
+  ],
+  [
+   "Carol White",
+   "Eve Davis"
+  ],
+  [
+   "Carol White",
+   "Eve Davis"
+  ],
+  [
+   "Carol White",
+   "Olivia Clark"
+  ],
+  [
+   "Carol White",
+   "Olivia Clark"
+  ],
+  [
+   "David Brown",
+   "Alice Johnson"
+  ],
+  [
+   "David Brown",
+   "Alice Johnson"
+  ],
+  [
+   "David Brown",
+   "Alice Johnson"
+  ],
+  [
+   "David Brown",
+   "Alice Johnson"
+  ],
+  [
+   "David Brown",
+   "David Brown"
+  ],
+  [
+   "David Brown",
+   "David Brown"
+  ],
+  [
+   "David Brown",
+   "Frank Miller"
+  ],
+  [
+   "David Brown",
+   "Frank Miller"
+  ],
+  [
+   "David Brown",
+   "Frank Miller"
+  ],
+  [
+   "David Brown",
+   "Frank Miller"
+  ],
+  [
+   "Eve Davis",
+   "Bob Smith"
+  ],
+  [
+   "Eve Davis",
+   "Bob Smith"
+  ],
+  [
+   "Eve Davis",
+   "Bob Smith"
+  ],
+  [
+   "Eve Davis",
+   "Bob Smith"
+  ],
+  [
+   "Eve Davis",
+   "Carol White"
+  ],
+  [
+   "Eve Davis",
+   "Carol White"
+  ],
+  [
+   "Eve Davis",
+   "Carol White"
+  ],
+  [
+   "Eve Davis",
+   "Carol White"
+  ],
+  [
+   "Eve Davis",
+   "Eve Davis"
+  ],
+  [
+   "Eve Davis",
+   "Eve Davis"
+  ],
+  [
+   "Frank Miller",
+   "Alice Johnson"
+  ],
+  [
+   "Frank Miller",
+   "Alice Johnson"
+  ],
+  [
+   "Frank Miller",
+   "Alice Johnson"
+  ],
+  [
+   "Frank Miller",
+   "Alice Johnson"
+  ],
+  [
+   "Frank Miller",
+   "David Brown"
+  ],
+  [
+   "Frank Miller",
+   "David Brown"
+  ],
+  [
+   "Frank Miller",
+   "David Brown"
+  ],
+  [
+   "Frank Miller",
+   "David Brown"
+  ],
+  [
+   "Frank Miller",
+   "Frank Miller"
+  ],
+  [
+   "Frank Miller",
+   "Frank Miller"
+  ],
+  [
+   "Grace Lee",
+   "Alice Johnson"
+  ],
+  [
+   "Grace Lee",
+   "Alice Johnson"
+  ],
+  [
+   "Grace Lee",
+   "Alice Johnson"
+  ],
+  [
+   "Grace Lee",
+   "Alice Johnson"
+  ],
+  [
+   "Grace Lee",
+   "Grace Lee"
+  ],
+  [
+   "Grace Lee",
+   "Grace Lee"
+  ],
+  [
+   "Grace Lee",
+   "Henry Wilson"
+  ],
+  [
+   "Grace Lee",
+   "Henry Wilson"
+  ],
+  [
+   "Henry Wilson",
+   "Alice Johnson"
+  ],
+  [
+   "Henry Wilson",
+   "Alice Johnson"
+  ],
+  [
+   "Henry Wilson",
+   "Grace Lee"
+  ],
+  [
+   "Henry Wilson",
+   "Grace Lee"
+  ],
+  [
+   "Iris Martinez",
+   "Bob Smith"
+  ],
+  [
+   "Iris Martinez",
+   "Bob Smith"
+  ],
+  [
+   "Iris Martinez",
+   "Jack Taylor"
+  ],
+  [
+   "Jack Taylor",
+   "Bob Smith"
+  ],
+  [
+   "Jack Taylor",
+   "Bob Smith"
+  ],
+  [
+   "Jack Taylor",
+   "Iris Martinez"
+  ],
+  [
+   "Kate Anderson",
+   "Alice Johnson"
+  ],
+  [
+   "Kate Anderson",
+   "Alice Johnson"
+  ],
+  [
+   "Kate Anderson",
+   "Liam Thomas"
+  ],
+  [
+   "Liam Thomas",
+   "Alice Johnson"
+  ],
+  [
+   "Liam Thomas",
+   "Alice Johnson"
+  ],
+  [
+   "Liam Thomas",
+   "Kate Anderson"
+  ],
+  [
+   "Mia Jackson",
+   "Bob Smith"
+  ],
+  [
+   "Mia Jackson",
+   "Bob Smith"
+  ],
+  [
+   "Mia Jackson",
+   "Noah Harris"
+  ],
+  [
+   "Noah Harris",
+   "Bob Smith"
+  ],
+  [
+   "Noah Harris",
+   "Bob Smith"
+  ],
+  [
+   "Noah Harris",
+   "Mia Jackson"
+  ],
+  [
+   "Olivia Clark",
+   "Carol White"
+  ],
+  [
+   "Olivia Clark",
+   "Carol White"
+  ]
+ ],
+ "order_keys": [
+  "a.name",
+  "b.name"
+ ],
  "rows": [
   "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Alice Johnson\"}",
   "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Alice Johnson\"}",

@@ -1,6 +1,42 @@
 {
+ "columns": [
+  "lowerName"
+ ],
  "cypher": "MATCH (u:User) WITH toLower(u.name) AS lowerName RETURN lowerName LIMIT 1",
- "kinds": {},
+ "full_rows": [
+  "{\"lowerName\": \"alice johnson\"}",
+  "{\"lowerName\": \"amy adams\"}",
+  "{\"lowerName\": \"ben baker\"}",
+  "{\"lowerName\": \"bob smith\"}",
+  "{\"lowerName\": \"carol white\"}",
+  "{\"lowerName\": \"chloe carter\"}",
+  "{\"lowerName\": \"dan foster\"}",
+  "{\"lowerName\": \"david brown\"}",
+  "{\"lowerName\": \"eve davis\"}",
+  "{\"lowerName\": \"frank miller\"}",
+  "{\"lowerName\": \"grace lee\"}",
+  "{\"lowerName\": \"henry wilson\"}",
+  "{\"lowerName\": \"iris martinez\"}",
+  "{\"lowerName\": \"jack taylor\"}",
+  "{\"lowerName\": \"kate anderson\"}",
+  "{\"lowerName\": \"liam thomas\"}",
+  "{\"lowerName\": \"mia jackson\"}",
+  "{\"lowerName\": \"noah harris\"}",
+  "{\"lowerName\": \"olivia clark\"}",
+  "{\"lowerName\": \"paul lewis\"}",
+  "{\"lowerName\": \"quinn walker\"}",
+  "{\"lowerName\": \"rachel hall\"}",
+  "{\"lowerName\": \"sam allen\"}",
+  "{\"lowerName\": \"tina young\"}",
+  "{\"lowerName\": \"uma king\"}",
+  "{\"lowerName\": \"victor wright\"}",
+  "{\"lowerName\": \"wendy lopez\"}",
+  "{\"lowerName\": \"xavier hill\"}",
+  "{\"lowerName\": \"yara scott\"}",
+  "{\"lowerName\": \"zack green\"}"
+ ],
+ "limit": 1,
+ "order_keys": null,
  "rows": [
   "{\"lowerName\": \"alice johnson\"}"
  ],

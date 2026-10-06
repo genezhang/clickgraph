@@ -1,9 +1,28 @@
 {
+ "columns": [
+  "x.name",
+  "x.city"
+ ],
  "cypher": "MATCH (u:User)-[:FOLLOWS*1..2]->(x:User)\n                    WHERE u.user_id = 1\n                    RETURN x.name, x.city\n                    LIMIT 3",
- "kinds": {},
- "rows": [
+ "full_rows": [
+  "{\"x.city\": \"Berlin\", \"x.name\": \"Frank Miller\"}",
+  "{\"x.city\": \"Chicago\", \"x.name\": \"Henry Wilson\"}",
+  "{\"x.city\": \"Dublin\", \"x.name\": \"Liam Thomas\"}",
   "{\"x.city\": \"London\", \"x.name\": \"Bob Smith\"}",
+  "{\"x.city\": \"Manchester\", \"x.name\": \"Kate Anderson\"}",
   "{\"x.city\": \"New York\", \"x.name\": \"Alice Johnson\"}",
+  "{\"x.city\": \"New York\", \"x.name\": \"Alice Johnson\"}",
+  "{\"x.city\": \"New York\", \"x.name\": \"Alice Johnson\"}",
+  "{\"x.city\": \"San Francisco\", \"x.name\": \"Eve Davis\"}",
+  "{\"x.city\": \"Seoul\", \"x.name\": \"Grace Lee\"}",
+  "{\"x.city\": \"Sydney\", \"x.name\": \"David Brown\"}",
+  "{\"x.city\": \"Toronto\", \"x.name\": \"Carol White\"}"
+ ],
+ "limit": 3,
+ "order_keys": null,
+ "rows": [
+  "{\"x.city\": \"Berlin\", \"x.name\": \"Frank Miller\"}",
+  "{\"x.city\": \"London\", \"x.name\": \"Bob Smith\"}",
   "{\"x.city\": \"Sydney\", \"x.name\": \"David Brown\"}"
  ],
  "schema": "social_integration"

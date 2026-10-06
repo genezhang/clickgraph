@@ -1,8 +1,11 @@
 {
+ "columns": [
+  "reachable_count"
+ ],
  "cypher": "MATCH (u1:User)-[:FOLLOWS*1..2]->(u2:User)\n        WHERE u1.user_id = 1\n        RETURN COUNT(DISTINCT u2.user_id) as reachable_count",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"reachable_count\": 10.0}"
+  "{\"reachable_count\": 10}"
  ],
  "schema": "social_integration"
 }

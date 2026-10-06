@@ -1,12 +1,54 @@
 {
+ "columns": [
+  "a.email",
+  "c.email"
+ ],
  "cypher": "MATCH (a:User)-[r1:FOLLOWS]->(b:User)-[r2:FOLLOWS]->(c:User) RETURN a.email, c.email LIMIT 5",
- "kinds": {},
- "rows": [
+ "full_rows": [
+  "{\"a.email\": \"alice@example.com\", \"c.email\": \"alice@example.com\"}",
+  "{\"a.email\": \"alice@example.com\", \"c.email\": \"alice@example.com\"}",
+  "{\"a.email\": \"alice@example.com\", \"c.email\": \"alice@example.com\"}",
+  "{\"a.email\": \"alice@example.com\", \"c.email\": \"david@example.com\"}",
+  "{\"a.email\": \"alice@example.com\", \"c.email\": \"frank@example.com\"}",
+  "{\"a.email\": \"alice@example.com\", \"c.email\": \"grace@example.com\"}",
+  "{\"a.email\": \"alice@example.com\", \"c.email\": \"henry@example.com\"}",
+  "{\"a.email\": \"alice@example.com\", \"c.email\": \"kate@example.com\"}",
+  "{\"a.email\": \"alice@example.com\", \"c.email\": \"liam@example.com\"}",
   "{\"a.email\": \"bob@example.com\", \"c.email\": \"bob@example.com\"}",
+  "{\"a.email\": \"bob@example.com\", \"c.email\": \"bob@example.com\"}",
+  "{\"a.email\": \"bob@example.com\", \"c.email\": \"bob@example.com\"}",
+  "{\"a.email\": \"bob@example.com\", \"c.email\": \"carol@example.com\"}",
+  "{\"a.email\": \"bob@example.com\", \"c.email\": \"eve@example.com\"}",
+  "{\"a.email\": \"bob@example.com\", \"c.email\": \"iris@example.com\"}",
+  "{\"a.email\": \"bob@example.com\", \"c.email\": \"jack@example.com\"}",
+  "{\"a.email\": \"bob@example.com\", \"c.email\": \"mia@example.com\"}",
+  "{\"a.email\": \"bob@example.com\", \"c.email\": \"noah@example.com\"}",
   "{\"a.email\": \"carol@example.com\", \"c.email\": \"bob@example.com\"}",
   "{\"a.email\": \"carol@example.com\", \"c.email\": \"carol@example.com\"}",
+  "{\"a.email\": \"carol@example.com\", \"c.email\": \"carol@example.com\"}",
+  "{\"a.email\": \"carol@example.com\", \"c.email\": \"eve@example.com\"}",
+  "{\"a.email\": \"carol@example.com\", \"c.email\": \"olivia@example.com\"}",
+  "{\"a.email\": \"david@example.com\", \"c.email\": \"alice@example.com\"}",
+  "{\"a.email\": \"david@example.com\", \"c.email\": \"david@example.com\"}",
+  "{\"a.email\": \"david@example.com\", \"c.email\": \"frank@example.com\"}",
   "{\"a.email\": \"eve@example.com\", \"c.email\": \"bob@example.com\"}",
-  "{\"a.email\": \"eve@example.com\", \"c.email\": \"carol@example.com\"}"
+  "{\"a.email\": \"eve@example.com\", \"c.email\": \"carol@example.com\"}",
+  "{\"a.email\": \"eve@example.com\", \"c.email\": \"eve@example.com\"}",
+  "{\"a.email\": \"frank@example.com\", \"c.email\": \"alice@example.com\"}",
+  "{\"a.email\": \"frank@example.com\", \"c.email\": \"david@example.com\"}",
+  "{\"a.email\": \"frank@example.com\", \"c.email\": \"frank@example.com\"}",
+  "{\"a.email\": \"grace@example.com\", \"c.email\": \"alice@example.com\"}",
+  "{\"a.email\": \"grace@example.com\", \"c.email\": \"grace@example.com\"}",
+  "{\"a.email\": \"grace@example.com\", \"c.email\": \"henry@example.com\"}"
+ ],
+ "limit": 5,
+ "order_keys": null,
+ "rows": [
+  "{\"a.email\": \"bob@example.com\", \"c.email\": \"bob@example.com\"}",
+  "{\"a.email\": \"bob@example.com\", \"c.email\": \"carol@example.com\"}",
+  "{\"a.email\": \"carol@example.com\", \"c.email\": \"bob@example.com\"}",
+  "{\"a.email\": \"carol@example.com\", \"c.email\": \"carol@example.com\"}",
+  "{\"a.email\": \"eve@example.com\", \"c.email\": \"bob@example.com\"}"
  ],
  "schema": "social_integration"
 }

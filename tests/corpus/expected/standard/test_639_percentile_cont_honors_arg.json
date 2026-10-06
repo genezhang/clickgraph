@@ -1,6 +1,9 @@
 {
+ "columns": [
+  "percentileCont(b.user_id, 0.9)"
+ ],
  "cypher": "MATCH (a:User)-[:FOLLOWS]->(b) RETURN percentileCont(b.user_id, 0.9)",
- "kinds": {},
+ "order_keys": null,
  "rows": [
   "{\"percentileCont(b.user_id, 0.9)\": 13.1}"
  ],

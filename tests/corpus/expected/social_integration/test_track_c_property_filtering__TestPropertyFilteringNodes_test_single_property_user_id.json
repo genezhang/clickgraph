@@ -1,8 +1,15 @@
 {
+ "columns": [
+  "uid"
+ ],
  "cypher": "MATCH (n) WHERE n.user_id = 1\n        RETURN n.user_id AS uid\n        LIMIT 5",
- "kinds": {},
+ "full_rows": [
+  "{\"uid\": 1}"
+ ],
+ "limit": 5,
+ "order_keys": null,
  "rows": [
-  "{\"uid\": 1.0}"
+  "{\"uid\": 1}"
  ],
  "schema": "social_integration"
 }

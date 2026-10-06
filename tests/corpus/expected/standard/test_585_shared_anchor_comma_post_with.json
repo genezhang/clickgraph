@@ -1,6 +1,11 @@
 {
+ "columns": [
+  "p.name",
+  "post.title",
+  "post2.title"
+ ],
  "cypher": "MATCH (p:User) WITH p MATCH (p)-[:AUTHORED]->(post:Post), (p)-[:LIKED]->(post2:Post) RETURN p.name, post.title, post2.title",
- "kinds": {},
+ "order_keys": null,
  "rows": [
   "{\"p.name\": \"Alice Johnson\", \"post.title\": \"Introduction\", \"post2.title\": \"Cooking Tips\"}",
   "{\"p.name\": \"Alice Johnson\", \"post.title\": \"Introduction\", \"post2.title\": \"First Post\"}",

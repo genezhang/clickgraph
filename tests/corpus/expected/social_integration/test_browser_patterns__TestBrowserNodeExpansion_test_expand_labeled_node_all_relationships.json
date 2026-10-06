@@ -1,6 +1,10 @@
 {
+ "columns": [
+  "rel_type",
+  "target_label"
+ ],
  "cypher": "MATCH (n:User)-[r]-(m) WHERE n.user_id = 1 RETURN type(r) as rel_type, labels(m)[0] as target_label",
- "kinds": {},
+ "order_keys": null,
  "rows": [
   "{\"rel_type\": \"AUTHORED\", \"target_label\": \"Post\"}",
   "{\"rel_type\": \"AUTHORED\", \"target_label\": \"Post\"}",

@@ -1,9 +1,13 @@
 {
+ "columns": [
+  "a.is_active",
+  "rel_count"
+ ],
  "cypher": "MATCH (a:User) OPTIONAL MATCH (a)-[r:FOLLOWS]->(b) RETURN a.is_active, count(r) AS rel_count",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"a.is_active\": 0.0, \"rel_count\": 0.0}",
-  "{\"a.is_active\": 1.0, \"rel_count\": 20.0}"
+  "{\"a.is_active\": 0, \"rel_count\": 0}",
+  "{\"a.is_active\": 1, \"rel_count\": 20}"
  ],
  "schema": "social_integration"
 }

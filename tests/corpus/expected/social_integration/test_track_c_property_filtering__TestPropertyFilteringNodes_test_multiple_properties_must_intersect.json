@@ -1,8 +1,12 @@
 {
+ "columns": [
+  "uid",
+  "email"
+ ],
  "cypher": "MATCH (n) WHERE n.user_id = 1 AND n.email IS NOT NULL\n        RETURN n.user_id AS uid, n.email AS email",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"email\": \"alice@example.com\", \"uid\": 1.0}"
+  "{\"email\": \"alice@example.com\", \"uid\": 1}"
  ],
  "schema": "social_integration"
 }

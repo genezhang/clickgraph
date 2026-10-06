@@ -1,15 +1,30 @@
 {
+ "columns": [
+  "userId",
+  "postCount"
+ ],
  "cypher": "MATCH (u1:User)-[:FOLLOWS*1..2]->(u2:User)-[:AUTHORED]->(p:Post)\n        WHERE u1.user_id = 1\n        RETURN u2.user_id AS userId, COUNT(DISTINCT p) AS postCount\n        LIMIT 10",
- "kinds": {},
+ "full_rows": [
+  "{\"postCount\": 2, \"userId\": 1}",
+  "{\"postCount\": 2, \"userId\": 2}",
+  "{\"postCount\": 2, \"userId\": 3}",
+  "{\"postCount\": 2, \"userId\": 4}",
+  "{\"postCount\": 2, \"userId\": 5}",
+  "{\"postCount\": 2, \"userId\": 6}",
+  "{\"postCount\": 2, \"userId\": 7}",
+  "{\"postCount\": 2, \"userId\": 8}"
+ ],
+ "limit": 10,
+ "order_keys": null,
  "rows": [
-  "{\"postCount\": 2.0, \"userId\": 1.0}",
-  "{\"postCount\": 2.0, \"userId\": 2.0}",
-  "{\"postCount\": 2.0, \"userId\": 3.0}",
-  "{\"postCount\": 2.0, \"userId\": 4.0}",
-  "{\"postCount\": 2.0, \"userId\": 5.0}",
-  "{\"postCount\": 2.0, \"userId\": 6.0}",
-  "{\"postCount\": 2.0, \"userId\": 7.0}",
-  "{\"postCount\": 2.0, \"userId\": 8.0}"
+  "{\"postCount\": 2, \"userId\": 1}",
+  "{\"postCount\": 2, \"userId\": 2}",
+  "{\"postCount\": 2, \"userId\": 3}",
+  "{\"postCount\": 2, \"userId\": 4}",
+  "{\"postCount\": 2, \"userId\": 5}",
+  "{\"postCount\": 2, \"userId\": 6}",
+  "{\"postCount\": 2, \"userId\": 7}",
+  "{\"postCount\": 2, \"userId\": 8}"
  ],
  "schema": "social_integration"
 }

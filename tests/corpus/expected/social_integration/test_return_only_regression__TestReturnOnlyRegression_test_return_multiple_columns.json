@@ -1,8 +1,13 @@
 {
+ "columns": [
+  "a",
+  "b",
+  "c"
+ ],
  "cypher": "RETURN 1 AS a, 2 AS b, 3 AS c",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"a\": 1.0, \"b\": 2.0, \"c\": 3.0}"
+  "{\"a\": 1, \"b\": 2, \"c\": 3}"
  ],
  "schema": "social_integration"
 }

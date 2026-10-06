@@ -1,6 +1,12 @@
 {
+ "columns": [
+  "length(p)",
+  "nodes(p)"
+ ],
  "cypher": "MATCH p = (a:Post)-[*1..3]->(b:Post) RETURN length(p), nodes(p) LIMIT 5",
- "kinds": {},
+ "full_rows": [],
+ "limit": 5,
+ "order_keys": null,
  "rows": [],
  "schema": "social_integration"
 }

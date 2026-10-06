@@ -1,8 +1,11 @@
 {
+ "columns": [
+  "nameCount"
+ ],
  "cypher": "MATCH (u:User) WITH count(u.name) AS nameCount RETURN nameCount",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"nameCount\": 30.0}"
+  "{\"nameCount\": 30}"
  ],
  "schema": "social_integration"
 }

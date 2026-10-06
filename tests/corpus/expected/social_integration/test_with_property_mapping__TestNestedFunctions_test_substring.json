@@ -1,6 +1,42 @@
 {
+ "columns": [
+  "prefix"
+ ],
  "cypher": "MATCH (u:User) WITH substring(u.name, 1, 5) AS prefix RETURN prefix LIMIT 1",
- "kinds": {},
+ "full_rows": [
+  "{\"prefix\": \"achel\"}",
+  "{\"prefix\": \"ack G\"}",
+  "{\"prefix\": \"ack T\"}",
+  "{\"prefix\": \"am Al\"}",
+  "{\"prefix\": \"an Fo\"}",
+  "{\"prefix\": \"ara S\"}",
+  "{\"prefix\": \"arol \"}",
+  "{\"prefix\": \"ate A\"}",
+  "{\"prefix\": \"aul L\"}",
+  "{\"prefix\": \"avid \"}",
+  "{\"prefix\": \"avier\"}",
+  "{\"prefix\": \"en Ba\"}",
+  "{\"prefix\": \"endy \"}",
+  "{\"prefix\": \"enry \"}",
+  "{\"prefix\": \"hloe \"}",
+  "{\"prefix\": \"ia Ja\"}",
+  "{\"prefix\": \"iam T\"}",
+  "{\"prefix\": \"ictor\"}",
+  "{\"prefix\": \"ina Y\"}",
+  "{\"prefix\": \"lice \"}",
+  "{\"prefix\": \"livia\"}",
+  "{\"prefix\": \"ma Ki\"}",
+  "{\"prefix\": \"my Ad\"}",
+  "{\"prefix\": \"oah H\"}",
+  "{\"prefix\": \"ob Sm\"}",
+  "{\"prefix\": \"race \"}",
+  "{\"prefix\": \"rank \"}",
+  "{\"prefix\": \"ris M\"}",
+  "{\"prefix\": \"uinn \"}",
+  "{\"prefix\": \"ve Da\"}"
+ ],
+ "limit": 1,
+ "order_keys": null,
  "rows": [
   "{\"prefix\": \"lice \"}"
  ],

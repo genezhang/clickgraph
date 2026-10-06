@@ -1,6 +1,10 @@
 {
+ "columns": [
+  "type(r)",
+  "cnt"
+ ],
  "cypher": "MATCH (a:Post)-[r:FOLLOWS|AUTHORED]->(b:Post) RETURN type(r), count(*) AS cnt",
- "kinds": {},
+ "order_keys": null,
  "rows": [],
  "schema": "social_integration"
 }

@@ -1,8 +1,11 @@
 {
+ "columns": [
+  "count"
+ ],
  "cypher": "MATCH ()-[r]-() RETURN count(*) as count",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"count\": 120.0}"
+  "{\"count\": 120}"
  ],
  "schema": "social_integration"
 }

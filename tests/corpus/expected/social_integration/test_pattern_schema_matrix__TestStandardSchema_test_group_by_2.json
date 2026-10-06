@@ -1,42 +1,78 @@
 {
+ "columns": [
+  "n.post_id",
+  "cnt"
+ ],
  "cypher": "MATCH (n:Post) RETURN n.post_id, count(n) AS cnt ORDER BY cnt DESC LIMIT 10",
- "full": {
-  "kinds": {},
-  "rows": [
-   "{\"cnt\": 1.0, \"n.post_id\": 1.0}",
-   "{\"cnt\": 1.0, \"n.post_id\": 10.0}",
-   "{\"cnt\": 1.0, \"n.post_id\": 11.0}",
-   "{\"cnt\": 1.0, \"n.post_id\": 12.0}",
-   "{\"cnt\": 1.0, \"n.post_id\": 13.0}",
-   "{\"cnt\": 1.0, \"n.post_id\": 14.0}",
-   "{\"cnt\": 1.0, \"n.post_id\": 15.0}",
-   "{\"cnt\": 1.0, \"n.post_id\": 16.0}",
-   "{\"cnt\": 1.0, \"n.post_id\": 17.0}",
-   "{\"cnt\": 1.0, \"n.post_id\": 18.0}",
-   "{\"cnt\": 1.0, \"n.post_id\": 19.0}",
-   "{\"cnt\": 1.0, \"n.post_id\": 2.0}",
-   "{\"cnt\": 1.0, \"n.post_id\": 20.0}",
-   "{\"cnt\": 1.0, \"n.post_id\": 3.0}",
-   "{\"cnt\": 1.0, \"n.post_id\": 4.0}",
-   "{\"cnt\": 1.0, \"n.post_id\": 5.0}",
-   "{\"cnt\": 1.0, \"n.post_id\": 6.0}",
-   "{\"cnt\": 1.0, \"n.post_id\": 7.0}",
-   "{\"cnt\": 1.0, \"n.post_id\": 8.0}",
-   "{\"cnt\": 1.0, \"n.post_id\": 9.0}"
+ "full_rows": [
+  "{\"cnt\": 1, \"n.post_id\": 10}",
+  "{\"cnt\": 1, \"n.post_id\": 11}",
+  "{\"cnt\": 1, \"n.post_id\": 12}",
+  "{\"cnt\": 1, \"n.post_id\": 13}",
+  "{\"cnt\": 1, \"n.post_id\": 14}",
+  "{\"cnt\": 1, \"n.post_id\": 15}",
+  "{\"cnt\": 1, \"n.post_id\": 16}",
+  "{\"cnt\": 1, \"n.post_id\": 17}",
+  "{\"cnt\": 1, \"n.post_id\": 18}",
+  "{\"cnt\": 1, \"n.post_id\": 19}",
+  "{\"cnt\": 1, \"n.post_id\": 1}",
+  "{\"cnt\": 1, \"n.post_id\": 20}",
+  "{\"cnt\": 1, \"n.post_id\": 2}",
+  "{\"cnt\": 1, \"n.post_id\": 3}",
+  "{\"cnt\": 1, \"n.post_id\": 4}",
+  "{\"cnt\": 1, \"n.post_id\": 5}",
+  "{\"cnt\": 1, \"n.post_id\": 6}",
+  "{\"cnt\": 1, \"n.post_id\": 7}",
+  "{\"cnt\": 1, \"n.post_id\": 8}",
+  "{\"cnt\": 1, \"n.post_id\": 9}"
+ ],
+ "key_sequence": [
+  [
+   1
+  ],
+  [
+   1
+  ],
+  [
+   1
+  ],
+  [
+   1
+  ],
+  [
+   1
+  ],
+  [
+   1
+  ],
+  [
+   1
+  ],
+  [
+   1
+  ],
+  [
+   1
+  ],
+  [
+   1
   ]
- },
- "kinds": {},
+ ],
+ "limit": 10,
+ "order_keys": [
+  "cnt"
+ ],
  "rows": [
-  "{\"cnt\": 1.0, \"n.post_id\": 1.0}",
-  "{\"cnt\": 1.0, \"n.post_id\": 10.0}",
-  "{\"cnt\": 1.0, \"n.post_id\": 2.0}",
-  "{\"cnt\": 1.0, \"n.post_id\": 3.0}",
-  "{\"cnt\": 1.0, \"n.post_id\": 4.0}",
-  "{\"cnt\": 1.0, \"n.post_id\": 5.0}",
-  "{\"cnt\": 1.0, \"n.post_id\": 6.0}",
-  "{\"cnt\": 1.0, \"n.post_id\": 7.0}",
-  "{\"cnt\": 1.0, \"n.post_id\": 8.0}",
-  "{\"cnt\": 1.0, \"n.post_id\": 9.0}"
+  "{\"cnt\": 1, \"n.post_id\": 10}",
+  "{\"cnt\": 1, \"n.post_id\": 1}",
+  "{\"cnt\": 1, \"n.post_id\": 2}",
+  "{\"cnt\": 1, \"n.post_id\": 3}",
+  "{\"cnt\": 1, \"n.post_id\": 4}",
+  "{\"cnt\": 1, \"n.post_id\": 5}",
+  "{\"cnt\": 1, \"n.post_id\": 6}",
+  "{\"cnt\": 1, \"n.post_id\": 7}",
+  "{\"cnt\": 1, \"n.post_id\": 8}",
+  "{\"cnt\": 1, \"n.post_id\": 9}"
  ],
  "schema": "social_integration"
 }

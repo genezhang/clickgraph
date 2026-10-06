@@ -1,6 +1,10 @@
 {
+ "columns": [
+  "x.name",
+  "x.city"
+ ],
  "cypher": "MATCH (u:User)-[:FOLLOWS*1..2]->(x:User)\n            WHERE u.user_id = 1 AND x.city = 'NYC'\n            RETURN x.name, x.city",
- "kinds": {},
+ "order_keys": null,
  "rows": [],
  "schema": "social_integration"
 }

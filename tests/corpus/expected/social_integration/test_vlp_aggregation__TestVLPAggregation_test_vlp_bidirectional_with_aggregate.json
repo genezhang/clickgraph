@@ -1,25 +1,46 @@
 {
+ "columns": [
+  "userId",
+  "postCount"
+ ],
  "cypher": "MATCH (u1:User {user_id: 1})-[:FOLLOWS*1..2]-(u2:User)\n        WITH u2\n        MATCH (u2)-[:AUTHORED]->(p:Post)\n        RETURN u2.user_id AS userId, COUNT(DISTINCT p) AS postCount\n        ORDER BY postCount DESC\n        LIMIT 5",
- "full": {
-  "kinds": {},
-  "rows": [
-   "{\"postCount\": 2.0, \"userId\": 1.0}",
-   "{\"postCount\": 2.0, \"userId\": 2.0}",
-   "{\"postCount\": 2.0, \"userId\": 3.0}",
-   "{\"postCount\": 2.0, \"userId\": 4.0}",
-   "{\"postCount\": 2.0, \"userId\": 5.0}",
-   "{\"postCount\": 2.0, \"userId\": 6.0}",
-   "{\"postCount\": 2.0, \"userId\": 7.0}",
-   "{\"postCount\": 2.0, \"userId\": 8.0}"
+ "full_rows": [
+  "{\"postCount\": 2, \"userId\": 1}",
+  "{\"postCount\": 2, \"userId\": 2}",
+  "{\"postCount\": 2, \"userId\": 3}",
+  "{\"postCount\": 2, \"userId\": 4}",
+  "{\"postCount\": 2, \"userId\": 5}",
+  "{\"postCount\": 2, \"userId\": 6}",
+  "{\"postCount\": 2, \"userId\": 7}",
+  "{\"postCount\": 2, \"userId\": 8}"
+ ],
+ "key_sequence": [
+  [
+   2
+  ],
+  [
+   2
+  ],
+  [
+   2
+  ],
+  [
+   2
+  ],
+  [
+   2
   ]
- },
- "kinds": {},
+ ],
+ "limit": 5,
+ "order_keys": [
+  "postCount"
+ ],
  "rows": [
-  "{\"postCount\": 2.0, \"userId\": 2.0}",
-  "{\"postCount\": 2.0, \"userId\": 3.0}",
-  "{\"postCount\": 2.0, \"userId\": 4.0}",
-  "{\"postCount\": 2.0, \"userId\": 5.0}",
-  "{\"postCount\": 2.0, \"userId\": 6.0}"
+  "{\"postCount\": 2, \"userId\": 2}",
+  "{\"postCount\": 2, \"userId\": 3}",
+  "{\"postCount\": 2, \"userId\": 4}",
+  "{\"postCount\": 2, \"userId\": 5}",
+  "{\"postCount\": 2, \"userId\": 6}"
  ],
  "schema": "social_integration"
 }

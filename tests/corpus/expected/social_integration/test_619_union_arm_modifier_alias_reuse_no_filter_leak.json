@@ -1,10 +1,13 @@
 {
+ "columns": [
+  "id"
+ ],
  "cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE a.user_id = 5 RETURN b.user_id AS id ORDER BY id LIMIT 2\nUNION ALL\nMATCH (a:User) WHERE a.user_id = 6 RETURN a.user_id AS id",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"id\": 1.0}",
-  "{\"id\": 2.0}",
-  "{\"id\": 6.0}"
+  "{\"id\": 1}",
+  "{\"id\": 2}",
+  "{\"id\": 6}"
  ],
  "schema": "social_integration"
 }

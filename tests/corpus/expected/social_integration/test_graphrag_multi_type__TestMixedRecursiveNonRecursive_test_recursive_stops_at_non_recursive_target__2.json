@@ -1,8 +1,11 @@
 {
+ "columns": [
+  "cnt"
+ ],
  "cypher": "MATCH (u:User)-[:AUTHORED*2]->(x)\n                WHERE u.user_id = 1\n                RETURN count(*) as cnt",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"cnt\": 0.0}"
+  "{\"cnt\": 0}"
  ],
  "schema": "social_integration"
 }

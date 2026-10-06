@@ -1,8 +1,11 @@
 {
+ "columns": [
+  "path_count"
+ ],
  "cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)\n    WHERE a.user_id = 1\n    RETURN COUNT(*) as path_count",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"path_count\": 12.0}"
+  "{\"path_count\": 12}"
  ],
  "schema": "social_integration"
 }

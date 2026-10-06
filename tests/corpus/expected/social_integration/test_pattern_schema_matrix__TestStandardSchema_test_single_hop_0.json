@@ -1,17 +1,44 @@
 {
+ "columns": [
+  "a.name",
+  "b.post_id"
+ ],
  "cypher": "MATCH (a:User)-[r:LIKED]->(b:Post) RETURN a.name, b.post_id LIMIT 10",
- "kinds": {},
+ "full_rows": [
+  "{\"a.name\": \"Alice Johnson\", \"b.post_id\": 2}",
+  "{\"a.name\": \"Alice Johnson\", \"b.post_id\": 3}",
+  "{\"a.name\": \"Alice Johnson\", \"b.post_id\": 5}",
+  "{\"a.name\": \"Bob Smith\", \"b.post_id\": 1}",
+  "{\"a.name\": \"Bob Smith\", \"b.post_id\": 3}",
+  "{\"a.name\": \"Bob Smith\", \"b.post_id\": 6}",
+  "{\"a.name\": \"Carol White\", \"b.post_id\": 1}",
+  "{\"a.name\": \"Carol White\", \"b.post_id\": 7}",
+  "{\"a.name\": \"Carol White\", \"b.post_id\": 8}",
+  "{\"a.name\": \"David Brown\", \"b.post_id\": 10}",
+  "{\"a.name\": \"David Brown\", \"b.post_id\": 2}",
+  "{\"a.name\": \"David Brown\", \"b.post_id\": 9}",
+  "{\"a.name\": \"Eve Davis\", \"b.post_id\": 11}",
+  "{\"a.name\": \"Eve Davis\", \"b.post_id\": 12}",
+  "{\"a.name\": \"Eve Davis\", \"b.post_id\": 1}",
+  "{\"a.name\": \"Frank Miller\", \"b.post_id\": 13}",
+  "{\"a.name\": \"Frank Miller\", \"b.post_id\": 14}",
+  "{\"a.name\": \"Frank Miller\", \"b.post_id\": 2}",
+  "{\"a.name\": \"Grace Lee\", \"b.post_id\": 15}",
+  "{\"a.name\": \"Grace Lee\", \"b.post_id\": 3}"
+ ],
+ "limit": 10,
+ "order_keys": null,
  "rows": [
-  "{\"a.name\": \"Alice Johnson\", \"b.post_id\": 2.0}",
-  "{\"a.name\": \"Alice Johnson\", \"b.post_id\": 3.0}",
-  "{\"a.name\": \"Alice Johnson\", \"b.post_id\": 5.0}",
-  "{\"a.name\": \"Bob Smith\", \"b.post_id\": 1.0}",
-  "{\"a.name\": \"Bob Smith\", \"b.post_id\": 3.0}",
-  "{\"a.name\": \"Carol White\", \"b.post_id\": 1.0}",
-  "{\"a.name\": \"David Brown\", \"b.post_id\": 2.0}",
-  "{\"a.name\": \"Eve Davis\", \"b.post_id\": 1.0}",
-  "{\"a.name\": \"Frank Miller\", \"b.post_id\": 2.0}",
-  "{\"a.name\": \"Grace Lee\", \"b.post_id\": 3.0}"
+  "{\"a.name\": \"Alice Johnson\", \"b.post_id\": 2}",
+  "{\"a.name\": \"Alice Johnson\", \"b.post_id\": 3}",
+  "{\"a.name\": \"Alice Johnson\", \"b.post_id\": 5}",
+  "{\"a.name\": \"Bob Smith\", \"b.post_id\": 1}",
+  "{\"a.name\": \"Bob Smith\", \"b.post_id\": 3}",
+  "{\"a.name\": \"Carol White\", \"b.post_id\": 1}",
+  "{\"a.name\": \"David Brown\", \"b.post_id\": 2}",
+  "{\"a.name\": \"Eve Davis\", \"b.post_id\": 1}",
+  "{\"a.name\": \"Frank Miller\", \"b.post_id\": 2}",
+  "{\"a.name\": \"Grace Lee\", \"b.post_id\": 3}"
  ],
  "schema": "social_integration"
 }

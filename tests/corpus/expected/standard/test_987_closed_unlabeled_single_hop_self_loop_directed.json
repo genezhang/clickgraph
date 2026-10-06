@@ -1,8 +1,11 @@
 {
+ "columns": [
+  "count(*)"
+ ],
  "cypher": "MATCH (a)-[r]->(a) RETURN count(*)",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"count(*)\": 0.0}"
+  "{\"count(*)\": 0}"
  ],
  "schema": "standard"
 }

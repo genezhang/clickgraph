@@ -1,6 +1,11 @@
 {
+ "columns": [
+  "length(p)"
+ ],
  "cypher": "MATCH p = shortestPath((a:Post)-[*1..5]->(b:Post)) WHERE a.post_id <> b.post_id RETURN length(p) LIMIT 5",
- "kinds": {},
+ "full_rows": [],
+ "limit": 5,
+ "order_keys": null,
  "rows": [],
  "schema": "social_integration"
 }

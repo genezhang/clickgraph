@@ -1,6 +1,10 @@
 {
+ "columns": [
+  "a.name",
+  "a.country"
+ ],
  "cypher": "MATCH (a:User)-[:FOLLOWS*2..2]->(a) RETURN a.name, a.country",
- "kinds": {},
+ "order_keys": null,
  "rows": [
   "{\"a.country\": \"Australia\", \"a.name\": \"David Brown\"}",
   "{\"a.country\": \"Canada\", \"a.name\": \"Carol White\"}",

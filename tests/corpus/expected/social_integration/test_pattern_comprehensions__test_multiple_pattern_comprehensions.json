@@ -1,6 +1,11 @@
 {
+ "columns": [
+  "u.name",
+  "friends",
+  "followers"
+ ],
  "cypher": "MATCH (u:PatternCompUser)\n        WHERE u.user_id = 1\n        RETURN u.name,\n               [(u)-[:PATTERN_COMP_FOLLOWS]->(f) | f.name] AS friends,\n               [(u)<-[:PATTERN_COMP_FOLLOWS]-(follower) | follower.name] AS followers",
- "kinds": {},
+ "order_keys": null,
  "rows": [],
  "schema": "social_integration"
 }

@@ -1,6 +1,10 @@
 {
+ "columns": [
+  "p.name",
+  "c.name"
+ ],
  "cypher": "MATCH (p:User) WITH p MATCH (p)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User) RETURN p.name, c.name",
- "kinds": {},
+ "order_keys": null,
  "rows": [
   "{\"c.name\": \"Alice Johnson\", \"p.name\": \"Alice Johnson\"}",
   "{\"c.name\": \"Alice Johnson\", \"p.name\": \"Alice Johnson\"}",

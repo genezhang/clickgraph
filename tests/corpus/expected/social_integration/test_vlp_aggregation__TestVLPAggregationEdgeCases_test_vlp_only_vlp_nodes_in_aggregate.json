@@ -1,8 +1,12 @@
 {
+ "columns": [
+  "u1.user_id",
+  "friendCount"
+ ],
  "cypher": "MATCH (u1:User {user_id: 1})-[:FOLLOWS*1..2]-(u2:User)\n        RETURN u1.user_id, COUNT(DISTINCT u2) AS friendCount",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"friendCount\": 10.0, \"u1.user_id\": 1.0}"
+  "{\"friendCount\": 10, \"u1.user_id\": 1}"
  ],
  "schema": "social_integration"
 }

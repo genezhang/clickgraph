@@ -1,8 +1,11 @@
 {
+ "columns": [
+  "total"
+ ],
  "cypher": "MATCH (a:User)--(b) RETURN count(DISTINCT b) as total",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"total\": 35.0}"
+  "{\"total\": 35}"
  ],
  "schema": "social_integration"
 }

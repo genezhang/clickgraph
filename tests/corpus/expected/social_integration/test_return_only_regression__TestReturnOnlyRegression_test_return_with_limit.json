@@ -1,8 +1,15 @@
 {
+ "columns": [
+  "num"
+ ],
  "cypher": "RETURN 1 AS num LIMIT 1",
- "kinds": {},
+ "full_rows": [
+  "{\"num\": 1}"
+ ],
+ "limit": 1,
+ "order_keys": null,
  "rows": [
-  "{\"num\": 1.0}"
+  "{\"num\": 1}"
  ],
  "schema": "social_integration"
 }

@@ -1,8 +1,11 @@
 {
+ "columns": [
+  "count(*)"
+ ],
  "cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User)-[:FOLLOWS]->(y:User)-[:FOLLOWS]->(z:User) RETURN count(*)",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"count(*)\": 599.0}"
+  "{\"count(*)\": 599}"
  ],
  "schema": "standard"
 }

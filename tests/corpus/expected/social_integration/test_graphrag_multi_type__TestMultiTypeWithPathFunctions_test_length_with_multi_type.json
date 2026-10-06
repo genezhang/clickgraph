@@ -1,9 +1,23 @@
 {
+ "columns": [
+  "path_length",
+  "cnt"
+ ],
  "cypher": "MATCH p = (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)\n            WHERE u.user_id = 1\n            RETURN length(p) as path_length, count(*) as cnt\n            ORDER BY path_length",
- "kinds": {},
+ "key_sequence": [
+  [
+   1
+  ],
+  [
+   2
+  ]
+ ],
+ "order_keys": [
+  "path_length"
+ ],
  "rows": [
-  "{\"cnt\": 15.0, \"path_length\": 2.0}",
-  "{\"cnt\": 5.0, \"path_length\": 1.0}"
+  "{\"cnt\": 15, \"path_length\": 2}",
+  "{\"cnt\": 5, \"path_length\": 1}"
  ],
  "schema": "social_integration"
 }

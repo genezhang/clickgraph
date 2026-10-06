@@ -1,6 +1,33 @@
 {
+ "columns": [
+  "a.city",
+  "b.city"
+ ],
  "cypher": "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN a.city, b.city LIMIT 10",
- "kinds": {},
+ "full_rows": [
+  "{\"a.city\": \"Berlin\", \"b.city\": \"Austin\"}",
+  "{\"a.city\": \"Berlin\", \"b.city\": \"London\"}",
+  "{\"a.city\": \"Berlin\", \"b.city\": \"Vancouver\"}",
+  "{\"a.city\": \"London\", \"b.city\": \"Berlin\"}",
+  "{\"a.city\": \"London\", \"b.city\": \"New York\"}",
+  "{\"a.city\": \"London\", \"b.city\": \"Sydney\"}",
+  "{\"a.city\": \"New York\", \"b.city\": \"London\"}",
+  "{\"a.city\": \"New York\", \"b.city\": \"San Francisco\"}",
+  "{\"a.city\": \"New York\", \"b.city\": \"Toronto\"}",
+  "{\"a.city\": \"San Francisco\", \"b.city\": \"Dublin\"}",
+  "{\"a.city\": \"San Francisco\", \"b.city\": \"Manchester\"}",
+  "{\"a.city\": \"San Francisco\", \"b.city\": \"New York\"}",
+  "{\"a.city\": \"Seoul\", \"b.city\": \"Melbourne\"}",
+  "{\"a.city\": \"Seoul\", \"b.city\": \"Toronto\"}",
+  "{\"a.city\": \"Sydney\", \"b.city\": \"Boston\"}",
+  "{\"a.city\": \"Sydney\", \"b.city\": \"London\"}",
+  "{\"a.city\": \"Sydney\", \"b.city\": \"Madrid\"}",
+  "{\"a.city\": \"Toronto\", \"b.city\": \"Chicago\"}",
+  "{\"a.city\": \"Toronto\", \"b.city\": \"New York\"}",
+  "{\"a.city\": \"Toronto\", \"b.city\": \"Seoul\"}"
+ ],
+ "limit": 10,
+ "order_keys": null,
  "rows": [
   "{\"a.city\": \"London\", \"b.city\": \"Berlin\"}",
   "{\"a.city\": \"London\", \"b.city\": \"New York\"}",

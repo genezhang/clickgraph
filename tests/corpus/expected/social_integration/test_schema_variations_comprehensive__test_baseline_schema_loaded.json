@@ -1,8 +1,15 @@
 {
+ "columns": [
+  "count(n)"
+ ],
  "cypher": "MATCH (n) RETURN count(n) LIMIT 1",
- "kinds": {},
+ "full_rows": [
+  "{\"count(n)\": 50}"
+ ],
+ "limit": 1,
+ "order_keys": null,
  "rows": [
-  "{\"count(n)\": 50.0}"
+  "{\"count(n)\": 50}"
  ],
  "schema": "social_integration"
 }

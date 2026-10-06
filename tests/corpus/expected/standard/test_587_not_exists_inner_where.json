@@ -1,6 +1,9 @@
 {
+ "columns": [
+  "a.name"
+ ],
  "cypher": "MATCH (a:User) WHERE NOT EXISTS { MATCH (a)-[:FOLLOWS]->(b:User) WHERE b.name = 'Bob Smith' } RETURN a.name",
- "kinds": {},
+ "order_keys": null,
  "rows": [
   "{\"a.name\": \"Amy Adams\"}",
   "{\"a.name\": \"Ben Baker\"}",

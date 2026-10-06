@@ -1,6 +1,295 @@
 {
+ "columns": [
+  "a.name",
+  "b.name"
+ ],
  "cypher": "MATCH (a:User) OPTIONAL MATCH (a)<-[:FOLLOWS*1..2]-(b:User) RETURN a.name, b.name ORDER BY a.name, b.name",
- "kinds": {},
+ "key_sequence": [
+  [
+   "Alice Johnson",
+   "Alice Johnson"
+  ],
+  [
+   "Alice Johnson",
+   "Alice Johnson"
+  ],
+  [
+   "Alice Johnson",
+   "Alice Johnson"
+  ],
+  [
+   "Alice Johnson",
+   "Bob Smith"
+  ],
+  [
+   "Alice Johnson",
+   "Carol White"
+  ],
+  [
+   "Alice Johnson",
+   "David Brown"
+  ],
+  [
+   "Alice Johnson",
+   "Eve Davis"
+  ],
+  [
+   "Alice Johnson",
+   "Frank Miller"
+  ],
+  [
+   "Alice Johnson",
+   "Grace Lee"
+  ],
+  [
+   "Amy Adams",
+   null
+  ],
+  [
+   "Ben Baker",
+   null
+  ],
+  [
+   "Bob Smith",
+   "Alice Johnson"
+  ],
+  [
+   "Bob Smith",
+   "Bob Smith"
+  ],
+  [
+   "Bob Smith",
+   "Bob Smith"
+  ],
+  [
+   "Bob Smith",
+   "Bob Smith"
+  ],
+  [
+   "Bob Smith",
+   "Carol White"
+  ],
+  [
+   "Bob Smith",
+   "David Brown"
+  ],
+  [
+   "Bob Smith",
+   "Eve Davis"
+  ],
+  [
+   "Bob Smith",
+   "Frank Miller"
+  ],
+  [
+   "Carol White",
+   "Alice Johnson"
+  ],
+  [
+   "Carol White",
+   "Bob Smith"
+  ],
+  [
+   "Carol White",
+   "Carol White"
+  ],
+  [
+   "Carol White",
+   "Carol White"
+  ],
+  [
+   "Carol White",
+   "Eve Davis"
+  ],
+  [
+   "Carol White",
+   "Grace Lee"
+  ],
+  [
+   "Chloe Carter",
+   null
+  ],
+  [
+   "Dan Foster",
+   null
+  ],
+  [
+   "David Brown",
+   "Alice Johnson"
+  ],
+  [
+   "David Brown",
+   "Bob Smith"
+  ],
+  [
+   "David Brown",
+   "David Brown"
+  ],
+  [
+   "David Brown",
+   "Frank Miller"
+  ],
+  [
+   "Eve Davis",
+   "Alice Johnson"
+  ],
+  [
+   "Eve Davis",
+   "Bob Smith"
+  ],
+  [
+   "Eve Davis",
+   "Carol White"
+  ],
+  [
+   "Eve Davis",
+   "Eve Davis"
+  ],
+  [
+   "Frank Miller",
+   "Alice Johnson"
+  ],
+  [
+   "Frank Miller",
+   "Bob Smith"
+  ],
+  [
+   "Frank Miller",
+   "David Brown"
+  ],
+  [
+   "Frank Miller",
+   "Frank Miller"
+  ],
+  [
+   "Grace Lee",
+   "Alice Johnson"
+  ],
+  [
+   "Grace Lee",
+   "Carol White"
+  ],
+  [
+   "Grace Lee",
+   "Grace Lee"
+  ],
+  [
+   "Henry Wilson",
+   "Alice Johnson"
+  ],
+  [
+   "Henry Wilson",
+   "Carol White"
+  ],
+  [
+   "Henry Wilson",
+   "Grace Lee"
+  ],
+  [
+   "Iris Martinez",
+   "Bob Smith"
+  ],
+  [
+   "Iris Martinez",
+   "David Brown"
+  ],
+  [
+   "Jack Taylor",
+   "Bob Smith"
+  ],
+  [
+   "Jack Taylor",
+   "David Brown"
+  ],
+  [
+   "Kate Anderson",
+   "Alice Johnson"
+  ],
+  [
+   "Kate Anderson",
+   "Eve Davis"
+  ],
+  [
+   "Liam Thomas",
+   "Alice Johnson"
+  ],
+  [
+   "Liam Thomas",
+   "Eve Davis"
+  ],
+  [
+   "Mia Jackson",
+   "Bob Smith"
+  ],
+  [
+   "Mia Jackson",
+   "Frank Miller"
+  ],
+  [
+   "Noah Harris",
+   "Bob Smith"
+  ],
+  [
+   "Noah Harris",
+   "Frank Miller"
+  ],
+  [
+   "Olivia Clark",
+   "Carol White"
+  ],
+  [
+   "Olivia Clark",
+   "Grace Lee"
+  ],
+  [
+   "Paul Lewis",
+   null
+  ],
+  [
+   "Quinn Walker",
+   null
+  ],
+  [
+   "Rachel Hall",
+   null
+  ],
+  [
+   "Sam Allen",
+   null
+  ],
+  [
+   "Tina Young",
+   null
+  ],
+  [
+   "Uma King",
+   null
+  ],
+  [
+   "Victor Wright",
+   null
+  ],
+  [
+   "Wendy Lopez",
+   null
+  ],
+  [
+   "Xavier Hill",
+   null
+  ],
+  [
+   "Yara Scott",
+   null
+  ],
+  [
+   "Zack Green",
+   null
+  ]
+ ],
+ "order_keys": [
+  "a.name",
+  "b.name"
+ ],
  "rows": [
   "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Alice Johnson\"}",
   "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Alice Johnson\"}",

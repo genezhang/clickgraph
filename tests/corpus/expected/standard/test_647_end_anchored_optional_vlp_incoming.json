@@ -1,37 +1,135 @@
 {
+ "columns": [
+  "a.name",
+  "c"
+ ],
  "cypher": "MATCH (a:User) OPTIONAL MATCH (a)<-[:FOLLOWS*1..2]-(b:User) RETURN a.name, count(b) AS c ORDER BY a.name",
- "kinds": {},
+ "key_sequence": [
+  [
+   "Alice Johnson"
+  ],
+  [
+   "Amy Adams"
+  ],
+  [
+   "Ben Baker"
+  ],
+  [
+   "Bob Smith"
+  ],
+  [
+   "Carol White"
+  ],
+  [
+   "Chloe Carter"
+  ],
+  [
+   "Dan Foster"
+  ],
+  [
+   "David Brown"
+  ],
+  [
+   "Eve Davis"
+  ],
+  [
+   "Frank Miller"
+  ],
+  [
+   "Grace Lee"
+  ],
+  [
+   "Henry Wilson"
+  ],
+  [
+   "Iris Martinez"
+  ],
+  [
+   "Jack Taylor"
+  ],
+  [
+   "Kate Anderson"
+  ],
+  [
+   "Liam Thomas"
+  ],
+  [
+   "Mia Jackson"
+  ],
+  [
+   "Noah Harris"
+  ],
+  [
+   "Olivia Clark"
+  ],
+  [
+   "Paul Lewis"
+  ],
+  [
+   "Quinn Walker"
+  ],
+  [
+   "Rachel Hall"
+  ],
+  [
+   "Sam Allen"
+  ],
+  [
+   "Tina Young"
+  ],
+  [
+   "Uma King"
+  ],
+  [
+   "Victor Wright"
+  ],
+  [
+   "Wendy Lopez"
+  ],
+  [
+   "Xavier Hill"
+  ],
+  [
+   "Yara Scott"
+  ],
+  [
+   "Zack Green"
+  ]
+ ],
+ "order_keys": [
+  "a.name"
+ ],
  "rows": [
-  "{\"a.name\": \"Alice Johnson\", \"c\": 9.0}",
-  "{\"a.name\": \"Amy Adams\", \"c\": 0.0}",
-  "{\"a.name\": \"Ben Baker\", \"c\": 0.0}",
-  "{\"a.name\": \"Bob Smith\", \"c\": 8.0}",
-  "{\"a.name\": \"Carol White\", \"c\": 6.0}",
-  "{\"a.name\": \"Chloe Carter\", \"c\": 0.0}",
-  "{\"a.name\": \"Dan Foster\", \"c\": 0.0}",
-  "{\"a.name\": \"David Brown\", \"c\": 4.0}",
-  "{\"a.name\": \"Eve Davis\", \"c\": 4.0}",
-  "{\"a.name\": \"Frank Miller\", \"c\": 4.0}",
-  "{\"a.name\": \"Grace Lee\", \"c\": 3.0}",
-  "{\"a.name\": \"Henry Wilson\", \"c\": 3.0}",
-  "{\"a.name\": \"Iris Martinez\", \"c\": 2.0}",
-  "{\"a.name\": \"Jack Taylor\", \"c\": 2.0}",
-  "{\"a.name\": \"Kate Anderson\", \"c\": 2.0}",
-  "{\"a.name\": \"Liam Thomas\", \"c\": 2.0}",
-  "{\"a.name\": \"Mia Jackson\", \"c\": 2.0}",
-  "{\"a.name\": \"Noah Harris\", \"c\": 2.0}",
-  "{\"a.name\": \"Olivia Clark\", \"c\": 2.0}",
-  "{\"a.name\": \"Paul Lewis\", \"c\": 0.0}",
-  "{\"a.name\": \"Quinn Walker\", \"c\": 0.0}",
-  "{\"a.name\": \"Rachel Hall\", \"c\": 0.0}",
-  "{\"a.name\": \"Sam Allen\", \"c\": 0.0}",
-  "{\"a.name\": \"Tina Young\", \"c\": 0.0}",
-  "{\"a.name\": \"Uma King\", \"c\": 0.0}",
-  "{\"a.name\": \"Victor Wright\", \"c\": 0.0}",
-  "{\"a.name\": \"Wendy Lopez\", \"c\": 0.0}",
-  "{\"a.name\": \"Xavier Hill\", \"c\": 0.0}",
-  "{\"a.name\": \"Yara Scott\", \"c\": 0.0}",
-  "{\"a.name\": \"Zack Green\", \"c\": 0.0}"
+  "{\"a.name\": \"Alice Johnson\", \"c\": 9}",
+  "{\"a.name\": \"Amy Adams\", \"c\": 0}",
+  "{\"a.name\": \"Ben Baker\", \"c\": 0}",
+  "{\"a.name\": \"Bob Smith\", \"c\": 8}",
+  "{\"a.name\": \"Carol White\", \"c\": 6}",
+  "{\"a.name\": \"Chloe Carter\", \"c\": 0}",
+  "{\"a.name\": \"Dan Foster\", \"c\": 0}",
+  "{\"a.name\": \"David Brown\", \"c\": 4}",
+  "{\"a.name\": \"Eve Davis\", \"c\": 4}",
+  "{\"a.name\": \"Frank Miller\", \"c\": 4}",
+  "{\"a.name\": \"Grace Lee\", \"c\": 3}",
+  "{\"a.name\": \"Henry Wilson\", \"c\": 3}",
+  "{\"a.name\": \"Iris Martinez\", \"c\": 2}",
+  "{\"a.name\": \"Jack Taylor\", \"c\": 2}",
+  "{\"a.name\": \"Kate Anderson\", \"c\": 2}",
+  "{\"a.name\": \"Liam Thomas\", \"c\": 2}",
+  "{\"a.name\": \"Mia Jackson\", \"c\": 2}",
+  "{\"a.name\": \"Noah Harris\", \"c\": 2}",
+  "{\"a.name\": \"Olivia Clark\", \"c\": 2}",
+  "{\"a.name\": \"Paul Lewis\", \"c\": 0}",
+  "{\"a.name\": \"Quinn Walker\", \"c\": 0}",
+  "{\"a.name\": \"Rachel Hall\", \"c\": 0}",
+  "{\"a.name\": \"Sam Allen\", \"c\": 0}",
+  "{\"a.name\": \"Tina Young\", \"c\": 0}",
+  "{\"a.name\": \"Uma King\", \"c\": 0}",
+  "{\"a.name\": \"Victor Wright\", \"c\": 0}",
+  "{\"a.name\": \"Wendy Lopez\", \"c\": 0}",
+  "{\"a.name\": \"Xavier Hill\", \"c\": 0}",
+  "{\"a.name\": \"Yara Scott\", \"c\": 0}",
+  "{\"a.name\": \"Zack Green\", \"c\": 0}"
  ],
  "schema": "standard"
 }

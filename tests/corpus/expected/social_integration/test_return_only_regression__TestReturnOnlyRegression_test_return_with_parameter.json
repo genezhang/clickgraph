@@ -1,6 +1,9 @@
 {
+ "columns": [
+  "value"
+ ],
  "cypher": "RETURN 'test_value' AS value",
- "kinds": {},
+ "order_keys": null,
  "rows": [
   "{\"value\": \"test_value\"}"
  ],

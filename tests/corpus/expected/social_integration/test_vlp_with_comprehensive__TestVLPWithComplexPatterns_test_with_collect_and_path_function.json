@@ -1,6 +1,11 @@
 {
+ "columns": [
+  "u1.name",
+  "reachable",
+  "max_hops"
+ ],
  "cypher": "MATCH path = (u1:TestUser)-[:TEST_FOLLOWS*1..2]->(u2:TestUser)\n        WHERE u1.user_id = 1\n        WITH u1, COLLECT(u2.name) as reachable, MAX(length(path)) as max_hops\n        RETURN u1.name, reachable, max_hops",
- "kinds": {},
+ "order_keys": null,
  "rows": [],
  "schema": "social_integration"
 }

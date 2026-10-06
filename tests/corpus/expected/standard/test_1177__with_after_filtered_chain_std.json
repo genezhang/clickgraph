@@ -1,8 +1,11 @@
 {
+ "columns": [
+  "k"
+ ],
  "cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WHERE c.name = 'Alice Smith' WITH count(*) AS k RETURN k",
- "kinds": {},
+ "order_keys": null,
  "rows": [
-  "{\"k\": 0.0}"
+  "{\"k\": 0}"
  ],
  "schema": "standard"
 }

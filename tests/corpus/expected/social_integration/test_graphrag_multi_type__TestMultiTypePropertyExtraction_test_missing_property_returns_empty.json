@@ -1,6 +1,16 @@
 {
+ "columns": [
+  "x.name",
+  "x.nonexistent_property"
+ ],
  "cypher": "MATCH (u:User)-[:FOLLOWS*1]->(x:User)\n            WHERE u.user_id = 1\n            RETURN x.name, x.nonexistent_property\n            LIMIT 2",
- "kinds": {},
+ "full_rows": [
+  "{\"x.name\": \"Bob Smith\", \"x.nonexistent_property\": null}",
+  "{\"x.name\": \"Carol White\", \"x.nonexistent_property\": null}",
+  "{\"x.name\": \"Eve Davis\", \"x.nonexistent_property\": null}"
+ ],
+ "limit": 2,
+ "order_keys": null,
  "rows": [
   "{\"x.name\": \"Bob Smith\", \"x.nonexistent_property\": null}",
   "{\"x.name\": \"Carol White\", \"x.nonexistent_property\": null}"

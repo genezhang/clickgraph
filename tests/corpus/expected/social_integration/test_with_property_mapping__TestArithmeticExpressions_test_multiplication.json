@@ -1,8 +1,44 @@
 {
+ "columns": [
+  "doubled"
+ ],
  "cypher": "MATCH (u:User) WITH u.user_id * 2 AS doubled RETURN doubled LIMIT 1",
- "kinds": {},
+ "full_rows": [
+  "{\"doubled\": 10}",
+  "{\"doubled\": 12}",
+  "{\"doubled\": 14}",
+  "{\"doubled\": 16}",
+  "{\"doubled\": 18}",
+  "{\"doubled\": 20}",
+  "{\"doubled\": 22}",
+  "{\"doubled\": 24}",
+  "{\"doubled\": 26}",
+  "{\"doubled\": 28}",
+  "{\"doubled\": 2}",
+  "{\"doubled\": 30}",
+  "{\"doubled\": 32}",
+  "{\"doubled\": 34}",
+  "{\"doubled\": 36}",
+  "{\"doubled\": 38}",
+  "{\"doubled\": 40}",
+  "{\"doubled\": 42}",
+  "{\"doubled\": 44}",
+  "{\"doubled\": 46}",
+  "{\"doubled\": 48}",
+  "{\"doubled\": 4}",
+  "{\"doubled\": 50}",
+  "{\"doubled\": 52}",
+  "{\"doubled\": 54}",
+  "{\"doubled\": 56}",
+  "{\"doubled\": 58}",
+  "{\"doubled\": 60}",
+  "{\"doubled\": 6}",
+  "{\"doubled\": 8}"
+ ],
+ "limit": 1,
+ "order_keys": null,
  "rows": [
-  "{\"doubled\": 2.0}"
+  "{\"doubled\": 2}"
  ],
  "schema": "social_integration"
 }

@@ -1,17 +1,44 @@
 {
+ "columns": [
+  "a.is_active",
+  "b.is_active"
+ ],
  "cypher": "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN a.is_active, b.is_active LIMIT 10",
- "kinds": {},
+ "full_rows": [
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}"
+ ],
+ "limit": 10,
+ "order_keys": null,
  "rows": [
-  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}",
-  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}",
-  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}",
-  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}",
-  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}",
-  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}",
-  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}",
-  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}",
-  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}",
-  "{\"a.is_active\": 1.0, \"b.is_active\": 1.0}"
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}",
+  "{\"a.is_active\": 1, \"b.is_active\": 1}"
  ],
  "schema": "social_integration"
 }

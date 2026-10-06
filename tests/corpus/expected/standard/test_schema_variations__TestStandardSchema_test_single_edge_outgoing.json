@@ -1,10 +1,20 @@
 {
+ "columns": [
+  "neighbor.user_id",
+  "neighbor.name"
+ ],
  "cypher": "MATCH (u:User)-[:FOLLOWS]->(neighbor:User) WHERE u.user_id = 1 RETURN neighbor.user_id, neighbor.name LIMIT 10",
- "kinds": {},
+ "full_rows": [
+  "{\"neighbor.name\": \"Bob Smith\", \"neighbor.user_id\": 2}",
+  "{\"neighbor.name\": \"Carol White\", \"neighbor.user_id\": 3}",
+  "{\"neighbor.name\": \"Eve Davis\", \"neighbor.user_id\": 5}"
+ ],
+ "limit": 10,
+ "order_keys": null,
  "rows": [
-  "{\"neighbor.name\": \"Bob Smith\", \"neighbor.user_id\": 2.0}",
-  "{\"neighbor.name\": \"Carol White\", \"neighbor.user_id\": 3.0}",
-  "{\"neighbor.name\": \"Eve Davis\", \"neighbor.user_id\": 5.0}"
+  "{\"neighbor.name\": \"Bob Smith\", \"neighbor.user_id\": 2}",
+  "{\"neighbor.name\": \"Carol White\", \"neighbor.user_id\": 3}",
+  "{\"neighbor.name\": \"Eve Davis\", \"neighbor.user_id\": 5}"
  ],
  "schema": "standard"
 }
