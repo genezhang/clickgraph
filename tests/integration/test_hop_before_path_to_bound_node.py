@@ -112,31 +112,72 @@ def test_hop_between_two_carried_nodes_then_path(carried, lo, hi):
     assert _rows(q)[0]["k"] == expected
 
 
-# --- #1297: a carried node in the MIDDLE of the chain (denormalized layout) --------------------------
-# The relationship-uniqueness predicate between the two fixed hops became the ON of the WITH CTE join,
-# a join tied to nothing: 96 rows vs 16. The shape is refused (outside #1182's verified chains), as
-# on the other layouts; it must never return the wrong count.
+# --- #1297: two carried nodes in the MIDDLE of the chain ---------------------------------------------
+# `WITH c, z MATCH (a)-[:R]->(z)-[:R]->(c)-[:R*1..2]->(b)`: outside the verified chains, the uniqueness
+# predicate between the two hops became the WITH CTE's join condition, tied to nothing (96 rows vs 16 on
+# the denormalized layout; refused on the others). The chain is now verified: the CTE is tied to the
+# hop into `z` and to the path's start `c`, both hops are kept, and the hops do not reuse path edges.
+
+MID_CHAIN = {
+    "standard": ("social_integration", "User", "FOLLOWS", "user_id"),
+    "denormalized": ("denormalized_flights", "Airport", "FLIGHT", "code"),
+    "polymorphic": ("social_polymorphic", "User", "FOLLOWS", "user_id"),
+}
 
 
-def test_denormalized_carried_node_mid_chain_before_path_is_not_silently_wrong():
+def _layout_edges(schema, label, rel, key):
+    rows = execute_cypher(
+        f"MATCH (z:{label})-[:{rel}]->(c:{label}) RETURN z.{key} AS z, c.{key} AS c",
+        schema_name=schema,
+    )["results"]
+    return [(r["z"], r["c"]) for r in rows]
+
+
+def _layout_count(schema, query):
+    result = execute_cypher(query, schema_name=schema, raise_on_error=False)
+    assert "results" in result, (query, result)
+    return result["results"][0]["k"]
+
+
+@pytest.mark.parametrize("layout", MID_CHAIN)
+@pytest.mark.parametrize("carried", ["c, z", "z, c"])
+@pytest.mark.parametrize("first", ["out", "in"])
+def test_two_carried_nodes_mid_chain_before_path(layout, carried, first):
+    schema, label, rel, key = MID_CHAIN[layout]
+    edges = _layout_edges(schema, label, rel, key)
+    expected = 0
+    for z, c in edges:
+        for ai, (s, d) in enumerate(edges):
+            # (a)-[:R]->(z) uses an edge INTO z; (a)<-[:R]-(z) one OUT of z
+            if (d if first == "out" else s) != z:
+                continue
+            for hi, e in enumerate(edges):
+                if e == (z, c) and hi != ai:
+                    expected += len(_trails(edges, c, 1, 2, {ai, hi}))
+    hop = f"(a:{label})-[:{rel}]->(z)" if first == "out" else f"(a:{label})<-[:{rel}]-(z)"
     q = (
-        "MATCH (z:Airport)-[:FLIGHT]->(c:Airport) WITH c, z "
-        "MATCH (a:Airport)-[:FLIGHT]->(z)-[:FLIGHT]->(c)-[:FLIGHT*1..2]->(b:Airport) "
-        "RETURN count(*) AS k"
+        f"MATCH (z:{label})-[:{rel}]->(c:{label}) WITH {carried} "
+        f"MATCH {hop}-[:{rel}]->(c)-[:{rel}*1..2]->(b:{label}) RETURN count(*) AS k"
     )
-    result = execute_cypher(q, schema_name="denormalized_flights", raise_on_error=False)
-    if "results" in result:
-        rows = execute_cypher(
-            "MATCH (z:Airport)-[:FLIGHT]->(c:Airport) RETURN z.code AS z, c.code AS c",
-            schema_name="denormalized_flights",
-        )["results"]
-        edges = [(r["z"], r["c"]) for r in rows]
-        expected = 0
-        for zi, (z, c) in enumerate(edges):
-            for ai, (a, z2) in enumerate(edges):
-                if z2 != z:
-                    continue
-                for hi, (z3, c3) in enumerate(edges):
-                    if (z3, c3) == (z, c) and hi != ai:
-                        expected += len(_trails(edges, c, 1, 2, {ai, hi}))
-        assert result["results"][0]["k"] == expected
+    assert _layout_count(schema, q) == expected
+
+
+@pytest.mark.parametrize("layout", ["standard", "polymorphic"])
+def test_path_from_carried_node_behind_an_incoming_carried_hop(layout):
+    # `(a)-[:R]->(c)<-[:R]-(z)-[:R*1..2]->(b)`: the path starts at `z`, which the CTE `c_z` is not
+    # named after; its start is tied all the same (174 rows vs 61 standard before the tie).
+    schema, label, rel, key = MID_CHAIN[layout]
+    edges = _layout_edges(schema, label, rel, key)
+    expected = 0
+    for z, c in edges:
+        for ai, (s, d) in enumerate(edges):
+            if d != c:
+                continue
+            for hi, e in enumerate(edges):
+                if e == (z, c) and hi != ai:
+                    expected += len(_trails(edges, z, 1, 2, {ai, hi}))
+    q = (
+        f"MATCH (z:{label})-[:{rel}]->(c:{label}) WITH c, z "
+        f"MATCH (a:{label})-[:{rel}]->(c)<-[:{rel}]-(z)-[:{rel}*1..2]->(b:{label}) RETURN count(*) AS k"
+    )
+    assert _layout_count(schema, q) == expected

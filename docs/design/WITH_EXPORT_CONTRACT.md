@@ -242,6 +242,7 @@ Remaining (filed):
 - [x] #1283 (root B in WITH bodies): see §3.2
 - [x] #1287: a path ending at a comma-bound or WITH-carried node expanded as a hop; hop-vs-path uniqueness in post-WITH and comma scopes (#1203 partial). #1294 fixed (a hop between two carried nodes is kept).
 - [x] #1291: a path out of the END of an earlier path across a WITH exported the wrong endpoint (the later path's VLP entry in `PlanCtx` shadowed the earlier one's); the context entry is used only for the same path.
+- [x] #1297: two carried nodes mid-chain before a path translate (allowlist: one carried fixed hop anywhere in a path chain; the CTE join ties the carried path endpoint by name-independent lookup; carried labels published for the #1175 guard). Polymorphic hop from a fresh node into a carried one before a path is #1300.
 - [ ] S5 R6/R1 cleanup
 - [ ] S6 FK-side join columns (#1279 residue)
 
