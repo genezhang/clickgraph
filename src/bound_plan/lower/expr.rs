@@ -179,7 +179,12 @@ impl Lowerer<'_> {
     ) -> Result<RenderExpr, LowerError> {
         let same_kind = match (self.scans.get(&a), self.scans.get(&b)) {
             (Some(Scan::Node { label: x, .. }), Some(Scan::Node { label: y, .. })) => x == y,
-            (Some(Scan::Rel { rel_type: x, .. }), Some(Scan::Rel { rel_type: y, .. })) => x == y,
+            // One type can have several edge definitions (one per endpoint
+            // label pair, each its own table): only rows of the same
+            // definition can be the same relationship.
+            (Some(Scan::Rel { schema: x, .. }), Some(Scan::Rel { schema: y, .. })) => {
+                std::ptr::eq(*x, *y)
+            }
             // An element that matches nothing: the relation has no rows.
             (Some(Scan::Impossible), _) | (_, Some(Scan::Impossible)) => {
                 return Ok(RenderExpr::Literal(Literal::Null))
@@ -316,7 +321,8 @@ impl Lowerer<'_> {
         // count(a) / count(DISTINCT a) count identities.
         if let (Some(v), "count") = (arg.and_then(|a| self.entity(a)), name.as_str()) {
             let id = match self.identity_columns(v) {
-                None => return Ok(RenderExpr::Literal(Literal::Integer(0))),
+                // An element that matches nothing: no values to count.
+                None => return Ok(aggregate_constant(RenderExpr::Literal(Literal::Integer(0)))),
                 Some(cols) if cols.len() == 1 || !distinct => col(v, &cols[0]),
                 Some(_) => return unsupported("count(DISTINCT) of a composite identity"),
             };
@@ -356,10 +362,25 @@ impl Lowerer<'_> {
             };
             return Ok(aggregate_constant(value));
         }
-        Ok(RenderExpr::AggregateFnCall(AggregateFnCall {
+        let call = RenderExpr::AggregateFnCall(AggregateFnCall {
             name: f.name.clone(),
             args,
-        }))
+        });
+        // Cypher: `sum` of no values is 0, `collect` of none is []. ClickHouse
+        // returns NULL when the argument is always NULL (`Nullable(Nothing)`:
+        // `sum(a.unmapped + 1)`); with any value the result is unchanged.
+        let empty = match name.as_str() {
+            "sum" => Some(RenderExpr::Literal(Literal::Integer(0))),
+            "collect" => Some(RenderExpr::List(Vec::new())),
+            _ => None,
+        };
+        Ok(match empty {
+            Some(e) => RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: "coalesce".to_string(),
+                args: vec![call, e],
+            }),
+            None => call,
+        })
     }
 }
 

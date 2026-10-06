@@ -431,3 +431,57 @@ fn the_bound_plan_does_not_use_the_legacy_composition() {
         }
     }
 }
+
+#[test]
+fn sum_and_collect_of_always_null_expressions() {
+    // ClickHouse: NULL for an argument typed Nullable(Nothing); Neo4j: 0, [].
+    has(
+        "MATCH (a:User) RETURN sum(a.nope + 1) AS s, collect(toUpper(a.nope)) AS l, sum(a.age) AS t",
+        &[
+            r#"coalesce(sum(NULL + 1), 0) AS "s""#,
+            r#"coalesce(groupArray(upperUTF8(NULL)), []) AS "l""#,
+            r#"coalesce(sum(v0.age), 0) AS "t""#,
+        ],
+    );
+    // count of an element that matches nothing is still one row: 0.
+    has(
+        "MATCH (x:Nope) RETURN count(x) AS c, count(DISTINCT x) AS d",
+        &[
+            r#"CASE WHEN count(*) >= 0 THEN 0 ELSE 0 END AS "c""#,
+            r#"CASE WHEN count(*) >= 0 THEN 0 ELSE 0 END AS "d""#,
+        ],
+    );
+}
+
+#[test]
+fn relationships_of_one_type_in_different_tables_are_never_equal() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_two_tables
+graph_schema:
+  nodes:
+    - { label: U, database: db, table: u, node_id: id, property_mappings: { id: id } }
+    - { label: P, database: db, table: p, node_id: id, property_mappings: { id: id } }
+  edges:
+    - { type: K, database: db, table: ku, from_id: a, to_id: b, edge_id: id, from_node: U, to_node: U, property_mappings: {} }
+    - { type: K, database: db, table: kp, from_id: a, to_id: b, edge_id: id, from_node: U, to_node: P, property_mappings: {} }
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let q = |w: &str| {
+        squash(
+            &translate_bound_plan(
+                &format!(
+                    "MATCH (a:U)-[r1:K]->(b:U), (c:U)-[r2:K]->(p:P) WHERE {w} RETURN count(*)"
+                ),
+                &schema,
+                &ReadOptions::default(),
+            )
+            .unwrap(),
+        )
+    };
+    assert!(q("r1 = r2").contains("WHERE false"), "{}", q("r1 = r2"));
+    assert!(q("r1 <> r2").contains("WHERE true"), "{}", q("r1 <> r2"));
+}

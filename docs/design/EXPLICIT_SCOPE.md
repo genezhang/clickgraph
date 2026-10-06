@@ -1081,7 +1081,7 @@ slice that will handle it.
       `count(DISTINCT a)`, `a = b` / `a <> b` (different labels or types are
       never equal) and `a IS [NOT] NULL`. Anywhere else it is the entity's
       value, which needs the result shape, so it is not lowered.
-    - An aggregate of no values (an unmapped property, an element that
+    - An aggregate of the NULL literal (an unmapped property, an element that
       matches nothing) is folded to Cypher's value (`collect` → `[]`, `sum` /
       `count` → 0, `min` / `max` / `avg` → NULL) and kept an aggregate
       (`CASE WHEN count(*) >= 0 …`), so the query still returns one row (one
@@ -1107,7 +1107,13 @@ slice that will handle it.
       ClickHouse error when other scans existed; `collect` / `sum` of no
       values gave NULL; `ORDER BY` / `GROUP BY` of a constant read as a
       column position; identity comparison ignored labels; a node nested in
-      an expression was returned as its id.
+      an expression was returned as its id. A second review found three more,
+      also fixed: relationships of one type in different tables compared
+      equal (now: same edge definition); `count(x)` of an element that
+      matches nothing gave no row; `sum` / `collect` of an expression that is
+      always NULL (`sum(a.unmapped + 1)`) gave NULL (now `coalesce(sum(..), 0)`
+      / `coalesce(collect(..), [])`). Pre-existing in both paths: `avg` /
+      `stDev` of no values give `nan` in ClickHouse where Neo4j gives NULL.
     - Acceptance (Neo4j oracle, `social_integration` and `standard`, switch
       off vs on): 82 queries take the new path; 79 equal Neo4j, 2 are
       rejected by Neo4j (`exists(prop)`), 1 is the known UInt8-vs-`true`
