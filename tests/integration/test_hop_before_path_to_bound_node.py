@@ -89,3 +89,24 @@ def test_hop_into_carried_node_then_path():
         "MATCH (n0:User)-[:FOLLOWS]->(c)-[:FOLLOWS*1..2]->(n2:User) RETURN count(*) AS k"
     )
     assert _rows(q)[0]["k"] == expected
+
+
+# --- #1294: a hop BETWEEN two nodes carried by the same WITH -----------------------------------------
+# Both endpoints are CTE-backed, so the hop's join was cleared as stale: the MATCH no longer required
+# the edge (111 rows vs 99). It is now kept, tied to the carried `z` and to the path's start `c`.
+
+
+@pytest.mark.parametrize("carried", ["c, z", "z, c"])
+@pytest.mark.parametrize("lo, hi", [(1, 2), (2, 3)])
+def test_hop_between_two_carried_nodes_then_path(carried, lo, hi):
+    edges = _edges()
+    expected = 0
+    for z, c in edges:
+        for i, (s, d) in enumerate(edges):
+            if (s, d) == (z, c):
+                expected += len(_trails(edges, c, lo, hi, {i}))
+    q = (
+        f"MATCH (z:User)-[:FOLLOWS]->(c:User) WITH {carried} "
+        f"MATCH (z)-[:FOLLOWS]->(c)-[:FOLLOWS*{lo}..{hi}]->(b:User) RETURN count(*) AS k"
+    )
+    assert _rows(q)[0]["k"] == expected

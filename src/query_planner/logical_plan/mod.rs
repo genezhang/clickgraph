@@ -2266,13 +2266,21 @@ fn supported_chain(
     let [bottom] = bottoms.as_slice() else {
         return false;
     };
-    // ... and only ONE carried node: a hop between two carried nodes is a different shape.
+    // ... and only ONE carried node, except (#1294, path chains only) the two ends of the
+    // chain's first FIXED hop: `WITH c, z MATCH (z)-[:R]->(c)-[:R*1..2]->(b)`. Its right end
+    // then also starts the next hop (a second slot).
     let carried_in_chain: std::collections::HashSet<&String> = rels
         .iter()
         .flat_map(|r| [&r.left_connection, &r.right_connection])
         .filter(|a| is_carried(a))
         .collect();
-    if carried_in_chain.len() > 1 {
+    let carried_bottom_hop = want_vlp
+        && carried_in_chain.len() == 2
+        && bottom.variable_length.is_none()
+        && bottom.left_connection != bottom.right_connection
+        && is_carried(&bottom.left_connection)
+        && is_carried(&bottom.right_connection);
+    if carried_in_chain.len() > 1 && !carried_bottom_hop {
         return false;
     }
     for gr in &rels {
@@ -2284,7 +2292,10 @@ fn supported_chain(
                     .flat_map(|r| [&r.left_connection, &r.right_connection])
                     .filter(|a| *a == alias)
                     .count();
-                if !in_bottom || slots != 1 {
+                // The shared end of a carried bottom hop also starts the next hop.
+                let shared_end = carried_bottom_hop && *alias == bottom.right_connection;
+                let allowed = if shared_end { 2 } else { 1 };
+                if !(in_bottom || shared_end) || slots != allowed {
                     return false;
                 }
             }

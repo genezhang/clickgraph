@@ -150,7 +150,13 @@ pub(super) fn guards(plan: &LogicalPlan) -> Vec<RenderExpr> {
     for gr in std::iter::once(path).chain(hops.iter().copied()) {
         let Ok(ctx) = super::cte_extraction::recreate_pattern_schema_context(gr, &schema, None)
         else {
-            return vec![];
+            // #1294: a hop between two WITH-carried nodes has no endpoint labels left to
+            // rebuild its context from. It has the path's single relationship type (checked
+            // above), so the path's verdict on the layout stands for it.
+            if std::ptr::eq(gr, path) {
+                return vec![];
+            }
+            continue;
         };
         if !matches!(
             ctx.join_strategy,

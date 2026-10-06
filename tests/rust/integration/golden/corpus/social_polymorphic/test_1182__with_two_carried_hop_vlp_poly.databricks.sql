@@ -38,3 +38,4 @@ SELECT
 FROM vlp_a_b AS t
 INNER JOIN with_c_z_cte_0 AS c_z ON 1 = 1
 INNER JOIN brahmand.interactions AS t1 ON t1.from_id = c_z.p1_c_user_id AND t1.to_id = t.start_id AND t1.interaction_type = 'FOLLOWS' AND t1.from_type = 'User' AND t1.to_type = 'User'
+WHERE NOT array_contains(t.path_edges, struct(t1.from_id, t1.to_id, t1.interaction_type, t1.timestamp))

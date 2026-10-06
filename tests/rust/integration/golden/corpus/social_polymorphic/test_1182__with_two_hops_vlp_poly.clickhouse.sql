@@ -39,4 +39,4 @@ FROM vlp_a_b AS t
 INNER JOIN with_c_cte_0 AS c ON 1 = 1
 INNER JOIN brahmand.interactions AS t1 ON t1.from_id = c.p1_c_user_id AND t1.interaction_type = 'FOLLOWS' AND t1.from_type = 'User' AND t1.to_type = 'User'
 INNER JOIN brahmand.interactions AS t2 ON t2.from_id = t1.to_id AND t2.to_id = t.start_id AND t2.interaction_type = 'FOLLOWS' AND t2.from_type = 'User' AND t2.to_type = 'User'
-WHERE (t2.from_id <> t1.from_id OR t2.to_id <> t1.to_id OR t2.interaction_type <> t1.interaction_type OR t2.timestamp <> t1.timestamp)
+WHERE ((NOT has(t.path_edges, tuple(t2.from_id, t2.to_id, t2.interaction_type, t2.timestamp)) AND NOT has(t.path_edges, tuple(t1.from_id, t1.to_id, t1.interaction_type, t1.timestamp))) AND (t2.from_id <> t1.from_id OR t2.to_id <> t1.to_id OR t2.interaction_type <> t1.interaction_type OR t2.timestamp <> t1.timestamp))
