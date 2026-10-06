@@ -2,6 +2,7 @@
 //!
 //! These tests verify that components work together correctly with real dependencies.
 
+mod binder_corpus;
 mod browser_expand_tests;
 mod browser_interaction_tests;
 pub(crate) mod browser_test_schemas;

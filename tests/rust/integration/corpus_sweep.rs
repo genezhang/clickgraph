@@ -74,12 +74,12 @@ struct CorpusEntry {
 }
 
 #[derive(Debug, serde::Deserialize)]
-struct SchemaMapEntry {
+pub(crate) struct SchemaMapEntry {
     yaml: String,
     subschema: Option<String>,
 }
 
-fn corpus_root() -> String {
+pub(crate) fn corpus_root() -> String {
     format!("{}/tests/corpus", env!("CARGO_MANIFEST_DIR"))
 }
 
@@ -93,7 +93,7 @@ fn load_entries() -> Vec<CorpusEntry> {
         .collect()
 }
 
-fn load_schema_map() -> std::collections::HashMap<String, SchemaMapEntry> {
+pub(crate) fn load_schema_map() -> std::collections::HashMap<String, SchemaMapEntry> {
     let path = format!("{}/schema_map.json", corpus_root());
     let content = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
     serde_json::from_str(&content).unwrap_or_else(|e| panic!("parse {path}: {e}"))
@@ -125,7 +125,7 @@ fn load_nondeterministic_set() -> HashSet<(String, String)> {
 /// `sql_golden_tests.rs` covers, so this loader is more general than that
 /// file's (reusing it here would need a `SchemaConfigFile`-aware rewrite of
 /// that helper anyway).
-fn load_schema_entry(entry: &SchemaMapEntry) -> GraphSchema {
+pub(crate) fn load_schema_entry(entry: &SchemaMapEntry) -> GraphSchema {
     let yaml_path = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), entry.yaml);
     let content =
         std::fs::read_to_string(&yaml_path).unwrap_or_else(|e| panic!("read {yaml_path}: {e}"));
