@@ -296,8 +296,13 @@ impl ConnectionConfig {
     /// `X-ClickHouse-Summary`) apply identical settings — any drift would make
     /// the two execution paths return different results.
     fn standard_options(max_cte_depth: u32, role: Option<&str>) -> Vec<(String, String)> {
-        let mut opts = vec![
-            ("join_use_nulls".to_string(), "1".to_string()),
+        // Result-correctness settings first (shared with chdb and SQL-only
+        // output via `portable_sql`), then limits and formats.
+        let mut opts: Vec<(String, String)> = crate::sql_generator::SEMANTIC_SESSION_SETTINGS
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        opts.extend([
             ("allow_experimental_json_type".to_string(), "1".to_string()),
             (
                 "input_format_binary_read_json_as_string".to_string(),
@@ -316,7 +321,7 @@ impl ConnectionConfig {
             ("max_query_size".to_string(), "10485760".to_string()), // 10MB
             // Large VLP SQL also creates large ASTs; default 50000 is too small.
             ("max_ast_elements".to_string(), "1000000".to_string()), // 1M
-        ];
+        ]);
         if let Some(role_name) = role {
             opts.push(("role".to_string(), role_name.to_string()));
         }

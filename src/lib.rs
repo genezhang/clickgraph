@@ -34,6 +34,7 @@ pub mod query_planner;
 pub mod render_plan;
 pub mod server;
 pub mod sql_generator;
+pub mod translate;
 
 /// Deprecated path for the ClickHouse SQL emitter — the code now lives at
 /// `crate::sql_generator::emitters::clickhouse` (Phase 0.3 of the

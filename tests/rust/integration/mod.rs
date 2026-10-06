@@ -19,5 +19,6 @@ mod skip_offset_tests;
 mod sql_generation_handler_comment_tests;
 mod sql_golden_tests;
 mod stats_anchor_golden_tests;
+mod translate_seam_endpoint_tests;
 mod with_cte_column_refs;
 mod with_where_having_tests;

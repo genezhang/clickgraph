@@ -110,7 +110,11 @@ impl<'db> Connection<'db> {
             with_query_context(context, async move {
                 set_current_dialect(dialect);
                 set_current_schema(Arc::clone(&schema));
-                cypher_to_sql(&cypher, &schema, 100).map_err(EmbeddedError::Query)
+                // #1314: SQL handed to the caller (for running elsewhere)
+                // carries the semantic session settings in the statement.
+                cypher_to_sql(&cypher, &schema, 100)
+                    .map(|sql| clickgraph::sql_generator::portable_sql(&sql, dialect))
+                    .map_err(EmbeddedError::Query)
             })
             .await
         })

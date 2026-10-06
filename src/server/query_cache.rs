@@ -141,6 +141,11 @@ pub struct QueryCacheKey {
     pub schema_name: String,
     /// Tenant ID and view parameters affect SQL generation for parameterized views
     pub view_scope: String,
+    /// The endpoint whose SQL this entry holds. Endpoints that translate the
+    /// same text differently (or return it instead of executing it) must not
+    /// share entries: `/query/sql` once cached analyzer-less SQL under the key
+    /// `/query` then executed.
+    pub route: &'static str,
 }
 
 impl QueryCacheKey {
@@ -186,7 +191,14 @@ impl QueryCacheKey {
             normalized_query: normalized,
             schema_name: schema_name.to_string(),
             view_scope,
+            route: "query",
         }
+    }
+
+    /// The same key, scoped to another endpoint's entries.
+    pub fn for_route(mut self, route: &'static str) -> Self {
+        self.route = route;
+        self
     }
 }
 
@@ -505,6 +517,16 @@ mod tests {
             ReplanOption::strip_prefix("  CYPHER replan=skip  MATCH (n) RETURN n  "),
             "MATCH (n) RETURN n"
         );
+    }
+
+    #[test]
+    fn test_cache_key_route_separates_endpoints() {
+        // `/query/sql` returns SQL instead of executing it and must never share
+        // entries with `/query`, even for the same text and scope.
+        let query = QueryCacheKey::new("MATCH (n) RETURN n", "s");
+        let sql_endpoint = QueryCacheKey::new("MATCH (n) RETURN n", "s").for_route("query_sql");
+        assert_eq!(query.route, "query");
+        assert_ne!(query, sql_endpoint);
     }
 
     #[test]

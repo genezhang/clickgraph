@@ -310,6 +310,13 @@ pub struct QueryContext {
     /// row membership, PRIORITIES.md §1.7).
     pub table_stats: Option<Arc<crate::graph_catalog::table_stats::TableStatsSnapshot>>,
 
+    /// Last generated anonymous alias number (`t{N}`) and CTE number
+    /// (`cte{N}`) for THIS query. Per query, so that one request resetting its
+    /// counters can never rewind another concurrent request's counters
+    /// mid-translation (which re-issues an alias already used in that query).
+    pub alias_counter: u32,
+    pub cte_counter: u32,
+
     /// #596: Cypher aliases bound in the OUTER (enclosing) query scope at the
     /// point an `EXISTS { ... }` pattern predicate is rendered. Populated from
     /// the outer plan's live node/relationship aliases (see
@@ -411,6 +418,19 @@ where
     QUERY_CONTEXT.scope(RefCell::new(context), f).await
 }
 
+/// Whether the caller is inside a query context ([`with_query_context`] or
+/// [`with_query_context_sync`]).
+pub fn has_query_context() -> bool {
+    QUERY_CONTEXT.try_with(|_| ()).is_ok()
+}
+
+/// Synchronous counterpart of [`with_query_context`]: run `f` with `context`
+/// as the task-local query context (for synchronous entry points such as
+/// `translate::translate_read` called by library code without one).
+pub fn with_query_context_sync<R>(context: QueryContext, f: impl FnOnce() -> R) -> R {
+    QUERY_CONTEXT.sync_scope(RefCell::new(context), f)
+}
+
 // ============================================================================
 // DIALECT ACCESSORS
 // ============================================================================
@@ -422,6 +442,41 @@ pub fn get_current_dialect() -> SqlDialect {
     QUERY_CONTEXT
         .try_with(|ctx| ctx.borrow().dialect)
         .unwrap_or_default()
+}
+
+/// Which per-query counter to advance (see [`next_query_counter`]).
+#[derive(Debug, Clone, Copy)]
+pub enum QueryCounter {
+    Alias,
+    Cte,
+}
+
+/// Advance this query's counter and return the new value (1, 2, ...), or
+/// `None` outside a query context (callers then use their process-global
+/// fallback, as unit tests without a context always did).
+pub fn next_query_counter(counter: QueryCounter) -> Option<u32> {
+    QUERY_CONTEXT
+        .try_with(|ctx| {
+            let mut ctx = ctx.borrow_mut();
+            let slot = match counter {
+                QueryCounter::Alias => &mut ctx.alias_counter,
+                QueryCounter::Cte => &mut ctx.cte_counter,
+            };
+            *slot += 1;
+            *slot
+        })
+        .ok()
+}
+
+/// Restart this query's counters. Returns false outside a query context.
+pub fn reset_query_counters() -> bool {
+    QUERY_CONTEXT
+        .try_with(|ctx| {
+            let mut ctx = ctx.borrow_mut();
+            ctx.alias_counter = 0;
+            ctx.cte_counter = 0;
+        })
+        .is_ok()
 }
 
 /// Set the SQL dialect for the current query (typically once at entry).

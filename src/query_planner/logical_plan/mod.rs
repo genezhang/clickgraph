@@ -323,13 +323,17 @@ pub fn evaluate_cypher_statement(
     }
 }
 
-/// Global counter for generating simple, human-readable aliases like t1, t2, t3...
+/// Process-global fallback for generated aliases, used only outside a query
+/// context (unit tests). Inside one, the counter is per query
+/// (`QueryContext::alias_counter`).
 static ALIAS_COUNTER: AtomicU32 = AtomicU32::new(1);
 
 /// Generate a simple, human-readable alias for anonymous nodes/edges.
 /// Returns "t1", "t2", "t3", etc. Much easier to read than UUID hex strings!
 pub fn generate_id() -> String {
-    let n = ALIAS_COUNTER.fetch_add(1, Ordering::SeqCst);
+    use crate::server::query_context::{next_query_counter, QueryCounter};
+    let n = next_query_counter(QueryCounter::Alias)
+        .unwrap_or_else(|| ALIAS_COUNTER.fetch_add(1, Ordering::SeqCst));
     format!("t{}", n)
 }
 
@@ -357,19 +361,29 @@ pub fn reset_alias_counter() {
     ALIAS_COUNTER.store(1, Ordering::SeqCst);
 }
 
-/// Reset all global counters for deterministic SQL generation.
-/// Call at the start of each query to ensure identical input produces identical output.
+/// Restart the generated-alias and CTE counters for deterministic SQL.
+/// Called at the start of each translation (`translate::translate_read`).
+///
+/// Inside a query context this resets only THAT query's counters. The
+/// process-global fallbacks are reset only when there is no context: a global
+/// reset used to rewind the counters of other requests being translated
+/// concurrently, so the same `t{N}` could be issued twice in one query.
 pub fn reset_all_counters() {
-    ALIAS_COUNTER.store(1, Ordering::SeqCst);
-    CTE_COUNTER.store(1, Ordering::SeqCst);
+    if !crate::server::query_context::reset_query_counters() {
+        ALIAS_COUNTER.store(1, Ordering::SeqCst);
+        CTE_COUNTER.store(1, Ordering::SeqCst);
+    }
 }
 
+/// Process-global fallback for CTE names outside a query context.
 static CTE_COUNTER: AtomicU32 = AtomicU32::new(1);
 
 /// Generate a simple, human-readable CTE name.
 /// Returns "cte1", "cte2", "cte3", etc. Much shorter than UUID strings!
 pub fn generate_cte_id() -> String {
-    let n = CTE_COUNTER.fetch_add(1, Ordering::SeqCst);
+    use crate::server::query_context::{next_query_counter, QueryCounter};
+    let n = next_query_counter(QueryCounter::Cte)
+        .unwrap_or_else(|| CTE_COUNTER.fetch_add(1, Ordering::SeqCst));
     format!("cte{}", n)
 }
 

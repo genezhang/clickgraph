@@ -201,7 +201,10 @@ class TestDenormalizedPropertyAccess:
         sql = result.get('generated_sql', '')
         
         # Check SQL - should NOT contain JOIN (all data in flights table)
-        assert 'JOIN' not in sql.upper(), f"SQL should not contain JOINs for denormalized query: {sql}"
+        # Match the JOIN keyword, not substrings such as the trailing
+        # `SETTINGS join_use_nulls = 1` that SQL-only output carries (#1314).
+        import re
+        assert not re.search(r'\bJOIN\b', sql.upper()), f"SQL should not contain JOINs for denormalized query: {sql}"
         
         # Should query only flights table
         assert 'flights' in sql.lower()

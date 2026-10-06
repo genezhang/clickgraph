@@ -752,9 +752,15 @@ RETURN b.name, b.name IS NULL, b.age`:
 
 Rules for the new path:
 1. **The setting belongs to the SQL contract, not to the connection.**
-   - ClickHouse-dialect SQL from the new path ends with
-     `SETTINGS join_use_nulls = 1`. The setting goes through `Dialect`;
-     Databricks/Spark has standard NULL semantics and emits nothing.
+   - There is one list, `sql_generator::SEMANTIC_SESSION_SETTINGS`. The
+     server connection pool, the `clickhouse` client and the chdb executor
+     all apply it at session level.
+   - **SQL handed to a user** carries the list in the statement itself:
+     `sql_generator::portable_sql` appends `SETTINGS join_use_nulls = 1` for
+     ClickHouse and leaves Databricks/Spark unchanged. This covers HTTP
+     `sql_only`, `/query/sql`, and embedded `query_to_sql`, which serves
+     `cg sql`, FFI, Go and Python.
+   - Executed SQL stays exactly what the emitter produced (done in S0.5).
    - Verified: a trailing `SETTINGS join_use_nulls = 1` applies to the whole
      statement, including recursive and WITH CTEs.
    - That makes the SQL correct wherever it runs, including the documented
@@ -866,7 +872,7 @@ The default stays `off` until slice 3 is accepted, then becomes `on`.
 | # | Slice | Acceptance | Closes |
 |---|---|---|---|
 | 0 | This doc + PRIORITIES P-4c | review | — |
-| 0.5 | **One translate seam.** ClickHouse SQL carries `SETTINGS join_use_nulls = 1` (§4.15); this is the only intended SQL-text change. Today there are about ten entry points that each call `evaluate_read_statement` + `to_render_plan_with_ctx`: `server/handlers.rs:1459, 2109`, `sql_generation_handler.rs:338`, `bolt_protocol/handler.rs:2374, 2670, 3108`, and `sql_generator/emitters/clickhouse/mod.rs:82, 131, 165`, which serve embedded, FFI, Go, Python and `cg`. All of them go through one function that returns SQL plus `ResultShape`. The query cache key includes the route. `$param` templating, `USE`, multi-schema selection and the depth guards are applied in the seam. | SQL byte-identical except the trailing `SETTINGS` clause; SQL-only output executed on a session without the setting returns NULLs | #1314 |
+| 0.5 | **One translate seam.** SQL handed to users carries `SETTINGS join_use_nulls = 1` (§4.15); executed SQL is unchanged. Today there are about ten entry points that each call `evaluate_read_statement` + `to_render_plan_with_ctx`: `server/handlers.rs:1459, 2109`, `sql_generation_handler.rs:338`, `bolt_protocol/handler.rs:2374, 2670, 3108`, and `sql_generator/emitters/clickhouse/mod.rs:82, 131, 165`, which serve embedded, FFI, Go, Python and `cg`. All of them go through one function that returns SQL plus `ResultShape`. The query cache key includes the route. `$param` templating, `USE`, multi-schema selection and the depth guards are applied in the seam. | executed SQL byte-identical (corpus and goldens unchanged); SQL-only output executed on a session without the setting returns NULLs | #1314 |
 | 1 | Oracle harness (§6.1–6.2) + result goldens for the corpus on the standard layout | goldens generated; **existing engine scored** (gives the baseline list of wrong answers) | — |
 | 2 | Clause-list parser (§4.2) with the legacy AST derived from it | legacy SQL goldens byte-identical; new shapes parse | parse gaps |
 | 3 | Binder + scope + label inference, no SQL (`cg bind` debug output) | binds the whole corpus or reports `Unsupported`; label parity with TypeInference; name-resolution tests incl. re-binding after WITH, shadowing, ORDER BY visibility | — |
@@ -926,7 +932,25 @@ slice that will handle it.
 ## 10. Checklist
 
 - [ ] S0 design doc + P-4c
-- [ ] S0.5 one translate seam
+- [x] S0.5 one translate seam (`src/translate.rs`).
+  - Every read entry point goes through `translate_read`: HTTP `/query`
+    and `/query/sql`, Bolt, both `apoc.export`/`COPY TO` inner queries, the
+    server export helper, embedded `cypher_to_sql*`, and the corpus and
+    golden harnesses.
+  - SQL-only outputs carry `SETTINGS join_use_nulls = 1` (#1314).
+  - It fixed three defects found on the way:
+    - The generated-alias and CTE counters were process-global and reset by
+      every HTTP and Bolt request, so a concurrent request could rewind
+      another query's counter mid-translation and re-issue the same `t{N}`.
+      They are now per query.
+    - `/query/sql` skipped the analyzer passes and the `id()` rewrite.
+    - `/query/sql` shared `/query`'s cache key (same text, no tenant or
+      view params), so its SQL could be served as `/query`'s cached SQL.
+      It now has its own route-scoped key that includes the view parameters.
+    - `/query/sql` and the HTTP `apoc.export` path translated with no query
+      context, so their counters, schema, stats and dialect came from
+      process-global state. They now set up a context like `/query` does,
+      and `translate_read` opens one for any caller without one.
 - [ ] S1 Neo4j oracle + result goldens (standard)
 - [ ] S2 clause-list parser
 - [ ] S3 binder + scope + labels

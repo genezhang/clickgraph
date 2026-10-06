@@ -26,10 +26,9 @@ use std::sync::Arc;
 use clickgraph::{
     graph_catalog::{config::GraphSchemaConfig, graph_schema::GraphSchema},
     open_cypher_parser::{parse_cypher_statement, strip_comments},
-    query_planner::evaluate_read_statement,
-    render_plan::{logical_plan_to_render_plan_with_ctx, ToSql},
     server::query_context::{set_current_schema, with_query_context, QueryContext},
     sql_generator::SqlDialect,
+    translate::{translate_read, ReadOptions, TranslateError},
 };
 
 /// A schema variation. Each variation loads its own YAML and its goldens live
@@ -2069,9 +2068,8 @@ fn load_schema(yaml_path: &str) -> GraphSchema {
 /// Render through the PRODUCTION path: `to_render_plan_with_ctx` with the
 /// planner's `PlanCtx`, exactly as `cypher_to_sql` (server / cg / embedded)
 /// does — the single, production-faithful render function for the golden net
-/// (issue #459). It is step-for-step equivalent to `Connection::query_to_sql`:
-/// parse → `evaluate_read_statement` → `logical_plan_to_render_plan_with_ctx`
-/// (passing the planner's `PlanCtx`) → `to_sql()`.
+/// (issue #459). Since P-4c S0.5 it calls the production read seam
+/// (`translate_read`) that every entry point uses.
 ///
 /// Before #459 the harness rendered via the ctx-less `logical_plan_to_render_plan`
 /// wrapper (no `PlanCtx`), which has NO production callers and demonstrably
@@ -2091,13 +2089,7 @@ async fn render(schema: &GraphSchema, cypher: &str, dialect: SqlDialect) -> Stri
         let cleaned = strip_comments(&cypher);
         let (_rest, statement) =
             parse_cypher_statement(&cleaned).unwrap_or_else(|e| panic!("parse: {e:?}"));
-        let (logical_plan, plan_ctx) =
-            evaluate_read_statement(statement, &schema, None, None, None)
-                .unwrap_or_else(|e| panic!("plan: {e:?}"));
-        let render_plan =
-            logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx))
-                .unwrap_or_else(|e| panic!("render: {e:?}"));
-        render_plan.to_sql()
+        seam_translate(statement, &schema).unwrap_or_else(|e| panic!("{e}"))
     })
     .await
 }
@@ -2120,15 +2112,31 @@ async fn try_render(
         let cleaned = strip_comments(&cypher);
         let (_rest, statement) =
             parse_cypher_statement(&cleaned).map_err(|e| format!("parse: {e:?}"))?;
-        let (logical_plan, plan_ctx) =
-            evaluate_read_statement(statement, &schema, None, None, None)
-                .map_err(|e| format!("plan: {e:?}"))?;
-        let render_plan =
-            logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx))
-                .map_err(|e| format!("render: {e:?}"))?;
-        Ok(render_plan.to_sql())
+        seam_translate(statement, &schema)
     })
     .await
+}
+
+/// The production read seam (`clickgraph::translate::translate_read`, which
+/// every entry point calls), with this harness's error spelling
+/// (`plan: <Debug>` / `render: <Debug>`).
+fn seam_translate(
+    statement: clickgraph::open_cypher_parser::ast::CypherStatement<'_>,
+    schema: &GraphSchema,
+) -> Result<String, String> {
+    translate_read(
+        statement,
+        schema,
+        ReadOptions {
+            max_cte_depth: 100,
+            ..Default::default()
+        },
+    )
+    .map(|t| t.sql)
+    .map_err(|e| match e {
+        TranslateError::Planning(e) => format!("plan: {e:?}"),
+        TranslateError::Render(e) => format!("render: {e:?}"),
+    })
 }
 
 /// Anonymize the two process-global counters whose values vary with test
