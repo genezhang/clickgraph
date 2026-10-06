@@ -1,0 +1,1038 @@
+# Explicit scope: bind every name once, then lower clause by clause
+
+Status: **proposed** (2026-10-06). Owner entry: `PRIORITIES.md` P-4c.
+It has had one adversarial review: 3 blocking and 10 important findings,
+all folded in. Two of them were live silent bugs in today's engine, filed as
+#1311 and #1312.
+Supersedes the open parts of P-4b (`WITH_EXPORT_CONTRACT.md`) roots B and C.
+The open P-4 slices (`FORWARD_RESOLUTION_PLAN.md`) and
+`VLP_ENDPOINT_RESOLUTION.md` are subsumed by §4.
+
+## 0. TL;DR
+
+ClickGraph has no object that says which variables are in scope at a point in
+a query, what each one is, or which SQL columns hold it. Scope is implied in
+several ways:
+- by alias names in about a dozen maps that cover the whole query;
+- by the nesting of the AST and the `LogicalPlan`;
+- by the order the analyzer passes run in.
+
+After planning, all scopes are merged into one flat map by name. Rendering
+then puts every clause into a single FROM/JOIN list, and **48 passes** patch
+that list after it is built. Most WITH, OPTIONAL MATCH and path bugs come from
+two things: a name meaning different variables in different parts of the
+query, and a clause boundary (a WITH, or an OPTIONAL MATCH's WHERE) that no
+data structure records.
+
+This design adds a stage between parsing and SQL rendering:
+
+```
+parse → clause list → BIND → bound plan → LOWER → RenderPlan → SQL
+                       │                    │
+          names resolved once,      one rule per operator; no pass
+          against an explicit       edits SQL after it is assembled
+          scope per clause
+```
+
+- **Bind.** Resolve every variable name exactly once, against an explicit
+  `Scope` belonging to the clause where the name appears. After binding, no
+  code looks anything up by name. A WITH creates a new scope. A name re-bound
+  in a later query part is a different variable (`VarId`).
+- **Bound plan.** A small relational algebra. Every operator has an output
+  `Scope` that lists its bindings and the columns that hold each one.
+  - An OPTIONAL MATCH is **one** operator, whose WHERE sits inside it.
+  - A variable-length path is an ordinary relation with start, end and
+    edge-identity columns.
+  - The direction alternatives of an undirected edge, and the label
+    alternatives of a polymorphic edge, are a union **inside that element**,
+    not a union around the whole query.
+- **Lower.** Each operator becomes SQL by a fixed rule. The rules reuse the
+  existing layout-aware generators: `PatternSchemaContext`, the recursive
+  path CTE generator, property mapping, schema filters and the dialect
+  emitter. Pushing a filter down is a separate optimization, allowed only
+  when a legality rule over the explicit scope says it is safe.
+
+**Evidence that this fixes the open issues and is not a rewrite for its own
+sake (§1.3).** For six open, silently wrong issues I hand-wrote the SQL this
+design produces and ran it on the `test_integration` fixture. All six match
+**Neo4j 5.26 loaded with the same graph**. The current engine is wrong on all
+six.
+
+**Migration (§7).** The new path is built alongside the old one. A query uses
+it only when every construct in it is supported; otherwise it falls back to
+today's pipeline. Each slice is accepted on **results compared with Neo4j**
+over the corpus on every layout. SQL text is not the acceptance test. The 48
+repair passes and the name-keyed maps are deleted as coverage reaches 100%.
+
+## 1. Evidence
+
+### 1.1 Issue flow
+
+From 2026-09-28 to 2026-10-06, 74 issues were filed and 53 closed. The last
+round filed 8 and fixed 4. Every one of those 8 was already wrong on `main`.
+They were found by reviews of fixes that made more query shapes executable.
+
+Of the 46 open issues, about 30 fall in three groups:
+
+| Group | Open issues |
+|---|---|
+| OPTIONAL MATCH | #504 #615 #1178.1 #1184.3 #1186.1 #1190 #1235 #1249 #1305 #1306 |
+| Variable-length path attachment | #1203 #1210 #1300 #1302 #1307 #1310 #1177 (rest) #1178.2/.3 #1292 #1155 #1106 #840 #1007 #627 |
+| WITH scope | #1189 #1149 #1160 #1263 #933 #1089 #1304 |
+
+### 1.2 Where scope is implied today (verified against `e1241a9c`)
+
+**Scope during planning.**
+- `process_with_clause_chain` plans the part after a WITH in a child
+  `PlanCtx` (`plan_builder.rs:432`).
+- It then **copies the child back into the parent by name**
+  (`plan_builder.rs:586-596`).
+  - `insert_table_ctx` overwrites the parent's entry; `VariableRegistry::merge`
+    does not.
+  - So for a reused name, the table context and the typed variable can
+    describe **different variables**.
+- Every analyzer and optimizer pass after that sees one flat map.
+- The only clause counter is `match_clause_index`, and nothing marks which
+  query part a clause belongs to.
+
+**Places where a lookup by name crosses a scope.** Items marked * were traced
+by reading the code but not reproduced.
+
+1. The flat copy-back described above.
+2. `register_with_cte_references` (`inference.rs:558-633`) sets
+   `cte_reference` on every exported name, and the outermost WITH wins. A fresh
+   variable with the same name in a later scope inherits the CTE as its table
+   (#1283).
+3. `already_available` in join generation is a set of names. With
+   `vlp_available`, every alias that has a CTE is in it*.
+4. FilterTagging puts conjuncts into `TableCtx[name].filters`, and
+   FilterIntoGraphRel injects them into **every** scan with that name, inside
+   WITH bodies too (`filter_into_graph_rel.rs:520-1114`). This is #1304.
+5. `optional_aliases` is keyed by name. Aliases of an OPTIONAL MATCH after a
+   WITH are not copied back to the root set*.
+6. CteReferencePopulator walks the whole subtree and adds a WITH's own
+   exports to **its own input**.
+7. CartesianJoinExtraction collects aliases from inside WITH bodies,
+   including hidden ones*.
+8. `projection_aliases` is never scoped: any name a WITH or UNWIND ever
+   defined is treated as a projection alias everywhere.
+9. VariableResolver's `ScopeContext::lookup` walks parents with no barrier.
+10. `with_cte_identity`, `with_cte_labels` and `cte_scope_for_correlation`
+    are scoped by "generation", but one generation spans the whole WITH
+    chain. `carried_labels` is never reset.
+11. `pattern_contexts`, `denormalized_node_edges`, `vlp_endpoints` and
+    `denormalized_aliases` are keyed by name for the whole query
+    (#1291 came from `vlp_endpoints`).
+
+**The parser also fixes a clause order.** After a WITH the AST holds at most
+one UNWIND, one MATCH, a list of OPTIONAL MATCHes and one next WITH
+(`ast.rs:167-190`). As a result,
+`MATCH (a) WITH a MATCH (a)-->(b) MATCH (b)-->(c) RETURN count(*)` **fails to
+parse** (Neo4j: 35), and so does `WITH a UNWIND .. UNWIND ..`.
+
+**Repairs after assembly.** The render layer receives a join list built by the
+analyzer (`GraphJoinInference`, which runs *before* `FilterIntoGraphRel`).
+48 passes then rewrite the assembled plan:
+- 20 in WITH finalization;
+- 13 in the main path;
+- 9 in `plan_optimizer`;
+- 6 in the emitter, plus `flatten_all_ctes`, which is printing, not repair.
+
+Examples:
+- `extract_cte_join_condition_from_filter` takes any `cte.x = y` equality in
+  WHERE as a join key;
+- `fix_orphan_table_aliases` adds `CROSS JOIN`s;
+- `fold_optional_edge_node_join_with_predicate` recognizes one OPTIONAL shape
+  in the finished SQL.
+
+The full list with `file:line` is in Appendix A.
+
+### 1.3 Prototype: the lowering this design produces, compared with Neo4j
+
+Fixture: `test_integration` (30 users, 20 FOLLOWS). The hand-written SQL and
+the harness are in Appendix B. Neo4j is `neo4j:5-community` 5.26.31, loaded
+with the same nodes and edges.
+
+| Issue | Query (abridged) | Neo4j | Lowered SQL | Engine today |
+|---|---|---|---|---|
+| #1235 | `MATCH (n0) OPTIONAL MATCH (n0)->(n1)->(n2)` | 58 | 58 | 66 |
+| #1305 | `WITH c MATCH (c)-[t1]->(a)-[*1..2]->(b) OPTIONAL MATCH (b)->(d) WHERE a.user_id=2` | 272 | 272 | 125 |
+| #1310 | `MATCH (z)->(a)-[*1..3]->(a)` | 14 | 14 | 77 |
+| #1307 | `WITH c UNWIND [2,3] AS x MATCH (c)->(a)-[*1..2]->(b)` | 404 | 404 | 2200 |
+| #1304 | `MATCH (a)->(c) WITH c MATCH (c)->(a)-[*1..2]->(b) WHERE a.user_id=2` | 55 | 55 | 33 |
+| #1306 | `MATCH (c)->(a) OPTIONAL MATCH (a)-[*1..2]->(b) WHERE a.user_id=2` | 53 | 53 | 36 |
+
+None of the lowered queries needed special-case code. Each is the same
+operator rules applied to a different query:
+- one join per pattern element;
+- ties come from shared variables;
+- uniqueness predicates over the relationships of the clause;
+- WHERE goes on its own clause;
+- an OPTIONAL MATCH is a LEFT JOIN to one unit.
+
+## 2. Why the earlier refactors did not stop this
+
+P-1 through P-4b each unified one *decision*:
+- traversal (`children()`/`walk()`);
+- property resolution (`VariableRegistry`, forward resolution);
+- CTE management;
+- path endpoint resolution;
+- the WITH export contract.
+
+Each unification was correct within its own area. But each one read state
+that is keyed by name and shared across scopes (§1.2). So each needed a gate
+saying where the new decision applies (`verified_chain`, `supported_chain`,
+`trailing_hops_only`, `is_render_safe`). The gate is the edge of the fix, and
+every shape outside it kept its old behaviour. Widening a gate brought in
+shapes that hit other heuristics, and the next review found the next bug
+(see the #1301 → #1303 → #1309 chain).
+
+This design changes the **representation**: once binding is done, the wrong
+answer to "which variable is `a` here?" cannot be expressed. It does not add
+another layer that tries to reconcile the existing ones.
+
+## 3. Semantics the design must implement (openCypher)
+
+A query part runs its clauses in order over a **driving table** of records.
+Each record binds the variables in scope. Each clause is a function from table
+to table:
+
+| Clause | Meaning |
+|---|---|
+| `MATCH P WHERE W` | For each input record, every match of `P` that agrees with the variables already bound, filtered by `W`. Relationship uniqueness holds across **all** patterns of this clause (comma parts included) and not across clauses. |
+| `OPTIONAL MATCH P WHERE W` | As MATCH, but `W` decides whether a match counts. A record with no match that passes `W` is kept once, with the clause's new variables set to NULL. `W` never drops input records. |
+| `WITH items` followed by `ORDER BY`, `SKIP`, `LIMIT` and `WHERE` | Projection, with aggregation if any item aggregates. The non-aggregated items are the grouping keys; an expression over an aggregate is computed after aggregating. The **output scope is exactly the projected names.** **Order matters:** a `WHERE` written after `ORDER BY`/`SKIP`/`LIMIT` filters the rows that are left after the limit. Neo4j returns 0 for `WITH u ORDER BY u.age LIMIT 5 WHERE u.age > 30`, where today's engine returns 5 (#1311). The WITH's own `WHERE` and `ORDER BY` can use the projected aliases and also the pre-projection variables. When the WITH aggregates or is DISTINCT, a pre-projection reference is allowed only if it is a projected expression or variable (`WITH DISTINCT u.name AS n ORDER BY u.name` is accepted, `… ORDER BY u.age` is an error). Later clauses see only the projected names. |
+| `UNWIND e AS x` | One record per element; `x` is a new variable. An empty list or NULL gives no records; a non-list value gives one record. |
+| `RETURN` | Like WITH, and it ends the query. |
+| `q1 UNION [ALL] q2` | Each arm is a complete query with its own scopes. The arms' column names must match. |
+| `EXISTS {…}`, a pattern used as a predicate, `size(pattern)`, `COUNT {…}`, pattern comprehension | A subquery correlated with the current record. Its own variables are local to it. |
+| List comprehension, `reduce`, quantifiers | A nested expression scope for the lambda variable, which shadows any outer variable with the same name. |
+
+Further rules, each checked on Neo4j 5.26:
+
+- **A reused bound node variable** means "this same node": an identity
+  equality.
+- **A reused bound relationship variable** means the same relationship.
+  - The endpoint ties depend on the direction written:
+    - after `WITH r`, `(a)-[r]-(b)` matches both orientations (40);
+    - `(a)<-[r]-(b)` matches only the reversed one (20).
+  - A bound relationship still takes part in the clause's uniqueness:
+    `WITH r MATCH (a)-[r]-(b)-[s]-(c)` = 122, not 162.
+  - `(a)-[r]->(b)-[r]->(c)` matches nothing.
+- **A label on an already-bound variable** in a later MATCH is a filter.
+- **A variable-length relationship `-[r*]->` binds a list** of
+  relationships, which can be matched again:
+  - `WITH r MATCH ()-[r*]->()`;
+  - `UNWIND r AS x MATCH ()-[x]->()`.
+- **An undirected pattern over a self-loop matches once**, not once per
+  direction.
+- **shortestPath with a WHERE:** conjuncts that depend on the path (or on
+  its relationships or nodes) are part of the search, and the shortest path
+  that satisfies them is returned. Picking first and filtering afterwards
+  drops pairs. Today's engine does this: 27 vs 47 3-hop paths (#1312).
+- **OPTIONAL MATCH NULLs:** an unmatched `r*` list, `nodes(p)` and
+  `size(r)` are NULL, not `[]` or 0.
+
+## 4. Design
+
+### 4.1 Where it sits
+
+```
+open_cypher_parser ──► ClauseList (new, §4.2)
+                         │
+                         ├─(not supported by new path)─► legacy: LogicalPlan → analyzer → render
+                         ▼
+                      binder (new) ──► BoundPlan (new) ──► lowering (new) ──► RenderPlan ──► emitter
+                         ▲                                     ▲
+                 GraphSchema +                   PatternSchemaContext, VLP CTE generator,
+                 PatternSchemaContext            property mapping, schema filters,
+                 (label feasibility)             ViewTableRef, RenderExpr + Dialect
+```
+
+New module: `src/bound_plan/` with `scope.rs`, `binder/`, `plan.rs`,
+`labels.rs`, `lower/`, `pushdown.rs` and `result_shape.rs`. It does not depend
+on `query_planner::analyzer` or on the render-layer composition code
+(`with_to_cte`, `join_builder`, `from_builder`, `plan_optimizer`). A ratchet
+test enforces this.
+
+### 4.2 The clause list (parser)
+
+The parser's grammar becomes `QueryPart* FinalPart`. Each part is a
+`Vec<Clause>`, where `Clause` is one of `Match`, `OptionalMatch`, `Unwind`,
+`With` (projection plus its ORDER BY, SKIP, LIMIT and WHERE, **with their
+written order recorded**, #1311), `Return`, `Call` or `Union`, in source
+order and with no fixed per-part layout. It accepts the output of the AST
+pre-passes that run today (the `id()` rewrite `transform_id_functions` with
+`IdMapper`, and `$param` handling) unchanged. The legacy AST
+(`OpenCypherQueryAst` with `subsequent_*`) is then *derived* from the clause
+list whenever it can represent the query, so the legacy pipeline does not
+change. A query the legacy AST cannot represent (for example two MATCHes after
+a WITH) is supported only by the new path, or fails loudly if the new path
+does not support it yet.
+
+### 4.3 Scope and bindings
+
+```rust
+pub struct VarId(u32);                    // allocated by the binder, unique per query
+pub struct RelId(u32);                    // one relation instance in the bound plan
+
+pub struct Scope {                        // ordered; a name occurs at most once
+    pub bindings: Vec<Binding>,
+}
+pub struct Binding {
+    pub var: VarId,
+    pub name: Option<String>,             // None for an anonymous pattern element
+    pub nullable: bool,                   // introduced by OPTIONAL MATCH, or carried from one
+    pub kind: BindingKind,
+}
+pub enum BindingKind {
+    Node  { labels: LabelSet, identity: Vec<Col>, props: PropSource },
+    Rel   { types: TypeSet, identity: Vec<Col>, from: Vec<Col>, to: Vec<Col>,
+            props: PropSource, direction_known: bool },
+    Path  { elements: Vec<PathElement> }, // nodes, fixed relationships, variable-length segments
+    List  { elem: Box<BindingKind>, source: ListSource }, // `-[r*]->` relationships, collect(n),
+                                          // nodes(p): element identities + the demanded property arrays
+    Value { col: Col, ty: Option<SchemaType> },
+}
+pub struct Col { pub rel: RelId, pub column: ColumnName }   // a concrete column of a relation
+pub enum PropSource {
+    Columns(BTreeMap<String, Col>),       // properties materialized in a relation (a WITH CTE, a node table)
+    Element(ElementAccess),               // resolved on demand through PatternSchemaContext
+}
+```
+
+**Invariants:**
+- I1: no code after the binder takes a variable *name* as input.
+- I2: every `Col` names a relation that is present in the operator's input.
+  This is checked when lowering; a violation is an internal error, never a
+  guess.
+- I3: a `Scope` is produced only by an operator. No code edits it as a side
+  effect.
+
+Composite identities are `Vec<Col>` throughout, and so is a denormalized
+node's identity: its columns are the role columns of the edge relation that
+supplies it (§4.6).
+
+A `List` binding lets a list of entities flow through `WITH`, `UNWIND` and a
+re-match (`UNWIND r AS x MATCH ()-[x]->()`) while still carrying identities.
+The demand pass (§4.10) follows a reference through `collect`, `UNWIND` and
+`nodes(p)`/`relationships(p)` to the property arrays it needs. One example is
+`[n IN nodes(p) | n.name]`, where the path relation must export a `name`
+array.
+
+### 4.4 Binder rules
+
+The binder walks the clause list once, keeping the *current scope*:
+
+- **MATCH / OPTIONAL MATCH.** For each pattern variable:
+  - If the name is in the current scope, it refers to that binding: an
+    identity tie, plus a label filter if a label is written.
+  - Otherwise allocate a new `VarId`.
+  - An anonymous element gets a `VarId` with `name: None`. No `tN` aliases
+    are generated for it, so there are no collisions (#1081 family).
+  - WHERE expressions resolve against *the current scope plus the clause's
+    new variables*.
+  - Variables introduced by OPTIONAL MATCH are `nullable`.
+- **WITH / RETURN.**
+  - Items resolve against the current scope.
+  - The **output scope is new**: one binding per item.
+    - A bare variable keeps its `VarId` and kind, but its columns now point
+      at the projection's output relation.
+    - Any other expression is a `Value`. `WITH a.x AS a` makes `a` a Value.
+      It no longer refers to the node (#1263).
+  - The WITH's own `ORDER BY`, `SKIP`, `LIMIT` and `WHERE` are bound in their
+    written order (#1311).
+    - They resolve against the projected aliases plus the input scope.
+    - In the plan the WITH is `Extend` (computes the aliases and keeps the
+      input bindings), then the modifiers in order, then a dropping
+      `Project`. This lets `WITH u.name AS n ORDER BY n, u.age` use both.
+  - When the WITH aggregates or is DISTINCT, the modifiers sit above the
+    `Aggregate`/`Distinct`. A pre-projection reference is rewritten to the
+    output column of the projected expression or variable it equals
+    (`WITH u.age AS a, count(*) AS c WHERE u.age > 1`). Any other
+    pre-projection reference is a bind error, as in Neo4j.
+  - An expression over aggregates (`RETURN u.age, u.age + count(*)`)
+    becomes `Aggregate` then `Project`. Its non-aggregate parts must be
+    grouping keys, otherwise it is a bind error as in Neo4j.
+  - `WITH *` / `RETURN *` expand to every named binding in the current
+    scope. A map projection `n{.*}` demands all of `n`'s properties.
+- **UNWIND.** Adds a `Value` binding (a whole node or relationship when the
+  element type is known).
+- **UNION.** Each arm is bound from an empty scope. Output names must match.
+- **Subquery expressions.** A child scope whose parent is the current scope.
+  The parent's variables used inside become the subquery's **correlation
+  set**, an explicit `Vec<VarId>`.
+- **Lambdas** (comprehensions, `reduce`, quantifiers). An expression-local
+  scope; the binder resolves the shadowing.
+- **Errors.** An unknown variable is a bind error ("Variable `x` not
+  defined", as in Neo4j). An unsupported construct is `Unsupported`, which
+  falls back to legacy during migration and is a loud error after it.
+
+Expressions are bound to `BoundExpr`: `LogicalExpr`'s operators, with every
+variable or property reference replaced by `Ref(VarId, Option<prop>)`.
+Conversion from the AST reuses `logical_expr/ast_conversion.rs` for operators,
+literals and functions.
+
+### 4.5 Bound plan operators
+
+```rust
+pub enum BoundPlan {
+    Unit,                                                     // one empty record
+    Element(ElementRel),                                      // node scan, edge scan, path, alternatives
+    Join     { left, right, kind: Inner | Cross, on: Vec<(Vec<Col>, Vec<Col>)>, residual: Option<BoundExpr> },
+    Optional { input, inner, correlation: Vec<VarId> },       // OPTIONAL MATCH as one unit (§4.9)
+    Filter   { input, predicate: BoundExpr },
+    Unwind   { input, expr: BoundExpr, var: VarId },
+    Extend   { input, items: Vec<(VarId, BoundExpr)> },                  // adds bindings, keeps input
+    Project  { input, items: Vec<(VarId, BoundExpr)>, distinct: bool },        // WITH / RETURN; drops
+    Aggregate{ input, keys: Vec<(VarId, BoundExpr)>, aggs: Vec<(VarId, AggCall)> },
+    Sort     { input, keys }, Skip { input, n }, Limit { input, n },
+    Union    { arms: Vec<BoundPlan>, all: bool },             // arms are symmetric; there is no "arm 0"
+    Apply    { input, sub: BoundPlan, kind: Semi | Anti | Mark(VarId) | Count | Collect,
+               correlation: Vec<VarId> },                               // Mark: boolean column (EXISTS under OR/CASE/RETURN)
+}
+pub enum ElementRel {
+    NodeScan { var: VarId, label: Label, access: NodeAccessStrategy },
+    EdgeScan { var: VarId, rel_type: RelType, from_var: VarId, to_var: VarId,
+               access: EdgeAccessStrategy, direction: Directed },
+    PathScan { var: Option<VarId>, from_var: VarId, to_var: VarId,
+               spec: PathSpec },                             // range, types, direction, uniqueness, shortest mode
+    Alternatives { arms: Vec<ElementRel> },                  // same output columns in every arm
+}
+```
+
+Every operator has a `scope()`. `Project` and `Aggregate` are the only
+operators that **drop** bindings. That rule is the precise meaning of
+"a WITH is a scope barrier".
+
+### 4.6 Lowering a MATCH clause: element relations, ties, uniqueness
+
+For `MATCH P1, …, Pk WHERE W` with input `I`:
+
+1. **Elements.**
+   - Each relationship becomes an `EdgeScan`.
+   - Each variable-length segment becomes a `PathScan`.
+   - Each node that no edge supplies, and that is not already bound, becomes
+     a `NodeScan`.
+   - Which nodes the edges supply, and with which columns, is decided by
+     `PatternSchemaContext` (`NodeAccessStrategy::OwnTable / EmbeddedInEdge /
+     Virtual`). There is no branching on raw layout flags, so this is
+     compatible with the ratchet.
+   - **Node-scan elision.** A labelled own-table node whose properties are not
+     demanded may be omitted, with the edge's foreign key standing in for
+     its identity, as today's engine does. This is allowed only when **all**
+     of these hold:
+     - the schema declares that the edge's endpoint references are
+       integral, a new per-edge `endpoint_integrity` flag, set to today's
+       behaviour for the existing fixtures;
+     - the node has no `filter:`;
+     - the node has no view parameters;
+     - the node does not use `FINAL`.
+
+     Neo4j cannot hold a dangling edge, so the oracle fixtures get seeded
+     dangling edges (§6) to keep this rule honest.
+   - A **bound relationship variable** (from the input scope, or used twice
+     in the clause) becomes an `EdgeScan` tied on its identity. Its endpoint
+     ties follow the written direction. For an undirected reuse they come
+     from `Alternatives`. It takes part in the clause's uniqueness pairs.
+     Using it twice in one clause can never match (each use is a separate
+     element, and uniqueness forbids the two being equal).
+2. **Ties.** For every node variable `v` that appears more than once (in two
+   elements, or in an element and the input scope), equate the identity
+   columns of each appearance with the first: `Vec<Col>` = `Vec<Col>`,
+   element by element.
+   - A closed pattern `(a)-[*]->(a)` gets two ties on `a`. It needs no special
+     handling (#1310).
+   - A WITH-carried node is "in the input scope". It needs no
+     `cte_references` repair (#1182 family, #1300, #1307).
+   - A denormalized node shared by two edges ties the two edges' role
+     columns directly.
+3. **Relationship uniqueness.** One rule for every pair of
+   relationship-bearing elements *of this clause*:
+   - edge and edge: identities differ;
+   - edge and path: `NOT has(path.edges, edge.identity)`;
+   - path and path: `NOT hasAny(p1.edges, p2.edges)`.
+
+   Inside a path the recursive CTE enforces it. Edge identity comes from the
+   schema's `edge_id`, or from the endpoint tuple as today (the #887 policy).
+   This removes the #1175, #1187 and #1203 per-shape guards.
+4. **Join tree.** Left-deep, in a deterministic order: input first, then
+   elements in pattern order, with a selective anchor first when there is no
+   input. Join order is an optimization, and every order is correct because
+   ties are equalities. Stats-informed ordering (P-5) applies here.
+5. **WHERE** becomes `Filter(W)` over the clause's join. Placement is §4.8.
+6. **Path variable.** `p` becomes a `Path` binding listing its elements.
+   `length(p)` is the number of fixed edges plus each segment's `hop_count`,
+   and `nodes(p)` / `relationships(p)` are built from element columns (#1202
+   in general form).
+
+`Alternatives`:
+- An undirected edge `(a)-[r]-(b)` is two directed `EdgeScan` arms with
+  identical output columns (from-side identity, to-side identity, edge
+  identity, properties).
+  - The reverse arm excludes self-loops (`from = to`), so a self-loop
+    matches once, as in Neo4j.
+  - Edge identity always uses the **stored** orientation (the schema's
+    `edge_id`, or the stored `(from, to)` tuple), never the direction
+    traversed. Otherwise uniqueness between undirected hops breaks for
+    schemas without `edge_id`.
+- A polymorphic edge with several possible endpoint labels has one arm per
+  feasible (from-label, type, to-label) combination.
+- An unlabeled node has one arm per feasible label.
+
+Arms whose columns have different types are cast to one declared type per
+column; the schema's declared property type wins. They are never left to
+ClickHouse's common-type inference: this server sets
+`use_variant_as_common_type=1`, which produces `Variant` columns whose
+comparisons fail at runtime. A property missing from an arm is a typed NULL.
+
+The union stays inside the element, so the rest of the query sees one
+relation. That removes the arm-0 asymmetry (root C) and the per-arm NULL
+extension of #1249.
+
+### 4.7 Label inference
+
+Labels are inferred over the explicit pattern graph of each clause, with
+carried variables bringing their already-inferred label sets. It is
+constraint propagation:
+
+```
+label(v) := label(v) ∩ { from-labels of feasible (type, direction) for each incident edge }
+```
+
+It is iterated to a fixed point, with feasibility taken from the schema
+catalog.
+- A variable-length segment propagates through the transitive closure of
+  feasible types.
+- A `*0..` segment also allows end = start, so the end's set includes the
+  start's.
+- An empty set means the clause matches nothing:
+  - in a MATCH this is the `WHERE false` plan, as today;
+  - in an OPTIONAL MATCH it means every input record gets NULLs. This replaces the per-query `TypeInference` result for the
+new path. Slice 1 includes a parity check against `TypeInference`'s label
+sets over the corpus, and any disagreement is decided by checking against
+Neo4j.
+
+### 4.8 Filter placement: correct by default, pushdown only when proven
+
+Every WHERE is first placed **exactly where its clause puts it**:
+- MATCH: a filter over the clause's join;
+- OPTIONAL MATCH: inside the `Optional`'s inner plan;
+- WITH: a filter over the `Project` / `Aggregate`.
+
+`pushdown.rs` then moves a conjunct `c` toward the leaves only when all of
+these hold:
+- (a) every `VarId` in `c` is produced by the target subtree;
+- (b) the target is not on the NULL side of an `Optional` boundary that `c`
+  sits outside;
+- (c) the target is not past a `Project`, `Aggregate`, `Limit` or `Skip`
+  boundary (except the standard push of a pure grouping-key predicate
+  through `Aggregate`);
+- (d) for a push into a `PathScan`'s base case, `c` references only the
+  path's start variable, by property.
+
+**shortestPath is not a pushdown case.** In a clause with a shortestPath, the
+conjuncts that reference the path, its relationships or nodes, or the
+in-path variables belong to `PathSpec.predicates`. They are evaluated
+**before** the per-(start, end) pick, because that is required for
+correctness (#1312), not as an optimization. The binder routes them there.
+A predicate that cannot be evaluated inside the search is `Unsupported`.
+
+Pushdown is never needed for correctness, and the test suite runs every query
+with pushdown both enabled and disabled. Conjuncts cannot be named into the
+wrong scope (#1304, #1308) or the wrong role (#1302), because a conjunct
+carries `VarId`s and `Col`s, not names.
+
+### 4.9 OPTIONAL MATCH as one unit
+
+`Optional { input: I, inner: Q, correlation: C }`, where:
+- `C` is the input variables the pattern shares, plus the input variables
+  its WHERE references;
+- `Q` is a MATCH clause's join over the pattern, with the WHERE inside it.
+
+`Q` reads `C` from a **drive** relation `D = SELECT DISTINCT C-columns FROM I`.
+
+Lowering: `I LEFT JOIN (Q over D) ON I.C = Q.C`.
+- Pattern-shared variables join with plain equality. A NULL pattern variable
+  cannot match, which is the correct Cypher behaviour.
+- Variables referenced only by the WHERE join with
+  `isNotDistinctFrom`, so that a NULL input value still reaches the WHERE.
+  Verified on ClickHouse 26.7: a NULL key matches the NULL drive row.
+
+**NULLs for every column type.** With `join_use_nulls = 1`, ClickHouse fills
+unmatched `Array`, `Tuple` and `Map` columns with defaults (`[]`), not NULL.
+This was verified, and Neo4j returns NULL for `r`, `size(r)` and `nodes(p)`
+of an unmatched OPTIONAL path.
+- So `Q` exports a `__matched` constant `1`, and the outer query reads every
+  inner column of a non-nullable type as `if(__matched IS NULL, NULL, col)`.
+- A composite identity tuple is exported as its component columns, each of
+  which is Nullable.
+- `nullable: true` on a binding is what tells the expression lowering to use
+  these guarded reads.
+
+**Cheaper forms when they are provably equivalent:**
+- When `C` is the pattern's anchor alone, the WHERE references no other
+  input variable, **and the anchor's relation is unique on its identity**,
+  `D` is the anchor's own element relation and needs no `DISTINCT` (the #479
+  form, generalized to any pattern).
+  - An own-table node scan is unique on its identity.
+  - A denormalized role column, or an `Alternatives` relation, is not, and
+    keeps the `DISTINCT` drive.
+- When the WHERE has conjuncts that reference only input variables, they may
+  move into the `ON` clause instead of `Q`. ClickHouse 26.7 handles
+  one-sided conditions in a LEFT JOIN ON correctly, which was checked.
+
+This is correct for:
+- multi-hop patterns (#1235);
+- paths (#1306);
+- union alternatives (#1249, one LEFT JOIN onto the union);
+- WITH-carried anchors (#1190, #1305);
+- coupled layouts (#504).
+
+The #597, #611 and #614 provenance tags are not needed, because the WHERE is
+never separated from its clause.
+
+**Cost.** `I` becomes a CTE referenced twice. ClickHouse inlines CTEs, so `I`
+is evaluated twice. The anchor-only form above avoids that in the common case.
+The rest is measured in slice 3 against the legacy SQL on the social
+benchmark and LDBC SF1 (§8).
+
+### 4.10 WITH, aggregation and exports
+
+`Project` / `Aggregate` lower to a CTE whose columns are **the output scope**.
+The CTE's column list is the scope, so a reader cannot guess wrongly
+(root A of P-4b).
+
+A carried node exports its identity columns plus the properties that later
+clauses actually use, found by a **demand pass** over the bound plan. The pass
+walks backwards and collects `Ref(VarId, prop)`. A whole-entity RETURN or a
+`properties()` call demands all properties.
+- Exporting what is demanded, rather than joining the node table back, is
+  required for denormalized nodes, which have no table of their own.
+- Labels travel as part of the binding (static), and as a column only when
+  the binding's label set has more than one member.
+
+Aggregation keys are the non-aggregated items. An aggregated node or
+relationship is grouped by its identity columns, never by a placeholder
+(#1222).
+
+### 4.11 Paths and shortestPath
+
+`PathScan` lowers through the existing recursive-CTE generator
+(`generate_vlp_cte_via_manager` and its strategies) behind one clean call. It
+takes:
+- the edge's `EdgeAccessStrategy`;
+- the endpoints' `NodeAccessStrategy`s;
+- the `PathSpec`;
+- an optional pushed-down start predicate (§4.8 d).
+
+It returns the column contract `start(Vec<Col>)`, `end(Vec<Col>)`,
+`edges` (the identity list), `nodes`, `hop_count`, and the property arrays
+the demand pass requests (`nodes.name`, `edges.weight`, …).
+`PathSpec.predicates` (§4.8) are evaluated inside the search.
+
+**The generator is not a clean call today, and slice 6 starts by fixing
+that.** It has three side channels:
+- `CteManager` sets `from_alias` from the query-wide `vlp_from_alias()`
+  (`cte_manager/mod.rs:653, 2050`).
+- It returns `outer_where_filters` that "must be applied in outer SELECT".
+- `cte_extraction.rs:5666` registers `vlp_composite_id_components` for the
+  printer to read.
+
+Each becomes an explicit output of the call (an alias chosen by the caller,
+filters returned as `BoundExpr` conjuncts, composite components in the
+column contract), or the path is `Unsupported`.
+
+The generator never sees the surrounding hops, the WITH CTE or the outer
+filters. The filters that used to be pushed in by `categorize_filters` are
+pushdown decisions (§4.8). shortestPath keeps the generator's pick, which is
+partitioned by (start, end) (#1183).
+
+### 4.12 Subquery expressions
+
+`Apply { kind, sub, correlation }`, where `sub` is a bound MATCH over the
+correlation variables:
+
+| Construct | Lowering |
+|---|---|
+| `EXISTS` / pattern predicate | semi-join (`IN` or `EXISTS` on the correlation identity) |
+| `NOT` | anti-join |
+| `size()` / `COUNT{}` | `LEFT JOIN` of a grouped count, with `coalesce(…, 0)` |
+| pattern comprehension | `LEFT JOIN` of a grouped `groupArray` |
+
+`Mark(VarId)` is the general form: a boolean column, for `EXISTS` used under
+`OR`, `CASE` or in `RETURN`. Semi and Anti are its specializations when the
+predicate is a top-level conjunct.
+
+ClickHouse constraints, verified on 26.7, that the lowering must respect:
+- **Decorrelate everything.** A doubly nested correlated subquery that
+  reads the outermost table fails with `NOT_FOUND_COLUMN_IN_BLOCK` (Code
+  10). So every `Apply` lowers to a join against a grouped or distinct
+  relation keyed on the correlation identity, never to a correlated
+  subquery.
+- **Guard NULL correlations.** `NOT (k IN (…))` with a scalar NULL `k` is
+  NULL and drops the row, whereas Neo4j's `NOT EXISTS {(x)-->()}` is true for
+  a NULL `x`. The anti and mark lowerings guard a nullable correlation
+  identity explicitly (`k IS NULL OR …`) and do not rely on
+  `transform_null_in`.
+
+The correlation set is explicit, so the alias guessing and the
+"outer alias" task-local of today are not needed.
+
+### 4.13 Result shape
+
+The final `Project`'s scope lowers to the SELECT list, using today's column
+naming (`a.prop`, `r.from_id`, …) so that the HTTP and Bolt outputs do not
+change. It also produces a `ResultShape`: per output column group, the kind
+(Value, Node{labels}, Rel{type, start labels, end labels, direction}, Path).
+Today `extract_return_metadata(LogicalPlan, PlanCtx)` reads the
+`LogicalPlan` and the name-keyed registry. It has three callers:
+- the Bolt handler (`bolt_protocol/handler.rs:3132`);
+- the HTTP graph output (`server/graph_output.rs:31`);
+- embedded (`clickgraph-embedded/src/graph_result.rs:159`).
+
+All three take the `ResultShape` instead when the new path rendered the
+query.
+
+### 4.14 Lowering target and emitter
+
+Lowering produces a `RenderPlan`:
+- CTEs are flat, so architectural rule 1 still holds;
+- WITH bodies, drive relations and inner OPTIONAL plans become CTEs;
+- path CTEs are `RawSql`, as today;
+- the final SELECT joins relations by `RelId`-derived aliases.
+
+Expressions lower to `RenderExpr` with concrete `table_alias.column`, and
+print through the existing dialect-aware emitter, which keeps Databricks
+support.
+
+The new path calls a **plain** emitter entry (`render_plan_to_sql_plain`). It
+runs `flatten_all_ctes` and printing, and none of the repair passes (Appendix
+A, groups C and D). A ratchet test forbids `src/bound_plan/` from calling any
+function that edits an assembled `RenderPlan`.
+
+**Printing is not plain today either.** It reads alias-keyed task-local state
+(`to_sql_query.rs`):
+- `is_string_operand` reads `get_reduce_binder_type` (:63);
+- `try_rewrite_in_cte_subquery` reads `get_cte_name_for_alias` (:350);
+- `render_arg_is_collection` reads the variable registry to choose
+  Databricks `size` (:1062);
+- `rewrite_expr_for_vlp` reads `vlp_from_alias`, `path_fixed_hops` and
+  `is_vlp_composite_id_component` (:2483–2665);
+- `extract_fixed_path_info_from_plan` runs inside `render_plan_to_sql`
+  (:6450).
+
+So:
+- the binder's types travel on the lowered `RenderExpr`: a type annotation
+  on column references and lambda binders;
+- the plain entry bypasses the VLP and fixed-path rewrites;
+- in debug builds it **asserts that these task-local channels are empty**,
+  so a hidden dependency fails loudly instead of resolving by name.
+
+`ViewTableRef.source` is an `Arc<LogicalPlan>`, and the emitter matches
+`LogicalPlan::ViewScan` (:3372, :4252). The new path builds table references
+through a constructor that does not need a `LogicalPlan`.
+
+### 4.15 ClickHouse settings the SQL depends on (`join_use_nulls = 1`)
+
+ClickHouse's default `join_use_nulls = 0` fills the unmatched side of a LEFT
+JOIN with **type defaults**, not NULL: `''` for String, `0` for numbers,
+`[]` for arrays. OPTIONAL MATCH semantics depend on getting NULL, and so do
+`IS NULL`, `count(x)`, `coalesce`, and any WHERE over an optional variable.
+Verified on 2026-10-06, `test_integration`, with
+`MATCH (u) WHERE u.user_id IN [20,21] OPTIONAL MATCH (u)-[:FOLLOWS]->(b)
+RETURN b.name, b.name IS NULL, b.age`:
+
+| Execution path | `b.name` | `b.name IS NULL` | `b.age` |
+|---|---|---|---|
+| server (`RoleConnectionPool::standard_options`) | NULL | true | NULL |
+| `cg query` / embedded remote (same pool) | NULL | true | NULL |
+| chdb embedded (`SET join_use_nulls = 1`) | NULL (by the same setting) | | |
+| the same SQL sent to ClickHouse **without** the setting | `''` | **false** | `0` |
+
+Rules for the new path:
+1. **The setting belongs to the SQL contract, not to the connection.**
+   - ClickHouse-dialect SQL from the new path ends with
+     `SETTINGS join_use_nulls = 1`. The setting goes through `Dialect`;
+     Databricks/Spark has standard NULL semantics and emits nothing.
+   - Verified: a trailing `SETTINGS join_use_nulls = 1` applies to the whole
+     statement, including recursive and WITH CTEs.
+   - That makes the SQL correct wherever it runs, including the documented
+     SQL-only mode (`sql_only: true`, `cg sql`) whose output users execute
+     outside ClickGraph.
+   - **Today that output carries no setting** (#1314). Run externally, every
+     OPTIONAL MATCH in it gives `''`/`0` and false `IS NULL` results, with
+     no error.
+   - Executors keep setting it at session level too. `Decision 0.7` (no
+     `SETTINGS` at query time) applies to embedded *writes* only.
+2. **The setting covers only Nullable-capable types.** `Array`, `Tuple`
+   and `Map` still come back as defaults (§4.9), so the `__matched` guard is
+   required with the setting. It is emitted through `Dialect` because Spark
+   does not need it.
+3. **Types change under the setting.** Right-side columns become
+   `Nullable(T)`, which affects:
+   - `UNION ALL` arms (the arms must agree; §4.6 casts each column to one
+     declared type, Nullable when any arm is on a NULL-supplying side);
+   - functions that reject Nullable arguments;
+   - `GROUP BY` keys.
+
+   The lowering computes nullability from `Binding.nullable` rather than
+   discovering it from ClickHouse errors.
+4. **The oracle harness and every probe run with the setting**, and with a
+   deliberately unset session too, to prove the SQL carries it (rule 1).
+   The prototype numbers in §1.3 were taken with `join_use_nulls = 1`. Those
+   six queries are `count(*)` with no predicate over an optional column, so
+   they do not depend on it; slice 1's harness covers the value-level cases.
+
+## 5. Reused, replaced, deleted
+
+| Component | New path |
+|---|---|
+| Parser expression grammar, AST expressions | reused |
+| Parser query-part structure | **replaced** by the clause list (§4.2); the legacy AST is derived from it |
+| `logical_expr/ast_conversion.rs` (operators, functions, literals) | reused by the binder |
+| `PlanCtx`, `TableCtx`, `VariableRegistry`, `VariableScope`, `ScopeContext`, the alias-keyed `QueryContext` channels | not used; deleted at cutover |
+| Analyzer passes (TypeInference, BidirectionalUnion, UnionDistribution, GraphJoinInference, FilterTagging, FilterIntoGraphRel, DuplicateScansRemoving, CteReferencePopulator, VariableResolver, CteColumnResolver, …) | not used; deleted at cutover |
+| `graph_catalog` (`GraphSchema`, `PatternSchemaContext`, access strategies, `SchemaFilter`) | **reused**: the only way the new path reads layouts |
+| Recursive path CTE generator (`cte_manager`, `variable_length_cte.rs`) | **reused** behind the `PathScan` call (§4.11) |
+| Property mapping, `ViewTableRef` (parameterized views, FINAL), composite `Identifier` helpers | reused |
+| `RenderExpr`, `FunctionMapper`, `Dialect`, SQL printing, `flatten_all_ctes` | reused |
+| `with_to_cte`, `join_builder`, `from_builder`, `filter_builder`, `filter_pipeline`, `plan_optimizer` repair passes, `cte_extraction` composition, `vlp_rewrite`, `hop_vlp_uniqueness`, `variable_scope.rs`, `cte_export.rs` | not used; deleted at cutover |
+| Write path (`write_plan_builder`), `CALL` procedures, `COPY TO` | out of scope; unchanged |
+
+## 6. Verification
+
+1. **Neo4j as the reference.**
+   - `scripts/oracle/` gets:
+     - a loader that builds each fixture database's *logical* graph from its
+       schema YAML and tables, in Python, written directly from the YAML
+       rules;
+     - a cross-check of node, edge and per-label counts against simple
+       ClickGraph scans and raw table counts;
+     - a runner that executes Cypher on `neo4j:5-community` in Docker.
+   - One logical graph is loaded per layout database: standard, FK-edge,
+     denormalized, polymorphic, composite id, mixed access.
+   - The Python loader is a second implementation of the layout rules.
+     That is the "oracle encodes the engine's assumption" risk of #1287. It
+     is kept small and declarative, and each layout's loaded graph is
+     checked three ways:
+     - per-label node counts and per-type edge counts against raw-table
+       counts;
+     - a hand-listed expected graph for the small fixtures;
+     - **seeded integrity cases**: a dangling edge, a self-loop, parallel
+       edges, and a node with no edges, so that rules like node-scan
+       elision (§4.6) and self-loop handling (§4.6) are actually exercised.
+   - **Comparator rules.** These are explicit and live in one file:
+     - `id()` / `elementId()` values are compared through a mapping from
+       Neo4j's internal ids to the loader's logical identity, never
+       literally;
+     - whole entities are compared as (labels, properties);
+     - paths are compared as sequences of entities;
+     - when there is no ORDER BY, rows are compared as multisets;
+     - shortestPath with ties between equal-length paths compares the set
+       of lengths and endpoints, not the chosen path;
+     - floats are compared with a tolerance;
+     - temporal formatting is normalized (#1055 #1068).
+2. **Result goldens.** For every corpus query and layout, the expected rows
+   from Neo4j are stored once (`tests/corpus/expected/<layout>/<id>.json`,
+   compared as multisets, in order when there is an ORDER BY). The live suite
+   compares ClickGraph's rows with them. The SQL-text goldens stay as
+   change-detectors for the legacy path only.
+3. **Differential runs per slice.** For each corpus query, compare new, legacy
+   and Neo4j. A slice may make a query the new path handles go from
+   wrong/error to correct. It may **never** go from correct to wrong or error.
+4. **Generated sweeps.** The pattern-shape generators from this year's sweeps
+   (`carry*_sweep.py`, `filter_sweep*.py`, `outside_sweep.py`) are retargeted
+   at Neo4j as the oracle, so "the oracle encodes a known gap" (#1287) can no
+   longer happen.
+5. **Invariant tests.**
+   - Ratchets: no name-keyed lookup after binding (no `HashMap<String, _>`
+     keyed by variable name in `src/bound_plan/` outside the binder); no
+     dependency on the analyzer or render composition modules.
+   - I2 is checked on every lowered plan in debug builds.
+   - Every query is also run with pushdown disabled.
+
+## 7. Migration slices
+
+Each slice is one PR with the standard gate: fmt, clippy, `cargo test
+--no-fail-fast`, the live suite, an adversarial review, and the Neo4j
+differential. The routing switch is
+`CLICKGRAPH_BOUND_PLAN = off | shadow | on`:
+- `shadow` translates with both paths and records differences in tests;
+- `on` routes supported queries to the new path.
+
+The default stays `off` until slice 3 is accepted, then becomes `on`.
+
+| # | Slice | Acceptance | Closes |
+|---|---|---|---|
+| 0 | This doc + PRIORITIES P-4c | review | — |
+| 0.5 | **One translate seam.** ClickHouse SQL carries `SETTINGS join_use_nulls = 1` (§4.15); this is the only intended SQL-text change. Today there are about ten entry points that each call `evaluate_read_statement` + `to_render_plan_with_ctx`: `server/handlers.rs:1459, 2109`, `sql_generation_handler.rs:338`, `bolt_protocol/handler.rs:2374, 2670, 3108`, and `sql_generator/emitters/clickhouse/mod.rs:82, 131, 165`, which serve embedded, FFI, Go, Python and `cg`. All of them go through one function that returns SQL plus `ResultShape`. The query cache key includes the route. `$param` templating, `USE`, multi-schema selection and the depth guards are applied in the seam. | SQL byte-identical except the trailing `SETTINGS` clause; SQL-only output executed on a session without the setting returns NULLs | #1314 |
+| 1 | Oracle harness (§6.1–6.2) + result goldens for the corpus on the standard layout | goldens generated; **existing engine scored** (gives the baseline list of wrong answers) | — |
+| 2 | Clause-list parser (§4.2) with the legacy AST derived from it | legacy SQL goldens byte-identical; new shapes parse | parse gaps |
+| 3 | Binder + scope + label inference, no SQL (`cg bind` debug output) | binds the whole corpus or reports `Unsupported`; label parity with TypeInference; name-resolution tests incl. re-binding after WITH, shadowing, ORDER BY visibility | — |
+| 4 | Lowering, standard layout: node and edge scans, fixed hops, comma patterns, reused relationship variables, WHERE, WITH/RETURN incl. aggregation, DISTINCT, ORDER/SKIP/LIMIT/WHERE order, `shadow` mode | Neo4j-equal on every corpus query it supports; 0 correct→wrong | #1304 #933 #1263 #1089 #1311 |
+| 5 | OPTIONAL MATCH (§4.9) | as 4 + timing vs legacy | #1235 #1305 #1306 #615 #1190 |
+| 6 | Paths (§4.11): make the generator call clean first, then uniqueness (§4.6.3), path functions, list bindings, shortestPath with in-search predicates | as 4 | #1310 #1307 #1203 #1210 #1300 #1292 #1178 #1177 #1312 |
+| 7 | UNWIND, Cypher UNION, `Alternatives` (undirected, unlabeled) | as 4 | #1249 (with 8) |
+| 8 | Layouts through `PatternSchemaContext`: FK-edge, denormalized, polymorphic, composite, mixed access, coupled | Neo4j-equal per layout | #1302 #1189 #1149 #1160 #1155 #1106 #1186 #1184 #504 #627 #1007 #924 #927 #1157 #1259 |
+| 9 | Subquery expressions + pattern comprehension (§4.12) | as 4 | #615.2 #640 #1105 #1062 (semantics) |
+| 10 | Default `on`; the legacy path is reachable only for `Unsupported` | full live suite green on `on`; LDBC SF1 timing within budget | — |
+| 11 | Delete the legacy read path in steps (analyzer passes, render composition, the 48 repairs, the name-keyed maps), one PR per group | coverage of the corpus = 100% on the new path | — |
+
+While P-4c is open: no new allowlist widenings or per-shape repairs in the
+legacy composition code. A new silently wrong bug in a family that P-4c covers
+is fixed by refusing loudly in legacy and recording a corpus entry for the
+slice that will handle it.
+
+## 8. Risks and open questions
+
+1. **Scale of the change.**
+   - New code: the binder, lowering and pushdown. My estimate for the read
+     path, excluding reused leaves, is 6–9k lines.
+   - Code eventually deleted: well over 50k lines (analyzer joins and
+     filters, plus render composition).
+   - The strangler routing and the per-slice Neo4j acceptance are what keep
+     this from being a big-bang rewrite. The risk that remains is running two
+     paths for a long time. Slice 11 has a coverage exit criterion, and §7's
+     freeze stops the legacy path growing in the meantime.
+2. **Performance.**
+   - Drive relations and inlined CTEs can evaluate an input twice (§4.9).
+   - The plain left-deep join order may lose some selective-anchor reorders.
+   - Slices 5 and 10 measure the social benchmark and LDBC SF1 against
+     legacy. Any regression beyond a stated budget blocks the slice and is
+     addressed in the lowering (anchor-only form, semi-join restriction of a
+     drive), never by loosening semantics.
+3. **Recursive CTEs** whose start is restricted by a drive or carried
+   relation: the pushdown in §4.8 d is per-start-property. Restricting the
+   start by a *join* (a semi-join of start ids) is an optimization to measure
+   in slice 6.
+4. **Parameterized views, FINAL, schema `filter:`** come through
+   `ViewTableRef` and `SchemaFilter` per element. The verification must
+   include the `data_security` and filtered-endpoint fixtures.
+5. **Databricks.** Lowering reuses the dialect emitter. The path generator
+   already has a Databricks form. The differential runs on Databricks too, if
+   the fixtures are available (`scripts/load_databricks_fixtures.py`).
+6. **Neo4j differences that are not bugs.** Ordering without ORDER BY, float
+   formatting, and the temporal output format (#1055 #1068) are normalized by
+   the comparator, and listed in the comparator, not hidden in goldens.
+
+## 9. Non-goals
+
+- Write clauses, `CALL`, `COPY TO`, and the schema-discovery and NL tools.
+- New Cypher features beyond what the parser accepts today, other than
+  clause-order freedom (§4.2).
+- Changing result column naming or the Bolt and HTTP formats.
+
+## 10. Checklist
+
+- [ ] S0 design doc + P-4c
+- [ ] S0.5 one translate seam
+- [ ] S1 Neo4j oracle + result goldens (standard)
+- [ ] S2 clause-list parser
+- [ ] S3 binder + scope + labels
+- [ ] S4 lowering: MATCH / WHERE / WITH / RETURN (standard)
+- [ ] S5 OPTIONAL MATCH unit
+- [ ] S6 paths + uniqueness + shortestPath
+- [ ] S7 UNWIND / UNION / alternatives
+- [ ] S8 layouts
+- [ ] S9 subquery expressions
+- [ ] S10 default on
+- [ ] S11 legacy deletion
+
+## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
+
+**A. WITH finalization (`with_to_cte/mod.rs` unless noted)**
+1. `prune_joins_covered_by_last_cte` 4680
+2. `clear_stale_joins_for_cte_aliases` `plan_builder_utils.rs:3974`
+3. `reattach_unwind_array_joins` 8890
+4. `rewrite_cte_join_conditions_and_prune_orphans` 6920
+5. `fix_composite_alias_refs_and_augment_scope` 7289
+6. `tie_or_reject_cross_joined_pattern_endpoint` 7181
+7. `restructure_post_with_optional_match` 6290
+8. `apply_passthrough_cte_name_remappings` 3158
+9. `reconcile_stale_cte_name_references` 3062
+10. `resolve_final_from_against_cte` 3340
+11. `resolve_cross_table_with_cte_joins` 4101
+12. `extract_cte_join_condition_from_filter` `plan_builder_utils.rs:379`
+13. `generate_vlp_with_cte_join_conditions` 3427
+14. `restructure_post_with_optional_or_insert_cte_join` 3665
+15. `apply_hop_uniqueness_after_with` 3949
+16. `add_cte_cross_joins_to_union_branches` 3185
+17. `apply_final_outer_scope_passes` 4645
+18. `fix_orphan_table_aliases` `variable_scope.rs:1397`
+19. `reject_with_cte_joined_twice_under_vlp` 4076
+20. `apply_weighted_shortest_path_restructure` 3252
+
+**B. Main render path**
+21. `rewrite_vlp_union_branch_aliases` `plan_builder_utils.rs:1740`
+22. `rewrite_vlp_aggregate_aliases` `vlp_rewrite.rs:46`
+23. `rewrite_render_plan_with_scope` `variable_scope.rs:530`
+24. `remap_coupled_rel_vars_in_filter` `plan_builder_helpers.rs:3304`
+25. `from_marker_pre_filter` `plan_builder.rs:169`
+26. `apply_anylast_wrapping_for_group_by` `plan_builder.rs:57`
+27. `rewrite_denorm_optional_vlp_anchor_scan` `plan_builder_helpers.rs:691`
+28. Pattern-comprehension join injection `plan_builder.rs:1523,5843`
+29. Optional-denorm `rewrite_denorm_refs` `plan_builder.rs:4787`
+30. `deduplicate_join_aliases` `join_deduplicator.rs:16`
+31. `inject_own_table_joins` `join_builder.rs:172`
+32. `apply_optional_node_pre_filters` `join_builder.rs:312`
+33. The #583 edge-target swap `join_builder.rs:~2192`
+
+**C. `plan_optimizer::optimize_plan`**
+34. `remove_dead_ctes` 123
+35. `prune_vlp_columns` 239
+36. `prune_cte_columns` 340
+37. `drop_from_alias_join_entries` 2102
+38. `fold_optional_edge_node_join_with_predicate` 1596
+39. `remove_unreferenced_joins` 2324
+40. `eliminate_bridge_nodes_in_plan` 2442
+41. `remove_redundant_edge_self_joins` 1935
+42. `reorder_from_for_selective_predicate` 4485
+
+**D. Emitter `render_plan_to_sql` (`to_sql_query.rs`)**
+43. `flatten_all_ctes` 6262 (kept: this is printing, not a repair)
+44. `short_circuit_reduce_over_empty_list` 6353
+45. `rewrite_vlp_in_cte_bodies` 5984
+46. `rewrite_vlp_select_aliases` 1453
+47. `drop_disconnected_vlp_joins` 1334
+48. `unify_mixed_anchor_branch_selects` 1394
+49. `sort_joins_by_dependency` `plan_builder_helpers.rs:5662`
+
+## Appendix B — prototype
+
+The SQL below is the lowering of §4 written by hand. `VLP(p, n)` is the
+existing recursive CTE shape (base case plus recursive step with
+`NOT has(path_edges, …)`), unchanged. Run with `join_use_nulls = 1`. The
+harness (`proto.py` and `neo.py`) is kept with the slice 1 oracle work.
+
+**#1305**: a WITH, then a hop and a path, then OPTIONAL with a WHERE on a
+variable from the required part:
+
+```sql
+WITH RECURSIVE
+  w1 AS (SELECT c.user_id AS c_id FROM users z JOIN follows r ON r.follower_id = z.user_id
+         JOIN users c ON c.user_id = r.followed_id),                         -- WITH c : scope {c}
+  p1 AS VLP(…, 2),
+  m2 AS (SELECT w1.c_id, a.user_id AS a_id, p1.end_id AS b_id               -- MATCH: scope {c, t1, a, b}
+         FROM w1 JOIN follows t1 ON t1.follower_id = w1.c_id
+         JOIN users a ON a.user_id = t1.followed_id
+         JOIN p1 ON p1.start_id = a.user_id JOIN users b ON b.user_id = p1.end_id
+         WHERE NOT has(p1.path_edges, tuple(t1.follower_id, t1.followed_id))),  -- clause uniqueness
+  drive AS (SELECT DISTINCT b_id, a_id FROM m2),                             -- correlation {b, a}
+  opt AS (SELECT drive.b_id AS k_b, drive.a_id AS k_a, d.user_id AS d_id
+          FROM drive JOIN follows t3 ON t3.follower_id = drive.b_id
+          JOIN users d ON d.user_id = t3.followed_id
+          WHERE drive.a_id = 2)                                              -- WHERE stays in its clause
+SELECT count(*) FROM m2 LEFT JOIN opt ON opt.k_b = m2.b_id AND opt.k_a = m2.a_id
+-- 272 = Neo4j (engine: 125)
+```
+
+**#1310**: closed path next to a hop. Two ties on `a` and nothing else:
+
+```sql
+SELECT count(*) FROM users z JOIN follows t1 ON t1.follower_id = z.user_id
+JOIN users a ON a.user_id = t1.followed_id
+JOIN p1 ON p1.start_id = a.user_id AND p1.end_id = a.user_id
+WHERE NOT has(p1.path_edges, tuple(t1.follower_id, t1.followed_id))
+-- 14 = Neo4j (engine: 77)
+```

@@ -456,7 +456,7 @@ bug-driven, not lane work. Per-shape patching of this class stays forbidden
 (§1.6). Remaining Phase-1 pass migrations (P1.4+) and Phase-3 §6.2 slices are
 fill-in work alongside, not blockers.
 
-### P-4b — WITH export contract (identity / join-key columns)  ◐ (S0 #1284, S1 #1285, S2 #1288, S4 merged; S3 blocked on #1287; next: S5 producer cleanup / S6 FK-side join columns)
+### P-4b — WITH export contract (identity / join-key columns)  ◐ → superseded by P-4c (S0 #1284, S1 #1285, S2 #1288, S4 merged; S3/S5/S6 not started: P-4c's bound plan makes the CTE column list the scope itself)
 **Plan: `docs/design/WITH_EXPORT_CONTRACT.md`.** A 2026-10-05 audit of the WITH bug
 family (about 100 closed and 11 open issues; 67 of 116 WITH-fix PRs touched
 `with_to_cte` or `plan_builder_utils`) found three structural roots: (A) no single
@@ -471,6 +471,55 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 `c.id`, FK-edge refusals) → S6 FK-side join columns (#1279 residue). Per-shape
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
+
+### P-4c — Explicit scope: bind names once, lower clause by clause  ☐ (S0 proposed 2026-10-06)
+**Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
+under P-4b roots B and C and the open P-4 slices.
+
+A 2026-10-06 step-back found about 30 of 46 open issues in three families:
+OPTIONAL MATCH, attaching a variable-length path to its neighbours, and WITH
+scope. They share one cause: no object records which variables are in scope
+at a point in the query.
+- After planning, all scopes are merged into one map keyed by alias name.
+- 11 places look a name up across a scope boundary.
+- The parser hard-codes the clause order after a WITH, so
+  `WITH a MATCH .. MATCH ..` does not parse.
+- Rendering builds one flat FROM/JOIN list, and 48 passes repair it after it
+  is built.
+
+The plan adds a stage between parsing and rendering:
+- a **binder** that resolves every name once, against an explicit `Scope`
+  per clause;
+- a **bound relational plan** in which an OPTIONAL MATCH is one operator, a
+  path is an ordinary relation, and direction/label alternatives are unions
+  local to one element;
+- **lowering by fixed per-operator rules**, reusing `PatternSchemaContext`,
+  the recursive path CTE generator, property mapping and the dialect emitter.
+
+Filters are placed where their clause puts them, and are pushed down only
+under a legality rule.
+
+Prototype: the hand-written lowering of #1235, #1304, #1305, #1306, #1307 and
+#1310 matches **Neo4j 5.26** on the same graph in all six cases; the engine is
+wrong on all six.
+
+Migration:
+- the new path is built alongside the legacy one and is used only for queries
+  it fully supports;
+- each slice is accepted on rows compared with Neo4j across layouts, never on
+  SQL text;
+- the legacy read path is deleted once coverage reaches 100%.
+
+Slices: S1 Neo4j oracle + result goldens → S2 clause-list parser → S3 binder
+→ S4 MATCH/WITH/RETURN lowering → S5 OPTIONAL unit → S6 paths → S7
+UNWIND/UNION/alternatives → S8 layouts → S9 subquery expressions → S10 default
+on → S11 legacy deletion.
+
+**Freeze while this is open:** no new allowlist widenings or per-shape repairs
+in the legacy composition code (`with_to_cte`, `join_builder`,
+`filter_builder`, `cte_extraction` composition, `plan_optimizer` repairs). A
+new silently wrong bug in a covered family is made loud in legacy and recorded
+as a corpus entry for the slice that will handle it.
 
 ### P-5 — Stats-informed SQL generation  ◐ (S1 implemented on branch; S2/S3 open)
 New. Today all planning is rules/heuristics; the concrete gap is
