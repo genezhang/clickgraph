@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use crate::graph_catalog::config::GraphSchemaConfig;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::open_cypher_parser::clause_list::parse_clause_statement;
+use crate::query_planner::logical_expr::{LogicalExpr, TableAlias};
 
 use super::*;
 
@@ -336,4 +337,209 @@ fn huge_hop_bounds_infer_without_stepping_every_hop() {
     assert_eq!(labels(&s, "b"), set(&["Post", "User"]));
     let s = ok("MATCH (a:User)-[:AUTHORED*4000000000..]->(b) RETURN b");
     assert!(labels(&s, "b").is_empty(), "AUTHORED never chains");
+}
+
+// ------------------------------------------------- review findings (Neo4j 5.26)
+
+fn final_projection(s: &BoundStatement) -> &Projection {
+    let BoundOp::Project { projection, .. } = &s.plan else {
+        panic!("not a projection: {:?}", s.plan)
+    };
+    projection
+}
+
+fn invalid(q: &str, needle: &str) {
+    match bind(q) {
+        Err(BindError::Invalid(m)) if m.contains(needle) => {}
+        other => panic!("{q}: expected Invalid containing {needle:?}, got {other:?}"),
+    }
+}
+
+fn unsupported(q: &str) {
+    match bind(q) {
+        Err(e) if e.is_unsupported() => {}
+        other => panic!("{q}: expected Unsupported, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_variable_length_list_and_a_relationship_do_not_mix() {
+    // Neo4j: "r defined with conflicting type List<Relationship> (expected
+    // Relationship)", and the reverse.
+    assert!(matches!(
+        bind("MATCH (a)-[r*]->(b) MATCH (c)-[r]->(d) RETURN r").unwrap_err(),
+        BindError::TypeMismatch {
+            bound: "List<Relationship>",
+            used: "Relationship",
+            ..
+        }
+    ));
+    assert!(matches!(
+        bind("MATCH (a)-[r]->(b) MATCH (c)-[r*]->(d) RETURN count(*)").unwrap_err(),
+        BindError::TypeMismatch {
+            bound: "Relationship",
+            used: "List<Relationship>",
+            ..
+        }
+    ));
+    // Neo4j accepts re-matching a list (7484 rows); not bound yet.
+    unsupported("MATCH (a)-[r*]->(b) MATCH (c)-[r*]->(d) RETURN count(*)");
+}
+
+#[test]
+fn order_by_prefers_a_projected_expression_over_a_shadowing_alias() {
+    // Neo4j sorts by the projected a.age.
+    let s = ok("MATCH (a:User) RETURN a.age AS a, count(*) AS c ORDER BY a.age DESC");
+    let p = final_projection(&s);
+    assert_eq!(
+        p.order_by[0].expr,
+        LogicalExpr::TableAlias(TableAlias(p.items[0].var.name()))
+    );
+    let s = ok("MATCH (a:User) WITH a.age AS a ORDER BY a.age RETURN a");
+    let BoundOp::Project { input, .. } = &s.plan else {
+        unreachable!()
+    };
+    let BoundOp::Project { projection, .. } = &**input else {
+        unreachable!()
+    };
+    assert_eq!(
+        projection.order_by[0].expr,
+        LogicalExpr::TableAlias(TableAlias(projection.items[0].var.name()))
+    );
+    // Not where the expression is not projected: `a` is the string item.
+    let s = ok("MATCH (a:User) RETURN a.name AS a ORDER BY a.age");
+    let p = final_projection(&s);
+    let LogicalExpr::PropertyAccessExp(pa) = &p.order_by[0].expr else {
+        panic!("{:?}", p.order_by[0].expr)
+    };
+    assert_eq!(pa.table_alias.0, p.items[0].var.name());
+}
+
+#[test]
+fn star_columns_are_in_name_order_before_explicit_items() {
+    let cols = |q: &str| -> Vec<String> { ok(q).columns.iter().map(|(n, _)| n.clone()).collect() };
+    assert_eq!(cols("MATCH (b:User), (a:Post) RETURN *"), ["a", "b"]);
+    assert_eq!(
+        cols("MATCH (b:User), (a:Post) RETURN *, 1 AS a0"),
+        ["a", "b", "a0"]
+    );
+    assert_eq!(cols("MATCH (b:User), (a:Post) RETURN *, a"), ["b", "a"]);
+    assert_eq!(
+        cols("MATCH (b:User), (a:Post) RETURN *, b.name AS a"),
+        ["b", "a"]
+    );
+    assert_eq!(cols("MATCH (b:User), (a:Post) WITH * RETURN *"), ["a", "b"]);
+    invalid("MATCH (b:User) RETURN 1 AS z, *", "must be the first");
+}
+
+#[test]
+fn aggregates_only_where_neo4j_allows_them() {
+    let misplaced = "Aggregations should not be used like this";
+    invalid("MATCH (a:User) WHERE count(*) > 1 RETURN a", misplaced);
+    invalid(
+        "MATCH (a:User) WITH a WHERE count(*) > 1 RETURN a",
+        misplaced,
+    );
+    invalid("MATCH (a:User {age: count(*)}) RETURN a", misplaced);
+    invalid(
+        "MATCH (a:User) WITH a ORDER BY count(*) RETURN a",
+        "no aggregate expressions",
+    );
+    invalid(
+        "MATCH (a:User) RETURN a.name AS n ORDER BY count(*)",
+        "no aggregate expressions",
+    );
+    invalid(
+        "MATCH (a:User) WITH a ORDER BY count(*) LIMIT 1 RETURN a",
+        "no aggregate expressions",
+    );
+    invalid(
+        "MATCH (a:User) WITH a, count(*) AS c ORDER BY sum(a.age) RETURN a",
+        "Illegal aggregation",
+    );
+    invalid("UNWIND [count(*)] AS x RETURN x", "executing over lists");
+    // Equal to a projected aggregate: allowed (Neo4j: 30 and "Alice", 1).
+    ok("MATCH (a:User) WITH a, count(*) AS c WHERE count(*) > 0 RETURN count(*)");
+    ok("MATCH (a:User) RETURN a.name AS n, count(*) AS c ORDER BY count(*) DESC");
+}
+
+#[test]
+fn free_standing_order_by_rejects_aggregates() {
+    invalid(
+        "MATCH (a:User) WITH a LIMIT 5 ORDER BY count(*) RETURN a",
+        "no aggregate expressions",
+    );
+}
+
+#[test]
+fn comprehension_locals_are_not_outer_variables() {
+    // Neo4j: 90; a list; accepted.
+    ok("MATCH (a:User) RETURN count(*) * reduce(s = 0, x IN [1, 2] | s + x) AS r");
+    ok("MATCH (a:User) RETURN [x IN collect(a.age) | x] AS l");
+    ok("MATCH (a:User) RETURN DISTINCT a.name AS n ORDER BY size([x IN [1, 2] | x])");
+    // An outer variable inside the comprehension still counts.
+    invalid(
+        "MATCH (a:User) RETURN count(*) * reduce(s = 0, x IN [a.age] | s + x) AS r",
+        "implicit grouping",
+    );
+    // Neo4j: "Variable `x` already declared".
+    assert!(matches!(
+        bind("RETURN reduce(x = 0, x IN [1] | x) AS r").unwrap_err(),
+        BindError::AlreadyDeclared(n) if n == "x"
+    ));
+}
+
+#[test]
+fn properties_of_a_grouping_key_variable() {
+    // Neo4j accepts both; `RETURN a.name, count(*) + a.age` stays an error.
+    ok("MATCH (a:User) RETURN a, count(*) + a.age AS c");
+    let s = ok("MATCH (a:User) RETURN a AS b, count(*) AS c ORDER BY a.age");
+    let p = final_projection(&s);
+    let LogicalExpr::PropertyAccessExp(pa) = &p.order_by[0].expr else {
+        panic!("{:?}", p.order_by[0].expr)
+    };
+    assert_eq!(pa.table_alias.0, p.items[0].var.name(), "rewritten to b");
+    invalid(
+        "MATCH (a:User) RETURN a.name, count(*) + a.age AS c",
+        "implicit grouping",
+    );
+}
+
+#[test]
+fn value_variables_used_as_graph_elements_fall_back() {
+    // Neo4j accepts all of these (types are checked at runtime).
+    unsupported("MATCH (a:User) WITH collect(a) AS ns UNWIND ns AS n MATCH (n)-->(m) RETURN m");
+    unsupported("MATCH (a:User) WITH coalesce(a, a) AS c MATCH (c)-->(m) RETURN m");
+    unsupported("MATCH ()-[rs*]->() UNWIND rs AS r MATCH ()-[r]->() RETURN count(*)");
+    unsupported("MATCH ()-[r]->() WITH collect(r) AS rs MATCH ()-[rs*]->() RETURN count(*)");
+    // A path is never a node.
+    assert!(matches!(
+        bind("MATCH p = (a)-->(b) MATCH (p)-->(c) RETURN c").unwrap_err(),
+        BindError::TypeMismatch { .. }
+    ));
+}
+
+#[test]
+fn the_same_relationship_twice_in_one_match_falls_back() {
+    // Neo4j: 0 rows (OPTIONAL MATCH: one null row).
+    unsupported("MATCH (a)-[r]->(b), (c)-[r]->(d) RETURN count(*)");
+    unsupported("OPTIONAL MATCH (a)-[r]->(b), (c)-[r]->(d) RETURN count(*)");
+}
+
+#[test]
+fn zero_hop_segment_with_no_feasible_type_keeps_its_endpoints() {
+    // Neo4j: 30 rows, all zero-hop. The endpoint keeps its labels; the empty
+    // type set means only the zero-hop match.
+    let s = ok("MATCH (a:User)-[r:NOPE*0..]->(b) RETURN b");
+    assert_eq!(labels(&s, "b"), set(&["User"]));
+    let BindingKind::Rel { types, length } = &named(&s, "r")[0].kind else {
+        unreachable!()
+    };
+    assert!(types.is_empty());
+    assert_eq!(*length, Some((0, None)));
+}
+
+#[test]
+fn order_by_star_is_not_a_sort_key() {
+    assert!(bind("MATCH (a:User) RETURN a ORDER BY *").is_err());
 }

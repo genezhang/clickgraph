@@ -12,15 +12,25 @@
 //!   exactly the items (new bindings). The projection's own ORDER BY and WHERE
 //!   see the items' names, and also the input scope unless the projection
 //!   aggregates or is DISTINCT; then an input-scope expression is allowed only
-//!   where it equals a projected expression (and is rewritten to it).
+//!   where it equals a projected expression, or is a property of a projected
+//!   variable (and is rewritten to the item). An ORDER BY expression equal to
+//!   a projected expression means that item even where an item's name shadows
+//!   the variable it reads (`RETURN a.age AS a ORDER BY a.age`).
 //! * An aggregating item may use non-aggregated variables only inside
-//!   expressions that are grouping keys.
+//!   expressions that are grouping keys, or as properties of a projected
+//!   variable.
 //! * A free-standing ORDER BY / SKIP / LIMIT sees only the current scope.
 //! * UNION arms are bound independently; their column names must agree.
+//! * An aggregate is allowed only in a projection item, and in the ORDER BY /
+//!   WHERE of an aggregating projection where it equals a projected item.
+//! * `*` expands to the variables in scope in name order, minus the names
+//!   projected explicitly; the explicit items follow.
 //!
 //! Not bound yet (`BindError::Unsupported`, the caller falls back): CALL,
 //! updating clauses, graph patterns inside expressions, property-map
-//! parameters, re-matching a bound variable-length relationship list.
+//! parameters, re-matching a bound variable-length relationship list, the
+//! same relationship variable twice in one MATCH, and a value-typed variable
+//! (list element, `coalesce(a, b)`) used as a node or relationship.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -32,7 +42,9 @@ use crate::open_cypher_parser::ast::{
 use crate::open_cypher_parser::clause_list::{Clause, ClauseQuery, ClauseStatement};
 use crate::query_planner::logical_expr::{LogicalExpr, TableAlias};
 
-use super::expr::{bind_expr, contains_aggregate, referenced_names, replace_subtrees, NameEnv};
+use super::expr::{
+    bind_expr, contains_aggregate, referenced_names, rename_refs, replace_subtrees, NameEnv,
+};
 use super::labels::{infer, Feasibility, NodeSlot, RelSlot};
 use super::types::*;
 
@@ -182,6 +194,11 @@ impl Binder {
                 }
                 Clause::Unwind(u) => {
                     let expr = self.expr(&u.expression, &[&scope])?;
+                    no_aggregate(
+                        &expr,
+                        "Can't use aggregating expressions inside of expressions executing \
+                         over lists",
+                    )?;
                     if scope.lookup(u.alias).is_some() {
                         return Err(BindError::AlreadyDeclared(u.alias.to_string()));
                     }
@@ -230,11 +247,15 @@ impl Binder {
                     scope = out_scope;
                 }
                 Clause::Return(r) => {
-                    let star = r
-                        .clause
-                        .return_items
-                        .iter()
-                        .any(|i| matches!(i.expression, Expression::Variable("*")));
+                    let is_star = |i: &&crate::open_cypher_parser::ast::ReturnItem<'_>| {
+                        matches!(i.expression, Expression::Variable("*"))
+                    };
+                    let star = r.clause.return_items.iter().any(|i| is_star(&i));
+                    if r.clause.return_items.iter().skip(1).any(|i| is_star(&i)) {
+                        return Err(BindError::Invalid(
+                            "Invalid input '*': `*` must be the first RETURN item".to_string(),
+                        ));
+                    }
                     let items: Vec<RawItem<'_, '_>> = r
                         .clause
                         .return_items
@@ -280,8 +301,15 @@ impl Binder {
                         .order_by_items
                         .iter()
                         .map(|k| {
+                            let expr = self.expr(&k.expression, &[&scope])?;
+                            not_star(&expr)?;
+                            no_aggregate(
+                                &expr,
+                                "Cannot use aggregation in ORDER BY if there are no aggregate \
+                                 expressions in the preceding RETURN",
+                            )?;
                             Ok(SortKey {
-                                expr: self.expr(&k.expression, &[&scope])?,
+                                expr,
                                 descending: matches!(k.order, OrerByOrder::Desc),
                             })
                         })
@@ -355,6 +383,9 @@ impl Binder {
         // Label inference over the whole clause.
         self.infer_labels(&mut bound_parts, &pb.introduces);
         let predicate = where_.map(|w| self.expr(w, &[&clause_scope])).transpose()?;
+        if let Some(p) = &predicate {
+            no_aggregate(p, AGGREGATE_MISPLACED)?;
+        }
         let pattern = BoundPattern { parts: bound_parts };
         Ok((
             BoundOp::Match {
@@ -450,25 +481,8 @@ impl Binder {
             ProjectionKind::With => "WITH",
             ProjectionKind::Return => "RETURN",
         };
-        // Items, in the input scope.
-        let mut items: Vec<ProjItem> = Vec::new();
-        let mut names: Vec<String> = Vec::new();
-        if raw.star {
-            for (name, var) in input.entries() {
-                items.push(ProjItem {
-                    var: *var,
-                    name: name.clone(),
-                    expr: LogicalExpr::TableAlias(TableAlias(var.name())),
-                    aggregate: false,
-                });
-                names.push(name.clone());
-            }
-            if items.is_empty() {
-                return Err(BindError::Invalid(format!(
-                    "{what} * is not allowed when there are no variables in scope"
-                )));
-            }
-        }
+        // Explicit items, in the input scope.
+        let mut explicit: Vec<ProjItem> = Vec::new();
         for it in &raw.items {
             let name = match (it.alias, it.expr) {
                 (Some(a), _) => a.to_string(),
@@ -478,22 +492,57 @@ impl Binder {
                     _ => return Err(BindError::MissingAlias(what)),
                 },
             };
-            if names.contains(&name) {
+            if explicit.iter().any(|i| i.name == name) {
                 return Err(BindError::DuplicateColumn(name));
             }
             let expr = self.expr(it.expr, &[input])?;
             let aggregate = contains_aggregate(&expr);
-            names.push(name.clone());
-            items.push(ProjItem {
+            explicit.push(ProjItem {
                 var: VarId(u32::MAX), // assigned below
                 name,
                 expr,
                 aggregate,
             });
         }
+        // `*` (Neo4j 5.26): the variables in scope in name order, except the
+        // names projected explicitly; the explicit items follow.
+        let mut items: Vec<ProjItem> = Vec::new();
+        if raw.star {
+            let mut entries: Vec<&(String, VarId)> = input.entries().iter().collect();
+            if entries.is_empty() {
+                return Err(BindError::Invalid(format!(
+                    "{what} * is not allowed when there are no variables in scope"
+                )));
+            }
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            for (name, var) in entries {
+                if explicit.iter().any(|i| &i.name == name) {
+                    continue;
+                }
+                items.push(ProjItem {
+                    var: *var,
+                    name: name.clone(),
+                    expr: LogicalExpr::TableAlias(TableAlias(var.name())),
+                    aggregate: false,
+                });
+            }
+        }
+        items.extend(explicit);
         let aggregating = items.iter().any(|i| i.aggregate);
+        // Bare variables projected without aggregation (grouping keys when
+        // aggregating), by generated name -> the item.
+        let bare_items: Vec<(String, usize)> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| !i.aggregate)
+            .filter_map(|(idx, i)| match &i.expr {
+                LogicalExpr::TableAlias(TableAlias(n)) => Some((n.clone(), idx)),
+                _ => None,
+            })
+            .collect();
         // Implicit grouping: outside aggregate calls, an aggregating item may
-        // only use expressions that are grouping keys.
+        // only use grouping-key expressions, properties of a grouping-key
+        // variable, and its own local variables.
         if aggregating {
             let keys: Vec<(LogicalExpr, LogicalExpr)> = items
                 .iter()
@@ -507,11 +556,14 @@ impl Binder {
                 .collect();
             for it in items.iter().filter(|i| i.aggregate) {
                 let without_keys = replace_subtrees(it.expr.clone(), &keys);
-                if let Some(v) = referenced_names(&without_keys, true).first() {
+                if let Some(v) = referenced_names(&without_keys, true)
+                    .into_iter()
+                    .find(|n| !self.is_local(n) && !bare_items.iter().any(|(k, _)| k == n))
+                {
                     return Err(BindError::Invalid(format!(
                         "Aggregation column contains implicit grouping expressions: `{}` is \
                          neither aggregated nor a grouping key",
-                        self.display_name(v)
+                        self.display_name(&v)
                     )));
                 }
             }
@@ -536,7 +588,9 @@ impl Binder {
             out.insert(&it.name, it.var);
         }
         // ORDER BY and WHERE: projected names, then (without aggregation or
-        // DISTINCT) the input scope.
+        // DISTINCT) the input scope. With aggregation or DISTINCT, an input
+        // expression is allowed only where it equals a projected one (and a
+        // grouping-key variable's properties); it is rewritten to the item.
         let restricted = aggregating || raw.distinct;
         let projected: Vec<(LogicalExpr, LogicalExpr)> = items
             .iter()
@@ -547,16 +601,58 @@ impl Binder {
                 )
             })
             .collect();
+        let key_vars: HashMap<String, String> = bare_items
+            .iter()
+            .map(|(n, idx)| (n.clone(), items[*idx].var.name()))
+            .collect();
         let item_vars: BTreeSet<String> = items.iter().map(|i| i.var.name()).collect();
-        let bind_modifier = |me: &mut Self, e: &Expression<'_>| -> Result<LogicalExpr, BindError> {
-            let bound = me.expr(e, &[&out, input])?;
+        let out_names: BTreeSet<&str> = items.iter().map(|i| i.name.as_str()).collect();
+        let order_by_misplaced = if aggregating {
+            "Illegal aggregation expression(s) in order by"
+        } else {
+            "Cannot use aggregation in ORDER BY if there are no aggregate expressions in the \
+             preceding RETURN"
+        };
+        let bind_modifier = |me: &mut Self,
+                             e: &Expression<'_>,
+                             is_order_by: bool|
+         -> Result<LogicalExpr, BindError> {
+            let mut bound = me.expr(e, &[&out, input])?;
+            if is_order_by {
+                // Neo4j resolves an ORDER BY expression that equals a
+                // projected expression to that item before resolving names:
+                // `RETURN a.age AS a ORDER BY a.age` sorts by the item. Taken
+                // only when nothing left refers to an input variable whose
+                // name an item now shadows.
+                if let Ok(in_input) = me.expr(e, &[input]) {
+                    let rewritten = replace_subtrees(in_input, &projected);
+                    let shadowed = referenced_names(&rewritten, false).into_iter().any(|n| {
+                        !item_vars.contains(&n)
+                            && !me.is_local(&n)
+                            && out_names.contains(me.display_name(&n).as_str())
+                    });
+                    if !shadowed {
+                        bound = rewritten;
+                    }
+                }
+            }
+            let rewritten = rename_refs(replace_subtrees(bound.clone(), &projected), &key_vars);
+            if contains_aggregate(&rewritten) {
+                return Err(BindError::Invalid(
+                    if is_order_by {
+                        order_by_misplaced
+                    } else {
+                        AGGREGATE_MISPLACED
+                    }
+                    .to_string(),
+                ));
+            }
             if !restricted {
                 return Ok(bound);
             }
-            let rewritten = replace_subtrees(bound, &projected);
             if let Some(v) = referenced_names(&rewritten, false)
                 .into_iter()
-                .find(|n| !item_vars.contains(n))
+                .find(|n| !item_vars.contains(n) && !me.is_local(n))
             {
                 return Err(BindError::Invalid(format!(
                     "In a WITH/RETURN with DISTINCT or an aggregation, it is not possible to \
@@ -570,13 +666,18 @@ impl Binder {
             .order_by
             .iter()
             .map(|k| {
+                let expr = bind_modifier(self, &k.expression, true)?;
+                not_star(&expr)?;
                 Ok(SortKey {
-                    expr: bind_modifier(self, &k.expression)?,
+                    expr,
                     descending: matches!(k.order, OrerByOrder::Desc),
                 })
             })
             .collect::<Result<Vec<_>, BindError>>()?;
-        let filter = raw.filter.map(|f| bind_modifier(self, f)).transpose()?;
+        let filter = raw
+            .filter
+            .map(|f| bind_modifier(self, f, false))
+            .transpose()?;
         Ok((
             Projection {
                 kind: raw.kind,
@@ -591,6 +692,13 @@ impl Binder {
         ))
     }
 
+    /// Is `generated` a comprehension / reduce / lambda variable?
+    fn is_local(&self, generated: &str) -> bool {
+        parse_var(generated)
+            .and_then(|v| self.bindings.get(v.0 as usize))
+            .is_some_and(|b| b.source == BindingSource::Local)
+    }
+
     /// The user's name for a generated name (for error messages).
     fn display_name(&self, generated: &str) -> String {
         parse_var(generated)
@@ -598,6 +706,26 @@ impl Binder {
             .and_then(|b| b.name.clone())
             .unwrap_or_else(|| generated.to_string())
     }
+}
+
+/// Neo4j's message for an aggregate outside a projection item.
+const AGGREGATE_MISPLACED: &str = "Aggregations should not be used like this.";
+
+fn no_aggregate(e: &LogicalExpr, message: &str) -> Result<(), BindError> {
+    if contains_aggregate(e) {
+        return Err(BindError::Invalid(message.to_string()));
+    }
+    Ok(())
+}
+
+/// `ORDER BY *` is not a sort key.
+fn not_star(e: &LogicalExpr) -> Result<(), BindError> {
+    if matches!(e, LogicalExpr::Star) {
+        return Err(BindError::Invalid(
+            "Invalid input '*' in ORDER BY".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn parse_var(generated: &str) -> Option<VarId> {
@@ -676,7 +804,9 @@ fn bind_props(
     for p in props.into_iter().flatten() {
         match p {
             Property::PropertyKV(kv) => {
-                out.push((kv.key.to_string(), b.expr(&kv.value, &[scope])?))
+                let value = b.expr(&kv.value, &[scope])?;
+                no_aggregate(&value, AGGREGATE_MISPLACED)?;
+                out.push((kv.key.to_string(), value))
             }
             Property::Param(_) => {
                 return Err(BindError::Unsupported(
@@ -823,10 +953,33 @@ impl<'s> PatternBuilder<'s> {
                     types: BTreeSet::new(),
                     length,
                 })?;
-                if before && length.is_some() {
-                    return Err(BindError::Unsupported(
-                        "re-matching a bound variable-length relationship list".to_string(),
-                    ));
+                if before {
+                    let bound_length = match b.binding(v).kind {
+                        BindingKind::Rel { length, .. } => length,
+                        _ => None,
+                    };
+                    match (bound_length, length) {
+                        (None, None) => {}
+                        (Some(_), None) => {
+                            return Err(BindError::TypeMismatch {
+                                name: name.to_string(),
+                                bound: "List<Relationship>",
+                                used: "Relationship",
+                            })
+                        }
+                        (None, Some(_)) => {
+                            return Err(BindError::TypeMismatch {
+                                name: name.to_string(),
+                                bound: "Relationship",
+                                used: "List<Relationship>",
+                            })
+                        }
+                        (Some(_), Some(_)) => {
+                            return Err(BindError::Unsupported(
+                                "re-matching a bound variable-length relationship list".to_string(),
+                            ))
+                        }
+                    }
                 }
                 (v, before)
             }
@@ -870,7 +1023,13 @@ impl<'s> PatternBuilder<'s> {
                 BindingKind::Node { .. } => "node",
                 BindingKind::Rel { .. } => "relationship",
                 BindingKind::Path => "path",
-                BindingKind::Value => "value",
+                BindingKind::Value => {
+                    // A list element or `coalesce(a, b)` may be a node or a
+                    // relationship at runtime; Neo4j accepts it.
+                    return Err(BindError::Unsupported(format!(
+                        "a value-typed variable `{name}` used as a {used_as}"
+                    )));
+                }
             };
             if bound != used_as {
                 return Err(BindError::TypeMismatch {
@@ -883,6 +1042,13 @@ impl<'s> PatternBuilder<'s> {
         };
         if let Some(v) = self.clause_vars.get(name).copied() {
             check(b, v)?;
+            if used_as == "relationship" {
+                // Relationship uniqueness makes the clause match nothing
+                // (OPTIONAL MATCH: one null row); lowered in S4/S5.
+                return Err(BindError::Unsupported(
+                    "the same relationship variable twice in one MATCH".to_string(),
+                ));
+            }
             return Ok((v, false));
         }
         if let Some(v) = self.input_scope.lookup(name) {

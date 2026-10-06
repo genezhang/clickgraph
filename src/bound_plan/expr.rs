@@ -143,6 +143,9 @@ fn rename(
             list,
             expression,
         }) => {
+            if accumulator == variable {
+                return Err(BindError::AlreadyDeclared(variable));
+            }
             let initial_value = rename_box(initial_value, env, locals)?;
             let list = rename_box(list, env, locals)?;
             let acc = env.new_local(&accumulator);
@@ -261,6 +264,31 @@ pub(crate) fn replace_subtrees(
         return with.clone();
     }
     map_children(expr, &mut |c| replace_subtrees(c, targets))
+}
+
+/// Re-point every reference to a binding in `map` (bare, property access,
+/// label test) at the mapped binding.
+pub(crate) fn rename_refs(
+    expr: LogicalExpr,
+    map: &std::collections::HashMap<String, String>,
+) -> LogicalExpr {
+    match expr {
+        LogicalExpr::TableAlias(TableAlias(n)) => {
+            LogicalExpr::TableAlias(TableAlias(map.get(&n).cloned().unwrap_or(n)))
+        }
+        LogicalExpr::PropertyAccessExp(PropertyAccess {
+            table_alias,
+            column,
+        }) => LogicalExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: TableAlias(map.get(&table_alias.0).cloned().unwrap_or(table_alias.0)),
+            column,
+        }),
+        LogicalExpr::LabelExpression { variable, label } => LogicalExpr::LabelExpression {
+            variable: map.get(&variable).cloned().unwrap_or(variable),
+            label,
+        },
+        other => map_children(other, &mut |c| rename_refs(c, map)),
+    }
 }
 
 fn visit(e: &LogicalExpr, f: &mut dyn FnMut(&LogicalExpr)) {

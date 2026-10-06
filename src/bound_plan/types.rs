@@ -36,7 +36,9 @@ pub enum BindingKind {
     /// inference (§4.7); an empty set means the pattern cannot match.
     Node { labels: BTreeSet<String> },
     /// A relationship; with `length` it is a variable-length relationship,
-    /// which binds a LIST of relationships.
+    /// which binds a LIST of relationships. An empty `types` set means no
+    /// relationship can match; for a segment with minimum length 0 the
+    /// zero-hop match (end = start) still stands.
     Rel {
         types: BTreeSet<String>,
         length: Option<(u32, Option<u32>)>,

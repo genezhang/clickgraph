@@ -742,9 +742,10 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 - 2026-10-06: **P-4c S3: binder, explicit scope and label inference** (`src/bound_plan/`).
   - `bind_statement` turns a clause-list statement into a bound plan: every variable is resolved once against the current scope and gets a `VarId`; WITH/RETURN outputs are new bindings; OPTIONAL MATCH bindings are nullable.
-  - Scope rules follow Neo4j 5.26 and are unit-tested (20 tests): ORDER BY/WHERE visibility after WITH, implicit grouping, UNION columns matched by name, comprehension locals, re-binding after WITH (#1304), a WITH scalar reusing a node name (#1263).
+  - Scope rules follow Neo4j 5.26 and are unit-tested (31 tests): ORDER BY/WHERE visibility after WITH, implicit grouping, UNION columns matched by name, comprehension locals, re-binding after WITH (#1304), a WITH scalar reusing a node name (#1263).
   - Labels are inferred from the schema to a fixed point. An unknown label or impossible pattern is an empty set (no rows, as in Cypher), not an error.
-  - Whole corpus: 1445 bound, 35 fall back (graph patterns inside expressions), 0 bind errors on queries Neo4j answers. A hang on closed patterns `(a)-[r]->(a)` was found and fixed before merge.
+  - Whole corpus: 1443 bound, 35 fall back (graph patterns inside expressions), and the 4 bind errors are all queries Neo4j also rejects. A hang on closed patterns `(a)-[r]->(a)` was found and fixed before merge.
+  - Review against Neo4j found nine defects (list vs relationship reuse, ORDER BY alias vs projected expression, `RETURN *` order, misplaced aggregates, comprehension locals in grouping, grouping-key properties, value variables as nodes, and three minor ones); all fixed, each test mutation-checked.
   - Not wired into translation yet; S4 lowers the bound plan.
 
 - 2026-10-06: **P-4c S2: clause-list parser** (`src/open_cypher_parser/clause_list.rs`).
