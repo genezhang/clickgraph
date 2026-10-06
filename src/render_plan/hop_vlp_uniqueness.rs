@@ -147,15 +147,24 @@ pub(super) fn guards(plan: &LogicalPlan) -> Vec<RenderExpr> {
     if !plain(from_col) || !plain(to_col) || !edge_id_cols.iter().all(|c| plain(c)) {
         return vec![];
     }
+    // #1294 / #1297: a node carried through WITH has no label in this scope; its label comes
+    // from the WITH export contract. A part whose context still cannot be rebuilt takes the
+    // verdict of the others: the path and its hops share ONE relationship type (checked
+    // above). With no verdict at all the layout is unknown and the clause is left unguarded.
+    // A carried node's single label, from the WITH export contract.
+    let carried_label =
+        |alias: &str| match crate::server::query_context::with_cte_labels(alias).as_deref() {
+            Some([label]) => Some(label.clone()),
+            _ => None,
+        };
+    let mut verdict = false;
     for gr in std::iter::once(path).chain(hops.iter().copied()) {
-        let Ok(ctx) = super::cte_extraction::recreate_pattern_schema_context(gr, &schema, None)
-        else {
-            // #1294: a hop between two WITH-carried nodes has no endpoint labels left to
-            // rebuild its context from. It has the path's single relationship type (checked
-            // above), so the path's verdict on the layout stands for it.
-            if std::ptr::eq(gr, path) {
-                return vec![];
-            }
+        let Ok(ctx) = super::cte_extraction::recreate_pattern_schema_context_with_label_hint(
+            gr,
+            &schema,
+            None,
+            &carried_label,
+        ) else {
             continue;
         };
         if !matches!(
@@ -164,6 +173,10 @@ pub(super) fn guards(plan: &LogicalPlan) -> Vec<RenderExpr> {
         ) {
             return vec![];
         }
+        verdict = true;
+    }
+    if !verdict {
+        return vec![];
     }
 
     let mapper = crate::sql_generator::function_mapper::current_function_mapper();

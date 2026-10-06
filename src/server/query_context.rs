@@ -248,6 +248,12 @@ pub struct QueryContext {
     /// see the CTE's schema directly.
     pub with_cte_identity: HashMap<String, (u64, Vec<String>)>,
 
+    /// The labels of each node a WITH CTE exports, published and scoped with
+    /// `with_cte_identity`. A carried node has no label in the scope after the
+    /// WITH; `hop_vlp_uniqueness` reads it from here to rebuild a pattern's
+    /// schema context (#1297).
+    pub with_cte_labels: HashMap<String, (u64, Vec<String>)>,
+
     /// Current "CTE scope generation" — see `enter_cte_scope_generation`.
     /// `0` is the sentinel meaning "no `build_chained_with_match_cte_plan`
     /// invocation is currently active" (i.e. we're between independent
@@ -1162,6 +1168,7 @@ pub fn enter_cte_scope_generation() -> u64 {
             if prev == 0 {
                 ctx.cte_scope_for_correlation.clear();
                 ctx.with_cte_identity.clear();
+                ctx.with_cte_labels.clear();
             }
             ctx.cte_scope_generation = new_gen;
             prev
@@ -1247,6 +1254,27 @@ pub fn set_with_cte_identity(alias: String, columns: Vec<String>) {
         let generation = ctx.cte_scope_generation;
         ctx.with_cte_identity.insert(alias, (generation, columns));
     });
+}
+
+/// Publish the labels of a node a WITH CTE exports. See `with_cte_labels`.
+pub fn set_with_cte_labels(alias: String, labels: Vec<String>) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        let mut ctx = ctx.borrow_mut();
+        let generation = ctx.cte_scope_generation;
+        ctx.with_cte_labels.insert(alias, (generation, labels));
+    });
+}
+
+/// The labels of WITH-exported node `alias`, scoped like `with_cte_identity`.
+pub fn with_cte_labels(alias: &str) -> Option<Vec<String>> {
+    QUERY_CONTEXT
+        .try_with(|ctx| {
+            let ctx = ctx.borrow();
+            let (generation, labels) = ctx.with_cte_labels.get(alias)?;
+            (*generation == ctx.cte_scope_generation).then(|| labels.clone())
+        })
+        .ok()
+        .flatten()
 }
 
 /// The CTE column(s) holding the identity of WITH-exported node `alias`, when

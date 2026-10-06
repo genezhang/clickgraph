@@ -324,6 +324,18 @@ pub(super) fn recreate_pattern_schema_context(
     schema: &GraphSchema,
     plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
 ) -> Result<PatternSchemaContext, RenderBuildError> {
+    recreate_pattern_schema_context_with_label_hint(graph_rel, schema, plan_ctx, &|_| None)
+}
+
+/// [`recreate_pattern_schema_context`] with `label_hint` consulted for an endpoint whose
+/// label neither the plan nor `plan_ctx` resolves (before inferring it from the
+/// relationship): a node carried through WITH, whose label the export contract keeps.
+pub(super) fn recreate_pattern_schema_context_with_label_hint(
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+    schema: &GraphSchema,
+    plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
+    label_hint: &dyn Fn(&str) -> Option<String>,
+) -> Result<PatternSchemaContext, RenderBuildError> {
     // Get relationship types first — needed for label inference when nodes are unlabeled
     let rel_types = graph_rel
         .labels
@@ -353,8 +365,12 @@ pub(super) fn recreate_pattern_schema_context(
         None
     };
 
-    let resolved_left = explicit_left.or(left_from_ctx);
-    let resolved_right = explicit_right.or(right_from_ctx);
+    let resolved_left = explicit_left
+        .or(left_from_ctx)
+        .or_else(|| label_hint(&graph_rel.left_connection));
+    let resolved_right = explicit_right
+        .or(right_from_ctx)
+        .or_else(|| label_hint(&graph_rel.right_connection));
 
     // Tier 3: Infer from relationship schema when still missing
     // GraphRel convention: left = source (from_node), right = target (to_node).

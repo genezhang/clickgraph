@@ -2198,10 +2198,11 @@ pub enum Descend {
 /// for (against a brute-force oracle on the standard, polymorphic and denormalized
 /// fixtures): ONE left-deep chain of directed hops, at least one of them a CTE-backed
 /// variable-length path written in its own direction, with a WITH-carried node only as
-/// the chain's FIRST node. Anything else — a comma pattern, an undirected hop, a path
-/// written backwards, a carried node in the middle or at the end of the chain (a closed
-/// pattern included) — runs into other, older defects that the repair would turn from a
-/// loud error into silently wrong rows, so it is left exactly as it was.
+/// the chain's FIRST node — or, for a path chain, two carried nodes joined by one fixed hop
+/// anywhere in it (#1294, #1297). Anything else — a comma pattern, an undirected hop, a path
+/// written backwards, a single carried node in the middle or at the end of the chain (a
+/// closed pattern included) — runs into other, older defects that the repair would turn
+/// from a loud error into silently wrong rows, so it is left exactly as it was.
 ///
 /// `is_carried` says whether an alias is bound by a `WITH` CTE; `is_cte_backed_vlp`
 /// whether a variable-length `GraphRel` renders as a recursive CTE (a render-layer
@@ -2266,36 +2267,54 @@ fn supported_chain(
     let [bottom] = bottoms.as_slice() else {
         return false;
     };
-    // ... and only ONE carried node, except (#1294, path chains only) the two ends of the
-    // chain's first FIXED hop: `WITH c, z MATCH (z)-[:R]->(c)-[:R*1..2]->(b)`. Its right end
-    // then also starts the next hop (a second slot).
+    // ... and only ONE carried node, except (path chains only) the two ends of ONE fixed hop
+    // of the chain: `WITH c, z MATCH (z)-[:R]->(c)-[:R*1..2]->(b)` (#1294, the first hop) or
+    // `MATCH (a)-[:R]->(z)-[:R]->(c)-[:R*1..2]->(b)` (#1297, a middle one). Each end may also
+    // be an end of one more hop (a second slot), never a third.
     let carried_in_chain: std::collections::HashSet<&String> = rels
         .iter()
         .flat_map(|r| [&r.left_connection, &r.right_connection])
         .filter(|a| is_carried(a))
         .collect();
-    let carried_bottom_hop = want_vlp
-        && carried_in_chain.len() == 2
-        && bottom.variable_length.is_none()
-        && bottom.left_connection != bottom.right_connection
-        && is_carried(&bottom.left_connection)
-        && is_carried(&bottom.right_connection);
-    if carried_in_chain.len() > 1 && !carried_bottom_hop {
+    let carried_hop: Option<&&GraphRel> = if want_vlp && carried_in_chain.len() == 2 {
+        rels.iter().find(|r| {
+            r.variable_length.is_none()
+                && r.left_connection != r.right_connection
+                && is_carried(&r.left_connection)
+                && is_carried(&r.right_connection)
+        })
+    } else {
+        None
+    };
+    if carried_in_chain.len() > 1 && carried_hop.is_none() {
+        return false;
+    }
+    // An OPTIONAL hop at a carried node of the pair is not verified: its tie to the WITH CTE
+    // lands in the CTE's INNER join (the NULL-extended rows are lost), or the carried node is
+    // left untied (#1301 review: 0 rows vs 4, 30 vs 22).
+    if carried_hop.is_some()
+        && rels.iter().any(|r| {
+            r.is_optional.unwrap_or(false)
+                && (is_carried(&r.left_connection) || is_carried(&r.right_connection))
+        })
+    {
         return false;
     }
     for gr in &rels {
         for alias in [&gr.left_connection, &gr.right_connection] {
             if is_carried(alias) {
-                let in_bottom = std::ptr::eq(*gr, *bottom);
                 let slots = rels
                     .iter()
                     .flat_map(|r| [&r.left_connection, &r.right_connection])
                     .filter(|a| *a == alias)
                     .count();
-                // The shared end of a carried bottom hop also starts the next hop.
-                let shared_end = carried_bottom_hop && *alias == bottom.right_connection;
-                let allowed = if shared_end { 2 } else { 1 };
-                if !(in_bottom || shared_end) || slots != allowed {
+                let ok = match carried_hop {
+                    Some(h) => {
+                        (*alias == h.left_connection || *alias == h.right_connection) && slots <= 2
+                    }
+                    None => std::ptr::eq(*gr, *bottom) && slots == 1,
+                };
+                if !ok {
                     return false;
                 }
             }

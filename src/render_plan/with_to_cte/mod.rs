@@ -6843,6 +6843,12 @@ fn publish_cte_alias_scopes(
             if let (crate::render_plan::cte_export::CteExportKind::Node, Some(identity)) =
                 (&export.kind, export.identity)
             {
+                if !effective.is_empty() {
+                    crate::server::query_context::set_with_cte_labels(
+                        alias.clone(),
+                        effective.clone(),
+                    );
+                }
                 crate::server::query_context::set_with_cte_identity(alias.clone(), identity);
             }
         }
