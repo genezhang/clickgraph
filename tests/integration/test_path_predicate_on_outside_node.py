@@ -125,3 +125,40 @@ def test_optional_path_compared_with_an_outside_node_is_refused():
         "WHERE b <> z RETURN count(*) AS k",
     )
     assert "results" not in result or result.get("error"), result
+
+
+# --- review of #1309 -------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ("MATCH (z:User)-[:FOLLOWS]->(a:User) WITH z, a "
+         "MATCH (a)-[:FOLLOWS*1..3]->(a) WHERE z.age > a.age RETURN count(*) AS k", 14),
+        # next to a hop the closed path already loses its closure (#1310: 77 unfiltered vs 14)
+        ("MATCH (z:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..3]->(a) "
+         "WHERE z.user_id <> a.user_id RETURN count(*) AS k", 14),
+    ],
+)
+def test_closed_path_compared_with_an_outside_node_is_never_wrong(query, expected):
+    # A closed path keeps its old placement for an outside conjunct (inside the CTE: refused
+    # loudly), until #1310 restores the closure next to a hop. It must never be answered wrong.
+    result = _result("social_integration", query)
+    if "results" in result:
+        assert result["results"][0]["k"] == expected, query
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        # the other path's endpoint was resolved against this path's CTE (73 vs 159)
+        "MATCH (a:User)-[:FOLLOWS*1..2]->(c:User)-[:FOLLOWS*1..2]->(b:User) "
+        "WHERE b.user_id > a.user_id RETURN count(*) AS k",
+        # a WHERE equality became the WITH CTE's join key; `c` was left untied (160 vs 20)
+        "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c, z "
+        "MATCH (c)<-[:FOLLOWS*1..2]-(b:User) WHERE b.user_id = z.user_id RETURN count(*) AS k",
+    ],
+)
+def test_unsupported_outside_comparisons_are_refused(query):
+    result = _result("social_integration", query)
+    assert "results" not in result or result.get("error"), result

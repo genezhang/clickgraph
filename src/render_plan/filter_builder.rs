@@ -201,6 +201,27 @@ fn outside_path_outer_predicate(
         &own,
         graph_rel.path_variable.as_deref(),
     );
+    if conjuncts.is_empty() {
+        return Ok(None);
+    }
+    // Another variable-length path in this pattern: its endpoints are columns of ITS CTE, and
+    // the outer rewrite resolved them against this path's (`t.end_id` for the other path's end).
+    let other_path = [graph_rel.left.as_ref(), graph_rel.right.as_ref()]
+        .iter()
+        .any(|child| {
+            child.any_node(|n| {
+                matches!(n, LogicalPlan::GraphRel(gr)
+                    if gr.variable_length.is_some()
+                        && !crate::render_plan::from_builder::is_fixed_length_vlp(gr))
+            })
+        });
+    if other_path {
+        return Err(RenderBuildError::UnsupportedFeature(
+            "a WHERE comparing an endpoint of a variable-length path with a node of another \
+             variable-length path in the same pattern is not supported yet (#1308)."
+                .to_string(),
+        ));
+    }
     // Each conjunct is spelled against the hop that owns the outside node (mapped against the
     // path's subtree, a shared node would take the path's role column, #1170), and a bare node
     // in an identity comparison (`b = z`) becomes its id property first: the emitter turns a

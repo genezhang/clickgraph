@@ -4025,6 +4025,53 @@ fn carried_vlp_endpoint<'a>(render_plan: &RenderPlan, aliases: &'a [String]) -> 
     })
 }
 
+/// #1308: do `conditions` include a column equality that passed for the join key, while a
+/// carried alias that is an endpoint of the VLP CTE in FROM stays untied (no condition naming
+/// both the path's `start_id`/`end_id` and one of the alias's own CTE columns, `p{N}_{alias}_…`)?
+fn carried_vlp_endpoint_untied(
+    render_plan: &RenderPlan,
+    aliases: &[String],
+    conditions: &[OperatorApplication],
+) -> bool {
+    let FromTableItem(Some(from_ref)) = &render_plan.from else {
+        return false;
+    };
+    let Some(vlp) = render_plan
+        .ctes
+        .0
+        .iter()
+        .find(|cte| cte.cte_name == from_ref.name)
+    else {
+        return false;
+    };
+    // Only a COLUMN equality can pass for a tie (`c_z.p1_z_user_id = t.end_id`); a constant
+    // filter on the carried node (`a.p1_a_user_id = '1'`, the browser's expand) keeps its
+    // older handling.
+    let column_key = conditions.iter().any(|c| {
+        c.operands.len() == 2
+            && c.operands
+                .iter()
+                .all(|o| !matches!(o, RenderExpr::Literal(_) | RenderExpr::Parameter(_)))
+    });
+    if !column_key {
+        return false;
+    }
+    let spelled: Vec<String> = conditions.iter().map(|c| format!("{c:?}")).collect();
+    aliases.iter().any(|alias| {
+        let column = if vlp.vlp_cypher_start_alias.as_deref() == Some(alias.as_str()) {
+            "start_id"
+        } else if vlp.vlp_cypher_end_alias.as_deref() == Some(alias.as_str()) {
+            "end_id"
+        } else {
+            return false;
+        };
+        let own_prefix = format!("p{}_{}_", alias.len(), alias);
+        !spelled
+            .iter()
+            .any(|c| c.contains(column) && c.contains(&own_prefix))
+    })
+}
+
 /// See the call site. Only inspects a plan whose FROM is a VLP CTE.
 fn reject_with_cte_joined_twice_under_vlp(render_plan: &RenderPlan) -> RenderPlanBuilderResult<()> {
     let FromTableItem(Some(from_ref)) = &render_plan.from else {
@@ -4320,7 +4367,12 @@ fn resolve_cross_table_with_cte_joins(
                 // multiplying the rows (546 vs 36). The tie above is only found for a
                 // WITH CTE named after the node; a CTE shared by several carried nodes
                 // (`WITH c, z` -> `c_z`) never matches it.
-                if join_conditions.is_empty() {
+                // #1308: a NON-empty condition list need not tie it either — a WHERE equality
+                // with the CTE (`b.id = z.id`) is taken as the join key, while the carried path
+                // endpoint stays untied (160 vs 20 in a chain #1182 did not verify).
+                let untied_endpoint = !join_conditions.is_empty()
+                    && carried_vlp_endpoint_untied(render_plan, &aliases, &join_conditions);
+                if join_conditions.is_empty() || untied_endpoint {
                     // (sorted: `aliases` comes out of a HashMap, and the message is pinned)
                     let mut aliases = aliases.clone();
                     aliases.sort();

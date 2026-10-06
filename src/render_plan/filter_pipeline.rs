@@ -364,20 +364,24 @@ pub fn categorize_filters(
             // Path function filters (e.g., WHERE length(p) <= 3) go in path function filters
             crate::debug_println!("DEBUG: Going to path_fn_filters");
             path_fn_filters.push(predicate);
-        } else if names_alias_outside(
-            &predicate,
-            &[
-                start_cypher_alias,
-                end_cypher_alias,
-                rel_alias,
-                "start_node",
-                "end_node",
-                "rel",
-            ],
-        ) {
+        } else if start_cypher_alias != end_cypher_alias
+            && names_alias_outside(
+                &predicate,
+                &[
+                    start_cypher_alias,
+                    end_cypher_alias,
+                    rel_alias,
+                    "start_node",
+                    "end_node",
+                    "rel",
+                ],
+            )
+        {
             // #1308: names a node outside the path (`b = z`); the outer WHERE carries it
             // (`outside_path_conjuncts`). Inside the CTE it was an unresolvable alias (Code 47)
-            // or, in the denormalized `*0..N` arms, silently dropped.
+            // or, in the denormalized `*0..N` arms, silently dropped. A CLOSED path keeps the
+            // old placement: next to a hop it already loses its closure (#1310), and a conjunct
+            // emitted outside would turn that query's Code 47 into wrong rows.
             log::debug!("  -> outside the path: left to the outer WHERE");
         } else if refs_rel && column_ownership == ColumnOwnership::FromNode {
             // Column belongs to from_node_properties → start node filter

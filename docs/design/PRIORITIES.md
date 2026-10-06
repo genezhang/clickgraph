@@ -696,6 +696,10 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
   - The categorizer now leaves a conjunct naming any alias outside the path out of the CTE. The outer WHERE carries it (`outside_path_outer_predicate`): a bare outside node is lowered to its single id column, and it is mapped against the hop that owns it. OPTIONAL paths refuse it (it belongs in the LEFT JOIN's ON).
   - The path tie of a carried endpoint is completed when another condition already ties the WITH CTE: `WITH c, z MATCH (c)-[*]->(b) WHERE z.x = b.x` had its WHERE equality taken as the CTE join key in place of the tie (111 vs 12). This part came over from the #1297 repair branch.
   - Outside-node sweep (3 layouts, 4 predicate forms, chains/trailing hop/comma/post-WITH/OPTIONAL): ~120 ERR→OK, 4 WRONG→OK, 2 WRONG→ERR, 0 regressions; every other sweep unchanged.
+  - Review (3 ERR→WRONG fixed before merge):
+    - A carried path endpoint left untied by a WHERE column equality taken as the WITH CTE's join key, in a chain #1182 did not verify, is now refused (160 vs 20).
+    - A conjunct comparing the other path's endpoint in a two-path pattern is refused (73 vs 159).
+    - A closed path keeps the old in-CTE placement, so Code 47 is unchanged. Filed #1310: with a fixed hop at its node a closed path loses its closure (77 vs 14, silent on main).
 
 - 2026-10-06: **#1177 (part): a WHERE on a chained hop's node after a WITH is applied** (P-4b root B).
   - The #1170 chained-hop predicates were gated off in any query with a WITH, and nothing else emitted them: `WITH c MATCH (c)-[:R]->(a)-[:R*1..2]->(b) WHERE a.id = 1` returned every row (202 vs 66 standard; also denormalized and polymorphic), silently. That includes #1182's verified chains.
