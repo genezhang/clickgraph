@@ -951,7 +951,22 @@ slice that will handle it.
       context, so their counters, schema, stats and dialect came from
       process-global state. They now set up a context like `/query` does,
       and `translate_read` opens one for any caller without one.
-- [ ] S1 Neo4j oracle + result goldens (standard)
+- [x] S1 Neo4j oracle + result goldens (standard): `scripts/oracle/`,
+  `tests/corpus/expected/`, `tests/integration/test_neo4j_result_goldens.py`.
+  - The corpus queries tagged `social_integration` and `standard` score
+    353 correct and 94 known-wrong.
+  - The 94 are categorized in `triage.json`; the new bugs are tracked in
+    #1316.
+  - Findings that change later slices:
+    - `#1181`'s hand oracle enforces less relationship uniqueness than
+      Cypher (S6 must use Neo4j);
+    - unknown labels and impossible patterns are refused where Cypher
+      returns empty (decide in S3);
+    - an undeclared UInt8 flag compared with `true` (needs
+      `property_types`);
+    - unmapped properties are read from table columns (decide in S3).
+  - Other layouts (FK-edge, denormalized, polymorphic, composite) need
+    loader rules, added with S8.
 - [ ] S2 clause-list parser
 - [ ] S3 binder + scope + labels
 - [ ] S4 lowering: MATCH / WHERE / WITH / RETURN (standard)
