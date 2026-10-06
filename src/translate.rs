@@ -77,15 +77,35 @@ impl std::error::Error for TranslateError {}
 /// Translate a parsed read statement to SQL.
 ///
 /// The statement must already have gone through the caller's AST pre-passes
-/// (`USE` extraction, the `id()` rewrite). Must run inside the caller's
-/// `with_query_context` scope, with the schema (and dialect, where it is not
-/// the server default) set on it.
+/// (`USE` extraction, the `id()` rewrite). Server entry points call this
+/// inside their `with_query_context` scope (schema, dialect, table stats set).
+/// A caller without one (library code, unit tests) gets a fresh per-query
+/// context holding `schema`, so a translation never runs on process-global
+/// state: in particular the generated-alias counters are always this query's
+/// own, and resetting them cannot rewind a concurrent query's.
 pub fn translate_read(
     statement: CypherStatement<'_>,
     schema: &GraphSchema,
     options: ReadOptions,
 ) -> Result<ReadTranslation, TranslateError> {
-    // Deterministic generated aliases for every entry point.
+    use crate::server::query_context::{
+        has_query_context, set_current_schema, with_query_context_sync, QueryContext,
+    };
+    if has_query_context() {
+        return translate_in_context(statement, schema, options);
+    }
+    with_query_context_sync(QueryContext::new(None), || {
+        set_current_schema(std::sync::Arc::new(schema.clone()));
+        translate_in_context(statement, schema, options)
+    })
+}
+
+fn translate_in_context(
+    statement: CypherStatement<'_>,
+    schema: &GraphSchema,
+    options: ReadOptions,
+) -> Result<ReadTranslation, TranslateError> {
+    // Deterministic generated aliases: restart THIS query's counters.
     crate::query_planner::logical_plan::reset_all_counters();
 
     let planning_start = Instant::now();
@@ -130,6 +150,42 @@ pub fn translate_read(
 mod tests {
     use crate::query_planner::logical_plan::{generate_cte_id, generate_id, reset_all_counters};
     use crate::server::query_context::{with_query_context, QueryContext};
+
+    /// A translation without a caller-provided context still runs on its own
+    /// per-query counters: the process-global fallback is neither reset nor
+    /// advanced (it was, and concurrent `/query/sql` requests, which had no
+    /// context, rewound each other's aliases mid-translation).
+    #[test]
+    fn translation_without_context_leaves_global_counters_alone() {
+        let schema = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
+            include_str!("../schemas/test/social_integration.yaml"),
+        )
+        .unwrap()
+        .to_graph_schema()
+        .unwrap();
+        let translate = || {
+            let cypher = "MATCH (a:User)-[:FOLLOWS]->()-[:FOLLOWS]->(c:User) RETURN count(*)";
+            let (_, stmt) = crate::open_cypher_parser::parse_cypher_statement(cypher).unwrap();
+            super::translate_read(
+                stmt,
+                &schema,
+                super::ReadOptions {
+                    max_cte_depth: 100,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .sql
+        };
+        let before: u32 = generate_id()[1..].parse().unwrap();
+        let first = translate();
+        let after: u32 = generate_id()[1..].parse().unwrap();
+        assert_eq!(after, before + 1, "translation touched the global counter");
+        assert_eq!(first, translate(), "translation is not deterministic");
+        // Numbered from this query's own counter (`t1` is the pruned middle
+        // node), whatever the global counter's value.
+        assert!(first.contains("AS t2 ") && first.contains("AS t3 "), "{first}");
+    }
 
     /// A query's generated aliases are numbered by its OWN counters: another
     /// query resetting its counters (every translation does) must not rewind

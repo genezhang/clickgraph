@@ -418,6 +418,19 @@ where
     QUERY_CONTEXT.scope(RefCell::new(context), f).await
 }
 
+/// Whether the caller is inside a query context ([`with_query_context`] or
+/// [`with_query_context_sync`]).
+pub fn has_query_context() -> bool {
+    QUERY_CONTEXT.try_with(|_| ()).is_ok()
+}
+
+/// Synchronous counterpart of [`with_query_context`]: run `f` with `context`
+/// as the task-local query context (for synchronous entry points such as
+/// `translate::translate_read` called by library code without one).
+pub fn with_query_context_sync<R>(context: QueryContext, f: impl FnOnce() -> R) -> R {
+    QUERY_CONTEXT.sync_scope(RefCell::new(context), f)
+}
+
 // ============================================================================
 // DIALECT ACCESSORS
 // ============================================================================
