@@ -3049,11 +3049,16 @@ pub(crate) fn expand_table_alias_to_select_items(
     // body, the VLP may be in a LATER scope (after the WITH). Using VLP columns from a later
     // scope contaminates the current CTE with wrong column names.
     let vlp_info_from_plan = detect_vlp_endpoint_from_plan(plan, alias);
-    let vlp_info_from_ctx = if vlp_info_from_plan.is_some() {
-        // Plan tree confirms VLP — prefer ctx info (more detailed) if available
-        plan_ctx.and_then(|ctx| ctx.get_vlp_endpoint(alias))
-    } else {
-        None
+    let vlp_info_from_ctx = match vlp_info_from_plan.as_ref() {
+        // Plan tree confirms VLP — prefer ctx info (more detailed) if available, but only when it
+        // describes the SAME path. PlanCtx keeps one entry per alias for the whole query, so in
+        // `(c)-[*]->(a) WITH a MATCH (a)-[*]->(b)` it holds the LATER path (`a` is its START) while
+        // this WITH body holds the earlier one (`a` is its END): reading `start_id` exported
+        // the wrong endpoint of the first path (485 rows vs 339, #1291).
+        Some(from_plan) => plan_ctx
+            .and_then(|ctx| ctx.get_vlp_endpoint(alias))
+            .filter(|from_ctx| from_ctx.rel_alias == from_plan.rel_alias),
+        None => None,
     };
 
     if let Some(vlp_info) = vlp_info_from_ctx.or(vlp_info_from_plan.as_ref()) {
