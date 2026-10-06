@@ -179,12 +179,14 @@ pub fn parse_clause_query(
             | Clause::Remove(_)
             | Clause::Delete(_),
         ) => {}
-        Some(_) => return Err(nom::Err::Failure(OpenCypherParsingError {
-            errors: vec![(
+        Some(_) => {
+            return Err(nom::Err::Failure(OpenCypherParsingError {
+                errors: vec![(
                 input,
                 "Query cannot conclude with this clause (must be RETURN, an update clause or CALL)",
             )],
-        })),
+            }))
+        }
     }
     Ok((
         input,
