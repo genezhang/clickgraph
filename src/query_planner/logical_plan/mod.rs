@@ -2270,7 +2270,7 @@ fn supported_chain(
     // ... and only ONE carried node, except (path chains only) the two ends of ONE fixed hop
     // of the chain: `WITH c, z MATCH (z)-[:R]->(c)-[:R*1..2]->(b)` (#1294, the first hop) or
     // `MATCH (a)-[:R]->(z)-[:R]->(c)-[:R*1..2]->(b)` (#1297, a middle one). Each end may also
-    // be an end of the hop next to it (a second slot), never a third: a closed chain is out.
+    // be an end of one more hop (a second slot), never a third.
     let carried_in_chain: std::collections::HashSet<&String> = rels
         .iter()
         .flat_map(|r| [&r.left_connection, &r.right_connection])
@@ -2287,6 +2287,17 @@ fn supported_chain(
         None
     };
     if carried_in_chain.len() > 1 && carried_hop.is_none() {
+        return false;
+    }
+    // An OPTIONAL hop at a carried node of the pair is not verified: its tie to the WITH CTE
+    // lands in the CTE's INNER join (the NULL-extended rows are lost), or the carried node is
+    // left untied (#1301 review: 0 rows vs 4, 30 vs 22).
+    if carried_hop.is_some()
+        && rels.iter().any(|r| {
+            r.is_optional.unwrap_or(false)
+                && (is_carried(&r.left_connection) || is_carried(&r.right_connection))
+        })
+    {
         return false;
     }
     for gr in &rels {
