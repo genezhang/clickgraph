@@ -5,12 +5,16 @@
 //! * [`binder`]: clause-list statement -> [`types::BoundStatement`].
 //! * `expr`: expression binding (variables renamed to their bindings).
 //! * `labels`: label inference over a clause's pattern.
+//! * [`lower`]: bound plan -> `RenderPlan`, printed by
+//!   `render_plan_to_sql_plain` (S4a: MATCH / WHERE / RETURN on the standard
+//!   layout; everything else falls back to the legacy pipeline).
 //!
-//! S3 binds; nothing here generates SQL yet (lowering is S4).
+//! Routing is in `crate::translate` (`CLICKGRAPH_BOUND_PLAN=on`).
 
 pub mod binder;
 mod expr;
 mod labels;
+pub mod lower;
 pub mod types;
 
 #[cfg(test)]

@@ -3086,6 +3086,9 @@ impl BoltHandler {
                 max_inferred_types: Some(20), // increased for UNION branches
                 where_label_constraints: Some(label_constraints_from_second_pass),
                 max_cte_depth: 1000,
+                // Bolt's result metadata reads the legacy logical plan.
+                cypher: None,
+                bound_plan: None,
             },
         ) {
             Ok(t) => t,

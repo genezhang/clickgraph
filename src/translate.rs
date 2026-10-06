@@ -33,6 +33,39 @@ pub struct ReadOptions {
     /// (second pass); injected into the plan context before rendering.
     pub where_label_constraints: Option<HashMap<String, std::collections::HashSet<String>>>,
     pub max_cte_depth: u32,
+    /// The query text `statement` was parsed from (comments stripped). The
+    /// bound-plan path (P-4c) parses it with the clause-list parser; a caller
+    /// that leaves it `None` always gets the legacy pipeline.
+    pub cypher: Option<String>,
+    /// Override of `CLICKGRAPH_BOUND_PLAN` (tests).
+    pub bound_plan: Option<BoundPlanMode>,
+}
+
+/// Which pipeline translates read queries (`CLICKGRAPH_BOUND_PLAN`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundPlanMode {
+    /// The legacy pipeline only (default).
+    Off,
+    /// The bound-plan path for every query it lowers; the legacy pipeline
+    /// for the rest (`Unsupported`, or anything it cannot bind).
+    On,
+}
+
+impl BoundPlanMode {
+    /// From `CLICKGRAPH_BOUND_PLAN` (`on` / `off`, default off).
+    pub fn from_env() -> Self {
+        match std::env::var("CLICKGRAPH_BOUND_PLAN") {
+            Ok(v) if v.eq_ignore_ascii_case("on") => BoundPlanMode::On,
+            _ => BoundPlanMode::Off,
+        }
+    }
+}
+
+/// Which pipeline produced a translation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    Legacy,
+    BoundPlan,
 }
 
 /// Wall-clock time spent in each translation stage (HTTP metrics).
@@ -50,9 +83,13 @@ pub struct ReadTranslation {
     pub sql: String,
     /// The analyzed plan and its context, for result-shape metadata
     /// (`extract_return_metadata`, graph output) and `include_plan` debugging.
+    /// `LogicalPlan::Empty` and an empty context when `route` is
+    /// `BoundPlan` (which lowers only queries returning values, so no result
+    /// shape is needed yet).
     pub logical_plan: LogicalPlan,
     pub plan_ctx: PlanCtx,
     pub timings: TranslateTimings,
+    pub route: Route,
 }
 
 /// The stage a translation failed in. Callers map planning errors to client
@@ -108,6 +145,28 @@ fn translate_in_context(
     // Deterministic generated aliases: restart THIS query's counters.
     crate::query_planner::logical_plan::reset_all_counters();
 
+    let mode = options.bound_plan.unwrap_or_else(BoundPlanMode::from_env);
+    if mode == BoundPlanMode::On && options.where_label_constraints.is_none() {
+        if let Some(cypher) = options.cypher.as_deref() {
+            let start = Instant::now();
+            match translate_bound_plan(cypher, schema, &options) {
+                Ok(sql) => {
+                    return Ok(ReadTranslation {
+                        sql,
+                        logical_plan: LogicalPlan::Empty,
+                        plan_ctx: PlanCtx::new_empty(),
+                        timings: TranslateTimings {
+                            planning: start.elapsed(),
+                            ..Default::default()
+                        },
+                        route: Route::BoundPlan,
+                    })
+                }
+                Err(reason) => log::debug!("bound plan: legacy pipeline ({reason})"),
+            }
+        }
+    }
+
     let planning_start = Instant::now();
     let (logical_plan, mut plan_ctx) = query_planner::evaluate_read_statement(
         statement,
@@ -143,7 +202,33 @@ fn translate_in_context(
             render,
             sql_generation,
         },
+        route: Route::Legacy,
     })
+}
+
+/// The bound-plan path (P-4c): clause list → bind → lower → plain print.
+/// `Err` carries why the legacy pipeline translates the query instead.
+pub fn translate_bound_plan(
+    cypher: &str,
+    schema: &GraphSchema,
+    options: &ReadOptions,
+) -> Result<String, String> {
+    use crate::bound_plan::lower::{lower_statement, LowerOptions};
+    let (rest, stmt) = crate::open_cypher_parser::clause_list::parse_clause_statement(cypher)
+        .map_err(|e| format!("clause-list parse: {e:?}"))?;
+    if !rest.trim().trim_end_matches(';').trim().is_empty() {
+        return Err(format!("clause-list parse stopped at: {rest}"));
+    }
+    let bound = crate::bound_plan::bind_statement(&stmt, schema).map_err(|e| e.to_string())?;
+    let plan = lower_statement(
+        &bound,
+        schema,
+        &LowerOptions {
+            view_parameter_values: options.view_parameter_values.clone(),
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(crate::clickhouse_query_generator::to_sql_query::render_plan_to_sql_plain(plan))
 }
 
 #[cfg(test)]

@@ -86,3 +86,60 @@ fn the_corpus_binds() {
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// P-4c S4: lower every corpus query the bound-plan path can lower, through
+/// the same seam the server uses. No panic, and every lowered query yields
+/// SQL. With `LOWERED_LIST=<path>`, writes `schema/name` of each lowered
+/// query (the oracle comparison uses it to score the new path alone).
+#[test]
+fn the_corpus_lowers() {
+    let schema_map = load_schema_map();
+    let mut schemas: HashMap<String, GraphSchema> = HashMap::new();
+    let mut lowered = Vec::new();
+    let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
+    let mut failures = Vec::new();
+    let corpus = std::fs::read_to_string(format!("{}/queries.jsonl", corpus_root())).unwrap();
+    for line in corpus.lines().filter(|l| !l.trim().is_empty()) {
+        let entry: serde_json::Value = serde_json::from_str(line).unwrap();
+        let (cypher, name, schema_name) = (
+            entry["cypher"].as_str().unwrap(),
+            entry["name"].as_str().unwrap(),
+            entry["schema"].as_str().unwrap(),
+        );
+        let Some(map_entry) = schema_map.get(schema_name) else {
+            continue;
+        };
+        let schema = schemas
+            .entry(schema_name.to_string())
+            .or_insert_with(|| load_schema_entry(map_entry));
+        let cleaned = strip_comments(cypher);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            clickgraph::translate::translate_bound_plan(
+                &cleaned,
+                schema,
+                &clickgraph::translate::ReadOptions::default(),
+            )
+        }));
+        match result {
+            Err(_) => failures.push(format!("PANIC {schema_name}/{name}: {cypher}")),
+            Ok(Ok(sql)) => {
+                assert!(sql.starts_with("SELECT"), "{schema_name}/{name}: {sql}");
+                lowered.push(format!("{schema_name}/{name}"));
+            }
+            Ok(Err(why)) => {
+                let key = why.split(':').take(2).collect::<Vec<_>>().join(":");
+                *reasons.entry(key).or_default() += 1;
+            }
+        }
+    }
+    println!("lowered: {}", lowered.len());
+    let mut by_count: Vec<_> = reasons.into_iter().collect();
+    by_count.sort_by(|a, b| b.1.cmp(&a.1));
+    for (why, n) in by_count.iter().take(25) {
+        println!("  {n:5}  {why}");
+    }
+    if let Ok(path) = std::env::var("LOWERED_LIST") {
+        std::fs::write(path, lowered.join("\n") + "\n").unwrap();
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

@@ -542,6 +542,20 @@ impl RelationshipSchema {
         !self.is_fk_edge && self.from_node_properties.is_none() && self.to_node_properties.is_none()
     }
 
+    /// P-4c S4: the relationship is the standard layout — a plain,
+    /// monomorphic edge table (one type per table, one row per edge) whose
+    /// endpoints are concrete labels, with no label discriminator columns.
+    /// Its endpoints must also be standard (`NodeSchema::is_standard_own_table`)
+    /// for the edge to be scanned with node-table joins.
+    pub fn is_standard_edge_table(&self) -> bool {
+        self.is_plain_edge_table()
+            && !self.is_polymorphic()
+            && self.from_label_column.is_none()
+            && self.to_label_column.is_none()
+            && self.from_node != "$any"
+            && self.to_node != "$any"
+    }
+
     /// True when the relationship is a **polymorphic** edge: all edge types
     /// share one physical table, discriminated by a type column. Schema-pattern
     /// classification belongs here (axis-dispatch rule); callers outside
@@ -766,6 +780,14 @@ impl NodeSchema {
     /// Get the fully qualified table name (database.table)
     pub fn full_table_name(&self) -> String {
         format!("{}.{}", self.database, self.table_name)
+    }
+
+    /// P-4c S4: the node is the standard layout — its own table, one row per
+    /// node, not embedded in an edge table and not sharing a table with other
+    /// labels through a label column. The bound-plan lowering scans only these
+    /// directly (other layouts come in S8 through `PatternSchemaContext`).
+    pub fn is_standard_own_table(&self) -> bool {
+        !self.is_denormalized && self.label_column.is_none()
     }
 
     /// #492 review RN5: The node's identity columns as PHYSICAL table columns

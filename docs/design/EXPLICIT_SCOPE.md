@@ -1045,7 +1045,57 @@ slice that will handle it.
     parameters, re-matching a bound variable-length relationship list, the
     same relationship variable twice in one MATCH (Neo4j: no rows), and a
     list element or other value used as a node or relationship.
-- [ ] S4 lowering: MATCH / WHERE / WITH / RETURN (standard)
+- [ ] S4 lowering: MATCH / WHERE / WITH / RETURN (standard). Split in two:
+  - [x] **S4a: MATCH / WHERE / RETURN** (`src/bound_plan/lower/`).
+    - Routing: `CLICKGRAPH_BOUND_PLAN=on` (default off) in
+      `translate::translate_in_context`. A query goes to the bound-plan path
+      when the caller passes its text (`ReadOptions.cypher`: HTTP `/query`
+      except graph output, and `cypher_to_sql`) and it binds and lowers;
+      anything else, including every bind error, goes to the legacy pipeline.
+      Bolt, graph output and the metadata entry points stay legacy until the
+      result shape exists.
+    - Every pattern element is its own scan aliased `v{N}`; a variable seen
+      again (same clause or earlier) is the same scan, tied by identity.
+      Scans are joined node, relationship, node in path order, each tie in
+      the ON of the later scan, so the printer needs no join sorting.
+      Relationships of one MATCH sharing an edge table must differ (edge_id,
+      else the stored endpoint tuple).
+    - Scope: standard layout only, decided in `graph_catalog`
+      (`NodeSchema::is_standard_own_table`,
+      `RelationshipSchema::is_standard_edge_table`); one label per node and
+      one type per relationship after inference; directed fixed hops; inline
+      property maps; schema `filter:`; view parameters; FINAL on the FROM
+      table; a RETURN of values with aggregation, DISTINCT, ORDER BY, SKIP,
+      LIMIT; RETURN with no MATCH.
+    - An element whose label or type set is empty, or a variable from an
+      earlier clause written with a label it does not have, makes the query
+      return no rows (`WHERE false`), as in Cypher. A property the schema does
+      not map reads as NULL.
+    - `render_plan_to_sql_plain` prints the plan: CTE flattening, alias
+      scope for result typing, duplicate-alias disambiguation, and nothing
+      else (no `optimize_plan`, no VLP or fixed-path rewrites, no join
+      re-sorting). While it runs, `QueryContext::plain_render` makes column
+      printing skip the name-keyed resolution (registry, multi-type VLP
+      aliases, the `id` pseudo-property). Legacy printing is unchanged.
+    - Not lowered yet: whole-entity returns and `id()` (need the result
+      shape and the server's id encoding), list comprehensions (the legacy
+      converter prints lambda bodies early), composite identities used as one
+      value, FINAL on a joined table.
+    - A test fails if `src/bound_plan/` uses the analyzer, `PlanCtx`, the
+      render composition modules or task-local query state.
+    - The binder now starts a reused relationship's inference from its bound
+      types (it used the written ones, so `MATCH (a)-[r:FOLLOWS]->(b) MATCH
+      (c)-[r]->(d)` left `c` and `d` unlabeled).
+    - Acceptance (Neo4j oracle, `social_integration` and `standard`, run
+      with the switch off and on): 72 queries take the new path; 69 equal
+      Neo4j, 2 are rejected by Neo4j (`exists(prop)`), and 1 is the known
+      UInt8-vs-`true` mismatch (needs `property_types`, also wrong on the
+      legacy path). 0 correct → wrong; 8 wrong → correct (7 errors, 1 wrong
+      answer, including impossible patterns that now return empty).
+      300 corpus queries lower in all.
+  - [ ] **S4b: WITH**, free-standing ORDER BY / SKIP / LIMIT, the WITH
+    modifiers' fixed order (#1311), the result shape (whole-entity returns,
+    Bolt, graph output).
 - [ ] S5 OPTIONAL MATCH unit
 - [ ] S6 paths + uniqueness + shortestPath
 - [ ] S7 UNWIND / UNION / alternatives

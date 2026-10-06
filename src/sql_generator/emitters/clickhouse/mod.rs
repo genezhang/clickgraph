@@ -77,7 +77,7 @@ pub fn cypher_to_sql(
     let (_remaining, statement) = crate::open_cypher_parser::parse_cypher_statement(&cleaned)
         .map_err(|e| format!("Parse error: {:?}", e))?;
 
-    translate_for_library(statement, schema, max_cte_depth).map(|t| t.sql)
+    translate_for_library(statement, schema, max_cte_depth, Some(&cleaned)).map(|t| t.sql)
 }
 
 /// Convert a Cypher query to ClickHouse SQL after clearing all write
@@ -116,7 +116,8 @@ pub fn cypher_to_sql_read_only(
         }
     }
 
-    translate_for_library(statement, schema, max_cte_depth).map(|t| t.sql)
+    // The statement no longer matches the text (write clauses removed).
+    translate_for_library(statement, schema, max_cte_depth, None).map(|t| t.sql)
 }
 
 /// Convert a Cypher query string to ClickHouse SQL, also returning the
@@ -140,7 +141,8 @@ pub fn cypher_to_sql_with_metadata(
     let (_remaining, statement) = crate::open_cypher_parser::parse_cypher_statement(&cleaned)
         .map_err(|e| format!("Parse error: {:?}", e))?;
 
-    let t = translate_for_library(statement, schema, max_cte_depth)?;
+    // Callers read the logical plan for result metadata: legacy pipeline.
+    let t = translate_for_library(statement, schema, max_cte_depth, None)?;
     Ok((t.sql, t.logical_plan, t.plan_ctx))
 }
 
@@ -151,12 +153,14 @@ fn translate_for_library(
     statement: crate::open_cypher_parser::ast::CypherStatement<'_>,
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
     max_cte_depth: u32,
+    cypher: Option<&str>,
 ) -> Result<crate::translate::ReadTranslation, String> {
     crate::translate::translate_read(
         statement,
         schema,
         crate::translate::ReadOptions {
             max_cte_depth,
+            cypher: cypher.map(str::to_string),
             ..Default::default()
         },
     )
