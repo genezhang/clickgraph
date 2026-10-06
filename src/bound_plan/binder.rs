@@ -630,7 +630,7 @@ struct PatternBuilder<'s> {
     clause_vars: HashMap<String, VarId>,
     /// Anonymous nodes, by their (shared) AST node: consecutive steps of a
     /// path share the node between them.
-    anon_nodes: HashMap<*const std::cell::RefCell<NodePattern<'static>>, VarId>,
+    anon_nodes: HashMap<NodeKey, VarId>,
     introduces: Vec<VarId>,
     optional: bool,
     clause: usize,
@@ -769,7 +769,7 @@ impl<'s> PatternBuilder<'s> {
         &mut self,
         b: &mut Binder,
         np: &NodePattern<'_>,
-        shared: Option<*const std::cell::RefCell<NodePattern<'static>>>,
+        shared: Option<NodeKey>,
     ) -> Result<PatNode, BindError> {
         let labels: Vec<String> = np.labels.iter().flatten().map(|l| l.to_string()).collect();
         let (var, bound_before) = match np.name {
@@ -903,8 +903,10 @@ impl<'s> PatternBuilder<'s> {
     }
 }
 
-fn rc_key(
-    rc: &std::rc::Rc<std::cell::RefCell<NodePattern<'_>>>,
-) -> *const std::cell::RefCell<NodePattern<'static>> {
-    std::rc::Rc::as_ptr(rc) as *const std::cell::RefCell<NodePattern<'static>>
+/// Identity of a node pattern the parser shares between two steps of a path
+/// (`(a)-[]->()-[]->(c)`: the middle node is one `Rc`), used only as a map key.
+type NodeKey = *const ();
+
+fn rc_key(rc: &std::rc::Rc<std::cell::RefCell<NodePattern<'_>>>) -> NodeKey {
+    std::rc::Rc::as_ptr(rc).cast()
 }

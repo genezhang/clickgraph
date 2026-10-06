@@ -60,11 +60,13 @@ fn rename_all(
 }
 
 fn rename_box(
-    e: Box<LogicalExpr>,
+    mut e: Box<LogicalExpr>,
     env: &mut dyn NameEnv,
     locals: &mut Vec<(String, VarId)>,
 ) -> Result<Box<LogicalExpr>, BindError> {
-    Ok(Box::new(rename(*e, env, locals)?))
+    // In place, reusing the allocation.
+    *e = rename(std::mem::replace(&mut *e, LogicalExpr::Star), env, locals)?;
+    Ok(e)
 }
 
 /// Exhaustive on purpose: a new `LogicalExpr` variant is a compile error here
