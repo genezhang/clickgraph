@@ -709,9 +709,9 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 - 2026-10-05: **#1297 repaired: two WITH-carried nodes in the middle of a path chain** (P-4b root A/B; follows the #1299 refusal).
   - `WITH c, z MATCH (a)-[:R]->(z)-[:R]->(c)-[:R*1..2]->(b)` and `(a)-[:R]->(c)<-[:R]-(z)-[:R*1..2]->(b)` now translate (denormalized 16, was 96 then refused; standard/polymorphic refused before).
   - #1182's verified-chain allowlist admits the two carried ends of ONE fixed hop anywhere in a path chain (each end in at most two slots; a closed chain stays out).
-  - The WITH CTE join, already tied to one carried node by a correlation predicate, now also ties the carried path endpoint (`t.start_id = c_z.p1_c_*`), whatever the CTE is named (`c_z` for a path starting at `z`).
+  - The WITH CTE join's completion tie for a carried path endpoint (#1308) covers these shapes (`c_z` for a path starting at `z`). An OPTIONAL hop at either carried node is refused (review: 0 vs 4 polymorphic, 30 vs 22 denormalized).
   - Carried node labels are published from the export contract (`with_cte_labels`, generation-scoped like `with_cte_identity`); the #1175 hop-vs-path guard uses them to rebuild a carried pattern part's context (polymorphic), and takes the layout verdict from any part that rebuilds.
-  - New direction-aware mid-chain sweep: 34 ERR→OK (standard 12, denormalized 10, polymorphic 12), plus 6 ERR→OK in the two-carried sweep, 0 regressions. One polymorphic WRONG→ERR (#1300, loud only by accident).
+  - New direction-aware mid-chain sweep: 34 ERR→OK (standard 12, denormalized 10, polymorphic 12), plus 6 ERR→OK in the two-carried sweep; with WHERE filters on every node, 228 ERR→OK; polymorphic filtered incoming-hop shapes 6 WRONG→OK; 0 regressions. One polymorphic WRONG→ERR (#1300, loud only by accident).
 
 - 2026-10-05: **#1297: a carried node the WITH CTE join cannot be tied to is refused** (P-4b root B).
   - Next to a path in a chain outside #1182's verified allowlist, the relationship-uniqueness predicate between two fixed hops (it does not mention the CTE) became the WITH CTE's `ON`: a join tied to nothing. Denormalized `WITH c, z MATCH (a)-[:R]->(z)-[:R]->(c)-[:R*1..2]->(b)` returned 96 vs 16; the backwards-path pin `test_1182__outside_reversed_vlp_hop_after_not_repaired_den` returned 24 vs 4 (silent).
