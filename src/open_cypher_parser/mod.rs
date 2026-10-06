@@ -15,6 +15,7 @@ use nom::{IResult, Parser};
 
 pub mod ast;
 mod call_clause;
+pub mod clause_list;
 mod common;
 pub(crate) mod copy_to;
 mod create_clause;

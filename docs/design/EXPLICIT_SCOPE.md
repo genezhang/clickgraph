@@ -201,7 +201,7 @@ to table:
 |---|---|
 | `MATCH P WHERE W` | For each input record, every match of `P` that agrees with the variables already bound, filtered by `W`. Relationship uniqueness holds across **all** patterns of this clause (comma parts included) and not across clauses. |
 | `OPTIONAL MATCH P WHERE W` | As MATCH, but `W` decides whether a match counts. A record with no match that passes `W` is kept once, with the clause's new variables set to NULL. `W` never drops input records. |
-| `WITH items` followed by `ORDER BY`, `SKIP`, `LIMIT` and `WHERE` | Projection, with aggregation if any item aggregates. The non-aggregated items are the grouping keys; an expression over an aggregate is computed after aggregating. The **output scope is exactly the projected names.** **Order matters:** a `WHERE` written after `ORDER BY`/`SKIP`/`LIMIT` filters the rows that are left after the limit. Neo4j returns 0 for `WITH u ORDER BY u.age LIMIT 5 WHERE u.age > 30`, where today's engine returns 5 (#1311). The WITH's own `WHERE` and `ORDER BY` can use the projected aliases and also the pre-projection variables. When the WITH aggregates or is DISTINCT, a pre-projection reference is allowed only if it is a projected expression or variable (`WITH DISTINCT u.name AS n ORDER BY u.name` is accepted, `… ORDER BY u.age` is an error). Later clauses see only the projected names. |
+| `WITH items` followed by `ORDER BY`, `SKIP`, `LIMIT` and `WHERE` | Projection, with aggregation if any item aggregates. The non-aggregated items are the grouping keys; an expression over an aggregate is computed after aggregating. The **output scope is exactly the projected names.** **Order matters:** Neo4j 5.26 applies a WITH's `ORDER BY`, `SKIP`, `LIMIT` and `WHERE` one after another in written order. A `WHERE` after `LIMIT` filters the limited rows: Neo4j returns 0 for `WITH u ORDER BY u.age LIMIT 5 WHERE u.age > 30`, where today's engine returns 5 (#1311). `WITH x LIMIT 2 ORDER BY x` limits and then sorts. A RETURN's modifiers, by contrast, must be written ORDER BY, SKIP, LIMIT. The WITH's own `WHERE` and `ORDER BY` can use the projected aliases and also the pre-projection variables. When the WITH aggregates or is DISTINCT, a pre-projection reference is allowed only if it is a projected expression or variable (`WITH DISTINCT u.name AS n ORDER BY u.name` is accepted, `… ORDER BY u.age` is an error). Later clauses see only the projected names. |
 | `UNWIND e AS x` | One record per element; `x` is a new variable. An empty list or NULL gives no records; a non-list value gives one record. |
 | `RETURN` | Like WITH, and it ends the query. |
 | `q1 UNION [ALL] q2` | Each arm is a complete query with its own scopes. The arms' column names must match. |
@@ -972,7 +972,20 @@ slice that will handle it.
     - unmapped properties are read from table columns (decide in S3).
   - Other layouts (FK-edge, denormalized, polymorphic, composite) need
     loader rules, added with S8.
-- [ ] S2 clause-list parser
+- [x] S2 clause-list parser (`open_cypher_parser/clause_list.rs`).
+  - Every clause is in source order, and each WITH keeps its modifiers in
+    written order.
+  - It reuses the legacy clause and expression parsers; the legacy parser
+    and pipeline are unchanged.
+  - `clause_list_parity.rs` checks that both parsers agree on all 1484
+    corpus queries the legacy parser accepts, comparing canonical forms.
+    The test fails on a deliberately broken parser (34 disagreements).
+  - It accepts `WITH a MATCH .. MATCH ..`, several UNWINDs after a WITH, and
+    MATCH after OPTIONAL MATCH after a WITH. It rejects the same 21 invalid
+    corpus queries as the legacy parser.
+  - Not done here: deriving the legacy AST from the clause list. It is not
+    needed, because the legacy parser and planner are deleted together in
+    S11.
 - [ ] S3 binder + scope + labels
 - [ ] S4 lowering: MATCH / WHERE / WITH / RETURN (standard)
 - [ ] S5 OPTIONAL MATCH unit

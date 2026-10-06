@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 Neo4j oracle done; next: S2 clause-list parser)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 clause-list parser done; next: S3 binder)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,12 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-06: **P-4c S2: clause-list parser** (`src/open_cypher_parser/clause_list.rs`).
+  - `parse_clause_statement` gives each query, and each UNION arm, as clauses in source order. A WITH keeps its ORDER BY, SKIP, LIMIT and WHERE in written order: Neo4j 5.26 applies them in that order (`WITH x LIMIT 2 ORDER BY x` limits, then sorts). A RETURN's modifiers stay ORDER BY, SKIP, LIMIT.
+  - It shares the legacy clause and expression parsers, and the WITH head is factored out as `parse_with_head`. The legacy parser and pipeline are unchanged.
+  - `clause_list_parity.rs`: both parsers agree on all 1484 corpus queries the legacy parser accepts, compared in canonical form. The test is mutation-checked (34 disagreements when WITH's WHERE is dropped).
+  - Newly parsed: `WITH a MATCH .. MATCH ..` (Neo4j: 35), several UNWINDs after a WITH, and MATCH after OPTIONAL MATCH after a WITH.
 
 - 2026-10-06: **P-4c S1: Neo4j result oracle and result goldens (standard layout)** (#1316 tracks the findings).
   - `scripts/oracle/` loads a schema's logical graph from its YAML and ClickHouse tables into Neo4j 5.26, runs corpus queries on both, and compares rows exactly (`compare.py`):
