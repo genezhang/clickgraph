@@ -1,0 +1,1 @@
+render error: Unsupported feature: an OPTIONAL MATCH WHERE comparing an endpoint of a variable-length path with a node outside that path is not supported yet (#1308): it would have to decide the optional match, not filter the rows.

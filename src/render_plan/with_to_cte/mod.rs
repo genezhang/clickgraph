@@ -3418,6 +3418,11 @@ fn resolve_final_from_against_cte(
 /// Pushes any generated condition into `join_conditions`; a no-op when FROM is not
 /// a VLP CTE or the alias is neither the VLP start nor end. The caller gates this
 /// on `join_conditions.is_empty()`.
+///
+/// `tie_every_carried_endpoint`: tie each carried alias that is an endpoint of the path,
+/// whatever the CTE is named (`c_z` when the path starts at `z`). Only for a CTE join that
+/// another condition already ties, in a verified chain (#1308); the name-based lookup alone
+/// is what keeps unverified shapes refused.
 #[allow(clippy::too_many_arguments)]
 fn generate_vlp_with_cte_join_conditions(
     render_plan: &RenderPlan,
@@ -3428,6 +3433,7 @@ fn generate_vlp_with_cte_join_conditions(
     cte_schemas: &crate::render_plan::CteSchemas,
     join_conditions: &mut Vec<OperatorApplication>,
     verified_chain: bool,
+    tie_every_carried_endpoint: bool,
 ) {
     if let FromTableItem(Some(from_ref)) = &render_plan.from {
         if from_ref.name.starts_with("vlp_") {
@@ -3456,7 +3462,7 @@ fn generate_vlp_with_cte_join_conditions(
                     // tie already found: when the alias names neither end, no tie is made
                     // here and `carried_vlp_endpoint` refuses the shape (its other pattern
                     // edges may not be rendered).
-                    if !endpoints.is_empty() {
+                    if !endpoints.is_empty() || tie_every_carried_endpoint {
                         for (endpoint_is_start, endpoint) in [
                             (true, vlp_cte.vlp_cypher_start_alias.as_deref()),
                             (false, vlp_cte.vlp_cypher_end_alias.as_deref()),
@@ -4277,12 +4283,35 @@ fn resolve_cross_table_with_cte_joins(
                         &aliases,
                         cte_schemas,
                         &mut join_conditions,
-                        crate::query_planner::logical_plan::is_supported_with_vlp_chain(
-                            current_plan,
-                            &|alias| cte_references.contains_key(alias),
-                            &|gr| !super::from_builder::is_fixed_length_vlp(gr),
-                        ),
+                        from_is_vlp_cte,
+                        false,
                     );
+                } else if from_is_vlp_cte {
+                    // #1308: another condition already ties ONE carried node (a correlation
+                    // predicate, or a WHERE column equality `c_z.p1_z_user_id = t.end_id` taken
+                    // as the join key); a carried path endpoint (`c`) must be tied too, or every
+                    // WITH row pairs with every path: the path's start is never compared with
+                    // the row's `c` (111 rows vs 12).
+                    let mut vlp_ties = Vec::new();
+                    generate_vlp_with_cte_join_conditions(
+                        render_plan,
+                        &render_plan.ctes.0,
+                        &cte_name,
+                        &cte_alias,
+                        &aliases,
+                        cte_schemas,
+                        &mut vlp_ties,
+                        true,
+                        true,
+                    );
+                    for tie in vlp_ties {
+                        if !join_conditions
+                            .iter()
+                            .any(|c| format!("{c:?}") == format!("{tie:?}"))
+                        {
+                            join_conditions.push(tie);
+                        }
+                    }
                 }
 
                 // #1182: a carried node that is ALSO an endpoint of the VLP CTE in FROM
@@ -7139,6 +7168,7 @@ fn tie_or_reject_cross_joined_pattern_endpoint(
                 &carried_by(&cte_name),
                 cte_schemas,
                 &mut conditions,
+                false,
                 false,
             );
             if !conditions.is_empty() {

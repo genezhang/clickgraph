@@ -178,6 +178,134 @@ fn path_function_outer_predicate(
     }))
 }
 
+/// #1308: the conjuncts of a CTE-backed path's `WHERE` that name a node or relationship OUTSIDE
+/// the path (`WHERE b = z` for `(z)-[:R]->(c)-[:R*1..2]->(b)`), as one outer-WHERE predicate.
+/// The CTE categorizer leaves them out (they cannot be evaluated inside the recursion).
+fn outside_path_outer_predicate(
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+) -> FilterBuilderResult<Option<RenderExpr>> {
+    let Some(predicate) = graph_rel.where_predicate.as_ref() else {
+        return Ok(None);
+    };
+    let expr: RenderExpr = predicate.clone().try_into()?;
+    let own = [
+        graph_rel.left_connection.as_str(),
+        graph_rel.right_connection.as_str(),
+        graph_rel.alias.as_str(),
+        "start_node",
+        "end_node",
+        "rel",
+    ];
+    let conjuncts = crate::render_plan::filter_pipeline::outside_path_conjuncts(
+        &expr,
+        &own,
+        graph_rel.path_variable.as_deref(),
+    );
+    // Each conjunct is spelled against the hop that owns the outside node (mapped against the
+    // path's subtree, a shared node would take the path's role column, #1170), and a bare node
+    // in an identity comparison (`b = z`) becomes its id property first: the emitter turns a
+    // bare PATH endpoint into `t.end_id`, but leaves any other bare node as is.
+    let mut mapped = Vec::new();
+    for mut conjunct in conjuncts {
+        lower_outside_node_identity(&mut conjunct, &own, graph_rel)?;
+        for child in [graph_rel.left.as_ref(), graph_rel.right.as_ref()] {
+            let mut named = std::collections::HashSet::new();
+            crate::render_plan::plan_builder_utils::collect_aliases_from_single_render_expr(
+                &conjunct, &mut named,
+            );
+            let owns = |alias: &String| {
+                !own.contains(&alias.as_str())
+                    && child.any_node(|n| match n {
+                        LogicalPlan::GraphNode(gn) => &gn.alias == alias,
+                        LogicalPlan::GraphRel(gr) => {
+                            &gr.left_connection == alias
+                                || &gr.right_connection == alias
+                                || &gr.alias == alias
+                        }
+                        _ => false,
+                    })
+            };
+            if named.iter().any(owns) {
+                crate::render_plan::plan_builder_helpers::register_own_table_property_requests(
+                    &conjunct, child,
+                );
+                apply_property_mapping_to_expr(&mut conjunct, child);
+            }
+        }
+        mapped.push(conjunct);
+    }
+    Ok(mapped.into_iter().reduce(|acc, pred| {
+        RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::And,
+            operands: vec![acc, pred],
+        })
+    }))
+}
+
+/// #1308: in `x = y` / `x <> y`, replace a bare node `x` that is not one of the path's own
+/// aliases by its single id property (`z` -> `z.code`). A composite or unknown id is refused:
+/// the comparison cannot be written column by column here.
+fn lower_outside_node_identity(
+    expr: &mut RenderExpr,
+    own: &[&str],
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+) -> FilterBuilderResult<()> {
+    let RenderExpr::OperatorApplicationExp(op) = expr else {
+        return Ok(());
+    };
+    if !matches!(op.operator, Operator::Equal | Operator::NotEqual) {
+        for operand in op.operands.iter_mut() {
+            lower_outside_node_identity(operand, own, graph_rel)?;
+        }
+        return Ok(());
+    }
+    let plan = LogicalPlan::GraphRel(graph_rel.clone());
+    for operand in op.operands.iter_mut() {
+        let RenderExpr::TableAlias(alias) = operand else {
+            continue;
+        };
+        if own.contains(&alias.0.as_str()) {
+            continue;
+        }
+        let id_property = crate::server::query_context::get_current_schema()
+            .and_then(|schema| {
+                let label =
+                    crate::render_plan::cte_extraction::get_node_label_for_alias(&alias.0, &plan)?;
+                let ns = schema.node_schema_opt(&label)?;
+                match ns.node_id.id.columns().as_slice() {
+                    [col] => Some(col.to_string()),
+                    _ => None,
+                }
+            })
+            .ok_or_else(|| {
+                RenderBuildError::UnsupportedFeature(format!(
+                    "a WHERE comparing node `{}` with an endpoint of the variable-length path \
+                     next to it needs `{}`'s single id column, which could not be resolved \
+                     (composite or unknown id). Compare a property instead (#1308).",
+                    alias.0, alias.0
+                ))
+            })?;
+        // The predicate reaches render with property names already resolved to columns (on the
+        // denormalized layout, the column of the node's ROLE in its hop: `code` -> `Origin`).
+        use crate::render_plan::properties_builder::PropertiesBuilder;
+        let id_column = plan
+            .get_properties_with_table_alias(&alias.0)
+            .ok()
+            .and_then(|(props, _)| {
+                props
+                    .into_iter()
+                    .find(|(prop, _)| *prop == id_property)
+                    .map(|(_, col)| col)
+            })
+            .unwrap_or(id_property);
+        *operand = RenderExpr::PropertyAccessExp(crate::render_plan::render_expr::PropertyAccess {
+            table_alias: alias.clone(),
+            column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_column),
+        });
+    }
+    Ok(())
+}
+
 /// AND two optional predicates.
 fn and_optional(a: Option<RenderExpr>, b: Option<RenderExpr>) -> Option<RenderExpr> {
     match (a, b) {
@@ -430,6 +558,17 @@ impl FilterBuilder for LogicalPlan {
                             // Fall through to collect_graphrel_predicates below
                             // (#1218: a path-function predicate is refused loudly here)
                             path_function_outer_predicate(graph_rel)?;
+                            // #1308: so is one naming a node outside the path: it belongs in
+                            // the LEFT JOIN's ON, and is kept out of the CTE.
+                            if outside_path_outer_predicate(graph_rel)?.is_some() {
+                                return Err(RenderBuildError::UnsupportedFeature(
+                                    "an OPTIONAL MATCH WHERE comparing an endpoint of a \
+                                     variable-length path with a node outside that path is not \
+                                     supported yet (#1308): it would have to decide the \
+                                     optional match, not filter the rows."
+                                        .to_string(),
+                                ));
+                            }
                         } else {
                             // #625: a CLOSED VLP pattern pins both endpoints to
                             // the SAME variable (`(a)-[*min..max]-(a)` /
@@ -600,9 +739,10 @@ impl FilterBuilder for LogicalPlan {
                             // WHERE c.x = …`) owns its predicate in the OUTER query —
                             // returning None here silently dropped it.
                             let path_fn = path_function_outer_predicate(graph_rel)?;
+                            let outside = outside_path_outer_predicate(graph_rel)?;
                             return Ok(and_optional(
-                                child_hop_outer_predicates(graph_rel),
-                                path_fn,
+                                and_optional(child_hop_outer_predicates(graph_rel), path_fn),
+                                outside,
                             ));
                         }
                     } else {

@@ -44,6 +44,62 @@ pub(super) fn path_function_conjuncts(predicate: &RenderExpr, path_var: &str) ->
         .collect()
 }
 
+/// The aliases `expr` names directly — a property access or a bare node/relationship reference —
+/// through operators, function calls, lists and CASE (not into subqueries).
+fn named_aliases(expr: &RenderExpr, out: &mut std::collections::HashSet<String>) {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            out.insert(prop.table_alias.0.clone());
+        }
+        RenderExpr::TableAlias(alias) => {
+            out.insert(alias.0.clone());
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            op.operands.iter().for_each(|o| named_aliases(o, out));
+        }
+        RenderExpr::ScalarFnCall(f) => f.args.iter().for_each(|a| named_aliases(a, out)),
+        RenderExpr::List(items) => items.iter().for_each(|i| named_aliases(i, out)),
+        RenderExpr::Case(case) => {
+            if let Some(e) = &case.expr {
+                named_aliases(e, out);
+            }
+            for (when, then) in &case.when_then {
+                named_aliases(when, out);
+                named_aliases(then, out);
+            }
+            if let Some(e) = &case.else_expr {
+                named_aliases(e, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// #1308: does `conjunct` name a node or relationship OUTSIDE the path (`b = z`, `b.x = z.y` for
+/// `(z)-[:R]->(c)-[:R*1..2]->(b)`)? Such a conjunct cannot be evaluated inside the path's
+/// recursive CTE, which only sees its own endpoints and relationship. `own` lists the path's
+/// aliases (Cypher and CTE-internal).
+pub(super) fn names_alias_outside(conjunct: &RenderExpr, own: &[&str]) -> bool {
+    let mut named = std::collections::HashSet::new();
+    named_aliases(conjunct, &mut named);
+    named.iter().any(|a| !own.contains(&a.as_str()))
+}
+
+/// #1308: the conjuncts of a path's predicate that name a node or relationship outside the path
+/// (path-function conjuncts excluded: #1218 carries those). The CTE categorizer leaves them out;
+/// the outer WHERE must carry them.
+pub(super) fn outside_path_conjuncts(
+    predicate: &RenderExpr,
+    own: &[&str],
+    path_var: Option<&str>,
+) -> Vec<RenderExpr> {
+    split_and_conjuncts(predicate)
+        .into_iter()
+        .filter(|c| !path_var.is_some_and(|p| calls_path_function_on(c, p)))
+        .filter(|c| names_alias_outside(c, own))
+        .collect()
+}
+
 /// Represents categorized filters for different parts of a query
 ///
 /// This struct supports two modes:
@@ -308,6 +364,21 @@ pub fn categorize_filters(
             // Path function filters (e.g., WHERE length(p) <= 3) go in path function filters
             crate::debug_println!("DEBUG: Going to path_fn_filters");
             path_fn_filters.push(predicate);
+        } else if names_alias_outside(
+            &predicate,
+            &[
+                start_cypher_alias,
+                end_cypher_alias,
+                rel_alias,
+                "start_node",
+                "end_node",
+                "rel",
+            ],
+        ) {
+            // #1308: names a node outside the path (`b = z`); the outer WHERE carries it
+            // (`outside_path_conjuncts`). Inside the CTE it was an unresolvable alias (Code 47)
+            // or, in the denormalized `*0..N` arms, silently dropped.
+            log::debug!("  -> outside the path: left to the outer WHERE");
         } else if refs_rel && column_ownership == ColumnOwnership::FromNode {
             // Column belongs to from_node_properties → start node filter
             crate::debug_println!(
