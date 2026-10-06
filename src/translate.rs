@@ -157,9 +157,9 @@ mod tests {
     /// context, rewound each other's aliases mid-translation).
     #[test]
     fn translation_without_context_leaves_global_counters_alone() {
-        let schema = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(
-            include_str!("../schemas/test/social_integration.yaml"),
-        )
+        let schema = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(include_str!(
+            "../schemas/test/social_integration.yaml"
+        ))
         .unwrap()
         .to_graph_schema()
         .unwrap();
@@ -184,7 +184,10 @@ mod tests {
         assert_eq!(first, translate(), "translation is not deterministic");
         // Numbered from this query's own counter (`t1` is the pruned middle
         // node), whatever the global counter's value.
-        assert!(first.contains("AS t2 ") && first.contains("AS t3 "), "{first}");
+        assert!(
+            first.contains("AS t2 ") && first.contains("AS t3 "),
+            "{first}"
+        );
     }
 
     /// A query's generated aliases are numbered by its OWN counters: another

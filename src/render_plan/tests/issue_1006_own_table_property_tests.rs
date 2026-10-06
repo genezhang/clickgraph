@@ -77,15 +77,21 @@ fn own_table_property_resolves_via_injected_join_flat_arrow() {
     );
     // The edge's alias is a generated `t{N}` (deterministically `t1` since
     // counters are per query); whatever it is, nothing may read `name` off it.
-    let edge_alias = regex::Regex::new(r"testdb\.reports AS (t\d+)")
+    let edge_aliases: Vec<String> = regex::Regex::new(r"testdb\.reports AS (t\d+)")
         .unwrap()
-        .captures(&sql)
+        .captures_iter(&sql)
         .map(|c| c[1].to_string())
-        .expect("edge table must be joined");
+        .collect();
     assert!(
-        !sql.contains(&format!("{edge_alias}.name")),
-        "must not reference reports.name (edge table has no name column); SQL:\n{sql}"
+        !edge_aliases.is_empty(),
+        "edge table must be joined; SQL:\n{sql}"
     );
+    for edge_alias in &edge_aliases {
+        assert!(
+            !sql.contains(&format!("{edge_alias}.name")),
+            "must not reference reports.name (edge table has no name column); SQL:\n{sql}"
+        );
+    }
 }
 
 #[test]

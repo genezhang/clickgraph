@@ -5,6 +5,10 @@ use axum::{extract::State, http::StatusCode, response::Json};
 use crate::{
     open_cypher_parser,
     query_planner::{self, types::QueryType},
+    server::query_context::{
+        attach_current_table_stats, set_current_schema, set_current_schema_name,
+        with_query_context, QueryContext,
+    },
 };
 
 use super::{
@@ -21,6 +25,21 @@ use super::{
 pub async fn sql_generation_handler(
     State(app_state): State<Arc<AppState>>,
     Json(payload): Json<SqlGenerationRequest>,
+) -> Result<Json<SqlGenerationResponse>, (StatusCode, Json<SqlGenerationError>)> {
+    // Like `/query`: the whole request runs in its own task-local query
+    // context (schema, dialect, table stats, per-query alias counters).
+    // Without it, translation fell back to process-global state, and
+    // concurrent requests rewound each other's generated aliases.
+    with_query_context(
+        QueryContext::new(None),
+        sql_generation_handler_inner(app_state, payload),
+    )
+    .await
+}
+
+async fn sql_generation_handler_inner(
+    app_state: Arc<AppState>,
+    payload: SqlGenerationRequest,
 ) -> Result<Json<SqlGenerationResponse>, (StatusCode, Json<SqlGenerationError>)> {
     let start_time = Instant::now();
 
@@ -77,17 +96,7 @@ pub async fn sql_generation_handler(
     // Check query cache first
     // Scoped to this endpoint, and to the view parameters the SQL is planned
     // with (they change parameterized-view SQL).
-    let vp_strings: Option<HashMap<String, String>> = payload.view_parameters.as_ref().map(|p| {
-        p.iter()
-            .map(|(k, v)| {
-                let s = match v {
-                    serde_json::Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                (k.clone(), s)
-            })
-            .collect()
-    });
+    let vp_strings = view_parameter_strings(&payload);
     let cache_key =
         QueryCacheKey::with_view_scope(&payload.query, schema_name, None, vp_strings.as_ref())
             .for_route("query_sql");
@@ -163,6 +172,12 @@ pub async fn sql_generation_handler(
             ));
         }
     };
+    // Same per-query setup as `/query`: downstream code reads the schema from
+    // the context, and stats-informed planning needs the snapshot before
+    // planning.
+    set_current_schema_name(Some(schema_name.to_string()));
+    set_current_schema(Arc::new(graph_schema.clone()));
+    attach_current_table_stats(&graph_schema).await;
 
     // Clean query (remove CYPHER prefix if present), then strip comments
     // before parsing (#516 made parse_cypher_statement all-consuming — a
@@ -334,24 +349,8 @@ pub async fn sql_generation_handler(
     } else if is_read {
         // Phase 2: Plan query
 
-        // Convert view_parameters from Option<HashMap<String, Value>> to Option<HashMap<String, String>>
-        let view_parameter_values: Option<HashMap<String, String>> = payload
-            .view_parameters
-            .as_ref()
-            .map(|params: &HashMap<String, serde_json::Value>| {
-                params
-                    .iter()
-                    .map(|(k, v): (&String, &serde_json::Value)| {
-                        let string_value = match v {
-                            serde_json::Value::String(s) => s.clone(),
-                            serde_json::Value::Number(n) => n.to_string(),
-                            serde_json::Value::Bool(b) => b.to_string(),
-                            _ => v.to_string(),
-                        };
-                        (k.clone(), string_value)
-                    })
-                    .collect()
-            });
+        // The same conversion the cache key used.
+        let view_parameter_values = vp_strings.clone();
 
         // Same pre-pass and pipeline as `/query`, so this endpoint returns
         // the SQL `/query` would run: the id() rewrite, then the translate
@@ -470,4 +469,23 @@ pub async fn sql_generation_handler(
         logical_plan: logical_plan_str,
         dialect_notes: None, // Future: Add ClickHouse-specific optimization hints
     }))
+}
+
+/// The request's view parameters as strings: used for BOTH the cache key and
+/// planning, so the two can never disagree.
+fn view_parameter_strings(payload: &SqlGenerationRequest) -> Option<HashMap<String, String>> {
+    payload.view_parameters.as_ref().map(|params| {
+        params
+            .iter()
+            .map(|(k, v)| {
+                let string_value = match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::Bool(b) => b.to_string(),
+                    _ => v.to_string(),
+                };
+                (k.clone(), string_value)
+            })
+            .collect()
+    })
 }

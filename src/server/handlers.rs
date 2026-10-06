@@ -515,7 +515,11 @@ pub async fn query_handler(
         if sql_only {
             let response = SqlOnlyResponse {
                 cypher_query: payload.query.clone(),
-                generated_sql: export_sql,
+                // #1314: carry the semantic session settings.
+                generated_sql: crate::sql_generator::portable_sql(
+                    &export_sql,
+                    crate::server::query_context::get_current_dialect(),
+                ),
                 execution_mode: "sql_only".to_string(),
             };
             return Ok(Json(response).into_response());
@@ -681,25 +685,30 @@ pub async fn query_handler(
                     Ok(s) => s,
                     Err(e) => return Err((StatusCode::BAD_REQUEST, e)),
                 };
-            crate::server::query_context::set_current_schema(Arc::new(graph_schema.clone()));
-
-            // Translate inner Cypher → SQL
-            let inner_sql = translate_cypher_to_sql(
-                &export_args.cypher_query,
-                &graph_schema,
-                &schema_name_for_export,
-                app_state.config.max_cte_depth,
-            )
-            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
-
-            // Build INSERT INTO FUNCTION ... SELECT ...
-            let export_sql = crate::procedures::apoc_export::build_export_sql(
-                &inner_sql,
-                &export_args.destination,
-                ch_format,
-                &export_args.config,
-            )
-            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+            // Translate inner Cypher → SQL and build INSERT INTO FUNCTION ...
+            // SELECT ... inside a task-local QueryContext (as COPY TO does):
+            // this runs before the /query context opens, and outside one
+            // set_current_schema() is a no-op and translation would read
+            // process-global state.
+            let context = QueryContext::new(Some(schema_name_for_export.clone()));
+            let export_sql = with_query_context(context, async {
+                crate::server::query_context::set_current_schema(Arc::new(graph_schema.clone()));
+                let inner_sql = translate_cypher_to_sql(
+                    &export_args.cypher_query,
+                    &graph_schema,
+                    &schema_name_for_export,
+                    app_state.config.max_cte_depth,
+                )
+                .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+                crate::procedures::apoc_export::build_export_sql(
+                    &inner_sql,
+                    &export_args.destination,
+                    ch_format,
+                    &export_args.config,
+                )
+                .map_err(|e| (StatusCode::BAD_REQUEST, e))
+            })
+            .await?;
 
             log::info!("Export SQL: {}", export_sql);
 
@@ -707,7 +716,11 @@ pub async fn query_handler(
             if sql_only {
                 let response = SqlOnlyResponse {
                     cypher_query: payload.query.clone(),
-                    generated_sql: export_sql,
+                    // #1314: carry the semantic session settings.
+                    generated_sql: crate::sql_generator::portable_sql(
+                        &export_sql,
+                        crate::server::query_context::get_current_dialect(),
+                    ),
                     execution_mode: "sql_only".to_string(),
                 };
                 return Ok(Json(response).into_response());
