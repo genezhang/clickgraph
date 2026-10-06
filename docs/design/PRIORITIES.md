@@ -691,6 +691,12 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-10-06: **#1177 (part): a WHERE on a chained hop's node after a WITH is applied** (P-4b root B).
+  - The #1170 chained-hop predicates were gated off in any query with a WITH, and nothing else emitted them: `WITH c MATCH (c)-[:R]->(a)-[:R*1..2]->(b) WHERE a.id = 1` returned every row (202 vs 66 standard; also denormalized and polymorphic), silently. That includes #1182's verified chains.
+  - The gate is gone (only a WITH nested in the pattern's own subtree still gates). A conjunct on a CARRIED node is left out: it is already applied where the node is (path CTE or WITH CTE), and emitted again it was spelled through both namings (`t.start_p1_c_user_id`).
+  - Filter sweep (WHERE `=`/`<>` on every node of 9 post-WITH shapes + WITH bodies, 3 layouts): 19 WRONG→OK, 0 regressions. Unfiltered sweeps unchanged.
+  - Still open on #1177: `MATCH (c) WITH c MATCH (c)-[:R]->(a)-[:R*1..2]->(b)` (a WITH over a bare node scan) is refused even without a filter. Filed #1302 (denormalized hop-path-hop filter on the middle node maps to the wrong column, no WITH needed).
+
 - 2026-10-05: **#1297: a carried node the WITH CTE join cannot be tied to is refused** (P-4b root B).
   - Next to a path in a chain outside #1182's verified allowlist, the relationship-uniqueness predicate between two fixed hops (it does not mention the CTE) became the WITH CTE's `ON`: a join tied to nothing. Denormalized `WITH c, z MATCH (a)-[:R]->(z)-[:R]->(c)-[:R*1..2]->(b)` returned 96 vs 16; the backwards-path pin `test_1182__outside_reversed_vlp_hop_after_not_repaired_den` returned 24 vs 4 (silent).
   - Both now fail with a clean render error. Not a repair: the real fix is tying a mid-chain carried node (needs the export contract's id columns on the denormalized CTE, which is `SELECT *` here, #1189).

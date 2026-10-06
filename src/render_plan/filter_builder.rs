@@ -38,33 +38,17 @@ pub trait FilterBuilder {
 /// outer WHERE is NOT yet known to be correct, so `main`'s behaviour is kept
 /// (`None`) rather than risk turning a loud refusal into silently wrong rows.
 ///
-/// - **Any WITH in the query.** A WITH-carried node is a CTE alias, and a post-WITH
-///   `c.x = 'v'` is then misread as a join key by `extract_cte_join_condition_from_filter`,
-///   which disarms the #451 cartesian guard (loud refusal → 26 rows where 11 are
-///   correct). And inside a WITH body the chained node's join is pruned when the WITH
-///   projection doesn't name it, so the new WHERE would reference an unjoined alias
-///   (Code 47). Both need CTE-aware handling, tracked as a follow-up.
+/// - **A WITH clause inside this pattern's subtree** (an inner scope this render
+///   does not own).
 /// - **An OPTIONAL chained hop.** Its predicate must stay in the LEFT JOIN's ON
 ///   (NULL-extension); an outer WHERE turns the OPTIONAL into an inner join.
 fn child_hop_predicates_are_safe_to_emit(
     graph_rel: &crate::query_planner::logical_plan::GraphRel,
 ) -> bool {
-    use crate::render_plan::cte_extraction::render_root_plan;
-    use crate::render_plan::plan_predicates::has_with_clause_in_tree;
+    // #1177: a scope AFTER a WITH is handled (the carried nodes' conjuncts are left out by
+    // `child_hop_outer_predicates`); a WITH clause nested inside this subtree is not.
     let subtree = LogicalPlan::GraphRel(graph_rel.clone());
-    // The OUTERMOST plan sees a WITH even when this GraphRel is the WITH body or
-    // sits after it; fall back to the subtree when no root is recorded.
-    let has_with = match render_root_plan() {
-        Some(root) => has_with_clause_in_tree(&root) || has_with_clause_in_tree(&subtree),
-        None => has_with_clause_in_tree(&subtree),
-    };
-    // #1177: a WITH AFTER the chain (this scope is the WITH body, nothing carried in) is safe —
-    // the chained node's own join is kept because the predicate references it. Only a scope
-    // that consumes a WITH-carried node (a CTE alias) stays gated.
-    let consumes_with_cte = subtree
-        .any_node(|n| matches!(n, LogicalPlan::GraphRel(g) if !g.cte_references.is_empty()))
-        || subtree.any_node(|n| matches!(n, LogicalPlan::WithClause(_)));
-    if has_with && consumes_with_cte {
+    if subtree.any_node(|n| matches!(n, LogicalPlan::WithClause(_))) {
         return false;
     }
     let optional_child = [graph_rel.left.as_ref(), graph_rel.right.as_ref()]
@@ -103,11 +87,30 @@ fn child_hop_outer_predicates(
     if !child_hop_predicates_are_safe_to_emit(graph_rel) {
         return None;
     }
+    // #1177: after a WITH, a conjunct on a CARRIED node is already applied where the node is
+    // (inside the path CTE for a path endpoint, against the WITH CTE otherwise); emitted here
+    // too it would be spelled through both namings (`t.start_p1_c_user_id`). Only the
+    // conjuncts on this scope's own nodes are added — before, they were all dropped, so
+    // `WITH c MATCH (c)-[:R]->(a)-[:R*1..2]->(b) WHERE a.id = 1` ignored the filter.
+    let subtree = LogicalPlan::GraphRel(graph_rel.clone());
+    let mut carried: std::collections::HashSet<String> = std::collections::HashSet::new();
+    subtree.any_node(|n| {
+        if let LogicalPlan::GraphRel(g) = n {
+            carried.extend(g.cte_references.keys().cloned());
+        }
+        false
+    });
+    let on_carried_node = |pred: &RenderExpr| {
+        carried
+            .iter()
+            .any(|alias| crate::render_plan::expression_utils::references_alias(pred, alias))
+    };
     let mut predicates: Vec<RenderExpr> = Vec::new();
     for child in [graph_rel.left.as_ref(), graph_rel.right.as_ref()] {
         for mut pred in collect_graphrel_predicates(child)
             .into_iter()
-            .filter(|p| !is_labels_predicate(p))
+            .flat_map(crate::render_plan::plan_builder_utils::split_render_and_conjuncts)
+            .filter(|p| !is_labels_predicate(p) && !on_carried_node(p))
         {
             // Same two steps the general path applies before emitting (#1006
             // registry, then denormalized/mixed property mapping).
