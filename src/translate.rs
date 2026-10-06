@@ -213,6 +213,17 @@ pub fn translate_bound_plan(
     schema: &GraphSchema,
     options: &ReadOptions,
 ) -> Result<String, String> {
+    use crate::server::query_context::{
+        has_query_context, set_current_schema, with_query_context_sync, QueryContext,
+    };
+    // Printing reads the query context (plain printing, the dialect); a
+    // caller without one gets a fresh one, as in `translate_read`.
+    if !has_query_context() {
+        return with_query_context_sync(QueryContext::new(None), || {
+            set_current_schema(std::sync::Arc::new(schema.clone()));
+            translate_bound_plan(cypher, schema, options)
+        });
+    }
     use crate::bound_plan::lower::{lower_statement, LowerOptions};
     let (rest, stmt) = crate::open_cypher_parser::clause_list::parse_clause_statement(cypher)
         .map_err(|e| format!("clause-list parse: {e:?}"))?;
@@ -224,11 +235,35 @@ pub fn translate_bound_plan(
         &bound,
         schema,
         &LowerOptions {
-            view_parameter_values: options.view_parameter_values.clone(),
+            view_parameter_values: merged_view_parameters(
+                options.tenant_id.as_deref(),
+                options.view_parameter_values.as_ref(),
+            ),
         },
     )
     .map_err(|e| e.to_string())?;
     Ok(crate::clickhouse_query_generator::to_sql_query::render_plan_to_sql_plain(plan))
+}
+
+/// The view-parameter values a translation applies: the request's, plus
+/// `tenant_id` from the request's tenant unless a `tenant_id` view parameter
+/// was given explicitly. The legacy planner merges them the same way
+/// (`PlanCtx::with_all_parameters`); tenant isolation of parameterized views
+/// depends on it.
+fn merged_view_parameters(
+    tenant_id: Option<&str>,
+    view_parameter_values: Option<&HashMap<String, String>>,
+) -> Option<HashMap<String, String>> {
+    match (tenant_id, view_parameter_values) {
+        (None, values) => values.cloned(),
+        (Some(tenant), values) => {
+            let mut merged = values.cloned().unwrap_or_default();
+            merged
+                .entry("tenant_id".to_string())
+                .or_insert_with(|| tenant.to_string());
+            Some(merged)
+        }
+    }
 }
 
 #[cfg(test)]

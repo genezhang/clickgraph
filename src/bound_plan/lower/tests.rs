@@ -152,8 +152,146 @@ fn what_cannot_match_returns_no_rows() {
     ] {
         let got = squash(&sql(q));
         assert!(got.ends_with("WHERE false"), "{q}\n{got}");
-        assert!(!got.contains("FROM"), "{q}\n{got}");
     }
+    // Scans that do match stay in FROM (the SELECT may read them); with no
+    // scan at all there is no FROM.
+    has(
+        "MATCH (a:User), (b:Nope) RETURN a.name AS n",
+        &["FROM test_integration.users_test AS v0", "WHERE false"],
+    );
+    let none = squash(&sql(
+        "MATCH (b:Nope) RETURN count(*) AS c, collect(b.name) AS l",
+    ));
+    assert!(!none.contains("FROM"), "{none}");
+    assert!(none.contains(r#"THEN [] ELSE [] END AS "l""#), "{none}");
+}
+
+#[test]
+fn aggregates_of_no_values() {
+    // Neo4j: [], 0, 0, NULL. ClickHouse gives NULL for groupArray/sum of a
+    // NULL literal (`Nullable(Nothing)`), so these are folded.
+    // Still an aggregate, so the query returns one row.
+    has(
+        "MATCH (a:User) RETURN collect(a.nickname) AS l, sum(a.nickname) AS s, count(a.nickname) AS c, max(a.nickname) AS m",
+        &[
+            r#"CASE WHEN count(*) >= 0 THEN [] ELSE [] END AS "l""#,
+            r#"CASE WHEN count(*) >= 0 THEN 0 ELSE 0 END AS "s""#,
+            r#"CASE WHEN count(*) >= 0 THEN 0 ELSE 0 END AS "c""#,
+            r#"CASE WHEN count(*) >= 0 THEN NULL ELSE NULL END AS "m""#,
+        ],
+    );
+    has(
+        "MATCH (a:User) RETURN collect(DISTINCT a.nickname) AS l",
+        &[r#"CASE WHEN count(*) >= 0 THEN [] ELSE [] END AS "l""#],
+    );
+}
+
+#[test]
+fn constant_sort_and_grouping_keys() {
+    // `ORDER BY 1` would be a column position in ClickHouse.
+    let got = squash(&sql(
+        "MATCH (a:User) RETURN a.name AS n, 1 AS one ORDER BY one, n",
+    ));
+    assert!(got.ends_with("ORDER BY v0.full_name ASC"), "{got}");
+    // `GROUP BY 1` likewise; one constant group keeps "no row on no input".
+    let got = squash(&sql("MATCH (a:User) RETURN count(*) AS c, 1 AS k"));
+    assert!(!got.contains("GROUP BY"), "{got}");
+    assert!(got.contains("HAVING count(*) > 0"), "{got}");
+    let got = squash(&sql("RETURN 42 AS x ORDER BY x"));
+    assert!(!got.contains("ORDER BY"), "{got}");
+}
+
+#[test]
+fn identity_comparisons_respect_labels_and_types() {
+    has(
+        "MATCH (a:User), (p:Post) WHERE a = p RETURN count(*)",
+        &["WHERE false"],
+    );
+    has(
+        "MATCH (a:User), (p:Post) WHERE a <> p RETURN count(*)",
+        &["WHERE true"],
+    );
+    has(
+        "MATCH (a:User), (b:User) WHERE a <> b RETURN count(*)",
+        &["WHERE v0.user_id <> v1.user_id"],
+    );
+    has(
+        "MATCH ()-[r1:FOLLOWS]->(), ()-[r2:LIKED]->() WHERE r1 = r2 RETURN count(*)",
+        &["false"],
+    );
+    has(
+        "MATCH (a:User) RETURN count(a) AS c, count(DISTINCT a) AS d",
+        &[
+            r#"count(v0.user_id) AS "c""#,
+            r#"count(DISTINCT v0.user_id) AS "d""#,
+        ],
+    );
+}
+
+#[test]
+fn a_node_used_as_a_value_is_not_lowered() {
+    for q in [
+        "MATCH (a:User) RETURN [a] AS l",
+        "MATCH (a:User) RETURN {n: a} AS m",
+        "MATCH (a:User) RETURN collect(a) AS l",
+        "MATCH (a:User) RETURN collect(CASE WHEN a.age > 30 THEN a END) AS l",
+        "MATCH (a:User), (p:Post) RETURN count(DISTINCT CASE WHEN a.age > 30 THEN a ELSE p END) AS c",
+    ] {
+        not_lowered(q, "node or relationship");
+    }
+}
+
+#[test]
+fn the_tenant_selects_the_parameterized_view() {
+    let schema =
+        GraphSchemaConfig::from_yaml_str(include_str!("../../../schemas/test/multi_tenant.yaml"))
+            .unwrap()
+            .to_graph_schema()
+            .unwrap();
+    let tenant = |tenant_id: Option<&str>, explicit: Option<&str>| {
+        let opts = ReadOptions {
+            tenant_id: tenant_id.map(str::to_string),
+            view_parameter_values: explicit
+                .map(|v| HashMap::from([("tenant_id".to_string(), v.to_string())])),
+            ..Default::default()
+        };
+        squash(&translate_bound_plan("MATCH (u:User) RETURN u.name", &schema, &opts).unwrap())
+    };
+    assert!(tenant(Some("acme"), None).contains("users_by_tenant(tenant_id = 'acme')"));
+    // As in the legacy planner, an explicit view parameter wins.
+    assert!(tenant(Some("acme"), Some("globex")).contains("(tenant_id = 'globex')"));
+}
+
+#[test]
+fn edge_constraints_are_not_lowered_yet() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_constraints
+graph_schema:
+  nodes:
+    - { label: F, database: db, table: f, node_id: id, property_mappings: { id: id, ts: ts } }
+  edges:
+    - type: R
+      database: db
+      table: r
+      from_id: a
+      to_id: b
+      from_node: F
+      to_node: F
+      constraints: "from.ts <= to.ts"
+      property_mappings: {}
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let err = translate_bound_plan(
+        "MATCH (x:F)-[:R]->(y:F) RETURN count(*)",
+        &schema,
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(err.contains("constraints"), "{err}");
 }
 
 #[test]

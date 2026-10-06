@@ -4,8 +4,11 @@
 //! * a property of a node or relationship is `v{N}.<mapped column>`; a
 //!   property the schema does not map is NULL (the graph has no such
 //!   property), and a property of an element that matches nothing is NULL;
-//! * a bare node or relationship is its identity (`count(a)`, `a = b`,
-//!   `a IS NULL`);
+//! * a bare node or relationship stands for its identity only where that is
+//!   its whole meaning: `count(a)`, `count(DISTINCT a)`, `a = b`, `a <> b`
+//!   (elements of different labels / types are never equal), `a IS [NOT]
+//!   NULL`. Anywhere else (`RETURN a`, `[a]`, `collect(a)`, `CASE … a …`) it
+//!   is the entity's value, which needs the result shape: `Unsupported`;
 //! * a projected item (ORDER BY after RETURN) is the item's expression.
 //!
 //! The conversion is structural and reads no task-local state. Shapes that
@@ -88,7 +91,7 @@ impl Lowerer<'_> {
                 RenderExpr::Literal(Literal::Boolean(holds))
             }
             LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
-                RenderExpr::OperatorApplicationExp(self.operator(op, items)?)
+                self.operator(op, items)?
             }
             LogicalExpr::List(xs) => RenderExpr::List(self.all(xs, items)?),
             LogicalExpr::MapLiteral(entries) => RenderExpr::MapLiteral(
@@ -143,10 +146,70 @@ impl Lowerer<'_> {
         xs.iter().map(|x| self.expr(x, items)).collect()
     }
 
-    fn operator(&self, op: &LOp, items: &Items) -> Result<OperatorApplication, LowerError> {
-        Ok(OperatorApplication {
+    fn operator(&self, op: &LOp, items: &Items) -> Result<RenderExpr, LowerError> {
+        use lx::Operator as O;
+        let entities: Vec<VarId> = op.operands.iter().filter_map(|o| self.entity(o)).collect();
+        if !entities.is_empty() {
+            return match (op.operator, op.operands.len(), entities.as_slice()) {
+                (O::Equal | O::NotEqual, 2, [a, b]) => {
+                    self.identity_comparison(*a, *b, op.operator == O::Equal)
+                }
+                (O::IsNull | O::IsNotNull, 1, [a]) => {
+                    Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: op.operator,
+                        operands: vec![self.identity(*a)?],
+                    }))
+                }
+                _ => unsupported("a node or relationship as an operand (needs its value)"),
+            };
+        }
+        Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
             operator: op.operator,
             operands: self.all(&op.operands, items)?,
+        }))
+    }
+
+    /// `a = b` / `a <> b` between two nodes or two relationships: equal only
+    /// when they have the same label (type) and identity.
+    fn identity_comparison(
+        &self,
+        a: VarId,
+        b: VarId,
+        equal: bool,
+    ) -> Result<RenderExpr, LowerError> {
+        let same_kind = match (self.scans.get(&a), self.scans.get(&b)) {
+            (Some(Scan::Node { label: x, .. }), Some(Scan::Node { label: y, .. })) => x == y,
+            (Some(Scan::Rel { rel_type: x, .. }), Some(Scan::Rel { rel_type: y, .. })) => x == y,
+            // An element that matches nothing: the relation has no rows.
+            (Some(Scan::Impossible), _) | (_, Some(Scan::Impossible)) => {
+                return Ok(RenderExpr::Literal(Literal::Null))
+            }
+            _ => false,
+        };
+        if !same_kind {
+            return Ok(RenderExpr::Literal(Literal::Boolean(!equal)));
+        }
+        let (Some(ca), Some(cb)) = (self.identity_columns(a), self.identity_columns(b)) else {
+            return Ok(RenderExpr::Literal(Literal::Null));
+        };
+        let per_column: Vec<RenderExpr> = ca
+            .iter()
+            .zip(&cb)
+            .map(|(x, y)| {
+                RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: if equal {
+                        lx::Operator::Equal
+                    } else {
+                        lx::Operator::NotEqual
+                    },
+                    operands: vec![col(a, x), col(b, y)],
+                })
+            })
+            .collect();
+        Ok(if equal {
+            super::and_all(per_column).expect("an identity has columns")
+        } else {
+            super::or_all(per_column)
         })
     }
 
@@ -181,7 +244,9 @@ impl Lowerer<'_> {
         }
         let b = self.binding(v);
         match (&b.kind, &b.source) {
-            (BindingKind::Node { .. } | BindingKind::Rel { .. }, _) => self.identity(v),
+            (BindingKind::Node { .. } | BindingKind::Rel { .. }, _) => {
+                unsupported("a node or relationship as a value (needs the result shape)")
+            }
             (BindingKind::Value, BindingSource::Local) => {
                 Ok(RenderExpr::TableAlias(TableAlias(name.to_string())))
             }
@@ -190,14 +255,22 @@ impl Lowerer<'_> {
         }
     }
 
-    fn entity_arg(&self, args: &[LogicalExpr]) -> Option<VarId> {
-        match args {
-            [LogicalExpr::TableAlias(lx::TableAlias(n))] => parse_var(n).filter(|v| {
+    /// The node or relationship a bare variable expression names.
+    fn entity(&self, e: &LogicalExpr) -> Option<VarId> {
+        match e {
+            LogicalExpr::TableAlias(lx::TableAlias(n)) => parse_var(n).filter(|v| {
                 matches!(
                     self.binding(*v).kind,
                     BindingKind::Node { .. } | BindingKind::Rel { .. }
                 )
             }),
+            _ => None,
+        }
+    }
+
+    fn entity_arg(&self, args: &[LogicalExpr]) -> Option<VarId> {
+        match args {
+            [only] => self.entity(only),
             _ => None,
         }
     }
@@ -222,9 +295,6 @@ impl Lowerer<'_> {
                 _ => unsupported(format!("{}() of a node or relationship", f.name)),
             };
         }
-        if f.args.iter().any(|a| self.is_entity(a)) {
-            return unsupported(format!("{}() with a node or relationship argument", f.name));
-        }
         Ok(RenderExpr::ScalarFnCall(ScalarFnCall {
             name: f.name.clone(),
             args: self.all(&f.args, items)?,
@@ -232,29 +302,86 @@ impl Lowerer<'_> {
     }
 
     fn aggregate_fn(&self, f: &LAgg, items: &Items) -> Result<RenderExpr, LowerError> {
-        let counts = f.name.eq_ignore_ascii_case("count");
-        // count(a) / count(DISTINCT a) count identities; any other aggregate
-        // of a whole entity (collect(a)) needs the entity's value.
-        let entity_in = |e: &LogicalExpr| match e {
-            LogicalExpr::OperatorApplicationExp(op) | LogicalExpr::Operator(op)
-                if op.operator == lx::Operator::Distinct =>
+        let name = f.name.to_ascii_lowercase();
+        // The argument, and whether it is `DISTINCT x`.
+        let (arg, distinct) = match f.args.as_slice() {
+            [LogicalExpr::OperatorApplicationExp(op) | LogicalExpr::Operator(op)]
+                if op.operator == lx::Operator::Distinct && op.operands.len() == 1 =>
             {
-                op.operands.iter().any(|o| self.is_entity(o))
+                (Some(&op.operands[0]), true)
             }
-            other => self.is_entity(other),
+            [one] => (Some(one), false),
+            _ => (None, false),
         };
-        if !counts && f.args.iter().any(entity_in) {
-            return unsupported(format!("{}() of a node or relationship", f.name));
+        // count(a) / count(DISTINCT a) count identities.
+        if let (Some(v), "count") = (arg.and_then(|a| self.entity(a)), name.as_str()) {
+            let id = match self.identity_columns(v) {
+                None => return Ok(RenderExpr::Literal(Literal::Integer(0))),
+                Some(cols) if cols.len() == 1 || !distinct => col(v, &cols[0]),
+                Some(_) => return unsupported("count(DISTINCT) of a composite identity"),
+            };
+            let arg = if distinct {
+                RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: lx::Operator::Distinct,
+                    operands: vec![id],
+                })
+            } else {
+                id
+            };
+            return Ok(RenderExpr::AggregateFnCall(AggregateFnCall {
+                name: f.name.clone(),
+                args: vec![arg],
+            }));
+        }
+        let args = self.all(&f.args, items)?;
+        // An aggregate of the NULL literal (an unmapped property, an element
+        // that matches nothing) aggregates no values. ClickHouse types it
+        // `Nullable(Nothing)` and returns NULL where Cypher returns [] / 0.
+        let null_arg = match args.as_slice() {
+            [RenderExpr::Literal(Literal::Null)] => true,
+            [RenderExpr::OperatorApplicationExp(op)]
+                if op.operator == lx::Operator::Distinct
+                    && matches!(op.operands.as_slice(), [RenderExpr::Literal(Literal::Null)]) =>
+            {
+                true
+            }
+            _ => false,
+        };
+        if null_arg {
+            let value = match name.as_str() {
+                "collect" => RenderExpr::List(Vec::new()),
+                "count" | "sum" => RenderExpr::Literal(Literal::Integer(0)),
+                "min" | "max" | "avg" => RenderExpr::Literal(Literal::Null),
+                _ => return unsupported(format!("{}() of no values", f.name)),
+            };
+            return Ok(aggregate_constant(value));
         }
         Ok(RenderExpr::AggregateFnCall(AggregateFnCall {
             name: f.name.clone(),
-            args: self.all(&f.args, items)?,
+            args,
         }))
     }
+}
 
-    fn is_entity(&self, e: &LogicalExpr) -> bool {
-        self.entity_arg(std::slice::from_ref(e)).is_some()
-    }
+/// A constant that is still an aggregate: `CASE WHEN count(*) >= 0 THEN c
+/// ELSE c END`. The projection stays an aggregation (one row, or one per
+/// group, also on an empty input) even when every aggregate in it folded.
+fn aggregate_constant(value: RenderExpr) -> RenderExpr {
+    let count_all = RenderExpr::AggregateFnCall(AggregateFnCall {
+        name: "count".to_string(),
+        args: vec![RenderExpr::Star],
+    });
+    RenderExpr::Case(RenderCase {
+        expr: None,
+        when_then: vec![(
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: lx::Operator::GreaterThanEqual,
+                operands: vec![count_all, RenderExpr::Literal(Literal::Integer(0))],
+            }),
+            value.clone(),
+        )],
+        else_expr: Some(Box::new(value)),
+    })
 }
 
 fn literal(l: &lx::Literal) -> Literal {

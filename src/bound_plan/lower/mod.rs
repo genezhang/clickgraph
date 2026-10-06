@@ -282,6 +282,9 @@ impl<'s> Lowerer<'s> {
                             "type {rel_type} is not the standard layout (S8)"
                         ));
                     }
+                    if rs.constraints.is_some() {
+                        return unsupported("an edge `constraints:` expression (S8)");
+                    }
                     Scan::Rel {
                         schema: rs,
                         rel_type,
@@ -519,7 +522,7 @@ impl<'s> Lowerer<'s> {
         }
         let mut items_env: HashMap<VarId, RenderExpr> = HashMap::new();
         let mut select = Vec::new();
-        let mut group_by = Vec::new();
+        let mut group_by: Vec<RenderExpr> = Vec::new();
         let aggregating = p.items.iter().any(|i| i.aggregate);
         for it in &p.items {
             if let LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(n)) =
@@ -557,16 +560,36 @@ impl<'s> Lowerer<'s> {
                 })
             })
             .collect::<Result<Vec<_>, LowerError>>()?;
+        // A relation that matches nothing keeps its scans (expressions may
+        // read them) and filters every row out. With no scan at all (every
+        // element impossible, or no MATCH: `RETURN 1 + 1`) there is no FROM.
         let mut filters = std::mem::take(&mut self.filters);
         if self.empty {
             filters = vec![RenderExpr::Literal(Literal::Boolean(false))];
         }
-        let (from, joins) = if self.empty {
-            (None, Vec::new())
-        } else {
-            (self.from.take(), std::mem::take(&mut self.joins))
-        };
-        // No MATCH (`RETURN 1 + 1`): one row, no FROM.
+        let (from, joins) = (self.from.take(), std::mem::take(&mut self.joins));
+        // A constant key orders nothing, and ClickHouse would read an
+        // integer one as a column position (`ORDER BY 1`). A constant
+        // grouping key forms one group: drop it, but keep the one-group
+        // semantics on an empty input (no row, unlike a global aggregate).
+        let order_by: Vec<OrderByItem> = order_by
+            .into_iter()
+            .filter(|o| !is_constant(&o.expression))
+            .collect();
+        let only_constant_keys = !group_by.is_empty() && group_by.iter().all(is_constant);
+        group_by.retain(|g| !is_constant(g));
+        let having_clause = only_constant_keys.then(|| {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::GreaterThan,
+                operands: vec![
+                    RenderExpr::AggregateFnCall(crate::render_plan::render_expr::AggregateFnCall {
+                        name: "count".to_string(),
+                        args: vec![RenderExpr::Star],
+                    }),
+                    RenderExpr::Literal(Literal::Integer(0)),
+                ],
+            })
+        });
         Ok(RenderPlan {
             ctes: CteItems(Vec::new()),
             select: SelectItems {
@@ -578,7 +601,7 @@ impl<'s> Lowerer<'s> {
             array_join: ArrayJoinItem(Vec::new()),
             filters: FilterItems(and_all(filters)),
             group_by: GroupByExpressions(group_by),
-            having_clause: None,
+            having_clause,
             order_by: OrderByItems(order_by),
             skip: SkipItem(p.skip),
             limit: LimitItem(p.limit),
@@ -596,7 +619,18 @@ pub(crate) fn parse_var(generated: &str) -> Option<VarId> {
     generated.strip_prefix('v')?.parse().ok().map(VarId)
 }
 
-fn and_all(mut exprs: Vec<RenderExpr>) -> Option<RenderExpr> {
+/// No column, variable or aggregate: the same value on every row.
+fn is_constant(e: &RenderExpr) -> bool {
+    match e {
+        RenderExpr::Literal(_) | RenderExpr::Parameter(_) => true,
+        RenderExpr::List(xs) => xs.iter().all(is_constant),
+        RenderExpr::MapLiteral(entries) => entries.iter().all(|(_, v)| is_constant(v)),
+        RenderExpr::OperatorApplicationExp(op) => op.operands.iter().all(is_constant),
+        _ => false,
+    }
+}
+
+pub(crate) fn and_all(mut exprs: Vec<RenderExpr>) -> Option<RenderExpr> {
     match exprs.len() {
         0 => None,
         1 => exprs.pop(),
@@ -607,7 +641,7 @@ fn and_all(mut exprs: Vec<RenderExpr>) -> Option<RenderExpr> {
     }
 }
 
-fn or_all(mut exprs: Vec<RenderExpr>) -> RenderExpr {
+pub(crate) fn or_all(mut exprs: Vec<RenderExpr>) -> RenderExpr {
     if exprs.len() == 1 {
         return exprs.pop().expect("one");
     }

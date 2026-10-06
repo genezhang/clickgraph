@@ -1077,22 +1077,51 @@ slice that will handle it.
       re-sorting). While it runs, `QueryContext::plain_render` makes column
       printing skip the name-keyed resolution (registry, multi-type VLP
       aliases, the `id` pseudo-property). Legacy printing is unchanged.
+    - A node or relationship stands for its identity only in `count(a)`,
+      `count(DISTINCT a)`, `a = b` / `a <> b` (different labels or types are
+      never equal) and `a IS [NOT] NULL`. Anywhere else it is the entity's
+      value, which needs the result shape, so it is not lowered.
+    - An aggregate of no values (an unmapped property, an element that
+      matches nothing) is folded to Cypher's value (`collect` → `[]`, `sum` /
+      `count` → 0, `min` / `max` / `avg` → NULL) and kept an aggregate
+      (`CASE WHEN count(*) >= 0 …`), so the query still returns one row (one
+      per group). ClickHouse returns NULL for these (`Nullable(Nothing)`).
+    - Constant ORDER BY keys are dropped (ClickHouse reads `ORDER BY 1` as a
+      column position). Constant grouping keys are dropped too, with
+      `HAVING count(*) > 0` when all keys were constant, so an empty input
+      still gives no row.
+    - `tenant_id` is merged into the view parameters as the legacy planner
+      does (`PlanCtx::with_all_parameters`): tenant isolation of
+      parameterized views.
     - Not lowered yet: whole-entity returns and `id()` (need the result
       shape and the server's id encoding), list comprehensions (the legacy
       converter prints lambda bodies early), composite identities used as one
-      value, FINAL on a joined table.
+      value, FINAL on a joined table, edge `constraints:`.
     - A test fails if `src/bound_plan/` uses the analyzer, `PlanCtx`, the
       render composition modules or task-local query state.
     - The binder now starts a reused relationship's inference from its bound
       types (it used the written ones, so `MATCH (a)-[r:FOLLOWS]->(b) MATCH
       (c)-[r]->(d)` left `c` and `d` unlabeled).
-    - Acceptance (Neo4j oracle, `social_integration` and `standard`, run
-      with the switch off and on): 72 queries take the new path; 69 equal
-      Neo4j, 2 are rejected by Neo4j (`exists(prop)`), and 1 is the known
-      UInt8-vs-`true` mismatch (needs `property_types`, also wrong on the
-      legacy path). 0 correct → wrong; 8 wrong → correct (7 errors, 1 wrong
-      answer, including impossible patterns that now return empty).
-      300 corpus queries lower in all.
+    - Review (checked on ClickHouse and Neo4j) found six defects, all fixed:
+      tenant isolation dropped; an element that matches nothing gave a
+      ClickHouse error when other scans existed; `collect` / `sum` of no
+      values gave NULL; `ORDER BY` / `GROUP BY` of a constant read as a
+      column position; identity comparison ignored labels; a node nested in
+      an expression was returned as its id.
+    - Acceptance (Neo4j oracle, `social_integration` and `standard`, switch
+      off vs on): 82 queries take the new path; 79 equal Neo4j, 2 are
+      rejected by Neo4j (`exists(prop)`), 1 is the known UInt8-vs-`true`
+      mismatch (needs `property_types`; wrong on the legacy path too).
+      0 correct → wrong; 8 wrong → correct. 314 corpus queries lower in all.
+    - Live suite with the switch on vs off: 17 tests differ, none a new-path
+      defect. 7 Neo4j-golden entries are now correct (the goldens are keyed
+      to the default path); 2 expose #1320 (legacy EXISTS over an impossible
+      pattern is true for every row); 1 asserts the SQL text `INNER JOIN`.
+      Six encode legacy behaviour that differs from Cypher and from the docs:
+      an error for an unknown label, type or property (Cypher: no rows /
+      NULL), and reading an unmapped column (`docs/wiki/Schema-Basics.md`:
+      "Unmapped properties won't be accessible"). They are decided when the
+      default flips (S10).
   - [ ] **S4b: WITH**, free-standing ORDER BY / SKIP / LIMIT, the WITH
     modifiers' fixed order (#1311), the result shape (whole-entity returns,
     Bolt, graph output).

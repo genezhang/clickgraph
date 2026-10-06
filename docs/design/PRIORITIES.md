@@ -743,7 +743,9 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 - 2026-10-06: **P-4c S4a: lowering MATCH / WHERE / RETURN (standard layout)** (`src/bound_plan/lower/`).
   - `CLICKGRAPH_BOUND_PLAN=on` routes a query to the bound-plan path when it binds and lowers (HTTP `/query` and `cypher_to_sql`); everything else, and the default `off`, is the legacy pipeline. Legacy SQL is unchanged.
   - Lowering: each element is its own `v{N}` scan, joined in path order with ties in the later scan's ON; relationship uniqueness per MATCH; impossible patterns and unknown labels return no rows; unmapped properties are NULL. Printed by `render_plan_to_sql_plain`, which runs none of the legacy repair passes and none of the name-keyed column resolution.
-  - Neo4j oracle with the switch on: 72 queries take the new path, 69 equal Neo4j (the other 3: 2 rejected by Neo4j, 1 known UInt8/`true` data issue). 0 correct → wrong, 8 wrong → correct.
+  - Neo4j oracle with the switch on: 82 queries take the new path, 79 equal Neo4j (the other 3: 2 rejected by Neo4j, 1 known UInt8/`true` data issue). 0 correct → wrong, 8 wrong → correct.
+  - Review found six defects (tenant isolation, impossible elements next to real scans, `collect`/`sum` of no values, constant ORDER BY/GROUP BY keys, identity across labels, nodes nested in expressions), all fixed and re-checked on Neo4j.
+  - Live suite on vs off: 17 differences, none a new-path defect; six encode legacy behaviour that differs from Cypher (errors for unknown labels/types/properties, reading unmapped columns), decided at S10. Filed #1320 (legacy EXISTS over an impossible pattern is true for every row).
   - Binder fix: a relationship reused from an earlier MATCH now brings its bound type to label inference.
 
 - 2026-10-06: **P-4c S3: binder, explicit scope and label inference** (#1319, `src/bound_plan/`).
