@@ -11,7 +11,20 @@ pub fn parse_skip_clause(
     input: &'_ str,
 ) -> IResult<&'_ str, SkipClause, OpenCypherParsingError<'_>> {
     let (input, _) = ws(tag_no_case("SKIP")).parse(input)?;
+    parse_skip_amount(input)
+}
 
+/// `SKIP n` or its GQL synonym `OFFSET n` (Neo4j 5 accepts both). Used by the
+/// clause-list parser; the legacy grammar keeps `parse_skip_clause`.
+pub(crate) fn parse_skip_or_offset_clause(
+    input: &'_ str,
+) -> IResult<&'_ str, SkipClause, OpenCypherParsingError<'_>> {
+    let (input, _) =
+        nom::branch::alt((ws(tag_no_case("SKIP")), ws(tag_no_case("OFFSET")))).parse(input)?;
+    parse_skip_amount(input)
+}
+
+fn parse_skip_amount(input: &'_ str) -> IResult<&'_ str, SkipClause, OpenCypherParsingError<'_>> {
     let (input, expression) = context("Error in skip clause", cut(parse_expression))
         .parse(input)
         .map_err(|e| match e {

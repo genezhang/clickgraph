@@ -1,35 +1,38 @@
-//! P-4c S2: the clause-list parser (`open_cypher_parser::clause_list`) agrees
-//! with the legacy parser on every corpus query the legacy parser accepts, and
-//! accepts the clause orders the legacy layout cannot hold.
+//! P-4c S2: the clause-list parser (`open_cypher_parser::clause_list`).
 //!
-//! Both parses are reduced to one canonical form: per query part (a part ends
-//! at a WITH or RETURN), the reading clauses in order, the UNWINDs in order,
-//! a dangling WHERE, CALL, write clauses, and the projection with its
-//! modifiers. The canonical form forgets exactly what the legacy AST cannot
-//! record: where an UNWIND stood relative to the reading clauses of its part
-//! (the legacy parser merges leading and trailing UNWINDs) and the written
-//! order of a WITH's ORDER BY / SKIP / LIMIT / WHERE.
+//! 1. It agrees with the legacy parser on every corpus query the legacy
+//!    parser accepts. Both parses are reduced to one canonical form: per query
+//!    part (a part ends at WITH or RETURN), the reading clauses in order, the
+//!    UNWINDs in order, CALLs, write clauses, and the projection with its
+//!    modifiers. The canonical form forgets only what the legacy AST cannot
+//!    record: where an UNWIND stood relative to the reading clauses of its part
+//!    (the legacy parser merges leading and trailing UNWINDs).
+//! 2. Its grammar follows Neo4j 5.26 for clause order: every positive and
+//!    negative case below was checked against Neo4j 5.26.31.
 
 use clickgraph::open_cypher_parser::ast::{
     CallClause, CreateClause, CypherStatement, DeleteClause, LimitClause, OpenCypherQueryAst,
     OrderByClause, ReadingClause, RemoveClause, ReturnClause, SetClause, SkipClause, UnionType,
     UnwindClause, UseClause, WhereClause, WithClause, WithItem,
 };
-use clickgraph::open_cypher_parser::clause_list::{
-    parse_clause_statement, Clause, ClauseQuery, Modifier,
-};
+use clickgraph::open_cypher_parser::clause_list::{parse_clause_statement, Clause, ClauseQuery};
 use clickgraph::open_cypher_parser::{parse_cypher_statement, strip_comments};
 
 #[derive(Debug, PartialEq, Clone, Default)]
 struct Part<'a> {
     reading: Vec<ReadingClause<'a>>,
     unwinds: Vec<UnwindClause<'a>>,
+    /// Only the legacy AST can hold a WHERE outside MATCH/WITH; the clause
+    /// list cannot, so a legacy query with one shows up as a disagreement.
     dangling_where: Option<WhereClause<'a>>,
-    call: Option<CallClause<'a>>,
+    calls: Vec<CallClause<'a>>,
     creates: Vec<CreateClause<'a>>,
     sets: Vec<SetClause<'a>>,
     removes: Vec<RemoveClause<'a>>,
     deletes: Vec<DeleteClause<'a>>,
+    /// Free-standing ORDER BY / SKIP / LIMIT clauses (the legacy grammar has
+    /// none, so any here is a disagreement).
+    standalone_modifiers: usize,
     projection: Option<Projection<'a>>,
 }
 
@@ -63,7 +66,7 @@ fn legacy_canon<'a>(q: &OpenCypherQueryAst<'a>) -> Canon<'a> {
         reading: q.reading_clauses.clone(),
         unwinds: q.unwind_clauses.clone(),
         dangling_where: q.where_clause.clone(),
-        call: q.call_clause.clone(),
+        calls: q.call_clause.clone().into_iter().collect(),
         ..Part::default()
     };
     let mut with = q.with_clause.as_ref();
@@ -114,19 +117,6 @@ fn legacy_with<'a>(w: &WithClause<'a>) -> Projection<'a> {
     }
 }
 
-fn mods<'a>(ms: &[Modifier<'a>]) -> Mods<'a> {
-    let mut out = Mods::default();
-    for m in ms {
-        match m {
-            Modifier::OrderBy(o) => out.order_by = Some(o.clone()),
-            Modifier::Skip(s) => out.skip = Some(s.clone()),
-            Modifier::Limit(l) => out.limit = Some(l.clone()),
-            Modifier::Where(w) => out.where_ = Some(w.clone()),
-        }
-    }
-    out
-}
-
 fn clause_canon<'a>(q: &ClauseQuery<'a>) -> Canon<'a> {
     let mut parts = Vec::new();
     let mut part = Part::default();
@@ -135,30 +125,45 @@ fn clause_canon<'a>(q: &ClauseQuery<'a>) -> Canon<'a> {
             Clause::Match(m) => part.reading.push(ReadingClause::Match(m.clone())),
             Clause::OptionalMatch(o) => part.reading.push(ReadingClause::OptionalMatch(o.clone())),
             Clause::Unwind(u) => part.unwinds.push(u.clone()),
-            Clause::Where(w) => part.dangling_where = Some(w.clone()),
-            Clause::Call(c) => part.call = Some(c.clone()),
+            Clause::Call(c) => part.calls.push(c.clone()),
             Clause::Create(c) => part.creates.push(c.clone()),
             Clause::Set(s) => part.sets.push(s.clone()),
             Clause::Remove(r) => part.removes.push(r.clone()),
             Clause::Delete(d) => part.deletes.push(d.clone()),
+            Clause::OrderBy(_) | Clause::Skip(_) | Clause::Limit(_) => {
+                part.standalone_modifiers += 1
+            }
             Clause::With(w) => {
                 part.projection = Some(Projection::With {
                     distinct: w.distinct,
                     is_star: w.is_star,
                     items: w.items.clone(),
-                    mods: mods(&w.modifiers),
+                    mods: Mods {
+                        order_by: w.order_by.clone(),
+                        skip: w.skip.clone(),
+                        limit: w.limit.clone(),
+                        where_: w.where_clause.clone(),
+                    },
                 });
                 parts.push(std::mem::take(&mut part));
             }
             Clause::Return(r) => {
                 part.projection = Some(Projection::Return {
                     clause: r.clause.clone(),
-                    mods: mods(&r.modifiers),
+                    mods: Mods {
+                        order_by: r.order_by.clone(),
+                        skip: r.skip.clone(),
+                        limit: r.limit.clone(),
+                        where_: None,
+                    },
                 });
+                parts.push(std::mem::take(&mut part));
             }
         }
     }
-    parts.push(part);
+    if part != Part::default() {
+        parts.push(part);
+    }
     (q.use_clause.clone(), parts)
 }
 
@@ -183,7 +188,8 @@ fn legacy_statement<'a>(s: &CypherStatement<'a>) -> Option<Statement<'a>> {
 #[test]
 fn clause_list_parser_agrees_with_the_legacy_parser_on_the_corpus() {
     let corpus = include_str!("../../corpus/queries.jsonl");
-    let (mut compared, mut legacy_rejects, mut not_queries) = (0, 0, 0);
+    let (mut compared, mut legacy_rejects, mut not_queries, mut incomplete) = (0, 0, 0, 0);
+    let (mut with_parts, mut unions) = (0, 0);
     let mut disagreements = Vec::new();
     for line in corpus.lines().filter(|l| !l.trim().is_empty()) {
         let entry: serde_json::Value = serde_json::from_str(line).unwrap();
@@ -200,7 +206,26 @@ fn clause_list_parser_agrees_with_the_legacy_parser_on_the_corpus() {
             not_queries += 1;
             continue;
         };
+        // A query without RETURN / update clause / CALL is accepted by the
+        // legacy parser (the planner rejects it later); the clause-list
+        // parser rejects it, as Neo4j does ("Query cannot conclude with ...").
+        let last = legacy.0 .1.last().expect("at least one part");
+        let concludes = matches!(last.projection, Some(Projection::Return { .. }))
+            || !last.calls.is_empty()
+            || !(last.creates.is_empty()
+                && last.sets.is_empty()
+                && last.removes.is_empty()
+                && last.deletes.is_empty());
+        if !concludes {
+            incomplete += 1;
+            if parse_clause_statement(&cleaned).is_ok() {
+                disagreements.push(format!("{}: accepted without RETURN", entry["name"]));
+            }
+            continue;
+        }
         compared += 1;
+        with_parts += usize::from(legacy.0 .1.len() > 1);
+        unions += usize::from(!legacy.1.is_empty());
         match parse_clause_statement(&cleaned) {
             Ok((_, s)) => {
                 let new = (
@@ -222,115 +247,145 @@ fn clause_list_parser_agrees_with_the_legacy_parser_on_the_corpus() {
     }
     assert!(compared > 1000, "corpus too small: {compared}");
     assert!(
+        with_parts > 200 && unions > 5,
+        "corpus lacks WITH/UNION coverage"
+    );
+    assert!(
         disagreements.is_empty(),
         "{} of {compared} corpus queries disagree (legacy rejects {legacy_rejects}, \
-         non-queries {not_queries}):\n{}",
+         non-queries {not_queries}, no RETURN {incomplete}):\n{}",
         disagreements.len(),
         disagreements.join("\n")
     );
 }
 
-fn clauses(cypher: &str) -> Vec<&'static str> {
+fn kinds(cypher: &str) -> Result<Vec<&'static str>, String> {
     let leaked: &'static str = Box::leak(cypher.to_string().into_boxed_str());
-    let (_, s) = parse_clause_statement(leaked).unwrap_or_else(|e| panic!("{cypher}: {e:?}"));
-    s.first
+    let (_, s) = parse_clause_statement(leaked).map_err(|e| format!("{e:?}"))?;
+    Ok(s.first
         .clauses
         .iter()
         .map(|c| match c {
             Clause::Match(_) => "MATCH",
             Clause::OptionalMatch(_) => "OPTIONAL MATCH",
             Clause::Unwind(_) => "UNWIND",
-            Clause::Where(_) => "WHERE",
             Clause::Call(_) => "CALL",
-            Clause::With(_) => "WITH",
+            Clause::With(w) => {
+                if w.order_by.is_none()
+                    && w.skip.is_none()
+                    && w.limit.is_none()
+                    && w.where_clause.is_none()
+                {
+                    "WITH"
+                } else {
+                    "WITH+mods"
+                }
+            }
+            Clause::OrderBy(_) => "ORDER BY",
+            Clause::Skip(_) => "SKIP",
+            Clause::Limit(_) => "LIMIT",
             Clause::Return(_) => "RETURN",
             Clause::Create(_) => "CREATE",
             Clause::Set(_) => "SET",
             Clause::Remove(_) => "REMOVE",
             Clause::Delete(_) => "DELETE",
         })
-        .collect()
+        .collect())
 }
 
-/// Clause orders the legacy layout cannot hold parse, in source order.
+/// Accepted by Neo4j 5.26; the clause sequence the parser must produce.
 #[test]
-fn clause_orders_the_legacy_layout_cannot_hold() {
-    let q = "MATCH (a:User) WITH a MATCH (a)-[:FOLLOWS]->(b:User) MATCH (b)-[:FOLLOWS]->(c:User) RETURN count(*)";
-    assert!(
-        parse_cypher_statement(q).is_err(),
-        "legacy parser accepts it now; update this test"
-    );
-    assert_eq!(clauses(q), ["MATCH", "WITH", "MATCH", "MATCH", "RETURN"]);
-
-    let q = "MATCH (a:User) WITH a UNWIND [1,2] AS x UNWIND [3] AS y RETURN count(*)";
-    assert!(parse_cypher_statement(q).is_err());
-    assert_eq!(clauses(q), ["MATCH", "WITH", "UNWIND", "UNWIND", "RETURN"]);
-
-    let q = "MATCH (a:User) WITH a OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) MATCH (b)-[:FOLLOWS]->(c:User) RETURN count(*)";
-    assert!(parse_cypher_statement(q).is_err());
-    assert_eq!(
-        clauses(q),
-        ["MATCH", "WITH", "OPTIONAL MATCH", "MATCH", "RETURN"]
-    );
-
-    // UNWIND between two MATCH clauses keeps its place.
-    let q = "MATCH (a:User) UNWIND [1,2] AS x MATCH (b:User) RETURN count(*)";
-    assert_eq!(clauses(q), ["MATCH", "UNWIND", "MATCH", "RETURN"]);
+fn neo4j_accepted_clause_orders() {
+    let cases: &[(&str, &[&str])] = &[
+        // shapes the legacy layout cannot hold
+        (
+            "MATCH (a:User) WITH a MATCH (a)-[:FOLLOWS]->(b:User) MATCH (b)-[:FOLLOWS]->(c:User) RETURN count(*)",
+            &["MATCH", "WITH", "MATCH", "MATCH", "RETURN"],
+        ),
+        (
+            "MATCH (a:User) WITH a UNWIND [1,2] AS x UNWIND [3] AS y RETURN count(*)",
+            &["MATCH", "WITH", "UNWIND", "UNWIND", "RETURN"],
+        ),
+        (
+            "MATCH (a:User) WITH a OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) MATCH (b)-[:FOLLOWS]->(c:User) RETURN count(*)",
+            &["MATCH", "WITH", "OPTIONAL MATCH", "MATCH", "RETURN"],
+        ),
+        (
+            "MATCH (a:User) UNWIND [1,2] AS x MATCH (b:User) RETURN count(*)",
+            &["MATCH", "UNWIND", "MATCH", "RETURN"],
+        ),
+        // a WITH's own modifiers, in the fixed order, WHERE last (#1311)
+        (
+            "MATCH (u:User) WITH u ORDER BY u.age LIMIT 5 WHERE u.age > 30 RETURN count(*)",
+            &["MATCH", "WITH+mods", "RETURN"],
+        ),
+        // out-of-order modifiers are free-standing clauses (Neo4j: [[1],[3]])
+        (
+            "UNWIND [3,1,2] AS x WITH x LIMIT 2 ORDER BY x RETURN x",
+            &["UNWIND", "WITH+mods", "ORDER BY", "RETURN"],
+        ),
+        (
+            "UNWIND [3,1,2] AS x WITH x SKIP 1 ORDER BY x RETURN x",
+            &["UNWIND", "WITH+mods", "ORDER BY", "RETURN"],
+        ),
+        (
+            "UNWIND [3,1,2] AS x WITH x SKIP 1 SKIP 1 RETURN x",
+            &["UNWIND", "WITH+mods", "SKIP", "RETURN"],
+        ),
+        (
+            "UNWIND [3,1,2] AS x WITH x ORDER BY x WHERE x > 1 ORDER BY x DESC RETURN x",
+            &["UNWIND", "WITH+mods", "ORDER BY", "RETURN"],
+        ),
+        (
+            "UNWIND [3,1,2] AS x WITH x WHERE x > 1 ORDER BY x LIMIT 1 RETURN x",
+            &["UNWIND", "WITH+mods", "ORDER BY", "LIMIT", "RETURN"],
+        ),
+        // after a clause other than WITH (Neo4j: [[3],[2]])
+        (
+            "UNWIND [1,2,3] AS x ORDER BY x DESC LIMIT 2 RETURN x",
+            &["UNWIND", "ORDER BY", "LIMIT", "RETURN"],
+        ),
+        (
+            "UNWIND [3,1,2] AS x WITH x OFFSET 1 RETURN x",
+            &["UNWIND", "WITH+mods", "RETURN"],
+        ),
+        (
+            "UNWIND [3,1,2] AS x RETURN x ORDER BY x OFFSET 1",
+            &["UNWIND", "RETURN"],
+        ),
+        ("RETURN 1 AS num SKIP 0 LIMIT 5", &["RETURN"]),
+    ];
+    for (q, expected) in cases {
+        assert_eq!(kinds(q).as_deref(), Ok(*expected), "{q}");
+    }
 }
 
-/// A WITH's WHERE written after LIMIT is recorded after it (#1311): it filters
-/// the limited rows, so the order is part of the meaning.
+/// Rejected by Neo4j 5.26; the parser must reject them too.
 #[test]
-fn with_modifiers_keep_their_written_order() {
-    let q = "MATCH (u:User) WITH u ORDER BY u.age LIMIT 5 WHERE u.age > 30 RETURN count(*)";
-    let (_, s) = parse_clause_statement(q).unwrap();
-    let Clause::With(w) = &s.first.clauses[1] else {
-        panic!("expected WITH")
-    };
-    let order: Vec<&str> = w
-        .modifiers
-        .iter()
-        .map(|m| match m {
-            Modifier::OrderBy(_) => "ORDER BY",
-            Modifier::Skip(_) => "SKIP",
-            Modifier::Limit(_) => "LIMIT",
-            Modifier::Where(_) => "WHERE",
-        })
-        .collect();
-    assert_eq!(order, ["ORDER BY", "LIMIT", "WHERE"]);
-
-    let q = "MATCH (u:User) WITH u WHERE u.age > 30 ORDER BY u.age LIMIT 5 RETURN count(*)";
-    let (_, s) = parse_clause_statement(q).unwrap();
-    let Clause::With(w) = &s.first.clauses[1] else {
-        panic!("expected WITH")
-    };
-    assert!(matches!(w.modifiers[0], Modifier::Where(_)));
-}
-
-/// Neo4j 5.26 applies a WITH's modifiers in written order (`WITH x LIMIT 2
-/// ORDER BY x` limits, then sorts), but a RETURN's must be ORDER BY, SKIP,
-/// LIMIT in that order (`RETURN 1 LIMIT 5 SKIP 0` is an error).
-#[test]
-fn return_modifiers_have_a_fixed_order_with_modifiers_do_not() {
-    assert!(parse_clause_statement("RETURN 1 AS num LIMIT 5 SKIP 0").is_err());
-    assert!(parse_clause_statement("RETURN 1 AS num SKIP 0 LIMIT 5").is_ok());
-    let (_, s) =
-        parse_clause_statement("UNWIND [3,1,2] AS x WITH x LIMIT 2 ORDER BY x RETURN x").unwrap();
-    let Clause::With(w) = &s.first.clauses[1] else {
-        panic!("expected WITH")
-    };
-    assert!(matches!(
-        w.modifiers[..],
-        [Modifier::Limit(_), Modifier::OrderBy(_)]
-    ));
-}
-
-#[test]
-fn trailing_garbage_and_errors_are_rejected() {
-    assert!(parse_clause_statement("MATCH (n) RETURN n garbage").is_err());
-    assert!(parse_clause_statement("MATCH (n) RETURN n;").is_ok());
-    assert!(parse_clause_statement("MATCH (n RETURN n").is_err());
-    assert!(parse_clause_statement("").is_err());
+fn neo4j_rejected_clause_orders() {
+    for q in [
+        // nothing may follow RETURN
+        "RETURN 1 AS a MATCH (n) RETURN n",
+        "RETURN 1 AS x RETURN 2 AS y",
+        "UNWIND [1,2,3] AS x RETURN x WHERE x > 1",
+        "RETURN 1 AS num LIMIT 5 SKIP 0",
+        // a query must not end with WITH / MATCH / UNWIND
+        "UNWIND [1,2] AS x WITH x",
+        "MATCH (n)",
+        "WITH 1 AS x UNION RETURN 2 AS x",
+        // there is no free-standing WHERE
+        "UNWIND [3,1,2] AS x WITH x WHERE x > 1 WHERE x > 2 RETURN x",
+        "UNWIND [1] AS x WHERE x > 0 RETURN x",
+        "UNWIND [3,1,2] AS x WITH x AS y SKIP 0 ORDER BY y LIMIT 1 WHERE y > 0 RETURN y",
+        "UNWIND [3,1,2] AS x WITH x AS y LIMIT 3 SKIP 0 WHERE y > 0 RETURN y",
+        // syntax errors and trailing garbage
+        "MATCH (n) RETURN n garbage",
+        "MATCH (n RETURN n",
+        "",
+    ] {
+        assert!(kinds(q).is_err(), "must be rejected: {q}");
+    }
+    assert!(kinds("MATCH (n) RETURN n;").is_ok());
 }
 
 #[test]
@@ -343,7 +398,7 @@ fn union_arms_are_separate_queries() {
 }
 
 /// Report (not assert) the corpus queries the legacy parser rejects and what
-/// the clause-list parser does with them: run with `--nocapture` to see.
+/// the clause-list parser does with them: run with `--ignored --nocapture`.
 #[test]
 #[ignore]
 fn report_legacy_rejects() {
