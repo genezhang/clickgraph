@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; next: S4 lowering)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; next: S4b WITH)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,14 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-06: **P-4c S4a: lowering MATCH / WHERE / RETURN (standard layout)** (#1321, `src/bound_plan/lower/`).
+  - `CLICKGRAPH_BOUND_PLAN=on` routes a query to the bound-plan path when it binds and lowers (HTTP `/query` and `cypher_to_sql`); everything else, and the default `off`, is the legacy pipeline. Legacy SQL is unchanged.
+  - Lowering: each element is its own `v{N}` scan, joined in path order with ties in the later scan's ON; relationship uniqueness per MATCH; impossible patterns and unknown labels return no rows; unmapped properties are NULL. Printed by `render_plan_to_sql_plain`, which runs none of the legacy repair passes and none of the name-keyed column resolution.
+  - Neo4j oracle with the switch on: 82 queries take the new path, 79 equal Neo4j (the other 3: 2 rejected by Neo4j, 1 known UInt8/`true` data issue). 0 correct → wrong, 8 wrong → correct.
+  - Review found six defects (tenant isolation, impossible elements next to real scans, `collect`/`sum` of no values, constant ORDER BY/GROUP BY keys, identity across labels, nodes nested in expressions), a second review three more (relationship identity across edge definitions, `count` of an impossible element, `sum`/`collect` of always-NULL expressions); all fixed and re-checked on Neo4j.
+  - Live suite on vs off: 17 differences, none a new-path defect; six encode legacy behaviour that differs from Cypher (errors for unknown labels/types/properties, reading unmapped columns), decided at S10. Filed #1320 (legacy EXISTS over an impossible pattern is true for every row).
+  - Binder fix: a relationship reused from an earlier MATCH now brings its bound type to label inference.
 
 - 2026-10-06: **P-4c S3: binder, explicit scope and label inference** (#1319, `src/bound_plan/`).
   - `bind_statement` turns a clause-list statement into a bound plan: every variable is resolved once against the current scope and gets a `VarId`; WITH/RETURN outputs are new bindings; OPTIONAL MATCH bindings are nullable.

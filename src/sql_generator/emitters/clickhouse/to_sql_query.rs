@@ -6417,6 +6417,74 @@ fn rewrite_empty_reduce_list(
     RenderRewrite::Recurse
 }
 
+/// P-4c (`EXPLICIT_SCOPE.md` §4.14): print a plan produced by the bound-plan
+/// lowering. It runs only what printing needs — CTE flattening, the alias →
+/// label scope used for result typing, duplicate-alias disambiguation — and
+/// none of the post-assembly repair passes (`optimize_plan`, the VLP and
+/// fixed-path rewrites, join re-sorting): the lowering emits joins in
+/// dependency order and every column reference already names its element's
+/// alias and physical column. Column printing skips the name-keyed resolution
+/// while this runs (`QueryContext::plain_render`).
+///
+/// Supports the plan shapes the lowering produces today: one SELECT with
+/// FROM / JOINs / WHERE / GROUP BY / ORDER BY / SKIP / LIMIT, no CTEs and no
+/// UNION.
+pub fn render_plan_to_sql_plain(mut plan: RenderPlan) -> String {
+    assert!(
+        plan.ctes.0.is_empty() && plan.union.0.is_none() && plan.array_join.0.is_empty(),
+        "render_plan_to_sql_plain: CTEs, UNION and ARRAY JOIN are not lowered yet"
+    );
+    flatten_all_ctes(&mut plan);
+    struct PlainGuard(bool);
+    impl Drop for PlainGuard {
+        fn drop(&mut self) {
+            crate::server::query_context::set_plain_render(self.0);
+            clear_all_render_contexts();
+        }
+    }
+    let _guard = PlainGuard(crate::server::query_context::is_plain_render());
+    crate::server::query_context::set_plain_render(true);
+    activate_scope_context(&plan.from, &plan.joins);
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for item in plan.select.items.iter_mut() {
+        if let Some(ref mut alias) = item.col_alias {
+            let count = seen.entry(alias.0.clone()).or_insert(0);
+            *count += 1;
+            if *count > 1 {
+                alias.0 = format!("{}_{}", alias.0, count);
+            }
+        }
+    }
+    let mut sql = String::new();
+    sql.push_str(&plan.select.to_sql());
+    sql.push_str(&plan.from.to_sql());
+    sql.push_str(&plan.joins.to_sql());
+    sql.push_str(&plan.filters.to_sql());
+    sql.push_str(&plan.group_by.to_sql());
+    if let Some(having) = &plan.having_clause {
+        sql.push_str("HAVING ");
+        sql.push_str(&having.to_sql());
+        sql.push('\n');
+    }
+    // As in `render_plan_to_sql`: Databricks resolves a DISTINCT query's
+    // ORDER BY against the SELECT aliases.
+    let distinct_spark_order = plan.select.distinct
+        && matches!(
+            crate::server::query_context::get_current_dialect(),
+            crate::sql_generator::SqlDialect::Databricks
+        );
+    if distinct_spark_order {
+        sql.push_str(&render_order_by_with_select_aliases(
+            &plan.order_by,
+            &plan.select,
+        ));
+    } else {
+        sql.push_str(&plan.order_by.to_sql());
+    }
+    sql.push_str(&limit_offset_clause(plan.skip.0, plan.limit.0));
+    sql
+}
+
 pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
     log::trace!(
         "render_plan_to_sql: from={:?}, joins={}, union={}, ctes={}",
@@ -8785,6 +8853,11 @@ impl RenderExpr {
                 table_alias,
                 column,
             }) => {
+                // P-4c: a lowered plan's column references are final — the
+                // alias is the element's own and the column is physical.
+                if crate::server::query_context::is_plain_render() {
+                    return column.to_sql(&table_alias.0);
+                }
                 let col_name = column.raw();
                 log::info!(
                     "🔍 RenderExpr::PropertyAccessExp: {}.{}",

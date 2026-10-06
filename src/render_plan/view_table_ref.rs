@@ -20,9 +20,23 @@ pub struct ViewTableRef {
 impl ViewTableRef {
     /// Build table reference with parameterized view syntax if applicable
     fn build_table_reference(scan: &ViewScan, base_name: &str) -> String {
-        if let (Some(param_names), Some(param_values)) =
-            (&scan.view_parameter_names, &scan.view_parameter_values)
-        {
+        Self::parameterized_name(
+            base_name,
+            scan.view_parameter_names.as_deref(),
+            scan.view_parameter_values.as_ref(),
+        )
+    }
+
+    /// `base_name(p = 'v', …)` for a parameterized view, else `base_name`.
+    /// Shared by the legacy `ViewScan` path and the P-4c lowering, which has
+    /// the schema's parameter names and the request's values but no
+    /// `ViewScan`.
+    pub fn parameterized_name(
+        base_name: &str,
+        param_names: Option<&[String]>,
+        param_values: Option<&std::collections::HashMap<String, String>>,
+    ) -> String {
+        if let (Some(param_names), Some(param_values)) = (param_names, param_values) {
             if !param_names.is_empty() {
                 // Generate parameterized view call with actual values
                 // e.g., view_name(tenant_id='acme', region='US')

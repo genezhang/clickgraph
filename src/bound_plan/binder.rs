@@ -421,23 +421,29 @@ impl Binder {
                 });
                 // Written labels are alternatives; several occurrences of one
                 // variable intersect. A label the schema lacks matches nothing.
+                // A variable bound before the clause is narrowed here only for
+                // this clause's inference; its binding keeps its labels.
                 if !n.labels.is_empty() {
                     let written: BTreeSet<String> = n.labels.iter().cloned().collect();
                     let slot = &mut nodes[idx];
-                    if !slot.fixed {
-                        slot.labels = slot.labels.intersection(&written).cloned().collect();
-                    }
+                    slot.labels = slot.labels.intersection(&written).cloned().collect();
                 }
             }
         }
         for part in parts.iter() {
             for (i, r) in part.rels.iter().enumerate() {
+                // A relationship bound before the clause starts from its bound
+                // types (its written types, if any, narrow this clause only).
+                let start: BTreeSet<String> = match &self.bindings[r.var.0 as usize].kind {
+                    BindingKind::Rel { types, .. } if r.bound_before => types.clone(),
+                    _ => f.all_types.clone(),
+                };
                 let types: BTreeSet<String> = if r.types.is_empty() {
-                    f.all_types.clone()
+                    start
                 } else {
                     r.types
                         .iter()
-                        .filter(|t| f.all_types.contains(*t))
+                        .filter(|t| start.contains(*t))
                         .cloned()
                         .collect()
                 };

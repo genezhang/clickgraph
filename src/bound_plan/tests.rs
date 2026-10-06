@@ -543,3 +543,17 @@ fn zero_hop_segment_with_no_feasible_type_keeps_its_endpoints() {
 fn order_by_star_is_not_a_sort_key() {
     assert!(bind("MATCH (a:User) RETURN a ORDER BY *").is_err());
 }
+
+#[test]
+fn a_reused_relationship_brings_its_type_to_inference() {
+    // `r` is a FOLLOWS (User -> User); its new endpoints are Users. Inference
+    // used the written type set (none: every type) and left them unlabeled.
+    let s = ok("MATCH (a:User)-[r:FOLLOWS]->(b) MATCH (c)-[r]->(d) RETURN c.name");
+    assert_eq!(labels(&s, "c"), set(&["User"]));
+    assert_eq!(labels(&s, "d"), set(&["User"]));
+    // A label written on a bound variable narrows this clause's inference
+    // (here: m), never the variable itself.
+    let s = ok("MATCH (n) OPTIONAL MATCH (n:Post)-[:FOLLOWS]->(m) RETURN n");
+    assert_eq!(labels(&s, "n"), set(&["Post", "User"]));
+    assert!(labels(&s, "m").is_empty(), "Posts follow no one");
+}

@@ -1482,6 +1482,9 @@ async fn query_handler_inner(
                     max_inferred_types: payload.max_inferred_types,
                     where_label_constraints: None,
                     max_cte_depth: app_state.config.max_cte_depth,
+                    // Graph output reads the legacy logical plan.
+                    cypher: (output_format != OutputFormat::Graph).then(|| clean_query.clone()),
+                    bound_plan: None,
                 },
             ) {
                 Ok(t) => t,

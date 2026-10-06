@@ -1045,7 +1045,92 @@ slice that will handle it.
     parameters, re-matching a bound variable-length relationship list, the
     same relationship variable twice in one MATCH (Neo4j: no rows), and a
     list element or other value used as a node or relationship.
-- [ ] S4 lowering: MATCH / WHERE / WITH / RETURN (standard)
+- [ ] S4 lowering: MATCH / WHERE / WITH / RETURN (standard). Split in two:
+  - [x] **S4a: MATCH / WHERE / RETURN** (`src/bound_plan/lower/`).
+    - Routing: `CLICKGRAPH_BOUND_PLAN=on` (default off) in
+      `translate::translate_in_context`. A query goes to the bound-plan path
+      when the caller passes its text (`ReadOptions.cypher`: HTTP `/query`
+      except graph output, and `cypher_to_sql`) and it binds and lowers;
+      anything else, including every bind error, goes to the legacy pipeline.
+      Bolt, graph output and the metadata entry points stay legacy until the
+      result shape exists.
+    - Every pattern element is its own scan aliased `v{N}`; a variable seen
+      again (same clause or earlier) is the same scan, tied by identity.
+      Scans are joined node, relationship, node in path order, each tie in
+      the ON of the later scan, so the printer needs no join sorting.
+      Relationships of one MATCH sharing an edge table must differ (edge_id,
+      else the stored endpoint tuple).
+    - Scope: standard layout only, decided in `graph_catalog`
+      (`NodeSchema::is_standard_own_table`,
+      `RelationshipSchema::is_standard_edge_table`); one label per node and
+      one type per relationship after inference; directed fixed hops; inline
+      property maps; schema `filter:`; view parameters; FINAL on the FROM
+      table; a RETURN of values with aggregation, DISTINCT, ORDER BY, SKIP,
+      LIMIT; RETURN with no MATCH.
+    - An element whose label or type set is empty, or a variable from an
+      earlier clause written with a label it does not have, makes the query
+      return no rows (`WHERE false`), as in Cypher. A property the schema does
+      not map reads as NULL.
+    - `render_plan_to_sql_plain` prints the plan: CTE flattening, alias
+      scope for result typing, duplicate-alias disambiguation, and nothing
+      else (no `optimize_plan`, no VLP or fixed-path rewrites, no join
+      re-sorting). While it runs, `QueryContext::plain_render` makes column
+      printing skip the name-keyed resolution (registry, multi-type VLP
+      aliases, the `id` pseudo-property). Legacy printing is unchanged.
+    - A node or relationship stands for its identity only in `count(a)`,
+      `count(DISTINCT a)`, `a = b` / `a <> b` (different labels or types are
+      never equal) and `a IS [NOT] NULL`. Anywhere else it is the entity's
+      value, which needs the result shape, so it is not lowered.
+    - An aggregate of the NULL literal (an unmapped property, an element that
+      matches nothing) is folded to Cypher's value (`collect` → `[]`, `sum` /
+      `count` → 0, `min` / `max` / `avg` → NULL) and kept an aggregate
+      (`CASE WHEN count(*) >= 0 …`), so the query still returns one row (one
+      per group). ClickHouse returns NULL for these (`Nullable(Nothing)`).
+    - Constant ORDER BY keys are dropped (ClickHouse reads `ORDER BY 1` as a
+      column position). Constant grouping keys are dropped too, with
+      `HAVING count(*) > 0` when all keys were constant, so an empty input
+      still gives no row.
+    - `tenant_id` is merged into the view parameters as the legacy planner
+      does (`PlanCtx::with_all_parameters`): tenant isolation of
+      parameterized views.
+    - Not lowered yet: whole-entity returns and `id()` (need the result
+      shape and the server's id encoding), list comprehensions (the legacy
+      converter prints lambda bodies early), composite identities used as one
+      value, FINAL on a joined table, edge `constraints:`.
+    - A test fails if `src/bound_plan/` uses the analyzer, `PlanCtx`, the
+      render composition modules or task-local query state.
+    - The binder now starts a reused relationship's inference from its bound
+      types (it used the written ones, so `MATCH (a)-[r:FOLLOWS]->(b) MATCH
+      (c)-[r]->(d)` left `c` and `d` unlabeled).
+    - Review (checked on ClickHouse and Neo4j) found six defects, all fixed:
+      tenant isolation dropped; an element that matches nothing gave a
+      ClickHouse error when other scans existed; `collect` / `sum` of no
+      values gave NULL; `ORDER BY` / `GROUP BY` of a constant read as a
+      column position; identity comparison ignored labels; a node nested in
+      an expression was returned as its id. A second review found three more,
+      also fixed: relationships of one type in different tables compared
+      equal (now: same edge definition); `count(x)` of an element that
+      matches nothing gave no row; `sum` / `collect` of an expression that is
+      always NULL (`sum(a.unmapped + 1)`) gave NULL (now `coalesce(sum(..), 0)`
+      / `coalesce(collect(..), [])`). Pre-existing in both paths: `avg` /
+      `stDev` of no values give `nan` in ClickHouse where Neo4j gives NULL.
+    - Acceptance (Neo4j oracle, `social_integration` and `standard`, switch
+      off vs on): 82 queries take the new path; 79 equal Neo4j, 2 are
+      rejected by Neo4j (`exists(prop)`), 1 is the known UInt8-vs-`true`
+      mismatch (needs `property_types`; wrong on the legacy path too).
+      0 correct → wrong; 8 wrong → correct. 314 corpus queries lower in all.
+    - Live suite with the switch on vs off: 17 tests differ, none a new-path
+      defect. 7 Neo4j-golden entries are now correct (the goldens are keyed
+      to the default path); 2 expose #1320 (legacy EXISTS over an impossible
+      pattern is true for every row); 1 asserts the SQL text `INNER JOIN`.
+      Six encode legacy behaviour that differs from Cypher and from the docs:
+      an error for an unknown label, type or property (Cypher: no rows /
+      NULL), and reading an unmapped column (`docs/wiki/Schema-Basics.md`:
+      "Unmapped properties won't be accessible"). They are decided when the
+      default flips (S10).
+  - [ ] **S4b: WITH**, free-standing ORDER BY / SKIP / LIMIT, the WITH
+    modifiers' fixed order (#1311), the result shape (whole-entity returns,
+    Bolt, graph output).
 - [ ] S5 OPTIONAL MATCH unit
 - [ ] S6 paths + uniqueness + shortestPath
 - [ ] S7 UNWIND / UNION / alternatives

@@ -290,6 +290,13 @@ pub struct QueryContext {
     /// not track (e.g. `WITH collect(post) AS posts`).
     pub array_cte_columns: HashSet<String>,
 
+    /// P-4c: the SQL printer is printing a plan lowered from the bound plan
+    /// (`render_plan_to_sql_plain`). Every column reference already carries
+    /// its table alias and physical column, so the name-keyed resolution in
+    /// `PropertyAccessExp` printing (variable registry, multi-type VLP
+    /// aliases, the `id` pseudo-property) must not run.
+    pub plain_render: bool,
+
     /// #1006: own-table join requests for a MixedAccess/denormalized-edge
     /// endpoint whose non-id property is NOT in the edge's embedded property
     /// map (e.g. `foreign_selfloop`: `a` embeds only `pid → mgr_id`, so
@@ -1124,6 +1131,20 @@ pub fn set_current_variable_registry(
 }
 
 /// Record the set of CTE columns that hold array/collection values.
+/// Set or clear plain printing (see [`QueryContext::plain_render`]).
+pub fn set_plain_render(plain: bool) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().plain_render = plain;
+    });
+}
+
+/// True while printing a plan lowered from the bound plan.
+pub fn is_plain_render() -> bool {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().plain_render)
+        .unwrap_or(false)
+}
+
 pub fn set_array_cte_columns(columns: std::collections::HashSet<String>) {
     let _ = QUERY_CONTEXT.try_with(|ctx| {
         ctx.borrow_mut().array_cte_columns = columns;
