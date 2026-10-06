@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "r"
+ ],
+ "cypher": "RETURN 'it\\'s' AS r",
+ "order_keys": null,
+ "rows": [
+  "{\"r\": \"it's\"}"
+ ],
+ "schema": "standard"
+}

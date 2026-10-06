@@ -1,0 +1,12 @@
+{
+ "columns": [
+  "a.content",
+  "b.content"
+ ],
+ "cypher": "MATCH (a:Post)-[*1..3]->(b:Post) RETURN a.content, b.content LIMIT 10",
+ "full_rows": [],
+ "limit": 10,
+ "order_keys": null,
+ "rows": [],
+ "schema": "social_integration"
+}

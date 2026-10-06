@@ -1,0 +1,31 @@
+{
+ "columns": [
+  "z.user_id",
+  "c.user_id"
+ ],
+ "cypher": "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c, z MATCH (z)-[:FOLLOWS*1..2]->(c) RETURN z.user_id, c.user_id",
+ "order_keys": null,
+ "rows": [
+  "{\"c.user_id\": 1, \"z.user_id\": 2}",
+  "{\"c.user_id\": 1, \"z.user_id\": 3}",
+  "{\"c.user_id\": 1, \"z.user_id\": 5}",
+  "{\"c.user_id\": 10, \"z.user_id\": 4}",
+  "{\"c.user_id\": 11, \"z.user_id\": 5}",
+  "{\"c.user_id\": 12, \"z.user_id\": 5}",
+  "{\"c.user_id\": 13, \"z.user_id\": 6}",
+  "{\"c.user_id\": 14, \"z.user_id\": 6}",
+  "{\"c.user_id\": 15, \"z.user_id\": 7}",
+  "{\"c.user_id\": 2, \"z.user_id\": 1}",
+  "{\"c.user_id\": 2, \"z.user_id\": 4}",
+  "{\"c.user_id\": 2, \"z.user_id\": 6}",
+  "{\"c.user_id\": 3, \"z.user_id\": 1}",
+  "{\"c.user_id\": 3, \"z.user_id\": 7}",
+  "{\"c.user_id\": 4, \"z.user_id\": 2}",
+  "{\"c.user_id\": 5, \"z.user_id\": 1}",
+  "{\"c.user_id\": 6, \"z.user_id\": 2}",
+  "{\"c.user_id\": 7, \"z.user_id\": 3}",
+  "{\"c.user_id\": 8, \"z.user_id\": 3}",
+  "{\"c.user_id\": 9, \"z.user_id\": 4}"
+ ],
+ "schema": "standard"
+}

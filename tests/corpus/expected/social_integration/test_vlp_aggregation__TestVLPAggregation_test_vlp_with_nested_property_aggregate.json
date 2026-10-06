@@ -1,0 +1,46 @@
+{
+ "columns": [
+  "userId",
+  "totalPosts"
+ ],
+ "cypher": "MATCH (u1:User {user_id: 1})-[:FOLLOWS*1..2]-(u2:User)-[:AUTHORED]->(p:Post)\n        RETURN u2.user_id AS userId, SUM(1) AS totalPosts\n        ORDER BY totalPosts DESC\n        LIMIT 5",
+ "full_rows": [
+  "{\"totalPosts\": 12, \"userId\": 1}",
+  "{\"totalPosts\": 4, \"userId\": 2}",
+  "{\"totalPosts\": 4, \"userId\": 3}",
+  "{\"totalPosts\": 4, \"userId\": 5}",
+  "{\"totalPosts\": 4, \"userId\": 8}",
+  "{\"totalPosts\": 8, \"userId\": 4}",
+  "{\"totalPosts\": 8, \"userId\": 6}",
+  "{\"totalPosts\": 8, \"userId\": 7}"
+ ],
+ "key_sequence": [
+  [
+   12
+  ],
+  [
+   8
+  ],
+  [
+   8
+  ],
+  [
+   8
+  ],
+  [
+   4
+  ]
+ ],
+ "limit": 5,
+ "order_keys": [
+  "totalPosts"
+ ],
+ "rows": [
+  "{\"totalPosts\": 12, \"userId\": 1}",
+  "{\"totalPosts\": 4, \"userId\": 3}",
+  "{\"totalPosts\": 8, \"userId\": 4}",
+  "{\"totalPosts\": 8, \"userId\": 6}",
+  "{\"totalPosts\": 8, \"userId\": 7}"
+ ],
+ "schema": "social_integration"
+}

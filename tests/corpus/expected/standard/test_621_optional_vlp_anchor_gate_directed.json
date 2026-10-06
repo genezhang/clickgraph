@@ -1,0 +1,41 @@
+{
+ "columns": [
+  "a.name",
+  "c"
+ ],
+ "cypher": "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS*1..2]->(b:User) WHERE a.is_active = true RETURN a.name, count(b) AS c",
+ "order_keys": null,
+ "rows": [
+  "{\"a.name\": \"Alice Johnson\", \"c\": 0}",
+  "{\"a.name\": \"Amy Adams\", \"c\": 0}",
+  "{\"a.name\": \"Ben Baker\", \"c\": 0}",
+  "{\"a.name\": \"Bob Smith\", \"c\": 0}",
+  "{\"a.name\": \"Carol White\", \"c\": 0}",
+  "{\"a.name\": \"Chloe Carter\", \"c\": 0}",
+  "{\"a.name\": \"Dan Foster\", \"c\": 0}",
+  "{\"a.name\": \"David Brown\", \"c\": 0}",
+  "{\"a.name\": \"Eve Davis\", \"c\": 0}",
+  "{\"a.name\": \"Frank Miller\", \"c\": 0}",
+  "{\"a.name\": \"Grace Lee\", \"c\": 0}",
+  "{\"a.name\": \"Henry Wilson\", \"c\": 0}",
+  "{\"a.name\": \"Iris Martinez\", \"c\": 0}",
+  "{\"a.name\": \"Jack Taylor\", \"c\": 0}",
+  "{\"a.name\": \"Kate Anderson\", \"c\": 0}",
+  "{\"a.name\": \"Liam Thomas\", \"c\": 0}",
+  "{\"a.name\": \"Mia Jackson\", \"c\": 0}",
+  "{\"a.name\": \"Noah Harris\", \"c\": 0}",
+  "{\"a.name\": \"Olivia Clark\", \"c\": 0}",
+  "{\"a.name\": \"Paul Lewis\", \"c\": 0}",
+  "{\"a.name\": \"Quinn Walker\", \"c\": 0}",
+  "{\"a.name\": \"Rachel Hall\", \"c\": 0}",
+  "{\"a.name\": \"Sam Allen\", \"c\": 0}",
+  "{\"a.name\": \"Tina Young\", \"c\": 0}",
+  "{\"a.name\": \"Uma King\", \"c\": 0}",
+  "{\"a.name\": \"Victor Wright\", \"c\": 0}",
+  "{\"a.name\": \"Wendy Lopez\", \"c\": 0}",
+  "{\"a.name\": \"Xavier Hill\", \"c\": 0}",
+  "{\"a.name\": \"Yara Scott\", \"c\": 0}",
+  "{\"a.name\": \"Zack Green\", \"c\": 0}"
+ ],
+ "schema": "standard"
+}

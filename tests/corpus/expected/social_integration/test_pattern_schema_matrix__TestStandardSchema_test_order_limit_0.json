@@ -1,0 +1,82 @@
+{
+ "columns": [
+  "n.user_id"
+ ],
+ "cypher": "MATCH (n:User) WHERE n.user_id IS NOT NULL RETURN n.user_id ORDER BY n.user_id DESC SKIP 5 LIMIT 10",
+ "full_rows": [
+  "{\"n.user_id\": 10}",
+  "{\"n.user_id\": 11}",
+  "{\"n.user_id\": 12}",
+  "{\"n.user_id\": 13}",
+  "{\"n.user_id\": 14}",
+  "{\"n.user_id\": 15}",
+  "{\"n.user_id\": 16}",
+  "{\"n.user_id\": 17}",
+  "{\"n.user_id\": 18}",
+  "{\"n.user_id\": 19}",
+  "{\"n.user_id\": 1}",
+  "{\"n.user_id\": 20}",
+  "{\"n.user_id\": 21}",
+  "{\"n.user_id\": 22}",
+  "{\"n.user_id\": 23}",
+  "{\"n.user_id\": 24}",
+  "{\"n.user_id\": 25}",
+  "{\"n.user_id\": 2}",
+  "{\"n.user_id\": 3}",
+  "{\"n.user_id\": 4}",
+  "{\"n.user_id\": 5}",
+  "{\"n.user_id\": 6}",
+  "{\"n.user_id\": 7}",
+  "{\"n.user_id\": 8}",
+  "{\"n.user_id\": 9}"
+ ],
+ "key_sequence": [
+  [
+   25
+  ],
+  [
+   24
+  ],
+  [
+   23
+  ],
+  [
+   22
+  ],
+  [
+   21
+  ],
+  [
+   20
+  ],
+  [
+   19
+  ],
+  [
+   18
+  ],
+  [
+   17
+  ],
+  [
+   16
+  ]
+ ],
+ "limit": 10,
+ "order_keys": [
+  "n.user_id"
+ ],
+ "rows": [
+  "{\"n.user_id\": 16}",
+  "{\"n.user_id\": 17}",
+  "{\"n.user_id\": 18}",
+  "{\"n.user_id\": 19}",
+  "{\"n.user_id\": 20}",
+  "{\"n.user_id\": 21}",
+  "{\"n.user_id\": 22}",
+  "{\"n.user_id\": 23}",
+  "{\"n.user_id\": 24}",
+  "{\"n.user_id\": 25}"
+ ],
+ "schema": "social_integration"
+}

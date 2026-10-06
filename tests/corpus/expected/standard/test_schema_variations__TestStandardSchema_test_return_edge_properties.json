@@ -1,0 +1,20 @@
+{
+ "columns": [
+  "r.follow_date",
+  "neighbor.name"
+ ],
+ "cypher": "MATCH (u:User)-[r:FOLLOWS]->(neighbor:User) WHERE u.user_id = 1 RETURN r.follow_date, neighbor.name LIMIT 5",
+ "full_rows": [
+  "{\"neighbor.name\": \"Bob Smith\", \"r.follow_date\": \"2023-01-01\"}",
+  "{\"neighbor.name\": \"Carol White\", \"r.follow_date\": \"2023-01-02\"}",
+  "{\"neighbor.name\": \"Eve Davis\", \"r.follow_date\": \"2023-01-03\"}"
+ ],
+ "limit": 5,
+ "order_keys": null,
+ "rows": [
+  "{\"neighbor.name\": \"Bob Smith\", \"r.follow_date\": \"2023-01-01\"}",
+  "{\"neighbor.name\": \"Carol White\", \"r.follow_date\": \"2023-01-02\"}",
+  "{\"neighbor.name\": \"Eve Davis\", \"r.follow_date\": \"2023-01-03\"}"
+ ],
+ "schema": "standard"
+}

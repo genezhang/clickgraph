@@ -1,0 +1,20 @@
+{
+ "columns": [
+  "u2.user_id",
+  "post_count"
+ ],
+ "cypher": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:AUTHORED]->(p:Post)\n        WHERE u1.user_id = 1\n        RETURN u2.user_id, COUNT(p) as post_count\n        LIMIT 10",
+ "full_rows": [
+  "{\"post_count\": 2, \"u2.user_id\": 2}",
+  "{\"post_count\": 2, \"u2.user_id\": 3}",
+  "{\"post_count\": 2, \"u2.user_id\": 5}"
+ ],
+ "limit": 10,
+ "order_keys": null,
+ "rows": [
+  "{\"post_count\": 2, \"u2.user_id\": 2}",
+  "{\"post_count\": 2, \"u2.user_id\": 3}",
+  "{\"post_count\": 2, \"u2.user_id\": 5}"
+ ],
+ "schema": "social_integration"
+}

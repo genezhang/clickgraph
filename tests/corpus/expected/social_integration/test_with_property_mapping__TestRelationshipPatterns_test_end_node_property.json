@@ -1,0 +1,36 @@
+{
+ "columns": [
+  "followedName"
+ ],
+ "cypher": "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH b.name AS followedName RETURN followedName LIMIT 3",
+ "full_rows": [
+  "{\"followedName\": \"Alice Johnson\"}",
+  "{\"followedName\": \"Alice Johnson\"}",
+  "{\"followedName\": \"Alice Johnson\"}",
+  "{\"followedName\": \"Bob Smith\"}",
+  "{\"followedName\": \"Bob Smith\"}",
+  "{\"followedName\": \"Bob Smith\"}",
+  "{\"followedName\": \"Carol White\"}",
+  "{\"followedName\": \"Carol White\"}",
+  "{\"followedName\": \"David Brown\"}",
+  "{\"followedName\": \"Eve Davis\"}",
+  "{\"followedName\": \"Frank Miller\"}",
+  "{\"followedName\": \"Grace Lee\"}",
+  "{\"followedName\": \"Henry Wilson\"}",
+  "{\"followedName\": \"Iris Martinez\"}",
+  "{\"followedName\": \"Jack Taylor\"}",
+  "{\"followedName\": \"Kate Anderson\"}",
+  "{\"followedName\": \"Liam Thomas\"}",
+  "{\"followedName\": \"Mia Jackson\"}",
+  "{\"followedName\": \"Noah Harris\"}",
+  "{\"followedName\": \"Olivia Clark\"}"
+ ],
+ "limit": 3,
+ "order_keys": null,
+ "rows": [
+  "{\"followedName\": \"Bob Smith\"}",
+  "{\"followedName\": \"Carol White\"}",
+  "{\"followedName\": \"Eve Davis\"}"
+ ],
+ "schema": "social_integration"
+}

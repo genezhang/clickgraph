@@ -1,0 +1,39 @@
+{
+ "columns": [
+  "u2.name",
+  "p.content"
+ ],
+ "cypher": "MATCH (u1:User)-[:FOLLOWS*1..2]->(u2:User)-[:AUTHORED]->(p:Post)\n        WHERE u1.user_id = 1\n        RETURN u2.name, p.content\n        LIMIT 5",
+ "full_rows": [
+  "{\"p.content\": \"Best pasta recipe\", \"u2.name\": \"Eve Davis\"}",
+  "{\"p.content\": \"Growing tomatoes\", \"u2.name\": \"Grace Lee\"}",
+  "{\"p.content\": \"Hello everyone!\", \"u2.name\": \"Alice Johnson\"}",
+  "{\"p.content\": \"Hello everyone!\", \"u2.name\": \"Alice Johnson\"}",
+  "{\"p.content\": \"Hello everyone!\", \"u2.name\": \"Alice Johnson\"}",
+  "{\"p.content\": \"Home improvement\", \"u2.name\": \"Bob Smith\"}",
+  "{\"p.content\": \"Job hunting tips\", \"u2.name\": \"Eve Davis\"}",
+  "{\"p.content\": \"Latest blockbuster\", \"u2.name\": \"Alice Johnson\"}",
+  "{\"p.content\": \"Latest blockbuster\", \"u2.name\": \"Alice Johnson\"}",
+  "{\"p.content\": \"Latest blockbuster\", \"u2.name\": \"Alice Johnson\"}",
+  "{\"p.content\": \"Latest in technology\", \"u2.name\": \"Carol White\"}",
+  "{\"p.content\": \"Local art show\", \"u2.name\": \"Henry Wilson\"}",
+  "{\"p.content\": \"My dogs adventure\", \"u2.name\": \"Carol White\"}",
+  "{\"p.content\": \"My first post here\", \"u2.name\": \"Bob Smith\"}",
+  "{\"p.content\": \"My trip to Europe\", \"u2.name\": \"David Brown\"}",
+  "{\"p.content\": \"New album review\", \"u2.name\": \"Frank Miller\"}",
+  "{\"p.content\": \"Spring collection\", \"u2.name\": \"David Brown\"}",
+  "{\"p.content\": \"Stock market basics\", \"u2.name\": \"Frank Miller\"}",
+  "{\"p.content\": \"This months book\", \"u2.name\": \"Grace Lee\"}",
+  "{\"p.content\": \"Week 1 progress\", \"u2.name\": \"Henry Wilson\"}"
+ ],
+ "limit": 5,
+ "order_keys": null,
+ "rows": [
+  "{\"p.content\": \"Home improvement\", \"u2.name\": \"Bob Smith\"}",
+  "{\"p.content\": \"My first post here\", \"u2.name\": \"Bob Smith\"}",
+  "{\"p.content\": \"My trip to Europe\", \"u2.name\": \"David Brown\"}",
+  "{\"p.content\": \"Spring collection\", \"u2.name\": \"David Brown\"}",
+  "{\"p.content\": \"Stock market basics\", \"u2.name\": \"Frank Miller\"}"
+ ],
+ "schema": "social_integration"
+}

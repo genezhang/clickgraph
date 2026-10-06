@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "total"
+ ],
+ "cypher": "MATCH (a)-[:AUTHORED]->(p)\n        WITH a, p, p.likes as like_count\n        MATCH (a)-[:FOLLOWS]->(f)\n        RETURN count(*) as total",
+ "order_keys": null,
+ "rows": [
+  "{\"total\": 40}"
+ ],
+ "schema": "social_integration"
+}

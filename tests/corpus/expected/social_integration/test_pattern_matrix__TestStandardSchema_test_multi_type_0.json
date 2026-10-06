@@ -1,0 +1,12 @@
+{
+ "columns": [
+  "type(r)",
+  "cnt"
+ ],
+ "cypher": "MATCH (a:User)-[r:FOLLOWS|FOLLOWS]->(b:User) RETURN type(r), count(*) AS cnt",
+ "order_keys": null,
+ "rows": [
+  "{\"cnt\": 20, \"type(r)\": \"FOLLOWS\"}"
+ ],
+ "schema": "social_integration"
+}

@@ -1,0 +1,15 @@
+{
+ "columns": [
+  "u2.user_id",
+  "postCount"
+ ],
+ "cypher": "MATCH (u1:User)-[:FOLLOWS*1..2]-(u2:User)-[:AUTHORED]->(p:Post)\n        WHERE u1.user_id = 1 AND u2.is_active = true\n        RETURN u2.user_id, COUNT(DISTINCT p) AS postCount\n        ORDER BY postCount DESC\n        LIMIT 5",
+ "full_rows": [],
+ "key_sequence": [],
+ "limit": 5,
+ "order_keys": [
+  "postCount"
+ ],
+ "rows": [],
+ "schema": "social_integration"
+}

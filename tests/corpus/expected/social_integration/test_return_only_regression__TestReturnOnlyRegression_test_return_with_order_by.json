@@ -1,0 +1,18 @@
+{
+ "columns": [
+  "x"
+ ],
+ "cypher": "RETURN 42 AS x ORDER BY x",
+ "key_sequence": [
+  [
+   42
+  ]
+ ],
+ "order_keys": [
+  "x"
+ ],
+ "rows": [
+  "{\"x\": 42}"
+ ],
+ "schema": "social_integration"
+}

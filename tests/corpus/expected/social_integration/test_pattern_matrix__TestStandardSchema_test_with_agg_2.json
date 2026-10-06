@@ -1,0 +1,53 @@
+{
+ "columns": [
+  "prop",
+  "cnt"
+ ],
+ "cypher": "MATCH (a:User)-[r:FOLLOWS]->(b:User) WITH a.email AS prop, count(r) AS cnt RETURN prop, cnt ORDER BY cnt DESC LIMIT 10",
+ "full_rows": [
+  "{\"cnt\": 2, \"prop\": \"grace@example.com\"}",
+  "{\"cnt\": 3, \"prop\": \"alice@example.com\"}",
+  "{\"cnt\": 3, \"prop\": \"bob@example.com\"}",
+  "{\"cnt\": 3, \"prop\": \"carol@example.com\"}",
+  "{\"cnt\": 3, \"prop\": \"david@example.com\"}",
+  "{\"cnt\": 3, \"prop\": \"eve@example.com\"}",
+  "{\"cnt\": 3, \"prop\": \"frank@example.com\"}"
+ ],
+ "key_sequence": [
+  [
+   3
+  ],
+  [
+   3
+  ],
+  [
+   3
+  ],
+  [
+   3
+  ],
+  [
+   3
+  ],
+  [
+   3
+  ],
+  [
+   2
+  ]
+ ],
+ "limit": 10,
+ "order_keys": [
+  "cnt"
+ ],
+ "rows": [
+  "{\"cnt\": 2, \"prop\": \"grace@example.com\"}",
+  "{\"cnt\": 3, \"prop\": \"alice@example.com\"}",
+  "{\"cnt\": 3, \"prop\": \"bob@example.com\"}",
+  "{\"cnt\": 3, \"prop\": \"carol@example.com\"}",
+  "{\"cnt\": 3, \"prop\": \"david@example.com\"}",
+  "{\"cnt\": 3, \"prop\": \"eve@example.com\"}",
+  "{\"cnt\": 3, \"prop\": \"frank@example.com\"}"
+ ],
+ "schema": "social_integration"
+}

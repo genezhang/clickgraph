@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "value"
+ ],
+ "cypher": "RETURN 'test_value' AS value",
+ "order_keys": null,
+ "rows": [
+  "{\"value\": \"test_value\"}"
+ ],
+ "schema": "social_integration"
+}

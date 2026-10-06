@@ -1,0 +1,46 @@
+{
+ "columns": [
+  "user.name"
+ ],
+ "cypher": "MATCH (u:User)\n        WITH u, collect(u) as users\n        UNWIND users as user\n        RETURN user.name\n        LIMIT 3",
+ "full_rows": [
+  "{\"user.name\": \"Alice Johnson\"}",
+  "{\"user.name\": \"Amy Adams\"}",
+  "{\"user.name\": \"Ben Baker\"}",
+  "{\"user.name\": \"Bob Smith\"}",
+  "{\"user.name\": \"Carol White\"}",
+  "{\"user.name\": \"Chloe Carter\"}",
+  "{\"user.name\": \"Dan Foster\"}",
+  "{\"user.name\": \"David Brown\"}",
+  "{\"user.name\": \"Eve Davis\"}",
+  "{\"user.name\": \"Frank Miller\"}",
+  "{\"user.name\": \"Grace Lee\"}",
+  "{\"user.name\": \"Henry Wilson\"}",
+  "{\"user.name\": \"Iris Martinez\"}",
+  "{\"user.name\": \"Jack Taylor\"}",
+  "{\"user.name\": \"Kate Anderson\"}",
+  "{\"user.name\": \"Liam Thomas\"}",
+  "{\"user.name\": \"Mia Jackson\"}",
+  "{\"user.name\": \"Noah Harris\"}",
+  "{\"user.name\": \"Olivia Clark\"}",
+  "{\"user.name\": \"Paul Lewis\"}",
+  "{\"user.name\": \"Quinn Walker\"}",
+  "{\"user.name\": \"Rachel Hall\"}",
+  "{\"user.name\": \"Sam Allen\"}",
+  "{\"user.name\": \"Tina Young\"}",
+  "{\"user.name\": \"Uma King\"}",
+  "{\"user.name\": \"Victor Wright\"}",
+  "{\"user.name\": \"Wendy Lopez\"}",
+  "{\"user.name\": \"Xavier Hill\"}",
+  "{\"user.name\": \"Yara Scott\"}",
+  "{\"user.name\": \"Zack Green\"}"
+ ],
+ "limit": 3,
+ "order_keys": null,
+ "rows": [
+  "{\"user.name\": \"Alice Johnson\"}",
+  "{\"user.name\": \"Bob Smith\"}",
+  "{\"user.name\": \"Carol White\"}"
+ ],
+ "schema": "social_integration"
+}

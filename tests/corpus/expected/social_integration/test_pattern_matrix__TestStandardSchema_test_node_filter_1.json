@@ -1,0 +1,53 @@
+{
+ "columns": [
+  "n.is_active"
+ ],
+ "cypher": "MATCH (n:User) WHERE n.is_active IS NOT NULL RETURN n.is_active LIMIT 10",
+ "full_rows": [
+  "{\"n.is_active\": 0}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}"
+ ],
+ "limit": 10,
+ "order_keys": null,
+ "rows": [
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}",
+  "{\"n.is_active\": 1}"
+ ],
+ "schema": "social_integration"
+}

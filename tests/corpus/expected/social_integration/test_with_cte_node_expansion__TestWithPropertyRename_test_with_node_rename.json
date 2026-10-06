@@ -1,0 +1,44 @@
+{
+ "columns": [
+  "person"
+ ],
+ "cypher": "MATCH (a:User)\n            WITH a AS person\n            RETURN person\n            LIMIT 1",
+ "full_rows": [
+  "{\"person.age\": 24, \"person.city\": \"Austin\", \"person.country\": \"USA\", \"person.email\": \"mia@example.com\", \"person.is_active\": 1, \"person.name\": \"Mia Jackson\", \"person.registration_date\": \"2021-01-30\", \"person.user_id\": 13}",
+  "{\"person.age\": 25, \"person.city\": \"Portland\", \"person.country\": \"USA\", \"person.email\": \"rachel@example.com\", \"person.is_active\": 1, \"person.name\": \"Rachel Hall\", \"person.registration_date\": \"2021-02-16\", \"person.user_id\": 18}",
+  "{\"person.age\": 25, \"person.city\": \"Toronto\", \"person.country\": \"Canada\", \"person.email\": \"carol@example.com\", \"person.is_active\": 1, \"person.name\": \"Carol White\", \"person.registration_date\": \"2021-03-10\", \"person.user_id\": 3}",
+  "{\"person.age\": 26, \"person.city\": \"Calgary\", \"person.country\": \"Canada\", \"person.email\": \"chloe@example.com\", \"person.is_active\": 1, \"person.name\": \"Chloe Carter\", \"person.registration_date\": \"2021-04-08\", \"person.user_id\": 29}",
+  "{\"person.age\": 26, \"person.city\": \"Madrid\", \"person.country\": \"Spain\", \"person.email\": \"iris@example.com\", \"person.is_active\": 1, \"person.name\": \"Iris Martinez\", \"person.registration_date\": \"2021-06-22\", \"person.user_id\": 9}",
+  "{\"person.age\": 26, \"person.city\": \"Mumbai\", \"person.country\": \"India\", \"person.email\": \"uma@example.com\", \"person.is_active\": 1, \"person.name\": \"Uma King\", \"person.registration_date\": \"2021-05-17\", \"person.user_id\": 21}",
+  "{\"person.age\": 27, \"person.city\": \"Dubai\", \"person.country\": \"UAE\", \"person.email\": \"yara@example.com\", \"person.is_active\": 1, \"person.name\": \"Yara Scott\", \"person.registration_date\": \"2020-10-20\", \"person.user_id\": 25}",
+  "{\"person.age\": 27, \"person.city\": \"Edinburgh\", \"person.country\": \"UK\", \"person.email\": \"quinn@example.com\", \"person.is_active\": 1, \"person.name\": \"Quinn Walker\", \"person.registration_date\": \"2020-11-08\", \"person.user_id\": 17}",
+  "{\"person.age\": 27, \"person.city\": \"Seoul\", \"person.country\": \"South Korea\", \"person.email\": \"grace@example.com\", \"person.is_active\": 1, \"person.name\": \"Grace Lee\", \"person.registration_date\": \"2020-12-01\", \"person.user_id\": 7}",
+  "{\"person.age\": 28, \"person.city\": \"Atlanta\", \"person.country\": \"USA\", \"person.email\": \"ben@example.com\", \"person.is_active\": 1, \"person.name\": \"Ben Baker\", \"person.registration_date\": \"2020-07-25\", \"person.user_id\": 28}",
+  "{\"person.age\": 28, \"person.city\": \"Denver\", \"person.country\": \"USA\", \"person.email\": \"tina@example.com\", \"person.is_active\": 1, \"person.name\": \"Tina Young\", \"person.registration_date\": \"2020-09-03\", \"person.user_id\": 20}",
+  "{\"person.age\": 28, \"person.city\": \"Manchester\", \"person.country\": \"UK\", \"person.email\": \"kate@example.com\", \"person.is_active\": 1, \"person.name\": \"Kate Anderson\", \"person.registration_date\": \"2020-08-19\", \"person.user_id\": 11}",
+  "{\"person.age\": 28, \"person.city\": \"New York\", \"person.country\": \"USA\", \"person.email\": \"alice@example.com\", \"person.is_active\": 1, \"person.name\": \"Alice Johnson\", \"person.registration_date\": \"2020-01-15\", \"person.user_id\": 1}",
+  "{\"person.age\": 29, \"person.city\": \"Melbourne\", \"person.country\": \"Australia\", \"person.email\": \"olivia@example.com\", \"person.is_active\": 1, \"person.name\": \"Olivia Clark\", \"person.registration_date\": \"2020-05-25\", \"person.user_id\": 15}",
+  "{\"person.age\": 29, \"person.city\": \"Phoenix\", \"person.country\": \"USA\", \"person.email\": \"zack@example.com\", \"person.is_active\": 1, \"person.name\": \"Zack Green\", \"person.registration_date\": \"2020-02-14\", \"person.user_id\": 26}",
+  "{\"person.age\": 29, \"person.city\": \"San Francisco\", \"person.country\": \"USA\", \"person.email\": \"eve@example.com\", \"person.is_active\": 1, \"person.name\": \"Eve Davis\", \"person.registration_date\": \"2020-07-08\", \"person.user_id\": 5}",
+  "{\"person.age\": 30, \"person.city\": \"Boston\", \"person.country\": \"USA\", \"person.email\": \"jack@example.com\", \"person.is_active\": 1, \"person.name\": \"Jack Taylor\", \"person.registration_date\": \"2020-04-11\", \"person.user_id\": 10}",
+  "{\"person.age\": 30, \"person.city\": \"Mexico City\", \"person.country\": \"Mexico\", \"person.email\": \"wendy@example.com\", \"person.is_active\": 1, \"person.name\": \"Wendy Lopez\", \"person.registration_date\": \"2020-03-12\", \"person.user_id\": 23}",
+  "{\"person.age\": 31, \"person.city\": \"Berlin\", \"person.country\": \"Germany\", \"person.email\": \"frank@example.com\", \"person.is_active\": 1, \"person.name\": \"Frank Miller\", \"person.registration_date\": \"2019-09-14\", \"person.user_id\": 6}",
+  "{\"person.age\": 31, \"person.city\": \"Bristol\", \"person.country\": \"UK\", \"person.email\": \"amy@example.com\", \"person.is_active\": 1, \"person.name\": \"Amy Adams\", \"person.registration_date\": \"2019-11-30\", \"person.user_id\": 27}",
+  "{\"person.age\": 31, \"person.city\": \"Seattle\", \"person.country\": \"USA\", \"person.email\": \"paul@example.com\", \"person.is_active\": 1, \"person.name\": \"Paul Lewis\", \"person.registration_date\": \"2019-07-14\", \"person.user_id\": 16}",
+  "{\"person.age\": 32, \"person.city\": \"London\", \"person.country\": \"UK\", \"person.email\": \"bob@example.com\", \"person.is_active\": 1, \"person.name\": \"Bob Smith\", \"person.registration_date\": \"2019-05-20\", \"person.user_id\": 2}",
+  "{\"person.age\": 32, \"person.city\": \"Montreal\", \"person.country\": \"Canada\", \"person.email\": \"sam@example.com\", \"person.is_active\": 1, \"person.name\": \"Sam Allen\", \"person.registration_date\": \"2019-04-22\", \"person.user_id\": 19}",
+  "{\"person.age\": 33, \"person.city\": \"Chicago\", \"person.country\": \"USA\", \"person.email\": \"henry@example.com\", \"person.is_active\": 1, \"person.name\": \"Henry Wilson\", \"person.registration_date\": \"2019-02-18\", \"person.user_id\": 8}",
+  "{\"person.age\": 33, \"person.city\": \"Dallas\", \"person.country\": \"USA\", \"person.email\": \"xavier@example.com\", \"person.is_active\": 1, \"person.name\": \"Xavier Hill\", \"person.registration_date\": \"2019-06-05\", \"person.user_id\": 24}",
+  "{\"person.age\": 34, \"person.city\": \"Detroit\", \"person.country\": \"USA\", \"person.email\": \"dan@example.com\", \"person.is_active\": 0, \"person.name\": \"Dan Foster\", \"person.registration_date\": \"2018-09-16\", \"person.user_id\": 30}",
+  "{\"person.age\": 34, \"person.city\": \"Dublin\", \"person.country\": \"Ireland\", \"person.email\": \"liam@example.com\", \"person.is_active\": 1, \"person.name\": \"Liam Thomas\", \"person.registration_date\": \"2018-10-05\", \"person.user_id\": 12}",
+  "{\"person.age\": 35, \"person.city\": \"Miami\", \"person.country\": \"USA\", \"person.email\": \"victor@example.com\", \"person.is_active\": 1, \"person.name\": \"Victor Wright\", \"person.registration_date\": \"2018-08-29\", \"person.user_id\": 22}",
+  "{\"person.age\": 35, \"person.city\": \"Sydney\", \"person.country\": \"Australia\", \"person.email\": \"david@example.com\", \"person.is_active\": 1, \"person.name\": \"David Brown\", \"person.registration_date\": \"2018-11-25\", \"person.user_id\": 4}",
+  "{\"person.age\": 36, \"person.city\": \"Vancouver\", \"person.country\": \"Canada\", \"person.email\": \"noah@example.com\", \"person.is_active\": 1, \"person.name\": \"Noah Harris\", \"person.registration_date\": \"2017-12-12\", \"person.user_id\": 14}"
+ ],
+ "limit": 1,
+ "order_keys": null,
+ "rows": [
+  "{\"person.age\": 28, \"person.city\": \"New York\", \"person.country\": \"USA\", \"person.email\": \"alice@example.com\", \"person.is_active\": 1, \"person.name\": \"Alice Johnson\", \"person.registration_date\": \"2020-01-15\", \"person.user_id\": 1}"
+ ],
+ "schema": "social_integration"
+}

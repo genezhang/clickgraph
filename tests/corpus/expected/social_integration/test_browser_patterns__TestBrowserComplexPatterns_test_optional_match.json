@@ -1,0 +1,49 @@
+{
+ "columns": [
+  "u.user_id",
+  "follow_count"
+ ],
+ "cypher": "MATCH (u:User)\n            OPTIONAL MATCH (u)-[r:FOLLOWS]->(f:User)\n            RETURN u.user_id, count(r) as follow_count\n            LIMIT 5",
+ "full_rows": [
+  "{\"follow_count\": 0, \"u.user_id\": 10}",
+  "{\"follow_count\": 0, \"u.user_id\": 11}",
+  "{\"follow_count\": 0, \"u.user_id\": 12}",
+  "{\"follow_count\": 0, \"u.user_id\": 13}",
+  "{\"follow_count\": 0, \"u.user_id\": 14}",
+  "{\"follow_count\": 0, \"u.user_id\": 15}",
+  "{\"follow_count\": 0, \"u.user_id\": 16}",
+  "{\"follow_count\": 0, \"u.user_id\": 17}",
+  "{\"follow_count\": 0, \"u.user_id\": 18}",
+  "{\"follow_count\": 0, \"u.user_id\": 19}",
+  "{\"follow_count\": 0, \"u.user_id\": 20}",
+  "{\"follow_count\": 0, \"u.user_id\": 21}",
+  "{\"follow_count\": 0, \"u.user_id\": 22}",
+  "{\"follow_count\": 0, \"u.user_id\": 23}",
+  "{\"follow_count\": 0, \"u.user_id\": 24}",
+  "{\"follow_count\": 0, \"u.user_id\": 25}",
+  "{\"follow_count\": 0, \"u.user_id\": 26}",
+  "{\"follow_count\": 0, \"u.user_id\": 27}",
+  "{\"follow_count\": 0, \"u.user_id\": 28}",
+  "{\"follow_count\": 0, \"u.user_id\": 29}",
+  "{\"follow_count\": 0, \"u.user_id\": 30}",
+  "{\"follow_count\": 0, \"u.user_id\": 8}",
+  "{\"follow_count\": 0, \"u.user_id\": 9}",
+  "{\"follow_count\": 2, \"u.user_id\": 7}",
+  "{\"follow_count\": 3, \"u.user_id\": 1}",
+  "{\"follow_count\": 3, \"u.user_id\": 2}",
+  "{\"follow_count\": 3, \"u.user_id\": 3}",
+  "{\"follow_count\": 3, \"u.user_id\": 4}",
+  "{\"follow_count\": 3, \"u.user_id\": 5}",
+  "{\"follow_count\": 3, \"u.user_id\": 6}"
+ ],
+ "limit": 5,
+ "order_keys": null,
+ "rows": [
+  "{\"follow_count\": 3, \"u.user_id\": 1}",
+  "{\"follow_count\": 3, \"u.user_id\": 2}",
+  "{\"follow_count\": 3, \"u.user_id\": 3}",
+  "{\"follow_count\": 3, \"u.user_id\": 4}",
+  "{\"follow_count\": 3, \"u.user_id\": 5}"
+ ],
+ "schema": "social_integration"
+}

@@ -1,0 +1,47 @@
+{
+ "columns": [
+  "userId",
+  "userName",
+  "postCount"
+ ],
+ "cypher": "MATCH (u1:User {user_id: 1})-[:FOLLOWS*1..2]-(u2:User)-[:AUTHORED]->(p:Post)\n        RETURN u2.user_id AS userId,\n               u2.name AS userName,\n               SUM(1) AS postCount\n        ORDER BY postCount DESC\n        LIMIT 5",
+ "full_rows": [
+  "{\"postCount\": 12, \"userId\": 1, \"userName\": \"Alice Johnson\"}",
+  "{\"postCount\": 4, \"userId\": 2, \"userName\": \"Bob Smith\"}",
+  "{\"postCount\": 4, \"userId\": 3, \"userName\": \"Carol White\"}",
+  "{\"postCount\": 4, \"userId\": 5, \"userName\": \"Eve Davis\"}",
+  "{\"postCount\": 4, \"userId\": 8, \"userName\": \"Henry Wilson\"}",
+  "{\"postCount\": 8, \"userId\": 4, \"userName\": \"David Brown\"}",
+  "{\"postCount\": 8, \"userId\": 6, \"userName\": \"Frank Miller\"}",
+  "{\"postCount\": 8, \"userId\": 7, \"userName\": \"Grace Lee\"}"
+ ],
+ "key_sequence": [
+  [
+   12
+  ],
+  [
+   8
+  ],
+  [
+   8
+  ],
+  [
+   8
+  ],
+  [
+   4
+  ]
+ ],
+ "limit": 5,
+ "order_keys": [
+  "postCount"
+ ],
+ "rows": [
+  "{\"postCount\": 12, \"userId\": 1, \"userName\": \"Alice Johnson\"}",
+  "{\"postCount\": 4, \"userId\": 3, \"userName\": \"Carol White\"}",
+  "{\"postCount\": 8, \"userId\": 4, \"userName\": \"David Brown\"}",
+  "{\"postCount\": 8, \"userId\": 6, \"userName\": \"Frank Miller\"}",
+  "{\"postCount\": 8, \"userId\": 7, \"userName\": \"Grace Lee\"}"
+ ],
+ "schema": "social_integration"
+}

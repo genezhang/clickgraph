@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "total"
+ ],
+ "cypher": "MATCH (a:User)\n        OPTIONAL MATCH (a)-[:AUTHORED]->(p:Post)\n        OPTIONAL MATCH (p)<-[:LIKED]-(u2:User)\n        RETURN count(*) as total",
+ "order_keys": null,
+ "rows": [
+  "{\"total\": 46}"
+ ],
+ "schema": "social_integration"
+}

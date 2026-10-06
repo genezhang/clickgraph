@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "total"
+ ],
+ "cypher": "MATCH (n) RETURN count(n) as total",
+ "order_keys": null,
+ "rows": [
+  "{\"total\": 50}"
+ ],
+ "schema": "social_integration"
+}

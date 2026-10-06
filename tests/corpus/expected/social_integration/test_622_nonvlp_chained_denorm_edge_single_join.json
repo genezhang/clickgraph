@@ -1,0 +1,41 @@
+{
+ "columns": [
+  "u2.user_id",
+  "p.post_id"
+ ],
+ "cypher": "MATCH (u1:User)-[:FOLLOWS]->(u2:User)-[:AUTHORED]->(p:Post) RETURN u2.user_id, p.post_id",
+ "order_keys": null,
+ "rows": [
+  "{\"p.post_id\": 1, \"u2.user_id\": 1}",
+  "{\"p.post_id\": 1, \"u2.user_id\": 1}",
+  "{\"p.post_id\": 1, \"u2.user_id\": 1}",
+  "{\"p.post_id\": 10, \"u2.user_id\": 10}",
+  "{\"p.post_id\": 11, \"u2.user_id\": 1}",
+  "{\"p.post_id\": 11, \"u2.user_id\": 1}",
+  "{\"p.post_id\": 11, \"u2.user_id\": 1}",
+  "{\"p.post_id\": 12, \"u2.user_id\": 2}",
+  "{\"p.post_id\": 12, \"u2.user_id\": 2}",
+  "{\"p.post_id\": 12, \"u2.user_id\": 2}",
+  "{\"p.post_id\": 13, \"u2.user_id\": 3}",
+  "{\"p.post_id\": 13, \"u2.user_id\": 3}",
+  "{\"p.post_id\": 14, \"u2.user_id\": 4}",
+  "{\"p.post_id\": 15, \"u2.user_id\": 5}",
+  "{\"p.post_id\": 16, \"u2.user_id\": 6}",
+  "{\"p.post_id\": 17, \"u2.user_id\": 7}",
+  "{\"p.post_id\": 18, \"u2.user_id\": 8}",
+  "{\"p.post_id\": 19, \"u2.user_id\": 9}",
+  "{\"p.post_id\": 2, \"u2.user_id\": 2}",
+  "{\"p.post_id\": 2, \"u2.user_id\": 2}",
+  "{\"p.post_id\": 2, \"u2.user_id\": 2}",
+  "{\"p.post_id\": 20, \"u2.user_id\": 10}",
+  "{\"p.post_id\": 3, \"u2.user_id\": 3}",
+  "{\"p.post_id\": 3, \"u2.user_id\": 3}",
+  "{\"p.post_id\": 4, \"u2.user_id\": 4}",
+  "{\"p.post_id\": 5, \"u2.user_id\": 5}",
+  "{\"p.post_id\": 6, \"u2.user_id\": 6}",
+  "{\"p.post_id\": 7, \"u2.user_id\": 7}",
+  "{\"p.post_id\": 8, \"u2.user_id\": 8}",
+  "{\"p.post_id\": 9, \"u2.user_id\": 9}"
+ ],
+ "schema": "social_integration"
+}

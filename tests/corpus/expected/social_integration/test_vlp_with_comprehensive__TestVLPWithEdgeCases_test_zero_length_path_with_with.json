@@ -1,0 +1,10 @@
+{
+ "columns": [
+  "u.name",
+  "hops"
+ ],
+ "cypher": "MATCH path = (u:TestUser)-[:TEST_FOLLOWS*0..1]->(u)\n        WHERE u.user_id = 1\n        WITH u, length(path) as hops\n        WHERE hops = 0\n        RETURN u.name, hops",
+ "order_keys": null,
+ "rows": [],
+ "schema": "social_integration"
+}

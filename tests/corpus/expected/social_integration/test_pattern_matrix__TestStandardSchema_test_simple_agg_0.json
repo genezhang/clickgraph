@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "count(n)"
+ ],
+ "cypher": "MATCH (n:User) RETURN count(n)",
+ "order_keys": null,
+ "rows": [
+  "{\"count(n)\": 30}"
+ ],
+ "schema": "social_integration"
+}

@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "total"
+ ],
+ "cypher": "MATCH (a:User)-[*1..2]->(b)\n        RETURN count(*) as total",
+ "order_keys": null,
+ "rows": [
+  "{\"total\": 160}"
+ ],
+ "schema": "social_integration"
+}

@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "count(n)"
+ ],
+ "cypher": "MATCH (c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WITH b.name AS n RETURN count(n)",
+ "order_keys": null,
+ "rows": [
+  "{\"count(n)\": 99}"
+ ],
+ "schema": "standard"
+}

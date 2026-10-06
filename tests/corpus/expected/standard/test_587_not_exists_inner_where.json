@@ -1,0 +1,37 @@
+{
+ "columns": [
+  "a.name"
+ ],
+ "cypher": "MATCH (a:User) WHERE NOT EXISTS { MATCH (a)-[:FOLLOWS]->(b:User) WHERE b.name = 'Bob Smith' } RETURN a.name",
+ "order_keys": null,
+ "rows": [
+  "{\"a.name\": \"Amy Adams\"}",
+  "{\"a.name\": \"Ben Baker\"}",
+  "{\"a.name\": \"Bob Smith\"}",
+  "{\"a.name\": \"Carol White\"}",
+  "{\"a.name\": \"Chloe Carter\"}",
+  "{\"a.name\": \"Dan Foster\"}",
+  "{\"a.name\": \"Eve Davis\"}",
+  "{\"a.name\": \"Grace Lee\"}",
+  "{\"a.name\": \"Henry Wilson\"}",
+  "{\"a.name\": \"Iris Martinez\"}",
+  "{\"a.name\": \"Jack Taylor\"}",
+  "{\"a.name\": \"Kate Anderson\"}",
+  "{\"a.name\": \"Liam Thomas\"}",
+  "{\"a.name\": \"Mia Jackson\"}",
+  "{\"a.name\": \"Noah Harris\"}",
+  "{\"a.name\": \"Olivia Clark\"}",
+  "{\"a.name\": \"Paul Lewis\"}",
+  "{\"a.name\": \"Quinn Walker\"}",
+  "{\"a.name\": \"Rachel Hall\"}",
+  "{\"a.name\": \"Sam Allen\"}",
+  "{\"a.name\": \"Tina Young\"}",
+  "{\"a.name\": \"Uma King\"}",
+  "{\"a.name\": \"Victor Wright\"}",
+  "{\"a.name\": \"Wendy Lopez\"}",
+  "{\"a.name\": \"Xavier Hill\"}",
+  "{\"a.name\": \"Yara Scott\"}",
+  "{\"a.name\": \"Zack Green\"}"
+ ],
+ "schema": "standard"
+}

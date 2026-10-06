@@ -1,0 +1,12 @@
+{
+ "columns": [
+  "a.post_id",
+  "c.post_id"
+ ],
+ "cypher": "MATCH (a:Post)-[r1:FOLLOWS]->(b:Post)-[r2:AUTHORED]->(c:Post) RETURN a.post_id, c.post_id LIMIT 5",
+ "full_rows": [],
+ "limit": 5,
+ "order_keys": null,
+ "rows": [],
+ "schema": "social_integration"
+}

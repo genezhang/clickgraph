@@ -1,0 +1,82 @@
+{
+ "columns": [
+  "n.email"
+ ],
+ "cypher": "MATCH (n:User) WHERE n.email IS NOT NULL RETURN n.email ORDER BY n.email DESC SKIP 5 LIMIT 10",
+ "full_rows": [
+  "{\"n.email\": \"alice@example.com\"}",
+  "{\"n.email\": \"amy@example.com\"}",
+  "{\"n.email\": \"ben@example.com\"}",
+  "{\"n.email\": \"bob@example.com\"}",
+  "{\"n.email\": \"carol@example.com\"}",
+  "{\"n.email\": \"chloe@example.com\"}",
+  "{\"n.email\": \"dan@example.com\"}",
+  "{\"n.email\": \"david@example.com\"}",
+  "{\"n.email\": \"eve@example.com\"}",
+  "{\"n.email\": \"frank@example.com\"}",
+  "{\"n.email\": \"grace@example.com\"}",
+  "{\"n.email\": \"henry@example.com\"}",
+  "{\"n.email\": \"iris@example.com\"}",
+  "{\"n.email\": \"jack@example.com\"}",
+  "{\"n.email\": \"kate@example.com\"}",
+  "{\"n.email\": \"liam@example.com\"}",
+  "{\"n.email\": \"mia@example.com\"}",
+  "{\"n.email\": \"noah@example.com\"}",
+  "{\"n.email\": \"olivia@example.com\"}",
+  "{\"n.email\": \"paul@example.com\"}",
+  "{\"n.email\": \"quinn@example.com\"}",
+  "{\"n.email\": \"rachel@example.com\"}",
+  "{\"n.email\": \"sam@example.com\"}",
+  "{\"n.email\": \"tina@example.com\"}",
+  "{\"n.email\": \"uma@example.com\"}"
+ ],
+ "key_sequence": [
+  [
+   "uma@example.com"
+  ],
+  [
+   "tina@example.com"
+  ],
+  [
+   "sam@example.com"
+  ],
+  [
+   "rachel@example.com"
+  ],
+  [
+   "quinn@example.com"
+  ],
+  [
+   "paul@example.com"
+  ],
+  [
+   "olivia@example.com"
+  ],
+  [
+   "noah@example.com"
+  ],
+  [
+   "mia@example.com"
+  ],
+  [
+   "liam@example.com"
+  ]
+ ],
+ "limit": 10,
+ "order_keys": [
+  "n.email"
+ ],
+ "rows": [
+  "{\"n.email\": \"liam@example.com\"}",
+  "{\"n.email\": \"mia@example.com\"}",
+  "{\"n.email\": \"noah@example.com\"}",
+  "{\"n.email\": \"olivia@example.com\"}",
+  "{\"n.email\": \"paul@example.com\"}",
+  "{\"n.email\": \"quinn@example.com\"}",
+  "{\"n.email\": \"rachel@example.com\"}",
+  "{\"n.email\": \"sam@example.com\"}",
+  "{\"n.email\": \"tina@example.com\"}",
+  "{\"n.email\": \"uma@example.com\"}"
+ ],
+ "schema": "social_integration"
+}

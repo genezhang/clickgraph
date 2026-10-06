@@ -1,0 +1,44 @@
+{
+ "columns": [
+  "offsetId"
+ ],
+ "cypher": "MATCH (u:User) WITH u.user_id + 100 AS offsetId RETURN offsetId LIMIT 1",
+ "full_rows": [
+  "{\"offsetId\": 101}",
+  "{\"offsetId\": 102}",
+  "{\"offsetId\": 103}",
+  "{\"offsetId\": 104}",
+  "{\"offsetId\": 105}",
+  "{\"offsetId\": 106}",
+  "{\"offsetId\": 107}",
+  "{\"offsetId\": 108}",
+  "{\"offsetId\": 109}",
+  "{\"offsetId\": 110}",
+  "{\"offsetId\": 111}",
+  "{\"offsetId\": 112}",
+  "{\"offsetId\": 113}",
+  "{\"offsetId\": 114}",
+  "{\"offsetId\": 115}",
+  "{\"offsetId\": 116}",
+  "{\"offsetId\": 117}",
+  "{\"offsetId\": 118}",
+  "{\"offsetId\": 119}",
+  "{\"offsetId\": 120}",
+  "{\"offsetId\": 121}",
+  "{\"offsetId\": 122}",
+  "{\"offsetId\": 123}",
+  "{\"offsetId\": 124}",
+  "{\"offsetId\": 125}",
+  "{\"offsetId\": 126}",
+  "{\"offsetId\": 127}",
+  "{\"offsetId\": 128}",
+  "{\"offsetId\": 129}",
+  "{\"offsetId\": 130}"
+ ],
+ "limit": 1,
+ "order_keys": null,
+ "rows": [
+  "{\"offsetId\": 101}"
+ ],
+ "schema": "social_integration"
+}

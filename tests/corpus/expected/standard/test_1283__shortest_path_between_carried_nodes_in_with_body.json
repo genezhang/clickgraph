@@ -1,0 +1,14 @@
+{
+ "columns": [
+  "fid",
+  "d"
+ ],
+ "cypher": "MATCH (p:User), (f:User) WHERE p.user_id = 1 AND f.user_id IN [2, 7, 15] WITH p, f MATCH path = shortestPath((p)-[:FOLLOWS*1..3]-(f)) WITH min(length(path)) AS d, f RETURN f.user_id AS fid, d",
+ "order_keys": null,
+ "rows": [
+  "{\"d\": 1, \"fid\": 2}",
+  "{\"d\": 2, \"fid\": 7}",
+  "{\"d\": 3, \"fid\": 15}"
+ ],
+ "schema": "standard"
+}

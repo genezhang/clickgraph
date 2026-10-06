@@ -1,0 +1,17 @@
+{
+ "columns": [
+  "a.name"
+ ],
+ "cypher": "MATCH (a:User) WHERE EXISTS { MATCH (a)-[:FOLLOWS]->(b:User) } RETURN a.name",
+ "order_keys": null,
+ "rows": [
+  "{\"a.name\": \"Alice Johnson\"}",
+  "{\"a.name\": \"Bob Smith\"}",
+  "{\"a.name\": \"Carol White\"}",
+  "{\"a.name\": \"David Brown\"}",
+  "{\"a.name\": \"Eve Davis\"}",
+  "{\"a.name\": \"Frank Miller\"}",
+  "{\"a.name\": \"Grace Lee\"}"
+ ],
+ "schema": "standard"
+}

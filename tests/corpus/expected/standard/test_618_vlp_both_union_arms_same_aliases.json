@@ -1,0 +1,22 @@
+{
+ "columns": [
+  "id"
+ ],
+ "cypher": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE a.user_id = 6 RETURN b.user_id AS id UNION ALL MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE a.user_id = 5 RETURN b.user_id AS id",
+ "order_keys": null,
+ "rows": [
+  "{\"id\": 11}",
+  "{\"id\": 12}",
+  "{\"id\": 13}",
+  "{\"id\": 14}",
+  "{\"id\": 1}",
+  "{\"id\": 1}",
+  "{\"id\": 2}",
+  "{\"id\": 2}",
+  "{\"id\": 3}",
+  "{\"id\": 4}",
+  "{\"id\": 5}",
+  "{\"id\": 6}"
+ ],
+ "schema": "standard"
+}

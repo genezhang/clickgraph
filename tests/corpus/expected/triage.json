@@ -1,0 +1,507 @@
+{
+ "social_integration/test_622_named_chained_denorm_edge_aggregate_arg_resolves": {
+  "category": "EXTENSION",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_622_named_chained_denorm_edge_property_resolves_to_node": {
+  "category": "EXTENSION",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_622_standalone_named_denorm_edge_keeps_own_scan": {
+  "category": "EXTENSION",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserDirectionValidation_test_invalid_direction_post_to_user": {
+  "category": "DESIGN_REFUSAL",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_browser_patterns__TestBrowserErrorCases_test_impossible_pattern": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserErrorCases_test_nonexistent_label": {
+  "category": "DESIGN_REFUSAL",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_browser_patterns__TestBrowserErrorCases_test_nonexistent_relationship_type": {
+  "category": "DESIGN_REFUSAL",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_browser_patterns__TestBrowserRelationshipTypeClick_test_click_authored_relationship": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserRelationshipTypeClick_test_click_liked_relationship_undirected": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_graphrag_multi_type__TestMixedRecursiveNonRecursive_test_recursive_stops_at_non_recursive_target__2": {
+  "category": "DESIGN_REFUSAL",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypePropertyExtraction_test_json_extraction_sql_generation__2": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypePropertyExtraction_test_missing_property_returns_empty": {
+  "category": "EXTENSION",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypeRecursivePatterns_test_follows_or_authored_one_to_two_hops": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypeRecursivePatterns_test_multi_type_exact_paths": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypeRecursivePatterns_test_multi_type_two_hops_only": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_optional_match__TestOptionalWhereMandatoryVar_test_anchor_where_folds_into_join_on_597": {
+  "category": "UNTYPED_BOOLEAN",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_optional_match__TestOptionalWhereMandatoryVar_test_chained_optional_where_second_clause_597": {
+  "category": "UNTYPED_BOOLEAN",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_optional_match__TestOptionalWhereMandatoryVar_test_incoming_chained_optional_gate_611": {
+  "category": "UNTYPED_BOOLEAN",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_optional_match__TestOptionalWhereMandatoryVar_test_mixed_anchor_and_optional_conjuncts_597": {
+  "category": "UNTYPED_BOOLEAN",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_optional_match__TestOptionalWhereMandatoryVar_test_pattern_base_identical_conjunct_retained_611": {
+  "category": "UNTYPED_BOOLEAN",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_optional_match__TestOptionalWhereMandatoryVar_test_two_optionals_each_anchor_gate_611": {
+  "category": "UNTYPED_BOOLEAN",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_optional_match__TestOptionalWhereMandatoryVar_test_undirected_excluded_from_gate_597": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_pattern_comprehensions__test_multiple_pattern_comprehensions": {
+  "category": "CORPUS_TAG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_comprehensions__test_pattern_comprehension_empty_result": {
+  "category": "CORPUS_TAG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_comprehensions__test_pattern_comprehension_with_expression": {
+  "category": "CORPUS_TAG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_comprehensions__test_pattern_comprehension_with_where": {
+  "category": "CORPUS_TAG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_comprehensions__test_simple_pattern_comprehension": {
+  "category": "CORPUS_TAG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_multi_hop_0": {
+  "category": "DESIGN_REFUSAL",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_multi_hop_1": {
+  "category": "DESIGN_REFUSAL",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_multi_hop_2": {
+  "category": "DESIGN_REFUSAL",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_optional_match_0": {
+  "category": "DESIGN_REFUSAL",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_optional_match_2": {
+  "category": "DESIGN_REFUSAL",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_return_rel_0": {
+  "category": "DESIGN_REFUSAL",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_return_rel_1": {
+  "category": "DESIGN_REFUSAL",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_return_rel_2": {
+  "category": "DESIGN_REFUSAL",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_shortest_path_0": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_shortest_path_1": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_single_hop_2": {
+  "category": "DESIGN_REFUSAL",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_vlp_exact_2": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_vlp_path_var_1": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_vlp_range_0": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_with_agg_1": {
+  "category": "DESIGN_REFUSAL",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_with_agg_2": {
+  "category": "DESIGN_REFUSAL",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_property_pruning__test_property_requirements_in_filter": {
+  "category": "UNTYPED_BOOLEAN",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_where_type_function": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_with_property_filter_before_inference": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestSchemaInteractions_test_complex_union_with_filters": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestSchemaInteractions_test_shortest_path_with_type_inference": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_vlp_aggregation__TestVLPAggregationEdgeCases_test_vlp_complex_where_with_aggregate": {
+  "category": "UNTYPED_BOOLEAN",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_vlp_aggregation__TestVLPAggregation_test_vlp_with_having_equivalent": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_vlp_aggregation__TestVLPAggregation_test_vlp_with_multiple_additional_relationships": {
+  "category": "DESIGN_REFUSAL",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithComplexPatterns_test_chained_with_clauses": {
+  "category": "CORPUS_TAG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithComplexPatterns_test_with_collect_and_path_function": {
+  "category": "CORPUS_TAG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithComplexPatterns_test_with_distinct": {
+  "category": "CORPUS_TAG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithComplexPatterns_test_with_order_by_limit": {
+  "category": "CORPUS_TAG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithEdgeCases_test_path_function_in_where_and_with": {
+  "category": "CORPUS_TAG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithEdgeCases_test_unbounded_vlp_with_limit_in_with": {
+  "category": "CORPUS_TAG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithEdgeCases_test_with_arithmetic_on_path_function": {
+  "category": "CORPUS_TAG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithEdgeCases_test_zero_length_path_with_with": {
+  "category": "CORPUS_TAG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithMultipleRelTypes_test_multi_rel_length_path_in_with": {
+  "category": "CORPUS_TAG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithMultipleRelTypes_test_multi_rel_relationships_in_with": {
+  "category": "CORPUS_TAG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithStandardSchema_test_with_aggregation_and_path_function": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithBasicNodeExpansion_test_with_single_node_export": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithChaining_test_with_chaining_three_levels": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithChaining_test_with_chaining_two_levels": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithCrossTable_test_with_where_filter": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithPolymorphicLabels_test_with_multi_label_node__2": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithPropertyRename_test_with_multi_rename": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithPropertyRename_test_with_node_rename": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "standard/test_1169__case_over_both_endpoints_loud_std": {
+  "category": "KNOWN_LOUD",
+  "ref": "#1169",
+  "verdict": "CG_ERROR"
+ },
+ "standard/test_1181__chain_then_hop_std": {
+  "category": "BUG",
+  "ref": "#1210",
+  "verdict": "MISMATCH"
+ },
+ "standard/test_1181__chain_then_incoming_hop_not_repaired_std": {
+  "category": "BUG",
+  "ref": "#1210",
+  "verdict": "MISMATCH"
+ },
+ "standard/test_1181__chain_then_two_hops_std": {
+  "category": "BUG",
+  "ref": "#1210",
+  "verdict": "MISMATCH"
+ },
+ "standard/test_1181__hop_before_chain_not_repaired_std": {
+  "category": "BUG",
+  "ref": "#1210",
+  "verdict": "MISMATCH"
+ },
+ "standard/test_1182__outside_comma_pattern_not_repaired_std": {
+  "category": "KNOWN_LOUD",
+  "ref": "#1182",
+  "verdict": "CG_ERROR"
+ },
+ "standard/test_1182__outside_reversed_vlp_hop_after_not_repaired_std": {
+  "category": "KNOWN_LOUD",
+  "ref": "#1182",
+  "verdict": "CG_ERROR"
+ },
+ "standard/test_1182__outside_two_carried_used_not_repaired_std": {
+  "category": "KNOWN_LOUD",
+  "ref": "#1182",
+  "verdict": "CG_ERROR"
+ },
+ "standard/test_1182__outside_undirected_hop_not_repaired_std": {
+  "category": "KNOWN_LOUD",
+  "ref": "#1233",
+  "verdict": "CG_ERROR"
+ },
+ "standard/test_1182__with_hop_optional_vlp_not_repaired_std": {
+  "category": "BUG",
+  "ref": "#1190",
+  "verdict": "CG_ERROR"
+ },
+ "standard/test_1182__with_hop_vlp_then_optional_vlp_not_repaired_1190_std": {
+  "category": "BUG",
+  "ref": "#1190",
+  "verdict": "CG_ERROR"
+ },
+ "standard/test_1182__with_optional_hop_vlp_not_repaired_std": {
+  "category": "BUG",
+  "ref": "#1190",
+  "verdict": "CG_ERROR"
+ },
+ "standard/test_1182__with_two_carried_closing_hop_after_vlp_stays_loud_std": {
+  "category": "KNOWN_LOUD",
+  "ref": "#1182",
+  "verdict": "CG_ERROR"
+ },
+ "standard/test_1182__with_vlp_then_optional_vlp_not_repaired_1190_std": {
+  "category": "BUG",
+  "ref": "#1190",
+  "verdict": "CG_ERROR"
+ },
+ "standard/test_1192__optional_back_path_incoming_hop_not_repaired_std": {
+  "category": "BUG",
+  "ref": "#1235",
+  "verdict": "MISMATCH"
+ },
+ "standard/test_1195__with_hop_then_optional_incoming_hop_not_repaired_std": {
+  "category": "BUG",
+  "ref": "#1235",
+  "verdict": "MISMATCH"
+ },
+ "standard/test_1195__with_optional_hop_then_incoming_hop_not_repaired_std": {
+  "category": "BUG",
+  "ref": "#1235",
+  "verdict": "MISMATCH"
+ },
+ "standard/test_1308__optional_path_vs_outside_node_refused": {
+  "category": "KNOWN_LOUD",
+  "ref": "#1308",
+  "verdict": "CG_ERROR"
+ },
+ "standard/test_585_shared_anchor_comma_reversed": {
+  "category": "BUG",
+  "ref": "#933",
+  "verdict": "CG_ERROR"
+ },
+ "standard/test_588_not_vlp_pattern_fails_loud": {
+  "category": "KNOWN_LOUD",
+  "ref": "#588",
+  "verdict": "CG_ERROR"
+ },
+ "standard/test_600_2_rel_inline_map_unchanged": {
+  "category": "BUG",
+  "ref": "#1316",
+  "verdict": "CG_ERROR"
+ },
+ "standard/test_616_fold_optional_bid_plain_predicate": {
+  "category": "EXTENSION",
+  "ref": "#411",
+  "verdict": "MISMATCH"
+ },
+ "standard/test_621_optional_vlp_anchor_gate_compound_range": {
+  "category": "UNTYPED_BOOLEAN",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "standard/test_621_optional_vlp_anchor_gate_directed": {
+  "category": "UNTYPED_BOOLEAN",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "standard/test_636_shared_anchor_comma_interleaved_stays_loud": {
+  "category": "BUG",
+  "ref": "#933",
+  "verdict": "CG_ERROR"
+ },
+ "standard/test_641_hole1_chained_undirected_optional_in_union_branch_stays_loud": {
+  "category": "KNOWN_LOUD",
+  "ref": "#641",
+  "verdict": "CG_ERROR"
+ },
+ "standard/test_641_hole2_undirected_inner_directed_outer_chained_optional_stays_loud": {
+  "category": "KNOWN_LOUD",
+  "ref": "#641",
+  "verdict": "CG_ERROR"
+ },
+ "standard/test_645_reversed_optional_vlp_anchor_gate": {
+  "category": "UNTYPED_BOOLEAN",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "standard/test_645_reversed_optional_vlp_anchor_gate_compound": {
+  "category": "UNTYPED_BOOLEAN",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "standard/test_647_end_anchored_optional_vlp_anchor_gate": {
+  "category": "UNTYPED_BOOLEAN",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "standard/test_647_end_anchored_optional_vlp_far_endpoint_filter": {
+  "category": "UNTYPED_BOOLEAN",
+  "ref": "#1316",
+  "verdict": "MISMATCH"
+ },
+ "standard/test_987_closed_unlabeled_vlp_fails_loud": {
+  "category": "KNOWN_LOUD",
+  "ref": "#987",
+  "verdict": "CG_ERROR"
+ }
+}

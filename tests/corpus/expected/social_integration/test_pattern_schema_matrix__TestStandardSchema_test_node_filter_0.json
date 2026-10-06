@@ -1,0 +1,43 @@
+{
+ "columns": [
+  "n.post_id"
+ ],
+ "cypher": "MATCH (n:Post) WHERE n.post_id IS NOT NULL RETURN n.post_id LIMIT 10",
+ "full_rows": [
+  "{\"n.post_id\": 10}",
+  "{\"n.post_id\": 11}",
+  "{\"n.post_id\": 12}",
+  "{\"n.post_id\": 13}",
+  "{\"n.post_id\": 14}",
+  "{\"n.post_id\": 15}",
+  "{\"n.post_id\": 16}",
+  "{\"n.post_id\": 17}",
+  "{\"n.post_id\": 18}",
+  "{\"n.post_id\": 19}",
+  "{\"n.post_id\": 1}",
+  "{\"n.post_id\": 20}",
+  "{\"n.post_id\": 2}",
+  "{\"n.post_id\": 3}",
+  "{\"n.post_id\": 4}",
+  "{\"n.post_id\": 5}",
+  "{\"n.post_id\": 6}",
+  "{\"n.post_id\": 7}",
+  "{\"n.post_id\": 8}",
+  "{\"n.post_id\": 9}"
+ ],
+ "limit": 10,
+ "order_keys": null,
+ "rows": [
+  "{\"n.post_id\": 10}",
+  "{\"n.post_id\": 1}",
+  "{\"n.post_id\": 2}",
+  "{\"n.post_id\": 3}",
+  "{\"n.post_id\": 4}",
+  "{\"n.post_id\": 5}",
+  "{\"n.post_id\": 6}",
+  "{\"n.post_id\": 7}",
+  "{\"n.post_id\": 8}",
+  "{\"n.post_id\": 9}"
+ ],
+ "schema": "social_integration"
+}

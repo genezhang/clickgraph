@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "r"
+ ],
+ "cypher": "MATCH (a:Post)-[r:LIKED]->(b:User) RETURN r LIMIT 5",
+ "full_rows": [],
+ "limit": 5,
+ "order_keys": null,
+ "rows": [],
+ "schema": "social_integration"
+}

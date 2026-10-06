@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "u"
+ ],
+ "cypher": "MATCH (u:User)\n    WHERE u.user_id = 1\n    RETURN u",
+ "order_keys": null,
+ "rows": [
+  "{\"u.age\": 28, \"u.city\": \"New York\", \"u.country\": \"USA\", \"u.email\": \"alice@example.com\", \"u.is_active\": 1, \"u.name\": \"Alice Johnson\", \"u.registration_date\": \"2020-01-15\", \"u.user_id\": 1}"
+ ],
+ "schema": "social_integration"
+}

@@ -1,0 +1,20 @@
+{
+ "columns": [
+  "follower.user_id",
+  "follower.name"
+ ],
+ "cypher": "MATCH (u:User)<-[:FOLLOWS]-(follower:User) WHERE u.user_id = 2 RETURN follower.user_id, follower.name LIMIT 10",
+ "full_rows": [
+  "{\"follower.name\": \"Alice Johnson\", \"follower.user_id\": 1}",
+  "{\"follower.name\": \"David Brown\", \"follower.user_id\": 4}",
+  "{\"follower.name\": \"Frank Miller\", \"follower.user_id\": 6}"
+ ],
+ "limit": 10,
+ "order_keys": null,
+ "rows": [
+  "{\"follower.name\": \"Alice Johnson\", \"follower.user_id\": 1}",
+  "{\"follower.name\": \"David Brown\", \"follower.user_id\": 4}",
+  "{\"follower.name\": \"Frank Miller\", \"follower.user_id\": 6}"
+ ],
+ "schema": "standard"
+}

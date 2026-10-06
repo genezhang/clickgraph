@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "pid"
+ ],
+ "cypher": "MATCH (n) WHERE n.post_id = 1\n        RETURN n.post_id AS pid",
+ "order_keys": null,
+ "rows": [
+  "{\"pid\": 1}"
+ ],
+ "schema": "social_integration"
+}

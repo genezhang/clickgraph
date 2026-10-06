@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "sum"
+ ],
+ "cypher": "RETURN 1 + 1 AS sum",
+ "order_keys": null,
+ "rows": [
+  "{\"sum\": 2}"
+ ],
+ "schema": "social_integration"
+}

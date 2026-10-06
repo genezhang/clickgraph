@@ -1,0 +1,94 @@
+{
+ "columns": [
+  "r.post_id"
+ ],
+ "cypher": "MATCH (u:User)-[r:AUTHORED]->(p:Post) RETURN r.post_id ORDER BY r.post_id",
+ "key_sequence": [
+  [
+   null
+  ],
+  [
+   null
+  ],
+  [
+   null
+  ],
+  [
+   null
+  ],
+  [
+   null
+  ],
+  [
+   null
+  ],
+  [
+   null
+  ],
+  [
+   null
+  ],
+  [
+   null
+  ],
+  [
+   null
+  ],
+  [
+   null
+  ],
+  [
+   null
+  ],
+  [
+   null
+  ],
+  [
+   null
+  ],
+  [
+   null
+  ],
+  [
+   null
+  ],
+  [
+   null
+  ],
+  [
+   null
+  ],
+  [
+   null
+  ],
+  [
+   null
+  ]
+ ],
+ "order_keys": [
+  "r.post_id"
+ ],
+ "rows": [
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}",
+  "{\"r.post_id\": null}"
+ ],
+ "schema": "social_integration"
+}

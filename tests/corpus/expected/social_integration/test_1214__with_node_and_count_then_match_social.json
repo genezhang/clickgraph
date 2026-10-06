@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "count(*)"
+ ],
+ "cypher": "MATCH (a)-[:AUTHORED]->(b) WITH a, count(b) AS n MATCH (a)-[:FOLLOWS]->(f) RETURN count(*)",
+ "order_keys": null,
+ "rows": [
+  "{\"count(*)\": 20}"
+ ],
+ "schema": "social_integration"
+}

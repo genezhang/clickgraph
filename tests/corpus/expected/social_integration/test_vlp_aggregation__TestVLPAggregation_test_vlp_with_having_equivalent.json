@@ -1,0 +1,46 @@
+{
+ "columns": [
+  "userId",
+  "postCount"
+ ],
+ "cypher": "MATCH (u1:User {user_id: 1})-[:FOLLOWS*1..2]-(u2:User)-[:AUTHORED]->(p:Post)\n        WITH u2, COUNT(DISTINCT p) AS postCount\n        WHERE postCount > 0\n        RETURN u2.user_id AS userId, postCount\n        ORDER BY postCount DESC\n        LIMIT 5",
+ "full_rows": [
+  "{\"postCount\": 2, \"userId\": 1}",
+  "{\"postCount\": 2, \"userId\": 2}",
+  "{\"postCount\": 2, \"userId\": 3}",
+  "{\"postCount\": 2, \"userId\": 4}",
+  "{\"postCount\": 2, \"userId\": 5}",
+  "{\"postCount\": 2, \"userId\": 6}",
+  "{\"postCount\": 2, \"userId\": 7}",
+  "{\"postCount\": 2, \"userId\": 8}"
+ ],
+ "key_sequence": [
+  [
+   2
+  ],
+  [
+   2
+  ],
+  [
+   2
+  ],
+  [
+   2
+  ],
+  [
+   2
+  ]
+ ],
+ "limit": 5,
+ "order_keys": [
+  "postCount"
+ ],
+ "rows": [
+  "{\"postCount\": 2, \"userId\": 2}",
+  "{\"postCount\": 2, \"userId\": 3}",
+  "{\"postCount\": 2, \"userId\": 4}",
+  "{\"postCount\": 2, \"userId\": 5}",
+  "{\"postCount\": 2, \"userId\": 6}"
+ ],
+ "schema": "social_integration"
+}

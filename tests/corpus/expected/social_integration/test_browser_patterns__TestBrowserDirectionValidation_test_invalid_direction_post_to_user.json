@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "count"
+ ],
+ "cypher": "MATCH (p:Post)-[r:LIKED]->(u:User) RETURN count(*) as count",
+ "order_keys": null,
+ "rows": [
+  "{\"count\": 0}"
+ ],
+ "schema": "social_integration"
+}

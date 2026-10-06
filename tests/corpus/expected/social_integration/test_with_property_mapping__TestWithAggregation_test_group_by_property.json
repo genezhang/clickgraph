@@ -1,0 +1,30 @@
+{
+ "columns": [
+  "country",
+  "cnt"
+ ],
+ "cypher": "MATCH (u:User) WITH u.country AS country, count(*) AS cnt RETURN country, cnt LIMIT 5",
+ "full_rows": [
+  "{\"cnt\": 1, \"country\": \"Germany\"}",
+  "{\"cnt\": 1, \"country\": \"India\"}",
+  "{\"cnt\": 1, \"country\": \"Ireland\"}",
+  "{\"cnt\": 1, \"country\": \"Mexico\"}",
+  "{\"cnt\": 1, \"country\": \"South Korea\"}",
+  "{\"cnt\": 1, \"country\": \"Spain\"}",
+  "{\"cnt\": 1, \"country\": \"UAE\"}",
+  "{\"cnt\": 13, \"country\": \"USA\"}",
+  "{\"cnt\": 2, \"country\": \"Australia\"}",
+  "{\"cnt\": 4, \"country\": \"Canada\"}",
+  "{\"cnt\": 4, \"country\": \"UK\"}"
+ ],
+ "limit": 5,
+ "order_keys": null,
+ "rows": [
+  "{\"cnt\": 1, \"country\": \"Germany\"}",
+  "{\"cnt\": 13, \"country\": \"USA\"}",
+  "{\"cnt\": 2, \"country\": \"Australia\"}",
+  "{\"cnt\": 4, \"country\": \"Canada\"}",
+  "{\"cnt\": 4, \"country\": \"UK\"}"
+ ],
+ "schema": "social_integration"
+}

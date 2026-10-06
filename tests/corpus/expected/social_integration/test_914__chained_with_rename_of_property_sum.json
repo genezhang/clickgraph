@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "total"
+ ],
+ "cypher": "MATCH (u:User)\n            WITH u.age AS a\n            WITH a AS b\n            RETURN sum(b) AS total",
+ "order_keys": null,
+ "rows": [
+  "{\"total\": 889}"
+ ],
+ "schema": "social_integration"
+}

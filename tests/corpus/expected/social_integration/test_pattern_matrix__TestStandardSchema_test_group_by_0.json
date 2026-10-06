@@ -1,0 +1,28 @@
+{
+ "columns": [
+  "n.is_active",
+  "cnt"
+ ],
+ "cypher": "MATCH (n:User) RETURN n.is_active, count(n) AS cnt ORDER BY cnt DESC LIMIT 10",
+ "full_rows": [
+  "{\"cnt\": 1, \"n.is_active\": 0}",
+  "{\"cnt\": 29, \"n.is_active\": 1}"
+ ],
+ "key_sequence": [
+  [
+   29
+  ],
+  [
+   1
+  ]
+ ],
+ "limit": 10,
+ "order_keys": [
+  "cnt"
+ ],
+ "rows": [
+  "{\"cnt\": 1, \"n.is_active\": 0}",
+  "{\"cnt\": 29, \"n.is_active\": 1}"
+ ],
+ "schema": "social_integration"
+}

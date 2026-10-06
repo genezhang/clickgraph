@@ -1,0 +1,19 @@
+{
+ "columns": [
+  "u2.user_id",
+  "postCount"
+ ],
+ "cypher": "MATCH (u1:User {user_id: 1})-[:FOLLOWS*1..2]-(u2:User)-[:AUTHORED]->(p:Post)\n        RETURN u2.user_id, COUNT(DISTINCT p) AS postCount",
+ "order_keys": null,
+ "rows": [
+  "{\"postCount\": 2, \"u2.user_id\": 1}",
+  "{\"postCount\": 2, \"u2.user_id\": 2}",
+  "{\"postCount\": 2, \"u2.user_id\": 3}",
+  "{\"postCount\": 2, \"u2.user_id\": 4}",
+  "{\"postCount\": 2, \"u2.user_id\": 5}",
+  "{\"postCount\": 2, \"u2.user_id\": 6}",
+  "{\"postCount\": 2, \"u2.user_id\": 7}",
+  "{\"postCount\": 2, \"u2.user_id\": 8}"
+ ],
+ "schema": "social_integration"
+}

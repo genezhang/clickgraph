@@ -1,0 +1,9 @@
+{
+ "columns": [
+  "n"
+ ],
+ "cypher": "MATCH (n) WHERE n.nonexistent_xyz_999 = 123\n        RETURN n",
+ "order_keys": null,
+ "rows": [],
+ "schema": "social_integration"
+}

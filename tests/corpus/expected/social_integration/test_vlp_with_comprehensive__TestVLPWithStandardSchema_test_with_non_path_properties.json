@@ -1,0 +1,50 @@
+{
+ "columns": [
+  "start_name",
+  "end_name"
+ ],
+ "cypher": "MATCH path = (u1:User)-[:FOLLOWS*1..2]->(u2:User)\n        WHERE u1.user_id = 1\n        WITH u1.name as start_name, u2.name as end_name\n        WHERE start_name IS NOT NULL\n        RETURN start_name, end_name\n        ORDER BY end_name\n        LIMIT 5",
+ "full_rows": [
+  "{\"end_name\": \"Alice Johnson\", \"start_name\": \"Alice Johnson\"}",
+  "{\"end_name\": \"Alice Johnson\", \"start_name\": \"Alice Johnson\"}",
+  "{\"end_name\": \"Alice Johnson\", \"start_name\": \"Alice Johnson\"}",
+  "{\"end_name\": \"Bob Smith\", \"start_name\": \"Alice Johnson\"}",
+  "{\"end_name\": \"Carol White\", \"start_name\": \"Alice Johnson\"}",
+  "{\"end_name\": \"David Brown\", \"start_name\": \"Alice Johnson\"}",
+  "{\"end_name\": \"Eve Davis\", \"start_name\": \"Alice Johnson\"}",
+  "{\"end_name\": \"Frank Miller\", \"start_name\": \"Alice Johnson\"}",
+  "{\"end_name\": \"Grace Lee\", \"start_name\": \"Alice Johnson\"}",
+  "{\"end_name\": \"Henry Wilson\", \"start_name\": \"Alice Johnson\"}",
+  "{\"end_name\": \"Kate Anderson\", \"start_name\": \"Alice Johnson\"}",
+  "{\"end_name\": \"Liam Thomas\", \"start_name\": \"Alice Johnson\"}"
+ ],
+ "key_sequence": [
+  [
+   "Alice Johnson"
+  ],
+  [
+   "Alice Johnson"
+  ],
+  [
+   "Alice Johnson"
+  ],
+  [
+   "Bob Smith"
+  ],
+  [
+   "Carol White"
+  ]
+ ],
+ "limit": 5,
+ "order_keys": [
+  "end_name"
+ ],
+ "rows": [
+  "{\"end_name\": \"Alice Johnson\", \"start_name\": \"Alice Johnson\"}",
+  "{\"end_name\": \"Alice Johnson\", \"start_name\": \"Alice Johnson\"}",
+  "{\"end_name\": \"Alice Johnson\", \"start_name\": \"Alice Johnson\"}",
+  "{\"end_name\": \"Bob Smith\", \"start_name\": \"Alice Johnson\"}",
+  "{\"end_name\": \"Carol White\", \"start_name\": \"Alice Johnson\"}"
+ ],
+ "schema": "social_integration"
+}

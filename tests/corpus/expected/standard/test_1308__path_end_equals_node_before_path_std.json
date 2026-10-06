@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "k"
+ ],
+ "cypher": "MATCH (z:User)-[:FOLLOWS]->(c:User)-[:FOLLOWS*1..2]->(b:User) WHERE b = z RETURN count(*) AS k",
+ "order_keys": null,
+ "rows": [
+  "{\"k\": 12}"
+ ],
+ "schema": "standard"
+}

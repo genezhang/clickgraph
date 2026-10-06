@@ -1,0 +1,1435 @@
+{
+ "social_integration/test_1214__with_node_and_count_then_match_social": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_605_closed_exact_vlp_directed_reroutes_to_cte": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_605_closed_exact_vlp_undirected_reroutes_to_cte": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_605_open_exact_vlp_stays_flat_sentinel": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_619_union_arm_modifier_alias_reuse_no_filter_leak": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_619_union_arm_modifier_nonvlp_no_filter_leak": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_622_named_chained_denorm_edge_aggregate_arg_resolves": {
+  "verdict": "MISMATCH",
+  "signature": "146e78a55bf2af08"
+ },
+ "social_integration/test_622_named_chained_denorm_edge_property_resolves_to_node": {
+  "verdict": "MISMATCH",
+  "signature": "79a43fa9da74acda"
+ },
+ "social_integration/test_622_nonvlp_chained_denorm_edge_aggregate_no_squared": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_622_nonvlp_chained_denorm_edge_single_join": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_622_standalone_named_denorm_edge_keeps_own_scan": {
+  "verdict": "MISMATCH",
+  "signature": "74b45ef410c5852b"
+ },
+ "social_integration/test_622_vlp_then_denorm_edge_aggregate_no_squared": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_625_closed_directed_vlp_range_start_eq_end": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_625_closed_undirected_vlp_range_start_eq_end": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_625_closed_vlp_range_composes_with_anchor_where": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_625_open_vlp_range_no_constraint_sentinel": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_628_closed_vlp_lower_bound_zero_counts_cycles": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_864__with_rename_of_unwind_scalar_count": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_886__chained_with_rename_of_literal_scalar_count": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_886__chained_with_rename_of_unwind_scalar_count": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_886__chained_with_rename_then_where_count": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_914__chained_with_rename_of_property_collect": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_914__chained_with_rename_of_property_sum": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserComplexPatterns_test_aggregation_with_grouping": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserComplexPatterns_test_multiple_relationships": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserComplexPatterns_test_optional_match": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserDirectionValidation_test_invalid_direction_post_to_user": {
+  "verdict": "CG_ERROR",
+  "signature": "76346a7add8c58f2"
+ },
+ "social_integration/test_browser_patterns__TestBrowserDirectionValidation_test_undirected_respects_schema_direction": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserDirectionValidation_test_valid_direction_user_to_post": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserErrorCases_test_impossible_pattern": {
+  "verdict": "MISMATCH",
+  "signature": "3da8f5ed559352ae"
+ },
+ "social_integration/test_browser_patterns__TestBrowserErrorCases_test_nonexistent_label": {
+  "verdict": "CG_ERROR",
+  "signature": "fefe3e7df8a37974"
+ },
+ "social_integration/test_browser_patterns__TestBrowserErrorCases_test_nonexistent_relationship_type": {
+  "verdict": "CG_ERROR",
+  "signature": "46e8f789325e299e"
+ },
+ "social_integration/test_browser_patterns__TestBrowserLabelCombinations_test_both_nodes_labeled": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserLabelCombinations_test_one_node_labeled_left": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserLabelCombinations_test_one_node_labeled_right": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserLabelCombinations_test_unlabeled_nodes_labeled_relationship": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserLabelCombinations_test_unlabeled_nodes_labeled_relationship__2": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserLabelCombinations_test_unlabeled_nodes_labeled_relationship__3": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserLabelCombinations_test_unlabeled_nodes_unlabeled_relationship": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserNodeExpansion_test_expand_labeled_node_all_relationships": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserNodeExpansion_test_expand_node_incoming_only": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserNodeExpansion_test_expand_node_outgoing_only": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserNodeExpansion_test_expand_node_specific_relationship_type": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserPathQueries_test_variable_length_path": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserRelationshipTypeClick_test_click_authored_relationship": {
+  "verdict": "MISMATCH",
+  "signature": "ef5434b175fcab7c"
+ },
+ "social_integration/test_browser_patterns__TestBrowserRelationshipTypeClick_test_click_liked_relationship_directed": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserRelationshipTypeClick_test_click_liked_relationship_undirected": {
+  "verdict": "MISMATCH",
+  "signature": "bda91f103ce71e17"
+ },
+ "social_integration/test_browser_patterns__TestBrowserRelationshipTypeClick_test_click_relationship_type_directed_incoming": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserRelationshipTypeClick_test_click_relationship_type_directed_outgoing": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserRelationshipTypeClick_test_click_relationship_type_undirected": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_collect_unwind__test_collect_unwind_distinct_properties": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_collect_unwind__test_collect_unwind_multiple_properties": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_collect_unwind__test_collect_unwind_single_property": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_collect_unwind__test_collect_unwind_with_aggregate": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_collect_unwind__test_collect_unwind_with_ordering": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_edge_id_optimization__test_single_column_edge_id": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_graph_output__TestGraphFormatBasic_test_graph_format_returns_nodes_and_edges": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_graph_output__TestGraphFormatBasic_test_graph_format_stats_fields": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_graph_output__TestGraphFormatDeduplication_test_graph_format_deduplicates_nodes": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_graph_output__TestGraphFormatNodeOnly_test_graph_format_node_query": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_graph_output__TestGraphFormatScalar_test_graph_format_scalar_only_query": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_graphrag_multi_type__TestMixedRecursiveNonRecursive_test_follows_continues_after_follows": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_graphrag_multi_type__TestMixedRecursiveNonRecursive_test_recursive_stops_at_non_recursive_target": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_graphrag_multi_type__TestMixedRecursiveNonRecursive_test_recursive_stops_at_non_recursive_target__2": {
+  "verdict": "CG_ERROR",
+  "signature": "0fe2f7167c5a0ff0"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypePerformance_test_multi_type_all_users": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypePropertyExtraction_test_basic_property_access": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypePropertyExtraction_test_cte_columns_direct_access": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypePropertyExtraction_test_json_extraction_sql_generation": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypePropertyExtraction_test_json_extraction_sql_generation__2": {
+  "verdict": "MISMATCH",
+  "signature": "1f09bf971a1dc36c"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypePropertyExtraction_test_missing_property_returns_empty": {
+  "verdict": "CG_ERROR",
+  "signature": "aa7da000289d14f1"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypePropertyExtraction_test_multiple_properties": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypePropertyExtraction_test_property_with_filter": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypePropertyExtraction_test_property_with_order_by": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypeRecursivePatterns_test_follows_or_authored_one_to_two_hops": {
+  "verdict": "MISMATCH",
+  "signature": "52c92cefdb7fa4f7"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypeRecursivePatterns_test_multi_type_exact_paths": {
+  "verdict": "MISMATCH",
+  "signature": "d6f7c570241c2041"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypeRecursivePatterns_test_multi_type_two_hops_only": {
+  "verdict": "CG_ERROR",
+  "signature": "eeacc69ab35eea65"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypeWithPathFunctions_test_length_with_multi_type": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_issue_623__TestFlatExactVlp_test_623_exact_then_trailing_hop": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_issue_623__TestFlatExactVlp_test_623_leading_hop_then_exact": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_issue_623__TestFlatExactVlp_test_623_leading_hop_then_range": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_issue_623__TestFlatExactVlp_test_623_leading_hop_then_undirected_exact": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_issue_623__TestFlatExactVlp_test_623_length_exact_is_two": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_issue_623__TestFlatExactVlp_test_623_standalone_exact_stays_flat": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_joincontext_vlp_chained__TestJoinContextFixedLengthChained_test_fixed_length_chained": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_joincontext_vlp_chained__TestJoinContextVLPChained_test_vlp_chained_aggregation_bug1": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_joincontext_vlp_chained__TestJoinContextVLPChained_test_vlp_chained_multiple_aggregations": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_joincontext_vlp_chained__TestJoinContextVLPChained_test_vlp_chained_simple_return": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_joincontext_vlp_chained__TestJoinContextVLPChained_test_vlp_chained_with_intermediate_properties": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_joincontext_vlp_chained__TestJoinContextVLPOnlyPatterns_test_vlp_simple": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_joincontext_vlp_chained__TestJoinContextVLPOnlyPatterns_test_vlp_with_aggregation": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_optional_match__TestOptionalWhereMandatoryVar_test_anchor_where_folds_into_join_on_597": {
+  "verdict": "MISMATCH",
+  "signature": "466c6a48e115a06e"
+ },
+ "social_integration/test_optional_match__TestOptionalWhereMandatoryVar_test_chained_optional_where_second_clause_597": {
+  "verdict": "MISMATCH",
+  "signature": "3f7474c16169587f"
+ },
+ "social_integration/test_optional_match__TestOptionalWhereMandatoryVar_test_incoming_chained_optional_gate_611": {
+  "verdict": "MISMATCH",
+  "signature": "7a9a0ae6cf3539ba"
+ },
+ "social_integration/test_optional_match__TestOptionalWhereMandatoryVar_test_is_not_null_anchor_gate_597": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_optional_match__TestOptionalWhereMandatoryVar_test_mixed_anchor_and_optional_conjuncts_597": {
+  "verdict": "MISMATCH",
+  "signature": "ed8be466b22a54ff"
+ },
+ "social_integration/test_optional_match__TestOptionalWhereMandatoryVar_test_pattern_base_identical_conjunct_retained_611": {
+  "verdict": "MISMATCH",
+  "signature": "196685ea73327a7e"
+ },
+ "social_integration/test_optional_match__TestOptionalWhereMandatoryVar_test_two_optionals_each_anchor_gate_611": {
+  "verdict": "MISMATCH",
+  "signature": "6fd6f05ae7c903a9"
+ },
+ "social_integration/test_optional_match__TestOptionalWhereMandatoryVar_test_undirected_excluded_from_gate_597": {
+  "verdict": "MISMATCH",
+  "signature": "6b710e499d92ea0b"
+ },
+ "social_integration/test_optional_match__TestOptionalWherePatternPredicate_test_exists_on_optional_var_folds_614": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_optional_match__TestOptionalWherePatternPredicate_test_not_exists_on_optional_var_folds_614": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_comprehensions__test_multiple_pattern_comprehensions": {
+  "verdict": "CG_ERROR",
+  "signature": "4ee6d0c3676e7c66"
+ },
+ "social_integration/test_pattern_comprehensions__test_pattern_comprehension_empty_result": {
+  "verdict": "CG_ERROR",
+  "signature": "4ee6d0c3676e7c66"
+ },
+ "social_integration/test_pattern_comprehensions__test_pattern_comprehension_with_expression": {
+  "verdict": "CG_ERROR",
+  "signature": "4ee6d0c3676e7c66"
+ },
+ "social_integration/test_pattern_comprehensions__test_pattern_comprehension_with_where": {
+  "verdict": "CG_ERROR",
+  "signature": "4ee6d0c3676e7c66"
+ },
+ "social_integration/test_pattern_comprehensions__test_simple_pattern_comprehension": {
+  "verdict": "CG_ERROR",
+  "signature": "4ee6d0c3676e7c66"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_group_by_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_group_by_1": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_multi_hop_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_multi_hop_1": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_multi_type_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_node_filter_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_node_filter_1": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_node_filter_2": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_node_scan_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_optional_match_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_optional_match_1": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_order_limit_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_order_limit_2": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_return_node_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_return_rel_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_shortest_path_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_shortest_path_1": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_simple_agg_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_single_hop_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_single_hop_1": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_vlp_exact_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_vlp_exact_1": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_vlp_exact_2": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_vlp_range_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_vlp_range_1": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_vlp_range_2": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_with_agg_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_with_agg_2": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_group_by_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_group_by_1": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_group_by_2": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_multi_hop_0": {
+  "verdict": "CG_ERROR",
+  "signature": "9f1106d6b898e7bc"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_multi_hop_1": {
+  "verdict": "CG_ERROR",
+  "signature": "9f1106d6b898e7bc"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_multi_hop_2": {
+  "verdict": "CG_ERROR",
+  "signature": "44d887d94f6ab5bc"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_multi_type_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_multi_type_1": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_node_filter_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_node_filter_2": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_node_scan_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_node_scan_1": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_node_scan_2": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_optional_match_0": {
+  "verdict": "CG_ERROR",
+  "signature": "7ac80f812f41da2c"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_optional_match_1": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_optional_match_2": {
+  "verdict": "CG_ERROR",
+  "signature": "6064e448be9b9c2e"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_order_limit_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_order_limit_1": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_return_node_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_return_rel_0": {
+  "verdict": "CG_ERROR",
+  "signature": "7ac80f812f41da2c"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_return_rel_1": {
+  "verdict": "CG_ERROR",
+  "signature": "76346a7add8c58f2"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_return_rel_2": {
+  "verdict": "CG_ERROR",
+  "signature": "9f1106d6b898e7bc"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_shortest_path_0": {
+  "verdict": "CG_ERROR",
+  "signature": "9b48ebbd2f757a90"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_shortest_path_1": {
+  "verdict": "CG_ERROR",
+  "signature": "9b48ebbd2f757a90"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_simple_agg_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_single_hop_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_single_hop_1": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_single_hop_2": {
+  "verdict": "CG_ERROR",
+  "signature": "76346a7add8c58f2"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_vlp_exact_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_vlp_exact_1": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_vlp_exact_2": {
+  "verdict": "CG_ERROR",
+  "signature": "346e494ab4625012"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_vlp_path_var_1": {
+  "verdict": "CG_ERROR",
+  "signature": "9b48ebbd2f757a90"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_vlp_range_0": {
+  "verdict": "CG_ERROR",
+  "signature": "346e494ab4625012"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_vlp_range_1": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_vlp_range_2": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_with_agg_0": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_with_agg_1": {
+  "verdict": "CG_ERROR",
+  "signature": "76346a7add8c58f2"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_with_agg_2": {
+  "verdict": "CG_ERROR",
+  "signature": "6064e448be9b9c2e"
+ },
+ "social_integration/test_property_pruning__test_property_requirements_basic_query": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_property_pruning__test_property_requirements_in_filter": {
+  "verdict": "MISMATCH",
+  "signature": "c7acef3bd86ffcc2"
+ },
+ "social_integration/test_property_pruning__test_property_requirements_with_clause_propagation": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_property_pruning__test_property_requirements_with_wildcard": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_return_only_regression__TestReturnOnlyRegression_test_return_arithmetic": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_return_only_regression__TestReturnOnlyRegression_test_return_function_call": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_return_only_regression__TestReturnOnlyRegression_test_return_multiple_columns": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_return_only_regression__TestReturnOnlyRegression_test_return_simple_integer": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_return_only_regression__TestReturnOnlyRegression_test_return_string_literal": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_return_only_regression__TestReturnOnlyRegression_test_return_with_limit": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_return_only_regression__TestReturnOnlyRegression_test_return_with_order_by": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_return_only_regression__TestReturnOnlyRegression_test_return_with_parameter": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_return_only_regression__TestReturnOnlyRegression_test_return_with_skip": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_role_based_queries__test_query_without_role": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_role_based_queries__test_sql_generation_includes_set_role": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_aggregation_preserves_types": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_all_labels_known": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_all_missing_creates_union": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_both_missing_rel_known_authored": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_both_missing_rel_known_follows": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_exists_subquery": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_left_from_authored_and_post": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_left_from_rel_and_right": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_left_missing_rel_known": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_multiple_patterns_constraint_propagation": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_optional_match_propagation": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_rel_from_user_to_post": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_rel_from_user_to_user": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_right_from_rel_and_left": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_right_from_user_authored": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_right_missing_rel_known": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_undirected_all_missing": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_undirected_both_labeled": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_undirected_left_labeled": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_undirected_right_labeled": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_union_relationship_types": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_variable_length_path_endpoint": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_where_type_function": {
+  "verdict": "MISMATCH",
+  "signature": "8e1e2d1c47703cff"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_with_property_filter_before_inference": {
+  "verdict": "CG_ERROR",
+  "signature": "d2034298b9c323da"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestMultiTableNodes_test_unlabeled_bidirectional_infers_from_schema": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestMultiTableNodes_test_unlabeled_multiple_patterns_same_var": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestMultiTableNodes_test_unlabeled_node_creates_union_all_types": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestMultiTableNodes_test_unlabeled_with_relationship_infers_label": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestSchemaInteractions_test_aggregation_groups_across_union": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestSchemaInteractions_test_complex_union_with_filters": {
+  "verdict": "MISMATCH",
+  "signature": "342ab18e2fa5ac15"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestSchemaInteractions_test_direction_optimization_undirected_to_directed": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestSchemaInteractions_test_direction_validation_filters_union": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestSchemaInteractions_test_nested_optional_matches": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestSchemaInteractions_test_shortest_path_with_type_inference": {
+  "verdict": "MISMATCH",
+  "signature": "a9e5a1d7331aa3cf"
+ },
+ "social_integration/test_schema_variations_comprehensive__TestSchemaInteractions_test_with_clause_type_preservation_across_union": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_schema_variations_comprehensive__test_baseline_schema_loaded": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_track_c_property_filtering__TestPropertyFilteringNodes_test_multiple_properties_must_intersect": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_track_c_property_filtering__TestPropertyFilteringNodes_test_nonexistent_property_returns_empty": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_track_c_property_filtering__TestPropertyFilteringNodes_test_property_filter_post_id": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_track_c_property_filtering__TestPropertyFilteringNodes_test_single_property_user_id": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_track_c_property_filtering__TestPropertyFilteringRelationships_test_relationship_property_filter": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_union_all__test_union_all_simple": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_variable_length_paths__TestVLPEndpointFilter_test_endpoint_filter_not_on_intermediate_607": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_variable_length_paths__TestVLPEndpointFilter_test_zero_hop_seed_not_filtered_610": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_vlp_aggregation__TestVLPAggregationEdgeCases_test_vlp_complex_where_with_aggregate": {
+  "verdict": "MISMATCH",
+  "signature": "f48d64b86c96c20a"
+ },
+ "social_integration/test_vlp_aggregation__TestVLPAggregationEdgeCases_test_vlp_no_aggregation": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_vlp_aggregation__TestVLPAggregationEdgeCases_test_vlp_only_vlp_nodes_in_aggregate": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_vlp_aggregation__TestVLPAggregation_test_sql_generation_includes_aggregate_columns": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_vlp_aggregation__TestVLPAggregation_test_vlp_bidirectional_with_aggregate": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_vlp_aggregation__TestVLPAggregation_test_vlp_with_count_distinct_basic_sql_generation": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_vlp_aggregation__TestVLPAggregation_test_vlp_with_having_equivalent": {
+  "verdict": "CG_ERROR",
+  "signature": "db59b17116b5e6cc"
+ },
+ "social_integration/test_vlp_aggregation__TestVLPAggregation_test_vlp_with_multiple_additional_relationships": {
+  "verdict": "CG_ERROR",
+  "signature": "76346a7add8c58f2"
+ },
+ "social_integration/test_vlp_aggregation__TestVLPAggregation_test_vlp_with_multiple_aggregates": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_vlp_aggregation__TestVLPAggregation_test_vlp_with_nested_property_aggregate": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_vlp_aggregation__TestVLPAggregation_test_vlp_with_sum_aggregate": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithComplexPatterns_test_chained_with_clauses": {
+  "verdict": "CG_ERROR",
+  "signature": "bf5112fe0dd46af3"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithComplexPatterns_test_with_collect_and_path_function": {
+  "verdict": "CG_ERROR",
+  "signature": "bf5112fe0dd46af3"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithComplexPatterns_test_with_distinct": {
+  "verdict": "CG_ERROR",
+  "signature": "bf5112fe0dd46af3"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithComplexPatterns_test_with_order_by_limit": {
+  "verdict": "CG_ERROR",
+  "signature": "bf5112fe0dd46af3"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithEdgeCases_test_path_function_in_where_and_with": {
+  "verdict": "CG_ERROR",
+  "signature": "bf5112fe0dd46af3"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithEdgeCases_test_unbounded_vlp_with_limit_in_with": {
+  "verdict": "CG_ERROR",
+  "signature": "bf5112fe0dd46af3"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithEdgeCases_test_with_arithmetic_on_path_function": {
+  "verdict": "CG_ERROR",
+  "signature": "bf5112fe0dd46af3"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithEdgeCases_test_zero_length_path_with_with": {
+  "verdict": "CG_ERROR",
+  "signature": "bf5112fe0dd46af3"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithMultipleRelTypes_test_multi_rel_length_path_in_with": {
+  "verdict": "CG_ERROR",
+  "signature": "bf5112fe0dd46af3"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithMultipleRelTypes_test_multi_rel_relationships_in_with": {
+  "verdict": "CG_ERROR",
+  "signature": "bf5112fe0dd46af3"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithStandardSchema_test_length_path_in_with": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithStandardSchema_test_multiple_path_functions_in_with": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithStandardSchema_test_nodes_path_in_with": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithStandardSchema_test_relationships_path_in_with": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithStandardSchema_test_with_aggregation_and_path_function": {
+  "verdict": "CG_ERROR",
+  "signature": "a11e2199e0c0578c"
+ },
+ "social_integration/test_vlp_with_comprehensive__TestVLPWithStandardSchema_test_with_non_path_properties": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithBasicNodeExpansion_test_with_single_node_export": {
+  "verdict": "MISMATCH",
+  "signature": "5ae8133d599a580b"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithChaining_test_with_chaining_three_levels": {
+  "verdict": "MISMATCH",
+  "signature": "28e7984839cb176a"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithChaining_test_with_chaining_two_levels": {
+  "verdict": "MISMATCH",
+  "signature": "9b0f8c032f411dba"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithCrossTable_test_with_cross_table_multi_hop": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithCrossTable_test_with_where_filter": {
+  "verdict": "MISMATCH",
+  "signature": "e38b4ae9ba5646fe"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithMultipleVariableExport_test_with_three_node_export": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithMultipleVariableExport_test_with_two_node_export": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithOptionalMatch_test_optional_match_with_export": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithPolymorphicLabels_test_with_multi_label_node__2": {
+  "verdict": "MISMATCH",
+  "signature": "1692c6b8eef9851f"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithPropertyRename_test_with_multi_rename": {
+  "verdict": "MISMATCH",
+  "signature": "5d33623425c1f33c"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithPropertyRename_test_with_node_rename": {
+  "verdict": "MISMATCH",
+  "signature": "8779a158ba42342c"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithRegressionCases_test_aggregation_without_with": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithRegressionCases_test_base_table_expansion_unchanged": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithRegressionCases_test_multi_hop_without_with": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithRegressionCases_test_property_access_unchanged": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithScalarExport_test_with_scalar_and_node": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_cte_node_expansion__TestWithScalarExport_test_with_scalar_count": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestArithmeticExpressions_test_addition": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestArithmeticExpressions_test_multiplication": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestBasicPropertyMapping_test_identity_mapping": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestBasicPropertyMapping_test_simple_property_email": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestBasicPropertyMapping_test_simple_property_name": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestComplexExpressions_test_string_concatenation": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestEdgeCases_test_coalesce_function": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestEdgeCases_test_list_with_properties": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestEdgeCases_test_multiple_refs_same_node": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestMultipleProperties_test_multiple_scalar_expressions": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestNestedFunctions_test_substring": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestNestedFunctions_test_tolower": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestNestedFunctions_test_toupper": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestRelationshipPatterns_test_both_nodes_properties": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestRelationshipPatterns_test_end_node_property": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestRelationshipPatterns_test_start_node_property": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestWithAggregation_test_count_with_property": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestWithAggregation_test_group_by_property": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestWithModifiers_test_with_distinct": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestWithModifiers_test_with_order_by": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestWithNodePassthrough_test_node_with_multiple_properties": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_with_property_mapping__TestWithNodePassthrough_test_node_with_property": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1169__case_over_both_endpoints_loud_std": {
+  "verdict": "CG_ERROR",
+  "signature": "151919b9c83329d8"
+ },
+ "standard/test_1169__fn_both_endpoints_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1169__fn_start_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1173__escaped_quotes_in_predicates_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1173__escaped_single_quote_literal_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1175__hop_then_path_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1175__incoming_hop_then_path_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1175__path_then_hop_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1175__two_hops_then_path_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1175__undirected_path_not_repaired_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1175__with_after_pattern_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1175__zero_lower_bound_hop_guard_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1177__post_with_carried_filter_stays_in_cte_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1177__post_with_chained_hop_filter_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1177__with_after_chain_projection_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1177__with_after_filtered_chain_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1181__chain_then_hop_std": {
+  "verdict": "MISMATCH",
+  "signature": "d9f8637564e034b6"
+ },
+ "standard/test_1181__chain_then_incoming_hop_not_repaired_std": {
+  "verdict": "MISMATCH",
+  "signature": "df074cb7b48e0bff"
+ },
+ "standard/test_1181__chain_then_two_hops_std": {
+  "verdict": "MISMATCH",
+  "signature": "28ec7dd10d52af5c"
+ },
+ "standard/test_1181__hop_before_chain_not_repaired_std": {
+  "verdict": "MISMATCH",
+  "signature": "e03923aa6359bf46"
+ },
+ "standard/test_1182__outside_carried_node_mid_chain_not_repaired_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1182__outside_closed_on_carried_node_not_repaired_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1182__outside_comma_pattern_not_repaired_std": {
+  "verdict": "CG_ERROR",
+  "signature": "20d58c1b6c6b0c44"
+ },
+ "standard/test_1182__outside_reversed_vlp_hop_after_not_repaired_std": {
+  "verdict": "CG_ERROR",
+  "signature": "2aa3d8ea687a0f78"
+ },
+ "standard/test_1182__outside_two_carried_used_not_repaired_std": {
+  "verdict": "CG_ERROR",
+  "signature": "48e9eabc8bc00252"
+ },
+ "standard/test_1182__outside_undirected_hop_not_repaired_std": {
+  "verdict": "CG_ERROR",
+  "signature": "016d7b4aa987886e"
+ },
+ "standard/test_1182__vlp_then_with_hop_vlp_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1182__with_hop_exact_vlp_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1182__with_hop_no_vlp_unchanged_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1182__with_hop_optional_vlp_not_repaired_std": {
+  "verdict": "CG_ERROR",
+  "signature": "ecaec2c5a1fe3b33"
+ },
+ "standard/test_1182__with_hop_vlp_count_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1182__with_hop_vlp_filter_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1182__with_hop_vlp_incoming_hop_after_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1182__with_hop_vlp_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1182__with_hop_vlp_then_optional_hop_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1182__with_hop_vlp_then_optional_vlp_not_repaired_1190_std": {
+  "verdict": "CG_ERROR",
+  "signature": "feffded8e6733102"
+ },
+ "standard/test_1182__with_incoming_hop_vlp_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1182__with_optional_hop_vlp_not_repaired_std": {
+  "verdict": "CG_ERROR",
+  "signature": "feffded8e6733102"
+ },
+ "standard/test_1182__with_two_carried_closing_hop_after_vlp_stays_loud_std": {
+  "verdict": "CG_ERROR",
+  "signature": "1d7623fed65fd1be"
+ },
+ "standard/test_1182__with_two_carried_hop_vlp_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1182__with_two_hops_no_vlp_uniqueness_1187_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1182__with_two_hops_vlp_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1182__with_vlp_then_hop_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1182__with_vlp_then_optional_vlp_not_repaired_1190_std": {
+  "verdict": "CG_ERROR",
+  "signature": "feffded8e6733102"
+ },
+ "standard/test_1182__with_vlp_two_hops_after_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1187__inner_two_hops_then_with_hop_vlp_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1187__inner_two_hops_with_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1187__with_two_hops_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1188__carry_both_then_vlp_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1188__two_with_scopes_hop_vlp_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1189__two_carried_path_between_them_not_repaired_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1192__back_path_incoming_hop_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1192__back_path_two_incoming_hops_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1192__fwd_path_incoming_hop_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1192__optional_back_path_incoming_hop_not_repaired_std": {
+  "verdict": "MISMATCH",
+  "signature": "78d35547d7fa3b9e"
+ },
+ "standard/test_1195__with_hop_then_incoming_hop_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1195__with_hop_then_optional_incoming_hop_not_repaired_std": {
+  "verdict": "MISMATCH",
+  "signature": "b2c2e33811228997"
+ },
+ "standard/test_1195__with_optional_hop_then_incoming_hop_not_repaired_std": {
+  "verdict": "MISMATCH",
+  "signature": "b2c2e33811228997"
+ },
+ "standard/test_1199__undirected_fixed_length_end_filter_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1202__length_of_hop_plus_path_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1203__hop_backwards_path_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1203__hop_undirected_path_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1214__with_two_carried_after_path_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1218__where_length_path_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1220__path_var_keeps_unread_hop_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1222__with_path_length_group_by_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1222__with_scalar_group_by_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1225__node_and_property_carried_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1225__return_alias_of_with_scalar_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1225__scalar_through_two_withs_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1227__scalar_next_to_its_node_group_by_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1230__zero_lower_bound_edge_unique_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1236__optional_where_count_keeps_fold_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1238__positive_pattern_predicate_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1283__path_off_carried_in_with_body_tied_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1283__shortest_path_between_carried_nodes_in_with_body": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1287__hop_before_path_into_carried_node": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1287__hop_before_path_into_comma_bound_node": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1291__path_out_of_earlier_path_end": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1294__hop_between_two_carried_nodes_tied": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1297__path_from_carried_behind_incoming_carried_hop_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1297__two_carried_mid_chain_before_path_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1308__optional_path_vs_outside_node_refused": {
+  "verdict": "CG_ERROR",
+  "signature": "7f5420dfa97a494c"
+ },
+ "standard/test_1308__path_end_equals_carried_node_outside_path_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_1308__path_end_equals_node_before_path_std": {
+  "verdict": "MATCH"
+ },
+ "standard/test_585_sequential_multihop_post_with_unchanged": {
+  "verdict": "MATCH"
+ },
+ "standard/test_585_shared_anchor_comma_post_with": {
+  "verdict": "MATCH"
+ },
+ "standard/test_585_shared_anchor_comma_reversed": {
+  "verdict": "CG_ERROR",
+  "signature": "a6de718d37e7c21a"
+ },
+ "standard/test_585_shared_anchor_comma_three_way": {
+  "verdict": "MATCH"
+ },
+ "standard/test_587_exists_inner_where_directed": {
+  "verdict": "MATCH"
+ },
+ "standard/test_587_exists_inner_where_incoming": {
+  "verdict": "MATCH"
+ },
+ "standard/test_587_exists_inner_where_unlabeled_maps": {
+  "verdict": "MATCH"
+ },
+ "standard/test_587_exists_no_where_unchanged": {
+  "verdict": "MATCH"
+ },
+ "standard/test_587_not_exists_inner_where": {
+  "verdict": "MATCH"
+ },
+ "standard/test_588_not_vlp_pattern_fails_loud": {
+  "verdict": "CG_ERROR",
+  "signature": "b4d689dfab1aceb4"
+ },
+ "standard/test_600_2_explicit_where_unchanged": {
+  "verdict": "MATCH"
+ },
+ "standard/test_600_2_lone_node_inline_map_mapped": {
+  "verdict": "MATCH"
+ },
+ "standard/test_600_2_lone_node_inline_map_multi_prop": {
+  "verdict": "MATCH"
+ },
+ "standard/test_600_2_rel_inline_map_unchanged": {
+  "verdict": "CG_ERROR",
+  "signature": "9b508d98abb16fbe"
+ },
+ "standard/test_616_fold_optional_bid_plain_predicate": {
+  "verdict": "MISMATCH",
+  "signature": "159d2d35493c2f3d"
+ },
+ "standard/test_618_vlp_both_union_arms_same_aliases": {
+  "verdict": "MATCH"
+ },
+ "standard/test_620_directed_vlp_with_endpoint_id_projection": {
+  "verdict": "MATCH"
+ },
+ "standard/test_620_undirected_vlp_with_count_far_endpoint": {
+  "verdict": "MATCH"
+ },
+ "standard/test_620_undirected_vlp_with_distinct_endpoint_id": {
+  "verdict": "MATCH"
+ },
+ "standard/test_620_undirected_vlp_with_endpoint_id_projection": {
+  "verdict": "MATCH"
+ },
+ "standard/test_620_undirected_vlp_with_id_and_name_mixed": {
+  "verdict": "MATCH"
+ },
+ "standard/test_621_optional_vlp_anchor_gate_compound_range": {
+  "verdict": "MISMATCH",
+  "signature": "876a4eb2615ccaaf"
+ },
+ "standard/test_621_optional_vlp_anchor_gate_directed": {
+  "verdict": "MISMATCH",
+  "signature": "269aaaf2308c904d"
+ },
+ "standard/test_624_directed_unwind_unchanged": {
+  "verdict": "MATCH"
+ },
+ "standard/test_624_undirected_unwind_multi_hop_uniqueness": {
+  "verdict": "MATCH"
+ },
+ "standard/test_624_undirected_unwind_single_hop": {
+  "verdict": "MATCH"
+ },
+ "standard/test_624_undirected_unwind_with_barrier": {
+  "verdict": "MATCH"
+ },
+ "standard/test_631_closed_exact_vlp_endpoint_prop": {
+  "verdict": "MATCH"
+ },
+ "standard/test_631_closed_range_vlp_endpoint_prop": {
+  "verdict": "MATCH"
+ },
+ "standard/test_631_closed_vlp_multi_prop": {
+  "verdict": "MATCH"
+ },
+ "standard/test_636_shared_anchor_comma_four_way_trailing_incoming": {
+  "verdict": "MATCH"
+ },
+ "standard/test_636_shared_anchor_comma_interleaved_stays_loud": {
+  "verdict": "CG_ERROR",
+  "signature": "7dc5a71943f04866"
+ },
+ "standard/test_636_shared_anchor_comma_three_way_trailing_incoming": {
+  "verdict": "MATCH"
+ },
+ "standard/test_638_stdev_fresh_match_group_by": {
+  "verdict": "MATCH"
+ },
+ "standard/test_638_stdev_post_with_multi_agg": {
+  "verdict": "MATCH"
+ },
+ "standard/test_639_percentile_cont_honors_arg": {
+  "verdict": "MATCH"
+ },
+ "standard/test_639_percentile_disc_honors_arg": {
+  "verdict": "MATCH"
+ },
+ "standard/test_639_percentile_grouped_real_group_by": {
+  "verdict": "MATCH"
+ },
+ "standard/test_639_percentile_post_with_barrier": {
+  "verdict": "MATCH"
+ },
+ "standard/test_641_hole1_chained_undirected_optional_in_union_branch_stays_loud": {
+  "verdict": "CG_ERROR",
+  "signature": "9721840555e98b53"
+ },
+ "standard/test_641_hole2_undirected_inner_directed_outer_chained_optional_stays_loud": {
+  "verdict": "CG_ERROR",
+  "signature": "9721840555e98b53"
+ },
+ "standard/test_645_reversed_optional_vlp_anchor_gate": {
+  "verdict": "MISMATCH",
+  "signature": "269aaaf2308c904d"
+ },
+ "standard/test_645_reversed_optional_vlp_anchor_gate_compound": {
+  "verdict": "MISMATCH",
+  "signature": "876a4eb2615ccaaf"
+ },
+ "standard/test_647_end_anchored_optional_vlp_anchor_gate": {
+  "verdict": "MISMATCH",
+  "signature": "093af3d06a7e1e4b"
+ },
+ "standard/test_647_end_anchored_optional_vlp_endpoint_projection": {
+  "verdict": "MATCH"
+ },
+ "standard/test_647_end_anchored_optional_vlp_far_endpoint_filter": {
+  "verdict": "MISMATCH",
+  "signature": "093af3d06a7e1e4b"
+ },
+ "standard/test_647_end_anchored_optional_vlp_incoming": {
+  "verdict": "MATCH"
+ },
+ "standard/test_647_end_anchored_optional_vlp_prebound_outgoing": {
+  "verdict": "MATCH"
+ },
+ "standard/test_987_closed_unlabeled_single_hop_self_loop_directed": {
+  "verdict": "MATCH"
+ },
+ "standard/test_987_closed_unlabeled_single_hop_self_loop_undirected": {
+  "verdict": "MATCH"
+ },
+ "standard/test_987_closed_unlabeled_vlp_fails_loud": {
+  "verdict": "CG_ERROR",
+  "signature": "1b8913e3a308cbc6"
+ },
+ "standard/test_987_open_unlabeled_single_hop_no_self_loop_control": {
+  "verdict": "MATCH"
+ },
+ "standard/test_schema_variations__TestStandardSchema_test_return_edge_properties": {
+  "verdict": "MATCH"
+ },
+ "standard/test_schema_variations__TestStandardSchema_test_single_edge_bidirectional": {
+  "verdict": "MATCH"
+ },
+ "standard/test_schema_variations__TestStandardSchema_test_single_edge_incoming": {
+  "verdict": "MATCH"
+ },
+ "standard/test_schema_variations__TestStandardSchema_test_single_edge_outgoing": {
+  "verdict": "MATCH"
+ },
+ "standard/test_schema_variations__TestStandardSchema_test_vlp_single_type": {
+  "verdict": "MATCH"
+ },
+ "standard/test_undirected_vlp__Test617SingleWalk_test_endpoint_filter_wrapper": {
+  "verdict": "MATCH"
+ },
+ "standard/test_undirected_vlp__Test617SingleWalk_test_exact_flat_doubled_chain": {
+  "verdict": "MATCH"
+ },
+ "standard/test_undirected_vlp__Test617SingleWalk_test_exact_one_hop_keeps_two_arm": {
+  "verdict": "MATCH"
+ },
+ "standard/test_undirected_vlp__Test617SingleWalk_test_optional_range_left_join_cte": {
+  "verdict": "MATCH"
+ },
+ "standard/test_undirected_vlp__Test617SingleWalk_test_range_single_doubled_walk": {
+  "verdict": "MATCH"
+ },
+ "standard/test_undirected_vlp__Test617SingleWalk_test_zero_hop_single_seed": {
+  "verdict": "MATCH"
+ }
+}

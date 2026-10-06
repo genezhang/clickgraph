@@ -1,0 +1,135 @@
+{
+ "columns": [
+  "a.name",
+  "count(b)"
+ ],
+ "cypher": "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS*1..2]-(b:User) RETURN a.name, count(b) ORDER BY a.name",
+ "key_sequence": [
+  [
+   "Alice Johnson"
+  ],
+  [
+   "Amy Adams"
+  ],
+  [
+   "Ben Baker"
+  ],
+  [
+   "Bob Smith"
+  ],
+  [
+   "Carol White"
+  ],
+  [
+   "Chloe Carter"
+  ],
+  [
+   "Dan Foster"
+  ],
+  [
+   "David Brown"
+  ],
+  [
+   "Eve Davis"
+  ],
+  [
+   "Frank Miller"
+  ],
+  [
+   "Grace Lee"
+  ],
+  [
+   "Henry Wilson"
+  ],
+  [
+   "Iris Martinez"
+  ],
+  [
+   "Jack Taylor"
+  ],
+  [
+   "Kate Anderson"
+  ],
+  [
+   "Liam Thomas"
+  ],
+  [
+   "Mia Jackson"
+  ],
+  [
+   "Noah Harris"
+  ],
+  [
+   "Olivia Clark"
+  ],
+  [
+   "Paul Lewis"
+  ],
+  [
+   "Quinn Walker"
+  ],
+  [
+   "Rachel Hall"
+  ],
+  [
+   "Sam Allen"
+  ],
+  [
+   "Tina Young"
+  ],
+  [
+   "Uma King"
+  ],
+  [
+   "Victor Wright"
+  ],
+  [
+   "Wendy Lopez"
+  ],
+  [
+   "Xavier Hill"
+  ],
+  [
+   "Yara Scott"
+  ],
+  [
+   "Zack Green"
+  ]
+ ],
+ "order_keys": [
+  "a.name"
+ ],
+ "rows": [
+  "{\"a.name\": \"Alice Johnson\", \"count(b)\": 30}",
+  "{\"a.name\": \"Amy Adams\", \"count(b)\": 0}",
+  "{\"a.name\": \"Ben Baker\", \"count(b)\": 0}",
+  "{\"a.name\": \"Bob Smith\", \"count(b)\": 28}",
+  "{\"a.name\": \"Carol White\", \"count(b)\": 19}",
+  "{\"a.name\": \"Chloe Carter\", \"count(b)\": 0}",
+  "{\"a.name\": \"Dan Foster\", \"count(b)\": 0}",
+  "{\"a.name\": \"David Brown\", \"count(b)\": 14}",
+  "{\"a.name\": \"Eve Davis\", \"count(b)\": 14}",
+  "{\"a.name\": \"Frank Miller\", \"count(b)\": 14}",
+  "{\"a.name\": \"Grace Lee\", \"count(b)\": 11}",
+  "{\"a.name\": \"Henry Wilson\", \"count(b)\": 5}",
+  "{\"a.name\": \"Iris Martinez\", \"count(b)\": 4}",
+  "{\"a.name\": \"Jack Taylor\", \"count(b)\": 4}",
+  "{\"a.name\": \"Kate Anderson\", \"count(b)\": 4}",
+  "{\"a.name\": \"Liam Thomas\", \"count(b)\": 4}",
+  "{\"a.name\": \"Mia Jackson\", \"count(b)\": 4}",
+  "{\"a.name\": \"Noah Harris\", \"count(b)\": 4}",
+  "{\"a.name\": \"Olivia Clark\", \"count(b)\": 3}",
+  "{\"a.name\": \"Paul Lewis\", \"count(b)\": 0}",
+  "{\"a.name\": \"Quinn Walker\", \"count(b)\": 0}",
+  "{\"a.name\": \"Rachel Hall\", \"count(b)\": 0}",
+  "{\"a.name\": \"Sam Allen\", \"count(b)\": 0}",
+  "{\"a.name\": \"Tina Young\", \"count(b)\": 0}",
+  "{\"a.name\": \"Uma King\", \"count(b)\": 0}",
+  "{\"a.name\": \"Victor Wright\", \"count(b)\": 0}",
+  "{\"a.name\": \"Wendy Lopez\", \"count(b)\": 0}",
+  "{\"a.name\": \"Xavier Hill\", \"count(b)\": 0}",
+  "{\"a.name\": \"Yara Scott\", \"count(b)\": 0}",
+  "{\"a.name\": \"Zack Green\", \"count(b)\": 0}"
+ ],
+ "schema": "standard"
+}

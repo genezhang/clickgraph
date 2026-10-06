@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "total"
+ ],
+ "cypher": "MATCH (a:User)-[r:AUTHORED]->(b)\n        WHERE b.post_id > 0\n        RETURN count(*) as total",
+ "order_keys": null,
+ "rows": [
+  "{\"total\": 20}"
+ ],
+ "schema": "social_integration"
+}

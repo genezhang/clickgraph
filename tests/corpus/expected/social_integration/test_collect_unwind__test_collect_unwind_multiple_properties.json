@@ -1,0 +1,48 @@
+{
+ "columns": [
+  "user.name",
+  "user.email",
+  "user.city"
+ ],
+ "cypher": "MATCH (u:User)\n        WITH u, collect(u) as users\n        UNWIND users as user\n        RETURN user.name, user.email, user.city\n        LIMIT 3",
+ "full_rows": [
+  "{\"user.city\": \"Atlanta\", \"user.email\": \"ben@example.com\", \"user.name\": \"Ben Baker\"}",
+  "{\"user.city\": \"Austin\", \"user.email\": \"mia@example.com\", \"user.name\": \"Mia Jackson\"}",
+  "{\"user.city\": \"Berlin\", \"user.email\": \"frank@example.com\", \"user.name\": \"Frank Miller\"}",
+  "{\"user.city\": \"Boston\", \"user.email\": \"jack@example.com\", \"user.name\": \"Jack Taylor\"}",
+  "{\"user.city\": \"Bristol\", \"user.email\": \"amy@example.com\", \"user.name\": \"Amy Adams\"}",
+  "{\"user.city\": \"Calgary\", \"user.email\": \"chloe@example.com\", \"user.name\": \"Chloe Carter\"}",
+  "{\"user.city\": \"Chicago\", \"user.email\": \"henry@example.com\", \"user.name\": \"Henry Wilson\"}",
+  "{\"user.city\": \"Dallas\", \"user.email\": \"xavier@example.com\", \"user.name\": \"Xavier Hill\"}",
+  "{\"user.city\": \"Denver\", \"user.email\": \"tina@example.com\", \"user.name\": \"Tina Young\"}",
+  "{\"user.city\": \"Detroit\", \"user.email\": \"dan@example.com\", \"user.name\": \"Dan Foster\"}",
+  "{\"user.city\": \"Dubai\", \"user.email\": \"yara@example.com\", \"user.name\": \"Yara Scott\"}",
+  "{\"user.city\": \"Dublin\", \"user.email\": \"liam@example.com\", \"user.name\": \"Liam Thomas\"}",
+  "{\"user.city\": \"Edinburgh\", \"user.email\": \"quinn@example.com\", \"user.name\": \"Quinn Walker\"}",
+  "{\"user.city\": \"London\", \"user.email\": \"bob@example.com\", \"user.name\": \"Bob Smith\"}",
+  "{\"user.city\": \"Madrid\", \"user.email\": \"iris@example.com\", \"user.name\": \"Iris Martinez\"}",
+  "{\"user.city\": \"Manchester\", \"user.email\": \"kate@example.com\", \"user.name\": \"Kate Anderson\"}",
+  "{\"user.city\": \"Melbourne\", \"user.email\": \"olivia@example.com\", \"user.name\": \"Olivia Clark\"}",
+  "{\"user.city\": \"Mexico City\", \"user.email\": \"wendy@example.com\", \"user.name\": \"Wendy Lopez\"}",
+  "{\"user.city\": \"Miami\", \"user.email\": \"victor@example.com\", \"user.name\": \"Victor Wright\"}",
+  "{\"user.city\": \"Montreal\", \"user.email\": \"sam@example.com\", \"user.name\": \"Sam Allen\"}",
+  "{\"user.city\": \"Mumbai\", \"user.email\": \"uma@example.com\", \"user.name\": \"Uma King\"}",
+  "{\"user.city\": \"New York\", \"user.email\": \"alice@example.com\", \"user.name\": \"Alice Johnson\"}",
+  "{\"user.city\": \"Phoenix\", \"user.email\": \"zack@example.com\", \"user.name\": \"Zack Green\"}",
+  "{\"user.city\": \"Portland\", \"user.email\": \"rachel@example.com\", \"user.name\": \"Rachel Hall\"}",
+  "{\"user.city\": \"San Francisco\", \"user.email\": \"eve@example.com\", \"user.name\": \"Eve Davis\"}",
+  "{\"user.city\": \"Seattle\", \"user.email\": \"paul@example.com\", \"user.name\": \"Paul Lewis\"}",
+  "{\"user.city\": \"Seoul\", \"user.email\": \"grace@example.com\", \"user.name\": \"Grace Lee\"}",
+  "{\"user.city\": \"Sydney\", \"user.email\": \"david@example.com\", \"user.name\": \"David Brown\"}",
+  "{\"user.city\": \"Toronto\", \"user.email\": \"carol@example.com\", \"user.name\": \"Carol White\"}",
+  "{\"user.city\": \"Vancouver\", \"user.email\": \"noah@example.com\", \"user.name\": \"Noah Harris\"}"
+ ],
+ "limit": 3,
+ "order_keys": null,
+ "rows": [
+  "{\"user.city\": \"London\", \"user.email\": \"bob@example.com\", \"user.name\": \"Bob Smith\"}",
+  "{\"user.city\": \"New York\", \"user.email\": \"alice@example.com\", \"user.name\": \"Alice Johnson\"}",
+  "{\"user.city\": \"Toronto\", \"user.email\": \"carol@example.com\", \"user.name\": \"Carol White\"}"
+ ],
+ "schema": "social_integration"
+}

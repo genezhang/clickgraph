@@ -1,0 +1,44 @@
+{
+ "columns": [
+  "info"
+ ],
+ "cypher": "MATCH (u:User) WITH [u.name, u.email] AS info RETURN info LIMIT 1",
+ "full_rows": [
+  "{\"info\": [\"Alice Johnson\", \"alice@example.com\"]}",
+  "{\"info\": [\"Amy Adams\", \"amy@example.com\"]}",
+  "{\"info\": [\"Ben Baker\", \"ben@example.com\"]}",
+  "{\"info\": [\"Bob Smith\", \"bob@example.com\"]}",
+  "{\"info\": [\"Carol White\", \"carol@example.com\"]}",
+  "{\"info\": [\"Chloe Carter\", \"chloe@example.com\"]}",
+  "{\"info\": [\"Dan Foster\", \"dan@example.com\"]}",
+  "{\"info\": [\"David Brown\", \"david@example.com\"]}",
+  "{\"info\": [\"Eve Davis\", \"eve@example.com\"]}",
+  "{\"info\": [\"Frank Miller\", \"frank@example.com\"]}",
+  "{\"info\": [\"Grace Lee\", \"grace@example.com\"]}",
+  "{\"info\": [\"Henry Wilson\", \"henry@example.com\"]}",
+  "{\"info\": [\"Iris Martinez\", \"iris@example.com\"]}",
+  "{\"info\": [\"Jack Taylor\", \"jack@example.com\"]}",
+  "{\"info\": [\"Kate Anderson\", \"kate@example.com\"]}",
+  "{\"info\": [\"Liam Thomas\", \"liam@example.com\"]}",
+  "{\"info\": [\"Mia Jackson\", \"mia@example.com\"]}",
+  "{\"info\": [\"Noah Harris\", \"noah@example.com\"]}",
+  "{\"info\": [\"Olivia Clark\", \"olivia@example.com\"]}",
+  "{\"info\": [\"Paul Lewis\", \"paul@example.com\"]}",
+  "{\"info\": [\"Quinn Walker\", \"quinn@example.com\"]}",
+  "{\"info\": [\"Rachel Hall\", \"rachel@example.com\"]}",
+  "{\"info\": [\"Sam Allen\", \"sam@example.com\"]}",
+  "{\"info\": [\"Tina Young\", \"tina@example.com\"]}",
+  "{\"info\": [\"Uma King\", \"uma@example.com\"]}",
+  "{\"info\": [\"Victor Wright\", \"victor@example.com\"]}",
+  "{\"info\": [\"Wendy Lopez\", \"wendy@example.com\"]}",
+  "{\"info\": [\"Xavier Hill\", \"xavier@example.com\"]}",
+  "{\"info\": [\"Yara Scott\", \"yara@example.com\"]}",
+  "{\"info\": [\"Zack Green\", \"zack@example.com\"]}"
+ ],
+ "limit": 1,
+ "order_keys": null,
+ "rows": [
+  "{\"info\": [\"Alice Johnson\", \"alice@example.com\"]}"
+ ],
+ "schema": "social_integration"
+}

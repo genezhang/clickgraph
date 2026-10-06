@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "c"
+ ],
+ "cypher": "UNWIND [1, 2, 3] AS x\n            WITH x AS y\n            WITH y AS z\n            RETURN count(z) AS c",
+ "order_keys": null,
+ "rows": [
+  "{\"c\": 3}"
+ ],
+ "schema": "social_integration"
+}

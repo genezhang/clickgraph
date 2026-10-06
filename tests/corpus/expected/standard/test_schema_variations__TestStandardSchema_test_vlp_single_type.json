@@ -1,0 +1,34 @@
+{
+ "columns": [
+  "neighbor.user_id",
+  "neighbor.name"
+ ],
+ "cypher": "MATCH (u:User)-[:FOLLOWS*1..2]->(neighbor:User) WHERE u.user_id = 1 RETURN DISTINCT neighbor.user_id, neighbor.name LIMIT 20",
+ "full_rows": [
+  "{\"neighbor.name\": \"Alice Johnson\", \"neighbor.user_id\": 1}",
+  "{\"neighbor.name\": \"Bob Smith\", \"neighbor.user_id\": 2}",
+  "{\"neighbor.name\": \"Carol White\", \"neighbor.user_id\": 3}",
+  "{\"neighbor.name\": \"David Brown\", \"neighbor.user_id\": 4}",
+  "{\"neighbor.name\": \"Eve Davis\", \"neighbor.user_id\": 5}",
+  "{\"neighbor.name\": \"Frank Miller\", \"neighbor.user_id\": 6}",
+  "{\"neighbor.name\": \"Grace Lee\", \"neighbor.user_id\": 7}",
+  "{\"neighbor.name\": \"Henry Wilson\", \"neighbor.user_id\": 8}",
+  "{\"neighbor.name\": \"Kate Anderson\", \"neighbor.user_id\": 11}",
+  "{\"neighbor.name\": \"Liam Thomas\", \"neighbor.user_id\": 12}"
+ ],
+ "limit": 20,
+ "order_keys": null,
+ "rows": [
+  "{\"neighbor.name\": \"Alice Johnson\", \"neighbor.user_id\": 1}",
+  "{\"neighbor.name\": \"Bob Smith\", \"neighbor.user_id\": 2}",
+  "{\"neighbor.name\": \"Carol White\", \"neighbor.user_id\": 3}",
+  "{\"neighbor.name\": \"David Brown\", \"neighbor.user_id\": 4}",
+  "{\"neighbor.name\": \"Eve Davis\", \"neighbor.user_id\": 5}",
+  "{\"neighbor.name\": \"Frank Miller\", \"neighbor.user_id\": 6}",
+  "{\"neighbor.name\": \"Grace Lee\", \"neighbor.user_id\": 7}",
+  "{\"neighbor.name\": \"Henry Wilson\", \"neighbor.user_id\": 8}",
+  "{\"neighbor.name\": \"Kate Anderson\", \"neighbor.user_id\": 11}",
+  "{\"neighbor.name\": \"Liam Thomas\", \"neighbor.user_id\": 12}"
+ ],
+ "schema": "standard"
+}

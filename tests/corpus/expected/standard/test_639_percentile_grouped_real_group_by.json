@@ -1,0 +1,18 @@
+{
+ "columns": [
+  "a.city",
+  "percentileCont(b.user_id, 0.5)"
+ ],
+ "cypher": "MATCH (a:User)-[:FOLLOWS]->(b) RETURN a.city, percentileCont(b.user_id, 0.5)",
+ "order_keys": null,
+ "rows": [
+  "{\"a.city\": \"Berlin\", \"percentileCont(b.user_id, 0.5)\": 13}",
+  "{\"a.city\": \"London\", \"percentileCont(b.user_id, 0.5)\": 4}",
+  "{\"a.city\": \"New York\", \"percentileCont(b.user_id, 0.5)\": 3}",
+  "{\"a.city\": \"San Francisco\", \"percentileCont(b.user_id, 0.5)\": 11}",
+  "{\"a.city\": \"Seoul\", \"percentileCont(b.user_id, 0.5)\": 9}",
+  "{\"a.city\": \"Sydney\", \"percentileCont(b.user_id, 0.5)\": 9}",
+  "{\"a.city\": \"Toronto\", \"percentileCont(b.user_id, 0.5)\": 7}"
+ ],
+ "schema": "standard"
+}

@@ -1,0 +1,13 @@
+{
+ "columns": [
+  "l",
+  "n"
+ ],
+ "cypher": "MATCH p=(c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN length(p) AS l, count(*) AS n",
+ "order_keys": null,
+ "rows": [
+  "{\"l\": 2, \"n\": 35}",
+  "{\"l\": 3, \"n\": 64}"
+ ],
+ "schema": "standard"
+}

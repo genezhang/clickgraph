@@ -1,0 +1,9 @@
+{
+ "columns": [
+  "n"
+ ],
+ "cypher": "MATCH (n:NonExistent) RETURN n",
+ "order_keys": null,
+ "rows": [],
+ "schema": "social_integration"
+}

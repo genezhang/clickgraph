@@ -1,0 +1,9 @@
+{
+ "columns": [
+  "u.name"
+ ],
+ "cypher": "MATCH (u:User)\n    WHERE u.country = 'USA' AND u.is_active = true\n    RETURN u.name",
+ "order_keys": null,
+ "rows": [],
+ "schema": "social_integration"
+}

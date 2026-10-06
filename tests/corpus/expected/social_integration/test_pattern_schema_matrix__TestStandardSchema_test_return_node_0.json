@@ -1,0 +1,38 @@
+{
+ "columns": [
+  "n"
+ ],
+ "cypher": "MATCH (n:Post) RETURN n LIMIT 5",
+ "full_rows": [
+  "{\"n.author_id\": 1, \"n.content\": \"Hello everyone!\", \"n.created_at\": \"2023-01-01\", \"n.post_id\": 1, \"n.title\": \"Introduction\"}",
+  "{\"n.author_id\": 1, \"n.content\": \"Latest blockbuster\", \"n.created_at\": \"2023-01-11\", \"n.post_id\": 11, \"n.title\": \"Movie Review\"}",
+  "{\"n.author_id\": 10, \"n.content\": \"Ancient Rome\", \"n.created_at\": \"2023-01-20\", \"n.post_id\": 20, \"n.title\": \"History Lesson\"}",
+  "{\"n.author_id\": 10, \"n.content\": \"New game release\", \"n.created_at\": \"2023-01-10\", \"n.post_id\": 10, \"n.title\": \"Gaming News\"}",
+  "{\"n.author_id\": 2, \"n.content\": \"Home improvement\", \"n.created_at\": \"2023-01-12\", \"n.post_id\": 12, \"n.title\": \"DIY Projects\"}",
+  "{\"n.author_id\": 2, \"n.content\": \"My first post here\", \"n.created_at\": \"2023-01-02\", \"n.post_id\": 2, \"n.title\": \"First Post\"}",
+  "{\"n.author_id\": 3, \"n.content\": \"Latest in technology\", \"n.created_at\": \"2023-01-03\", \"n.post_id\": 3, \"n.title\": \"Tech News\"}",
+  "{\"n.author_id\": 3, \"n.content\": \"My dogs adventure\", \"n.created_at\": \"2023-01-13\", \"n.post_id\": 13, \"n.title\": \"Pet Stories\"}",
+  "{\"n.author_id\": 4, \"n.content\": \"My trip to Europe\", \"n.created_at\": \"2023-01-04\", \"n.post_id\": 4, \"n.title\": \"Travel Blog\"}",
+  "{\"n.author_id\": 4, \"n.content\": \"Spring collection\", \"n.created_at\": \"2023-01-14\", \"n.post_id\": 14, \"n.title\": \"Fashion Trends\"}",
+  "{\"n.author_id\": 5, \"n.content\": \"Best pasta recipe\", \"n.created_at\": \"2023-01-05\", \"n.post_id\": 5, \"n.title\": \"Cooking Tips\"}",
+  "{\"n.author_id\": 5, \"n.content\": \"Job hunting tips\", \"n.created_at\": \"2023-01-15\", \"n.post_id\": 15, \"n.title\": \"Career Advice\"}",
+  "{\"n.author_id\": 6, \"n.content\": \"New album review\", \"n.created_at\": \"2023-01-06\", \"n.post_id\": 6, \"n.title\": \"Music Review\"}",
+  "{\"n.author_id\": 6, \"n.content\": \"Stock market basics\", \"n.created_at\": \"2023-01-16\", \"n.post_id\": 16, \"n.title\": \"Investment Tips\"}",
+  "{\"n.author_id\": 7, \"n.content\": \"Growing tomatoes\", \"n.created_at\": \"2023-01-17\", \"n.post_id\": 17, \"n.title\": \"Gardening\"}",
+  "{\"n.author_id\": 7, \"n.content\": \"This months book\", \"n.created_at\": \"2023-01-07\", \"n.post_id\": 7, \"n.title\": \"Book Club\"}",
+  "{\"n.author_id\": 8, \"n.content\": \"Local art show\", \"n.created_at\": \"2023-01-18\", \"n.post_id\": 18, \"n.title\": \"Art Exhibition\"}",
+  "{\"n.author_id\": 8, \"n.content\": \"Week 1 progress\", \"n.created_at\": \"2023-01-08\", \"n.post_id\": 8, \"n.title\": \"Fitness Journey\"}",
+  "{\"n.author_id\": 9, \"n.content\": \"Space discoveries\", \"n.created_at\": \"2023-01-19\", \"n.post_id\": 19, \"n.title\": \"Science Facts\"}",
+  "{\"n.author_id\": 9, \"n.content\": \"Sunset shots\", \"n.created_at\": \"2023-01-09\", \"n.post_id\": 9, \"n.title\": \"Photography\"}"
+ ],
+ "limit": 5,
+ "order_keys": null,
+ "rows": [
+  "{\"n.author_id\": 1, \"n.content\": \"Hello everyone!\", \"n.created_at\": \"2023-01-01\", \"n.post_id\": 1, \"n.title\": \"Introduction\"}",
+  "{\"n.author_id\": 2, \"n.content\": \"My first post here\", \"n.created_at\": \"2023-01-02\", \"n.post_id\": 2, \"n.title\": \"First Post\"}",
+  "{\"n.author_id\": 3, \"n.content\": \"Latest in technology\", \"n.created_at\": \"2023-01-03\", \"n.post_id\": 3, \"n.title\": \"Tech News\"}",
+  "{\"n.author_id\": 4, \"n.content\": \"My trip to Europe\", \"n.created_at\": \"2023-01-04\", \"n.post_id\": 4, \"n.title\": \"Travel Blog\"}",
+  "{\"n.author_id\": 5, \"n.content\": \"Best pasta recipe\", \"n.created_at\": \"2023-01-05\", \"n.post_id\": 5, \"n.title\": \"Cooking Tips\"}"
+ ],
+ "schema": "social_integration"
+}

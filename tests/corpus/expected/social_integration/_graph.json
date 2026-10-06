@@ -1,0 +1,12 @@
+{
+ "dangling": {},
+ "nodes": {
+  "Post": 20,
+  "User": 30
+ },
+ "rels": {
+  "AUTHORED": 20,
+  "FOLLOWS": 20,
+  "LIKED": 20
+ }
+}

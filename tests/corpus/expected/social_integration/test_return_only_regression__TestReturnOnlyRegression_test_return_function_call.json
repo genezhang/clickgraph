@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "upper"
+ ],
+ "cypher": "RETURN toUpper('hello') AS upper",
+ "order_keys": null,
+ "rows": [
+  "{\"upper\": \"HELLO\"}"
+ ],
+ "schema": "social_integration"
+}

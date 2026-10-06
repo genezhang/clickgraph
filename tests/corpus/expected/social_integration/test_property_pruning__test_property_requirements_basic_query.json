@@ -1,0 +1,12 @@
+{
+ "columns": [
+  "u.name",
+  "u.email"
+ ],
+ "cypher": "MATCH (u:User)\n    WHERE u.user_id = 1\n    RETURN u.name, u.email",
+ "order_keys": null,
+ "rows": [
+  "{\"u.email\": \"alice@example.com\", \"u.name\": \"Alice Johnson\"}"
+ ],
+ "schema": "social_integration"
+}

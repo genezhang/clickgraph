@@ -1,0 +1,46 @@
+{
+ "columns": [
+  "n",
+  "e",
+  "id"
+ ],
+ "cypher": "MATCH (u:User) WITH u.name AS n, u.email AS e, u.user_id AS id RETURN n, e, id LIMIT 1",
+ "full_rows": [
+  "{\"e\": \"alice@example.com\", \"id\": 1, \"n\": \"Alice Johnson\"}",
+  "{\"e\": \"amy@example.com\", \"id\": 27, \"n\": \"Amy Adams\"}",
+  "{\"e\": \"ben@example.com\", \"id\": 28, \"n\": \"Ben Baker\"}",
+  "{\"e\": \"bob@example.com\", \"id\": 2, \"n\": \"Bob Smith\"}",
+  "{\"e\": \"carol@example.com\", \"id\": 3, \"n\": \"Carol White\"}",
+  "{\"e\": \"chloe@example.com\", \"id\": 29, \"n\": \"Chloe Carter\"}",
+  "{\"e\": \"dan@example.com\", \"id\": 30, \"n\": \"Dan Foster\"}",
+  "{\"e\": \"david@example.com\", \"id\": 4, \"n\": \"David Brown\"}",
+  "{\"e\": \"eve@example.com\", \"id\": 5, \"n\": \"Eve Davis\"}",
+  "{\"e\": \"frank@example.com\", \"id\": 6, \"n\": \"Frank Miller\"}",
+  "{\"e\": \"grace@example.com\", \"id\": 7, \"n\": \"Grace Lee\"}",
+  "{\"e\": \"henry@example.com\", \"id\": 8, \"n\": \"Henry Wilson\"}",
+  "{\"e\": \"iris@example.com\", \"id\": 9, \"n\": \"Iris Martinez\"}",
+  "{\"e\": \"jack@example.com\", \"id\": 10, \"n\": \"Jack Taylor\"}",
+  "{\"e\": \"kate@example.com\", \"id\": 11, \"n\": \"Kate Anderson\"}",
+  "{\"e\": \"liam@example.com\", \"id\": 12, \"n\": \"Liam Thomas\"}",
+  "{\"e\": \"mia@example.com\", \"id\": 13, \"n\": \"Mia Jackson\"}",
+  "{\"e\": \"noah@example.com\", \"id\": 14, \"n\": \"Noah Harris\"}",
+  "{\"e\": \"olivia@example.com\", \"id\": 15, \"n\": \"Olivia Clark\"}",
+  "{\"e\": \"paul@example.com\", \"id\": 16, \"n\": \"Paul Lewis\"}",
+  "{\"e\": \"quinn@example.com\", \"id\": 17, \"n\": \"Quinn Walker\"}",
+  "{\"e\": \"rachel@example.com\", \"id\": 18, \"n\": \"Rachel Hall\"}",
+  "{\"e\": \"sam@example.com\", \"id\": 19, \"n\": \"Sam Allen\"}",
+  "{\"e\": \"tina@example.com\", \"id\": 20, \"n\": \"Tina Young\"}",
+  "{\"e\": \"uma@example.com\", \"id\": 21, \"n\": \"Uma King\"}",
+  "{\"e\": \"victor@example.com\", \"id\": 22, \"n\": \"Victor Wright\"}",
+  "{\"e\": \"wendy@example.com\", \"id\": 23, \"n\": \"Wendy Lopez\"}",
+  "{\"e\": \"xavier@example.com\", \"id\": 24, \"n\": \"Xavier Hill\"}",
+  "{\"e\": \"yara@example.com\", \"id\": 25, \"n\": \"Yara Scott\"}",
+  "{\"e\": \"zack@example.com\", \"id\": 26, \"n\": \"Zack Green\"}"
+ ],
+ "limit": 1,
+ "order_keys": null,
+ "rows": [
+  "{\"e\": \"alice@example.com\", \"id\": 1, \"n\": \"Alice Johnson\"}"
+ ],
+ "schema": "social_integration"
+}

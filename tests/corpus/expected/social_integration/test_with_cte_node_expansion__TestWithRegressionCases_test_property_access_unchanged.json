@@ -1,0 +1,45 @@
+{
+ "columns": [
+  "a.user_id",
+  "a.name"
+ ],
+ "cypher": "MATCH (a:User)\n            RETURN a.user_id, a.name\n            LIMIT 1",
+ "full_rows": [
+  "{\"a.name\": \"Alice Johnson\", \"a.user_id\": 1}",
+  "{\"a.name\": \"Amy Adams\", \"a.user_id\": 27}",
+  "{\"a.name\": \"Ben Baker\", \"a.user_id\": 28}",
+  "{\"a.name\": \"Bob Smith\", \"a.user_id\": 2}",
+  "{\"a.name\": \"Carol White\", \"a.user_id\": 3}",
+  "{\"a.name\": \"Chloe Carter\", \"a.user_id\": 29}",
+  "{\"a.name\": \"Dan Foster\", \"a.user_id\": 30}",
+  "{\"a.name\": \"David Brown\", \"a.user_id\": 4}",
+  "{\"a.name\": \"Eve Davis\", \"a.user_id\": 5}",
+  "{\"a.name\": \"Frank Miller\", \"a.user_id\": 6}",
+  "{\"a.name\": \"Grace Lee\", \"a.user_id\": 7}",
+  "{\"a.name\": \"Henry Wilson\", \"a.user_id\": 8}",
+  "{\"a.name\": \"Iris Martinez\", \"a.user_id\": 9}",
+  "{\"a.name\": \"Jack Taylor\", \"a.user_id\": 10}",
+  "{\"a.name\": \"Kate Anderson\", \"a.user_id\": 11}",
+  "{\"a.name\": \"Liam Thomas\", \"a.user_id\": 12}",
+  "{\"a.name\": \"Mia Jackson\", \"a.user_id\": 13}",
+  "{\"a.name\": \"Noah Harris\", \"a.user_id\": 14}",
+  "{\"a.name\": \"Olivia Clark\", \"a.user_id\": 15}",
+  "{\"a.name\": \"Paul Lewis\", \"a.user_id\": 16}",
+  "{\"a.name\": \"Quinn Walker\", \"a.user_id\": 17}",
+  "{\"a.name\": \"Rachel Hall\", \"a.user_id\": 18}",
+  "{\"a.name\": \"Sam Allen\", \"a.user_id\": 19}",
+  "{\"a.name\": \"Tina Young\", \"a.user_id\": 20}",
+  "{\"a.name\": \"Uma King\", \"a.user_id\": 21}",
+  "{\"a.name\": \"Victor Wright\", \"a.user_id\": 22}",
+  "{\"a.name\": \"Wendy Lopez\", \"a.user_id\": 23}",
+  "{\"a.name\": \"Xavier Hill\", \"a.user_id\": 24}",
+  "{\"a.name\": \"Yara Scott\", \"a.user_id\": 25}",
+  "{\"a.name\": \"Zack Green\", \"a.user_id\": 26}"
+ ],
+ "limit": 1,
+ "order_keys": null,
+ "rows": [
+  "{\"a.name\": \"Alice Johnson\", \"a.user_id\": 1}"
+ ],
+ "schema": "social_integration"
+}

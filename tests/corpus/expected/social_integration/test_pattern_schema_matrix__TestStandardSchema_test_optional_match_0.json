@@ -1,0 +1,31 @@
+{
+ "columns": [
+  "a.content",
+  "rel_count"
+ ],
+ "cypher": "MATCH (a:Post) OPTIONAL MATCH (a)-[r:FOLLOWS]->(b) RETURN a.content, count(r) AS rel_count",
+ "order_keys": null,
+ "rows": [
+  "{\"a.content\": \"Ancient Rome\", \"rel_count\": 0}",
+  "{\"a.content\": \"Best pasta recipe\", \"rel_count\": 0}",
+  "{\"a.content\": \"Growing tomatoes\", \"rel_count\": 0}",
+  "{\"a.content\": \"Hello everyone!\", \"rel_count\": 0}",
+  "{\"a.content\": \"Home improvement\", \"rel_count\": 0}",
+  "{\"a.content\": \"Job hunting tips\", \"rel_count\": 0}",
+  "{\"a.content\": \"Latest blockbuster\", \"rel_count\": 0}",
+  "{\"a.content\": \"Latest in technology\", \"rel_count\": 0}",
+  "{\"a.content\": \"Local art show\", \"rel_count\": 0}",
+  "{\"a.content\": \"My dogs adventure\", \"rel_count\": 0}",
+  "{\"a.content\": \"My first post here\", \"rel_count\": 0}",
+  "{\"a.content\": \"My trip to Europe\", \"rel_count\": 0}",
+  "{\"a.content\": \"New album review\", \"rel_count\": 0}",
+  "{\"a.content\": \"New game release\", \"rel_count\": 0}",
+  "{\"a.content\": \"Space discoveries\", \"rel_count\": 0}",
+  "{\"a.content\": \"Spring collection\", \"rel_count\": 0}",
+  "{\"a.content\": \"Stock market basics\", \"rel_count\": 0}",
+  "{\"a.content\": \"Sunset shots\", \"rel_count\": 0}",
+  "{\"a.content\": \"This months book\", \"rel_count\": 0}",
+  "{\"a.content\": \"Week 1 progress\", \"rel_count\": 0}"
+ ],
+ "schema": "social_integration"
+}

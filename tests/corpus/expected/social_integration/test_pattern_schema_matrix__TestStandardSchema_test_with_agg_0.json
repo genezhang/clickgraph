@@ -1,0 +1,53 @@
+{
+ "columns": [
+  "prop",
+  "cnt"
+ ],
+ "cypher": "MATCH (a:User)-[r:LIKED]->(b:Post) WITH a.user_id AS prop, count(r) AS cnt RETURN prop, cnt ORDER BY cnt DESC LIMIT 10",
+ "full_rows": [
+  "{\"cnt\": 2, \"prop\": 7}",
+  "{\"cnt\": 3, \"prop\": 1}",
+  "{\"cnt\": 3, \"prop\": 2}",
+  "{\"cnt\": 3, \"prop\": 3}",
+  "{\"cnt\": 3, \"prop\": 4}",
+  "{\"cnt\": 3, \"prop\": 5}",
+  "{\"cnt\": 3, \"prop\": 6}"
+ ],
+ "key_sequence": [
+  [
+   3
+  ],
+  [
+   3
+  ],
+  [
+   3
+  ],
+  [
+   3
+  ],
+  [
+   3
+  ],
+  [
+   3
+  ],
+  [
+   2
+  ]
+ ],
+ "limit": 10,
+ "order_keys": [
+  "cnt"
+ ],
+ "rows": [
+  "{\"cnt\": 2, \"prop\": 7}",
+  "{\"cnt\": 3, \"prop\": 1}",
+  "{\"cnt\": 3, \"prop\": 2}",
+  "{\"cnt\": 3, \"prop\": 3}",
+  "{\"cnt\": 3, \"prop\": 4}",
+  "{\"cnt\": 3, \"prop\": 5}",
+  "{\"cnt\": 3, \"prop\": 6}"
+ ],
+ "schema": "social_integration"
+}

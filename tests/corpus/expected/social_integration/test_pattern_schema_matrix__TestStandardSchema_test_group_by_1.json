@@ -1,0 +1,88 @@
+{
+ "columns": [
+  "n.user_id",
+  "cnt"
+ ],
+ "cypher": "MATCH (n:User) RETURN n.user_id, count(n) AS cnt ORDER BY cnt DESC LIMIT 10",
+ "full_rows": [
+  "{\"cnt\": 1, \"n.user_id\": 10}",
+  "{\"cnt\": 1, \"n.user_id\": 11}",
+  "{\"cnt\": 1, \"n.user_id\": 12}",
+  "{\"cnt\": 1, \"n.user_id\": 13}",
+  "{\"cnt\": 1, \"n.user_id\": 14}",
+  "{\"cnt\": 1, \"n.user_id\": 15}",
+  "{\"cnt\": 1, \"n.user_id\": 16}",
+  "{\"cnt\": 1, \"n.user_id\": 17}",
+  "{\"cnt\": 1, \"n.user_id\": 18}",
+  "{\"cnt\": 1, \"n.user_id\": 19}",
+  "{\"cnt\": 1, \"n.user_id\": 1}",
+  "{\"cnt\": 1, \"n.user_id\": 20}",
+  "{\"cnt\": 1, \"n.user_id\": 21}",
+  "{\"cnt\": 1, \"n.user_id\": 22}",
+  "{\"cnt\": 1, \"n.user_id\": 23}",
+  "{\"cnt\": 1, \"n.user_id\": 24}",
+  "{\"cnt\": 1, \"n.user_id\": 25}",
+  "{\"cnt\": 1, \"n.user_id\": 26}",
+  "{\"cnt\": 1, \"n.user_id\": 27}",
+  "{\"cnt\": 1, \"n.user_id\": 28}",
+  "{\"cnt\": 1, \"n.user_id\": 29}",
+  "{\"cnt\": 1, \"n.user_id\": 2}",
+  "{\"cnt\": 1, \"n.user_id\": 30}",
+  "{\"cnt\": 1, \"n.user_id\": 3}",
+  "{\"cnt\": 1, \"n.user_id\": 4}",
+  "{\"cnt\": 1, \"n.user_id\": 5}",
+  "{\"cnt\": 1, \"n.user_id\": 6}",
+  "{\"cnt\": 1, \"n.user_id\": 7}",
+  "{\"cnt\": 1, \"n.user_id\": 8}",
+  "{\"cnt\": 1, \"n.user_id\": 9}"
+ ],
+ "key_sequence": [
+  [
+   1
+  ],
+  [
+   1
+  ],
+  [
+   1
+  ],
+  [
+   1
+  ],
+  [
+   1
+  ],
+  [
+   1
+  ],
+  [
+   1
+  ],
+  [
+   1
+  ],
+  [
+   1
+  ],
+  [
+   1
+  ]
+ ],
+ "limit": 10,
+ "order_keys": [
+  "cnt"
+ ],
+ "rows": [
+  "{\"cnt\": 1, \"n.user_id\": 10}",
+  "{\"cnt\": 1, \"n.user_id\": 1}",
+  "{\"cnt\": 1, \"n.user_id\": 2}",
+  "{\"cnt\": 1, \"n.user_id\": 3}",
+  "{\"cnt\": 1, \"n.user_id\": 4}",
+  "{\"cnt\": 1, \"n.user_id\": 5}",
+  "{\"cnt\": 1, \"n.user_id\": 6}",
+  "{\"cnt\": 1, \"n.user_id\": 7}",
+  "{\"cnt\": 1, \"n.user_id\": 8}",
+  "{\"cnt\": 1, \"n.user_id\": 9}"
+ ],
+ "schema": "social_integration"
+}

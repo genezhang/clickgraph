@@ -1,0 +1,53 @@
+{
+ "columns": [
+  "u.user_id",
+  "follow_count"
+ ],
+ "cypher": "MATCH (u:User)-[r:FOLLOWS]->()\n            RETURN u.user_id, count(r) as follow_count\n            ORDER BY follow_count DESC\n            LIMIT 10",
+ "full_rows": [
+  "{\"follow_count\": 2, \"u.user_id\": 7}",
+  "{\"follow_count\": 3, \"u.user_id\": 1}",
+  "{\"follow_count\": 3, \"u.user_id\": 2}",
+  "{\"follow_count\": 3, \"u.user_id\": 3}",
+  "{\"follow_count\": 3, \"u.user_id\": 4}",
+  "{\"follow_count\": 3, \"u.user_id\": 5}",
+  "{\"follow_count\": 3, \"u.user_id\": 6}"
+ ],
+ "key_sequence": [
+  [
+   3
+  ],
+  [
+   3
+  ],
+  [
+   3
+  ],
+  [
+   3
+  ],
+  [
+   3
+  ],
+  [
+   3
+  ],
+  [
+   2
+  ]
+ ],
+ "limit": 10,
+ "order_keys": [
+  "follow_count"
+ ],
+ "rows": [
+  "{\"follow_count\": 2, \"u.user_id\": 7}",
+  "{\"follow_count\": 3, \"u.user_id\": 1}",
+  "{\"follow_count\": 3, \"u.user_id\": 2}",
+  "{\"follow_count\": 3, \"u.user_id\": 3}",
+  "{\"follow_count\": 3, \"u.user_id\": 4}",
+  "{\"follow_count\": 3, \"u.user_id\": 5}",
+  "{\"follow_count\": 3, \"u.user_id\": 6}"
+ ],
+ "schema": "social_integration"
+}

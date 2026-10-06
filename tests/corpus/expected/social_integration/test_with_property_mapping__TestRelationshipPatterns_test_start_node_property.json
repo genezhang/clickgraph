@@ -1,0 +1,36 @@
+{
+ "columns": [
+  "followerName"
+ ],
+ "cypher": "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a.name AS followerName RETURN followerName LIMIT 3",
+ "full_rows": [
+  "{\"followerName\": \"Alice Johnson\"}",
+  "{\"followerName\": \"Alice Johnson\"}",
+  "{\"followerName\": \"Alice Johnson\"}",
+  "{\"followerName\": \"Bob Smith\"}",
+  "{\"followerName\": \"Bob Smith\"}",
+  "{\"followerName\": \"Bob Smith\"}",
+  "{\"followerName\": \"Carol White\"}",
+  "{\"followerName\": \"Carol White\"}",
+  "{\"followerName\": \"Carol White\"}",
+  "{\"followerName\": \"David Brown\"}",
+  "{\"followerName\": \"David Brown\"}",
+  "{\"followerName\": \"David Brown\"}",
+  "{\"followerName\": \"Eve Davis\"}",
+  "{\"followerName\": \"Eve Davis\"}",
+  "{\"followerName\": \"Eve Davis\"}",
+  "{\"followerName\": \"Frank Miller\"}",
+  "{\"followerName\": \"Frank Miller\"}",
+  "{\"followerName\": \"Frank Miller\"}",
+  "{\"followerName\": \"Grace Lee\"}",
+  "{\"followerName\": \"Grace Lee\"}"
+ ],
+ "limit": 3,
+ "order_keys": null,
+ "rows": [
+  "{\"followerName\": \"Alice Johnson\"}",
+  "{\"followerName\": \"Alice Johnson\"}",
+  "{\"followerName\": \"Alice Johnson\"}"
+ ],
+ "schema": "social_integration"
+}

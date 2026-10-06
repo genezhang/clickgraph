@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "greeting"
+ ],
+ "cypher": "RETURN 'hello' AS greeting",
+ "order_keys": null,
+ "rows": [
+  "{\"greeting\": \"hello\"}"
+ ],
+ "schema": "social_integration"
+}

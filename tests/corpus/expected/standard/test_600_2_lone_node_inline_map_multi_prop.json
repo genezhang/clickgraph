@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "count(*)"
+ ],
+ "cypher": "MATCH (a:User {name:'Alice Johnson', country:'USA'}) RETURN count(*)",
+ "order_keys": null,
+ "rows": [
+  "{\"count(*)\": 1}"
+ ],
+ "schema": "standard"
+}

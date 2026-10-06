@@ -1,0 +1,53 @@
+{
+ "columns": [
+  "n.name"
+ ],
+ "cypher": "MATCH (n:User) WHERE n.name IS NOT NULL RETURN n.name LIMIT 10",
+ "full_rows": [
+  "{\"n.name\": \"Alice Johnson\"}",
+  "{\"n.name\": \"Amy Adams\"}",
+  "{\"n.name\": \"Ben Baker\"}",
+  "{\"n.name\": \"Bob Smith\"}",
+  "{\"n.name\": \"Carol White\"}",
+  "{\"n.name\": \"Chloe Carter\"}",
+  "{\"n.name\": \"Dan Foster\"}",
+  "{\"n.name\": \"David Brown\"}",
+  "{\"n.name\": \"Eve Davis\"}",
+  "{\"n.name\": \"Frank Miller\"}",
+  "{\"n.name\": \"Grace Lee\"}",
+  "{\"n.name\": \"Henry Wilson\"}",
+  "{\"n.name\": \"Iris Martinez\"}",
+  "{\"n.name\": \"Jack Taylor\"}",
+  "{\"n.name\": \"Kate Anderson\"}",
+  "{\"n.name\": \"Liam Thomas\"}",
+  "{\"n.name\": \"Mia Jackson\"}",
+  "{\"n.name\": \"Noah Harris\"}",
+  "{\"n.name\": \"Olivia Clark\"}",
+  "{\"n.name\": \"Paul Lewis\"}",
+  "{\"n.name\": \"Quinn Walker\"}",
+  "{\"n.name\": \"Rachel Hall\"}",
+  "{\"n.name\": \"Sam Allen\"}",
+  "{\"n.name\": \"Tina Young\"}",
+  "{\"n.name\": \"Uma King\"}",
+  "{\"n.name\": \"Victor Wright\"}",
+  "{\"n.name\": \"Wendy Lopez\"}",
+  "{\"n.name\": \"Xavier Hill\"}",
+  "{\"n.name\": \"Yara Scott\"}",
+  "{\"n.name\": \"Zack Green\"}"
+ ],
+ "limit": 10,
+ "order_keys": null,
+ "rows": [
+  "{\"n.name\": \"Alice Johnson\"}",
+  "{\"n.name\": \"Bob Smith\"}",
+  "{\"n.name\": \"Carol White\"}",
+  "{\"n.name\": \"David Brown\"}",
+  "{\"n.name\": \"Eve Davis\"}",
+  "{\"n.name\": \"Frank Miller\"}",
+  "{\"n.name\": \"Grace Lee\"}",
+  "{\"n.name\": \"Henry Wilson\"}",
+  "{\"n.name\": \"Iris Martinez\"}",
+  "{\"n.name\": \"Jack Taylor\"}"
+ ],
+ "schema": "social_integration"
+}

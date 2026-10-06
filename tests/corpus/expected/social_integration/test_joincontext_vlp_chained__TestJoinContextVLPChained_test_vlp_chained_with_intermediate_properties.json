@@ -1,0 +1,40 @@
+{
+ "columns": [
+  "starter",
+  "author",
+  "p.post_id"
+ ],
+ "cypher": "MATCH (u1:User)-[:FOLLOWS*1..2]->(u2:User)-[:AUTHORED]->(p:Post)\n        WHERE u1.user_id = 1\n        RETURN u1.name AS starter, u2.name AS author, p.post_id\n        LIMIT 5",
+ "full_rows": [
+  "{\"author\": \"Alice Johnson\", \"p.post_id\": 1, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Alice Johnson\", \"p.post_id\": 1, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Alice Johnson\", \"p.post_id\": 1, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Alice Johnson\", \"p.post_id\": 11, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Alice Johnson\", \"p.post_id\": 11, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Alice Johnson\", \"p.post_id\": 11, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Bob Smith\", \"p.post_id\": 12, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Bob Smith\", \"p.post_id\": 2, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Carol White\", \"p.post_id\": 13, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Carol White\", \"p.post_id\": 3, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"David Brown\", \"p.post_id\": 14, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"David Brown\", \"p.post_id\": 4, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Eve Davis\", \"p.post_id\": 15, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Eve Davis\", \"p.post_id\": 5, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Frank Miller\", \"p.post_id\": 16, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Frank Miller\", \"p.post_id\": 6, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Grace Lee\", \"p.post_id\": 17, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Grace Lee\", \"p.post_id\": 7, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Henry Wilson\", \"p.post_id\": 18, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Henry Wilson\", \"p.post_id\": 8, \"starter\": \"Alice Johnson\"}"
+ ],
+ "limit": 5,
+ "order_keys": null,
+ "rows": [
+  "{\"author\": \"Bob Smith\", \"p.post_id\": 12, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Bob Smith\", \"p.post_id\": 2, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"David Brown\", \"p.post_id\": 14, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"David Brown\", \"p.post_id\": 4, \"starter\": \"Alice Johnson\"}",
+  "{\"author\": \"Frank Miller\", \"p.post_id\": 16, \"starter\": \"Alice Johnson\"}"
+ ],
+ "schema": "social_integration"
+}

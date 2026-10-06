@@ -1,0 +1,53 @@
+{
+ "columns": [
+  "n.email"
+ ],
+ "cypher": "MATCH (n:User) WHERE n.email IS NOT NULL RETURN n.email LIMIT 10",
+ "full_rows": [
+  "{\"n.email\": \"alice@example.com\"}",
+  "{\"n.email\": \"amy@example.com\"}",
+  "{\"n.email\": \"ben@example.com\"}",
+  "{\"n.email\": \"bob@example.com\"}",
+  "{\"n.email\": \"carol@example.com\"}",
+  "{\"n.email\": \"chloe@example.com\"}",
+  "{\"n.email\": \"dan@example.com\"}",
+  "{\"n.email\": \"david@example.com\"}",
+  "{\"n.email\": \"eve@example.com\"}",
+  "{\"n.email\": \"frank@example.com\"}",
+  "{\"n.email\": \"grace@example.com\"}",
+  "{\"n.email\": \"henry@example.com\"}",
+  "{\"n.email\": \"iris@example.com\"}",
+  "{\"n.email\": \"jack@example.com\"}",
+  "{\"n.email\": \"kate@example.com\"}",
+  "{\"n.email\": \"liam@example.com\"}",
+  "{\"n.email\": \"mia@example.com\"}",
+  "{\"n.email\": \"noah@example.com\"}",
+  "{\"n.email\": \"olivia@example.com\"}",
+  "{\"n.email\": \"paul@example.com\"}",
+  "{\"n.email\": \"quinn@example.com\"}",
+  "{\"n.email\": \"rachel@example.com\"}",
+  "{\"n.email\": \"sam@example.com\"}",
+  "{\"n.email\": \"tina@example.com\"}",
+  "{\"n.email\": \"uma@example.com\"}",
+  "{\"n.email\": \"victor@example.com\"}",
+  "{\"n.email\": \"wendy@example.com\"}",
+  "{\"n.email\": \"xavier@example.com\"}",
+  "{\"n.email\": \"yara@example.com\"}",
+  "{\"n.email\": \"zack@example.com\"}"
+ ],
+ "limit": 10,
+ "order_keys": null,
+ "rows": [
+  "{\"n.email\": \"alice@example.com\"}",
+  "{\"n.email\": \"bob@example.com\"}",
+  "{\"n.email\": \"carol@example.com\"}",
+  "{\"n.email\": \"david@example.com\"}",
+  "{\"n.email\": \"eve@example.com\"}",
+  "{\"n.email\": \"frank@example.com\"}",
+  "{\"n.email\": \"grace@example.com\"}",
+  "{\"n.email\": \"henry@example.com\"}",
+  "{\"n.email\": \"iris@example.com\"}",
+  "{\"n.email\": \"jack@example.com\"}"
+ ],
+ "schema": "social_integration"
+}

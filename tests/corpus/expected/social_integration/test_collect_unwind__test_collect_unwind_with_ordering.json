@@ -1,0 +1,60 @@
+{
+ "columns": [
+  "user.name",
+  "user.city"
+ ],
+ "cypher": "MATCH (u:User)\n        WITH u, collect(u) as users\n        UNWIND users as user\n        RETURN user.name, user.city\n        ORDER BY user.city\n        LIMIT 3",
+ "full_rows": [
+  "{\"user.city\": \"Atlanta\", \"user.name\": \"Ben Baker\"}",
+  "{\"user.city\": \"Austin\", \"user.name\": \"Mia Jackson\"}",
+  "{\"user.city\": \"Berlin\", \"user.name\": \"Frank Miller\"}",
+  "{\"user.city\": \"Boston\", \"user.name\": \"Jack Taylor\"}",
+  "{\"user.city\": \"Bristol\", \"user.name\": \"Amy Adams\"}",
+  "{\"user.city\": \"Calgary\", \"user.name\": \"Chloe Carter\"}",
+  "{\"user.city\": \"Chicago\", \"user.name\": \"Henry Wilson\"}",
+  "{\"user.city\": \"Dallas\", \"user.name\": \"Xavier Hill\"}",
+  "{\"user.city\": \"Denver\", \"user.name\": \"Tina Young\"}",
+  "{\"user.city\": \"Detroit\", \"user.name\": \"Dan Foster\"}",
+  "{\"user.city\": \"Dubai\", \"user.name\": \"Yara Scott\"}",
+  "{\"user.city\": \"Dublin\", \"user.name\": \"Liam Thomas\"}",
+  "{\"user.city\": \"Edinburgh\", \"user.name\": \"Quinn Walker\"}",
+  "{\"user.city\": \"London\", \"user.name\": \"Bob Smith\"}",
+  "{\"user.city\": \"Madrid\", \"user.name\": \"Iris Martinez\"}",
+  "{\"user.city\": \"Manchester\", \"user.name\": \"Kate Anderson\"}",
+  "{\"user.city\": \"Melbourne\", \"user.name\": \"Olivia Clark\"}",
+  "{\"user.city\": \"Mexico City\", \"user.name\": \"Wendy Lopez\"}",
+  "{\"user.city\": \"Miami\", \"user.name\": \"Victor Wright\"}",
+  "{\"user.city\": \"Montreal\", \"user.name\": \"Sam Allen\"}",
+  "{\"user.city\": \"Mumbai\", \"user.name\": \"Uma King\"}",
+  "{\"user.city\": \"New York\", \"user.name\": \"Alice Johnson\"}",
+  "{\"user.city\": \"Phoenix\", \"user.name\": \"Zack Green\"}",
+  "{\"user.city\": \"Portland\", \"user.name\": \"Rachel Hall\"}",
+  "{\"user.city\": \"San Francisco\", \"user.name\": \"Eve Davis\"}",
+  "{\"user.city\": \"Seattle\", \"user.name\": \"Paul Lewis\"}",
+  "{\"user.city\": \"Seoul\", \"user.name\": \"Grace Lee\"}",
+  "{\"user.city\": \"Sydney\", \"user.name\": \"David Brown\"}",
+  "{\"user.city\": \"Toronto\", \"user.name\": \"Carol White\"}",
+  "{\"user.city\": \"Vancouver\", \"user.name\": \"Noah Harris\"}"
+ ],
+ "key_sequence": [
+  [
+   "Atlanta"
+  ],
+  [
+   "Austin"
+  ],
+  [
+   "Berlin"
+  ]
+ ],
+ "limit": 3,
+ "order_keys": [
+  "user.city"
+ ],
+ "rows": [
+  "{\"user.city\": \"Atlanta\", \"user.name\": \"Ben Baker\"}",
+  "{\"user.city\": \"Austin\", \"user.name\": \"Mia Jackson\"}",
+  "{\"user.city\": \"Berlin\", \"user.name\": \"Frank Miller\"}"
+ ],
+ "schema": "social_integration"
+}

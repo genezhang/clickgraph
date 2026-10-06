@@ -1,0 +1,19 @@
+{
+ "columns": [
+  "node_type",
+  "cnt"
+ ],
+ "cypher": "MATCH (u:User)-[:FOLLOWS|AUTHORED*1]->(x)\n            WHERE u.user_id = 1\n            RETURN labels(x)[1] as node_type, count(*) as cnt\n            ORDER BY node_type",
+ "key_sequence": [
+  [
+   null
+  ]
+ ],
+ "order_keys": [
+  "node_type"
+ ],
+ "rows": [
+  "{\"cnt\": 5}"
+ ],
+ "schema": "social_integration"
+}

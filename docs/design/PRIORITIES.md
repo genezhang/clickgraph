@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 translate seam done; next: S1 Neo4j oracle + result goldens)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 Neo4j oracle done; next: S2 clause-list parser)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,32 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-06: **P-4c S1: Neo4j result oracle and result goldens (standard layout)** (#1316 tracks the findings).
+  - `scripts/oracle/` loads a schema's logical graph from its YAML and ClickHouse tables into Neo4j 5.26, runs corpus queries on both, and compares rows exactly (`compare.py`):
+    - ORDER BY key sequences are checked;
+    - a LIMIT answer must be a valid subset of Neo4j's full answer;
+    - relationship endpoints are compared;
+    - integers compare exactly.
+  - `tests/corpus/expected/` holds Neo4j's answers, `scorecard.json` (verdict plus a signature of each wrong outcome), `triage.json`, and a per-schema data fingerprint.
+  - `tests/integration/test_neo4j_result_goldens.py` checks ClickGraph against them in the live suite. A known-wrong entry must keep its recorded wrong outcome: a fix, or a drift to another wrong answer, fails until the scorecard is regenerated.
+  - Baseline (`social_integration` + `standard`): 343 correct and 101 known-wrong. Of those, 51 are BUG (11 of them in existing issues: #1210, #1190, #1235, #933) and 11 are KNOWN_LOUD. The other 50 are semantic decisions:
+    - 16 refusals where Cypher answers;
+    - 15 mis-tagged corpus entries;
+    - 14 untyped booleans;
+    - 5 ClickGraph extensions.
+    - Each non-bug category was confirmed by re-running a rewritten query on Neo4j.
+  - New wrong rows include:
+    - `WITH a ... RETURN a` (7 shapes) leaks database and CTE columns;
+    - `type(r) IN [...]` is ignored (60 vs 40);
+    - an undirected anonymous relationship is matched in one orientation;
+    - `labels(x)[1]` is treated as 1-based;
+    - an unlabeled shortestPath returns 120 rows instead of 1;
+    - an aggregate over an empty match returns no row, or `count(*) = 1`;
+    - a missing property in a multi-type path is returned as `""`, not NULL;
+    - an undirected OPTIONAL MATCH with an anchor WHERE drops anchors and invents rows.
+  - The `#1181` chained-path shapes over-count against Neo4j (509 vs 415): their hand-written oracle was weaker than Cypher's relationship uniqueness.
+  - An adversarial review found the first cut passing 7 wrong answers (a count-only LIMIT rule) and a triage rule hiding a real bug. Both are fixed, and the fixes are covered by `scripts/oracle/test_compare.py`.
 
 - 2026-10-06: **P-4c S0.5: one read translation seam** (`src/translate.rs`, #1314).
   - Every read entry point now goes through `translate_read`: HTTP `/query` and `/query/sql`, Bolt, both `apoc.export`/`COPY TO` inner queries, the server export helper, embedded `cypher_to_sql*` (and through it FFI, Go, Python and `cg`), and the corpus and golden harnesses. Executed SQL is byte-identical; corpus and goldens are unchanged.

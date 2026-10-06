@@ -1,0 +1,53 @@
+{
+ "columns": [
+  "n.city"
+ ],
+ "cypher": "MATCH (n:User) RETURN n.city LIMIT 10",
+ "full_rows": [
+  "{\"n.city\": \"Atlanta\"}",
+  "{\"n.city\": \"Austin\"}",
+  "{\"n.city\": \"Berlin\"}",
+  "{\"n.city\": \"Boston\"}",
+  "{\"n.city\": \"Bristol\"}",
+  "{\"n.city\": \"Calgary\"}",
+  "{\"n.city\": \"Chicago\"}",
+  "{\"n.city\": \"Dallas\"}",
+  "{\"n.city\": \"Denver\"}",
+  "{\"n.city\": \"Detroit\"}",
+  "{\"n.city\": \"Dubai\"}",
+  "{\"n.city\": \"Dublin\"}",
+  "{\"n.city\": \"Edinburgh\"}",
+  "{\"n.city\": \"London\"}",
+  "{\"n.city\": \"Madrid\"}",
+  "{\"n.city\": \"Manchester\"}",
+  "{\"n.city\": \"Melbourne\"}",
+  "{\"n.city\": \"Mexico City\"}",
+  "{\"n.city\": \"Miami\"}",
+  "{\"n.city\": \"Montreal\"}",
+  "{\"n.city\": \"Mumbai\"}",
+  "{\"n.city\": \"New York\"}",
+  "{\"n.city\": \"Phoenix\"}",
+  "{\"n.city\": \"Portland\"}",
+  "{\"n.city\": \"San Francisco\"}",
+  "{\"n.city\": \"Seattle\"}",
+  "{\"n.city\": \"Seoul\"}",
+  "{\"n.city\": \"Sydney\"}",
+  "{\"n.city\": \"Toronto\"}",
+  "{\"n.city\": \"Vancouver\"}"
+ ],
+ "limit": 10,
+ "order_keys": null,
+ "rows": [
+  "{\"n.city\": \"Berlin\"}",
+  "{\"n.city\": \"Boston\"}",
+  "{\"n.city\": \"Chicago\"}",
+  "{\"n.city\": \"London\"}",
+  "{\"n.city\": \"Madrid\"}",
+  "{\"n.city\": \"New York\"}",
+  "{\"n.city\": \"San Francisco\"}",
+  "{\"n.city\": \"Seoul\"}",
+  "{\"n.city\": \"Sydney\"}",
+  "{\"n.city\": \"Toronto\"}"
+ ],
+ "schema": "social_integration"
+}

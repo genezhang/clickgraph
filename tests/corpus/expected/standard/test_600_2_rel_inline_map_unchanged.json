@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "count(*)"
+ ],
+ "cypher": "MATCH (a:User {name:'Alice Johnson'})-[:FOLLOWS]->(b) RETURN count(*)",
+ "order_keys": null,
+ "rows": [
+  "{\"count(*)\": 3}"
+ ],
+ "schema": "standard"
+}

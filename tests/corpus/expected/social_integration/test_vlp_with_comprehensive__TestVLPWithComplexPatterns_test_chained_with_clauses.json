@@ -1,0 +1,16 @@
+{
+ "columns": [
+  "start_name",
+  "end_name",
+  "hops"
+ ],
+ "cypher": "MATCH path = (u1:TestUser)-[:TEST_FOLLOWS*1..2]->(u2:TestUser)\n        WHERE u1.user_id = 1\n        WITH u1, u2, length(path) as hops\n        WHERE hops = 2\n        WITH u1.name as start_name, u2.name as end_name, hops\n        RETURN start_name, end_name, hops\n        ORDER BY end_name\n        LIMIT 5",
+ "full_rows": [],
+ "key_sequence": [],
+ "limit": 5,
+ "order_keys": [
+  "end_name"
+ ],
+ "rows": [],
+ "schema": "social_integration"
+}

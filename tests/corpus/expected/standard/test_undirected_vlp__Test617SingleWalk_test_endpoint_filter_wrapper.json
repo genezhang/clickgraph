@@ -1,0 +1,11 @@
+{
+ "columns": [
+  "count(*)"
+ ],
+ "cypher": "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User) WHERE b.user_id > 2 RETURN count(*)",
+ "order_keys": null,
+ "rows": [
+  "{\"count(*)\": 104}"
+ ],
+ "schema": "standard"
+}

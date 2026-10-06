@@ -1,0 +1,45 @@
+{
+ "columns": [
+  "n",
+  "e"
+ ],
+ "cypher": "MATCH (u:User) WITH u, u.name AS n, u.email AS e RETURN n, e LIMIT 1",
+ "full_rows": [
+  "{\"e\": \"alice@example.com\", \"n\": \"Alice Johnson\"}",
+  "{\"e\": \"amy@example.com\", \"n\": \"Amy Adams\"}",
+  "{\"e\": \"ben@example.com\", \"n\": \"Ben Baker\"}",
+  "{\"e\": \"bob@example.com\", \"n\": \"Bob Smith\"}",
+  "{\"e\": \"carol@example.com\", \"n\": \"Carol White\"}",
+  "{\"e\": \"chloe@example.com\", \"n\": \"Chloe Carter\"}",
+  "{\"e\": \"dan@example.com\", \"n\": \"Dan Foster\"}",
+  "{\"e\": \"david@example.com\", \"n\": \"David Brown\"}",
+  "{\"e\": \"eve@example.com\", \"n\": \"Eve Davis\"}",
+  "{\"e\": \"frank@example.com\", \"n\": \"Frank Miller\"}",
+  "{\"e\": \"grace@example.com\", \"n\": \"Grace Lee\"}",
+  "{\"e\": \"henry@example.com\", \"n\": \"Henry Wilson\"}",
+  "{\"e\": \"iris@example.com\", \"n\": \"Iris Martinez\"}",
+  "{\"e\": \"jack@example.com\", \"n\": \"Jack Taylor\"}",
+  "{\"e\": \"kate@example.com\", \"n\": \"Kate Anderson\"}",
+  "{\"e\": \"liam@example.com\", \"n\": \"Liam Thomas\"}",
+  "{\"e\": \"mia@example.com\", \"n\": \"Mia Jackson\"}",
+  "{\"e\": \"noah@example.com\", \"n\": \"Noah Harris\"}",
+  "{\"e\": \"olivia@example.com\", \"n\": \"Olivia Clark\"}",
+  "{\"e\": \"paul@example.com\", \"n\": \"Paul Lewis\"}",
+  "{\"e\": \"quinn@example.com\", \"n\": \"Quinn Walker\"}",
+  "{\"e\": \"rachel@example.com\", \"n\": \"Rachel Hall\"}",
+  "{\"e\": \"sam@example.com\", \"n\": \"Sam Allen\"}",
+  "{\"e\": \"tina@example.com\", \"n\": \"Tina Young\"}",
+  "{\"e\": \"uma@example.com\", \"n\": \"Uma King\"}",
+  "{\"e\": \"victor@example.com\", \"n\": \"Victor Wright\"}",
+  "{\"e\": \"wendy@example.com\", \"n\": \"Wendy Lopez\"}",
+  "{\"e\": \"xavier@example.com\", \"n\": \"Xavier Hill\"}",
+  "{\"e\": \"yara@example.com\", \"n\": \"Yara Scott\"}",
+  "{\"e\": \"zack@example.com\", \"n\": \"Zack Green\"}"
+ ],
+ "limit": 1,
+ "order_keys": null,
+ "rows": [
+  "{\"e\": \"alice@example.com\", \"n\": \"Alice Johnson\"}"
+ ],
+ "schema": "social_integration"
+}

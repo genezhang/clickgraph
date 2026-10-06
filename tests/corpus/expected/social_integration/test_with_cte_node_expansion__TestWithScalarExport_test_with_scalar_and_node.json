@@ -1,0 +1,22 @@
+{
+ "columns": [
+  "a",
+  "follower_count"
+ ],
+ "cypher": "MATCH (a:User)-[:FOLLOWS]->(b:User)\n            WITH a, COUNT(b) AS follower_count\n            RETURN a, follower_count\n            LIMIT 1",
+ "full_rows": [
+  "{\"a.age\": 25, \"a.city\": \"Toronto\", \"a.country\": \"Canada\", \"a.email\": \"carol@example.com\", \"a.is_active\": 1, \"a.name\": \"Carol White\", \"a.registration_date\": \"2021-03-10\", \"a.user_id\": 3, \"follower_count\": 3}",
+  "{\"a.age\": 27, \"a.city\": \"Seoul\", \"a.country\": \"South Korea\", \"a.email\": \"grace@example.com\", \"a.is_active\": 1, \"a.name\": \"Grace Lee\", \"a.registration_date\": \"2020-12-01\", \"a.user_id\": 7, \"follower_count\": 2}",
+  "{\"a.age\": 28, \"a.city\": \"New York\", \"a.country\": \"USA\", \"a.email\": \"alice@example.com\", \"a.is_active\": 1, \"a.name\": \"Alice Johnson\", \"a.registration_date\": \"2020-01-15\", \"a.user_id\": 1, \"follower_count\": 3}",
+  "{\"a.age\": 29, \"a.city\": \"San Francisco\", \"a.country\": \"USA\", \"a.email\": \"eve@example.com\", \"a.is_active\": 1, \"a.name\": \"Eve Davis\", \"a.registration_date\": \"2020-07-08\", \"a.user_id\": 5, \"follower_count\": 3}",
+  "{\"a.age\": 31, \"a.city\": \"Berlin\", \"a.country\": \"Germany\", \"a.email\": \"frank@example.com\", \"a.is_active\": 1, \"a.name\": \"Frank Miller\", \"a.registration_date\": \"2019-09-14\", \"a.user_id\": 6, \"follower_count\": 3}",
+  "{\"a.age\": 32, \"a.city\": \"London\", \"a.country\": \"UK\", \"a.email\": \"bob@example.com\", \"a.is_active\": 1, \"a.name\": \"Bob Smith\", \"a.registration_date\": \"2019-05-20\", \"a.user_id\": 2, \"follower_count\": 3}",
+  "{\"a.age\": 35, \"a.city\": \"Sydney\", \"a.country\": \"Australia\", \"a.email\": \"david@example.com\", \"a.is_active\": 1, \"a.name\": \"David Brown\", \"a.registration_date\": \"2018-11-25\", \"a.user_id\": 4, \"follower_count\": 3}"
+ ],
+ "limit": 1,
+ "order_keys": null,
+ "rows": [
+  "{\"a.age\": 28, \"a.city\": \"New York\", \"a.country\": \"USA\", \"a.email\": \"alice@example.com\", \"a.is_active\": 1, \"a.name\": \"Alice Johnson\", \"a.registration_date\": \"2020-01-15\", \"a.user_id\": 1, \"follower_count\": 3}"
+ ],
+ "schema": "social_integration"
+}
