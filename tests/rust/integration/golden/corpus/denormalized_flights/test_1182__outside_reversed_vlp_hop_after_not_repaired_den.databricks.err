@@ -1,0 +1,1 @@
+render error: Invalid render plan: the WITH CTE 'with_c_cte_0' (nodes ["c"]) would be joined on a predicate that does not mention it, next to a variable-length path: the carried node is not tied to the pattern. Not supported yet (#1297) — match the carried node at the start of a pattern whose path runs in its own direction.

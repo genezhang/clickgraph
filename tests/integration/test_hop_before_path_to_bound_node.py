@@ -110,3 +110,33 @@ def test_hop_between_two_carried_nodes_then_path(carried, lo, hi):
         f"MATCH (z)-[:FOLLOWS]->(c)-[:FOLLOWS*{lo}..{hi}]->(b:User) RETURN count(*) AS k"
     )
     assert _rows(q)[0]["k"] == expected
+
+
+# --- #1297: a carried node in the MIDDLE of the chain (denormalized layout) --------------------------
+# The relationship-uniqueness predicate between the two fixed hops became the ON of the WITH CTE join,
+# a join tied to nothing: 96 rows vs 16. The shape is refused (outside #1182's verified chains), as
+# on the other layouts; it must never return the wrong count.
+
+
+def test_denormalized_carried_node_mid_chain_before_path_is_not_silently_wrong():
+    q = (
+        "MATCH (z:Airport)-[:FLIGHT]->(c:Airport) WITH c, z "
+        "MATCH (a:Airport)-[:FLIGHT]->(z)-[:FLIGHT]->(c)-[:FLIGHT*1..2]->(b:Airport) "
+        "RETURN count(*) AS k"
+    )
+    result = execute_cypher(q, schema_name="denormalized_flights", raise_on_error=False)
+    if "results" in result:
+        rows = execute_cypher(
+            "MATCH (z:Airport)-[:FLIGHT]->(c:Airport) RETURN z.code AS z, c.code AS c",
+            schema_name="denormalized_flights",
+        )["results"]
+        edges = [(r["z"], r["c"]) for r in rows]
+        expected = 0
+        for zi, (z, c) in enumerate(edges):
+            for ai, (a, z2) in enumerate(edges):
+                if z2 != z:
+                    continue
+                for hi, (z3, c3) in enumerate(edges):
+                    if (z3, c3) == (z, c) and hi != ai:
+                        expected += len(_trails(edges, c, 1, 2, {ai, hi}))
+        assert result["results"][0]["k"] == expected

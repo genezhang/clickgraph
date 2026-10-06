@@ -691,6 +691,11 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-10-05: **#1297: a carried node the WITH CTE join cannot be tied to is refused** (P-4b root B).
+  - Next to a path in a chain outside #1182's verified allowlist, the relationship-uniqueness predicate between two fixed hops (it does not mention the CTE) became the WITH CTE's `ON`: a join tied to nothing. Denormalized `WITH c, z MATCH (a)-[:R]->(z)-[:R]->(c)-[:R*1..2]->(b)` returned 96 vs 16; the backwards-path pin `test_1182__outside_reversed_vlp_hop_after_not_repaired_den` returned 24 vs 4 (silent).
+  - Both now fail with a clean render error. Not a repair: the real fix is tying a mid-chain carried node (needs the export contract's id columns on the denormalized CTE, which is `SELECT *` here, #1189).
+  - Sweeps: 2 WRONG→ERR, 0 other changes. Three corpus pins change (two to `.err`, one message).
+
 - 2026-10-05: **#1291: a path out of the end of an earlier path, across a WITH** (P-4b root A/B).
   - `MATCH (c)-[*1..2]->(a) WITH a MATCH (a)-[*1..2]->(b)` exported the first path's `start_id` for the carried `a` (485 vs 339 standard, 21 vs 5 polymorphic, 42 vs 40 denormalized, 54 vs 32 composite; silent).
   - Cause: `expand_table_alias_to_select_items` preferred `PlanCtx::get_vlp_endpoint(alias)`, which keeps ONE entry per alias for the whole query. The later path (`a` is its START) overwrote the earlier one (`a` is its END). It now uses the context entry only when it describes the same path (`rel_alias`) as the plan being rendered.
