@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 clause-list parser done; next: S3 binder)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; next: S4 lowering)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,14 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-06: **P-4c S3: binder, explicit scope and label inference** (#1319, `src/bound_plan/`).
+  - `bind_statement` turns a clause-list statement into a bound plan: every variable is resolved once against the current scope and gets a `VarId`; WITH/RETURN outputs are new bindings; OPTIONAL MATCH bindings are nullable.
+  - Scope rules follow Neo4j 5.26 and are unit-tested (31 tests): ORDER BY/WHERE visibility after WITH, implicit grouping, UNION columns matched by name, comprehension locals, re-binding after WITH (#1304), a WITH scalar reusing a node name (#1263).
+  - Labels are inferred from the schema to a fixed point. An unknown label or impossible pattern is an empty set (no rows, as in Cypher), not an error.
+  - Whole corpus: 1443 bound, 35 fall back (graph patterns inside expressions), and the 4 bind errors are all queries Neo4j also rejects. A hang on closed patterns `(a)-[r]->(a)` was found and fixed before merge.
+  - Review against Neo4j found nine defects (list vs relationship reuse, ORDER BY alias vs projected expression, `RETURN *` order, misplaced aggregates, comprehension locals in grouping, grouping-key properties, value variables as nodes, and three minor ones); all fixed, each test mutation-checked.
+  - Not wired into translation yet; S4 lowers the bound plan.
 
 - 2026-10-06: **P-4c S2: clause-list parser** (`src/open_cypher_parser/clause_list.rs`).
   - `parse_clause_statement` gives each query, and each UNION arm, as clauses in source order. The legacy parser and pipeline are unchanged; the two share the clause and expression parsers, and the WITH head is factored out as `parse_with_head`.

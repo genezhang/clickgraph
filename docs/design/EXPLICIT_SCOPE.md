@@ -999,7 +999,52 @@ slice that will handle it.
   - Not done here: deriving the legacy AST from the clause list. It is not
     needed, because the legacy parser and planner are deleted together in
     S11.
-- [ ] S3 binder + scope + labels
+- [x] S3 binder + scope + labels (`src/bound_plan/`).
+  - `bind_statement` walks the clause list once and resolves every variable
+    name against the current scope exactly once. Each binding gets a `VarId`
+    (internal name `v{N}`), a kind (node, relationship, path, value), a
+    nullability and its source clause.
+  - WITH and RETURN outputs are new bindings. The projection's ORDER BY and
+    WHERE see the input scope too, unless it aggregates or is DISTINCT; then
+    an input expression is allowed only where it equals a projected one.
+    Implicit grouping, UNION column names (matched by name), comprehension
+    and reduce locals, and re-binding a name after WITH (#1304) all follow
+    Neo4j 5.26.
+  - Labels are inferred from the schema's (type, from, to) triples to a fixed
+    point, including variable-length segments and closed patterns. Only
+    variables the clause introduces are narrowed; a bound variable never is
+    (an OPTIONAL MATCH must not drop input rows).
+  - S1 finding decided: an unknown label or an impossible pattern binds to an
+    empty label set and will match nothing, as in Cypher; it is not an error.
+    The other S1 finding (unmapped properties read from table columns) is a
+    property-to-column decision and moves to S4.
+  - `binder_corpus.rs` binds the whole corpus: 1443 bound, 35 unsupported
+    (graph patterns inside expressions, which fall back until S9), 24
+    rejected by the clause-list parser (all invalid Cypher), 4 bind errors
+    (all queries Neo4j also rejects, checked on Neo4j). No query in the
+    Neo4j scorecard gets a bind error.
+  - Review (checked against Neo4j) found nine defects, all fixed with tests
+    that fail without the fix:
+    - a variable-length list reused as one relationship was accepted;
+    - ORDER BY resolved an alias before matching a projected expression
+      (`RETURN a.age AS a ORDER BY a.age`);
+    - `RETURN *` columns were not in name order;
+    - aggregates were accepted in WHERE, pattern properties, UNWIND and
+      non-aggregating ORDER BY;
+    - comprehension and reduce variables counted as outer variables in the
+      grouping check;
+    - a property of a grouping-key variable was rejected;
+    - value-typed variables used as nodes were rejected (now a fallback);
+    - plus `RETURN *, a`, `reduce(x = 0, x IN ..)` and `ORDER BY *`.
+  - A first run hung: a closed pattern `(a)-[r]->(a)` assigned each end's
+    label set to the shared slot in turn and never converged. Inference now
+    only intersects (so it always terminates), handles closed patterns, and
+    stops a variable-length search when a frontier repeats.
+  - Not bound yet (`BindError::Unsupported`, the caller falls back): CALL,
+    updating clauses, graph patterns inside expressions, property-map
+    parameters, re-matching a bound variable-length relationship list, the
+    same relationship variable twice in one MATCH (Neo4j: no rows), and a
+    list element or other value used as a node or relationship.
 - [ ] S4 lowering: MATCH / WHERE / WITH / RETURN (standard)
 - [ ] S5 OPTIONAL MATCH unit
 - [ ] S6 paths + uniqueness + shortestPath

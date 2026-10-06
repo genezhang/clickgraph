@@ -24,6 +24,7 @@ macro_rules! debug_println {
 
 pub mod utils;
 
+pub mod bound_plan;
 pub mod config;
 pub mod executor;
 pub mod graph_catalog;
