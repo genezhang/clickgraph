@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ☐ (S0 proposed 2026-10-06)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 translate seam done; next: S1 Neo4j oracle + result goldens)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,12 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-06: **P-4c S0.5: one read translation seam** (`src/translate.rs`, #1314).
+  - Every read entry point now goes through `translate_read`: HTTP `/query` and `/query/sql`, Bolt, both `apoc.export`/`COPY TO` inner queries, the server export helper, embedded `cypher_to_sql*` (and through it FFI, Go, Python and `cg`), and the corpus and golden harnesses. Executed SQL is byte-identical; corpus and goldens are unchanged.
+  - `SEMANTIC_SESSION_SETTINGS` (`join_use_nulls = 1`) is now one list used by the connection pool, the `clickhouse` client and chdb. SQL handed to users (`sql_only`, `/query/sql`, `query_to_sql`) carries it as a trailing `SETTINGS` clause. Before, that SQL run elsewhere returned `''`/`0` and a false `IS NULL` for unmatched OPTIONAL rows (#1314).
+  - The generated-alias and CTE counters are per query. They were process-global and every HTTP/Bolt request reset them, so a concurrent request could rewind another query's counter mid-translation and re-issue `t{N}`. A golden test caught this only when the harness started resetting through the seam.
+  - `/query/sql` now runs the same `id()` rewrite and analyzer passes as `/query`, and it has its own cache route. It used to share `/query`'s key and could have put its analyzer-less SQL into the cache that `/query` executes from.
 
 - 2026-10-06: **#1308: a WHERE comparing a path endpoint with a node outside the path** (P-4b root B).
   - `MATCH (z)-[:R]->(c)-[:R*1..2]->(b) WHERE b = z` / `b.x = z.x`: the conjunct was categorized as a filter of the path's recursive CTE, which cannot see `z`. Most layouts got Code 47; on the denormalized `*0..N` arms it was silently dropped (24 vs 6).
