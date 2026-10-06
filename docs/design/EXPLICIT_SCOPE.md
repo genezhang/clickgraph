@@ -733,6 +733,57 @@ So:
 `LogicalPlan::ViewScan` (:3372, :4252). The new path builds table references
 through a constructor that does not need a `LogicalPlan`.
 
+### 4.15 ClickHouse settings the SQL depends on (`join_use_nulls = 1`)
+
+ClickHouse's default `join_use_nulls = 0` fills the unmatched side of a LEFT
+JOIN with **type defaults**, not NULL: `''` for String, `0` for numbers,
+`[]` for arrays. OPTIONAL MATCH semantics depend on getting NULL, and so do
+`IS NULL`, `count(x)`, `coalesce`, and any WHERE over an optional variable.
+Verified on 2026-10-06, `test_integration`, with
+`MATCH (u) WHERE u.user_id IN [20,21] OPTIONAL MATCH (u)-[:FOLLOWS]->(b)
+RETURN b.name, b.name IS NULL, b.age`:
+
+| Execution path | `b.name` | `b.name IS NULL` | `b.age` |
+|---|---|---|---|
+| server (`RoleConnectionPool::standard_options`) | NULL | true | NULL |
+| `cg query` / embedded remote (same pool) | NULL | true | NULL |
+| chdb embedded (`SET join_use_nulls = 1`) | NULL (by the same setting) | | |
+| the same SQL sent to ClickHouse **without** the setting | `''` | **false** | `0` |
+
+Rules for the new path:
+1. **The setting belongs to the SQL contract, not to the connection.**
+   - ClickHouse-dialect SQL from the new path ends with
+     `SETTINGS join_use_nulls = 1`. The setting goes through `Dialect`;
+     Databricks/Spark has standard NULL semantics and emits nothing.
+   - Verified: a trailing `SETTINGS join_use_nulls = 1` applies to the whole
+     statement, including recursive and WITH CTEs.
+   - That makes the SQL correct wherever it runs, including the documented
+     SQL-only mode (`sql_only: true`, `cg sql`) whose output users execute
+     outside ClickGraph.
+   - **Today that output carries no setting** (#1314). Run externally, every
+     OPTIONAL MATCH in it gives `''`/`0` and false `IS NULL` results, with
+     no error.
+   - Executors keep setting it at session level too. `Decision 0.7` (no
+     `SETTINGS` at query time) applies to embedded *writes* only.
+2. **The setting covers only Nullable-capable types.** `Array`, `Tuple`
+   and `Map` still come back as defaults (§4.9), so the `__matched` guard is
+   required with the setting. It is emitted through `Dialect` because Spark
+   does not need it.
+3. **Types change under the setting.** Right-side columns become
+   `Nullable(T)`, which affects:
+   - `UNION ALL` arms (the arms must agree; §4.6 casts each column to one
+     declared type, Nullable when any arm is on a NULL-supplying side);
+   - functions that reject Nullable arguments;
+   - `GROUP BY` keys.
+
+   The lowering computes nullability from `Binding.nullable` rather than
+   discovering it from ClickHouse errors.
+4. **The oracle harness and every probe run with the setting**, and with a
+   deliberately unset session too, to prove the SQL carries it (rule 1).
+   The prototype numbers in §1.3 were taken with `join_use_nulls = 1`. Those
+   six queries are `count(*)` with no predicate over an optional column, so
+   they do not depend on it; slice 1's harness covers the value-level cases.
+
 ## 5. Reused, replaced, deleted
 
 | Component | New path |
@@ -815,7 +866,7 @@ The default stays `off` until slice 3 is accepted, then becomes `on`.
 | # | Slice | Acceptance | Closes |
 |---|---|---|---|
 | 0 | This doc + PRIORITIES P-4c | review | — |
-| 0.5 | **One translate seam.** Today there are about ten entry points that each call `evaluate_read_statement` + `to_render_plan_with_ctx`: `server/handlers.rs:1459, 2109`, `sql_generation_handler.rs:338`, `bolt_protocol/handler.rs:2374, 2670, 3108`, and `sql_generator/emitters/clickhouse/mod.rs:82, 131, 165`, which serve embedded, FFI, Go, Python and `cg`. All of them go through one function that returns SQL plus `ResultShape`. The query cache key includes the route. `$param` templating, `USE`, multi-schema selection and the depth guards are applied in the seam. | byte-identical SQL on every entry; no behaviour change | — |
+| 0.5 | **One translate seam.** ClickHouse SQL carries `SETTINGS join_use_nulls = 1` (§4.15); this is the only intended SQL-text change. Today there are about ten entry points that each call `evaluate_read_statement` + `to_render_plan_with_ctx`: `server/handlers.rs:1459, 2109`, `sql_generation_handler.rs:338`, `bolt_protocol/handler.rs:2374, 2670, 3108`, and `sql_generator/emitters/clickhouse/mod.rs:82, 131, 165`, which serve embedded, FFI, Go, Python and `cg`. All of them go through one function that returns SQL plus `ResultShape`. The query cache key includes the route. `$param` templating, `USE`, multi-schema selection and the depth guards are applied in the seam. | SQL byte-identical except the trailing `SETTINGS` clause; SQL-only output executed on a session without the setting returns NULLs | #1314 |
 | 1 | Oracle harness (§6.1–6.2) + result goldens for the corpus on the standard layout | goldens generated; **existing engine scored** (gives the baseline list of wrong answers) | — |
 | 2 | Clause-list parser (§4.2) with the legacy AST derived from it | legacy SQL goldens byte-identical; new shapes parse | parse gaps |
 | 3 | Binder + scope + label inference, no SQL (`cg bind` debug output) | binds the whole corpus or reports `Unsupported`; label parity with TypeInference; name-resolution tests incl. re-binding after WITH, shadowing, ORDER BY visibility | — |
