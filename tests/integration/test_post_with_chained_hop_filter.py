@@ -121,3 +121,35 @@ def test_filter_after_with_on_a_chained_hop_node(layout, pattern, var, op):
         f"MATCH {cypher.replace(':R', ':' + rel)} WHERE {var}.{key} {op} {literal} RETURN count(*) AS k"
     )
     assert _rows(schema, q)[0]["k"] == expected, q
+
+
+# A conjunct mixing a scope node with a WITH value (a scalar, or a carried node's property) is not
+# a carried-node filter: nothing else applies it, so it is emitted too (#1303 review: 202 vs 85).
+@pytest.mark.parametrize(
+    "with_items, where, keep",
+    [
+        ("c, 30 AS lim", "a.age > lim", lambda z, c, a: a["age"] > 30),
+        ("c, z.age AS za", "a.age > za", lambda z, c, a: a["age"] > z["age"]),
+        ("c, c.age AS ca", "a.age > ca", lambda z, c, a: a["age"] > c["age"]),
+        ("c, 30 AS lim", "c.age > lim", lambda z, c, a: c["age"] > 30),
+        ("c, 30 AS lim", "a.age > lim AND a.user_id <> 1", lambda z, c, a: a["age"] > 30 and a["user_id"] != 1),
+    ],
+)
+def test_filter_after_with_mixing_a_with_value(with_items, where, keep):
+    schema = "social_integration"
+    users = {
+        r["id"]: {"user_id": r["id"], "age": r["age"]}
+        for r in _rows(schema, "MATCH (u:User) RETURN u.user_id AS id, u.age AS age")
+    }
+    edges = _edges(schema, "User", "FOLLOWS", "user_id")
+    expected = sum(
+        1
+        for z, c in edges
+        for m in _matches("(c)-[:R]->(a)-[:R*1..2]->(b)", edges, {"c": c})
+        if keep(users[z], users[c], users[m["a"]])
+    )
+    q = (
+        f"MATCH (z:User)-[:FOLLOWS]->(c:User) WITH {with_items} "
+        f"MATCH (c)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WHERE {where} RETURN count(*) AS k"
+    )
+    assert _rows(schema, q)[0]["k"] == expected, q

@@ -87,11 +87,12 @@ fn child_hop_outer_predicates(
     if !child_hop_predicates_are_safe_to_emit(graph_rel) {
         return None;
     }
-    // #1177: after a WITH, a conjunct on a CARRIED node is already applied where the node is
-    // (inside the path CTE for a path endpoint, against the WITH CTE otherwise); emitted here
-    // too it would be spelled through both namings (`t.start_p1_c_user_id`). Only the
-    // conjuncts on this scope's own nodes are added — before, they were all dropped, so
-    // `WITH c MATCH (c)-[:R]->(a)-[:R*1..2]->(b) WHERE a.id = 1` ignored the filter.
+    // #1177: after a WITH, a conjunct on CARRIED nodes only is already applied where the node
+    // is (inside the path CTE for a path endpoint, against the WITH CTE otherwise); emitted here
+    // too it would be spelled through both namings (`t.start_p1_c_user_id`). Every other
+    // conjunct is added — before, they were all dropped, so `WITH c MATCH (c)-[:R]->(a)-
+    // [:R*1..2]->(b) WHERE a.id = 1` ignored the filter. That includes one mixing a scope node
+    // with a WITH value (`a.age > lim`, `lim` read off the carried CTE): nothing else applies it.
     let subtree = LogicalPlan::GraphRel(graph_rel.clone());
     let mut carried: std::collections::HashSet<String> = std::collections::HashSet::new();
     subtree.any_node(|n| {
@@ -101,9 +102,12 @@ fn child_hop_outer_predicates(
         false
     });
     let on_carried_node = |pred: &RenderExpr| {
-        carried
-            .iter()
-            .any(|alias| crate::render_plan::expression_utils::references_alias(pred, alias))
+        let mut referenced = std::collections::HashSet::new();
+        crate::render_plan::plan_builder_utils::collect_aliases_from_single_render_expr(
+            pred,
+            &mut referenced,
+        );
+        !referenced.is_empty() && referenced.iter().all(|alias| carried.contains(alias))
     };
     let mut predicates: Vec<RenderExpr> = Vec::new();
     for child in [graph_rel.left.as_ref(), graph_rel.right.as_ref()] {
