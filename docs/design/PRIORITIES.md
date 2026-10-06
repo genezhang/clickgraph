@@ -691,6 +691,11 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-10-05: **#1291: a path out of the end of an earlier path, across a WITH** (P-4b root A/B).
+  - `MATCH (c)-[*1..2]->(a) WITH a MATCH (a)-[*1..2]->(b)` exported the first path's `start_id` for the carried `a` (485 vs 339 standard, 21 vs 5 polymorphic, 42 vs 40 denormalized, 54 vs 32 composite; silent).
+  - Cause: `expand_table_alias_to_select_items` preferred `PlanCtx::get_vlp_endpoint(alias)`, which keeps ONE entry per alias for the whole query. The later path (`a` is its START) overwrote the earlier one (`a` is its END). It now uses the context entry only when it describes the same path (`rel_alias`) as the plan being rendered.
+  - Path-then-WITH sweep: 4 WRONG→OK (one per layout), 0 regressions. The denormalized exact-length first path (`*2..2`) still fails loudly on main and here (`a.Dest` unknown); not this bug.
+
 - 2026-10-05: **#1294: a hop between two WITH-carried nodes is kept** (P-4b root B).
   - `WITH c, z MATCH (z)-[:R]->(c)-[:R*1..2]->(b)`: the hop's join referenced only CTE-backed aliases, so `clear_stale_joins_for_cte_aliases` dropped it (111 vs 99, silent).
   - #1182's verified-chain allowlist now admits the two carried ends of the chain's first fixed hop (path chains only).
