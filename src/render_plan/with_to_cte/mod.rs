@@ -4197,6 +4197,20 @@ fn resolve_cross_table_with_cte_joins(
                             }
                             continue;
                         }
+                        // #1297: next to a path in an UNVERIFIED chain (a carried node in the
+                        // middle of it, a path written backwards) this predicate would become
+                        // the CTE's ON, a join tied to nothing: 96 rows vs 16, silently.
+                        if !mentions_cte && from_is_a_vlp_cte {
+                            let mut aliases = aliases.clone();
+                            aliases.sort();
+                            return Err(RenderBuildError::InvalidRenderPlan(format!(
+                                "the WITH CTE '{cte_name}' (nodes {aliases:?}) would be joined on \
+                                 a predicate that does not mention it, next to a variable-length \
+                                 path: the carried node is not tied to the pattern. Not supported \
+                                 yet (#1297) — match the carried node at the start of a pattern \
+                                 whose path runs in its own direction."
+                            )));
+                        }
                         // Rewrite the operands to use CTE column names
                         let rewritten = rewrite_operator_application_for_cte_join(
                             &op_app,
