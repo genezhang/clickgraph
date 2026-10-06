@@ -162,9 +162,11 @@ impl ChdbExecutor {
         // Apply ClickHouse settings required by ClickGraph's SQL.
         // `join_use_nulls = 1` makes LEFT JOINs return NULL for missing rows
         // (required by OPTIONAL MATCH semantics).
-        session
-            .execute("SET join_use_nulls = 1", None)
-            .map_err(|e| ExecutorError::QueryFailed(format!("chdb SET failed: {}", e)))?;
+        for (name, value) in crate::sql_generator::SEMANTIC_SESSION_SETTINGS {
+            session
+                .execute(&format!("SET {} = {}", name, value), None)
+                .map_err(|e| ExecutorError::QueryFailed(format!("chdb SET failed: {}", e)))?;
+        }
 
         // Apply storage credentials as session-level settings.
         for stmt in credentials.to_set_statements() {

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use errors::QueryPlannerError;
+pub use errors::QueryPlannerError;
 use plan_ctx::PlanCtx;
 use types::QueryType;
 

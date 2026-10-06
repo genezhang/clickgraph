@@ -59,8 +59,7 @@ use std::sync::Arc;
 use clickgraph::{
     graph_catalog::{config::GraphSchemaConfig, graph_schema::GraphSchema},
     open_cypher_parser::{parse_cypher_statement, strip_comments},
-    query_planner::evaluate_read_statement,
-    render_plan::{logical_plan_to_render_plan_with_ctx, ToSql},
+    translate::{translate_read, ReadOptions, TranslateError},
     server::query_context::{set_current_schema, with_query_context, QueryContext},
     sql_generator::SqlDialect,
 };
@@ -167,9 +166,8 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// Parse -> plan -> render for one (schema, cypher, dialect), catching BOTH
 /// pipeline errors (`Result::Err`) and Rust panics (`unimplemented!`/
 /// `panic!` deep in the planner/renderer) so one bad corpus entry can't take
-/// down the whole sweep. Mirrors `sql_golden_tests::render`'s steps exactly
-/// (same production path: `evaluate_read_statement` ->
-/// `logical_plan_to_render_plan_with_ctx` -> `to_sql()`), but returns
+/// down the whole sweep. Uses the production read seam
+/// (`clickgraph::translate::translate_read`, which every entry point calls), but returns
 /// `Result<String, String>` instead of panicking, so errors can be LOCKED
 /// rather than failing the test outright.
 async fn try_render(
@@ -190,13 +188,20 @@ async fn try_render(
                 let cleaned = strip_comments(&cypher);
                 let (_rest, statement) =
                     parse_cypher_statement(&cleaned).map_err(|e| format!("parse error: {e}"))?;
-                let (logical_plan, plan_ctx) =
-                    evaluate_read_statement(statement, &schema, None, None, None)
-                        .map_err(|e| format!("plan error: {e}"))?;
-                let render_plan =
-                    logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx))
-                        .map_err(|e| format!("render error: {e}"))?;
-                Ok(render_plan.to_sql())
+                // The production read seam (every entry point translates here).
+                translate_read(
+                    statement,
+                    &schema,
+                    ReadOptions {
+                        max_cte_depth: 100,
+                        ..Default::default()
+                    },
+                )
+                .map(|t| t.sql)
+                .map_err(|e| match e {
+                    TranslateError::Planning(e) => format!("plan error: {e}"),
+                    TranslateError::Render(e) => format!("render error: {e}"),
+                })
             },
         ));
         match outcome {

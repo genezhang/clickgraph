@@ -87,6 +87,36 @@ impl SqlDialect {
     }
 }
 
+/// ClickHouse session settings that generated SQL depends on for **result
+/// correctness** (not limits or formats). `join_use_nulls = 1` makes the
+/// unmatched side of a LEFT JOIN NULL instead of the type default (`''`, `0`),
+/// which OPTIONAL MATCH, `IS NULL`, `count(x)` and `coalesce` rely on.
+///
+/// Single source of truth: the server connection pool, the chdb executor and
+/// [`portable_sql`] all apply this list.
+pub const SEMANTIC_SESSION_SETTINGS: &[(&str, &str)] = &[("join_use_nulls", "1")];
+
+/// SQL that is correct on any session of `dialect`: for ClickHouse, appends a
+/// `SETTINGS` clause carrying [`SEMANTIC_SESSION_SETTINGS`], so SQL-only output
+/// that a user runs outside ClickGraph gives the same rows (#1314). Other
+/// dialects already have standard NULL semantics and are returned unchanged.
+///
+/// Executors must NOT use this: they apply the settings at session level and
+/// the executed SQL stays exactly what the emitter produced.
+pub fn portable_sql(sql: &str, dialect: SqlDialect) -> String {
+    match dialect {
+        SqlDialect::ClickHouse => {
+            let settings = SEMANTIC_SESSION_SETTINGS
+                .iter()
+                .map(|(k, v)| format!("{} = {}", k, v))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{}\nSETTINGS {}", sql.trim_end(), settings)
+        }
+        _ => sql.to_string(),
+    }
+}
+
 /// Renders a `RenderPlan` into SQL text for a target dialect.
 ///
 /// `pub(crate)` because the method surface will widen in later phases
@@ -116,4 +146,24 @@ pub(crate) fn emitter_for(dialect: SqlDialect) -> &'static dyn SqlEmitter {
 /// dialect can be chosen at runtime in a future phase.
 pub fn generate_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
     emitter_for(SqlDialect::default()).emit(plan, max_cte_depth)
+}
+
+#[cfg(test)]
+mod portable_sql_tests {
+    use super::*;
+
+    #[test]
+    fn clickhouse_sql_carries_join_use_nulls() {
+        let sql = "SELECT a.x\nFROM t AS a\nLEFT JOIN u AS b ON b.k = a.k\n";
+        assert_eq!(
+            portable_sql(sql, SqlDialect::ClickHouse),
+            "SELECT a.x\nFROM t AS a\nLEFT JOIN u AS b ON b.k = a.k\nSETTINGS join_use_nulls = 1"
+        );
+    }
+
+    #[test]
+    fn databricks_sql_is_unchanged() {
+        let sql = "SELECT a.x FROM t AS a";
+        assert_eq!(portable_sql(sql, SqlDialect::Databricks), sql);
+    }
 }

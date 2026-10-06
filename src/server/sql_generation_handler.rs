@@ -3,9 +3,8 @@ use std::{collections::HashMap, sync::Arc, time::Instant};
 use axum::{extract::State, http::StatusCode, response::Json};
 
 use crate::{
-    clickhouse_query_generator, open_cypher_parser,
+    open_cypher_parser,
     query_planner::{self, types::QueryType},
-    render_plan::plan_builder::RenderPlanBuilder,
 };
 
 use super::{
@@ -76,7 +75,22 @@ pub async fn sql_generation_handler(
     };
 
     // Check query cache first
-    let cache_key = QueryCacheKey::new(&payload.query, schema_name);
+    // Scoped to this endpoint, and to the view parameters the SQL is planned
+    // with (they change parameterized-view SQL).
+    let vp_strings: Option<HashMap<String, String>> = payload.view_parameters.as_ref().map(|p| {
+        p.iter()
+            .map(|(k, v)| {
+                let s = match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                (k.clone(), s)
+            })
+            .collect()
+    });
+    let cache_key =
+        QueryCacheKey::with_view_scope(&payload.query, schema_name, None, vp_strings.as_ref())
+            .for_route("query_sql");
 
     let mut cache_status = "MISS";
     let cached_sql = if let Some(cache) = GLOBAL_QUERY_CACHE.get() {
@@ -99,8 +113,13 @@ pub async fn sql_generation_handler(
             sql_statements.push(format!("SET ROLE {}", role));
         }
 
-        // Add the cached query
-        sql_statements.push(ch_query);
+        // Add the cached query.
+        // #1314: SQL returned for external execution carries the semantic
+        // session settings (join_use_nulls) in the statement itself.
+        sql_statements.push(crate::sql_generator::portable_sql(
+            &ch_query,
+            crate::server::query_context::get_current_dialect(),
+        ));
 
         let elapsed = start_time.elapsed();
 
@@ -314,7 +333,6 @@ pub async fn sql_generation_handler(
         (ch_sql, plan_str, planning_time, sql_gen_time)
     } else if is_read {
         // Phase 2: Plan query
-        let planning_start = Instant::now();
 
         // Convert view_parameters from Option<HashMap<String, Value>> to Option<HashMap<String, String>>
         let view_parameter_values: Option<HashMap<String, String>> = payload
@@ -335,51 +353,56 @@ pub async fn sql_generation_handler(
                     .collect()
             });
 
-        let (logical_plan, plan_ctx) = match query_planner::logical_plan::evaluate_cypher_statement(
+        // Same pre-pass and pipeline as `/query`, so this endpoint returns
+        // the SQL `/query` would run: the id() rewrite, then the translate
+        // seam (which runs the analyzer passes this endpoint used to skip).
+        use crate::query_planner::ast_transform;
+        use crate::server::bolt_protocol::id_mapper::IdMapper;
+        let mut id_mapper = IdMapper::new();
+        id_mapper.set_scope(Some(schema_name.to_string()), None);
+        let ast_arena = ast_transform::StringArena::new();
+        let (cypher_statement, _label_constraints) = ast_transform::transform_id_functions(
+            &ast_arena,
+            cypher_statement,
+            &id_mapper,
+            Some(&graph_schema),
+        );
+
+        let translation = match crate::translate::translate_read(
             cypher_statement,
             &graph_schema,
-            None, // tenant_id not needed for SQL generation
-            view_parameter_values,
-            None, // max_inferred_types
+            crate::translate::ReadOptions {
+                view_parameter_values,
+                max_cte_depth: app_state.config.max_cte_depth,
+                ..Default::default()
+            },
         ) {
-            Ok(result) => result,
+            Ok(t) => t,
             Err(e) => {
-                let _planning_time = planning_start.elapsed().as_secs_f64() * 1000.0;
+                let error_type = match e {
+                    crate::translate::TranslateError::Planning(_) => "PlanningError",
+                    crate::translate::TranslateError::Render(_) => "RenderError",
+                };
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(SqlGenerationError {
                         cypher_query: payload.query.clone(),
                         error: format!("{}", e),
-                        error_type: "PlanningError".to_string(),
+                        error_type: error_type.to_string(),
                         error_details: None,
                     }),
                 ));
             }
         };
-        let planning_time = planning_start.elapsed().as_secs_f64() * 1000.0;
-
-        // Phase 3: Render plan generation - use _with_ctx to pass VLP endpoint information
-        let render_start = Instant::now();
-        let render_plan =
-            match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx), None) {
-                Ok(plan) => plan,
-                Err(e) => {
-                    return Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(SqlGenerationError {
-                            cypher_query: payload.query.clone(),
-                            error: format!("{}", e),
-                            error_type: "RenderError".to_string(),
-                            error_details: None,
-                        }),
-                    ));
-                }
-            };
-
-        // Phase 4: SQL generation
-        let ch_query: String =
-            clickhouse_query_generator::generate_sql(render_plan, app_state.config.max_cte_depth);
-        let sql_gen_time = render_start.elapsed().as_secs_f64() * 1000.0;
+        let planning_time = translation.timings.planning.as_secs_f64() * 1000.0;
+        let sql_gen_time = (translation.timings.render + translation.timings.sql_generation)
+            .as_secs_f64()
+            * 1000.0;
+        let crate::translate::ReadTranslation {
+            sql: ch_query,
+            logical_plan,
+            ..
+        } = translation;
 
         let plan_str = if payload.include_plan.unwrap_or(false) {
             Some(format!("{:#?}", logical_plan))
@@ -420,7 +443,12 @@ pub async fn sql_generation_handler(
     }
 
     // Add the main query
-    sql_statements.push(ch_query);
+    // #1314: SQL returned for external execution carries the semantic
+    // session settings (join_use_nulls) in the statement itself.
+    sql_statements.push(crate::sql_generator::portable_sql(
+        &ch_query,
+        crate::server::query_context::get_current_dialect(),
+    ));
 
     let total_time = start_time.elapsed().as_secs_f64() * 1000.0;
 

@@ -14,7 +14,6 @@ use super::messages::{signatures, BoltMessage, BoltValue};
 use super::result_transformer::extract_return_metadata;
 use super::{BoltConfig, BoltContext, ConnectionState};
 
-use crate::clickhouse_query_generator;
 use crate::executor::QueryExecutor;
 use crate::open_cypher_parser;
 use crate::query_planner;
@@ -44,7 +43,6 @@ struct ProcedureBranch {
     has_return: bool,
 }
 
-use crate::render_plan::plan_builder::RenderPlanBuilder;
 use crate::server::{graph_catalog, parameter_substitution};
 
 /// Helper macro for safe mutex locking with proper error handling
@@ -2370,25 +2368,16 @@ impl BoltHandler {
                     Some(&graph_schema_obj),
                 );
 
-                crate::query_planner::logical_plan::reset_all_counters();
-                let (logical_plan, plan_ctx) = query_planner::evaluate_read_statement(
+                crate::translate::translate_read(
                     inner_cypher,
                     &graph_schema_obj,
-                    None,
-                    None,
-                    None,
+                    crate::translate::ReadOptions {
+                        max_cte_depth: 1000,
+                        ..Default::default()
+                    },
                 )
-                .map_err(|e| {
-                    BoltError::query_error(format!("Inner Cypher planning error: {}", e))
-                })?;
-
-                let render_plan = logical_plan
-                    .to_render_plan_with_ctx(&graph_schema_obj, Some(&plan_ctx), None)
-                    .map_err(|e| {
-                        BoltError::query_error(format!("Inner Cypher render error: {}", e))
-                    })?;
-
-                clickhouse_query_generator::generate_sql(render_plan, 1000)
+                .map_err(|e| BoltError::query_error(inner_translate_error(e)))?
+                .sql
             };
 
             let export_sql = crate::procedures::apoc_export::build_export_sql(
@@ -2666,32 +2655,16 @@ impl BoltHandler {
                                     Some(&graph_schema),
                                 );
 
-                            crate::query_planner::logical_plan::reset_all_counters();
-                            let (logical_plan, plan_ctx) = query_planner::evaluate_read_statement(
+                            crate::translate::translate_read(
                                 inner_cypher,
                                 &graph_schema,
-                                None,
-                                None,
-                                None,
+                                crate::translate::ReadOptions {
+                                    max_cte_depth: 1000,
+                                    ..Default::default()
+                                },
                             )
-                            .map_err(|e| {
-                                BoltError::query_error(format!(
-                                    "Inner Cypher planning error: {}",
-                                    e
-                                ))
-                            })?;
-
-                            let render_plan = logical_plan
-                                .to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx), None)
-                                .map_err(|e| {
-                                    BoltError::query_error(format!(
-                                        "Inner Cypher render error: {}",
-                                        e
-                                    ))
-                                })?;
-
-                            let max_cte_depth = 1000;
-                            clickhouse_query_generator::generate_sql(render_plan, max_cte_depth)
+                            .map_err(|e| BoltError::query_error(inner_translate_error(e)))?
+                            .sql
                         };
 
                         // Build export SQL
@@ -3101,32 +3074,40 @@ impl BoltHandler {
             label_constraints_from_second_pass.len()
         );
 
-        // Reset global counters for deterministic SQL generation
-        crate::query_planner::logical_plan::reset_all_counters();
-
-        // Generate logical plan using transformed statement
-        let (logical_plan, mut plan_ctx) = match query_planner::evaluate_read_statement(
+        // Plan, render and generate SQL through the single translate seam.
+        // The WHERE label constraints from the second id() pass are injected
+        // into the plan context before rendering (UNION pruning).
+        let translation = match crate::translate::translate_read(
             transformed_for_planning,
             &graph_schema,
-            tenant_id,
-            view_parameters,
-            Some(20), // max_inferred_types - increased for UNION branches
+            crate::translate::ReadOptions {
+                tenant_id,
+                view_parameter_values: view_parameters,
+                max_inferred_types: Some(20), // increased for UNION branches
+                where_label_constraints: Some(label_constraints_from_second_pass),
+                max_cte_depth: 1000,
+            },
         ) {
-            Ok(result) => result,
-            Err(e) => {
+            Ok(t) => t,
+            Err(crate::translate::TranslateError::Planning(e)) => {
                 return Err(BoltError::query_error(format!(
                     "Query planning failed: {}",
                     e
                 )));
             }
+            Err(crate::translate::TranslateError::Render(e)) => {
+                return Err(BoltError::query_error(format!(
+                    "Render plan generation failed: {}",
+                    e
+                )));
+            }
         };
-
-        // Inject label constraints into plan_ctx for UNION pruning
-        if !label_constraints_from_second_pass.is_empty() {
-            plan_ctx.set_where_label_constraints(label_constraints_from_second_pass);
-        }
-
-        // transformed_for_planning is now dropped
+        let crate::translate::ReadTranslation {
+            sql: ch_sql,
+            logical_plan,
+            plan_ctx,
+            ..
+        } = translation;
 
         // Extract return metadata for result transformation
         let return_metadata = match extract_return_metadata(&logical_plan, &plan_ctx) {
@@ -3145,22 +3126,6 @@ impl BoltHandler {
                     | super::result_transformer::ReturnItemType::IdFunction { .. }
             )
         });
-
-        // Generate render plan - use _with_ctx to pass VLP endpoint information
-        let render_plan =
-            match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx), None) {
-                Ok(plan) => plan,
-                Err(e) => {
-                    return Err(BoltError::query_error(format!(
-                        "Render plan generation failed: {}",
-                        e
-                    )));
-                }
-            };
-
-        // Generate ClickHouse SQL
-        let max_cte_depth = 1000; // Use default from config
-        let ch_sql = clickhouse_query_generator::generate_sql(render_plan, max_cte_depth);
 
         // Substitute parameters in SQL (for non-id() parameters like $name, $age, etc.)
         // Note: id() parameters were already handled in Cypher query substitution (line 741)
@@ -3731,5 +3696,18 @@ mod tests {
             msg.contains("Statement parsing failed") || msg.contains("Unexpected tokens"),
             "expected a parse-stage error for genuine trailing garbage, got: {msg}"
         );
+    }
+}
+
+/// Error text for an `apoc.export` / `COPY TO` inner query that failed to
+/// translate (the stage is part of the message, as before the seam).
+fn inner_translate_error(e: crate::translate::TranslateError) -> String {
+    match e {
+        crate::translate::TranslateError::Planning(e) => {
+            format!("Inner Cypher planning error: {}", e)
+        }
+        crate::translate::TranslateError::Render(e) => {
+            format!("Inner Cypher render error: {}", e)
+        }
     }
 }

@@ -73,21 +73,11 @@ pub fn cypher_to_sql(
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
     max_cte_depth: u32,
 ) -> Result<String, String> {
-    use crate::render_plan::plan_builder::RenderPlanBuilder;
-
     let cleaned = crate::open_cypher_parser::strip_comments(cypher);
     let (_remaining, statement) = crate::open_cypher_parser::parse_cypher_statement(&cleaned)
         .map_err(|e| format!("Parse error: {:?}", e))?;
 
-    let (logical_plan, plan_ctx) =
-        crate::query_planner::evaluate_read_statement(statement, schema, None, None, None)
-            .map_err(|e| format!("Plan error: {}", e))?;
-
-    let render_plan = logical_plan
-        .to_render_plan_with_ctx(schema, Some(&plan_ctx), None)
-        .map_err(|e| format!("Render error: {}", e))?;
-
-    Ok(generate_sql(render_plan, max_cte_depth))
+    translate_for_library(statement, schema, max_cte_depth).map(|t| t.sql)
 }
 
 /// Convert a Cypher query to ClickHouse SQL after clearing all write
@@ -105,8 +95,6 @@ pub fn cypher_to_sql_read_only(
     max_cte_depth: u32,
 ) -> Result<String, String> {
     use crate::open_cypher_parser::ast::CypherStatement;
-    use crate::render_plan::plan_builder::RenderPlanBuilder;
-
     let cleaned = crate::open_cypher_parser::strip_comments(cypher);
     let (_remaining, mut statement) = crate::open_cypher_parser::parse_cypher_statement(&cleaned)
         .map_err(|e| format!("Parse error: {:?}", e))?;
@@ -128,15 +116,7 @@ pub fn cypher_to_sql_read_only(
         }
     }
 
-    let (logical_plan, plan_ctx) =
-        crate::query_planner::evaluate_read_statement(statement, schema, None, None, None)
-            .map_err(|e| format!("Plan error: {}", e))?;
-
-    let render_plan = logical_plan
-        .to_render_plan_with_ctx(schema, Some(&plan_ctx), None)
-        .map_err(|e| format!("Render error: {}", e))?;
-
-    Ok(generate_sql(render_plan, max_cte_depth))
+    translate_for_library(statement, schema, max_cte_depth).map(|t| t.sql)
 }
 
 /// Convert a Cypher query string to ClickHouse SQL, also returning the
@@ -156,20 +136,32 @@ pub fn cypher_to_sql_with_metadata(
     ),
     String,
 > {
-    use crate::render_plan::plan_builder::RenderPlanBuilder;
-
     let cleaned = crate::open_cypher_parser::strip_comments(cypher);
     let (_remaining, statement) = crate::open_cypher_parser::parse_cypher_statement(&cleaned)
         .map_err(|e| format!("Parse error: {:?}", e))?;
 
-    let (logical_plan, plan_ctx) =
-        crate::query_planner::evaluate_read_statement(statement, schema, None, None, None)
-            .map_err(|e| format!("Plan error: {}", e))?;
+    let t = translate_for_library(statement, schema, max_cte_depth)?;
+    Ok((t.sql, t.logical_plan, t.plan_ctx))
+}
 
-    let render_plan = logical_plan
-        .to_render_plan_with_ctx(schema, Some(&plan_ctx), None)
-        .map_err(|e| format!("Render error: {}", e))?;
-
-    let sql = generate_sql(render_plan, max_cte_depth);
-    Ok((sql, logical_plan, plan_ctx))
+/// The library entry points' translation: the read seam with default
+/// options, errors rendered as the `Plan error:` / `Render error:` strings
+/// these functions have always returned.
+fn translate_for_library(
+    statement: crate::open_cypher_parser::ast::CypherStatement<'_>,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+    max_cte_depth: u32,
+) -> Result<crate::translate::ReadTranslation, String> {
+    crate::translate::translate_read(
+        statement,
+        schema,
+        crate::translate::ReadOptions {
+            max_cte_depth,
+            ..Default::default()
+        },
+    )
+    .map_err(|e| match e {
+        crate::translate::TranslateError::Planning(e) => format!("Plan error: {}", e),
+        crate::translate::TranslateError::Render(e) => format!("Render error: {}", e),
+    })
 }

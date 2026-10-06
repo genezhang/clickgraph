@@ -11,12 +11,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    clickhouse_query_generator,
     graph_catalog::graph_schema::{GraphSchema, GraphSchemaElement},
     graph_catalog::{DraftOptions, DraftRequest, EdgeHint, FkEdgeHint, NodeHint, SchemaDiscovery},
     open_cypher_parser::{self, ast::CypherStatement},
     query_planner::{self, types::QueryType},
-    render_plan::plan_builder::RenderPlanBuilder,
 };
 
 use super::{
@@ -1217,7 +1215,8 @@ async fn query_handler_inner(
         if sql_only {
             let sql_response = Json(SqlOnlyResponse {
                 cypher_query: payload.query.clone(),
-                generated_sql: final_sql.clone(),
+                // #1314: carry the semantic session settings in the SQL.
+                generated_sql: crate::sql_generator::portable_sql(&final_sql, crate::server::query_context::get_current_dialect()),
                 execution_mode: "sql_only".to_string(),
             });
 
@@ -1407,7 +1406,7 @@ async fn query_handler_inner(
             if sql_only {
                 let sql_response = SqlOnlyResponse {
                     cypher_query: payload.query.clone(),
-                    generated_sql: ch_sql.clone(),
+                    generated_sql: crate::sql_generator::portable_sql(&ch_sql, crate::server::query_context::get_current_dialect()),
                     execution_mode: "sql_only".to_string(),
                 };
                 return Ok(Json(sql_response).into_response());
@@ -1453,52 +1452,43 @@ async fn query_handler_inner(
                 view_parameter_values
             );
 
-            // Reset global counters for deterministic SQL generation
-            crate::query_planner::logical_plan::reset_all_counters();
-
-            let (logical_plan, plan_ctx) = match query_planner::evaluate_read_statement(
+            // Phases 2-4 (plan, render, SQL) through the single translate seam.
+            // Schema context is already set via with_query_context() at handler entry.
+            let translation = match crate::translate::translate_read(
                 cypher_statement,
                 &graph_schema,
-                payload.tenant_id.clone(),
-                view_parameter_values,
-                payload.max_inferred_types,
+                crate::translate::ReadOptions {
+                    tenant_id: payload.tenant_id.clone(),
+                    view_parameter_values,
+                    max_inferred_types: payload.max_inferred_types,
+                    where_label_constraints: None,
+                    max_cte_depth: app_state.config.max_cte_depth,
+                },
             ) {
-                Ok(result) => result,
-                Err(e) => {
+                Ok(t) => t,
+                Err(crate::translate::TranslateError::Planning(e)) => {
                     metrics.planning_time = planning_start.elapsed().as_secs_f64();
                     // Return 400 for planning errors (both sql_only and normal mode)
                     return Err((StatusCode::BAD_REQUEST, format!("Planning error: {}", e)));
                 }
+                Err(crate::translate::TranslateError::Render(e)) => {
+                    metrics.planning_time = planning_start.elapsed().as_secs_f64();
+                    // Return 500 for render errors (internal error)
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Render error: {}", e),
+                    ));
+                }
             };
-            metrics.planning_time = planning_start.elapsed().as_secs_f64();
-
-            // Phase 3: Render plan generation
-            let render_start = Instant::now();
-
-            // Schema context is already set via with_query_context() at handler entry
-            // Use to_render_plan_with_ctx to pass analysis-phase metadata (VLP endpoints, etc.)
-
-            let render_plan =
-                match logical_plan.to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx), None) {
-                    Ok(plan) => plan,
-                    Err(e) => {
-                        metrics.render_time = render_start.elapsed().as_secs_f64();
-                        // Return 500 for render errors (internal error)
-                        return Err((
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("Render error: {}", e),
-                        ));
-                    }
-                };
-            metrics.render_time = render_start.elapsed().as_secs_f64();
-
-            // Phase 4: SQL generation
-            let sql_generation_start = Instant::now();
-            let ch_query = clickhouse_query_generator::generate_sql(
-                render_plan,
-                app_state.config.max_cte_depth,
-            );
-            metrics.sql_generation_time = sql_generation_start.elapsed().as_secs_f64();
+            metrics.planning_time = translation.timings.planning.as_secs_f64();
+            metrics.render_time = translation.timings.render.as_secs_f64();
+            metrics.sql_generation_time = translation.timings.sql_generation.as_secs_f64();
+            let crate::translate::ReadTranslation {
+                sql: ch_query,
+                logical_plan,
+                plan_ctx,
+                ..
+            } = translation;
             crate::debug_println!("\n ch_query \n {} \n", ch_query);
 
             // Store in cache (even in sql_only mode for future use)
@@ -1511,7 +1501,7 @@ async fn query_handler_inner(
             if sql_only {
                 let sql_response = Json(SqlOnlyResponse {
                     cypher_query: payload.query.clone(),
-                    generated_sql: ch_query.clone(),
+                    generated_sql: crate::sql_generator::portable_sql(&ch_query, crate::server::query_context::get_current_dialect()),
                     execution_mode: "sql_only".to_string(),
                 });
 
@@ -2103,22 +2093,23 @@ fn translate_cypher_to_sql(
         Some(graph_schema),
     );
 
-    // Plan
-    crate::query_planner::logical_plan::reset_all_counters();
-    let (logical_plan, plan_ctx) =
-        query_planner::evaluate_read_statement(cypher_statement, graph_schema, None, None, None)
-            .map_err(|e| format!("Inner Cypher planning error: {}", e))?;
-
-    // Render
-    let render_plan = logical_plan
-        .to_render_plan_with_ctx(graph_schema, Some(&plan_ctx), None)
-        .map_err(|e| format!("Inner Cypher render error: {}", e))?;
-
-    // Generate SQL
-    Ok(clickhouse_query_generator::generate_sql(
-        render_plan,
-        max_cte_depth,
-    ))
+    crate::translate::translate_read(
+        cypher_statement,
+        graph_schema,
+        crate::translate::ReadOptions {
+            max_cte_depth,
+            ..Default::default()
+        },
+    )
+    .map(|t| t.sql)
+    .map_err(|e| match e {
+        crate::translate::TranslateError::Planning(e) => {
+            format!("Inner Cypher planning error: {}", e)
+        }
+        crate::translate::TranslateError::Render(e) => {
+            format!("Inner Cypher render error: {}", e)
+        }
+    })
 }
 
 /// Extract a schema name from a leading `USE <schema>` clause in a Cypher query.
