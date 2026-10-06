@@ -59,9 +59,9 @@ use std::sync::Arc;
 use clickgraph::{
     graph_catalog::{config::GraphSchemaConfig, graph_schema::GraphSchema},
     open_cypher_parser::{parse_cypher_statement, strip_comments},
-    translate::{translate_read, ReadOptions, TranslateError},
     server::query_context::{set_current_schema, with_query_context, QueryContext},
     sql_generator::SqlDialect,
+    translate::{translate_read, ReadOptions, TranslateError},
 };
 
 use crate::sql_golden_tests::{normalize, normalize_golden_text};

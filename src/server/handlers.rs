@@ -1216,7 +1216,10 @@ async fn query_handler_inner(
             let sql_response = Json(SqlOnlyResponse {
                 cypher_query: payload.query.clone(),
                 // #1314: carry the semantic session settings in the SQL.
-                generated_sql: crate::sql_generator::portable_sql(&final_sql, crate::server::query_context::get_current_dialect()),
+                generated_sql: crate::sql_generator::portable_sql(
+                    &final_sql,
+                    crate::server::query_context::get_current_dialect(),
+                ),
                 execution_mode: "sql_only".to_string(),
             });
 
@@ -1406,7 +1409,10 @@ async fn query_handler_inner(
             if sql_only {
                 let sql_response = SqlOnlyResponse {
                     cypher_query: payload.query.clone(),
-                    generated_sql: crate::sql_generator::portable_sql(&ch_sql, crate::server::query_context::get_current_dialect()),
+                    generated_sql: crate::sql_generator::portable_sql(
+                        &ch_sql,
+                        crate::server::query_context::get_current_dialect(),
+                    ),
                     execution_mode: "sql_only".to_string(),
                 };
                 return Ok(Json(sql_response).into_response());
@@ -1501,7 +1507,10 @@ async fn query_handler_inner(
             if sql_only {
                 let sql_response = Json(SqlOnlyResponse {
                     cypher_query: payload.query.clone(),
-                    generated_sql: crate::sql_generator::portable_sql(&ch_query, crate::server::query_context::get_current_dialect()),
+                    generated_sql: crate::sql_generator::portable_sql(
+                        &ch_query,
+                        crate::server::query_context::get_current_dialect(),
+                    ),
                     execution_mode: "sql_only".to_string(),
                 });
 

@@ -3264,6 +3264,19 @@ impl BoltHandler {
     }
 }
 
+/// Error text for an `apoc.export` / `COPY TO` inner query that failed to
+/// translate (the stage is part of the message, as before the seam).
+fn inner_translate_error(e: crate::translate::TranslateError) -> String {
+    match e {
+        crate::translate::TranslateError::Planning(e) => {
+            format!("Inner Cypher planning error: {}", e)
+        }
+        crate::translate::TranslateError::Render(e) => {
+            format!("Inner Cypher render error: {}", e)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3696,18 +3709,5 @@ mod tests {
             msg.contains("Statement parsing failed") || msg.contains("Unexpected tokens"),
             "expected a parse-stage error for genuine trailing garbage, got: {msg}"
         );
-    }
-}
-
-/// Error text for an `apoc.export` / `COPY TO` inner query that failed to
-/// translate (the stage is part of the message, as before the seam).
-fn inner_translate_error(e: crate::translate::TranslateError) -> String {
-    match e {
-        crate::translate::TranslateError::Planning(e) => {
-            format!("Inner Cypher planning error: {}", e)
-        }
-        crate::translate::TranslateError::Render(e) => {
-            format!("Inner Cypher render error: {}", e)
-        }
     }
 }
