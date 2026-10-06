@@ -1493,3 +1493,6 @@
 {"cypher": "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c MATCH (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS*1..2]->(c) RETURN count(*) AS k", "name": "test_1287__hop_before_path_into_carried_node", "schema": "standard"}
 {"cypher": "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c, z MATCH (z)-[:FOLLOWS]->(c)-[:FOLLOWS*1..2]->(b:User) RETURN count(*) AS k", "name": "test_1294__hop_between_two_carried_nodes_tied", "schema": "standard"}
 {"cypher": "MATCH (c:User)-[:FOLLOWS*1..2]->(a:User) WITH a MATCH (a)-[:FOLLOWS*1..2]->(b:User) RETURN count(*) AS k", "name": "test_1291__path_out_of_earlier_path_end", "schema": "standard"}
+{"cypher": "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c MATCH (c)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WHERE a.user_id = 1 RETURN count(*) AS k", "name": "test_1177__post_with_chained_hop_filter_std", "schema": "standard"}
+{"cypher": "MATCH (z:Airport)-[:FLIGHT]->(c:Airport) WITH c MATCH (c)-[:FLIGHT]->(a:Airport)-[:FLIGHT*1..2]->(b:Airport) WHERE a.code = 'LAX' RETURN count(*) AS k", "name": "test_1177__post_with_chained_hop_filter_den", "schema": "denormalized_flights"}
+{"cypher": "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c MATCH (a:User)-[:FOLLOWS]->(c)-[:FOLLOWS*1..2]->(b:User) WHERE c.user_id = 1 RETURN count(*) AS k", "name": "test_1177__post_with_carried_filter_stays_in_cte_std", "schema": "standard"}
