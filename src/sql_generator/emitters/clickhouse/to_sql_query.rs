@@ -6444,6 +6444,17 @@ pub fn render_plan_to_sql_plain(mut plan: RenderPlan) -> String {
     }
     let _guard = PlainGuard(crate::server::query_context::is_plain_render());
     crate::server::query_context::set_plain_render(true);
+    // The Databricks `size()` render picks Spark `size` for a list-valued
+    // column (see `databricks_size_name`); a lowered plan has no variable
+    // registry, so its list columns are read off the plan itself.
+    struct ArrayColsGuard(HashSet<String>);
+    impl Drop for ArrayColsGuard {
+        fn drop(&mut self) {
+            crate::server::query_context::set_array_cte_columns(std::mem::take(&mut self.0));
+        }
+    }
+    let _array_cols_guard = ArrayColsGuard(crate::server::query_context::get_array_cte_columns());
+    crate::server::query_context::set_array_cte_columns(plain_list_columns(&plan));
     // A lowered plan's CTEs are WITH bodies: plain SELECTs, in dependency
     // order, none recursive.
     let mut sql = String::new();
@@ -6467,6 +6478,46 @@ pub fn render_plan_to_sql_plain(mut plan: RenderPlan) -> String {
     }
     sql.push_str(&plain_select_sql(plan));
     sql
+}
+
+/// The list-valued CTE columns of a lowered plan. Its column names are
+/// unique in the query (`v{N}`, `p{len}_v{N}_<prop>`), so a name identifies
+/// one column. A column is a list when its value is a list literal, a
+/// collecting aggregate (also inside the lowering's `coalesce(…, [])` and
+/// `CASE` folds), or an earlier list column passed through.
+fn plain_list_columns(plan: &RenderPlan) -> HashSet<String> {
+    fn is_list(e: &RenderExpr, lists: &HashSet<String>) -> bool {
+        match e {
+            RenderExpr::List(_) => true,
+            RenderExpr::AggregateFnCall(a) => is_collection_aggregate(&a.name),
+            RenderExpr::ScalarFnCall(f) if f.name.eq_ignore_ascii_case("coalesce") => {
+                f.args.iter().any(|a| is_list(a, lists))
+            }
+            RenderExpr::Case(c) => c
+                .when_then
+                .iter()
+                .map(|(_, t)| t)
+                .chain(c.else_expr.as_deref())
+                .any(|t| is_list(t, lists)),
+            RenderExpr::PropertyAccessExp(pa) => lists.contains(pa.column.raw()),
+            _ => false,
+        }
+    }
+    let mut lists = HashSet::new();
+    let bodies = plan.ctes.0.iter().filter_map(|c| match &c.content {
+        CteContent::Structured(body) => Some(body.as_ref()),
+        CteContent::RawSql(_) => None,
+    });
+    for body in bodies.chain(std::iter::once(plan)) {
+        for item in &body.select.items {
+            if let Some(alias) = &item.col_alias {
+                if is_list(&item.expression, &lists) {
+                    lists.insert(alias.0.clone());
+                }
+            }
+        }
+    }
+    lists
 }
 
 /// One SELECT of a lowered plan: its own alias scope (result typing),

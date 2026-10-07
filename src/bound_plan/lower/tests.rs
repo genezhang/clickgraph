@@ -699,7 +699,7 @@ fn rows_keep_their_order_until_a_match_or_an_aggregation() {
     );
     not_lowered(
         "MATCH (a:User) WITH a ORDER BY a.name WITH DISTINCT a.country AS c LIMIT 2 RETURN c",
-        "DISTINCT then SKIP / LIMIT over ordered rows",
+        "SKIP / LIMIT over ordered rows after DISTINCT or aggregation",
     );
 }
 
@@ -732,4 +732,74 @@ fn constants_need_no_column() {
         "MATCH (a:User) WITH a, NULL AS x RETURN collect(x) AS l",
         &["CASE WHEN count(*) >= 0 THEN [] ELSE [] END AS \"l\""],
     );
+}
+
+/// Review of S4b, each checked on ClickHouse and Neo4j 5.26.
+#[test]
+fn a_group_key_that_matches_nothing_still_groups() {
+    // Neo4j: no row (no group). The key exports no column, so the WITH must
+    // not become a global aggregate (one row, c = 0).
+    has(
+        "MATCH (a:Nope) WITH a, count(*) AS c RETURN c",
+        &["WHERE false HAVING count(*) > 0 )"],
+    );
+}
+
+#[test]
+fn an_order_the_sql_cannot_keep_is_not_relied_on() {
+    // `collect` reads its input in order, whatever the projection's own
+    // ORDER BY does to the groups.
+    not_lowered(
+        "MATCH (a:User) WITH a ORDER BY a.name WITH a.country AS c, collect(a.name) AS names \
+         ORDER BY c RETURN c, names",
+        "collect() over ordered rows",
+    );
+    // DISTINCT and aggregation keep their input's first-seen order in Neo4j;
+    // the SQL does not, so a later LIMIT or collect cannot rely on it.
+    not_lowered(
+        "MATCH (a:User) WITH a ORDER BY a.name DESC WITH DISTINCT a.country AS c \
+         WITH c LIMIT 3 RETURN c",
+        "SKIP / LIMIT over ordered rows after DISTINCT or aggregation",
+    );
+    not_lowered(
+        "MATCH (a:User) WITH a ORDER BY a.name DESC WITH DISTINCT a \
+         WITH collect(a.name) AS l RETURN l",
+        "collect() over ordered rows",
+    );
+    not_lowered(
+        "MATCH (a:User) ORDER BY a.name WITH DISTINCT a.country AS c LIMIT 2 RETURN c",
+        "SKIP / LIMIT over ordered rows after DISTINCT or aggregation",
+    );
+    // An unordered final RETURN does not rely on it.
+    sql("MATCH (a:User) WITH a ORDER BY a.name WITH DISTINCT a.country AS c RETURN c");
+    // A MATCH ends the order, so nothing is lost.
+    sql(
+        "MATCH (a:User) WITH a ORDER BY a.name MATCH (a)-[:FOLLOWS]->(b:User) \
+         RETURN collect(b.name) AS l",
+    );
+}
+
+/// Spark's `length` is string-only: `size()` of a list carried by a WITH
+/// must print Spark `size`. The lowered plan has no variable registry, so
+/// the printer reads the list columns off the plan.
+#[test]
+fn databricks_size_of_a_carried_list() {
+    use crate::server::query_context::{set_current_schema, with_query_context_sync, QueryContext};
+    let ctx = QueryContext {
+        dialect: crate::sql_generator::SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let got = with_query_context_sync(ctx, || {
+        set_current_schema(std::sync::Arc::new(social()));
+        translate_bound_plan(
+            "MATCH (a:User) WITH a.country AS c, collect(a.name) AS l WITH c, l AS m \
+             RETURN c, size(m) AS k, size(c) AS n",
+            &social(),
+            &ReadOptions::default(),
+        )
+        .unwrap()
+    });
+    let got = squash(&got);
+    assert!(got.contains("size(w2.v4) AS `k`"), "{got}");
+    assert!(got.contains("length(w2.v3) AS `n`"), "{got}");
 }

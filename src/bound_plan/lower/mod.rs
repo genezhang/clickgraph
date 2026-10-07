@@ -23,9 +23,11 @@
 //! relationship also its endpoint columns) and the properties later clauses
 //! read (the demand pass, [`demand`]); a value exports its value. A
 //! free-standing SKIP / LIMIT ends a segment the same way, exporting the
-//! scope unchanged. Rows keep an order only until a MATCH or an aggregation;
-//! while they have one it travels as exported sort-key columns, so a later
-//! SKIP / LIMIT / RETURN reads the rows in that order.
+//! scope unchanged. Rows keep an order until a MATCH; while they have one
+//! it travels as exported sort-key columns, so a later SKIP / LIMIT / RETURN
+//! reads the rows in that order. After DISTINCT or aggregation the order
+//! Neo4j keeps is lost in SQL (`RowOrder::Lost`), and a clause relying on
+//! it is not lowered.
 //!
 //! Scope today — everything else is [`LowerError::Unsupported`] and the
 //! query is translated by the legacy pipeline:
@@ -112,7 +114,7 @@ pub fn lower_statement(
         pending: Vec::new(),
         filters: Vec::new(),
         empty: false,
-        order: Vec::new(),
+        order: RowOrder::Unordered,
     };
     l.relation(input)?;
     l.finish_relation();
@@ -200,9 +202,22 @@ struct Lowerer<'s> {
     filters: Vec<RenderExpr>,
     /// Some element matches nothing: the relation has no rows.
     empty: bool,
-    /// The rows' order, while they have one (after an ORDER BY, until a
-    /// MATCH or an aggregation).
-    order: Vec<OrderByItem>,
+    /// The rows' order (§3: after an ORDER BY, until a MATCH).
+    order: RowOrder,
+}
+
+/// The order of the current rows.
+#[derive(Debug, Clone, Default)]
+enum RowOrder {
+    /// None that a later clause may rely on.
+    #[default]
+    Unordered,
+    /// Sorted by these keys over the current relation.
+    Keys(Vec<OrderByItem>),
+    /// Neo4j would keep an order here (DISTINCT and aggregation keep the
+    /// first-seen order of their input) that the SQL does not: a later
+    /// clause that relies on it is not lowered.
+    Lost,
 }
 
 /// `alias.column`.
@@ -232,9 +247,15 @@ fn select(expression: RenderExpr, alias: &str) -> SelectItem {
 struct Body {
     select: Vec<SelectItem>,
     distinct: bool,
+    /// Aggregating with grouping items (even if none is left as a GROUP BY
+    /// key: a constant, or an element that matches nothing): one row per
+    /// group, so no row on an empty input.
+    grouped: bool,
     group_by: Vec<RenderExpr>,
     having: Vec<RenderExpr>,
     order_by: Vec<OrderByItem>,
+    /// The output rows have an order the SQL does not keep ([`RowOrder::Lost`]).
+    order_lost: bool,
     skip: Option<i64>,
     limit: Option<i64>,
 }
@@ -266,7 +287,7 @@ impl<'s> Lowerer<'s> {
                     self.filters.push(e);
                 }
                 // Joining other rows to them leaves the rows in no order.
-                self.order.clear();
+                self.order = RowOrder::Unordered;
                 Ok(())
             }
             BoundOp::Project { input, projection } => {
@@ -279,7 +300,11 @@ impl<'s> Lowerer<'s> {
             }
             BoundOp::Sort { input, keys } => {
                 self.relation(input)?;
-                self.order = self.sort_keys(keys, &HashMap::new())?;
+                let keys = self.sort_keys(keys, &HashMap::new())?;
+                // Sorting by constants keeps the order the rows had.
+                if !keys.is_empty() {
+                    self.order = RowOrder::Keys(keys);
+                }
                 Ok(())
             }
             BoundOp::Skip { input, count } => {
@@ -711,6 +736,7 @@ impl<'s> Lowerer<'s> {
         let aggregating = p.aggregates();
         let mut body = Body {
             distinct: p.distinct,
+            grouped: aggregating && p.items.iter().any(|i| !i.aggregate),
             skip: p.skip,
             limit: p.limit,
             ..Body::default()
@@ -767,17 +793,33 @@ impl<'s> Lowerer<'s> {
             }
         }
         body.order_by = self.sort_keys(&p.order_by, &items_env)?;
+        let ordered_input = !matches!(self.order, RowOrder::Unordered);
+        // `collect` lists its input rows in their order, whatever the
+        // projection's own ORDER BY does to its output.
+        if ordered_input
+            && aggregating
+            && p.items.iter().any(|i| calls_aggregate(&i.expr, "collect"))
+        {
+            return unsupported("collect() over ordered rows (keeping the order)");
+        }
         // Without its own ORDER BY, a projection keeps the order of its input
-        // rows unless it aggregates or is DISTINCT.
-        if body.order_by.is_empty() && !self.order.is_empty() {
-            if aggregating && p.items.iter().any(|i| calls_aggregate(&i.expr, "collect")) {
-                return unsupported("collect() over ordered rows (keeping the order)");
-            }
-            if p.distinct && (p.skip.is_some() || p.limit.is_some()) {
-                return unsupported("DISTINCT then SKIP / LIMIT over ordered rows");
-            }
-            if !aggregating && !p.distinct {
-                body.order_by = self.order.clone();
+        // rows. The SQL keeps it only for a plain projection; after DISTINCT or
+        // aggregation it is lost, so a SKIP / LIMIT relying on it is refused.
+        if body.order_by.is_empty() {
+            let paged = p.skip.is_some() || p.limit.is_some();
+            match &self.order {
+                RowOrder::Keys(keys) if !aggregating && !p.distinct => {
+                    body.order_by = keys.clone();
+                }
+                RowOrder::Unordered => {}
+                RowOrder::Keys(_) | RowOrder::Lost => {
+                    if paged {
+                        return unsupported(
+                            "SKIP / LIMIT over ordered rows after DISTINCT or aggregation",
+                        );
+                    }
+                    body.order_lost = true;
+                }
             }
         }
         if let Some(f) = &p.filter {
@@ -878,8 +920,15 @@ impl<'s> Lowerer<'s> {
     /// a CTE exporting the scope unchanged.
     fn page(&mut self, skip: Option<i64>, limit: Option<i64>) -> Result<(), LowerError> {
         let alias = self.next_cte_alias();
+        let order_by = match &self.order {
+            RowOrder::Keys(keys) => keys.clone(),
+            RowOrder::Unordered => Vec::new(),
+            RowOrder::Lost => {
+                return unsupported("SKIP / LIMIT over ordered rows after DISTINCT or aggregation")
+            }
+        };
         let mut body = Body {
-            order_by: self.order.clone(),
+            order_by,
             skip,
             limit,
             ..Body::default()
@@ -925,11 +974,11 @@ impl<'s> Lowerer<'s> {
     ) -> Result<(), LowerError> {
         // The rows' order travels as exported sort-key columns; the CTE body
         // itself needs an ORDER BY only for its SKIP / LIMIT.
-        let mut order = Vec::new();
+        let mut keys = Vec::new();
         for (i, k) in body.order_by.iter().enumerate() {
             let name = format!("__o{i}");
             body.select.push(select(k.expression.clone(), &name));
-            order.push(OrderByItem {
+            keys.push(OrderByItem {
                 expression: col_at(&alias, &name),
                 order: k.order.clone(),
             });
@@ -937,6 +986,13 @@ impl<'s> Lowerer<'s> {
         if body.skip.is_none() && body.limit.is_none() {
             body.order_by.clear();
         }
+        let order = if !keys.is_empty() {
+            RowOrder::Keys(keys)
+        } else if body.order_lost {
+            RowOrder::Lost
+        } else {
+            RowOrder::Unordered
+        };
         if body.select.is_empty() {
             // Nothing in scope needs a column; the rows still count.
             body.select
@@ -987,14 +1043,14 @@ impl<'s> Lowerer<'s> {
             filters = vec![RenderExpr::Literal(Literal::Boolean(false))];
         }
         let (from, joins) = (self.from.take(), std::mem::take(&mut self.joins));
-        // A constant grouping key forms one group: drop it, but keep the
-        // one-group semantics on an empty input (no row, unlike a global
-        // aggregate).
+        // A constant grouping key forms one group: drop it. When no key is
+        // left (constants, or an element that matches nothing and exports no
+        // column), keep the per-group semantics on an empty input: no row,
+        // unlike a global aggregate.
         let mut group_by = body.group_by;
         let mut having = body.having;
-        let only_constant_keys = !group_by.is_empty() && group_by.iter().all(is_constant);
         group_by.retain(|g| !is_constant(g));
-        if only_constant_keys {
+        if body.grouped && group_by.is_empty() {
             having.insert(
                 0,
                 RenderExpr::OperatorApplicationExp(OperatorApplication {

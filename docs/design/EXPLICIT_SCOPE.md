@@ -1160,13 +1160,22 @@ slice that will handle it.
       legacy 5). Without SKIP / LIMIT it is a WHERE, or HAVING when the WITH
       aggregates. Aggregation groups by the carried elements' exported
       columns (identity first, #1222).
-    - Rows keep an order until a MATCH or an aggregation. While they have
-      one, it travels as exported key columns (`__o{i}`). A later SKIP /
-      LIMIT, WITH or RETURN without its own ORDER BY reads the rows in that
-      order, so `WITH n ORDER BY n WITH n LIMIT 2` keeps the first two.
-      Not lowered yet (they need the order kept inside the aggregate):
-      `collect()` over ordered rows, and DISTINCT followed by SKIP / LIMIT
-      over ordered rows.
+    - Rows keep an order until a MATCH. While they have one, it travels as
+      exported key columns (`__o{i}`). A later SKIP / LIMIT, WITH or RETURN
+      without its own ORDER BY reads the rows in that order, so `WITH n
+      ORDER BY n WITH n LIMIT 2` keeps the first two. DISTINCT and
+      aggregation keep their input's first-seen order in Neo4j, which the SQL
+      does not; the order is then marked lost, and a later SKIP / LIMIT
+      without its own ORDER BY is not lowered. `collect()` over ordered rows
+      is not lowered either (the list would need the order kept inside the
+      aggregate), whatever the projection's own ORDER BY.
+    - An aggregating WITH whose grouping items leave no GROUP BY key (all
+      constant, or an element that matches nothing) still has per-group
+      semantics: no row on an empty input (`HAVING count(*) > 0`).
+    - On Databricks, `size()` of a list carried by a WITH prints Spark
+      `size` (Spark `length` is string-only): the plain printer reads the
+      list-valued CTE columns off the lowered plan, which has no variable
+      registry.
     - A free-standing SKIP / LIMIT ends a segment that exports the scope
       unchanged; a free-standing ORDER BY sets the rows' order.
     - `render_plan_to_sql_plain` prints the CTEs, each one plain SELECT with
@@ -1193,6 +1202,20 @@ slice that will handle it.
         one refused by design (DISTINCT + LIMIT over ordered rows), and three
         oracle-comparator artifacts (Neo4j's `meta` is shorter than the row,
         so `neo_rows` drops a column; ClickGraph's rows are equal).
+      - Review (about 230 more queries, each finding checked on ClickHouse
+        and Neo4j) found three defects and a Databricks printing regression,
+        all fixed with tests that fail without the fix: a group key that
+        matches nothing made the WITH a global aggregate (1 row, Neo4j 0);
+        `collect()` over ordered rows was lowered when the projection had its
+        own ORDER BY; DISTINCT dropped the order, so a later LIMIT or
+        `collect()` read unordered rows (the LIMIT case was right on legacy);
+        Spark `length` for `size()` of a carried list. Re-run of all 397
+        queries: 341 equal Neo4j, 38 are refused (Unsupported, or invalid
+        Cypher), and every remaining difference is one of: ties or an
+        unordered SKIP under LIMIT, a property the Neo4j loader does not
+        store (`follow_id`, an edge id read as a column by the undeclared-
+        property rule), `int / int` (#847), byte-based `size` / `reverse` of
+        non-ASCII strings (identical on legacy), and the comparator artifact.
   - [ ] **S4c: result shape** — whole-entity returns, `id()`, Bolt and graph
     output (§4.13).
 - [ ] S5 OPTIONAL MATCH unit
