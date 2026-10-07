@@ -33,7 +33,7 @@ mod composite_id_tests;
 // Re-export commonly used types
 // Note: These are public re-exports for library users
 #[allow(unused_imports)]
-pub use column_info::{query_table_columns, ColumnInfo};
+pub use column_info::{query_table_columns, ColumnDiscoveryTarget, ColumnInfo, DiscoveredColumns};
 #[allow(unused_imports)]
 pub use composite_key_utils::{
     build_composite_key, extract_type_name, is_composite_key, CompositeKey, CompositeKeyError,

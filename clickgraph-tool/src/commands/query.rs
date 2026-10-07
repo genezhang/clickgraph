@@ -5,6 +5,8 @@ use clickgraph_embedded::{
     value::Value,
 };
 
+use clickgraph::graph_catalog::config::GraphSchemaConfig;
+
 use crate::config::CgConfig;
 use crate::DialectArg;
 
@@ -24,11 +26,53 @@ pub fn run_validate(cypher: &str, cfg: &CgConfig) -> Result<()> {
 
 /// Translate Cypher → SQL using sql_only mode (no executor needed).
 fn translate(cypher: &str, cfg: &CgConfig) -> Result<String> {
-    let path = cfg.require_schema()?;
-    let db = Database::sql_only_with_dialect(path, cfg.dialect.to_sql_dialect())
-        .map_err(|e| anyhow!("{}", e))?;
+    let db = open_for_translation(cfg)?;
     let conn = Connection::new(&db).map_err(|e| anyhow!("{}", e))?;
     conn.query_to_sql(cypher).map_err(|e| anyhow!("{}", e))
+}
+
+/// Open the schema for translation without executing anything.
+///
+/// A schema element with `auto_discover_columns: true` takes its properties
+/// from its table's columns, which only ClickHouse can list: such a schema
+/// opens through `--clickhouse` (reading `system.columns`) and is refused
+/// without one. Blocks, so call it off the async worker.
+pub(crate) fn open_for_translation(cfg: &CgConfig) -> Result<Database> {
+    let path = cfg.require_schema()?;
+    let config = GraphSchemaConfig::from_yaml_file(path)
+        .map_err(|e| anyhow!("Failed to load schema '{}': {}", path, e))?;
+    let Some(target) = config.column_discovery_targets().into_iter().next() else {
+        return Database::sql_only_with_dialect(path, cfg.dialect.to_sql_dialect())
+            .map_err(|e| anyhow!("{}", e));
+    };
+    match (&cfg.dialect, remote_config(cfg)) {
+        (DialectArg::Clickhouse, Some(remote)) => Database::new_remote(path, remote)
+            .map_err(|e| anyhow!("Failed to read columns from ClickHouse: {}", e)),
+        (DialectArg::Clickhouse, None) => Err(anyhow!(
+            "{} sets auto_discover_columns: true, so its properties are the columns of \
+             `{}`.`{}`, read from ClickHouse: pass --clickhouse (or CG_CLICKHOUSE_URL), \
+             or declare its property_mappings instead.",
+            target.owner,
+            target.database,
+            target.table
+        )),
+        (DialectArg::Databricks, _) => Err(anyhow!(
+            "{} sets auto_discover_columns: true, which is not supported with Databricks; \
+             declare its property_mappings instead",
+            target.owner
+        )),
+    }
+}
+
+/// The remote ClickHouse that `--clickhouse` names, if any.
+fn remote_config(cfg: &CgConfig) -> Option<RemoteConfig> {
+    Some(RemoteConfig {
+        url: cfg.clickhouse_url.clone()?,
+        user: cfg.ch_user.clone(),
+        password: cfg.ch_password.clone(),
+        database: cfg.ch_database.clone(),
+        cluster_name: None,
+    })
 }
 
 /// `cg query` — translate Cypher and optionally execute against ClickHouse.
@@ -43,18 +87,8 @@ pub async fn run_query(cypher: &str, sql_only: bool, format: &str, cfg: &CgConfi
         return run_query_databricks(cypher, format, cfg).await;
     }
 
-    let ch_url = cfg
-        .clickhouse_url
-        .as_deref()
+    let remote = remote_config(cfg)
         .ok_or_else(|| anyhow!("No ClickHouse URL. Use --clickhouse or CG_CLICKHOUSE_URL."))?;
-
-    let remote = RemoteConfig {
-        url: ch_url.to_string(),
-        user: cfg.ch_user.clone(),
-        password: cfg.ch_password.clone(),
-        database: cfg.ch_database.clone(),
-        cluster_name: None,
-    };
     let schema_path = path.to_string();
     let cypher = cypher.to_string();
 

@@ -16,7 +16,11 @@ pub use clickgraph::executor::databricks_sql::{
     DatabricksConfig, DatabricksSqlExecutor, OAuthM2MConfig,
 };
 use clickgraph::executor::remote::RemoteClickHouseExecutor;
+use clickgraph::executor::source_resolver::resolve_source_uri;
 use clickgraph::executor::{ExecutorError, QueryExecutor};
+use clickgraph::graph_catalog::column_info::{
+    column_info_from_rows, describe_columns_sql, system_columns_sql, DiscoveredColumns,
+};
 use clickgraph::graph_catalog::config::GraphSchemaConfig;
 use clickgraph::graph_catalog::graph_schema::GraphSchema;
 use clickgraph::server::connection_pool::RoleConnectionPool;
@@ -139,8 +143,12 @@ impl Database {
     /// - Creates writable ReplacingMergeTree tables for entries WITHOUT `source:`
     #[cfg(feature = "embedded")]
     pub fn new(schema_path: impl AsRef<Path>, config: SystemConfig) -> Result<Self, EmbeddedError> {
-        let graph_schema = load_graph_schema(schema_path.as_ref())?;
-        Self::from_schema(Arc::new(graph_schema), config)
+        let schema_config = read_schema_config(schema_path.as_ref())?;
+        let (runtime, executor) = open_chdb_session(&config)?;
+        // `source:` entries become views over their data only once the schema
+        // is built, so their columns are read from the source itself.
+        let graph_schema = build_graph_schema(&schema_config, &executor, &runtime, true)?;
+        Self::finish_chdb(Arc::new(graph_schema), config, runtime, executor)
     }
 
     /// Open an in-memory database using a YAML schema file (requires `embedded` feature).
@@ -166,32 +174,18 @@ impl Database {
         schema: Arc<GraphSchema>,
         config: SystemConfig,
     ) -> Result<Self, EmbeddedError> {
-        let runtime = build_runtime()?;
+        let (runtime, executor) = open_chdb_session(&config)?;
+        Self::finish_chdb(schema, config, runtime, executor)
+    }
 
-        let (session_dir, auto_cleanup) = match config.session_dir {
-            Some(dir) => (dir, false),
-            None => {
-                let tmp =
-                    std::env::temp_dir().join(format!("clickgraph-{}", pseudo_random_suffix()));
-                (tmp, true)
-            }
-        };
-
-        let executor =
-            ChdbExecutor::new_with_credentials(&session_dir, auto_cleanup, &config.credentials)
-                .map_err(|e| EmbeddedError::Executor(e.to_string()))?;
-
-        if let Some(threads) = config.max_threads {
-            executor
-                .execute_blocking_ddl(&format!("SET max_threads = {threads}"))
-                .map_err(|e| EmbeddedError::Executor(e.to_string()))?;
-        }
-        if let Some(bytes) = config.max_memory_usage_bytes {
-            executor
-                .execute_blocking_ddl(&format!("SET max_memory_usage = {bytes}"))
-                .map_err(|e| EmbeddedError::Executor(e.to_string()))?;
-        }
-
+    /// Create the schema's views and writable tables in a fresh chdb session.
+    #[cfg(feature = "embedded")]
+    fn finish_chdb(
+        schema: Arc<GraphSchema>,
+        config: SystemConfig,
+        runtime: tokio::runtime::Runtime,
+        executor: ChdbExecutor,
+    ) -> Result<Self, EmbeddedError> {
         let view_count = clickgraph::executor::data_loader::load_schema_sources(&executor, &schema)
             .map_err(|e| EmbeddedError::Executor(e.to_string()))?;
         if view_count > 0 {
@@ -231,12 +225,14 @@ impl Database {
         schema_path: impl AsRef<Path>,
         remote: RemoteConfig,
     ) -> Result<Self, EmbeddedError> {
-        let graph_schema = load_graph_schema(schema_path.as_ref())?;
+        let schema_config = read_schema_config(schema_path.as_ref())?;
         let runtime = build_runtime()?;
         let remote_executor =
             Self::build_remote_executor(&runtime, Some(&remote))?.ok_or_else(|| {
                 EmbeddedError::Executor("Failed to connect to remote ClickHouse".to_string())
             })?;
+        let graph_schema =
+            build_graph_schema(&schema_config, remote_executor.as_ref(), &runtime, false)?;
         Ok(Database {
             executor: Arc::new(NullExecutor),
             remote_executor: Some(remote_executor),
@@ -402,18 +398,8 @@ impl QueryExecutor for NullExecutor {
     }
 }
 
-/// Load and parse a YAML schema file into a `GraphSchema`.
-fn load_graph_schema(schema_path: &Path) -> Result<GraphSchema, EmbeddedError> {
-    let (schema, _catalog) = load_graph_schema_with_catalog(schema_path)?;
-    Ok(schema)
-}
-
-/// Same as [`load_graph_schema`] but also returns the optional top-level
-/// `catalog:` field from the YAML. Used by the Databricks path to honor
-/// DeltaGraph Phase 3.2 (schema-embedded Unity Catalog default).
-fn load_graph_schema_with_catalog(
-    schema_path: &Path,
-) -> Result<(GraphSchema, Option<String>), EmbeddedError> {
+/// Read and parse a YAML schema file.
+fn read_schema_config(schema_path: &Path) -> Result<GraphSchemaConfig, EmbeddedError> {
     let yaml_content = std::fs::read_to_string(schema_path).map_err(|e| {
         EmbeddedError::Io(format!(
             "Cannot read schema '{}': {}",
@@ -421,15 +407,116 @@ fn load_graph_schema_with_catalog(
             e
         ))
     })?;
+    serde_yaml::from_str(&yaml_content)
+        .map_err(|e| EmbeddedError::Schema(format!("YAML parse error: {}", e)))
+}
 
-    let schema_config: GraphSchemaConfig = serde_yaml::from_str(&yaml_content)
-        .map_err(|e| EmbeddedError::Schema(format!("YAML parse error: {}", e)))?;
+/// Load a YAML schema file into a `GraphSchema` without a database: a schema
+/// that asks to discover columns (`auto_discover_columns`) is refused.
+fn load_graph_schema(schema_path: &Path) -> Result<GraphSchema, EmbeddedError> {
+    read_schema_config(schema_path)?
+        .to_graph_schema()
+        .map_err(schema_build_error)
+}
 
+/// Same as [`load_graph_schema`] but also returns the optional top-level
+/// `catalog:` field from the YAML. Used by the Databricks path to honor
+/// DeltaGraph Phase 3.2 (schema-embedded Unity Catalog default).
+#[cfg(feature = "databricks")]
+fn load_graph_schema_with_catalog(
+    schema_path: &Path,
+) -> Result<(GraphSchema, Option<String>), EmbeddedError> {
+    let schema_config = read_schema_config(schema_path)?;
     let catalog = schema_config.catalog.clone();
+    // Column discovery reads ClickHouse metadata (`system.columns`), which a
+    // SQL Warehouse does not have, so a discovering schema is refused here.
+    if let Some(target) = schema_config.column_discovery_targets().first() {
+        return Err(EmbeddedError::Schema(format!(
+            "{} sets auto_discover_columns: true, which is not supported with Databricks; \
+             declare its property_mappings instead",
+            target.owner
+        )));
+    }
     let schema = schema_config
         .to_graph_schema()
-        .map_err(|e| EmbeddedError::Schema(format!("Schema build error: {}", e)))?;
+        .map_err(schema_build_error)?;
     Ok((schema, catalog))
+}
+
+/// Build a `GraphSchema`, reading the columns of every table it asks to
+/// discover (`auto_discover_columns`) through `executor`. With `read_sources`,
+/// an element with a `source:` has its columns read from that source (chdb
+/// creates its view only after the schema is built).
+fn build_graph_schema(
+    schema_config: &GraphSchemaConfig,
+    executor: &dyn QueryExecutor,
+    runtime: &tokio::runtime::Runtime,
+    read_sources: bool,
+) -> Result<GraphSchema, EmbeddedError> {
+    let mut columns = DiscoveredColumns::default();
+    for target in schema_config.column_discovery_targets() {
+        if columns.contains(&target.database, &target.table) {
+            continue;
+        }
+        let sql = match &target.source {
+            Some(source) if read_sources => {
+                describe_columns_sql(&resolve_source_uri(source).map_err(|e| {
+                    EmbeddedError::Schema(format!("Invalid source for {}: {}", target.owner, e))
+                })?)
+            }
+            _ => system_columns_sql(&target.database, &target.table),
+        };
+        let read = |e: String| {
+            EmbeddedError::Schema(format!(
+                "Failed to read the columns of {} for auto_discover_columns: {}",
+                target.owner, e
+            ))
+        };
+        let rows = runtime
+            .block_on(executor.execute_json(&sql, None))
+            .map_err(|e| read(e.to_string()))?;
+        let info = column_info_from_rows(&rows).map_err(read)?;
+        columns.insert(&target.database, &target.table, info);
+    }
+    schema_config
+        .to_graph_schema_with_columns(&columns)
+        .map_err(schema_build_error)
+}
+
+fn schema_build_error(e: impl std::fmt::Display) -> EmbeddedError {
+    EmbeddedError::Schema(format!("Schema build error: {}", e))
+}
+
+/// Start a chdb session with the configured limits.
+#[cfg(feature = "embedded")]
+fn open_chdb_session(
+    config: &SystemConfig,
+) -> Result<(tokio::runtime::Runtime, ChdbExecutor), EmbeddedError> {
+    let runtime = build_runtime()?;
+
+    let (session_dir, auto_cleanup) = match &config.session_dir {
+        Some(dir) => (dir.clone(), false),
+        None => {
+            let tmp = std::env::temp_dir().join(format!("clickgraph-{}", pseudo_random_suffix()));
+            (tmp, true)
+        }
+    };
+
+    let executor =
+        ChdbExecutor::new_with_credentials(&session_dir, auto_cleanup, &config.credentials)
+            .map_err(|e| EmbeddedError::Executor(e.to_string()))?;
+
+    if let Some(threads) = config.max_threads {
+        executor
+            .execute_blocking_ddl(&format!("SET max_threads = {threads}"))
+            .map_err(|e| EmbeddedError::Executor(e.to_string()))?;
+    }
+    if let Some(bytes) = config.max_memory_usage_bytes {
+        executor
+            .execute_blocking_ddl(&format!("SET max_memory_usage = {bytes}"))
+            .map_err(|e| EmbeddedError::Executor(e.to_string()))?;
+    }
+    Ok((runtime, executor))
 }
 
 /// Build a single-threaded Tokio runtime for blocking `Connection` calls.

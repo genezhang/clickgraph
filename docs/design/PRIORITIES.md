@@ -740,6 +740,11 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-10-06: **#1322: `auto_discover_columns` in every loading mode** (P-1 fix, ahead of P-4c S4b).
+  - Only the server's startup loader read the columns; `POST /schemas/load`, embedded chdb, remote, SQL-only, Databricks, `cg` and the bindings ignored the flag without a word. The legacy planner's raw-column fallback for unmapped properties hid it, and the bound-plan path (unmapped → NULL) would have exposed it.
+  - One schema builder (`to_graph_schema_with_columns`); each mode reads the columns its own way (server client, chdb `DESCRIBE` of the `source:`, remote `system.columns`). Without a database the schema is refused, as is a discovering table with no columns. Polymorphic edges gain the option (documented, previously ignored).
+  - Live suite unchanged apart from `test_auto_discovery.py`, whose aspirational xfails are now real tests; the excluded-column case stays xfail on the legacy path (raw-column fallback) and passes with the bound plan on.
+
 - 2026-10-06: **P-4c S4a: lowering MATCH / WHERE / RETURN (standard layout)** (#1321, `src/bound_plan/lower/`).
   - `CLICKGRAPH_BOUND_PLAN=on` routes a query to the bound-plan path when it binds and lowers (HTTP `/query` and `cypher_to_sql`); everything else, and the default `off`, is the legacy pipeline. Legacy SQL is unchanged.
   - Lowering: each element is its own `v{N}` scan, joined in path order with ties in the later scan's ON; relationship uniqueness per MATCH; impossible patterns and unknown labels return no rows; unmapped properties are NULL. Printed by `render_plan_to_sql_plain`, which runs none of the legacy repair passes and none of the name-keyed column resolution.

@@ -909,6 +909,18 @@ pub struct PolymorphicEdgeDefinition {
     #[serde(rename = "property_mappings", default)]
     pub properties: HashMap<String, String>,
 
+    /// Optional: Auto-discover columns (shared across all edge types)
+    #[serde(default)]
+    pub auto_discover_columns: bool,
+
+    /// Optional: Exclude columns from auto-discovery
+    #[serde(default)]
+    pub exclude_columns: Vec<String>,
+
+    /// Optional: Naming convention for auto-discovered properties
+    #[serde(default = "default_naming_convention")]
+    pub naming_convention: String,
+
     /// Optional: View parameters
     #[serde(default)]
     pub view_parameters: Option<Vec<String>>,
@@ -1018,13 +1030,14 @@ fn parse_property_mappings(
 // ============================================================================
 // Schema Building Helpers
 // ============================================================================
-// These helper types and functions consolidate the shared logic between
-// `to_graph_schema()` (sync, no discovery) and `to_graph_schema_with_client()`
-// (async, with auto-discovery and engine detection).
+// These helpers build every schema element for `build_graph_schema()`, which
+// all the `to_graph_schema*()` entry points share; they differ only in the
+// discovered columns and detected engines they pass in.
 
+use super::column_info::{ColumnDiscoveryTarget, DiscoveredColumns};
 use super::engine_detection::TableEngine;
 
-/// Optional discovery data for a table (populated by async ClickHouse queries)
+/// Optional discovery data for a table (read from the database by the caller)
 #[derive(Debug, Clone, Default)]
 struct TableDiscovery {
     /// Auto-discovered columns (if auto_discover_columns is enabled)
@@ -1802,7 +1815,13 @@ fn build_polymorphic_edge_schemas(
     poly_edge: &PolymorphicEdgeDefinition,
     discovery: &TableDiscovery,
 ) -> Result<Vec<(String, RelationshipSchema)>, GraphSchemaError> {
-    let property_mappings = parse_property_mappings(poly_edge.properties.clone())?;
+    let property_mappings = parse_property_mappings(build_property_mappings(
+        poly_edge.properties.clone(),
+        discovery,
+        poly_edge.auto_discover_columns,
+        &poly_edge.exclude_columns,
+        &poly_edge.naming_convention,
+    ))?;
 
     // Determine use_final
     let use_final = determine_use_final(poly_edge.use_final, &discovery.engine);
@@ -2262,23 +2281,217 @@ impl GraphSchemaConfig {
         self.validate()
     }
 
-    /// Convert to GraphSchema (sync version, no auto-discovery)
+    /// The tables whose columns this schema asks to discover
+    /// (`auto_discover_columns: true`), in definition order.
+    pub fn column_discovery_targets(&self) -> Vec<ColumnDiscoveryTarget> {
+        let gs = &self.graph_schema;
+        let nodes = gs
+            .nodes
+            .iter()
+            .filter(|n| n.auto_discover_columns)
+            .map(|n| {
+                (
+                    format!("node '{}'", n.label),
+                    &n.database,
+                    &n.table,
+                    &n.source,
+                )
+            });
+        let relationships = gs
+            .relationships
+            .iter()
+            .filter(|r| r.auto_discover_columns)
+            .map(|r| {
+                (
+                    format!("relationship '{}'", r.type_name),
+                    &r.database,
+                    &r.table,
+                    &r.source,
+                )
+            });
+        let edges = gs.edges.iter().filter_map(|e| match e {
+            EdgeDefinition::Standard(e) if e.auto_discover_columns => Some((
+                format!("edge '{}'", e.type_name),
+                &e.database,
+                &e.table,
+                &e.source,
+            )),
+            EdgeDefinition::Polymorphic(e) if e.auto_discover_columns => {
+                Some((polymorphic_edge_owner(e), &e.database, &e.table, &None))
+            }
+            _ => None,
+        });
+        nodes
+            .chain(relationships)
+            .chain(edges)
+            .map(|(owner, database, table, source)| ColumnDiscoveryTarget {
+                owner,
+                database: database.clone(),
+                table: table.clone(),
+                source: source.clone(),
+            })
+            .collect()
+    }
+
+    /// Convert to GraphSchema without a database connection.
     ///
-    /// This is the sync version that doesn't require a ClickHouse connection.
-    /// For auto-discovery and engine detection, use `to_graph_schema_with_client()`.
+    /// Fails when the schema asks to discover columns (`auto_discover_columns`),
+    /// since its properties are then the table's columns, which only a
+    /// connection can read: use `to_graph_schema_with_columns()` or
+    /// `to_graph_schema_with_client()`.
     pub fn to_graph_schema(&self) -> Result<GraphSchema, GraphSchemaError> {
+        self.build_graph_schema(
+            Columns::Discovered(&DiscoveredColumns::default()),
+            &HashMap::new(),
+        )
+    }
+
+    /// Convert to GraphSchema with the columns read for every
+    /// `column_discovery_targets()` entry.
+    pub fn to_graph_schema_with_columns(
+        &self,
+        columns: &DiscoveredColumns,
+    ) -> Result<GraphSchema, GraphSchemaError> {
+        self.build_graph_schema(Columns::Discovered(columns), &HashMap::new())
+    }
+
+    /// Convert to GraphSchema from the declared `property_mappings` alone,
+    /// leaving out what `auto_discover_columns` would add. Only for structural
+    /// checks without a connection (`cg schema validate`): the result does not
+    /// have the properties queries see.
+    pub fn to_graph_schema_declared_only(&self) -> Result<GraphSchema, GraphSchemaError> {
+        self.build_graph_schema(Columns::DeclaredOnly, &HashMap::new())
+    }
+
+    /// Convert to GraphSchema with auto-discovery and engine detection
+    ///
+    /// Reads the columns of every `column_discovery_targets()` entry and the
+    /// engine of every table (for automatic FINAL) through `client`.
+    pub async fn to_graph_schema_with_client(
+        &self,
+        client: &clickhouse::Client,
+    ) -> Result<GraphSchema, GraphSchemaError> {
+        use super::column_info::query_table_column_info;
+        use super::engine_detection::detect_table_engine;
+
         self.validate()?;
 
-        // No discovery data in sync mode
-        let no_discovery = TableDiscovery::default();
+        let mut columns = DiscoveredColumns::default();
+        for target in self.column_discovery_targets() {
+            if columns.contains(&target.database, &target.table) {
+                continue;
+            }
+            let info = query_table_column_info(client, &target.database, &target.table)
+                .await
+                .map_err(|e| GraphSchemaError::ConfigReadError {
+                    error: format!("Failed to query columns for {}: {}", target.owner, e),
+                })?;
+            columns.insert(&target.database, &target.table, info);
+        }
+
+        let mut engines = HashMap::new();
+        for (database, table) in self.tables() {
+            let key = (database.to_string(), table.to_string());
+            if engines.contains_key(&key) {
+                continue;
+            }
+            if let Ok(engine) = detect_table_engine(client, database, table).await {
+                engines.insert(key, engine);
+            }
+        }
+
+        self.build_graph_schema(Columns::Discovered(&columns), &engines)
+    }
+
+    /// Every table the schema reads, as `(database, table)`.
+    fn tables(&self) -> Vec<(&str, &str)> {
+        let gs = &self.graph_schema;
+        let nodes = gs
+            .nodes
+            .iter()
+            .map(|n| (n.database.as_str(), n.table.as_str()));
+        let relationships = gs
+            .relationships
+            .iter()
+            .map(|r| (r.database.as_str(), r.table.as_str()));
+        let edges = gs.edges.iter().map(|e| match e {
+            EdgeDefinition::Standard(e) => (e.database.as_str(), e.table.as_str()),
+            EdgeDefinition::Polymorphic(e) => (e.database.as_str(), e.table.as_str()),
+        });
+        nodes.chain(relationships).chain(edges).collect()
+    }
+
+    /// The discovery data for one schema element's table.
+    fn table_discovery(
+        owner: &str,
+        database: &str,
+        table: &str,
+        auto_discover: bool,
+        columns: Columns<'_>,
+        engines: &HashMap<(String, String), TableEngine>,
+    ) -> Result<TableDiscovery, GraphSchemaError> {
+        let engine = engines
+            .get(&(database.to_string(), table.to_string()))
+            .cloned();
+        let discovered = match columns {
+            Columns::Discovered(columns) if auto_discover => {
+                let Some(found) = columns.get(database, table) else {
+                    return Err(GraphSchemaError::InvalidConfig {
+                        message: format!(
+                            "{} sets auto_discover_columns: true, so its properties are the \
+                             columns of `{}`.`{}`, which can only be read through a database \
+                             connection. Load this schema with one (the server with ClickHouse, \
+                             embedded chdb, or a remote ClickHouse), or declare its \
+                             property_mappings instead.",
+                            owner, database, table
+                        ),
+                    });
+                };
+                if found.is_empty() {
+                    return Err(GraphSchemaError::InvalidConfig {
+                        message: format!(
+                            "{} sets auto_discover_columns: true, but table `{}`.`{}` has no \
+                             columns (does it exist?)",
+                            owner, database, table
+                        ),
+                    });
+                }
+                Some(found)
+            }
+            Columns::Discovered(_) | Columns::DeclaredOnly => None,
+        };
+        Ok(TableDiscovery {
+            columns: discovered.map(|c| c.iter().map(|c| c.name.clone()).collect()),
+            column_info: discovered.map(|c| {
+                c.iter()
+                    .map(|c| (c.name.clone(), c.data_type.clone()))
+                    .collect()
+            }),
+            engine,
+        })
+    }
+
+    fn build_graph_schema(
+        &self,
+        columns: Columns<'_>,
+        engines: &HashMap<(String, String), TableEngine>,
+    ) -> Result<GraphSchema, GraphSchemaError> {
+        self.validate()?;
 
         let mut nodes = HashMap::new();
         let mut relationships = HashMap::new();
 
-        // Convert node definitions using shared builder
         // Store with BOTH composite key (table::label) AND label-only for backward compat
         for node_def in &self.graph_schema.nodes {
-            let node_schema = build_node_schema(node_def, &no_discovery)?;
+            let discovery = Self::table_discovery(
+                &format!("node '{}'", node_def.label),
+                &node_def.database,
+                &node_def.table,
+                node_def.auto_discover_columns,
+                columns,
+                engines,
+            )?;
+            let node_schema = build_node_schema(node_def, &discovery)?;
             // Composite key for table-specific lookup
             let composite_key = format!(
                 "{}::{}::{}",
@@ -2297,10 +2510,17 @@ impl GraphSchemaConfig {
             .map(|n| n.label.clone())
             .unwrap_or_else(|| "Unknown".to_string());
 
-        // Convert legacy relationship definitions using shared builder
         for rel_def in &self.graph_schema.relationships {
+            let discovery = Self::table_discovery(
+                &format!("relationship '{}'", rel_def.type_name),
+                &rel_def.database,
+                &rel_def.table,
+                rel_def.auto_discover_columns,
+                columns,
+                engines,
+            )?;
             let rel_schema =
-                build_relationship_schema(rel_def, &default_node_type, &nodes, &no_discovery)?;
+                build_relationship_schema(rel_def, &default_node_type, &nodes, &discovery)?;
             // Register with composite key: TYPE::FROM::TO
             let composite_key = GraphSchema::make_rel_composite_key(
                 &rel_def.type_name,
@@ -2310,11 +2530,18 @@ impl GraphSchemaConfig {
             relationships.insert(composite_key, rel_schema);
         }
 
-        // Convert edge definitions (new format) using shared builders
         for edge_def in &self.graph_schema.edges {
             match edge_def {
                 EdgeDefinition::Standard(std_edge) => {
-                    let rel_schema = build_standard_edge_schema(std_edge, &nodes, &no_discovery)?;
+                    let discovery = Self::table_discovery(
+                        &format!("edge '{}'", std_edge.type_name),
+                        &std_edge.database,
+                        &std_edge.table,
+                        std_edge.auto_discover_columns,
+                        columns,
+                        engines,
+                    )?;
+                    let rel_schema = build_standard_edge_schema(std_edge, &nodes, &discovery)?;
                     // Register with composite key: TYPE::FROM::TO
                     let composite_key = GraphSchema::make_rel_composite_key(
                         &std_edge.type_name,
@@ -2328,7 +2555,15 @@ impl GraphSchemaConfig {
                     relationships.insert(composite_key, rel_schema);
                 }
                 EdgeDefinition::Polymorphic(poly_edge) => {
-                    let poly_schemas = build_polymorphic_edge_schemas(poly_edge, &no_discovery)?;
+                    let discovery = Self::table_discovery(
+                        &polymorphic_edge_owner(poly_edge),
+                        &poly_edge.database,
+                        &poly_edge.table,
+                        poly_edge.auto_discover_columns,
+                        columns,
+                        engines,
+                    )?;
+                    let poly_schemas = build_polymorphic_edge_schemas(poly_edge, &discovery)?;
                     for (type_name, rel_schema) in poly_schemas {
                         if relationships.contains_key(&type_name) {
                             log::warn!(
@@ -2367,214 +2602,20 @@ impl GraphSchemaConfig {
             fulltext_indexes,
         ))
     }
+}
 
-    /// Convert to GraphSchema with auto-discovery and engine detection
-    ///
-    /// This method extends `to_graph_schema()` with:
-    /// - Auto-discovery of table columns when `auto_discover_columns = true`
-    /// - Automatic engine detection for FINAL keyword support
-    ///
-    /// Uses the same helper functions as `to_graph_schema()` but with populated
-    /// `TableDiscovery` data from ClickHouse metadata queries.
-    ///
-    /// # Arguments
-    /// * `client` - ClickHouse client for querying metadata
-    ///
-    /// # Returns
-    /// GraphSchema with auto-discovered properties and detected engines
-    pub async fn to_graph_schema_with_client(
-        &self,
-        client: &clickhouse::Client,
-    ) -> Result<GraphSchema, GraphSchemaError> {
-        use super::column_info::query_table_columns;
-        use super::engine_detection::detect_table_engine;
+/// Names a polymorphic edge in messages by its table, which its types share.
+fn polymorphic_edge_owner(edge: &PolymorphicEdgeDefinition) -> String {
+    format!("polymorphic edge on `{}`.`{}`", edge.database, edge.table)
+}
 
-        self.validate()?;
-
-        let mut nodes = HashMap::new();
-        let mut relationships = HashMap::new();
-
-        // Convert node definitions with auto-discovery
-        // Store with BOTH composite key (table::label) AND label-only for backward compat
-        for node_def in &self.graph_schema.nodes {
-            // Gather discovery data
-            let (columns, column_info) = if node_def.auto_discover_columns {
-                use super::column_info::query_table_column_info;
-                let col_info = query_table_column_info(client, &node_def.database, &node_def.table)
-                    .await
-                    .map_err(|e| GraphSchemaError::ConfigReadError {
-                        error: format!(
-                            "Failed to query columns for node '{}': {}",
-                            node_def.label, e
-                        ),
-                    })?;
-                let names: Vec<String> = col_info.iter().map(|c| c.name.clone()).collect();
-                let types: HashMap<String, String> = col_info
-                    .into_iter()
-                    .map(|c| (c.name, c.data_type))
-                    .collect();
-                (Some(names), Some(types))
-            } else {
-                (None, None)
-            };
-
-            let engine = detect_table_engine(client, &node_def.database, &node_def.table)
-                .await
-                .ok();
-
-            let discovery = TableDiscovery {
-                columns,
-                column_info,
-                engine,
-            };
-
-            let node_schema = build_node_schema(node_def, &discovery)?;
-            // Composite key for table-specific lookup
-            let composite_key = format!(
-                "{}::{}::{}",
-                node_def.database, node_def.table, node_def.label
-            );
-            nodes.insert(composite_key, node_schema.clone());
-            // Label-only key for backward compat (last one wins if duplicates)
-            nodes.insert(node_def.label.clone(), node_schema);
-        }
-
-        // Get default node type for legacy relationship definitions
-        let default_node_type = self
-            .graph_schema
-            .nodes
-            .first()
-            .map(|n| n.label.clone())
-            .unwrap_or_else(|| "Unknown".to_string());
-
-        // Convert relationship definitions with auto-discovery
-        for rel_def in &self.graph_schema.relationships {
-            let columns = if rel_def.auto_discover_columns {
-                Some(
-                    query_table_columns(client, &rel_def.database, &rel_def.table)
-                        .await
-                        .map_err(|e| GraphSchemaError::ConfigReadError {
-                            error: format!(
-                                "Failed to query columns for relationship '{}': {}",
-                                rel_def.type_name, e
-                            ),
-                        })?,
-                )
-            } else {
-                None
-            };
-
-            let engine = detect_table_engine(client, &rel_def.database, &rel_def.table)
-                .await
-                .ok();
-
-            let discovery = TableDiscovery {
-                columns,
-                column_info: None,
-                engine,
-            };
-
-            let rel_schema =
-                build_relationship_schema(rel_def, &default_node_type, &nodes, &discovery)?;
-            // Use composite key: TYPE::FROM::TO
-            let composite_key = GraphSchema::make_rel_composite_key(
-                &rel_def.type_name,
-                &rel_schema.from_node,
-                &rel_schema.to_node,
-            );
-            relationships.insert(composite_key, rel_schema.clone());
-        }
-
-        // Convert edge definitions (new format) with auto-discovery
-        for edge_def in &self.graph_schema.edges {
-            match edge_def {
-                EdgeDefinition::Standard(std_edge) => {
-                    let columns = if std_edge.auto_discover_columns {
-                        Some(
-                            query_table_columns(client, &std_edge.database, &std_edge.table)
-                                .await
-                                .map_err(|e| GraphSchemaError::ConfigReadError {
-                                    error: format!(
-                                        "Failed to query columns for edge '{}': {}",
-                                        std_edge.type_name, e
-                                    ),
-                                })?,
-                        )
-                    } else {
-                        None
-                    };
-
-                    let engine = detect_table_engine(client, &std_edge.database, &std_edge.table)
-                        .await
-                        .ok();
-
-                    let discovery = TableDiscovery {
-                        columns,
-                        column_info: None,
-                        engine,
-                    };
-
-                    let rel_schema = build_standard_edge_schema(std_edge, &nodes, &discovery)?;
-                    // Use composite key: TYPE::FROM::TO
-                    let composite_key = GraphSchema::make_rel_composite_key(
-                        &std_edge.type_name,
-                        &rel_schema.from_node,
-                        &rel_schema.to_node,
-                    );
-                    relationships.insert(composite_key, rel_schema);
-                }
-                EdgeDefinition::Polymorphic(poly_edge) => {
-                    // Polymorphic edges don't support auto_discover_columns,
-                    // but we still detect the engine
-                    let engine = detect_table_engine(client, &poly_edge.database, &poly_edge.table)
-                        .await
-                        .ok();
-
-                    let discovery = TableDiscovery {
-                        columns: None,
-                        column_info: None,
-                        engine,
-                    };
-
-                    for (type_name, rel_schema) in
-                        build_polymorphic_edge_schemas(poly_edge, &discovery)?
-                    {
-                        if relationships.contains_key(&type_name) {
-                            log::warn!(
-                                "⚠️ Schema collision: polymorphic edge '{}' overwrites existing \
-                                 standard edge with the same type name.",
-                                type_name
-                            );
-                        }
-                        relationships.insert(type_name, rel_schema);
-                    }
-                }
-            }
-        }
-
-        // Strip composite node keys (db::table::label) — only needed during build-time
-        // for denormalized edge property resolution. Runtime uses simple label keys only.
-        let nodes: HashMap<String, NodeSchema> = nodes
-            .into_iter()
-            .filter(|(k, _)| !k.contains("::"))
-            .collect();
-
-        // Resolve vector index definitions against node schemas
-        let vector_indexes = resolve_vector_indexes(&self.graph_schema.vector_indexes, &nodes)?;
-
-        // Resolve fulltext index definitions against node schemas
-        let fulltext_indexes =
-            resolve_fulltext_indexes(&self.graph_schema.fulltext_indexes, &nodes)?;
-
-        Ok(GraphSchema::build_with_indexes(
-            1,
-            "default".to_string(),
-            nodes,
-            relationships,
-            vector_indexes,
-            fulltext_indexes,
-        ))
-    }
+/// Where a schema build gets the columns that `auto_discover_columns` asks for.
+#[derive(Clone, Copy)]
+enum Columns<'a> {
+    /// Read from the database; a requested table that is missing is an error.
+    Discovered(&'a DiscoveredColumns),
+    /// Not read: build from the declared mappings only.
+    DeclaredOnly,
 }
 
 /// Resolve vector index definitions against built node schemas.
@@ -3279,6 +3320,9 @@ graph_schema:
                         "timestamp".to_string(),
                     ])),
                     properties: HashMap::new(),
+                    auto_discover_columns: false,
+                    exclude_columns: vec![],
+                    naming_convention: default_naming_convention(),
                     view_parameters: None,
                     use_final: None,
                     filter: None,
@@ -3338,6 +3382,9 @@ graph_schema:
                     type_values: vec![], // Empty!
                     edge_id: None,
                     properties: HashMap::new(),
+                    auto_discover_columns: false,
+                    exclude_columns: vec![],
+                    naming_convention: default_naming_convention(),
                     view_parameters: None,
                     use_final: None,
                     filter: None,
@@ -3430,6 +3477,9 @@ graph_schema:
                         "member_id".to_string(),
                     ])),
                     properties: HashMap::new(),
+                    auto_discover_columns: false,
+                    exclude_columns: vec![],
+                    naming_convention: default_naming_convention(),
                     view_parameters: None,
                     use_final: None,
                     filter: None,
@@ -3495,6 +3545,9 @@ graph_schema:
                     type_values: vec!["PARENT_OF".to_string()],
                     edge_id: None,
                     properties: HashMap::new(),
+                    auto_discover_columns: false,
+                    exclude_columns: vec![],
+                    naming_convention: default_naming_convention(),
                     view_parameters: None,
                     use_final: None,
                     filter: None,
@@ -3565,6 +3618,9 @@ graph_schema:
                     type_values: vec!["PARENT_OF".to_string()],
                     edge_id: None,
                     properties: HashMap::new(),
+                    auto_discover_columns: false,
+                    exclude_columns: vec![],
+                    naming_convention: default_naming_convention(),
                     view_parameters: None,
                     use_final: None,
                     filter: None,
@@ -3869,6 +3925,7 @@ graph_schema:
 #[cfg(test)]
 mod group_membership_tests {
     use super::*;
+    use crate::graph_catalog::column_info::ColumnInfo;
 
     #[test]
     fn test_group_membership_schema_parsing() {
@@ -3928,9 +3985,21 @@ mod group_membership_tests {
         // Validate the config
         assert!(config.validate().is_ok(), "Schema validation should pass");
 
-        // Convert to GraphSchema
+        // Both nodes discover their columns, so the schema needs a connection
+        assert!(config.to_graph_schema().is_err());
+        let mut columns = DiscoveredColumns::default();
+        for (table, id) in [("groups", "group_id"), ("users", "user_id")] {
+            columns.insert(
+                "brahmand",
+                table,
+                vec![
+                    ColumnInfo::new(id.to_string(), "UInt64".to_string()),
+                    ColumnInfo::new("name".to_string(), "String".to_string()),
+                ],
+            );
+        }
         let schema = config
-            .to_graph_schema()
+            .to_graph_schema_with_columns(&columns)
             .expect("Failed to convert to GraphSchema");
 
         println!("GraphSchema nodes: {}", schema.all_node_schemas().len());
@@ -4585,5 +4654,194 @@ graph_schema:
             "Error: {}",
             err
         );
+    }
+}
+
+#[cfg(test)]
+mod auto_discover_tests {
+    use super::*;
+    use crate::graph_catalog::column_info::ColumnInfo;
+
+    const SCHEMA: &str = r#"
+graph_schema:
+  nodes:
+    - label: User
+      database: db
+      table: users
+      node_id: user_id
+      auto_discover_columns: true
+      naming_convention: camelCase
+      exclude_columns: [_version]
+      property_mappings:
+        name: full_name
+    - label: Post
+      database: db
+      table: posts
+      node_id: post_id
+      property_mappings:
+        content: content
+  edges:
+    - type: FOLLOWS
+      database: db
+      table: follows
+      from_id: follower_id
+      to_id: followed_id
+      from_node: User
+      to_node: User
+      auto_discover_columns: true
+      property_mappings: {}
+"#;
+
+    fn config() -> GraphSchemaConfig {
+        GraphSchemaConfig::from_yaml_str(SCHEMA).unwrap()
+    }
+
+    fn columns(names: &[&str]) -> Vec<ColumnInfo> {
+        names
+            .iter()
+            .map(|n| ColumnInfo::new(n.to_string(), "String".to_string()))
+            .collect()
+    }
+
+    fn discovered() -> DiscoveredColumns {
+        let mut discovered = DiscoveredColumns::default();
+        discovered.insert(
+            "db",
+            "users",
+            columns(&["user_id", "full_name", "home_city", "_version"]),
+        );
+        discovered.insert(
+            "db",
+            "follows",
+            columns(&["follower_id", "followed_id", "follow_date"]),
+        );
+        discovered
+    }
+
+    fn column_of(mappings: &HashMap<String, PropertyValue>, property: &str) -> Option<String> {
+        mappings.get(property).map(|v| match v {
+            PropertyValue::Column(c) => c.clone(),
+            other => panic!("expected a column for '{}', got {:?}", property, other),
+        })
+    }
+
+    #[test]
+    fn targets_are_the_elements_that_ask() {
+        let targets = config().column_discovery_targets();
+        let owners: Vec<_> = targets.iter().map(|t| t.owner.as_str()).collect();
+        assert_eq!(owners, ["node 'User'", "edge 'FOLLOWS'"]);
+        assert_eq!(
+            (targets[0].database.as_str(), targets[0].table.as_str()),
+            ("db", "users")
+        );
+    }
+
+    #[test]
+    fn without_a_connection_the_schema_is_refused() {
+        let err = config().to_graph_schema().unwrap_err().to_string();
+        assert!(
+            err.contains("node 'User' sets auto_discover_columns"),
+            "{err}"
+        );
+        assert!(err.contains("`db`.`users`"), "{err}");
+    }
+
+    #[test]
+    fn discovered_columns_become_properties() {
+        let schema = config()
+            .to_graph_schema_with_columns(&discovered())
+            .unwrap();
+        let user = &schema.node_schema("User").unwrap().property_mappings;
+        // camelCase names, the declared mapping wins, excluded columns stay out
+        assert_eq!(column_of(user, "homeCity").as_deref(), Some("home_city"));
+        assert_eq!(column_of(user, "name").as_deref(), Some("full_name"));
+        assert_eq!(column_of(user, "fullName").as_deref(), Some("full_name"));
+        assert_eq!(column_of(user, "_version"), None);
+        assert_eq!(column_of(user, "home_city"), None);
+        let follows = schema
+            .get_relationships_schemas()
+            .values()
+            .find(|r| r.table_name == "follows")
+            .unwrap();
+        assert_eq!(
+            column_of(&follows.property_mappings, "follow_date").as_deref(),
+            Some("follow_date")
+        );
+        // A node that does not ask keeps its declared mappings only
+        let post = &schema.node_schema("Post").unwrap().property_mappings;
+        assert_eq!(column_of(post, "content").as_deref(), Some("content"));
+    }
+
+    #[test]
+    fn a_table_without_columns_is_an_error() {
+        let mut discovered = discovered();
+        discovered.insert("db", "follows", Vec::new());
+        let err = config()
+            .to_graph_schema_with_columns(&discovered)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("edge 'FOLLOWS'"), "{err}");
+        assert!(err.contains("has no columns"), "{err}");
+    }
+
+    #[test]
+    fn polymorphic_edges_discover_for_every_type() {
+        let config = GraphSchemaConfig::from_yaml_str(
+            r#"
+graph_schema:
+  nodes:
+    - label: User
+      database: db
+      table: users
+      node_id: user_id
+      property_mappings: {}
+  edges:
+    - polymorphic: true
+      database: db
+      table: interactions
+      from_id: from_id
+      to_id: to_id
+      type_column: kind
+      from_node: User
+      to_node: User
+      type_values: [FOLLOWS, LIKES]
+      auto_discover_columns: true
+      exclude_columns: [kind]
+      property_mappings: {}
+"#,
+        )
+        .unwrap();
+        let owners: Vec<_> = config
+            .column_discovery_targets()
+            .into_iter()
+            .map(|t| t.owner)
+            .collect();
+        assert_eq!(owners, ["polymorphic edge on `db`.`interactions`"]);
+        assert!(config.to_graph_schema().is_err());
+
+        let mut discovered = DiscoveredColumns::default();
+        discovered.insert(
+            "db",
+            "interactions",
+            columns(&["from_id", "to_id", "kind", "weight"]),
+        );
+        let schema = config.to_graph_schema_with_columns(&discovered).unwrap();
+        let rels = schema.get_relationships_schemas();
+        assert_eq!(rels.len(), 2);
+        for rel in rels.values() {
+            assert_eq!(
+                column_of(&rel.property_mappings, "weight").as_deref(),
+                Some("weight")
+            );
+            assert_eq!(column_of(&rel.property_mappings, "kind"), None);
+        }
+    }
+
+    #[test]
+    fn declared_only_leaves_discovery_out() {
+        let schema = config().to_graph_schema_declared_only().unwrap();
+        let user = &schema.node_schema("User").unwrap().property_mappings;
+        assert_eq!(column_of(user, "name").as_deref(), Some("full_name"));
+        assert_eq!(column_of(user, "homeCity"), None);
     }
 }
