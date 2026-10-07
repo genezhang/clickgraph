@@ -607,7 +607,12 @@ Implemented in S5 (`Lowerer::optional_match`):
   on `C`, and the introduced variables are read from its columns.
 - **Anchored form.** `C` is only nodes the pattern shares (any number,
   including none, which joins `ON 1 = 1`). `Q` holds the pattern's matches
-  in the whole graph and no drive is built. A shared node is in `I`, so it
+  in the whole graph and no drive is built. That is used only when `Q` is
+  bounded: one relationship (at most an edge table), no shared node, or a
+  shared node restricted by the input's WHERE (below). Otherwise a
+  multi-hop `Q` can be far larger than the result (every two-hop path of
+  the graph; the review ran ClickHouse out of memory at 18 GiB), and the
+  drive form is used. A shared node is in `I`, so it
   exists, and `Q` does not need its table: when `Q` reads nothing of it but
   its identity, it is read from the endpoint column of its first
   relationship in the pattern. A match whose endpoint is no input node joins
@@ -623,13 +628,20 @@ Implemented in S5 (`Lowerer::optional_match`):
     used as it is.
   - `D` is `optional_d{k}`, a `SELECT DISTINCT` of `C`'s identity and
     endpoint columns plus the properties the clause reads.
+  - A relationship identified by its endpoints (no `edge_id`) can have
+    parallel edges with other properties. It also joins on the properties
+    `D` holds, NULL-safely; otherwise each parallel edge got the other's
+    matches.
   - A value that only the WHERE reads joins NULL-safely, as
     `(x = y OR (x IS NULL AND y IS NULL))`, a form every dialect joins on.
     An element only the WHERE reads joins that way when its binding is
     nullable.
 - **Matches nothing.** A pattern that cannot match (empty label inference, a
-  label mismatch, an input element that matches nothing) needs no join. The
-  introduced variables are NULL.
+  label mismatch, a shared element that matches nothing) needs no join. The
+  introduced variables are NULL. A variable that matches nothing and is only
+  read by the WHERE is NULL inside `Q` (`WHERE b IS NULL` holds).
+- **NaN.** A NaN value read only by the WHERE does not equal itself, so the
+  NULL-safe key may not join it. The review saw this once in about 30 runs.
 - **NULL elements.** For a nullable binding, what is constant for a matched
   element is guarded by its identity: `b:User`, `type(r)`, and `a = b` across
   labels give `CASE WHEN id IS NULL THEN NULL ELSE … END`. `labels(b)` is
@@ -655,6 +667,8 @@ Implemented in S5 (`Lowerer::optional_match`):
   | Unselective anchor, 1 hop, 10M rows | 32 ms | 49 ms |
   | Two chained OPTIONALs, unselective | 71 ms | 109 ms |
   | WHERE on another variable than the anchor (`MATCH (a)-->(b) WHERE a…  OPTIONAL MATCH (b)-->(p)`) | 8 ms | 33 ms |
+  | Two hops from a WITH-carried anchor (`… WITH x OPTIONAL MATCH (x)-->(b)-->(c)`, drive) | 43 ms | 87–97 ms |
+  | Two hops after an earlier OPTIONAL (drive) | 69–80 ms | 111–139 ms |
 
   The last row is `Q` unrestricted: the input's restriction does not reach
   the anchor through its own columns. Restricting `Q` by `anchor IN (SELECT
@@ -1407,7 +1421,24 @@ slice that will handle it.
       new ones are the Neo4j-golden entries above: 4 recorded as wrong that
       are now correct, and `test_616` (wrong rows → the undeclared-column
       error). The goldens are keyed to the default path, so they report it.
-    - Mutation check: each of 18 rules broken in turn (the LEFT JOIN, tie
+    - Review (about 220 generated OPTIONAL shapes against Neo4j, Bolt, and
+      timing at scale 100). Three findings, all fixed, each with a unit
+      test:
+      - A variable that matches nothing and is only read by the WHERE
+        emptied the clause (`… WHERE b IS NULL`: 3 rows instead of 9).
+      - A drive over a relationship without `edge_id` joined parallel edges'
+        matches to each other (92/92 instead of 68/24 on `social`).
+      - An unrestricted multi-hop `Q` (anchor carried by a WITH or an
+        earlier OPTIONAL) ran out of memory. It now uses the drive.
+
+      After the fixes, the 279 shapes (the review's plus this slice's
+      sweep) on the new path all equal Neo4j, except for `collect()` order
+      without ORDER BY, a LIMIT over tied rows, and a comparator artifact
+      for an empty list. The other differences take the legacy path. With
+      the switch off nothing regressed: the PackStream change reaches only
+      the two `to_bytes` calls in `connection.rs`, and HELLO, RUN and PULL
+      still work with the Neo4j driver.
+    - Mutation check: each of 21 rules broken in turn (the LEFT JOIN, tie
       placement, `IS NOT NULL`, NULL-safe keys, the conjunct allowlist, the
       NULL guards, the drive's DISTINCT and CTE reuse, the elision, the
       restriction copy, the impossible cases, the WHERE inside `Q`, the

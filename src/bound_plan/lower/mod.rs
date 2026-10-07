@@ -562,15 +562,25 @@ impl<'s> Lowerer<'s> {
             );
         }
         let mut where_only: Vec<VarId> = Vec::new();
+        // Read by the clause, NULL on every input row (an element that
+        // matches nothing): a constant NULL in `Q` too, no column.
+        let mut null_inputs: Vec<VarId> = Vec::new();
         for e in &read {
             for v in referenced_names(e, false)
                 .iter()
                 .filter_map(|n| parse_var(n))
             {
+                if shared.contains(&v) || where_only.contains(&v) {
+                    continue;
+                }
+                if matches!(self.scans.get(&v), Some(Scan::Impossible)) {
+                    null_inputs.push(v);
+                    continue;
+                }
                 // A constant value is read as it is, not through a column.
                 let input = self.scans.contains_key(&v)
                     || self.values.get(&v).is_some_and(|e| !is_constant(e));
-                if input && !shared.contains(&v) && !where_only.contains(&v) {
+                if input {
                     where_only.push(v);
                 }
             }
@@ -580,11 +590,11 @@ impl<'s> Lowerer<'s> {
             .copied()
             .filter(|v| self.binding(*v).name.is_some())
             .collect();
-        // An input element that matches nothing (NULL on every row) is in no
-        // match.
+        // A shared element that matches nothing (NULL on every row) is in no
+        // match. (One only the WHERE reads is NULL there, and `IS NULL` can
+        // still hold.)
         if shared
             .iter()
-            .chain(&where_only)
             .any(|v| matches!(self.scans.get(v), Some(Scan::Impossible)))
         {
             for v in named {
@@ -592,10 +602,27 @@ impl<'s> Lowerer<'s> {
             }
             return Ok(());
         }
+        // Without the drive, `Q` holds the pattern's matches in the whole
+        // graph. That is bounded by one edge table for a single
+        // relationship; with more it can be far larger than the result
+        // (every two-hop path), unless the input's WHERE restricts a shared
+        // node (copied into `Q`, `anchor_correlation`).
+        let hops: usize = pattern.parts.iter().map(|p| p.rels.len()).sum();
+        let anchor_aliases: Vec<String> = shared
+            .iter()
+            .filter(|v| matches!(self.scans.get(*v).and_then(Scan::at), Some(At::Table(a)) if *a == v.name()))
+            .map(|v| v.name())
+            .collect();
+        let restricted = self
+            .filters
+            .iter()
+            .flat_map(conjuncts)
+            .any(|c| reads_only(c, &anchor_aliases) && !table_aliases(c).is_empty());
         let anchored = where_only.is_empty()
             && shared
                 .iter()
-                .all(|v| matches!(self.scans.get(v), Some(Scan::Node { .. })));
+                .all(|v| matches!(self.scans.get(v), Some(Scan::Node { .. })))
+            && (hops <= 1 || shared.is_empty() || restricted);
         let mut q = Segment {
             // Constants are read as they are, in `Q` too.
             values: self
@@ -617,6 +644,9 @@ impl<'s> Lowerer<'s> {
             for n in &part.nodes {
                 read_props.extend(n.props.iter().map(|(p, _)| (n.var, p.clone())));
             }
+        }
+        for v in &null_inputs {
+            q.scans.insert(*v, Scan::Impossible);
         }
         let correlation = if anchored {
             self.anchor_correlation(pattern, &shared, &read_props, &mut q)?
@@ -872,7 +902,24 @@ impl<'s> Lowerer<'s> {
                 };
                 d_props.insert(prop, e);
             }
-            // Joined on the identity; its other columns depend on it.
+            // Joined on the identity. A node's or an `edge_id`
+            // relationship's other columns depend on it; a relationship
+            // identified by its endpoints can have parallel edges with other
+            // properties, so it also joins on those `D` holds (NULL-safely).
+            if matches!(&scan, Scan::Rel { schema, .. } if schema.edge_id.is_none()) {
+                let mut props: Vec<&RenderExpr> =
+                    d_props.values().filter(|e| !is_constant(e)).collect();
+                props.sort_by_key(|e| column_of(e, &d).unwrap_or_default());
+                for e in props {
+                    let column = column_of(e, &d)?;
+                    correlation.push(Correlated {
+                        column: column.clone(),
+                        outer: col_at(&w, &column),
+                        inner: e.clone(),
+                        null_safe: true,
+                    });
+                }
+            }
             for c in self.identity_physical(*v).unwrap_or_default() {
                 let column = physical[&c].clone();
                 correlation.push(Correlated {

@@ -1217,3 +1217,65 @@ fn a_null_optional_variable_matches_nothing_later() {
         &["FROM with_w2 AS w2 WHERE w2.v3__user_id IS NOT NULL"],
     );
 }
+
+/// Review of S5: a variable only the WHERE reads that matches nothing is
+/// NULL in the matches, not a reason the clause has none (`b IS NULL`
+/// holds).
+#[test]
+fn a_null_variable_only_the_where_reads_is_null_in_the_matches() {
+    has(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:LIKED]->(b:User) \
+         OPTIONAL MATCH (a)-[:FOLLOWS]->(c:User) WHERE b IS NULL RETURN c.name",
+        &[
+            "WHERE NULL IS NULL )",
+            "LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id",
+        ],
+    );
+}
+
+/// Review of S5: with more than one relationship, matches in the whole
+/// graph can be far more than the result (every two-hop path), so unless
+/// the input's WHERE restricts a shared node, the drive restricts them.
+#[test]
+fn an_unrestricted_multi_hop_optional_is_driven_by_the_input() {
+    has(
+        "MATCH (x:User) WITH x OPTIONAL MATCH (x)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User) \
+         RETURN count(c)",
+        &["FROM optional_d2 AS d2 JOIN test_integration.user_follows_test AS v2 ON v2.follower_id = d2.v1__user_id"],
+    );
+    for anchored in [
+        "MATCH (x:User) WHERE x.age > 3 \
+         OPTIONAL MATCH (x)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User) RETURN count(c)",
+        "MATCH (x:User) WITH x OPTIONAL MATCH (x)-[:FOLLOWS]->(b:User) RETURN count(b)",
+    ] {
+        let q = sql(anchored);
+        assert!(!q.contains("optional_d"), "{q}");
+    }
+}
+
+/// Review of S5: a relationship identified by its endpoints (no `edge_id`)
+/// can have parallel edges with different properties, so the drive joins on
+/// the properties it holds too.
+#[test]
+fn a_driven_relationship_without_edge_id_joins_on_its_properties() {
+    let schema = GraphSchemaConfig::from_yaml_str(include_str!(
+        "../../../benchmarks/social_network/schemas/social_benchmark.yaml"
+    ))
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let got = lowered(
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) OPTIONAL MATCH (b)-[r2:FOLLOWS]->(c:User) \
+         WHERE r2.follow_date > r.follow_date RETURN count(c)",
+        &schema,
+        &LowerOptions::default(),
+    );
+    assert!(
+        got.contains(
+            "ON w1.v2__user_id = o3.v2__user_id AND (w1.p2_v1_follow_date = o3.p2_v1_follow_date \
+             OR (w1.p2_v1_follow_date IS NULL AND o3.p2_v1_follow_date IS NULL)) \
+             AND w1.v1__follower_id = o3.v1__follower_id AND w1.v1__followed_id = o3.v1__followed_id"
+        ),
+        "{got}"
+    );
+}
