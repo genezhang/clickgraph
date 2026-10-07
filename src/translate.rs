@@ -239,6 +239,7 @@ pub fn translate_bound_plan(
                 options.tenant_id.as_deref(),
                 options.view_parameter_values.as_ref(),
             ),
+            neo4j_compat: crate::server::query_context::server_neo4j_compat(),
         },
     )
     .map_err(|e| e.to_string())?;

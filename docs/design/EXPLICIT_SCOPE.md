@@ -1128,6 +1128,13 @@ slice that will handle it.
       NULL), and reading an unmapped column (`docs/wiki/Schema-Basics.md`:
       "Unmapped properties won't be accessible"). They are decided when the
       default flips (S10).
+    - Decided (user, 2026-10-06): an undeclared property reads the same-named
+      column, as on the legacy path; a missing column is a ClickHouse error
+      ("not much harm"). It is NULL only when the element's columns were
+      discovered (`closed_properties`; an excluded column is unknown) or in
+      Neo4j-compat mode. The lowering follows this (`LowerOptions::neo4j_compat`),
+      which removed three of the on/off differences (the unknown-property
+      error and the two `u.score` tier tests).
   - [ ] **S4b: WITH**, free-standing ORDER BY / SKIP / LIMIT, the WITH
     modifiers' fixed order (#1311), the result shape (whole-entity returns,
     Bolt, graph output).
