@@ -12,11 +12,7 @@ use clickgraph::graph_catalog::element_id::{
     generate_node_element_id, generate_relationship_element_id,
 };
 use clickgraph::graph_catalog::graph_schema::GraphSchema;
-use clickgraph::query_planner::logical_plan::LogicalPlan;
-use clickgraph::query_planner::plan_ctx::PlanCtx;
-use clickgraph::server::bolt_protocol::result_transformer::{
-    extract_return_metadata, ReturnItemType,
-};
+use clickgraph::server::bolt_protocol::result_transformer::{ReturnItemMetadata, ReturnItemType};
 
 use super::value::Value;
 
@@ -148,17 +144,13 @@ impl GraphResultBuilder {
 
 /// Transform flat JSON result rows into a structured `GraphResult`.
 ///
-/// Uses `extract_return_metadata` from the core crate to classify return items
-/// as Node, Relationship, or Scalar, then extracts properties from each row.
+/// `metadata` (from `cypher_to_sql_with_metadata`) classifies the return items
+/// as Node, Relationship, or Scalar; properties are extracted from each row.
 pub fn transform_rows_to_graph(
     rows: &[JsonValue],
-    logical_plan: &LogicalPlan,
-    plan_ctx: &PlanCtx,
+    metadata: &[ReturnItemMetadata],
     schema: &GraphSchema,
-) -> Result<GraphResult, String> {
-    let metadata = extract_return_metadata(logical_plan, plan_ctx)
-        .map_err(|e| format!("Failed to extract return metadata: {}", e))?;
-
+) -> GraphResult {
     let mut builder = GraphResultBuilder::new();
 
     for row_value in rows {
@@ -167,12 +159,15 @@ pub fn transform_rows_to_graph(
             _ => continue,
         };
 
-        for meta in &metadata {
+        for meta in metadata {
             match &meta.item_type {
                 ReturnItemType::Node { labels } => {
-                    if let Some(node) =
-                        extract_node_from_row(&row_map, &meta.field_name, labels, schema)
-                    {
+                    if let Some(node) = extract_node_from_row(
+                        &meta.entity_row(&row_map),
+                        &meta.field_name,
+                        labels,
+                        schema,
+                    ) {
                         builder.add_node(node);
                     }
                 }
@@ -183,7 +178,7 @@ pub fn transform_rows_to_graph(
                     ..
                 } => {
                     if let Some(edge) = extract_edge_from_row(
-                        &row_map,
+                        &meta.entity_row(&row_map),
                         &meta.field_name,
                         rel_types,
                         from_label.as_deref(),
@@ -199,7 +194,7 @@ pub fn transform_rows_to_graph(
         }
     }
 
-    Ok(builder.build())
+    builder.build()
 }
 
 /// Extract a `GraphNode` from a result row.

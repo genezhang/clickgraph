@@ -1198,15 +1198,14 @@ impl<'db> Connection<'db> {
         with_query_context(QueryContext::new(None), async move {
             set_current_dialect(dialect);
             set_current_schema(Arc::clone(&schema));
-            let (sql, logical_plan, plan_ctx) =
+            let (sql, metadata) =
                 cypher_to_sql_with_metadata(&cypher, &schema, DEFAULT_MAX_CTE_DEPTH)
                     .map_err(EmbeddedError::Query)?;
             let json_rows = executor
                 .execute_json(&sql, None)
                 .await
                 .map_err(EmbeddedError::from)?;
-            transform_rows_to_graph(&json_rows, &logical_plan, &plan_ctx, &schema)
-                .map_err(EmbeddedError::Query)
+            Ok(transform_rows_to_graph(&json_rows, &metadata, &schema))
         })
         .await
     }

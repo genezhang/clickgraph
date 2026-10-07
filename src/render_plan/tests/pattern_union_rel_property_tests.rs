@@ -167,13 +167,8 @@ fn cypher_to_sql_with(schema_yaml: &str, cypher: &str) -> String {
         .expect("parse schema yaml")
         .to_graph_schema()
         .expect("build graph schema");
-    let (sql, _lp, _ctx) = crate::sql_generator::emitters::clickhouse::cypher_to_sql_with_metadata(
-        cypher,
-        &graph_schema,
-        100,
-    )
-    .expect("translate cypher to sql");
-    sql
+    crate::sql_generator::emitters::clickhouse::cypher_to_sql(cypher, &graph_schema, 100)
+        .expect("translate cypher to sql")
 }
 
 #[test]

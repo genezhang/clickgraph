@@ -1166,9 +1166,9 @@ async fn query_handler_inner(
     );
     let mut cache_status = "MISS";
 
-    // Try cache lookup (unless replan=force or Graph format which needs plan context)
+    // Try cache lookup (unless replan=force or Graph format, which needs the result shape)
     let cached_sql = if output_format == OutputFormat::Graph {
-        log::debug!("Cache BYPASS for Graph format (needs plan context)");
+        log::debug!("Cache BYPASS for Graph format (needs the result shape)");
         cache_status = "BYPASS";
         None
     } else if replan_option != query_cache::ReplanOption::Force {
@@ -1275,7 +1275,7 @@ async fn query_handler_inner(
         }
     }
 
-    // graph_ctx holds (LogicalPlan, PlanCtx, GraphSchema) when format=Graph
+    // graph_ctx holds (result shape, GraphSchema) when format=Graph
     let (ch_sql_queries, maybe_schema_elem, is_read, query_type_str, graph_ctx) = {
         // ✅ FAIL LOUDLY: If schema not found, return clear error (no silent fallback)
         let graph_schema = match graph_catalog::get_graph_schema_by_name(&schema_name).await {
@@ -1482,8 +1482,7 @@ async fn query_handler_inner(
                     max_inferred_types: payload.max_inferred_types,
                     where_label_constraints: None,
                     max_cte_depth: app_state.config.max_cte_depth,
-                    // Graph output reads the legacy logical plan.
-                    cypher: (output_format != OutputFormat::Graph).then(|| clean_query.clone()),
+                    cypher: Some(clean_query.clone()),
                     bound_plan: None,
                 },
             ) {
@@ -1505,12 +1504,7 @@ async fn query_handler_inner(
             metrics.planning_time = translation.timings.planning.as_secs_f64();
             metrics.render_time = translation.timings.render.as_secs_f64();
             metrics.sql_generation_time = translation.timings.sql_generation.as_secs_f64();
-            let crate::translate::ReadTranslation {
-                sql: ch_query,
-                logical_plan,
-                plan_ctx,
-                ..
-            } = translation;
+            let ch_query = translation.sql.clone();
             crate::debug_println!("\n ch_query \n {} \n", ch_query);
 
             // Store in cache (even in sql_only mode for future use)
@@ -1540,9 +1534,15 @@ async fn query_handler_inner(
                 return Ok(response);
             }
 
-            // Preserve plan context for Graph format (needed for node/edge transformation)
+            // Graph format builds nodes and edges from the result shape.
             let graph_ctx = if output_format == OutputFormat::Graph {
-                Some((logical_plan, plan_ctx, graph_schema))
+                let metadata = translation.return_metadata().map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to extract return metadata for graph output: {}", e),
+                    )
+                })?;
+                Some((metadata, graph_schema))
             } else {
                 None
             };
@@ -1565,7 +1565,7 @@ async fn query_handler_inner(
     let all_params = merge_parameters(&payload.parameters, &payload.view_parameters);
 
     // Graph format: execute SQL, get rows, transform to nodes/edges
-    if let Some((logical_plan, plan_ctx, graph_schema)) = graph_ctx {
+    if let Some((return_metadata, graph_schema)) = graph_ctx {
         let rows = execute_json_rows(
             &app_state,
             &ch_sql_queries,
@@ -1582,8 +1582,7 @@ async fn query_handler_inner(
         metrics.log_performance(&payload.query);
 
         let (nodes, edges) =
-            super::graph_output::transform_to_graph(&rows, &logical_plan, &plan_ctx, &graph_schema)
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+            super::graph_output::transform_to_graph(&rows, &return_metadata, &graph_schema);
 
         let response = GraphQueryResponse {
             nodes,

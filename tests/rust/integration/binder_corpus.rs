@@ -122,7 +122,8 @@ fn the_corpus_lowers() {
         }));
         match result {
             Err(_) => failures.push(format!("PANIC {schema_name}/{name}: {cypher}")),
-            Ok(Ok(sql)) => {
+            Ok(Ok(t)) => {
+                let sql = t.sql;
                 assert!(
                     sql.starts_with("SELECT") || sql.starts_with("WITH "),
                     "{schema_name}/{name}: {sql}"

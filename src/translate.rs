@@ -18,10 +18,14 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use crate::bound_plan::lower::{ResultColumn, ResultKind};
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::open_cypher_parser::ast::CypherStatement;
 use crate::query_planner::{self, logical_plan::LogicalPlan, plan_ctx::PlanCtx};
 use crate::render_plan::plan_builder::RenderPlanBuilder;
+use crate::server::bolt_protocol::result_transformer::{
+    extract_return_metadata, ReturnItemMetadata, ReturnItemType,
+};
 
 /// Caller-supplied inputs that change how a read query is planned or rendered.
 #[derive(Debug, Clone, Default)]
@@ -81,15 +85,67 @@ pub struct TranslateTimings {
 pub struct ReadTranslation {
     /// SQL for an executor that applies the semantic session settings.
     pub sql: String,
-    /// The analyzed plan and its context, for result-shape metadata
-    /// (`extract_return_metadata`, graph output) and `include_plan` debugging.
-    /// `LogicalPlan::Empty` and an empty context when `route` is
-    /// `BoundPlan` (which lowers only queries returning values, so no result
-    /// shape is needed yet).
+    /// The analyzed plan and its context (legacy route), for the result
+    /// shape and `include_plan` debugging. `LogicalPlan::Empty` and an empty
+    /// context when `route` is `BoundPlan`.
     pub logical_plan: LogicalPlan,
     pub plan_ctx: PlanCtx,
+    /// What each RETURN item is, when `route` is `BoundPlan`.
+    pub shape: Option<Vec<ResultColumn>>,
     pub timings: TranslateTimings,
     pub route: Route,
+}
+
+impl ReadTranslation {
+    /// What each RETURN item is and which columns hold it (§4.13): Bolt, the
+    /// HTTP graph output and embedded `query_graph` build nodes and
+    /// relationships from it, whichever pipeline translated the query.
+    pub fn return_metadata(&self) -> Result<Vec<ReturnItemMetadata>, String> {
+        match &self.shape {
+            Some(shape) => Ok(shape.iter().map(return_item_metadata).collect()),
+            None => extract_return_metadata(&self.logical_plan, &self.plan_ctx),
+        }
+    }
+}
+
+/// The result transformer's view of a lowered RETURN item.
+fn return_item_metadata(c: &ResultColumn) -> ReturnItemMetadata {
+    let item_type = match &c.kind {
+        ResultKind::Value => ReturnItemType::Scalar,
+        ResultKind::Node { label } => ReturnItemType::Node {
+            labels: vec![label.clone()],
+        },
+        // The columns are in the stored orientation (`from_id` is the
+        // relationship's start node), whatever the pattern's direction.
+        ResultKind::Rel {
+            rel_type,
+            from_label,
+            to_label,
+        } => ReturnItemType::Relationship {
+            rel_types: vec![rel_type.clone()],
+            from_label: Some(from_label.clone()),
+            to_label: Some(to_label.clone()),
+            direction: Some("Outgoing".to_string()),
+        },
+        // `alias` names the column of the transformer's fallbacks, which an
+        // item with explicit columns never reaches.
+        ResultKind::NodeId { label } => ReturnItemType::IdFunction {
+            alias: c.name.clone(),
+            labels: vec![label.clone()],
+        },
+    };
+    ReturnItemMetadata {
+        field_name: c.name.clone(),
+        item_type,
+        columns: Some(c.columns.clone()),
+    }
+}
+
+/// A query translated by the bound-plan path.
+#[derive(Debug)]
+pub struct BoundTranslation {
+    pub sql: String,
+    pub shape: Vec<ResultColumn>,
 }
 
 /// The stage a translation failed in. Callers map planning errors to client
@@ -146,15 +202,23 @@ fn translate_in_context(
     crate::query_planner::logical_plan::reset_all_counters();
 
     let mode = options.bound_plan.unwrap_or_else(BoundPlanMode::from_env);
-    if mode == BoundPlanMode::On && options.where_label_constraints.is_none() {
+    // Label constraints come from `id() = N` predicates, which the bound
+    // plan does not lower (the `id()` rewrite turned them into key
+    // predicates in `statement`, not in `cypher`).
+    let id_constraints = options
+        .where_label_constraints
+        .as_ref()
+        .is_some_and(|c| !c.is_empty());
+    if mode == BoundPlanMode::On && !id_constraints {
         if let Some(cypher) = options.cypher.as_deref() {
             let start = Instant::now();
             match translate_bound_plan(cypher, schema, &options) {
-                Ok(sql) => {
+                Ok(BoundTranslation { sql, shape }) => {
                     return Ok(ReadTranslation {
                         sql,
                         logical_plan: LogicalPlan::Empty,
                         plan_ctx: PlanCtx::new_empty(),
+                        shape: Some(shape),
                         timings: TranslateTimings {
                             planning: start.elapsed(),
                             ..Default::default()
@@ -197,6 +261,7 @@ fn translate_in_context(
         sql,
         logical_plan,
         plan_ctx,
+        shape: None,
         timings: TranslateTimings {
             planning,
             render,
@@ -212,7 +277,7 @@ pub fn translate_bound_plan(
     cypher: &str,
     schema: &GraphSchema,
     options: &ReadOptions,
-) -> Result<String, String> {
+) -> Result<BoundTranslation, String> {
     use crate::server::query_context::{
         has_query_context, set_current_schema, with_query_context_sync, QueryContext,
     };
@@ -231,7 +296,7 @@ pub fn translate_bound_plan(
         return Err(format!("clause-list parse stopped at: {rest}"));
     }
     let bound = crate::bound_plan::bind_statement(&stmt, schema).map_err(|e| e.to_string())?;
-    let plan = lower_statement(
+    let lowered = lower_statement(
         &bound,
         schema,
         &LowerOptions {
@@ -243,7 +308,12 @@ pub fn translate_bound_plan(
         },
     )
     .map_err(|e| e.to_string())?;
-    Ok(crate::clickhouse_query_generator::to_sql_query::render_plan_to_sql_plain(plan))
+    Ok(BoundTranslation {
+        sql: crate::clickhouse_query_generator::to_sql_query::render_plan_to_sql_plain(
+            lowered.plan,
+        ),
+        shape: lowered.shape,
+    })
 }
 
 /// The view-parameter values a translation applies: the request's, plus
@@ -341,5 +411,93 @@ mod tests {
                 "cte1".to_string(),
             )
         );
+    }
+    /// Bolt, the HTTP graph output and embedded `query_graph` read the
+    /// result shape through `return_metadata`, whichever pipeline translated
+    /// the query (§4.13).
+    #[test]
+    fn return_metadata_on_both_routes() {
+        use crate::server::bolt_protocol::result_transformer::ReturnItemType as T;
+        let schema = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(include_str!(
+            "../schemas/test/social_integration.yaml"
+        ))
+        .unwrap()
+        .to_graph_schema()
+        .unwrap();
+        let cypher = "MATCH (a:User)<-[r:FOLLOWS]-(b:User) RETURN a AS x, r, id(b), b.name";
+        let translate = |mode| {
+            let (_, stmt) = crate::open_cypher_parser::parse_cypher_statement(cypher).unwrap();
+            super::translate_read(
+                stmt,
+                &schema,
+                super::ReadOptions {
+                    max_cte_depth: 100,
+                    cypher: Some(cypher.to_string()),
+                    bound_plan: Some(mode),
+                    // Bolt passes the (empty) constraints of its id() rewrite.
+                    where_label_constraints: Some(Default::default()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let bound = translate(super::BoundPlanMode::On);
+        assert_eq!(bound.route, super::Route::BoundPlan);
+        let metadata = bound.return_metadata().unwrap();
+        let x_columns = metadata[0].columns.as_ref().expect("explicit columns");
+        assert!(
+            x_columns.contains(&("name".to_string(), "x.name".to_string())),
+            "{x_columns:?}"
+        );
+        let items: Vec<(String, String)> = bound
+            .return_metadata()
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.field_name, format!("{:?}", m.item_type)))
+            .collect();
+        assert_eq!(
+            items,
+            [
+                (
+                    "x",
+                    format!(
+                        "{:?}",
+                        T::Node {
+                            labels: vec!["User".into()]
+                        }
+                    )
+                ),
+                (
+                    "r",
+                    format!(
+                        "{:?}",
+                        T::Relationship {
+                            rel_types: vec!["FOLLOWS".into()],
+                            from_label: Some("User".into()),
+                            to_label: Some("User".into()),
+                            // The columns are in the stored orientation.
+                            direction: Some("Outgoing".into()),
+                        }
+                    )
+                ),
+                (
+                    "id(b)",
+                    format!(
+                        "{:?}",
+                        T::IdFunction {
+                            alias: "id(b)".into(),
+                            labels: vec!["User".into()],
+                        }
+                    )
+                ),
+                ("b.name", format!("{:?}", T::Scalar)),
+            ]
+            .map(|(n, t)| (n.to_string(), t))
+        );
+        let legacy = translate(super::BoundPlanMode::Off);
+        assert_eq!(legacy.route, super::Route::Legacy);
+        let legacy_metadata = legacy.return_metadata().unwrap();
+        assert_eq!(legacy_metadata.len(), 4);
+        assert!(legacy_metadata.iter().all(|m| m.columns.is_none()));
     }
 }
