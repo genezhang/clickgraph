@@ -145,10 +145,17 @@ impl Database {
     pub fn new(schema_path: impl AsRef<Path>, config: SystemConfig) -> Result<Self, EmbeddedError> {
         let schema_config = read_schema_config(schema_path.as_ref())?;
         let (runtime, executor) = open_chdb_session(&config)?;
+        let remote_executor = Self::build_remote_executor(&runtime, config.remote.as_ref())?;
         // `source:` entries become views over their data only once the schema
-        // is built, so their columns are read from the source itself.
-        let graph_schema = build_graph_schema(&schema_config, &executor, &runtime, true)?;
-        Self::finish_chdb(Arc::new(graph_schema), config, runtime, executor)
+        // is built, so their columns are read from the source itself. Entries
+        // without one are tables chdb creates from the schema, so only a
+        // remote ClickHouse (hybrid mode) can hold their columns.
+        let readers = ColumnReaders {
+            sources: Some(&executor),
+            tables: remote_executor.as_deref(),
+        };
+        let graph_schema = build_graph_schema(&schema_config, readers, &runtime)?;
+        Self::finish_chdb(Arc::new(graph_schema), runtime, executor, remote_executor)
     }
 
     /// Open an in-memory database using a YAML schema file (requires `embedded` feature).
@@ -175,16 +182,17 @@ impl Database {
         config: SystemConfig,
     ) -> Result<Self, EmbeddedError> {
         let (runtime, executor) = open_chdb_session(&config)?;
-        Self::finish_chdb(schema, config, runtime, executor)
+        let remote_executor = Self::build_remote_executor(&runtime, config.remote.as_ref())?;
+        Self::finish_chdb(schema, runtime, executor, remote_executor)
     }
 
     /// Create the schema's views and writable tables in a fresh chdb session.
     #[cfg(feature = "embedded")]
     fn finish_chdb(
         schema: Arc<GraphSchema>,
-        config: SystemConfig,
         runtime: tokio::runtime::Runtime,
         executor: ChdbExecutor,
+        remote_executor: Option<Arc<dyn QueryExecutor>>,
     ) -> Result<Self, EmbeddedError> {
         let view_count = clickgraph::executor::data_loader::load_schema_sources(&executor, &schema)
             .map_err(|e| EmbeddedError::Executor(e.to_string()))?;
@@ -204,8 +212,6 @@ impl Database {
                 table_count
             );
         }
-
-        let remote_executor = Self::build_remote_executor(&runtime, config.remote.as_ref())?;
 
         Ok(Database {
             executor: Arc::new(executor),
@@ -231,8 +237,11 @@ impl Database {
             Self::build_remote_executor(&runtime, Some(&remote))?.ok_or_else(|| {
                 EmbeddedError::Executor("Failed to connect to remote ClickHouse".to_string())
             })?;
-        let graph_schema =
-            build_graph_schema(&schema_config, remote_executor.as_ref(), &runtime, false)?;
+        let readers = ColumnReaders {
+            sources: None,
+            tables: Some(remote_executor.as_ref()),
+        };
+        let graph_schema = build_graph_schema(&schema_config, readers, &runtime)?;
         Ok(Database {
             executor: Arc::new(NullExecutor),
             remote_executor: Some(remote_executor),
@@ -443,28 +452,47 @@ fn load_graph_schema_with_catalog(
     Ok((schema, catalog))
 }
 
+/// Where a mode reads the columns that `auto_discover_columns` asks for.
+#[derive(Clone, Copy)]
+struct ColumnReaders<'a> {
+    /// Reads an element's `source:` table function (chdb, which creates the
+    /// element's view only after the schema is built).
+    sources: Option<&'a dyn QueryExecutor>,
+    /// Reads `system.columns` for the database that holds the tables.
+    tables: Option<&'a dyn QueryExecutor>,
+}
+
 /// Build a `GraphSchema`, reading the columns of every table it asks to
-/// discover (`auto_discover_columns`) through `executor`. With `read_sources`,
-/// an element with a `source:` has its columns read from that source (chdb
-/// creates its view only after the schema is built).
+/// discover (`auto_discover_columns`) through `readers`.
 fn build_graph_schema(
     schema_config: &GraphSchemaConfig,
-    executor: &dyn QueryExecutor,
+    readers: ColumnReaders<'_>,
     runtime: &tokio::runtime::Runtime,
-    read_sources: bool,
 ) -> Result<GraphSchema, EmbeddedError> {
     let mut columns = DiscoveredColumns::default();
     for target in schema_config.column_discovery_targets() {
         if columns.contains(&target.database, &target.table) {
             continue;
         }
-        let sql = match &target.source {
-            Some(source) if read_sources => {
+        let (executor, sql) = match (&target.source, readers.sources, readers.tables) {
+            (Some(source), Some(executor), _) => (
+                executor,
                 describe_columns_sql(&resolve_source_uri(source).map_err(|e| {
                     EmbeddedError::Schema(format!("Invalid source for {}: {}", target.owner, e))
-                })?)
+                })?),
+            ),
+            (_, _, Some(executor)) => (
+                executor,
+                system_columns_sql(&target.database, &target.table),
+            ),
+            (_, _, None) => {
+                return Err(EmbeddedError::Schema(format!(
+                    "{} sets auto_discover_columns: true, but has no `source:`: embedded chdb \
+                     creates its table from the schema, so there are no columns to discover. \
+                     Give it a `source:`, or declare its property_mappings instead.",
+                    target.owner
+                )))
             }
-            _ => system_columns_sql(&target.database, &target.table),
         };
         let read = |e: String| {
             EmbeddedError::Schema(format!(
@@ -612,5 +640,103 @@ graph_schema:
                 Err(e) => panic!("expected Validation error, got {e:?} for {d:?}"),
             }
         }
+    }
+
+    /// Answers every query with one column row and records the SQL it saw.
+    struct RecordingExecutor {
+        seen: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingExecutor {
+        fn new() -> Self {
+            Self {
+                seen: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn seen(&self) -> Vec<String> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl QueryExecutor for RecordingExecutor {
+        async fn execute_json(
+            &self,
+            sql: &str,
+            _role: Option<&str>,
+        ) -> Result<Vec<serde_json::Value>, ExecutorError> {
+            self.seen.lock().unwrap().push(sql.to_string());
+            Ok(vec![
+                serde_json::json!({"name": "id", "type": "UInt64"}),
+                serde_json::json!({"name": "city", "type": "String"}),
+            ])
+        }
+
+        async fn execute_text(
+            &self,
+            _sql: &str,
+            _format: &str,
+            _role: Option<&str>,
+        ) -> Result<String, ExecutorError> {
+            Ok(String::new())
+        }
+    }
+
+    const DISCOVERING_SCHEMA: &str = r#"
+graph_schema:
+  nodes:
+    - label: Sourced
+      database: db
+      table: sourced
+      node_id: id
+      source: "/data/sourced.parquet"
+      auto_discover_columns: true
+      property_mappings: {}
+    - label: Plain
+      database: db
+      table: plain
+      node_id: id
+      auto_discover_columns: true
+      property_mappings: {}
+  edges: []
+"#;
+
+    #[test]
+    fn discovery_reads_sources_locally_and_tables_remotely() {
+        let config: GraphSchemaConfig = serde_yaml::from_str(DISCOVERING_SCHEMA).unwrap();
+        let runtime = build_runtime().unwrap();
+        let (local, remote) = (RecordingExecutor::new(), RecordingExecutor::new());
+        let readers = ColumnReaders {
+            sources: Some(&local),
+            tables: Some(&remote),
+        };
+        let schema = build_graph_schema(&config, readers, &runtime).unwrap();
+        assert_eq!(
+            local.seen(),
+            ["DESCRIBE TABLE file('/data/sourced.parquet', 'Parquet')"]
+        );
+        assert_eq!(remote.seen(), [system_columns_sql("db", "plain")]);
+        for label in ["Sourced", "Plain"] {
+            let node = schema.node_schema(label).unwrap();
+            assert!(node.property_mappings.contains_key("city"), "{label}");
+        }
+    }
+
+    #[test]
+    fn chdb_alone_cannot_discover_a_table_without_source() {
+        let config: GraphSchemaConfig = serde_yaml::from_str(DISCOVERING_SCHEMA).unwrap();
+        let runtime = build_runtime().unwrap();
+        let local = RecordingExecutor::new();
+        let readers = ColumnReaders {
+            sources: Some(&local),
+            tables: None,
+        };
+        let err = build_graph_schema(&config, readers, &runtime)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("node 'Plain'"), "{err}");
+        assert!(err.contains("has no `source:`"), "{err}");
     }
 }

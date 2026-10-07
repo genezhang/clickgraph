@@ -89,10 +89,11 @@ to execute Cypher against a remote cluster, then store results locally via `stor
 ### Schema loading and `auto_discover_columns`
 `read_schema_config()` reads YAML → `GraphSchemaConfig`. A schema element with
 `auto_discover_columns: true` takes its properties from its table's columns, so
-`build_graph_schema()` reads them through the mode's executor before building:
-`Database::new()` (chdb) runs `DESCRIBE TABLE <source table function>` for an
-element with `source:` and `system.columns` otherwise; `new_remote()` reads
-`system.columns`. `load_graph_schema()` (`sql_only()`) has no database and
+`build_graph_schema()` reads them through the mode's `ColumnReaders` before
+building: `Database::new()` (chdb) runs `DESCRIBE TABLE <source table function>`
+for an element with `source:`; one without is read from the remote's
+`system.columns` in hybrid mode and refused otherwise (chdb creates that table
+from the schema); `new_remote()` reads `system.columns`. `load_graph_schema()` (`sql_only()`) has no database and
 `to_graph_schema()` refuses such a schema; Databricks refuses it too (#1322).
 
 ## Conventions

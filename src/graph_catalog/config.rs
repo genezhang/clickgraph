@@ -2427,6 +2427,7 @@ impl GraphSchemaConfig {
         database: &str,
         table: &str,
         auto_discover: bool,
+        view_parameters: &Option<Vec<String>>,
         columns: Columns<'_>,
         engines: &HashMap<(String, String), TableEngine>,
     ) -> Result<TableDiscovery, GraphSchemaError> {
@@ -2448,11 +2449,17 @@ impl GraphSchemaConfig {
                     });
                 };
                 if found.is_empty() {
+                    let why = if view_parameters.as_ref().is_some_and(|p| !p.is_empty()) {
+                        "it is a parameterized view (view_parameters), whose columns \
+                         ClickHouse does not list; declare its property_mappings instead"
+                    } else {
+                        "the table does not exist, or this user cannot see its columns"
+                    };
                     return Err(GraphSchemaError::InvalidConfig {
                         message: format!(
-                            "{} sets auto_discover_columns: true, but table `{}`.`{}` has no \
-                             columns (does it exist?)",
-                            owner, database, table
+                            "{} sets auto_discover_columns: true, but no columns were found \
+                             for `{}`.`{}`: {}",
+                            owner, database, table, why
                         ),
                     });
                 }
@@ -2488,6 +2495,7 @@ impl GraphSchemaConfig {
                 &node_def.database,
                 &node_def.table,
                 node_def.auto_discover_columns,
+                &node_def.view_parameters,
                 columns,
                 engines,
             )?;
@@ -2516,6 +2524,7 @@ impl GraphSchemaConfig {
                 &rel_def.database,
                 &rel_def.table,
                 rel_def.auto_discover_columns,
+                &rel_def.view_parameters,
                 columns,
                 engines,
             )?;
@@ -2538,6 +2547,7 @@ impl GraphSchemaConfig {
                         &std_edge.database,
                         &std_edge.table,
                         std_edge.auto_discover_columns,
+                        &std_edge.view_parameters,
                         columns,
                         engines,
                     )?;
@@ -2560,6 +2570,7 @@ impl GraphSchemaConfig {
                         &poly_edge.database,
                         &poly_edge.table,
                         poly_edge.auto_discover_columns,
+                        &poly_edge.view_parameters,
                         columns,
                         engines,
                     )?;
@@ -4781,7 +4792,7 @@ graph_schema:
             .unwrap_err()
             .to_string();
         assert!(err.contains("edge 'FOLLOWS'"), "{err}");
-        assert!(err.contains("has no columns"), "{err}");
+        assert!(err.contains("no columns were found"), "{err}");
     }
 
     #[test]
@@ -4835,6 +4846,22 @@ graph_schema:
             );
             assert_eq!(column_of(&rel.property_mappings, "kind"), None);
         }
+    }
+
+    #[test]
+    fn a_parameterized_view_without_columns_says_why() {
+        let config = GraphSchemaConfig::from_yaml_str(&SCHEMA.replace(
+            "      exclude_columns: [_version]\n",
+            "      exclude_columns: [_version]\n      view_parameters: [tenant_id]\n",
+        ))
+        .unwrap();
+        let mut discovered = discovered();
+        discovered.insert("db", "users", Vec::new());
+        let err = config
+            .to_graph_schema_with_columns(&discovered)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("parameterized view"), "{err}");
     }
 
     #[test]

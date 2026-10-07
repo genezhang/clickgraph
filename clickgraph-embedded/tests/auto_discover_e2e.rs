@@ -167,5 +167,5 @@ fn remote_reads_columns_from_system_columns() {
         .err()
         .expect("missing table")
         .to_string();
-    assert!(err.contains("has no columns"), "{err}");
+    assert!(err.contains("no columns were found"), "{err}");
 }

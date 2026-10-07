@@ -597,12 +597,14 @@ a connection:
 | Mode | Columns read from |
 |------|-------------------|
 | Server (startup or `POST /schemas/load`) | ClickHouse `system.columns` |
-| Embedded chdb (`Database::new`) | the element's `source:` (`DESCRIBE TABLE`), else `system.columns` |
+| Embedded chdb (`Database::new`) | the element's `source:` (`DESCRIBE TABLE`); without one, the remote ClickHouse's `system.columns` in hybrid mode (`SystemConfig.remote`), else refused (chdb creates that table from the schema) |
 | Remote (`Database::new_remote`, `cg --clickhouse`) | ClickHouse `system.columns` |
 | SQL-only (`Database::sql_only`, `cg sql` without `--clickhouse`), Databricks | not supported: the schema is refused |
 
-A discovering element whose table has no columns (does not exist) is refused
-at load. Nodes, standard edges and polymorphic edges support it.
+A discovering element with no columns found is refused at load: the table
+does not exist, the user cannot see it, or it is a parameterized view
+(`view_parameters`), whose columns ClickHouse does not list. Nodes,
+relationships, standard edges and polymorphic edges support it.
 
 ---
 
