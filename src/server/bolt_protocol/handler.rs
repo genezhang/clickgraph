@@ -11,7 +11,6 @@ use std::sync::{Arc, Mutex};
 use super::auth::{AuthToken, AuthenticatedUser, Authenticator};
 use super::errors::{BoltError, BoltResult};
 use super::messages::{signatures, BoltMessage, BoltValue};
-use super::result_transformer::extract_return_metadata;
 use super::{BoltConfig, BoltContext, ConnectionState};
 
 use crate::executor::QueryExecutor;
@@ -3086,8 +3085,7 @@ impl BoltHandler {
                 max_inferred_types: Some(20), // increased for UNION branches
                 where_label_constraints: Some(label_constraints_from_second_pass),
                 max_cte_depth: 1000,
-                // Bolt's result metadata reads the legacy logical plan.
-                cypher: None,
+                cypher: Some(query.to_string()),
                 bound_plan: None,
             },
         ) {
@@ -3105,15 +3103,8 @@ impl BoltHandler {
                 )));
             }
         };
-        let crate::translate::ReadTranslation {
-            sql: ch_sql,
-            logical_plan,
-            plan_ctx,
-            ..
-        } = translation;
-
         // Extract return metadata for result transformation
-        let return_metadata = match extract_return_metadata(&logical_plan, &plan_ctx) {
+        let return_metadata = match translation.return_metadata() {
             Ok(metadata) => metadata,
             Err(e) => {
                 log::warn!("Failed to extract return metadata: {}", e);
@@ -3132,15 +3123,16 @@ impl BoltHandler {
 
         // Substitute parameters in SQL (for non-id() parameters like $name, $age, etc.)
         // Note: id() parameters were already handled in Cypher query substitution (line 741)
-        let final_sql = match parameter_substitution::substitute_parameters(&ch_sql, &parameters) {
-            Ok(sql) => sql,
-            Err(e) => {
-                return Err(BoltError::query_error(format!(
-                    "Parameter substitution failed: {}",
-                    e
-                )));
-            }
-        };
+        let final_sql =
+            match parameter_substitution::substitute_parameters(&translation.sql, &parameters) {
+                Ok(sql) => sql,
+                Err(e) => {
+                    return Err(BoltError::query_error(format!(
+                        "Parameter substitution failed: {}",
+                        e
+                    )));
+                }
+            };
 
         log::info!("📊 Executing SQL: {}", final_sql);
 

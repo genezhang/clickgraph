@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::bound_plan::lower::{lower_statement, LowerOptions};
+use crate::bound_plan::lower::{lower_statement, LowerOptions, ResultColumn, ResultKind};
 use crate::graph_catalog::config::GraphSchemaConfig;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::translate::{translate_bound_plan, ReadOptions};
@@ -58,6 +58,7 @@ graph_schema:
 fn sql(q: &str) -> String {
     translate_bound_plan(q, &social(), &ReadOptions::default())
         .unwrap_or_else(|e| panic!("{q}: {e}"))
+        .sql
 }
 
 fn squash(s: &str) -> String {
@@ -86,7 +87,10 @@ fn has_compat(q: &str, parts: &[&str]) {
 fn not_lowered(q: &str, why: &str) {
     match translate_bound_plan(q, &social(), &ReadOptions::default()) {
         Err(e) if e.contains(why) => {}
-        other => panic!("{q}: expected not lowered ({why}), got {other:?}"),
+        other => panic!(
+            "{q}: expected not lowered ({why}), got {:?}",
+            other.map(|t| t.sql)
+        ),
     }
 }
 
@@ -269,7 +273,11 @@ fn the_tenant_selects_the_parameterized_view() {
                 .map(|v| HashMap::from([("tenant_id".to_string(), v.to_string())])),
             ..Default::default()
         };
-        squash(&translate_bound_plan("MATCH (u:User) RETURN u.name", &schema, &opts).unwrap())
+        squash(
+            &translate_bound_plan("MATCH (u:User) RETURN u.name", &schema, &opts)
+                .unwrap()
+                .sql,
+        )
     };
     assert!(tenant(Some("acme"), None).contains("users_by_tenant(tenant_id = 'acme')"));
     // As in the legacy planner, an explicit view parameter wins.
@@ -332,7 +340,11 @@ fn lowered(q: &str, schema: &GraphSchema, options: &LowerOptions) -> String {
         crate::server::query_context::QueryContext::new(None),
         || {
             crate::server::query_context::set_current_schema(std::sync::Arc::new(schema.clone()));
-            squash(&crate::clickhouse_query_generator::to_sql_query::render_plan_to_sql_plain(plan))
+            squash(
+                &crate::clickhouse_query_generator::to_sql_query::render_plan_to_sql_plain(
+                    plan.plan,
+                ),
+            )
         },
     )
 }
@@ -433,13 +445,17 @@ fn table_options_come_from_the_schema() {
         ..Default::default()
     };
     let got = squash(
-        &translate_bound_plan("MATCH (a:A) RETURN a.name", &options_schema(), &opts).unwrap(),
+        &translate_bound_plan("MATCH (a:A) RETURN a.name", &options_schema(), &opts)
+            .unwrap()
+            .sql,
     );
     assert!(got.contains("FROM db.a(tenant = 't''1') AS v0"), "{got}");
     assert!(got.contains("WHERE ((v0.kind = 'x'))"), "{got}");
     // FINAL on the FROM table prints; on a joined table it is not lowered yet.
     let got = squash(
-        &translate_bound_plan("MATCH (b:B) RETURN count(*)", &options_schema(), &opts).unwrap(),
+        &translate_bound_plan("MATCH (b:B) RETURN count(*)", &options_schema(), &opts)
+            .unwrap()
+            .sql,
     );
     assert!(got.contains("FROM db.b AS v0 FINAL"), "{got}");
     let err = translate_bound_plan(
@@ -453,7 +469,6 @@ fn table_options_come_from_the_schema() {
 
 #[test]
 fn what_is_not_lowered_yet() {
-    not_lowered("MATCH (a:User) WITH a RETURN a", "whole node");
     not_lowered(
         "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b) RETURN b.name",
         "OPTIONAL",
@@ -466,8 +481,8 @@ fn what_is_not_lowered_yet() {
         "MATCH (a:User)-[:FOLLOWS]-(b) RETURN count(*)",
         "undirected",
     );
-    not_lowered("MATCH (a:User) RETURN a", "whole node");
-    not_lowered("MATCH (a:User) RETURN id(a)", "id()");
+    not_lowered("MATCH (a:User) RETURN collect(a) AS l", "as a value");
+    not_lowered("MATCH (a:User) WHERE id(a) = 1 RETURN a.name", "id()");
     not_lowered("MATCH (n) RETURN count(*)", "several possible labels");
     not_lowered(
         "MATCH p = (a:User)-[:FOLLOWS]->(b) RETURN count(*)",
@@ -568,7 +583,8 @@ graph_schema:
                 &schema,
                 &ReadOptions::default(),
             )
-            .unwrap(),
+            .unwrap()
+            .sql,
         )
     };
     assert!(q("r1 = r2").contains("WHERE false"), "{}", q("r1 = r2"));
@@ -798,8 +814,247 @@ fn databricks_size_of_a_carried_list() {
             &ReadOptions::default(),
         )
         .unwrap()
+        .sql
     });
     let got = squash(&got);
     assert!(got.contains("size(w2.v4) AS `k`"), "{got}");
     assert!(got.contains("length(w2.v3) AS `n`"), "{got}");
+}
+
+// ------------------------------------------------------------------ S4c
+
+/// The SQL and the result shape of `q` over `schema`.
+fn shaped(q: &str, schema: &GraphSchema) -> (String, Vec<ResultColumn>) {
+    let t = translate_bound_plan(q, schema, &ReadOptions::default())
+        .unwrap_or_else(|e| panic!("{q}: {e}"));
+    (squash(&t.sql), t.shape)
+}
+
+fn column(name: &str, kind: ResultKind) -> (String, ResultKind) {
+    (name.to_string(), kind)
+}
+
+/// Each item's name and kind.
+fn kinds(shape: &[ResultColumn]) -> Vec<(String, ResultKind)> {
+    shape
+        .iter()
+        .map(|c| (c.name.clone(), c.kind.clone()))
+        .collect()
+}
+
+fn user() -> ResultKind {
+    ResultKind::Node {
+        label: "User".to_string(),
+    }
+}
+
+/// Composite ids, and a relationship identified by an `edge_id` that is not
+/// one of its properties.
+fn shapes_schema() -> GraphSchema {
+    GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_shapes
+graph_schema:
+  nodes:
+    - { label: T, database: db, table: t, node_id: [tenant, id], property_mappings: { tenant: tenant, id: id, name: t_name } }
+    - { label: U, database: db, table: u, node_id: id, property_mappings: { id: id } }
+  edges:
+    - { type: C, database: db, table: c, from_id: [ft, fa], to_id: [tt, ta], from_node: T, to_node: T, property_mappings: {} }
+    - { type: K, database: db, table: k, from_id: a, to_id: b, edge_id: kid, from_node: U, to_node: U, property_mappings: { w: weight } }
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap()
+}
+
+/// A returned node or relationship is its columns, named `<item>.<…>` as on
+/// the legacy pipeline: a relationship's stored endpoint columns (whatever
+/// the pattern's direction), then every property by name.
+#[test]
+fn a_returned_element_is_its_columns_under_its_name() {
+    let (sql, shape) = shaped(
+        "MATCH (a:User)<-[r:FOLLOWS]-(b:User) RETURN r, a AS x, a.name",
+        &social(),
+    );
+    assert!(
+        sql.starts_with(
+            r#"SELECT v1.follower_id AS "r.from_id", v1.followed_id AS "r.to_id", v1.follow_date AS "r.follow_date", v0.age AS "x.age", v0.city AS "x.city", v0.country AS "x.country", v0.email_address AS "x.email", v0.is_active AS "x.is_active", v0.full_name AS "x.name", v0.registration_date AS "x.registration_date", v0.user_id AS "x.user_id", v0.full_name AS "a.name" FROM"#
+        ),
+        "{sql}"
+    );
+    assert_eq!(
+        kinds(&shape),
+        vec![
+            column(
+                "r",
+                ResultKind::Rel {
+                    rel_type: "FOLLOWS".to_string(),
+                    from_label: "User".to_string(),
+                    to_label: "User".to_string(),
+                }
+            ),
+            column("x", user()),
+            column("a.name", ResultKind::Value),
+        ]
+    );
+    // `v.*` is the node's columns too.
+    let (star, shape) = shaped("MATCH (a:User) RETURN a.*", &social());
+    let (whole, _) = shaped("MATCH (a:User) RETURN a", &social());
+    assert_eq!(star, whole);
+    assert_eq!(kinds(&shape), vec![column("a", user())]);
+    // Composite endpoint columns are numbered.
+    let (sql, _) = shaped("MATCH (:T)-[c:C]->(:T) RETURN c", &shapes_schema());
+    assert!(
+        sql.contains(
+            r#"v1.ft AS "c.from_id_1", v1.fa AS "c.from_id_2", v1.tt AS "c.to_id_1", v1.ta AS "c.to_id_2" FROM"#
+        ),
+        "{sql}"
+    );
+}
+
+/// A node returned after a WITH: the CTE exports every property, not just
+/// those read by name.
+#[test]
+fn a_carried_element_returned_whole_exports_every_property() {
+    let (sql, shape) = shaped(
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) WITH a AS u, r WHERE u.age > 30 RETURN u, r",
+        &social(),
+    );
+    for col in [
+        r#"v0.registration_date AS "p2_v3_registration_date""#,
+        r#"v1.follow_date AS "p2_v4_follow_date""#,
+        r#"w1.p2_v3_registration_date AS "u.registration_date""#,
+        r#"w1.v4__follower_id AS "r.from_id""#,
+        r#"w1.p2_v4_follow_date AS "r.follow_date""#,
+    ] {
+        assert!(sql.contains(col), "missing {col} in {sql}");
+    }
+    assert_eq!(kinds(&shape)[0], column("u", user()));
+}
+
+/// Grouping by a returned element groups by its identity, and DISTINCT is
+/// by its identity too, also when the identity is not one of its returned
+/// columns: rows equal in every returned column can be different
+/// relationships.
+#[test]
+fn grouping_and_distinct_over_a_returned_element() {
+    let (sql, _) = shaped(
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN b, count(*) AS c",
+        &social(),
+    );
+    assert!(
+        sql.contains(
+            "GROUP BY v2.age, v2.city, v2.country, v2.email_address, v2.is_active, \
+             v2.full_name, v2.registration_date, v2.user_id"
+        ) && !sql.contains("v2.user_id, v2.user_id"),
+        "{sql}"
+    );
+    let (sql, _) = shaped(
+        "MATCH (:U)-[k:K]->(:U) RETURN k, count(*) AS c",
+        &shapes_schema(),
+    );
+    assert!(
+        sql.contains("GROUP BY v1.a, v1.b, v1.weight, v1.kid"),
+        "{sql}"
+    );
+    let (sql, _) = shaped(
+        "MATCH (:U)-[k:K]->(:U) RETURN DISTINCT k, k.w AS w",
+        &shapes_schema(),
+    );
+    assert!(
+        sql.starts_with(r#"SELECT v1.a AS "k.from_id""#)
+            && sql.ends_with("GROUP BY v1.a, v1.b, v1.weight, v1.weight, v1.kid"),
+        "{sql}"
+    );
+    let err = translate_bound_plan(
+        "MATCH (:U)-[k:K]->(:U) RETURN DISTINCT k, count(*) AS c",
+        &shapes_schema(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(err.contains("edge_id is not returned"), "{err}");
+    // A node's identity is among its properties (`node_id` names
+    // properties): a plain DISTINCT.
+    has(
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN DISTINCT b",
+        &[r#"SELECT DISTINCT v2.age AS "b.age""#],
+    );
+}
+
+/// `id(n)` as a RETURN item is the node's key; Bolt encodes it from the
+/// shape. Anywhere else the key is not the id.
+#[test]
+fn id_of_a_returned_node_is_its_key() {
+    let (sql, shape) = shaped(
+        "MATCH (a:User) WITH a RETURN id(a), id(a) AS i, a.name",
+        &social(),
+    );
+    assert!(
+        sql.contains(r#"SELECT w1.v1__user_id AS "id(a)", w1.v1__user_id AS "i""#),
+        "{sql}"
+    );
+    let id = ResultKind::NodeId {
+        label: "User".to_string(),
+    };
+    assert_eq!(
+        kinds(&shape),
+        vec![
+            column("id(a)", id.clone()),
+            column("i", id),
+            column("a.name", ResultKind::Value)
+        ]
+    );
+    not_lowered(
+        "MATCH (a:User) RETURN id(a) AS i ORDER BY i",
+        "ORDER BY an id()",
+    );
+    not_lowered("MATCH (a:User) RETURN id(a) + 1 AS i", "id()");
+    not_lowered("MATCH (a:User) WITH id(a) AS i RETURN i", "id()");
+    not_lowered("MATCH (a:User)-[r:FOLLOWS]->(b) RETURN id(r)", "id()");
+    not_lowered("MATCH (a:User) RETURN size(a.*) AS n", "`v.*`");
+    let err = translate_bound_plan(
+        "MATCH (t:T) RETURN id(t)",
+        &shapes_schema(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(err.contains("composite identity"), "{err}");
+}
+
+/// A returned element that matches nothing: no rows, one NULL column.
+#[test]
+fn a_returned_element_that_matches_nothing() {
+    let (sql, shape) = shaped("MATCH (x:Nope) RETURN x, count(*) AS c", &social());
+    assert!(
+        sql.contains(r#"SELECT NULL AS "x", count(*) AS "c""#)
+            && sql.contains("HAVING count(*) > 0"),
+        "{sql}"
+    );
+    assert_eq!(kinds(&shape)[0], column("x", ResultKind::Value));
+}
+
+/// Result columns are named uniquely when lowering (the legacy names, `_2`
+/// on a clash), and the shape lists each item's own columns, so a reader
+/// never takes another item's column (`n.name_2`, `n.age + 1`) for a
+/// property.
+#[test]
+fn each_item_knows_its_own_columns() {
+    let (sql, shape) = shaped("MATCH (n:User) RETURN n.name, n, n.age + 1", &social());
+    assert!(
+        sql.contains(r#"v0.full_name AS "n.name", v0.age AS "n.age""#)
+            && sql.contains(r#"v0.full_name AS "n.name_2""#)
+            && sql.contains(r#"v0.age + 1 AS "n.age + 1""#),
+        "{sql}"
+    );
+    let cols = |i: usize| -> Vec<(String, String)> { shape[i].columns.clone() };
+    assert_eq!(cols(0), [("n.name".to_string(), "n.name".to_string())]);
+    let node = cols(1);
+    assert_eq!(node.len(), 8, "{node:?}");
+    assert!(node.contains(&("name".to_string(), "n.name_2".to_string())));
+    assert!(node.contains(&("age".to_string(), "n.age".to_string())));
+    assert_eq!(
+        cols(2),
+        [("n.age + 1".to_string(), "n.age + 1".to_string())]
+    );
 }

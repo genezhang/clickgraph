@@ -120,11 +120,11 @@ pub fn cypher_to_sql_read_only(
     translate_for_library(statement, schema, max_cte_depth, None).map(|t| t.sql)
 }
 
-/// Convert a Cypher query string to ClickHouse SQL, also returning the
-/// LogicalPlan and PlanCtx for downstream metadata extraction (e.g., graph output).
+/// Convert a Cypher query string to ClickHouse SQL, also returning what each
+/// RETURN item is (nodes, relationships, scalars) for downstream graph output.
 ///
-/// This is used by `query_graph()` in the embedded crate, which needs the plan
-/// metadata to classify return items as nodes vs relationships vs scalars.
+/// This is used by `query_graph()` in the embedded crate, which builds nodes
+/// and edges from the rows with this metadata.
 pub fn cypher_to_sql_with_metadata(
     cypher: &str,
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
@@ -132,8 +132,7 @@ pub fn cypher_to_sql_with_metadata(
 ) -> Result<
     (
         String,
-        crate::query_planner::logical_plan::LogicalPlan,
-        crate::query_planner::plan_ctx::PlanCtx,
+        Vec<crate::server::bolt_protocol::result_transformer::ReturnItemMetadata>,
     ),
     String,
 > {
@@ -141,9 +140,11 @@ pub fn cypher_to_sql_with_metadata(
     let (_remaining, statement) = crate::open_cypher_parser::parse_cypher_statement(&cleaned)
         .map_err(|e| format!("Parse error: {:?}", e))?;
 
-    // Callers read the logical plan for result metadata: legacy pipeline.
-    let t = translate_for_library(statement, schema, max_cte_depth, None)?;
-    Ok((t.sql, t.logical_plan, t.plan_ctx))
+    let t = translate_for_library(statement, schema, max_cte_depth, Some(&cleaned))?;
+    let metadata = t
+        .return_metadata()
+        .map_err(|e| format!("Failed to extract return metadata: {}", e))?;
+    Ok((t.sql, metadata))
 }
 
 /// The library entry points' translation: the read seam with default

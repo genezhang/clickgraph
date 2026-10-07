@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b WITH; next: S4c result shape)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c result shape; next: S5 OPTIONAL MATCH)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,14 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-07: **P-4c S4c: the result shape** (`src/bound_plan/lower/`, `src/translate.rs`, behind `CLICKGRAPH_BOUND_PLAN=on`).
+  - Whole nodes and relationships (`n`, `n AS x`, `n.*`) and `id(n)` lower in the final RETURN, under the legacy column names. The lowering also returns what each item is. `ReadTranslation::return_metadata()` is the one seam Bolt, the HTTP graph output and embedded `query_graph` read, on either path.
+  - Bolt and graph output now use the new path for the queries it lowers.
+  - Neo4j oracle switch off vs on: 0 correct → wrong, 22 wrong → correct (12 new here). Corpus lowering 371 → 405. Over 25 whole-entity shapes, Bolt equals Neo4j. Every on/off difference is a legacy defect: reversed `(a)<-[r]-(b)` relationships, aliased whole nodes, bogus properties after WITH, flat columns for grouped nodes, empty graph output.
+  - Live suite on vs off: 41 differences (28 after S4b). The 13 new ones are 12 known-wrong Neo4j goldens that are now correct, and one timing test.
+  - Each result item lists its own columns, and the transformers read only those. This fixes a defect present on both paths: `RETURN n, n.name` gave the node a `name_2` property, because columns were collected by prefix.
+  - Review: no wrong rows; HTTP Graph + `sql_only` failing with the switch off was fixed.
 
 - 2026-10-07: **P-4c S4b: lowering WITH, free-standing ORDER BY / SKIP / LIMIT** (`src/bound_plan/lower/`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - A WITH ends a segment: the rows so far become a CTE whose columns are the WITH's output scope (carried elements export identity/endpoint columns plus the properties later clauses read; values export their value). Later patterns tie to the exported identity; a carried relationship can be matched again and takes part in uniqueness.

@@ -7,8 +7,9 @@
 //! * a bare node or relationship stands for its identity only where that is
 //!   its whole meaning: `count(a)`, `count(DISTINCT a)`, `a = b`, `a <> b`
 //!   (elements of different labels / types are never equal), `a IS [NOT]
-//!   NULL`. Anywhere else (`RETURN a`, `[a]`, `collect(a)`, `CASE … a …`) it
-//!   is the entity's value, which needs the result shape: `Unsupported`;
+//!   NULL`. A RETURN item `a` is its columns (`Lowerer::return_element`).
+//!   Anywhere else (`[a]`, `collect(a)`, `CASE … a …`) it is the entity's
+//!   value: `Unsupported`;
 //! * a projected item (ORDER BY after RETURN) is the item's expression;
 //! * an element or value carried by a WITH is read from the WITH's CTE.
 //!
@@ -78,7 +79,7 @@ impl Lowerer<'_> {
     }
 
     /// A node's or relationship's identity as one expression.
-    fn identity_value(&self, v: VarId) -> Result<RenderExpr, LowerError> {
+    pub(super) fn identity_value(&self, v: VarId) -> Result<RenderExpr, LowerError> {
         match self.identity(v)? {
             None => Ok(RenderExpr::Literal(Literal::Null)),
             Some(mut cols) if cols.len() == 1 => Ok(cols.remove(0)),
@@ -96,6 +97,9 @@ impl Lowerer<'_> {
                 let PropertyValue::Column(prop) = &pa.column else {
                     return unsupported("a computed property access");
                 };
+                if prop == super::ALL_PROPERTIES {
+                    return unsupported("`v.*` other than as a RETURN item");
+                }
                 let Some(v) = parse_var(&pa.table_alias.0) else {
                     return unsupported("an unbound property access");
                 };
@@ -278,7 +282,7 @@ impl Lowerer<'_> {
         let b = self.binding(v);
         match (&b.kind, &b.source) {
             (BindingKind::Node { .. } | BindingKind::Rel { .. }, _) => {
-                unsupported("a node or relationship as a value (needs the result shape)")
+                unsupported("a node or relationship as a value (in a list, collect(), CASE …)")
             }
             (BindingKind::Value, BindingSource::Local) => {
                 Ok(RenderExpr::TableAlias(TableAlias(name.to_string())))
@@ -315,10 +319,14 @@ impl Lowerer<'_> {
         if let Some(v) = self.entity_arg(&f.args) {
             let lower = f.name.to_ascii_lowercase();
             return match (lower.as_str(), self.scans.get(&v)) {
-                // `id()` is the server's encoded id (the HTTP / Bolt `id()`
-                // rewrite, `IdMapper`), not a column; lowered with the result
-                // shape.
-                ("id" | "elementid", _) => unsupported("id() / elementId()"),
+                // `id()` is the server's encoded id (`IdMapper`): Bolt encodes
+                // the key column of an `id(n)` RETURN item (the result shape),
+                // and the HTTP / Bolt `id()` rewrite turns comparisons with
+                // ids into key predicates before planning. Anywhere else the
+                // key is not the id.
+                ("id" | "elementid", _) => {
+                    unsupported("id() / elementId() other than a node's `id(n)` RETURN item")
+                }
                 ("type", Some(Scan::Rel { rel_type, .. })) => {
                     Ok(RenderExpr::Literal(Literal::String(rel_type.clone())))
                 }

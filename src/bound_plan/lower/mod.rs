@@ -39,8 +39,9 @@
 //! * WITH and RETURN with aggregation, DISTINCT, ORDER BY, SKIP, LIMIT and
 //!   (WITH) WHERE, evaluated in that order; free-standing ORDER BY, SKIP and
 //!   LIMIT;
-//! * a final RETURN of values (no whole nodes or relationships: Bolt and
-//!   graph output need the result shape first).
+//! * a final RETURN of values, whole nodes and relationships (`n`, `n.*`)
+//!   and `id(n)`, with the result shape that Bolt, the HTTP graph output and
+//!   embedded `query_graph` read (§4.13, [`ResultColumn`]).
 //!
 //! A node or relationship whose label / type set is empty matches nothing
 //! (Cypher returns no rows; it is not an error): the query lowers to a
@@ -66,7 +67,7 @@ use crate::render_plan::{
 };
 use crate::utils::cte_column_naming::cte_column_name;
 
-use super::expr::{calls_aggregate, property_refs};
+use super::expr::{calls_aggregate, property_refs, referenced_names};
 use super::types::*;
 
 /// Why a bound plan was not lowered.
@@ -91,12 +92,55 @@ pub struct LowerOptions {
     pub neo4j_compat: bool,
 }
 
+/// A lowered statement: the plan, and what its result columns are.
+#[derive(Debug)]
+pub struct Lowered {
+    pub plan: RenderPlan,
+    pub shape: Vec<ResultColumn>,
+}
+
+/// One RETURN item of the result (§4.13), in RETURN order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResultColumn {
+    /// The item's name: its column, or the prefix of its columns.
+    pub name: String,
+    pub kind: ResultKind,
+    /// The SQL columns holding the item: (key, column). A value's key is its
+    /// name; an element's keys are `from_id` / `to_id` and its property
+    /// names. A column is the key's legacy name (`name`, `name.<key>`)
+    /// unless another item took that name first (then `…_2`, …), so a
+    /// reader must not collect columns by prefix.
+    pub columns: Vec<(String, String)>,
+}
+
+/// What a RETURN item is, and so which columns hold it. Element columns use
+/// the legacy pipeline's names, so the HTTP rows and the Bolt / graph
+/// transformation (`bolt_protocol::result_transformer`) are unchanged.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResultKind {
+    /// One column, `name`.
+    Value,
+    /// A node with this label: a column `name.<prop>` per property.
+    Node { label: String },
+    /// A relationship: `name.from_id` and `name.to_id` (its stored endpoint
+    /// columns, `from_id_1`, `from_id_2`, … when composite), then a column
+    /// `name.<prop>` per property.
+    Rel {
+        rel_type: String,
+        from_label: String,
+        to_label: String,
+    },
+    /// `id(n)` of a node with this label: column `name` holds the node's key,
+    /// which Bolt returns encoded (`IdMapper`), as on the legacy pipeline.
+    NodeId { label: String },
+}
+
 /// Lower a bound statement to a render plan.
 pub fn lower_statement(
     stmt: &BoundStatement,
     schema: &GraphSchema,
     options: &LowerOptions,
-) -> Result<RenderPlan, LowerError> {
+) -> Result<Lowered, LowerError> {
     let BoundOp::Project { input, projection } = &stmt.plan else {
         return unsupported("a statement that does not end in RETURN (UNION: S7)");
     };
@@ -118,9 +162,9 @@ pub fn lower_statement(
     };
     l.relation(input)?;
     l.finish_relation();
-    let mut plan = l.project(projection)?;
+    let (mut plan, shape) = l.project(projection)?;
     plan.ctes = CteItems(std::mem::take(&mut l.ctes));
-    Ok(plan)
+    Ok(Lowered { plan, shape })
 }
 
 /// How a pattern element is read.
@@ -256,8 +300,31 @@ struct Body {
     order_by: Vec<OrderByItem>,
     /// The output rows have an order the SQL does not keep ([`RowOrder::Lost`]).
     order_lost: bool,
+    /// DISTINCT also by these unreturned expressions (an element's identity).
+    distinct_keys: Vec<RenderExpr>,
     skip: Option<i64>,
     limit: Option<i64>,
+}
+
+impl Body {
+    /// Add a result column named `name`, or `name_2`, `name_3`, … if an
+    /// earlier column has that name (the printer's rule, so it renames
+    /// nothing after us). Returns the column's name.
+    fn column(&mut self, e: RenderExpr, name: &str) -> String {
+        let taken = |n: &str, select: &[SelectItem]| {
+            select
+                .iter()
+                .any(|i| i.col_alias.as_ref().is_some_and(|a| a.0 == n))
+        };
+        let mut column = name.to_string();
+        let mut n = 1;
+        while taken(&column, &self.select) {
+            n += 1;
+            column = format!("{name}_{n}");
+        }
+        self.select.push(select(e, &column));
+        column
+    }
 }
 
 impl<'s> Lowerer<'s> {
@@ -727,12 +794,13 @@ impl<'s> Lowerer<'s> {
     /// The SELECT of a WITH or RETURN over the current relation. For a WITH
     /// (`cte` = the alias its CTE will have), node and relationship items are
     /// exported as columns and the returned scope maps each item to where
-    /// the next segment reads it.
+    /// the next segment reads it. For the final RETURN (`cte` = `None`), the
+    /// returned shape says what each item is.
     fn projection_body(
         &mut self,
         p: &Projection,
         cte: Option<&str>,
-    ) -> Result<(Body, Exports<'s>), LowerError> {
+    ) -> Result<(Body, Exports<'s>, Vec<ResultColumn>), LowerError> {
         let aggregating = p.aggregates();
         let mut body = Body {
             distinct: p.distinct,
@@ -742,7 +810,10 @@ impl<'s> Lowerer<'s> {
             ..Body::default()
         };
         let mut exports = Exports::default();
+        let mut shape = Vec::new();
         let mut items_env: HashMap<VarId, RenderExpr> = HashMap::new();
+        // `id(n)` items: their column is the node's key, not the id returned.
+        let mut id_items: Vec<VarId> = Vec::new();
         for it in &p.items {
             let element = match &it.expr {
                 LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(n)) => {
@@ -753,26 +824,51 @@ impl<'s> Lowerer<'s> {
                 _ => None,
             };
             if let Some(src) = element {
-                let Some(alias) = cte else {
-                    return unsupported(
-                        "returning a whole node, relationship or path (needs the result shape)",
-                    );
-                };
                 if matches!(self.binding(src).kind, BindingKind::Path) {
                     return unsupported("a path variable (S6)");
                 }
+                // In this projection's ORDER BY / WHERE the item is the
+                // element itself.
+                let scan = self.scans.get(&src).cloned();
+                let Some(alias) = cte else {
+                    shape.push(self.return_element(src, &it.name, aggregating, &mut body)?);
+                    if let Some(s) = scan {
+                        self.scans.insert(it.var, s);
+                    }
+                    continue;
+                };
                 let mut keys = Vec::new();
-                let scan = self.export_element(src, it.var, alias, &mut body.select, &mut keys)?;
+                let out = self.export_element(src, it.var, alias, &mut body.select, &mut keys)?;
                 if aggregating {
                     body.group_by.extend(keys);
                 }
-                // In this projection's ORDER BY / WHERE the item is the
-                // element itself.
-                if let Some(s) = self.scans.get(&src).cloned() {
+                if let Some(s) = scan {
                     self.scans.insert(it.var, s);
                 }
-                exports.scans.push((it.var, scan));
+                exports.scans.push((it.var, out));
                 continue;
+            }
+            if cte.is_none() {
+                // `RETURN n.*`: the node's properties, named as for `RETURN n`.
+                if let Some(src) = self.all_properties_of(&it.expr) {
+                    let name = it.name.strip_suffix(".*").unwrap_or(&it.name);
+                    shape.push(self.return_element(src, name, aggregating, &mut body)?);
+                    continue;
+                }
+                if let Some((v, label)) = self.node_id_item(&it.expr) {
+                    let e = self.identity_value(v)?;
+                    if aggregating {
+                        body.group_by.push(e.clone());
+                    }
+                    let column = body.column(e, &it.name);
+                    shape.push(ResultColumn {
+                        name: it.name.clone(),
+                        kind: ResultKind::NodeId { label },
+                        columns: vec![(it.name.clone(), column)],
+                    });
+                    id_items.push(it.var);
+                    continue;
+                }
             }
             let e = self.expr(&it.expr, &HashMap::new())?;
             if aggregating && !it.aggregate {
@@ -789,8 +885,24 @@ impl<'s> Lowerer<'s> {
                     body.select.push(select(e, &name));
                     exports.values.push((it.var, col_at(alias, &name)));
                 }
-                None => body.select.push(select(e, &it.name)),
+                None => {
+                    let column = body.column(e, &it.name);
+                    shape.push(ResultColumn {
+                        name: it.name.clone(),
+                        kind: ResultKind::Value,
+                        columns: vec![(it.name.clone(), column)],
+                    });
+                }
             }
+        }
+        // Bolt returns `id(n)` encoded, and the encoding does not keep the
+        // key's order (a string key is hashed).
+        if p.order_by.iter().any(|k| {
+            referenced_names(&k.expr, false)
+                .iter()
+                .any(|n| parse_var(n).is_some_and(|v| id_items.contains(&v)))
+        }) {
+            return unsupported("ORDER BY an id() item (the encoded id has another order)");
         }
         body.order_by = self.sort_keys(&p.order_by, &items_env)?;
         let ordered_input = !matches!(self.order, RowOrder::Unordered);
@@ -836,7 +948,154 @@ impl<'s> Lowerer<'s> {
                 self.filters.push(e);
             }
         }
-        Ok((body, exports))
+        Ok((body, exports, shape))
+    }
+
+    /// A node or relationship item of the final RETURN: its columns, named
+    /// `name.<…>` as on the legacy pipeline. Returns what the item is.
+    fn return_element(
+        &self,
+        src: VarId,
+        name: &str,
+        aggregating: bool,
+        body: &mut Body,
+    ) -> Result<ResultColumn, LowerError> {
+        let Some((columns, kind)) = self.element_columns(src)? else {
+            // An element that matches nothing: the relation has no rows.
+            let column = body.column(RenderExpr::Literal(Literal::Null), name);
+            return Ok(ResultColumn {
+                name: name.to_string(),
+                kind: ResultKind::Value,
+                columns: vec![(name.to_string(), column)],
+            });
+        };
+        let Some(identity) = self.identity(src)? else {
+            return unsupported(format!("internal: {src} has columns but no identity"));
+        };
+        let unreturned: Vec<RenderExpr> = identity
+            .iter()
+            .filter(|i| !columns.iter().any(|(_, e)| e == *i))
+            .cloned()
+            .collect();
+        if body.distinct && !unreturned.is_empty() {
+            // Rows equal in every returned column can be different elements
+            // (a relationship whose `edge_id` is not a property): DISTINCT
+            // also by the identity.
+            if aggregating {
+                return unsupported(
+                    "DISTINCT aggregation over a relationship whose edge_id is not returned",
+                );
+            }
+            body.distinct_keys.extend(unreturned);
+        }
+        let mut named = Vec::new();
+        for (key, e) in columns {
+            if aggregating {
+                body.group_by.push(e.clone());
+            }
+            let column = body.column(e, &format!("{name}.{key}"));
+            named.push((key, column));
+        }
+        if aggregating {
+            // One group per element, whatever its columns.
+            for i in identity {
+                if !body.group_by.contains(&i) {
+                    body.group_by.push(i);
+                }
+            }
+        }
+        Ok(ResultColumn {
+            name: name.to_string(),
+            kind,
+            columns: named,
+        })
+    }
+
+    /// The columns of a whole node or relationship, in the legacy pipeline's
+    /// order: a relationship's stored endpoint columns, then every property
+    /// by name. `None` for an element that matches nothing.
+    fn element_columns(&self, v: VarId) -> Result<Option<ElementColumns>, LowerError> {
+        let mut columns = Vec::new();
+        let kind = match self.scans.get(&v) {
+            Some(Scan::Node { label, .. }) => ResultKind::Node {
+                label: label.clone(),
+            },
+            Some(Scan::Rel {
+                schema, rel_type, ..
+            }) => {
+                for (role, id) in [("from_id", &schema.from_id), ("to_id", &schema.to_id)] {
+                    let cols = id.columns();
+                    for (i, c) in cols.iter().enumerate() {
+                        let suffix = if cols.len() > 1 {
+                            format!("{role}_{}", i + 1)
+                        } else {
+                            role.to_string()
+                        };
+                        columns.push((suffix, self.physical(v, c)?));
+                    }
+                }
+                ResultKind::Rel {
+                    rel_type: rel_type.clone(),
+                    from_label: schema.from_node.clone(),
+                    to_label: schema.to_node.clone(),
+                }
+            }
+            Some(Scan::Impossible) => return Ok(None),
+            None => return unsupported(format!("internal: {v} has no scan")),
+        };
+        for prop in self.all_property_names(v) {
+            let e = self.property(v, &prop)?;
+            columns.push((prop, e));
+        }
+        Ok(Some((columns, kind)))
+    }
+
+    /// Every property of an element's label / type, by name.
+    fn all_property_names(&self, v: VarId) -> Vec<String> {
+        let mapped = match self.scans.get(&v) {
+            Some(Scan::Node { schema, .. }) => &schema.property_mappings,
+            Some(Scan::Rel { schema, .. }) => &schema.property_mappings,
+            _ => return Vec::new(),
+        };
+        let mut names: Vec<String> = mapped.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    /// The node or relationship of a `v.*` item.
+    fn all_properties_of(&self, e: &LogicalExpr) -> Option<VarId> {
+        let LogicalExpr::PropertyAccessExp(pa) = e else {
+            return None;
+        };
+        if !matches!(&pa.column, PropertyValue::Column(c) if c == ALL_PROPERTIES) {
+            return None;
+        }
+        parse_var(&pa.table_alias.0).filter(|v| {
+            matches!(
+                self.binding(*v).kind,
+                BindingKind::Node { .. } | BindingKind::Rel { .. }
+            )
+        })
+    }
+
+    /// `id(n)` of a node read from a table or a CTE: the node and its label.
+    fn node_id_item(&self, e: &LogicalExpr) -> Option<(VarId, String)> {
+        let LogicalExpr::ScalarFnCall(f) = e else {
+            return None;
+        };
+        if !f.name.eq_ignore_ascii_case("id") {
+            return None;
+        }
+        let [LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(n))] =
+            f.args.as_slice()
+        else {
+            return None;
+        };
+        let v = parse_var(n)?;
+        match self.scans.get(&v) {
+            Some(Scan::Node { label, .. }) => Some((v, label.clone())),
+            _ => None,
+        }
     }
 
     /// Export a node or relationship `src` as `out` from a CTE aliased
@@ -879,7 +1138,12 @@ impl<'s> Lowerer<'s> {
             physical.insert(c.clone(), name);
         }
         let mut props = HashMap::new();
-        for prop in self.demand.get(&out).into_iter().flatten() {
+        let demanded = self.demand.get(&out);
+        let mut names: BTreeSet<String> = demanded.into_iter().flatten().cloned().collect();
+        if names.remove(ALL_PROPERTIES) {
+            names.extend(self.all_property_names(src));
+        }
+        for prop in &names {
             let e = self.property(src, prop)?;
             if is_constant(&e) {
                 props.insert(prop.clone(), e);
@@ -912,7 +1176,7 @@ impl<'s> Lowerer<'s> {
     /// output scope, and a new segment reads from it.
     fn with(&mut self, p: &Projection) -> Result<(), LowerError> {
         let alias = self.next_cte_alias();
-        let (body, exports) = self.projection_body(p, Some(&alias))?;
+        let (body, exports, _) = self.projection_body(p, Some(&alias))?;
         self.close_segment(body, exports, alias)
     }
 
@@ -1025,12 +1289,12 @@ impl<'s> Lowerer<'s> {
     }
 
     /// The final RETURN.
-    fn project(&mut self, p: &Projection) -> Result<RenderPlan, LowerError> {
+    fn project(&mut self, p: &Projection) -> Result<(RenderPlan, Vec<ResultColumn>), LowerError> {
         if p.filter.is_some() {
             return unsupported("internal: a RETURN with a WHERE");
         }
-        let (body, _) = self.projection_body(p, None)?;
-        Ok(self.render(body))
+        let (body, _, shape) = self.projection_body(p, None)?;
+        Ok((self.render(body), shape))
     }
 
     /// The current relation under `body`'s SELECT.
@@ -1049,6 +1313,18 @@ impl<'s> Lowerer<'s> {
         // unlike a global aggregate.
         let mut group_by = body.group_by;
         let mut having = body.having;
+        let mut distinct = body.distinct;
+        if distinct && !body.distinct_keys.is_empty() {
+            // DISTINCT by the returned columns and keys that are not returned:
+            // a GROUP BY of both (a plain projection, so no aggregate).
+            group_by = body
+                .select
+                .iter()
+                .map(|i| i.expression.clone())
+                .chain(body.distinct_keys)
+                .collect();
+            distinct = false;
+        }
         group_by.retain(|g| !is_constant(g));
         if body.grouped && group_by.is_empty() {
             having.insert(
@@ -1071,7 +1347,7 @@ impl<'s> Lowerer<'s> {
             ctes: CteItems(Vec::new()),
             select: SelectItems {
                 items: body.select,
-                distinct: body.distinct,
+                distinct,
             },
             from: FromTableItem(from),
             joins: JoinItems(joins),
@@ -1093,6 +1369,13 @@ impl<'s> Lowerer<'s> {
 /// The per-row WITH WHERE value a CTE exports when the WHERE follows a SKIP
 /// or LIMIT.
 const KEEP: &str = "__keep";
+
+/// `v.*`, and in the demand pass: every property of `v` (a whole-entity
+/// RETURN).
+const ALL_PROPERTIES: &str = "*";
+
+/// A returned element's columns (`<item>.<suffix>`, expression) and kind.
+type ElementColumns = (Vec<(String, RenderExpr)>, ResultKind);
 
 /// What a segment's CTE exports: the next segment's scope.
 #[derive(Default)]
@@ -1166,6 +1449,24 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
     let mut add = |v: VarId, prop: &str| {
         demand.entry(v).or_default().insert(prop.to_string());
     };
+    // A node or relationship the final RETURN returns whole: every property
+    // (`v.*` is a property ref).
+    if let BoundOp::Project { projection, .. } = &stmt.plan {
+        for it in projection.items.iter().filter(|i| !i.aggregate) {
+            if let LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(n)) =
+                &it.expr
+            {
+                if let Some(v) = parse_var(n).filter(|v| {
+                    matches!(
+                        stmt.bindings[v.0 as usize].kind,
+                        BindingKind::Node { .. } | BindingKind::Rel { .. }
+                    )
+                }) {
+                    add(v, ALL_PROPERTIES);
+                }
+            }
+        }
+    }
     for e in all {
         for (name, prop) in property_refs(e) {
             if let Some(v) = parse_var(&name) {

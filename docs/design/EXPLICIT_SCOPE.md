@@ -698,6 +698,18 @@ Today `extract_return_metadata(LogicalPlan, PlanCtx)` reads the
 All three take the `ResultShape` instead when the new path rendered the
 query.
 
+Implemented in S4c:
+- The shape is `Vec<ResultColumn>` (`bound_plan::lower`), one per RETURN
+  item: `Value`, `Node{label}`, `Rel{type, from label, to label}`,
+  `NodeId{label}`. `ReadTranslation::return_metadata()` is the one seam the
+  three callers read. It converts the shape into the result transformer's
+  `ReturnItemMetadata` on the new path, and runs `extract_return_metadata`
+  on the legacy one.
+- A relationship's columns are its stored endpoint columns, so its shape
+  says `Outgoing` whatever the pattern's direction.
+- The legacy transformer swaps start and end for an `Incoming` pattern,
+  which reverses `(a)<-[r]-(b) RETURN r` over Bolt. The new path does not.
+
 ### 4.14 Lowering target and emitter
 
 Lowering produces a `RenderPlan`:
@@ -1216,8 +1228,77 @@ slice that will handle it.
         store (`follow_id`, an edge id read as a column by the undeclared-
         property rule), `int / int` (#847), byte-based `size` / `reverse` of
         non-ASCII strings (identical on legacy), and the comparator artifact.
-  - [ ] **S4c: result shape** — whole-entity returns, `id()`, Bolt and graph
+  - [x] **S4c: result shape** — whole-entity returns, `id()`, Bolt and graph
     output (§4.13).
+    - A node or relationship RETURN item (`n`, `n AS x`, `n.*`) is its
+      columns under the legacy names:
+      - `x.<prop>` for every property, by name;
+      - a relationship first has `x.from_id` / `x.to_id`, its stored endpoint
+        columns (`from_id_1`, … when composite);
+      - a WITH CTE exports every property of an element the final RETURN
+        returns whole: the demand pass marks it `*`, carried back through
+        pass-through items.
+    - Grouping by a returned element also groups by its identity. DISTINCT
+      over a relationship whose `edge_id` is not returned is a GROUP BY of
+      the returned columns plus the identity, since rows equal in every
+      returned column can be different relationships. With aggregation that
+      case is refused.
+    - `id(n)` as a RETURN item is the node's key column, as on the legacy
+      path; Bolt encodes it from the shape (`IdMapper`). Still refused:
+      - `id()` anywhere else (the HTTP / Bolt `id()` rewrite turns comparisons
+        into key predicates in the AST, not in the text the new path parses);
+      - `id()` of a relationship (the legacy value is its from column);
+      - a composite id;
+      - `ORDER BY` an `id()` item (a string key's encoded id is a hash, so it
+        sorts differently);
+      - `elementId()`.
+    - Routing: Bolt and HTTP `format: Graph` now pass the query text, and
+      embedded `query_graph` does too. A translation with `id() = N` label
+      constraints still takes the legacy path.
+    - Each shape item lists its own columns as (key, column). Lowering names
+      result columns uniquely (the printer's `_2` rule), and the Bolt, graph
+      and embedded transformers read only an item's listed columns
+      (`ReturnItemMetadata::columns`, `entity_row`, `value`). The legacy
+      convention instead collects every `x.`-prefixed column, which on both
+      paths gave `RETURN n, n.name` a `name_2` property and
+      `RETURN n, n.age + 1` an `age + 1` property. Legacy metadata keeps that
+      convention (`columns: None`).
+    - A returned element that matches nothing is one NULL column (no rows).
+    - An element as a value (`collect(a)`, `[a]`, `CASE … a …`) and `v.*`
+      outside a RETURN item are still refused.
+    - Fixed: S4a lowered `RETURN n.*` to `v0.* AS "n.*"` (behind the switch).
+    - Acceptance:
+      - Neo4j oracle, switch off vs on (`social_integration`, `standard`):
+        0 correct → wrong, 22 wrong → correct (12 of them whole-entity returns
+        new here). The corpus lowers 405 queries (was 371).
+      - Bolt and HTTP graph format, switch on vs off, and Bolt on vs Neo4j,
+        over 25 whole-entity shapes: every Bolt result equals Neo4j (labels,
+        properties, relationship type and endpoints); `n.*` is not Cypher. Every on/off difference
+        is a legacy defect the new path does not have:
+        - `(a)<-[r]-(b) RETURN r` has start and end swapped;
+        - `RETURN n AS x` is named `n`, and its Bolt node is missing;
+        - after `WITH n`, the properties gain `email_address` / `full_name`
+          and a relationship loses `from_id` (so no Bolt relationship);
+        - `RETURN b, count(*)` returns flat columns over Bolt;
+        - graph output is empty after a WITH or for `n.*`;
+        - `WITH r MATCH (x)-[r]->(y)` fails in ClickHouse.
+      - Embedded `query_remote_graph`: identical nodes and edges where the
+        legacy path works, and correct where it is empty or fails.
+      - Live suite, switch on vs off: 41 tests differ (28 after S4b). The 13
+        new ones are 12 Neo4j-golden entries recorded as wrong that are now
+        correct (the goldens are keyed to the default path; the same 12 as
+        the oracle), and one timing test (`test_filter_early_vs_late`).
+    - Review (about 120 queries over HTTP JSON, Graph and Bolt, on vs off vs
+      Neo4j) found no wrong rows on the new path. Two findings, both fixed:
+      - HTTP `format: Graph` with `sql_only` extracted the result shape before
+        returning the SQL, so with the switch off a query the legacy extractor
+        cannot read gave 500 instead of its SQL. The shape is now read only
+        after the `sql_only` return.
+      - Columns collected by prefix, as above.
+      Not changed: `translate.rs` imports the result transformer's metadata
+      type from the Bolt module, and Bolt reports no fields for an empty
+      all-scalar result, on both paths.
+
 - [ ] S5 OPTIONAL MATCH unit
 - [ ] S6 paths + uniqueness + shortestPath
 - [ ] S7 UNWIND / UNION / alternatives

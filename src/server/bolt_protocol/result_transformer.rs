@@ -60,6 +60,43 @@ pub struct ReturnItemMetadata {
     pub field_name: String,
     /// Type of return item
     pub item_type: ReturnItemType,
+    /// The result columns holding the item, as (key, column), when the
+    /// translation knows them exactly (the bound-plan path): a value's key is
+    /// its name, an entity's keys are `from_id` / `to_id` and its property
+    /// names. `None`: the legacy convention, where a value is the column
+    /// `field_name` and an entity is every column prefixed `field_name.`
+    /// (which also collects another item named `n.name_2` or `n.age + 1`).
+    pub columns: Option<Vec<(String, String)>>,
+}
+
+impl ReturnItemMetadata {
+    /// The value of a scalar or `id()` item.
+    pub fn value<'r>(&self, row: &'r HashMap<String, Value>) -> Option<&'r Value> {
+        match &self.columns {
+            Some(columns) => columns.first().and_then(|(_, c)| row.get(c)),
+            None => row.get(&self.field_name),
+        }
+    }
+
+    /// The row as an entity transform reads it (`{field_name}.{key}`). With
+    /// explicit columns: only this item's columns, under those names.
+    pub fn entity_row<'r>(
+        &self,
+        row: &'r HashMap<String, Value>,
+    ) -> std::borrow::Cow<'r, HashMap<String, Value>> {
+        match &self.columns {
+            None => std::borrow::Cow::Borrowed(row),
+            Some(columns) => std::borrow::Cow::Owned(
+                columns
+                    .iter()
+                    .filter_map(|(key, c)| {
+                        row.get(c)
+                            .map(|v| (format!("{}.{}", self.field_name, key), v.clone()))
+                    })
+                    .collect(),
+            ),
+        }
+    }
 }
 
 /// Type of a return item
@@ -514,6 +551,7 @@ pub fn extract_return_metadata(
         metadata.push(ReturnItemMetadata {
             field_name,
             item_type,
+            columns: None,
         });
     }
 
@@ -617,8 +655,11 @@ pub fn transform_row(
     );
 
     // Check for multi-label scan results (has {alias}_label, {alias}_id, {alias}_properties columns)
-    if let Some(transformed) = try_transform_multi_label_row(&row, metadata, id_mapper)? {
-        return Ok(transformed);
+    // A translation that names every item's columns has none.
+    if metadata.iter().any(|m| m.columns.is_none()) {
+        if let Some(transformed) = try_transform_multi_label_row(&row, metadata, id_mapper)? {
+            return Ok(transformed);
+        }
     }
 
     let mut result = Vec::new();
@@ -631,7 +672,7 @@ pub fn transform_row(
                     .field_name
                     .strip_suffix(".*")
                     .unwrap_or(&meta.field_name);
-                let mut node = transform_to_node(&row, var_name, labels, schema)?;
+                let mut node = transform_to_node(&meta.entity_row(&row), var_name, labels, schema)?;
                 // Assign session-scoped integer ID from id_mapper
                 node.id = id_mapper.get_or_assign(&node.element_id);
                 // Use the Node's packstream encoding
@@ -650,7 +691,7 @@ pub fn transform_row(
                     .strip_suffix(".*")
                     .unwrap_or(&meta.field_name);
                 let mut rel = transform_to_relationship(
-                    &row,
+                    &meta.entity_row(&row),
                     var_name,
                     rel_types,
                     from_label.as_deref(),
@@ -805,7 +846,7 @@ pub fn transform_row(
                 // First, try to get the id value from the field_name (the SQL column alias)
                 // When "id(u) as uid" is queried, SQL is "SELECT u.user_id AS uid"
                 // and row contains {"uid": 1}, so we look for field_name first
-                let element_id = if let Some(id_val) = row.get(&meta.field_name) {
+                let element_id = if let Some(id_val) = meta.value(&row) {
                     let id_str = match id_val {
                         Value::Number(n) => n.to_string(),
                         Value::String(s) => s.clone(),
@@ -861,7 +902,7 @@ pub fn transform_row(
             }
             ReturnItemType::Scalar => {
                 // For scalars, just extract the value and wrap in BoltValue::Json
-                let value = row.get(&meta.field_name).cloned().unwrap_or(Value::Null);
+                let value = meta.value(&row).cloned().unwrap_or(Value::Null);
                 result.push(BoltValue::Json(value));
             }
         }
@@ -3422,6 +3463,92 @@ graph_schema:
             .expect("unlabeled node should infer its label from the 'id' id column");
         assert_eq!(inferred.element_id, "Person:7-");
         assert_eq!(inferred.labels, vec!["Person".to_string()]);
+    }
+
+    /// An item with explicit columns (the bound-plan path) reads only its own
+    /// columns: another item's `n.name` (renamed `n.name_2`) or `n.age + 1`
+    /// is not a property of `n`, and a value is read from its own column.
+    #[test]
+    fn test_transform_row_reads_only_the_items_own_columns() {
+        use crate::graph_catalog::config::GraphSchemaConfig;
+        let schema = GraphSchemaConfig::from_yaml_str(
+            r#"
+graph_schema:
+  name: t
+  nodes:
+    - label: Person
+      database: test
+      table: Person
+      node_id: id
+      property_mappings:
+        id: id
+        name: name
+  relationships: []
+"#,
+        )
+        .expect("parse schema")
+        .to_graph_schema()
+        .expect("to graph schema");
+        // `RETURN m.name AS `n.name`, n, n.age + 1` over two persons: the
+        // node's `name` column is the renamed one.
+        let row: HashMap<String, Value> = [
+            ("n.name", Value::from("Bob")),
+            ("n.id", Value::from(7)),
+            ("n.name_2", Value::from("Alice")),
+            ("n.age + 1", Value::from(29)),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        let pairs = |p: &[(&str, &str)]| {
+            Some(
+                p.iter()
+                    .map(|(k, c)| (k.to_string(), c.to_string()))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let metadata = vec![
+            ReturnItemMetadata {
+                field_name: "n.name".to_string(),
+                item_type: ReturnItemType::Scalar,
+                columns: pairs(&[("n.name", "n.name")]),
+            },
+            ReturnItemMetadata {
+                field_name: "n".to_string(),
+                item_type: ReturnItemType::Node {
+                    labels: vec!["Person".to_string()],
+                },
+                columns: pairs(&[("id", "n.id"), ("name", "n.name_2")]),
+            },
+            ReturnItemMetadata {
+                field_name: "n.age + 1".to_string(),
+                item_type: ReturnItemType::Scalar,
+                columns: pairs(&[("n.age + 1", "n.age + 1")]),
+            },
+        ];
+        let node_row = metadata[1].entity_row(&row);
+        let node = transform_to_node(&node_row, "n", &["Person".to_string()], &schema).unwrap();
+        let mut props: Vec<_> = node.properties.into_iter().collect();
+        props.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            props,
+            [
+                ("id".to_string(), Value::from(7)),
+                ("name".to_string(), Value::from("Alice"))
+            ]
+        );
+        assert_eq!(metadata[0].value(&row), Some(&Value::from("Bob")));
+        assert_eq!(metadata[2].value(&row), Some(&Value::from(29)));
+        // A value whose column was renamed is read from that column.
+        let renamed = ReturnItemMetadata {
+            field_name: "x".to_string(),
+            item_type: ReturnItemType::Scalar,
+            columns: pairs(&[("x", "n.name_2")]),
+        };
+        assert_eq!(renamed.value(&row), Some(&Value::from("Alice")));
+        let mut ids = super::super::id_mapper::IdMapper::new();
+        let out = transform_row(row, &metadata, &schema, &mut ids).unwrap();
+        assert_eq!(out.len(), 3);
     }
 
     /// #486: `transform_vlp_path` must decode the standard (single-type) VLP
