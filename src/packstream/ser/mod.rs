@@ -211,7 +211,12 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         value.serialize(self)
     }
 
+    // `()` and `serde_json::Value::Null` serialize as a unit: PackStream
+    // NULL. Writing nothing left a record one value short, and the client
+    // failed to read it (`RETURN null AS x`).
     fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
+        self.bytes.reserve(1);
+        self.bytes.put_u8(0xC0);
         Ok(())
     }
 

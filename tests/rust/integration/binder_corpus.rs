@@ -90,7 +90,8 @@ fn the_corpus_binds() {
 /// P-4c S4: lower every corpus query the bound-plan path can lower, through
 /// the same seam the server uses. No panic, and every lowered query yields
 /// SQL. With `LOWERED_LIST=<path>`, writes `schema/name` of each lowered
-/// query (the oracle comparison uses it to score the new path alone).
+/// query (the oracle comparison uses it to score the new path alone); with
+/// `LOWER_TRACE=<text>`, prints why each query containing `<text>` is not.
 #[test]
 fn the_corpus_lowers() {
     let schema_map = load_schema_map();
@@ -131,6 +132,9 @@ fn the_corpus_lowers() {
                 lowered.push(format!("{schema_name}/{name}"));
             }
             Ok(Err(why)) => {
+                if std::env::var("LOWER_TRACE").is_ok_and(|t| cypher.contains(&t)) {
+                    println!("not lowered {schema_name}/{name}: {why}: {cypher}");
+                }
                 let key = why.split(':').take(2).collect::<Vec<_>>().join(":");
                 *reasons.entry(key).or_default() += 1;
             }

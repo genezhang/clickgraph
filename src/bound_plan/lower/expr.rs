@@ -78,6 +78,34 @@ impl Lowerer<'_> {
         }))
     }
 
+    /// `value`, a constant for matched elements, as NULL when one of `vars`
+    /// is NULL (an OPTIONAL MATCH found no match): Cypher's `b:User`,
+    /// `type(r)`, `labels(b)`, `a = b` of a NULL element are NULL.
+    pub(super) fn unless_null(
+        &self,
+        vars: &[VarId],
+        value: RenderExpr,
+    ) -> Result<RenderExpr, LowerError> {
+        let mut nulls = Vec::new();
+        for v in vars.iter().filter(|v| self.binding(**v).nullable) {
+            match self.identity(*v)? {
+                Some(id) => nulls.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: lx::Operator::IsNull,
+                    operands: vec![id[0].clone()],
+                })),
+                None => return Ok(RenderExpr::Literal(Literal::Null)),
+            }
+        }
+        if nulls.is_empty() {
+            return Ok(value);
+        }
+        Ok(RenderExpr::Case(RenderCase {
+            expr: None,
+            when_then: vec![(super::or_all(nulls), RenderExpr::Literal(Literal::Null))],
+            else_expr: Some(Box::new(value)),
+        }))
+    }
+
     /// A node's or relationship's identity as one expression.
     pub(super) fn identity_value(&self, v: VarId) -> Result<RenderExpr, LowerError> {
         match self.identity(v)? {
@@ -117,10 +145,10 @@ impl Lowerer<'_> {
                 let holds = match self.scans.get(&v) {
                     Some(Scan::Node { label: l, .. }) => l == label,
                     Some(Scan::Rel { rel_type, .. }) => rel_type == label,
-                    Some(Scan::Impossible) => false,
+                    Some(Scan::Impossible) => return Ok(RenderExpr::Literal(Literal::Null)),
                     None => return unsupported("a label test on a variable with no scan"),
                 };
-                RenderExpr::Literal(Literal::Boolean(holds))
+                self.unless_null(&[v], RenderExpr::Literal(Literal::Boolean(holds)))?
             }
             LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
                 self.operator(op, items)?
@@ -224,7 +252,7 @@ impl Lowerer<'_> {
             _ => false,
         };
         if !same_kind {
-            return Ok(RenderExpr::Literal(Literal::Boolean(!equal)));
+            return self.unless_null(&[a, b], RenderExpr::Literal(Literal::Boolean(!equal)));
         }
         let (Some(ca), Some(cb)) = (self.identity(a)?, self.identity(b)?) else {
             return Ok(RenderExpr::Literal(Literal::Null));
@@ -328,7 +356,12 @@ impl Lowerer<'_> {
                     unsupported("id() / elementId() other than a node's `id(n)` RETURN item")
                 }
                 ("type", Some(Scan::Rel { rel_type, .. })) => {
-                    Ok(RenderExpr::Literal(Literal::String(rel_type.clone())))
+                    self.unless_null(&[v], RenderExpr::Literal(Literal::String(rel_type.clone())))
+                }
+                // NULL for an unmatched node, and a ClickHouse array cannot
+                // be NULL.
+                ("labels", Some(Scan::Node { .. })) if self.binding(v).nullable => {
+                    unsupported("labels() of a node an OPTIONAL MATCH may leave NULL")
                 }
                 ("labels", Some(Scan::Node { label, .. })) => {
                     Ok(RenderExpr::List(vec![RenderExpr::Literal(

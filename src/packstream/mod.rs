@@ -444,7 +444,19 @@ mod tests {
 
     #[test]
     fn unit() {
-        roundtrip(&[], ());
+        roundtrip(&[0xC0], ());
+    }
+
+    /// A JSON null is a unit to serde: PackStream NULL, also nested (a Bolt
+    /// RECORD field written as nothing could not be read).
+    #[test]
+    fn json_null() {
+        let bytes = to_bytes(&serde_json::Value::Null).unwrap();
+        assert_eq!(&bytes[..], &[0xC0]);
+        let bytes = to_bytes(&serde_json::json!([1, null])).unwrap();
+        assert_eq!(&bytes[..], &[0x92, 0x01, 0xC0]);
+        let bytes = to_bytes(&serde_json::json!({"a": null})).unwrap();
+        assert_eq!(&bytes[..], &[0xA1, 0x81, b'a', 0xC0]);
     }
 
     #[test]

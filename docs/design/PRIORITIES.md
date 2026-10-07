@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c result shape; next: S5 OPTIONAL MATCH)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 OPTIONAL MATCH unit; next: S6 paths)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,16 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-07: **P-4c S5: OPTIONAL MATCH as one unit** (`src/bound_plan/lower/`, behind `CLICKGRAPH_BOUND_PLAN=on`; Bolt NULL fix on both paths).
+  - An OPTIONAL MATCH lowers to the rows so far LEFT JOIN its matches, a CTE holding the pattern with its WHERE inside, joined on the variables it shares. Its WHERE decides which matches there are and never drops an input row. Multi-hop patterns are all-or-nothing (#1235 on the new path).
+    - Shared nodes need no restriction to the input (they exist). A node `Q` reads only by identity comes from the relationship's endpoint column, and the input's conjuncts over the shared nodes' own columns are copied into `Q`.
+    - A shared relationship, or a variable only the WHERE reads, uses a distinct drive of the input, and a value joins NULL-safely.
+    - Unmatched elements are NULL in label tests, `type()` and cross-label comparisons. A later `MATCH (b)` of a NULL node drops the row.
+  - Neo4j oracle, switch on, vs S4c: 0 correct → wrong, MATCH 365 → 369. The corpus lowers 460 queries (was 405).
+  - 48 further OPTIONAL shapes: 47 equal Neo4j on the new path (one is a LIMIT tie); the legacy path gets 21 wrong and errors on 6.
+  - Bolt: unmatched elements and their `id()` are NULL. The vendored PackStream serializer wrote nothing for a JSON null, so every Bolt record holding a NULL failed in the client, on both paths; it now writes `0xC0`.
+  - Timing (social benchmark, scale 100): an anchor restricted by its own WHERE is 1.5–3× faster than legacy; unselective anchors are about 1.5× slower; a WHERE on another variable than the anchor is about 4× slower (8 → 33 ms). Choosing the form from table statistics belongs to P-5. Details: EXPLICIT_SCOPE §4.9.
 
 - 2026-10-07: **P-4c S4c: the result shape** (`src/bound_plan/lower/`, `src/translate.rs`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - Whole nodes and relationships (`n`, `n AS x`, `n.*`) and `id(n)` lower in the final RETURN, under the legacy column names. The lowering also returns what each item is. `ReadTranslation::return_metadata()` is the one seam Bolt, the HTTP graph output and embedded `query_graph` read, on either path.
