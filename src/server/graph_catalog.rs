@@ -555,7 +555,9 @@ pub async fn load_schema_from_content(
 ) -> Result<(), String> {
     println!("Loading schema '{}' from YAML content", schema_name);
 
-    match load_schema_and_config_from_yaml_content(yaml_content, None).await {
+    // Through the client, like the schemas loaded at startup: it reads the
+    // columns that auto_discover_columns asks for and each table's engine.
+    match load_schema_and_config_from_yaml_content(yaml_content, clickhouse_client.as_ref()).await {
         Ok((schema, config)) => {
             println!(
                 "✓ Successfully loaded schema '{}' from YAML content",

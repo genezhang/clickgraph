@@ -6,6 +6,7 @@ use clickgraph::graph_catalog::{
 };
 
 use crate::{
+    commands::query::open_for_translation,
     config::CgConfig,
     llm::{extract_yaml, LlmClient},
     schema_fmt, DialectArg,
@@ -13,22 +14,18 @@ use crate::{
 
 /// `cg schema show` — print the loaded schema in a compact, agent-friendly format.
 pub fn run_show(format: &str, cfg: &CgConfig) -> Result<()> {
-    let path = cfg.require_schema()?;
-    let config = GraphSchemaConfig::from_yaml_file(path)
-        .map_err(|e| anyhow!("Failed to load schema '{}': {}", path, e))?;
-    let schema = config
-        .to_graph_schema()
-        .map_err(|e| anyhow!("Failed to build schema: {}", e))?;
-
-    match format {
-        "json" => {
-            let json = schema_fmt::format_json(&schema);
-            println!("{}", serde_json::to_string_pretty(&json)?);
-        }
-        _ => {
-            print!("{}", schema_fmt::format_text(&schema));
-        }
-    }
+    // The Database owns a runtime, so it is opened and dropped off the async worker
+    let text = tokio::task::block_in_place(|| -> Result<String> {
+        let db = open_for_translation(cfg)?;
+        Ok(match format {
+            "json" => {
+                let json = schema_fmt::format_json(db.schema());
+                format!("{}\n", serde_json::to_string_pretty(&json)?)
+            }
+            _ => schema_fmt::format_text(db.schema()),
+        })
+    })?;
+    print!("{}", text);
     Ok(())
 }
 
@@ -41,9 +38,11 @@ pub fn run_validate_schema(path: &str) -> Result<()> {
         .validate()
         .map_err(|e| anyhow!("Schema validation failed: {}", e))?;
 
-    // Also try building the GraphSchema to catch type inference errors
+    // Also try building the GraphSchema to catch type inference errors.
+    // Without a connection, columns that auto_discover_columns would add are
+    // not read, so only the declared mappings are checked.
     config
-        .to_graph_schema()
+        .to_graph_schema_declared_only()
         .map_err(|e| anyhow!("Schema build error: {}", e))?;
 
     println!("OK — schema '{}' is valid.", path);
@@ -53,6 +52,12 @@ pub fn run_validate_schema(path: &str) -> Result<()> {
         config.graph_schema.nodes.len(),
         rel_count
     );
+    for target in config.column_discovery_targets() {
+        println!(
+            "  note: {} discovers the columns of `{}`.`{}` at load; they were not checked",
+            target.owner, target.database, target.table
+        );
+    }
     Ok(())
 }
 

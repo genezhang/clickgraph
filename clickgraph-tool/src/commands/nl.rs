@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use crate::{
-    commands::query::run_query,
+    commands::query::{open_for_translation, run_query},
     config::CgConfig,
     llm::{extract_code_block, LlmClient},
     schema_fmt,
@@ -53,16 +53,11 @@ pub async fn run_nl(description: &str, execute: bool, format: &str, cfg: &CgConf
 }
 
 fn load_schema_for_nl(cfg: &CgConfig) -> Result<String> {
-    use anyhow::anyhow;
-    use clickgraph::graph_catalog::config::GraphSchemaConfig;
-
-    let path = cfg.require_schema()?;
-    let config = GraphSchemaConfig::from_yaml_file(path)
-        .map_err(|e| anyhow!("Failed to load schema '{}': {}", path, e))?;
-    let schema = config
-        .to_graph_schema()
-        .map_err(|e| anyhow!("Failed to build schema: {}", e))?;
-    Ok(schema_fmt::format_text(&schema))
+    // The Database owns a runtime, so it is opened and dropped off the async worker
+    tokio::task::block_in_place(|| {
+        let db = open_for_translation(cfg)?;
+        Ok(schema_fmt::format_text(db.schema()))
+    })
 }
 
 fn provider_name(llm: &LlmClient) -> &str {

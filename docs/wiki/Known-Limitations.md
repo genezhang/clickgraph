@@ -170,7 +170,7 @@ property_mappings:
 ```
 
 **Auto-Discovery:**
-Use `auto_discover_columns: true` to automatically map columns with matching names (case-insensitive):
+Use `auto_discover_columns: true` to map every column of the table as a property (under its own name, or camelCase with `naming_convention: camelCase`). The columns are read when the schema loads, so it needs a database connection (server, embedded chdb, or remote ClickHouse); SQL-only mode and Databricks refuse such a schema:
 
 ```yaml
 nodes:

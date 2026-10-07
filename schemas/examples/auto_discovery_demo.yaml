@@ -1,14 +1,16 @@
 # Auto-Discovery Demo Schema
 #
-# This schema demonstrates the auto_discover_columns feature which automatically
-# queries ClickHouse system.columns to create property mappings.
+# This schema demonstrates the auto_discover_columns feature: at load, the
+# table's columns are read from ClickHouse (system.columns) and each becomes a
+# property. `naming_convention` renames them, `exclude_columns` leaves some
+# out, and declared property_mappings are added on top (a declared name wins).
 #
-# NOTE: This is a DEMO schema for testing the auto-discovery feature.
-# The actual tables (users_bench, posts_bench with demo data) don't exist in the test database.
-# To use this schema, you need to create these tables with appropriate columns.
+# Discovery needs a database connection: the server with ClickHouse, embedded
+# chdb (columns read from `source:`), or a remote ClickHouse (`cg --clickhouse`).
+# A schema that asks for it is refused where no database is available.
 #
-# Status: Schema loading and API endpoints work correctly (Nov 18, 2025)
-# Tests are marked as skipped until demo data is set up.
+# Tables: brahmand.users_bench, posts_bench, user_follows_bench,
+# post_likes_bench (created by scripts/test/setup_all_test_data.sh).
 
 name: auto_discovery_demo
 
@@ -22,19 +24,17 @@ graph_schema:
       # Enable auto-discovery: All columns become properties
       auto_discover_columns: true
       
-      # Optional: Convert snake_case to camelCase
+      # Optional: Convert snake_case to camelCase (user_id → userId, ...)
       naming_convention: camelCase
       
-      # Exclude internal/system columns
+      # Columns that do not become properties
       exclude_columns:
-        - _shard_num
-        - _version
+        - city
       
-      # Override specific property mappings
+      # Declared mappings, added on top of the discovered ones
       property_mappings:
-        full_name: name           # Rename full_name → name in Cypher
-        email_address: email      # Rename email_address → email
-        # All other columns use camelCase (e.g., user_id → userId)
+        name: full_name           # property `name` reads column full_name
+        email: email_address      # property `email` reads column email_address
 
     - label: Post
       database: brahmand
@@ -44,9 +44,9 @@ graph_schema:
       # Auto-discover without exclusions
       auto_discover_columns: true
       
-      # Simple rename
+      # Declared mapping: property `body` reads column content
       property_mappings:
-        post_content: content
+        body: content
 
   edges:
     - type: FOLLOWS
@@ -59,8 +59,7 @@ graph_schema:
       
       # Auto-discover relationship properties
       auto_discover_columns: true
-      exclude_columns: [_internal_seq]
-      property_mappings: {}  # Empty - identity mapping
+      property_mappings: {}  # Every column, under its own name
 
     - type: LIKES
       database: brahmand
