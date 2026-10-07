@@ -233,6 +233,32 @@ pub(crate) fn contains_aggregate(expr: &LogicalExpr) -> bool {
     found
 }
 
+/// Every `binding.property` an expression reads: (generated name, property).
+pub(crate) fn property_refs(expr: &LogicalExpr) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    visit(expr, &mut |e| {
+        if let LogicalExpr::PropertyAccessExp(PropertyAccess {
+            table_alias,
+            column: PropertyValue::Column(prop),
+        }) = e
+        {
+            out.push((table_alias.0.clone(), prop.clone()));
+        }
+    });
+    out
+}
+
+/// True if the expression calls the aggregate `name` (case-insensitive).
+pub(crate) fn calls_aggregate(expr: &LogicalExpr, name: &str) -> bool {
+    let mut found = false;
+    visit(expr, &mut |e| {
+        if let LogicalExpr::AggregateFnCall(f) = e {
+            found |= f.name.eq_ignore_ascii_case(name);
+        }
+    });
+    found
+}
+
 /// The bindings an expression references (by generated name), excluding
 /// those inside aggregate calls when `outside_aggregates`.
 pub(crate) fn referenced_names(expr: &LogicalExpr, outside_aggregates: bool) -> Vec<String> {

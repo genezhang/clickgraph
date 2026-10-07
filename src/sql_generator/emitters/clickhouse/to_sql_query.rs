@@ -6426,13 +6426,13 @@ fn rewrite_empty_reduce_list(
 /// alias and physical column. Column printing skips the name-keyed resolution
 /// while this runs (`QueryContext::plain_render`).
 ///
-/// Supports the plan shapes the lowering produces today: one SELECT with
-/// FROM / JOINs / WHERE / GROUP BY / ORDER BY / SKIP / LIMIT, no CTEs and no
-/// UNION.
+/// Supports the plan shapes the lowering produces today: SELECTs with FROM /
+/// JOINs / WHERE / GROUP BY / HAVING / ORDER BY / SKIP / LIMIT, the WITH
+/// bodies as flat CTEs before the final one, and no UNION.
 pub fn render_plan_to_sql_plain(mut plan: RenderPlan) -> String {
     assert!(
-        plan.ctes.0.is_empty() && plan.union.0.is_none() && plan.array_join.0.is_empty(),
-        "render_plan_to_sql_plain: CTEs, UNION and ARRAY JOIN are not lowered yet"
+        plan.union.0.is_none() && plan.array_join.0.is_empty(),
+        "render_plan_to_sql_plain: UNION and ARRAY JOIN are not lowered yet"
     );
     flatten_all_ctes(&mut plan);
     struct PlainGuard(bool);
@@ -6444,6 +6444,85 @@ pub fn render_plan_to_sql_plain(mut plan: RenderPlan) -> String {
     }
     let _guard = PlainGuard(crate::server::query_context::is_plain_render());
     crate::server::query_context::set_plain_render(true);
+    // The Databricks `size()` render picks Spark `size` for a list-valued
+    // column (see `databricks_size_name`); a lowered plan has no variable
+    // registry, so its list columns are read off the plan itself.
+    struct ArrayColsGuard(HashSet<String>);
+    impl Drop for ArrayColsGuard {
+        fn drop(&mut self) {
+            crate::server::query_context::set_array_cte_columns(std::mem::take(&mut self.0));
+        }
+    }
+    let _array_cols_guard = ArrayColsGuard(crate::server::query_context::get_array_cte_columns());
+    crate::server::query_context::set_array_cte_columns(plain_list_columns(&plan));
+    // A lowered plan's CTEs are WITH bodies: plain SELECTs, in dependency
+    // order, none recursive.
+    let mut sql = String::new();
+    let ctes = std::mem::take(&mut plan.ctes.0);
+    for (i, cte) in ctes.into_iter().enumerate() {
+        let CteContent::Structured(body) = cte.content else {
+            panic!("render_plan_to_sql_plain: a raw-SQL CTE is not lowered yet");
+        };
+        assert!(
+            !cte.is_recursive && body.ctes.0.is_empty() && body.union.0.is_none(),
+            "render_plan_to_sql_plain: a CTE body is one plain SELECT"
+        );
+        sql.push_str(if i == 0 { "WITH " } else { ", \n" });
+        sql.push_str(&cte.cte_name);
+        sql.push_str(" AS (\n");
+        sql.push_str(&plain_select_sql(*body));
+        sql.push(')');
+    }
+    if !sql.is_empty() {
+        sql.push('\n');
+    }
+    sql.push_str(&plain_select_sql(plan));
+    sql
+}
+
+/// The list-valued CTE columns of a lowered plan. Its column names are
+/// unique in the query (`v{N}`, `p{len}_v{N}_<prop>`), so a name identifies
+/// one column. A column is a list when its value is a list literal, a
+/// collecting aggregate (also inside the lowering's `coalesce(…, [])` and
+/// `CASE` folds), or an earlier list column passed through.
+fn plain_list_columns(plan: &RenderPlan) -> HashSet<String> {
+    fn is_list(e: &RenderExpr, lists: &HashSet<String>) -> bool {
+        match e {
+            RenderExpr::List(_) => true,
+            RenderExpr::AggregateFnCall(a) => is_collection_aggregate(&a.name),
+            RenderExpr::ScalarFnCall(f) if f.name.eq_ignore_ascii_case("coalesce") => {
+                f.args.iter().any(|a| is_list(a, lists))
+            }
+            RenderExpr::Case(c) => c
+                .when_then
+                .iter()
+                .map(|(_, t)| t)
+                .chain(c.else_expr.as_deref())
+                .any(|t| is_list(t, lists)),
+            RenderExpr::PropertyAccessExp(pa) => lists.contains(pa.column.raw()),
+            _ => false,
+        }
+    }
+    let mut lists = HashSet::new();
+    let bodies = plan.ctes.0.iter().filter_map(|c| match &c.content {
+        CteContent::Structured(body) => Some(body.as_ref()),
+        CteContent::RawSql(_) => None,
+    });
+    for body in bodies.chain(std::iter::once(plan)) {
+        for item in &body.select.items {
+            if let Some(alias) = &item.col_alias {
+                if is_list(&item.expression, &lists) {
+                    lists.insert(alias.0.clone());
+                }
+            }
+        }
+    }
+    lists
+}
+
+/// One SELECT of a lowered plan: its own alias scope (result typing),
+/// duplicate result aliases disambiguated, and no repair pass.
+fn plain_select_sql(mut plan: RenderPlan) -> String {
     activate_scope_context(&plan.from, &plan.joins);
     let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for item in plan.select.items.iter_mut() {

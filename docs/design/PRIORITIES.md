@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; next: S4b WITH)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b WITH; next: S4c result shape)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,13 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-07: **P-4c S4b: lowering WITH, free-standing ORDER BY / SKIP / LIMIT** (`src/bound_plan/lower/`, behind `CLICKGRAPH_BOUND_PLAN=on`).
+  - A WITH ends a segment: the rows so far become a CTE whose columns are the WITH's output scope (carried elements export identity/endpoint columns plus the properties later clauses read; values export their value). Later patterns tie to the exported identity; a carried relationship can be matched again and takes part in uniqueness.
+  - The WITH modifiers run in the fixed order ORDER BY, SKIP, LIMIT, WHERE (#1311 on the new path). Rows keep their order through exported key columns until a MATCH; after DISTINCT / aggregation the order is marked lost and a SKIP / LIMIT or `collect()` relying on it is refused.
+  - Neo4j oracle switch off vs on: 0 correct → wrong, 10 wrong → correct; the 47 newly lowered corpus queries with a WITH all equal Neo4j (2 are rejected by Neo4j). Corpus lowering 314 → 371. About 400 ad-hoc WITH shapes compared with Neo4j: no unexplained difference.
+  - Review found three defects and a Databricks `size()` regression; all fixed with tests.
+  - Not reached yet: entry points parse with the legacy parser first, so syntax only the clause-list parser accepts gets the legacy parse error; routing it belongs to S10. The result shape (whole-entity returns, `id()`, Bolt, graph output) is S4c.
 
 - 2026-10-06: **P-4c: undeclared properties on the bound-plan path follow the legacy rule** (user decision).
   - An undeclared property reads the same-named column (a missing one is a ClickHouse error); NULL only for discovered elements (`closed_properties`) and in Neo4j-compat mode. Before, the lowering gave NULL always.

@@ -9,7 +9,8 @@
 //!   (elements of different labels / types are never equal), `a IS [NOT]
 //!   NULL`. Anywhere else (`RETURN a`, `[a]`, `collect(a)`, `CASE … a …`) it
 //!   is the entity's value, which needs the result shape: `Unsupported`;
-//! * a projected item (ORDER BY after RETURN) is the item's expression.
+//! * a projected item (ORDER BY after RETURN) is the item's expression;
+//! * an element or value carried by a WITH is read from the WITH's CTE.
 //!
 //! The conversion is structural and reads no task-local state. Shapes that
 //! need more than that are `Unsupported`.
@@ -26,7 +27,7 @@ use crate::render_plan::render_expr::{
     RenderExpr, ScalarFnCall, TableAlias,
 };
 
-use super::{col, parse_var, unsupported, LowerError, Lowerer, Scan};
+use super::{parse_var, unsupported, At, LowerError, Lowerer, Scan};
 use crate::bound_plan::types::{BindingKind, BindingSource, VarId};
 
 type Items = HashMap<VarId, RenderExpr>;
@@ -34,15 +35,29 @@ type Items = HashMap<VarId, RenderExpr>;
 impl Lowerer<'_> {
     /// `v.prop` for a node or relationship binding.
     pub(super) fn property(&self, v: VarId, prop: &str) -> Result<RenderExpr, LowerError> {
-        let (mapping, closed) = match self.scans.get(&v) {
-            Some(Scan::Node { schema, .. }) => {
-                (schema.property_mappings.get(prop), schema.closed_properties)
-            }
-            Some(Scan::Rel { schema, .. }) => {
-                (schema.property_mappings.get(prop), schema.closed_properties)
-            }
+        let (mapping, closed, at) = match self.scans.get(&v) {
+            Some(Scan::Node { schema, at, .. }) => (
+                schema.property_mappings.get(prop),
+                schema.closed_properties,
+                at,
+            ),
+            Some(Scan::Rel { schema, at, .. }) => (
+                schema.property_mappings.get(prop),
+                schema.closed_properties,
+                at,
+            ),
             Some(Scan::Impossible) => return Ok(RenderExpr::Literal(Literal::Null)),
             None => return unsupported("a property of a variable with no scan"),
+        };
+        let alias = match at {
+            At::Table(alias) => alias,
+            // Read from a CTE: exported by the demand pass.
+            At::Exported { props, .. } => {
+                return match props.get(prop) {
+                    Some(e) => Ok(e.clone()),
+                    None => unsupported(format!("internal: {v}.{prop} is not exported")),
+                }
+            }
         };
         let column = match mapping {
             Some(pv) => pv.clone(),
@@ -57,16 +72,16 @@ impl Lowerer<'_> {
             None => PropertyValue::Column(prop.to_string()),
         };
         Ok(RenderExpr::PropertyAccessExp(PropertyAccess {
-            table_alias: TableAlias(v.name()),
+            table_alias: TableAlias(alias.clone()),
             column,
         }))
     }
 
     /// A node's or relationship's identity as one expression.
-    fn identity(&self, v: VarId) -> Result<RenderExpr, LowerError> {
-        match self.identity_columns(v) {
+    fn identity_value(&self, v: VarId) -> Result<RenderExpr, LowerError> {
+        match self.identity(v)? {
             None => Ok(RenderExpr::Literal(Literal::Null)),
-            Some(cols) if cols.len() == 1 => Ok(col(v, &cols[0])),
+            Some(mut cols) if cols.len() == 1 => Ok(cols.remove(0)),
             Some(_) => unsupported("a composite identity used as one value"),
         }
     }
@@ -170,7 +185,7 @@ impl Lowerer<'_> {
                 (O::IsNull | O::IsNotNull, 1, [a]) => {
                     Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
                         operator: op.operator,
-                        operands: vec![self.identity(*a)?],
+                        operands: vec![self.identity_value(*a)?],
                     }))
                 }
                 _ => unsupported("a node or relationship as an operand (needs its value)"),
@@ -207,12 +222,12 @@ impl Lowerer<'_> {
         if !same_kind {
             return Ok(RenderExpr::Literal(Literal::Boolean(!equal)));
         }
-        let (Some(ca), Some(cb)) = (self.identity_columns(a), self.identity_columns(b)) else {
+        let (Some(ca), Some(cb)) = (self.identity(a)?, self.identity(b)?) else {
             return Ok(RenderExpr::Literal(Literal::Null));
         };
         let per_column: Vec<RenderExpr> = ca
-            .iter()
-            .zip(&cb)
+            .into_iter()
+            .zip(cb)
             .map(|(x, y)| {
                 RenderExpr::OperatorApplicationExp(OperatorApplication {
                     operator: if equal {
@@ -220,7 +235,7 @@ impl Lowerer<'_> {
                     } else {
                         lx::Operator::NotEqual
                     },
-                    operands: vec![col(a, x), col(b, y)],
+                    operands: vec![x, y],
                 })
             })
             .collect();
@@ -269,7 +284,10 @@ impl Lowerer<'_> {
                 Ok(RenderExpr::TableAlias(TableAlias(name.to_string())))
             }
             (BindingKind::Path, _) => unsupported("a path variable (S6)"),
-            (BindingKind::Value, _) => unsupported("a WITH / UNWIND value (S4b, S7)"),
+            (BindingKind::Value, _) => match self.values.get(&v) {
+                Some(e) => Ok(e.clone()),
+                None => unsupported("an UNWIND value (S7)"),
+            },
         }
     }
 
@@ -333,10 +351,10 @@ impl Lowerer<'_> {
         };
         // count(a) / count(DISTINCT a) count identities.
         if let (Some(v), "count") = (arg.and_then(|a| self.entity(a)), name.as_str()) {
-            let id = match self.identity_columns(v) {
+            let id = match self.identity(v)? {
                 // An element that matches nothing: no values to count.
                 None => return Ok(aggregate_constant(RenderExpr::Literal(Literal::Integer(0)))),
-                Some(cols) if cols.len() == 1 || !distinct => col(v, &cols[0]),
+                Some(mut cols) if cols.len() == 1 || !distinct => cols.remove(0),
                 Some(_) => return unsupported("count(DISTINCT) of a composite identity"),
             };
             let arg = if distinct {
