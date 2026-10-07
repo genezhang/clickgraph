@@ -252,7 +252,11 @@ property_mappings:
   # Don't map phone, address, city, country if you won't query them
 ```
 
-**Note**: Unmapped properties won't be accessible in Cypher queries.
+**Note**: A property that is not mapped reads the column of the same name, so
+a wide table needs no mapping per column; if there is no such column, the query
+fails with a ClickHouse error. With `auto_discover_columns: true` the discovered
+columns are all the properties and any other name (including an excluded
+column) reads as NULL, as it does for every element in Neo4j-compat mode.
 
 ## Complete Example
 

@@ -740,6 +740,10 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-10-06: **P-4c: undeclared properties on the bound-plan path follow the legacy rule** (user decision).
+  - An undeclared property reads the same-named column (a missing one is a ClickHouse error); NULL only for discovered elements (`closed_properties`) and in Neo4j-compat mode. Before, the lowering gave NULL always.
+  - Live suite on vs off: 27 differences (was 30); the unknown-property error test and the two `u.score` tier tests now agree. Oracle verdicts unchanged.
+
 - 2026-10-06: **Excluded columns are unknown properties (NULL)** (follow-up to #1322, user decision).
   - For an element with `auto_discover_columns`, the discovered and declared properties are complete: an excluded column or any other undeclared name reads as NULL in the legacy planner too (`closed_properties` on the node/relationship schema, checked in `ViewResolver`). The bound-plan path already did this.
   - Elements without discovery keep the legacy identity fallback; whether it goes is still the S10 decision.

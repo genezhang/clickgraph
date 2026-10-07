@@ -34,19 +34,32 @@ type Items = HashMap<VarId, RenderExpr>;
 impl Lowerer<'_> {
     /// `v.prop` for a node or relationship binding.
     pub(super) fn property(&self, v: VarId, prop: &str) -> Result<RenderExpr, LowerError> {
-        let mapping = match self.scans.get(&v) {
-            Some(Scan::Node { schema, .. }) => schema.property_mappings.get(prop),
-            Some(Scan::Rel { schema, .. }) => schema.property_mappings.get(prop),
-            Some(Scan::Impossible) => None,
+        let (mapping, closed) = match self.scans.get(&v) {
+            Some(Scan::Node { schema, .. }) => {
+                (schema.property_mappings.get(prop), schema.closed_properties)
+            }
+            Some(Scan::Rel { schema, .. }) => {
+                (schema.property_mappings.get(prop), schema.closed_properties)
+            }
+            Some(Scan::Impossible) => return Ok(RenderExpr::Literal(Literal::Null)),
             None => return unsupported("a property of a variable with no scan"),
         };
-        Ok(match mapping {
-            Some(pv) => RenderExpr::PropertyAccessExp(PropertyAccess {
-                table_alias: TableAlias(v.name()),
-                column: pv.clone(),
-            }),
-            None => RenderExpr::Literal(Literal::Null),
-        })
+        let column = match mapping {
+            Some(pv) => pv.clone(),
+            // An undeclared property is absent (NULL, as in Cypher) when the
+            // element's properties are complete (its columns were discovered)
+            // or in Neo4j-compat mode. Otherwise it reads the same-named column,
+            // as the legacy planner does: a wide table needs no mapping per
+            // column, and a missing column is a ClickHouse error, not a value.
+            None if closed || self.options.neo4j_compat => {
+                return Ok(RenderExpr::Literal(Literal::Null))
+            }
+            None => PropertyValue::Column(prop.to_string()),
+        };
+        Ok(RenderExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: TableAlias(v.name()),
+            column,
+        }))
     }
 
     /// A node's or relationship's identity as one expression.

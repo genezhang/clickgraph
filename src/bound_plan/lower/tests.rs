@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use crate::bound_plan::lower::{lower_statement, LowerOptions};
 use crate::graph_catalog::config::GraphSchemaConfig;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::translate::{translate_bound_plan, ReadOptions};
@@ -65,6 +66,18 @@ fn squash(s: &str) -> String {
 
 fn has(q: &str, parts: &[&str]) {
     let got = squash(&sql(q));
+    for p in parts {
+        assert!(got.contains(p), "{q}\nmissing `{p}` in\n{got}");
+    }
+}
+
+/// As `has`, in Neo4j-compat mode, where an undeclared property is NULL.
+fn has_compat(q: &str, parts: &[&str]) {
+    let compat = LowerOptions {
+        neo4j_compat: true,
+        ..LowerOptions::default()
+    };
+    let got = lowered(q, &social(), &compat);
     for p in parts {
         assert!(got.contains(p), "{q}\nmissing `{p}` in\n{got}");
     }
@@ -170,8 +183,9 @@ fn what_cannot_match_returns_no_rows() {
 fn aggregates_of_no_values() {
     // Neo4j: [], 0, 0, NULL. ClickHouse gives NULL for groupArray/sum of a
     // NULL literal (`Nullable(Nothing)`), so these are folded.
-    // Still an aggregate, so the query returns one row.
-    has(
+    // Still an aggregate, so the query returns one row. (An undeclared
+    // property is NULL in Neo4j-compat mode.)
+    has_compat(
         "MATCH (a:User) RETURN collect(a.nickname) AS l, sum(a.nickname) AS s, count(a.nickname) AS c, max(a.nickname) AS m",
         &[
             r#"CASE WHEN count(*) >= 0 THEN [] ELSE [] END AS "l""#,
@@ -180,7 +194,7 @@ fn aggregates_of_no_values() {
             r#"CASE WHEN count(*) >= 0 THEN NULL ELSE NULL END AS "m""#,
         ],
     );
-    has(
+    has_compat(
         "MATCH (a:User) RETURN collect(DISTINCT a.nickname) AS l",
         &[r#"CASE WHEN count(*) >= 0 THEN [] ELSE [] END AS "l""#],
     );
@@ -300,11 +314,85 @@ fn inline_properties_and_unmapped_properties() {
         "MATCH (a:User {name: 'Alice Johnson'})-[:FOLLOWS {follow_date: '2024-01-01'}]->(b) RETURN b.city",
         &["v0.full_name = 'Alice Johnson'", "v1.follow_date = '2024-01-01'"],
     );
-    // The graph has no such property: NULL, as Neo4j returns.
+    // An undeclared property reads the same-named column, as on the legacy
+    // path (a wide table needs no mapping per column; a missing column is a
+    // ClickHouse error).
     has(
         "MATCH (a:User) RETURN a.nickname",
-        &[r#"NULL AS "a.nickname""#],
+        &[r#"v0.nickname AS "a.nickname""#],
     );
+}
+
+/// Lower `q` over `schema` with `options` (no query context needed).
+fn lowered(q: &str, schema: &GraphSchema, options: &LowerOptions) -> String {
+    let (_, stmt) = crate::open_cypher_parser::clause_list::parse_clause_statement(q).unwrap();
+    let bound = crate::bound_plan::bind_statement(&stmt, schema).unwrap();
+    let plan = lower_statement(&bound, schema, options).unwrap();
+    crate::server::query_context::with_query_context_sync(
+        crate::server::query_context::QueryContext::new(None),
+        || {
+            crate::server::query_context::set_current_schema(std::sync::Arc::new(schema.clone()));
+            squash(&crate::clickhouse_query_generator::to_sql_query::render_plan_to_sql_plain(plan))
+        },
+    )
+}
+
+#[test]
+fn undeclared_properties_are_null_when_known_absent() {
+    // Discovered columns are every property: anything else is NULL.
+    let config = GraphSchemaConfig::from_yaml_str(
+        r#"
+graph_schema:
+  nodes:
+    - label: U
+      database: db
+      table: u
+      node_id: id
+      auto_discover_columns: true
+      exclude_columns: [secret]
+      property_mappings: {}
+  edges: []
+"#,
+    )
+    .unwrap();
+    let mut columns = crate::graph_catalog::column_info::DiscoveredColumns::default();
+    columns.insert(
+        "db",
+        "u",
+        ["id", "name", "secret"]
+            .iter()
+            .map(|c| {
+                crate::graph_catalog::column_info::ColumnInfo::new(
+                    c.to_string(),
+                    "String".to_string(),
+                )
+            })
+            .collect(),
+    );
+    let discovered = config.to_graph_schema_with_columns(&columns).unwrap();
+    let got = lowered(
+        "MATCH (u:U) RETURN u.name, u.secret, u.nickname",
+        &discovered,
+        &LowerOptions::default(),
+    );
+    for part in [
+        r#"v0.name AS "u.name""#,
+        r#"NULL AS "u.secret""#,
+        r#"NULL AS "u.nickname""#,
+    ] {
+        assert!(got.contains(part), "missing `{part}` in {got}");
+    }
+
+    // Neo4j-compat mode: NULL on every element.
+    let got = lowered(
+        "MATCH (a:User) RETURN a.nickname",
+        &social(),
+        &LowerOptions {
+            neo4j_compat: true,
+            ..LowerOptions::default()
+        },
+    );
+    assert!(got.contains(r#"NULL AS "a.nickname""#), "{got}");
 }
 
 #[test]
@@ -435,7 +523,8 @@ fn the_bound_plan_does_not_use_the_legacy_composition() {
 #[test]
 fn sum_and_collect_of_always_null_expressions() {
     // ClickHouse: NULL for an argument typed Nullable(Nothing); Neo4j: 0, [].
-    has(
+    // (An undeclared property is NULL in Neo4j-compat mode.)
+    has_compat(
         "MATCH (a:User) RETURN sum(a.nope + 1) AS s, collect(toUpper(a.nope)) AS l, sum(a.age) AS t",
         &[
             r#"coalesce(sum(NULL + 1), 0) AS "s""#,

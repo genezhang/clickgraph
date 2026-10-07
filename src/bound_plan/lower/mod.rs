@@ -70,6 +70,9 @@ fn unsupported<T>(what: impl Into<String>) -> Result<T, LowerError> {
 pub struct LowerOptions {
     /// Values for parameterized views (`ReadOptions::view_parameter_values`).
     pub view_parameter_values: Option<HashMap<String, String>>,
+    /// Neo4j-compat mode: an undeclared property is NULL on every element,
+    /// not only on those whose columns were discovered.
+    pub neo4j_compat: bool,
 }
 
 /// Lower a bound statement to a render plan.
