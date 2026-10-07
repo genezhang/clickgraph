@@ -1135,9 +1135,66 @@ slice that will handle it.
       Neo4j-compat mode. The lowering follows this (`LowerOptions::neo4j_compat`),
       which removed three of the on/off differences (the unknown-property
       error and the two `u.score` tier tests).
-  - [ ] **S4b: WITH**, free-standing ORDER BY / SKIP / LIMIT, the WITH
-    modifiers' fixed order (#1311), the result shape (whole-entity returns,
-    Bolt, graph output).
+  - [x] **S4b: WITH**, free-standing ORDER BY / SKIP / LIMIT, the WITH
+    modifiers' fixed order (#1311) (`src/bound_plan/lower/`).
+    - A WITH ends a segment. The rows so far become a CTE whose columns are
+      exactly the WITH's output scope (§4.10), and the next clause reads from
+      it, so no later reader can resolve a name against the wrong relation:
+      - a carried node exports its identity columns; a relationship also
+        exports its endpoint columns, so it can be matched again;
+      - each also exports the properties later clauses read (the demand
+        pass, carried back through pass-through items `WITH a AS b`);
+      - a value exports its value; a constant needs no column (an aggregate
+        of a carried NULL still folds to Cypher's value).
+      Columns are named from the binding (`v{N}`, `v{N}__<physical>`,
+      `p{len}_v{N}_<prop>`), so they cannot collide.
+    - An element carried by a WITH is the same element: a later pattern ties
+      to its exported identity, two elements of one CTE tie in WHERE, and a
+      carried relationship takes part in the uniqueness of the MATCH that
+      uses it again.
+    - A CTE that the next pattern does not tie to is a cross join, so its
+      rows still count (#1089 shape).
+    - Modifiers run in the fixed order ORDER BY, SKIP, LIMIT, WHERE. A WHERE
+      after a SKIP / LIMIT is computed per row in the CTE and applied by the
+      next segment, so it filters the rows the LIMIT kept (#1311: Neo4j 0,
+      legacy 5). Without SKIP / LIMIT it is a WHERE, or HAVING when the WITH
+      aggregates. Aggregation groups by the carried elements' exported
+      columns (identity first, #1222).
+    - Rows keep an order until a MATCH or an aggregation. While they have
+      one, it travels as exported key columns (`__o{i}`). A later SKIP /
+      LIMIT, WITH or RETURN without its own ORDER BY reads the rows in that
+      order, so `WITH n ORDER BY n WITH n LIMIT 2` keeps the first two.
+      Not lowered yet (they need the order kept inside the aggregate):
+      `collect()` over ordered rows, and DISTINCT followed by SKIP / LIMIT
+      over ordered rows.
+    - A free-standing SKIP / LIMIT ends a segment that exports the scope
+      unchanged; a free-standing ORDER BY sets the rows' order.
+    - `render_plan_to_sql_plain` prints the CTEs, each one plain SELECT with
+      its own alias scope.
+    - Not reached yet: every entry point parses with the legacy parser before
+      routing, so syntax only the clause-list parser accepts (a free-standing
+      clause after MATCH, `WITH a MATCH .. MATCH ..`) still gets the legacy
+      parse error. The lowering handles it (unit tests, the ad-hoc oracle
+      below); routing parse failures to the new path belongs to S10.
+    - Acceptance:
+      - Neo4j oracle, switch off vs on (`social_integration`, `standard`):
+        0 correct → wrong, 10 wrong → correct. The 47 newly lowered queries
+        with a WITH all equal Neo4j except 2 that Neo4j rejects (a UInt8 flag
+        used as a predicate). The corpus lowers 371 queries (was 314); none
+        stops on WITH.
+      - An ad-hoc set of 102 WITH shapes (order travelling through WITHs,
+        #1311, carried relationships matched again in both directions,
+        uniqueness, DISTINCT, aggregation with HAVING, re-binding (#1304),
+        free-standing clauses, constants, NULLs, impossible labels), lowered
+        and run on ClickHouse, compared with Neo4j 5.26: every query with a
+        unique answer equals Neo4j, including the row order where one is
+        defined. The rest: two queries whose answer depends on ties or an
+        unordered SKIP, one `int / int` (#847, legacy prints the same `/`),
+        one refused by design (DISTINCT + LIMIT over ordered rows), and three
+        oracle-comparator artifacts (Neo4j's `meta` is shorter than the row,
+        so `neo_rows` drops a column; ClickGraph's rows are equal).
+  - [ ] **S4c: result shape** — whole-entity returns, `id()`, Bolt and graph
+    output (§4.13).
 - [ ] S5 OPTIONAL MATCH unit
 - [ ] S6 paths + uniqueness + shortestPath
 - [ ] S7 UNWIND / UNION / alternatives

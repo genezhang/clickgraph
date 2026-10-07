@@ -6426,13 +6426,13 @@ fn rewrite_empty_reduce_list(
 /// alias and physical column. Column printing skips the name-keyed resolution
 /// while this runs (`QueryContext::plain_render`).
 ///
-/// Supports the plan shapes the lowering produces today: one SELECT with
-/// FROM / JOINs / WHERE / GROUP BY / ORDER BY / SKIP / LIMIT, no CTEs and no
-/// UNION.
+/// Supports the plan shapes the lowering produces today: SELECTs with FROM /
+/// JOINs / WHERE / GROUP BY / HAVING / ORDER BY / SKIP / LIMIT, the WITH
+/// bodies as flat CTEs before the final one, and no UNION.
 pub fn render_plan_to_sql_plain(mut plan: RenderPlan) -> String {
     assert!(
-        plan.ctes.0.is_empty() && plan.union.0.is_none() && plan.array_join.0.is_empty(),
-        "render_plan_to_sql_plain: CTEs, UNION and ARRAY JOIN are not lowered yet"
+        plan.union.0.is_none() && plan.array_join.0.is_empty(),
+        "render_plan_to_sql_plain: UNION and ARRAY JOIN are not lowered yet"
     );
     flatten_all_ctes(&mut plan);
     struct PlainGuard(bool);
@@ -6444,6 +6444,34 @@ pub fn render_plan_to_sql_plain(mut plan: RenderPlan) -> String {
     }
     let _guard = PlainGuard(crate::server::query_context::is_plain_render());
     crate::server::query_context::set_plain_render(true);
+    // A lowered plan's CTEs are WITH bodies: plain SELECTs, in dependency
+    // order, none recursive.
+    let mut sql = String::new();
+    let ctes = std::mem::take(&mut plan.ctes.0);
+    for (i, cte) in ctes.into_iter().enumerate() {
+        let CteContent::Structured(body) = cte.content else {
+            panic!("render_plan_to_sql_plain: a raw-SQL CTE is not lowered yet");
+        };
+        assert!(
+            !cte.is_recursive && body.ctes.0.is_empty() && body.union.0.is_none(),
+            "render_plan_to_sql_plain: a CTE body is one plain SELECT"
+        );
+        sql.push_str(if i == 0 { "WITH " } else { ", \n" });
+        sql.push_str(&cte.cte_name);
+        sql.push_str(" AS (\n");
+        sql.push_str(&plain_select_sql(*body));
+        sql.push(')');
+    }
+    if !sql.is_empty() {
+        sql.push('\n');
+    }
+    sql.push_str(&plain_select_sql(plan));
+    sql
+}
+
+/// One SELECT of a lowered plan: its own alias scope (result typing),
+/// duplicate result aliases disambiguated, and no repair pass.
+fn plain_select_sql(mut plan: RenderPlan) -> String {
     activate_scope_context(&plan.from, &plan.joins);
     let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for item in plan.select.items.iter_mut() {

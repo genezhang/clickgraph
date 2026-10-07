@@ -1,5 +1,5 @@
 //! Lowering tests: the SQL each lowered construct produces, and
-//! `Unsupported` for what S4a does not lower. Row-level correctness is
+//! `Unsupported` for what is not lowered yet. Row-level correctness is
 //! checked against Neo4j by the oracle (`scripts/oracle/run_corpus.py` with
 //! `CLICKGRAPH_BOUND_PLAN=on`).
 
@@ -452,8 +452,8 @@ fn table_options_come_from_the_schema() {
 }
 
 #[test]
-fn what_s4a_does_not_lower() {
-    not_lowered("MATCH (a:User) WITH a RETURN a.name", "WITH");
+fn what_is_not_lowered_yet() {
+    not_lowered("MATCH (a:User) WITH a RETURN a", "whole node");
     not_lowered(
         "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b) RETURN b.name",
         "OPTIONAL",
@@ -573,4 +573,163 @@ graph_schema:
     };
     assert!(q("r1 = r2").contains("WHERE false"), "{}", q("r1 = r2"));
     assert!(q("r1 <> r2").contains("WHERE true"), "{}", q("r1 <> r2"));
+}
+
+// ------------------------------------------------------------------ S4b WITH
+
+#[test]
+fn a_with_is_a_cte_of_its_output_scope() {
+    // A carried node exports its identity and the properties read later.
+    has(
+        "MATCH (a:User) WITH a RETURN a.name",
+        &[
+            "WITH with_w1 AS ( SELECT v0.user_id AS \"v1__user_id\", v0.full_name AS \"p2_v1_name\" \
+             FROM test_integration.users_test AS v0 )",
+            "SELECT w1.p2_v1_name AS \"a.name\" FROM with_w1 AS w1",
+        ],
+    );
+    // A value exports its value under its binding's name.
+    has(
+        "MATCH (a:User) WITH a.name AS n RETURN n",
+        &[
+            "v0.full_name AS \"v1\"",
+            "SELECT w1.v1 AS \"n\" FROM with_w1 AS w1",
+        ],
+    );
+    // A property read only after a second pass-through is exported by both.
+    has(
+        "MATCH (a:User) WITH a AS b WITH b AS c RETURN c.name",
+        &[
+            "v0.full_name AS \"p2_v1_name\"",
+            "w1.p2_v1_name AS \"p2_v2_name\"",
+            "SELECT w2.p2_v2_name AS \"c.name\" FROM with_w2 AS w2",
+        ],
+    );
+}
+
+#[test]
+fn a_carried_element_is_tied_by_its_exported_columns() {
+    has(
+        "MATCH (a:User) WITH a MATCH (a)-[:FOLLOWS]->(b:User) RETURN b.name",
+        &[
+            "FROM with_w1 AS w1 JOIN test_integration.user_follows_test AS v2 \
+             ON v2.follower_id = w1.v1__user_id",
+        ],
+    );
+    // A relationship also exports its endpoints, so it can be matched again.
+    has(
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) WITH r MATCH (x)<-[r]-(y) RETURN x.name",
+        &[
+            "v1.follow_id AS \"v3__follow_id\", v1.follower_id AS \"v3__follower_id\", \
+             v1.followed_id AS \"v3__followed_id\"",
+            "JOIN test_integration.users_test AS v4 ON w1.v3__followed_id = v4.user_id",
+            "JOIN test_integration.users_test AS v5 ON w1.v3__follower_id = v5.user_id",
+        ],
+    );
+    // ... and takes part in the uniqueness of the MATCH that uses it.
+    has(
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) WITH r MATCH (x)-[r]->(y)-[s:FOLLOWS]->(z) \
+         RETURN count(*)",
+        &["WHERE w1.v3__follow_id <> v6.follow_id"],
+    );
+    // Two elements of one CTE tie in WHERE.
+    has(
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) WITH a, r MATCH (a)-[r]->(c) RETURN count(*)",
+        &["FROM with_w1 AS w1 JOIN test_integration.users_test AS v5 ON w1.v4__followed_id = v5.user_id \
+           WHERE w1.v4__follower_id = w1.v3__user_id"],
+    );
+    // A CTE with no tie to the next pattern is a cross join: its rows count.
+    has(
+        "MATCH (a:User) WITH count(*) AS c MATCH (b:User) RETURN c, b.name",
+        &["FROM with_w1 AS w1 CROSS JOIN test_integration.users_test AS v2"],
+    );
+}
+
+#[test]
+fn with_aggregation_groups_by_identity() {
+    has(
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, count(b) AS c WHERE c > 1 RETURN a.name, c",
+        &[
+            "count(v2.user_id) AS \"v4\"",
+            "GROUP BY v0.user_id, v0.full_name HAVING count(v2.user_id) > 1",
+        ],
+    );
+}
+
+/// A WITH's modifiers run in the fixed order ORDER BY, SKIP, LIMIT, WHERE:
+/// the WHERE filters the rows the LIMIT kept (#1311; Neo4j: 0 here).
+#[test]
+fn with_where_filters_the_rows_its_limit_kept() {
+    has(
+        "MATCH (u:User) WITH u ORDER BY u.age LIMIT 5 WHERE u.age > 30 RETURN count(*)",
+        &[
+            "AS \"__keep\"",
+            "ORDER BY v0.age ASC LIMIT 5)",
+            "FROM with_w1 AS w1 WHERE w1.__keep",
+        ],
+    );
+    // Without a SKIP / LIMIT it is an ordinary WHERE (HAVING if aggregating).
+    has(
+        "MATCH (a:User) WITH a WHERE a.age > 25 RETURN count(*)",
+        &["FROM test_integration.users_test AS v0 WHERE v0.age > 25 )"],
+    );
+}
+
+#[test]
+fn rows_keep_their_order_until_a_match_or_an_aggregation() {
+    // The order travels as exported key columns: the second WITH's LIMIT and
+    // the RETURN read the rows in it.
+    has(
+        "MATCH (a:User) WITH a.name AS n ORDER BY n WITH n LIMIT 2 RETURN n",
+        &[
+            "v0.full_name AS \"__o0\"",
+            "FROM with_w1 AS w1 ORDER BY w1.__o0 ASC LIMIT 2)",
+            "FROM with_w2 AS w2 ORDER BY w2.__o0 ASC",
+        ],
+    );
+    // A MATCH leaves the rows in no order.
+    let joined = squash(&sql(
+        "MATCH (a:User) WITH a ORDER BY a.name MATCH (a)-[:FOLLOWS]->(b:User) RETURN b.name",
+    ));
+    assert!(!joined.contains("ORDER BY"), "{joined}");
+    // An order-sensitive aggregate over ordered rows is not lowered yet.
+    not_lowered(
+        "MATCH (a:User) WITH a ORDER BY a.name RETURN collect(a.name) AS names",
+        "collect() over ordered rows",
+    );
+    not_lowered(
+        "MATCH (a:User) WITH a ORDER BY a.name WITH DISTINCT a.country AS c LIMIT 2 RETURN c",
+        "DISTINCT then SKIP / LIMIT over ordered rows",
+    );
+}
+
+#[test]
+fn free_standing_order_skip_limit() {
+    // `MATCH … ORDER BY … LIMIT …` (GQL style): the scope is exported as is.
+    has(
+        "MATCH (a:User) ORDER BY a.name DESC SKIP 1 LIMIT 2 RETURN a.name",
+        &[
+            "WITH with_w1 AS ( SELECT v0.user_id AS \"v0__user_id\", v0.full_name AS \"p2_v0_name\", \
+             v0.full_name AS \"__o0\" FROM test_integration.users_test AS v0 \
+             ORDER BY v0.full_name DESC NULLS FIRST LIMIT 1, 18446744073709551615)",
+            "FROM with_w1 AS w1 ORDER BY w1.__o0 DESC NULLS FIRST LIMIT 2)",
+            "SELECT w2.p2_v0_name AS \"a.name\" FROM with_w2 AS w2 ORDER BY w2.__o0 DESC NULLS FIRST",
+        ],
+    );
+}
+
+#[test]
+fn constants_need_no_column() {
+    has(
+        "WITH 1 AS x RETURN x",
+        &[
+            "WITH with_w1 AS ( SELECT 1 AS \"__row\" )",
+            "SELECT 1 AS \"x\" FROM with_w1 AS w1",
+        ],
+    );
+    // An aggregate of a NULL carried by a WITH still folds to Cypher's value.
+    has(
+        "MATCH (a:User) WITH a, NULL AS x RETURN collect(x) AS l",
+        &["CASE WHEN count(*) >= 0 THEN [] ELSE [] END AS \"l\""],
+    );
 }
