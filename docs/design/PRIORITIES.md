@@ -740,6 +740,10 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-10-06: **Excluded columns are unknown properties (NULL)** (follow-up to #1322, user decision).
+  - For an element with `auto_discover_columns`, the discovered and declared properties are complete: an excluded column or any other undeclared name reads as NULL in the legacy planner too (`closed_properties` on the node/relationship schema, checked in `ViewResolver`). The bound-plan path already did this.
+  - Elements without discovery keep the legacy identity fallback; whether it goes is still the S10 decision.
+
 - 2026-10-06: **#1322: `auto_discover_columns` in every loading mode** (P-1 fix, ahead of P-4c S4b).
   - Only the server's startup loader read the columns; `POST /schemas/load`, embedded chdb, remote, SQL-only, Databricks, `cg` and the bindings ignored the flag without a word. The legacy planner's raw-column fallback for unmapped properties hid it, and the bound-plan path (unmapped → NULL) would have exposed it.
   - One schema builder (`to_graph_schema_with_columns`); each mode reads the columns its own way (server client, chdb `DESCRIBE` of the `source:`, remote `system.columns`). Without a database the schema is refused, as is a discovering table with no columns. Polymorphic edges gain the option (documented, previously ignored).

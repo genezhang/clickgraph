@@ -32,6 +32,7 @@ mod tests {
         nodes.insert(
             "User".to_string(),
             NodeSchema {
+                closed_properties: false,
                 database: "test".to_string(),
                 table_name: "users".to_string(),
                 column_names: vec![],
@@ -59,6 +60,7 @@ mod tests {
         nodes.insert(
             "Post".to_string(),
             NodeSchema {
+                closed_properties: false,
                 database: "test".to_string(),
                 table_name: "posts".to_string(),
                 column_names: vec![],
@@ -85,6 +87,7 @@ mod tests {
         // FOLLOWS relationship: User → User
         // Add both simple key (for lookup) and composite key (for schema consistency)
         let follows_schema = RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "follows".to_string(),
             column_names: vec![],
@@ -121,6 +124,7 @@ mod tests {
         // AUTHORED relationship: User → Post
         // Add both simple key (for lookup) and composite key (for schema consistency)
         let authored_schema = RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "authored".to_string(),
             column_names: vec![],

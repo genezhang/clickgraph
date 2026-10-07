@@ -1381,6 +1381,7 @@ fn build_node_schema(
     )?;
 
     let mut node_schema = NodeSchema {
+        closed_properties: discovery.columns.is_some(),
         database: node_def.database.clone(),
         table_name: node_def.table.clone(),
         column_names: property_mappings
@@ -1559,6 +1560,7 @@ fn build_relationship_schema(
     )?;
 
     Ok(RelationshipSchema {
+        closed_properties: discovery.columns.is_some(),
         database: rel_def.database.clone(),
         table_name: rel_def.table.clone(),
         column_names: property_mappings
@@ -1771,6 +1773,7 @@ fn build_standard_edge_schema(
     )?;
 
     Ok(RelationshipSchema {
+        closed_properties: discovery.columns.is_some(),
         database: std_edge.database.clone(),
         table_name: std_edge.table.clone(),
         column_names: property_mappings
@@ -1851,6 +1854,7 @@ fn build_polymorphic_edge_schemas(
 
     for type_val in &poly_edge.type_values {
         let rel_schema = RelationshipSchema {
+            closed_properties: discovery.columns.is_some(),
             database: poly_edge.database.clone(),
             table_name: poly_edge.table.clone(),
             column_names: property_mappings
@@ -4383,6 +4387,7 @@ graph_schema:
         nodes.insert(
             "Article".to_string(),
             NodeSchema {
+                closed_properties: false,
                 database: "test_db".to_string(),
                 table_name: "articles".to_string(),
                 node_id: NodeIdSchema::single(
@@ -4531,6 +4536,7 @@ graph_schema:
         nodes.insert(
             "Article".to_string(),
             NodeSchema {
+                closed_properties: false,
                 database: "test_db".to_string(),
                 table_name: "articles".to_string(),
                 node_id: NodeIdSchema::single("id".to_string(), SchemaType::Integer),
@@ -4781,6 +4787,39 @@ graph_schema:
         // A node that does not ask keeps its declared mappings only
         let post = &schema.node_schema("Post").unwrap().property_mappings;
         assert_eq!(column_of(post, "content").as_deref(), Some("content"));
+    }
+
+    #[test]
+    fn unmapped_properties_of_discovered_elements_are_null() {
+        use crate::query_planner::analyzer::view_resolver::ViewResolver;
+        let schema = config()
+            .to_graph_schema_with_columns(&discovered())
+            .unwrap();
+        assert!(schema.node_schema("User").unwrap().closed_properties);
+        assert!(!schema.node_schema("Post").unwrap().closed_properties);
+        let resolver = ViewResolver::new(&schema);
+        let null = PropertyValue::Expression("NULL".to_string());
+        let column = |c: &str| PropertyValue::Column(c.to_string());
+        let user = |p: &str| resolver.resolve_node_property("User", p).unwrap();
+        // An excluded column and an unknown name are not properties
+        assert_eq!(user("_version"), null);
+        assert_eq!(user("nickname"), null);
+        // Discovered and declared properties, and mapped columns, still resolve
+        assert_eq!(user("homeCity"), column("home_city"));
+        assert_eq!(user("name"), column("full_name"));
+        assert_eq!(user("full_name"), column("full_name"));
+        // A node whose columns were not discovered keeps the identity fallback
+        assert_eq!(
+            resolver.resolve_node_property("Post", "title").unwrap(),
+            column("title")
+        );
+        let follows = |p: &str| {
+            resolver
+                .resolve_relationship_property("FOLLOWS", p, Some("User"), Some("User"))
+                .unwrap()
+        };
+        assert_eq!(follows("follow_date"), column("follow_date"));
+        assert_eq!(follows("weight"), null);
     }
 
     #[test]

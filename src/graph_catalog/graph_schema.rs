@@ -34,6 +34,12 @@ pub struct NodeSchema {
     pub primary_keys: String,
     pub node_id: NodeIdSchema,
     pub property_mappings: HashMap<String, PropertyValue>,
+    /// The properties were discovered from the table (`auto_discover_columns`),
+    /// so `property_mappings` lists every property: a name not there (an
+    /// excluded column, say) is not a property and reads as NULL, never as
+    /// the same-named column.
+    #[serde(default)]
+    pub closed_properties: bool,
     /// Optional: List of view parameters for parameterized views
     /// Example: Some(vec!["tenant_id".to_string(), "region".to_string()])
     pub view_parameters: Option<Vec<String>>,
@@ -375,6 +381,7 @@ impl NodeSchema {
         use_final: Option<bool>,
     ) -> Self {
         NodeSchema {
+            closed_properties: false,
             database,
             table_name,
             column_names,
@@ -404,6 +411,12 @@ pub struct RelationshipSchema {
     pub database: String,
     pub table_name: String,
     pub column_names: Vec<String>,
+    /// The properties were discovered from the table (`auto_discover_columns`),
+    /// so `property_mappings` lists every property: a name not there (an
+    /// excluded column, say) is not a property and reads as NULL, never as
+    /// the same-named column.
+    #[serde(default)]
+    pub closed_properties: bool,
     /// 🟢 GRAPH SPACE: Node label for source node (e.g., "User")
     /// Used for query planning, pattern matching, and property resolution
     pub from_node: String,
@@ -2361,6 +2374,7 @@ mod tests {
         to_props.insert("state".to_string(), "DestState".to_string());
 
         let flight_rel = RelationshipSchema {
+            closed_properties: false,
             database: "default".to_string(),
             table_name: "ontime".to_string(),
             column_names: vec!["Origin".to_string(), "Dest".to_string()],
@@ -2444,6 +2458,7 @@ mod tests {
     fn test_rel_type_index_survives_serde_roundtrip() {
         let mut relationships = HashMap::new();
         let related_to = RelationshipSchema {
+            closed_properties: false,
             database: "default".to_string(),
             table_name: "topic_related_to".to_string(),
             column_names: vec!["topic_id".to_string(), "related_topic_id".to_string()],
@@ -2510,6 +2525,7 @@ mod tests {
         user_props.insert("name".to_string(), "author_name".to_string());
 
         let authored_rel = RelationshipSchema {
+            closed_properties: false,
             database: "default".to_string(),
             table_name: "posts".to_string(),
             column_names: vec!["user_id".to_string(), "post_id".to_string()],
@@ -2566,6 +2582,7 @@ mod tests {
                     to_tbl: &str,
                     from_np: Option<HashMap<String, String>>,
                     to_np: Option<HashMap<String, String>>| RelationshipSchema {
+            closed_properties: false,
             database: "default".to_string(),
             table_name: from_tbl.to_string(),
             column_names: vec![],
@@ -2641,6 +2658,7 @@ mod tests {
         to_props.insert("city".to_string(), "dest_city".to_string());
 
         let airport = NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(),
             column_names: vec![],
@@ -2664,6 +2682,7 @@ mod tests {
         };
 
         let flight_edge = RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(), // Same table
             column_names: vec![],
@@ -2712,6 +2731,7 @@ mod tests {
     fn test_detect_traditional_pattern() {
         // Pattern: Airport nodes have separate airports table (traditional)
         let airport = NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "airports".to_string(), // Different table
             column_names: vec![],
@@ -2746,6 +2766,7 @@ mod tests {
         };
 
         let flight_edge = RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(), // Different table
             column_names: vec![],
@@ -2798,6 +2819,7 @@ mod tests {
         from_props_airport.insert("city".to_string(), "origin_city".to_string());
 
         let airport = NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(), // Same as edge
             column_names: vec![],
@@ -2821,6 +2843,7 @@ mod tests {
         };
 
         let user = NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "users".to_string(), // Different from edge
             column_names: vec![],
@@ -2859,6 +2882,7 @@ mod tests {
         from_props.insert("city".to_string(), "origin_city".to_string());
 
         let booked_edge = RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(),
             column_names: vec![],
@@ -2913,6 +2937,7 @@ mod tests {
     fn test_detect_mixed_pattern_to_denormalized() {
         // Pattern: User uses users table (traditional), Post uses posts table which is also edge table
         let user = NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "users".to_string(),
             column_names: vec![],
@@ -2947,6 +2972,7 @@ mod tests {
         to_props_post.insert("title".to_string(), "post_title".to_string());
 
         let post = NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "posts".to_string(), // Same as edge
             column_names: vec![],
@@ -2974,6 +3000,7 @@ mod tests {
         to_props.insert("title".to_string(), "post_title".to_string());
 
         let authored_edge = RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "posts".to_string(),
             column_names: vec![],
@@ -3031,6 +3058,7 @@ mod tests {
         to_props_min.insert("code".to_string(), "dest_code".to_string());
 
         let airport = NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(),
             column_names: vec![],
@@ -3069,6 +3097,7 @@ mod tests {
         to_props.insert("code".to_string(), "dest_code".to_string());
 
         let flight_edge = RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(),
             column_names: vec![],
@@ -3114,6 +3143,7 @@ mod tests {
         // Edge case: Node uses edge table BUT edge has no from/to_node_properties
         // This should NOT be detected as denormalized (misconfiguration)
         let airport = NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(),
             column_names: vec![],
@@ -3137,6 +3167,7 @@ mod tests {
         };
 
         let flight_edge = RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(), // Same table
             column_names: vec![],
@@ -3186,6 +3217,7 @@ mod tests {
         // Edge case: Same table name but different databases
         // Should NOT be detected as denormalized
         let airport = NodeSchema {
+            closed_properties: false,
             database: "db1".to_string(),
             table_name: "flights".to_string(),
             column_names: vec![],
@@ -3212,6 +3244,7 @@ mod tests {
         from_props.insert("code".to_string(), "origin_code".to_string());
 
         let flight_edge = RelationshipSchema {
+            closed_properties: false,
             database: "db2".to_string(), // Different database!
             table_name: "flights".to_string(),
             column_names: vec![],
@@ -3252,6 +3285,7 @@ mod tests {
         // Edge case: Node has many property_mappings (>2)
         // Should NOT be detected as denormalized
         let airport = NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(),
             column_names: vec![],
@@ -3297,6 +3331,7 @@ mod tests {
         from_props.insert("code".to_string(), "origin_code".to_string());
 
         let flight_edge = RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(),
             column_names: vec![],
@@ -3343,6 +3378,7 @@ mod tests {
 
         // REQUESTED: (IP)-[:REQUESTED]->(Domain)
         let requested = RelationshipSchema {
+            closed_properties: false,
             database: "zeek".to_string(),
             table_name: "dns_log".to_string(),
             column_names: vec![],
@@ -3376,6 +3412,7 @@ mod tests {
 
         // RESOLVED_TO: (Domain)-[:RESOLVED_TO]->(ResolvedIP)
         let resolved_to = RelationshipSchema {
+            closed_properties: false,
             database: "zeek".to_string(),
             table_name: "dns_log".to_string(),
             column_names: vec![],
@@ -3432,6 +3469,7 @@ mod tests {
         let mut relationships = HashMap::new();
 
         let edge1 = RelationshipSchema {
+            closed_properties: false,
             database: "db".to_string(),
             table_name: "table1".to_string(),
             column_names: vec![],
@@ -3464,6 +3502,7 @@ mod tests {
         };
 
         let edge2 = RelationshipSchema {
+            closed_properties: false,
             database: "db".to_string(),
             table_name: "table2".to_string(), // Different table!
             column_names: vec![],
@@ -3511,6 +3550,7 @@ mod tests {
         let mut relationships = HashMap::new();
 
         let edge1 = RelationshipSchema {
+            closed_properties: false,
             database: "db".to_string(),
             table_name: "same_table".to_string(),
             column_names: vec![],
@@ -3543,6 +3583,7 @@ mod tests {
         };
 
         let edge2 = RelationshipSchema {
+            closed_properties: false,
             database: "db".to_string(),
             table_name: "same_table".to_string(), // Same table
             column_names: vec![],
@@ -3626,6 +3667,7 @@ mod tests {
 
         let mut relationships = HashMap::new();
         let base_rel = || RelationshipSchema {
+            closed_properties: false,
             database: "db".to_string(),
             table_name: String::new(),
             column_names: vec![],

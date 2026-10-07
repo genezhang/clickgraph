@@ -20,6 +20,7 @@ fn create_test_schema() -> GraphSchema {
     nodes.insert(
         "Person".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "persons".to_string(),
             column_names: vec!["id".to_string(), "name".to_string()],
@@ -55,6 +56,7 @@ fn create_test_schema() -> GraphSchema {
     rels.insert(
         "FOLLOWS".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "follows".to_string(),
             column_names: vec!["follower_id".to_string(), "followed_id".to_string()],

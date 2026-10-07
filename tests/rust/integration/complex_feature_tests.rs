@@ -25,6 +25,7 @@ fn create_test_schema() -> GraphSchema {
     nodes.insert(
         "User".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "users".to_string(),
             column_names: vec![
@@ -81,6 +82,7 @@ fn create_test_schema() -> GraphSchema {
     nodes.insert(
         "Post".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "posts".to_string(),
             column_names: vec![
@@ -137,6 +139,7 @@ fn create_test_schema() -> GraphSchema {
     relationships.insert(
         "FOLLOWS".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "user_follows".to_string(),
             column_names: vec![
@@ -184,6 +187,7 @@ fn create_test_schema() -> GraphSchema {
     relationships.insert(
         "AUTHORED".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "post_authors".to_string(),
             column_names: vec!["author_id".to_string(), "post_id".to_string()],
@@ -1692,6 +1696,7 @@ async fn test_expression_property_preserved_through_render_phase() {
     nodes.insert(
         "User".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "users".to_string(),
             column_names: vec![

@@ -347,6 +347,7 @@ mod tests {
 
     fn person_node_with_source(source: Option<&str>) -> NodeSchema {
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "person".to_string(),
             column_names: vec!["id".to_string(), "name".to_string()],
@@ -377,6 +378,7 @@ mod tests {
 
     fn knows_rel(is_fk: bool) -> RelationshipSchema {
         RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "knows".to_string(),
             column_names: vec!["from_id".to_string(), "to_id".to_string()],

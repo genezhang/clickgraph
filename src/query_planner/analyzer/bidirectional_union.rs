@@ -3112,6 +3112,7 @@ mod tests {
         from_label_values: Option<Vec<String>>,
     ) -> RelationshipSchema {
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "memberships".to_string(),
             column_names: vec!["from_col".to_string(), "to_col".to_string()],

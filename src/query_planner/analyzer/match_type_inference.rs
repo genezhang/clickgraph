@@ -516,6 +516,7 @@ mod tests {
         nodes.insert(
             "User".to_string(),
             NodeSchema {
+                closed_properties: false,
                 database: "test".to_string(),
                 table_name: "users".to_string(),
                 column_names: vec!["user_id".to_string()],
@@ -541,6 +542,7 @@ mod tests {
         nodes.insert(
             "Post".to_string(),
             NodeSchema {
+                closed_properties: false,
                 database: "test".to_string(),
                 table_name: "posts".to_string(),
                 column_names: vec!["post_id".to_string()],
@@ -568,6 +570,7 @@ mod tests {
         rels.insert(
             "FOLLOWS".to_string(),
             RelationshipSchema {
+                closed_properties: false,
                 database: "test".to_string(),
                 table_name: "follows".to_string(),
                 column_names: vec!["follower_id".to_string(), "followed_id".to_string()],
@@ -602,6 +605,7 @@ mod tests {
         rels.insert(
             "LIKES".to_string(),
             RelationshipSchema {
+                closed_properties: false,
                 database: "test".to_string(),
                 table_name: "likes".to_string(),
                 column_names: vec!["user_id".to_string(), "post_id".to_string()],
@@ -642,6 +646,7 @@ mod tests {
         nodes.insert(
             "Node".to_string(),
             NodeSchema {
+                closed_properties: false,
                 database: "test".to_string(),
                 table_name: "nodes".to_string(),
                 column_names: vec!["id".to_string()],
@@ -669,6 +674,7 @@ mod tests {
         rels.insert(
             "ONLY_REL".to_string(),
             RelationshipSchema {
+                closed_properties: false,
                 database: "test".to_string(),
                 table_name: "only_rel".to_string(),
                 column_names: vec!["from_id".to_string(), "to_id".to_string()],

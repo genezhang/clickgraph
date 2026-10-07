@@ -37,6 +37,7 @@ fn create_test_schema() -> GraphSchema {
     nodes.insert(
         "User".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "users".to_string(),
             column_names: vec![
@@ -67,6 +68,7 @@ fn create_test_schema() -> GraphSchema {
     relationships.insert(
         "FOLLOWS::User::User".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "user_follows".to_string(),
             column_names: vec!["follower_id".to_string(), "followed_id".to_string()],

@@ -43,6 +43,7 @@ fn setup_denormalized_schema() -> GraphSchema {
     nodes.insert(
         "Airport".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "flights".to_string(), // Partially denormalized: node properties embedded in edge table
             column_names: vec!["airport_id".to_string(), "airport_code".to_string()],
@@ -102,6 +103,7 @@ fn setup_denormalized_schema() -> GraphSchema {
     relationships.insert(
         "FLIGHT::Airport::Airport".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "flights".to_string(),
             column_names: vec![
@@ -344,6 +346,7 @@ fn test_multiple_relationships_same_node() {
     schema.insert_relationship_schema(
         "AUTHORED".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "posts".to_string(),
             column_names: vec![
@@ -447,6 +450,7 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
     nodes.insert(
         "Airport".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "flights".to_string(), // ✅ Same table as edge!
             column_names: vec![
@@ -514,6 +518,7 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
     relationships.insert(
         "FLIGHT::Airport::Airport".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "flights".to_string(), // ✅ Same table as node!
             column_names: vec![

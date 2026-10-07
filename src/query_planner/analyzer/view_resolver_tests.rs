@@ -16,6 +16,7 @@ mod tests {
 
         // Create a test node schema
         let node_schema = NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "users".to_string(),
             column_names: vec!["user_id".to_string(), "name".to_string()],
@@ -44,6 +45,7 @@ mod tests {
 
         // Create a test relationship schema
         let rel_schema = RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "follows".to_string(),
             column_names: vec!["follower_id".to_string(), "followed_id".to_string()],

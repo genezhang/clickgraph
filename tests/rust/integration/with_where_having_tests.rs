@@ -26,6 +26,7 @@ fn create_test_schema() -> GraphSchema {
     property_mappings.insert("id".to_string(), PropertyValue::Column("id".to_string()));
 
     let node_schema = NodeSchema {
+        closed_properties: false,
         database: "test".to_string(),
         table_name: "nodes".to_string(),
         column_names: vec!["id".to_string()],

@@ -38,6 +38,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
     nodes.insert(
         "User".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "users".to_string(),
             column_names: vec![
@@ -79,6 +80,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
     nodes.insert(
         "Post".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "posts".to_string(),
             column_names: vec![
@@ -117,6 +119,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
     relationships.insert(
         "FOLLOWS::User::User".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "interactions".to_string(),
             column_names: vec![
@@ -160,6 +163,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
     relationships.insert(
         "LIKES::User::Post".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "interactions".to_string(),
             column_names: vec![
@@ -203,6 +207,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
     relationships.insert(
         "AUTHORED::User::Post".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "interactions".to_string(),
             column_names: vec![
@@ -386,6 +391,7 @@ fn test_non_polymorphic_relationship() {
     nodes.insert(
         "User".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "users".to_string(),
             column_names: vec!["user_id".to_string()],
@@ -413,6 +419,7 @@ fn test_non_polymorphic_relationship() {
     relationships.insert(
         "FOLLOWS::User::User".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "user_follows".to_string(),
             column_names: vec!["follower_id".to_string(), "followed_id".to_string()],
@@ -486,6 +493,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
     nodes.insert(
         "Group".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "groups".to_string(),
             column_names: vec!["group_id".to_string(), "name".to_string()],
@@ -513,6 +521,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
     nodes.insert(
         "User".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "users".to_string(),
             column_names: vec!["user_id".to_string(), "name".to_string()],
@@ -543,6 +552,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
     relationships.insert(
         "PARENT_OF::Group::$any".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "memberships".to_string(),
             column_names: vec![

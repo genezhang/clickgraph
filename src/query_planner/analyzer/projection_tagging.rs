@@ -696,7 +696,7 @@ impl ProjectionTagging {
                 let mapped_column = match &property_access.column {
                     crate::graph_catalog::expression_parser::PropertyValue::Expression(_) => {
                         // Already an expression - preserve it!
-                        println!(
+                        log::debug!(
                             "ProjectionTagging: Preserving existing Expression variant for '{}'",
                             property_access.column.raw()
                         );

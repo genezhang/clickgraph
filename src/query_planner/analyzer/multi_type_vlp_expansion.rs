@@ -447,6 +447,7 @@ mod tests {
         nodes.insert(
             "User".to_string(),
             NodeSchema {
+                closed_properties: false,
                 database: "test".to_string(),
                 table_name: "users".to_string(),
                 column_names: vec![],
@@ -474,6 +475,7 @@ mod tests {
         nodes.insert(
             "Post".to_string(),
             NodeSchema {
+                closed_properties: false,
                 database: "test".to_string(),
                 table_name: "posts".to_string(),
                 column_names: vec![],
@@ -501,6 +503,7 @@ mod tests {
         relationships.insert(
             "FOLLOWS::User::User".to_string(),
             RelationshipSchema {
+                closed_properties: false,
                 database: "test".to_string(),
                 table_name: "follows".to_string(),
                 column_names: vec![],
@@ -537,6 +540,7 @@ mod tests {
         relationships.insert(
             "AUTHORED::User::Post".to_string(),
             RelationshipSchema {
+                closed_properties: false,
                 database: "test".to_string(),
                 table_name: "authored".to_string(),
                 column_names: vec![],
@@ -729,6 +733,7 @@ mod tests {
         nodes.insert(
             "User".to_string(),
             NodeSchema {
+                closed_properties: false,
                 database: "test".to_string(),
                 table_name: "users".to_string(),
                 column_names: vec![],
@@ -754,6 +759,7 @@ mod tests {
         nodes.insert(
             "Post".to_string(),
             NodeSchema {
+                closed_properties: false,
                 database: "test".to_string(),
                 table_name: "posts".to_string(),
                 column_names: vec![],
@@ -779,6 +785,7 @@ mod tests {
         relationships.insert(
             "AUTHORED::User::Post".to_string(),
             RelationshipSchema {
+                closed_properties: false,
                 database: "test".to_string(),
                 table_name: "authored".to_string(),
                 column_names: vec![],
@@ -813,6 +820,7 @@ mod tests {
         relationships.insert(
             "LIKED::User::Post".to_string(),
             RelationshipSchema {
+                closed_properties: false,
                 database: "test".to_string(),
                 table_name: "likes".to_string(),
                 column_names: vec![],
