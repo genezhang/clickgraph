@@ -38,6 +38,7 @@ fn create_test_schema() -> GraphSchema {
     );
 
     let user_schema = NodeSchema {
+        closed_properties: false,
         database: "test".to_string(),
         table_name: "users".to_string(),
         column_names: vec![
@@ -68,6 +69,7 @@ fn create_test_schema() -> GraphSchema {
 
     // Create FOLLOWS relationship schema
     let follows_schema = RelationshipSchema {
+        closed_properties: false,
         database: "test".to_string(),
         table_name: "user_follows".to_string(),
         column_names: vec!["follower_id".to_string(), "followed_id".to_string()],

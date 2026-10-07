@@ -191,7 +191,7 @@ MATCH (u:User) RETURN count(u)
 | `use_final` | bool | `null` | Override FINAL keyword usage (auto-detect if null) |
 | `filter` | string | `null` | SQL predicate filter applied to all queries |
 | `auto_discover_columns` | bool | `false` | Map every table column as a property, read from the database at load (see [Auto-Discovery](#auto-discovery)) |
-| `exclude_columns` | list | `[]` | Columns to exclude from auto-discovery |
+| `exclude_columns` | list | `[]` | Columns that auto-discovery leaves out: they are not properties, so reading one gives NULL |
 | `naming_convention` | string | `"snake_case"` | Property naming: "snake_case" or "camelCase" |
 | `id_generation` | enum | `"uuid"` | **Embedded mode only.** How the ID column is filled when Cypher `CREATE` omits it: `"uuid"` (default — DDL `DEFAULT generateUUIDv4()` fills it), `"provided"` (caller must supply, planner errors otherwise), `"snowflake"` (planner emits a `generateSnowflakeID()` call). |
 
@@ -600,6 +600,11 @@ a connection:
 | Embedded chdb (`Database::new`) | the element's `source:` (`DESCRIBE TABLE`); without one, the remote ClickHouse's `system.columns` in hybrid mode (`SystemConfig.remote`), else refused (chdb creates that table from the schema) |
 | Remote (`Database::new_remote`, `cg --clickhouse`) | ClickHouse `system.columns` |
 | SQL-only (`Database::sql_only`, `cg sql` without `--clickhouse`), Databricks | not supported: the schema is refused |
+
+The discovered and declared properties are then all of the element's
+properties: any other name, including an excluded column, is unknown and reads
+as NULL, as in Cypher. (Without discovery, an undeclared name is still read as
+the same-named column.)
 
 A discovering element with no columns found is refused at load: the table
 does not exist, the user cannot see it, or it is a parameterized view

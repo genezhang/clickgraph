@@ -82,6 +82,7 @@ fn schema_with_user_node_id(id_prop: &str) -> GraphSchema {
     let mut relationships = HashMap::new();
 
     let user_node = NodeSchema {
+        closed_properties: false,
         database: "test_db".to_string(),
         table_name: "users".to_string(),
         column_names: vec![
@@ -116,6 +117,7 @@ fn schema_with_user_node_id(id_prop: &str) -> GraphSchema {
     nodes.insert("User".to_string(), user_node);
 
     let post_node = NodeSchema {
+        closed_properties: false,
         database: "test_db".to_string(),
         table_name: "posts".to_string(),
         column_names: vec!["post_id".to_string(), "title".to_string()],
@@ -145,6 +147,7 @@ fn schema_with_user_node_id(id_prop: &str) -> GraphSchema {
     nodes.insert("Post".to_string(), post_node);
 
     let follows_rel = RelationshipSchema {
+        closed_properties: false,
         database: "test_db".to_string(),
         table_name: "follows".to_string(),
         column_names: vec!["from_id".to_string(), "to_id".to_string()],

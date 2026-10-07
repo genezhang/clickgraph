@@ -80,15 +80,22 @@ def test_relationship_columns_are_properties(schema_name):
     assert rows[0]["f.follow_date"]
 
 
-@pytest.mark.xfail(
-    reason="the legacy planner reads an unmapped property as the same-named column, "
-    "so an excluded column stays readable (Cypher semantics give NULL; the "
-    "CLICKGRAPH_BOUND_PLAN path does)",
-    strict=False,
-)
 def test_excluded_column_is_not_a_property(schema_name):
+    """An excluded column is unknown, so NULL as in Cypher, and not part of the node."""
     rows = query(schema_name, "MATCH (u:User) WHERE u.userId = 1 RETURN u.city")
     assert rows == [{"u.city": None}]
+    rows = query(schema_name, "MATCH (u:User) WHERE u.city IS NOT NULL RETURN u.userId")
+    assert rows == []
+
+
+def test_unknown_property_is_null(schema_name):
+    """The discovered columns are all the properties; any other name is NULL."""
+    rows = query(
+        schema_name,
+        "MATCH (a:User)-[f:FOLLOWS]->(b:User) WHERE a.userId = 1 AND b.userId = 2 "
+        "RETURN a.nickname, f.weight",
+    )
+    assert rows == [{"a.nickname": None, "f.weight": None}]
 
 
 def test_manual_schema_still_works():

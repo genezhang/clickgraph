@@ -29,6 +29,7 @@ fn setup_person_schema() -> GraphSchema {
 
     // Person node with 6 properties (id + 5 data properties)
     let person_node = NodeSchema {
+        closed_properties: false,
         database: "test_db".to_string(),
         table_name: "persons".to_string(),
         column_names: vec![
@@ -69,6 +70,7 @@ fn setup_person_schema() -> GraphSchema {
     nodes.insert("Person".to_string(), person_node);
 
     let knows_rel = RelationshipSchema {
+        closed_properties: false,
         database: "test_db".to_string(),
         table_name: "knows".to_string(),
         column_names: vec!["from_id".to_string(), "to_id".to_string()],

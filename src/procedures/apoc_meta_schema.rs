@@ -251,6 +251,7 @@ mod tests {
 
     fn make_node(table: &str, id_col: &str, props: HashMap<String, PropertyValue>) -> NodeSchema {
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: table.to_string(),
             column_names: vec![id_col.to_string()],
@@ -283,6 +284,7 @@ mod tests {
         props: HashMap<String, PropertyValue>,
     ) -> RelationshipSchema {
         RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: table.to_string(),
             column_names: vec![from_id_col.to_string(), to_id_col.to_string()],

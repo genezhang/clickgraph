@@ -167,14 +167,14 @@ impl<'a> ViewResolver<'a> {
             );
         }
 
-        // In Neo4j-compat mode, a property that resolves to no known column is
-        // treated as absent and resolves to NULL — matching Neo4j's schemaless
-        // semantics where `n.missing` is null, not an error. This is what lets
-        // Neo4j Browser / graph-notebook work: clicking a property key that
-        // belongs to a different label runs `MATCH (n) WHERE n.prop IS NOT NULL`,
-        // which must return empty rather than a ClickHouse "unknown identifier"
-        // error.
-        if crate::server::query_context::server_neo4j_compat() {
+        // A property that resolves to no known column is absent, so NULL as in
+        // Cypher, when the node's properties were discovered (the mappings are
+        // then complete: an excluded column is not a property) or in Neo4j-compat
+        // mode. Compat is what lets Neo4j Browser / graph-notebook work: clicking
+        // a property key that belongs to a different label runs
+        // `MATCH (n) WHERE n.prop IS NOT NULL`, which must return empty rather
+        // than a ClickHouse "unknown identifier" error.
+        if node_schema.closed_properties || crate::server::query_context::server_neo4j_compat() {
             return Ok(
                 crate::graph_catalog::expression_parser::PropertyValue::Expression(
                     "NULL".to_string(),
@@ -182,8 +182,8 @@ impl<'a> ViewResolver<'a> {
             );
         }
 
-        // Default (non-compat): identity mapping (property name = column name).
-        // Supports wide tables without requiring hundreds of explicit mappings.
+        // Default: identity mapping (property name = column name), for tables
+        // whose columns were not discovered.
         Ok(crate::graph_catalog::expression_parser::PropertyValue::Column(property.to_string()))
     }
 
@@ -255,9 +255,10 @@ impl<'a> ViewResolver<'a> {
             );
         }
 
-        // Undeclared relationship property: NULL in Neo4j-compat mode (Neo4j
+        // Undeclared relationship property: NULL when the properties were
+        // discovered (the mappings are complete) or in Neo4j-compat mode (Neo4j
         // schemaless semantics), identity-mapped column otherwise (wide tables).
-        if crate::server::query_context::server_neo4j_compat() {
+        if rel_schema.closed_properties || crate::server::query_context::server_neo4j_compat() {
             return Ok(
                 crate::graph_catalog::expression_parser::PropertyValue::Expression(
                     "NULL".to_string(),

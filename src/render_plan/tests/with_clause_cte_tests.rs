@@ -56,6 +56,7 @@ fn setup_test_graph_schema() -> GraphSchema {
     let mut relationships = HashMap::new();
 
     let user_node = NodeSchema {
+        closed_properties: false,
         database: "test_db".to_string(),
         table_name: "users".to_string(),
         column_names: vec![
@@ -92,6 +93,7 @@ fn setup_test_graph_schema() -> GraphSchema {
     nodes.insert("User".to_string(), user_node);
 
     let post_node = NodeSchema {
+        closed_properties: false,
         database: "test_db".to_string(),
         table_name: "posts".to_string(),
         column_names: vec!["id".to_string(), "title".to_string(), "content".to_string()],
@@ -122,6 +124,7 @@ fn setup_test_graph_schema() -> GraphSchema {
     nodes.insert("Post".to_string(), post_node);
 
     let follows_rel = RelationshipSchema {
+        closed_properties: false,
         database: "test_db".to_string(),
         table_name: "follows".to_string(),
         column_names: vec!["from_id".to_string(), "to_id".to_string()],
@@ -155,6 +158,7 @@ fn setup_test_graph_schema() -> GraphSchema {
     relationships.insert("FOLLOWS::User::User".to_string(), follows_rel);
 
     let authored_rel = RelationshipSchema {
+        closed_properties: false,
         database: "test_db".to_string(),
         table_name: "authored".to_string(),
         column_names: vec!["from_id".to_string(), "to_id".to_string()],

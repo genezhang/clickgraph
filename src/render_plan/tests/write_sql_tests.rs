@@ -28,6 +28,7 @@ fn prop_col(name: &str) -> PropertyValue {
 
 fn person_node() -> NodeSchema {
     NodeSchema {
+        closed_properties: false,
         database: "test".to_string(),
         table_name: "person".to_string(),
         column_names: vec!["id".to_string(), "name".to_string(), "age".to_string()],
@@ -59,6 +60,7 @@ fn person_node() -> NodeSchema {
 
 fn knows_rel() -> RelationshipSchema {
     RelationshipSchema {
+        closed_properties: false,
         database: "test".to_string(),
         table_name: "knows".to_string(),
         column_names: vec!["from_id".to_string(), "to_id".to_string()],
@@ -496,6 +498,7 @@ fn detach_delete_uses_resolved_pk_column_for_non_id_schemas() {
 
     // Person with PK `user_id` (not `id`).
     let mut node = NodeSchema {
+        closed_properties: false,
         database: "test".into(),
         table_name: "person".into(),
         column_names: vec!["user_id".into(), "name".into()],

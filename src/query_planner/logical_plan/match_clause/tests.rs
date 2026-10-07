@@ -501,6 +501,7 @@ fn test_generate_scan() {
     nodes.insert(
         "Customer".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "customers".to_string(),
             column_names: vec!["id".to_string(), "name".to_string()],
@@ -560,6 +561,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
     nodes.insert(
         "Airport".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "airports".to_string(),
             column_names: vec!["id".to_string(), "code".to_string()],
@@ -585,6 +587,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
     nodes.insert(
         "User".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "users".to_string(),
             column_names: vec!["id".to_string(), "name".to_string()],
@@ -610,6 +613,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
     nodes.insert(
         "Post".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "posts".to_string(),
             column_names: vec!["id".to_string(), "title".to_string()],
@@ -637,6 +641,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
     rels.insert(
         "FLIGHT".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "flights".to_string(),
             column_names: vec!["from_airport".to_string(), "to_airport".to_string()],
@@ -671,6 +676,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
     rels.insert(
         "LIKES::User::Post".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "likes".to_string(),
             column_names: vec!["user_id".to_string(), "post_id".to_string()],
@@ -705,6 +711,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
     rels.insert(
         "FOLLOWS::User::User".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "follows".to_string(),
             column_names: vec!["follower_id".to_string(), "followed_id".to_string()],
@@ -741,6 +748,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
     nodes.insert(
         "Person".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "persons".to_string(),
             column_names: vec!["id".to_string(), "name".to_string(), "city".to_string()],
@@ -766,6 +774,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
     nodes.insert(
         "Organization".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "organizations".to_string(),
             column_names: vec!["id".to_string(), "name".to_string()],
@@ -791,6 +800,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
     nodes.insert(
         "Employee".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "employees".to_string(),
             column_names: vec!["id".to_string(), "name".to_string()],
@@ -816,6 +826,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
     nodes.insert(
         "Project".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "projects".to_string(),
             column_names: vec!["id".to_string(), "name".to_string()],
@@ -841,6 +852,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
     nodes.insert(
         "System".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "systems".to_string(),
             column_names: vec!["id".to_string(), "name".to_string()],
@@ -868,6 +880,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
     rels.insert(
         "WORKS_AT::Person::Organization".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "works_at".to_string(),
             column_names: vec!["person_id".to_string(), "org_id".to_string()],
@@ -902,6 +915,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
     rels.insert(
         "ASSIGNED_TO::Employee::Project".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "assigned_to".to_string(),
             column_names: vec!["emp_id".to_string(), "proj_id".to_string()],
@@ -936,6 +950,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
     rels.insert(
         "MANAGES::User::System".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "manages".to_string(),
             column_names: vec!["user_id".to_string(), "system_id".to_string()],
@@ -979,6 +994,7 @@ fn create_single_relationship_schema() -> GraphSchema {
     nodes.insert(
         "Person".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "persons".to_string(),
             column_names: vec!["id".to_string(), "name".to_string()],
@@ -1006,6 +1022,7 @@ fn create_single_relationship_schema() -> GraphSchema {
     rels.insert(
         "KNOWS".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "knows".to_string(),
             column_names: vec!["person1_id".to_string(), "person2_id".to_string()],
@@ -1255,6 +1272,7 @@ fn test_infer_relationship_type_too_many_matches_error() {
     nodes.insert(
         "User".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "users".to_string(),
             column_names: vec!["id".to_string()],
@@ -1284,6 +1302,7 @@ fn test_infer_relationship_type_too_many_matches_error() {
         rels.insert(
             format!("REL_{}", i),
             RelationshipSchema {
+                closed_properties: false,
                 database: "test_db".to_string(),
                 table_name: format!("rel_{}", i),
                 column_names: vec!["from_id".to_string(), "to_id".to_string()],
@@ -1355,6 +1374,7 @@ fn create_single_node_schema() -> GraphSchema {
     nodes.insert(
         "Person".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "persons".to_string(),
             column_names: vec!["id".to_string(), "name".to_string()],
@@ -1393,6 +1413,7 @@ fn create_multi_node_schema() -> GraphSchema {
         nodes.insert(
             node_type.to_string(),
             NodeSchema {
+                closed_properties: false,
                 database: "test_db".to_string(),
                 table_name: format!("{}s", node_type.to_lowercase()),
                 column_names: vec!["id".to_string()],
@@ -1477,6 +1498,7 @@ fn test_infer_node_label_many_nodes_no_error() {
         nodes.insert(
             format!("Type{}", i),
             NodeSchema {
+                closed_properties: false,
                 database: "test_db".to_string(),
                 table_name: format!("type_{}", i),
                 column_names: vec!["id".to_string()],
@@ -1521,6 +1543,7 @@ fn test_infer_node_label_denormalized_single_node() {
     nodes.insert(
         "Airport".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "flights".to_string(), // Edge table
             column_names: vec!["Origin".to_string(), "Dest".to_string()],
@@ -1571,6 +1594,7 @@ fn test_infer_relationship_type_polymorphic_edge() {
         nodes.insert(
             node_type.to_string(),
             NodeSchema {
+                closed_properties: false,
                 database: "test_db".to_string(),
                 table_name: format!("{}s", node_type.to_lowercase()),
                 column_names: vec!["id".to_string()],
@@ -1600,6 +1624,7 @@ fn test_infer_relationship_type_polymorphic_edge() {
     rels.insert(
         "MEMBER_OF".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "memberships".to_string(),
             column_names: vec!["member_id".to_string(), "group_id".to_string()],

@@ -20,6 +20,7 @@ pub fn create_standard_schema() -> GraphSchema {
     nodes.insert(
         "User".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "users".to_string(),
             column_names: vec![
@@ -65,6 +66,7 @@ pub fn create_standard_schema() -> GraphSchema {
     nodes.insert(
         "Post".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "posts".to_string(),
             column_names: vec![
@@ -110,6 +112,7 @@ pub fn create_standard_schema() -> GraphSchema {
     relationships.insert(
         "FOLLOWS::User::User".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "user_follows".to_string(),
             column_names: vec![
@@ -156,6 +159,7 @@ pub fn create_standard_schema() -> GraphSchema {
     relationships.insert(
         "AUTHORED::User::Post".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "post_authors".to_string(),
             column_names: vec!["author_id".to_string(), "post_id".to_string()],
@@ -191,6 +195,7 @@ pub fn create_standard_schema() -> GraphSchema {
     relationships.insert(
         "LIKED::User::Post".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "post_likes".to_string(),
             column_names: vec!["user_id".to_string(), "post_id".to_string()],
@@ -234,6 +239,7 @@ pub fn create_fk_edge_schema() -> GraphSchema {
     nodes.insert(
         "Order".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "orders".to_string(),
             column_names: vec![
@@ -275,6 +281,7 @@ pub fn create_fk_edge_schema() -> GraphSchema {
     nodes.insert(
         "Customer".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "customers".to_string(),
             column_names: vec!["customer_id".to_string(), "customer_name".to_string()],
@@ -313,6 +320,7 @@ pub fn create_fk_edge_schema() -> GraphSchema {
     relationships.insert(
         "PLACED_BY::Order::Customer".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "orders".to_string(),
             column_names: vec![
@@ -368,6 +376,7 @@ pub fn create_denormalized_schema() -> GraphSchema {
     nodes.insert(
         "Airport".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(),
             column_names: vec![],
@@ -394,6 +403,7 @@ pub fn create_denormalized_schema() -> GraphSchema {
     relationships.insert(
         "FLIGHT::Airport::Airport".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "flights".to_string(),
             column_names: vec![
@@ -448,6 +458,7 @@ pub fn create_composite_id_schema() -> GraphSchema {
     nodes.insert(
         "Account".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "accounts".to_string(),
             column_names: vec![
@@ -496,6 +507,7 @@ pub fn create_composite_id_schema() -> GraphSchema {
     nodes.insert(
         "Customer".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "customers".to_string(),
             column_names: vec!["customer_id".to_string(), "customer_name".to_string()],
@@ -534,6 +546,7 @@ pub fn create_composite_id_schema() -> GraphSchema {
     relationships.insert(
         "OWNS::Customer::Account".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "account_ownership".to_string(),
             column_names: vec![
@@ -574,6 +587,7 @@ pub fn create_composite_id_schema() -> GraphSchema {
     relationships.insert(
         "TRANSFERRED::Account::Account".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "transfers".to_string(),
             column_names: vec![
@@ -637,6 +651,7 @@ pub fn create_polymorphic_schema() -> GraphSchema {
     nodes.insert(
         "User".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "users".to_string(),
             column_names: vec![
@@ -682,6 +697,7 @@ pub fn create_polymorphic_schema() -> GraphSchema {
     nodes.insert(
         "Post".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "posts".to_string(),
             column_names: vec![
@@ -746,6 +762,7 @@ pub fn create_polymorphic_schema() -> GraphSchema {
     relationships.insert(
         "FOLLOWS::User::User".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "interactions".to_string(),
             column_names: poly_columns.clone(),
@@ -782,6 +799,7 @@ pub fn create_polymorphic_schema() -> GraphSchema {
     relationships.insert(
         "LIKES::User::Post".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "interactions".to_string(),
             column_names: poly_columns.clone(),
@@ -818,6 +836,7 @@ pub fn create_polymorphic_schema() -> GraphSchema {
     relationships.insert(
         "AUTHORED::User::Post".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "interactions".to_string(),
             column_names: poly_columns,

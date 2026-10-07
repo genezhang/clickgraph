@@ -659,6 +659,7 @@ mod tests {
 
     fn person_node(name: &str) -> NodeSchema {
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: name.to_lowercase(),
             column_names: vec!["id".to_string(), "name".to_string(), "age".to_string()],
@@ -693,6 +694,7 @@ mod tests {
 
     fn knows_rel() -> RelationshipSchema {
         RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "knows".to_string(),
             column_names: vec!["from_id".to_string(), "to_id".to_string()],

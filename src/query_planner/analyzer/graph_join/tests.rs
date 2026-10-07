@@ -36,6 +36,7 @@ fn create_test_graph_schema() -> GraphSchema {
     nodes.insert(
         "Person".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "default".to_string(),
             table_name: "Person".to_string(),
             column_names: vec!["id".to_string(), "name".to_string(), "age".to_string()],
@@ -63,6 +64,7 @@ fn create_test_graph_schema() -> GraphSchema {
     nodes.insert(
         "Company".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "default".to_string(),
             table_name: "Company".to_string(),
             column_names: vec!["id".to_string(), "name".to_string(), "founded".to_string()],
@@ -90,6 +92,7 @@ fn create_test_graph_schema() -> GraphSchema {
     relationships.insert(
         "FOLLOWS::Person::Person".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "default".to_string(),
             table_name: "FOLLOWS".to_string(),
             column_names: vec![
@@ -130,6 +133,7 @@ fn create_test_graph_schema() -> GraphSchema {
     relationships.insert(
         "WORKS_AT::Person::Company".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "default".to_string(),
             table_name: "WORKS_AT".to_string(),
             column_names: vec![
@@ -906,6 +910,7 @@ fn create_self_referencing_fk_schema() -> GraphSchema {
     nodes.insert(
         "Object".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "fs_objects".to_string(),
             column_names: vec![
@@ -954,6 +959,7 @@ fn create_self_referencing_fk_schema() -> GraphSchema {
     relationships.insert(
         "PARENT".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "fs_objects".to_string(), // Same as node table!
             column_names: vec![],
@@ -999,6 +1005,7 @@ fn create_non_self_referencing_fk_schema() -> GraphSchema {
     nodes.insert(
         "Order".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "orders".to_string(),
             column_names: vec![
@@ -1041,6 +1048,7 @@ fn create_non_self_referencing_fk_schema() -> GraphSchema {
     nodes.insert(
         "Customer".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "customers".to_string(),
             column_names: vec!["customer_id".to_string(), "name".to_string()],
@@ -1080,6 +1088,7 @@ fn create_non_self_referencing_fk_schema() -> GraphSchema {
     relationships.insert(
         "PLACED_BY".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "orders".to_string(), // Same as Order node table!
             column_names: vec![],
@@ -1502,6 +1511,7 @@ fn create_composite_id_graph_schema() -> GraphSchema {
     nodes.insert(
         "Customer".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "default".to_string(),
             table_name: "customers".to_string(),
             column_names: vec!["customer_id".to_string(), "name".to_string()],
@@ -1528,6 +1538,7 @@ fn create_composite_id_graph_schema() -> GraphSchema {
     nodes.insert(
         "Account".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "default".to_string(),
             table_name: "accounts".to_string(),
             column_names: vec![
@@ -1563,6 +1574,7 @@ fn create_composite_id_graph_schema() -> GraphSchema {
     relationships.insert(
         "OWNS::Customer::Account".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "default".to_string(),
             table_name: "account_ownership".to_string(),
             column_names: vec![

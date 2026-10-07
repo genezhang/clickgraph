@@ -3004,6 +3004,7 @@ mod tests {
         node_schemas.insert(
             "Person".to_string(),
             NodeSchema {
+                closed_properties: false,
                 database: "test_db".to_string(),
                 table_name: "users".to_string(),
                 column_names: vec![
@@ -3046,6 +3047,7 @@ mod tests {
         node_schemas.insert(
             "Company".to_string(),
             NodeSchema {
+                closed_properties: false,
                 database: "test_db".to_string(),
                 table_name: "companies".to_string(),
                 column_names: vec![
@@ -3085,6 +3087,7 @@ mod tests {
         rel_schemas.insert(
             "FOLLOWS".to_string(),
             RelationshipSchema {
+                closed_properties: false,
                 database: "test_db".to_string(),
                 table_name: "follows".to_string(),
                 column_names: vec![

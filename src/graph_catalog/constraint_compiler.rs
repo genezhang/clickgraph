@@ -166,6 +166,7 @@ mod tests {
         }
 
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: format!("{}_table", label),
             column_names,

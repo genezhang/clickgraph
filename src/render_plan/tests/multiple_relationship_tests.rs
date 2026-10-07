@@ -49,6 +49,7 @@ fn setup_test_schema() {
     relationships.insert(
         "FOLLOWS::User::User".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "user_follows".to_string(),
             column_names: vec!["follower_id".to_string(), "followed_id".to_string()],
@@ -85,6 +86,7 @@ fn setup_test_schema() {
     relationships.insert(
         "FRIENDS_WITH::User::User".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "friendships".to_string(),
             column_names: vec!["user1_id".to_string(), "user2_id".to_string()],
@@ -121,6 +123,7 @@ fn setup_test_schema() {
     relationships.insert(
         "PURCHASED::Customer::Product".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "orders".to_string(),
             column_names: vec!["customer_id".to_string(), "product_id".to_string()],
@@ -157,6 +160,7 @@ fn setup_test_schema() {
     relationships.insert(
         "PLACED_ORDER::Customer::Order".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "orders".to_string(),
             column_names: vec!["customer_id".to_string(), "order_id".to_string()],
@@ -193,6 +197,7 @@ fn setup_test_schema() {
     relationships.insert(
         "ORDER_CONTAINS::Order::Product".to_string(),
         RelationshipSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "order_items".to_string(),
             column_names: vec!["order_id".to_string(), "product_id".to_string()],
@@ -233,6 +238,7 @@ fn setup_test_schema() {
     nodes.insert(
         "User".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "users".to_string(),
             column_names: vec!["user_id".to_string(), "name".to_string()],
@@ -260,6 +266,7 @@ fn setup_test_schema() {
     nodes.insert(
         "Customer".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "customers".to_string(),
             column_names: vec!["customer_id".to_string(), "name".to_string()],
@@ -287,6 +294,7 @@ fn setup_test_schema() {
     nodes.insert(
         "Product".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "products".to_string(),
             column_names: vec!["product_id".to_string(), "name".to_string()],
@@ -314,6 +322,7 @@ fn setup_test_schema() {
     nodes.insert(
         "Order".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test_db".to_string(),
             table_name: "orders".to_string(),
             column_names: vec!["order_id".to_string(), "customer_id".to_string()],

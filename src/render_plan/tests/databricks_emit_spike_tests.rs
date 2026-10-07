@@ -138,6 +138,7 @@ fn setup_test_schema() -> GraphSchema {
     let mut relationships = HashMap::new();
 
     let user = NodeSchema {
+        closed_properties: false,
         database: "test_db".to_string(),
         table_name: "users".to_string(),
         column_names: vec!["id".to_string(), "name".to_string()],
@@ -173,6 +174,7 @@ fn setup_test_schema() -> GraphSchema {
     nodes.insert("User".to_string(), user);
 
     let follows = RelationshipSchema {
+        closed_properties: false,
         database: "test_db".to_string(),
         table_name: "follows".to_string(),
         column_names: vec!["from_id".to_string(), "to_id".to_string()],

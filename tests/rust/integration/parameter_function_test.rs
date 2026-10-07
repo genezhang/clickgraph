@@ -20,6 +20,7 @@ fn create_test_schema() -> GraphSchema {
     nodes.insert(
         "User".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "users".to_string(),
             column_names: vec!["id".to_string(), "name".to_string(), "age".to_string()],
@@ -56,6 +57,7 @@ fn create_test_schema() -> GraphSchema {
     nodes.insert(
         "Order".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "orders".to_string(),
             column_names: vec!["id".to_string(), "total".to_string()],
@@ -91,6 +93,7 @@ fn create_test_schema() -> GraphSchema {
     nodes.insert(
         "Product".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "products".to_string(),
             column_names: vec!["id".to_string(), "name".to_string(), "price".to_string()],
@@ -130,6 +133,7 @@ fn create_test_schema() -> GraphSchema {
     nodes.insert(
         "Person".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "persons".to_string(),
             column_names: vec!["id".to_string(), "name".to_string()],
@@ -165,6 +169,7 @@ fn create_test_schema() -> GraphSchema {
     nodes.insert(
         "Number".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "numbers".to_string(),
             column_names: vec!["id".to_string(), "value".to_string()],
@@ -200,6 +205,7 @@ fn create_test_schema() -> GraphSchema {
     nodes.insert(
         "Text".to_string(),
         NodeSchema {
+            closed_properties: false,
             database: "test".to_string(),
             table_name: "texts".to_string(),
             column_names: vec!["id".to_string(), "content".to_string()],
