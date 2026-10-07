@@ -7,8 +7,8 @@
 //! * `labels`: label inference over a clause's pattern.
 //! * [`lower`]: bound plan -> `RenderPlan`, printed by
 //!   `render_plan_to_sql_plain`, and the result shape Bolt / graph output
-//!   read (S4: MATCH / WITH / RETURN on the standard layout; everything else
-//!   falls back to the legacy pipeline).
+//!   read (S4–S5: MATCH, OPTIONAL MATCH, WITH and RETURN on the standard
+//!   layout; everything else falls back to the legacy pipeline).
 //!
 //! Routing is in `crate::translate` (`CLICKGRAPH_BOUND_PLAN=on`).
 

@@ -470,8 +470,8 @@ fn table_options_come_from_the_schema() {
 #[test]
 fn what_is_not_lowered_yet() {
     not_lowered(
-        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b) RETURN b.name",
-        "OPTIONAL",
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) RETURN labels(b) AS l",
+        "labels() of a node an OPTIONAL MATCH may leave NULL",
     );
     not_lowered(
         "MATCH (a:User)-[:FOLLOWS*1..2]->(b) RETURN count(*)",
@@ -1056,5 +1056,226 @@ fn each_item_knows_its_own_columns() {
     assert_eq!(
         cols(2),
         [("n.age + 1".to_string(), "n.age + 1".to_string())]
+    );
+}
+
+/// §4.9: an OPTIONAL MATCH is the input LEFT JOIN its matches, with the
+/// clause's WHERE inside the matches, so it decides which matches there are
+/// and never removes an input row.
+#[test]
+fn an_optional_match_is_the_input_left_join_its_matches() {
+    has(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) WHERE b.age > 30 \
+         RETURN a.name, b.name",
+        &[
+            // The shared node is read from the relationship's endpoint column.
+            r#"WITH optional_o1 AS ( SELECT v1.follower_id AS "v0__user_id", v2.user_id AS "v2__user_id","#,
+            "FROM test_integration.user_follows_test AS v1 \
+             JOIN test_integration.users_test AS v2 ON v1.followed_id = v2.user_id \
+             WHERE v2.age > 30 )",
+            r#"SELECT v0.full_name AS "a.name", o1.p2_v2_name AS "b.name" FROM test_integration.users_test AS v0 LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id"#,
+        ],
+    );
+    let multi_hop = squash(&sql(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User) \
+         RETURN a.name, c.name",
+    ));
+    // One unit: the second hop is an inner join inside the matches (#1235),
+    // never a second LEFT JOIN of the input.
+    assert_eq!(multi_hop.matches("LEFT JOIN").count(), 1, "{multi_hop}");
+    assert!(
+        multi_hop.contains(
+            "JOIN test_integration.user_follows_test AS v3 ON v3.follower_id = v2.user_id"
+        ),
+        "{multi_hop}"
+    );
+}
+
+/// A conjunct of the input's WHERE that reads only a shared node's columns
+/// (an operator tree, no function call) also restricts the matches, which
+/// then read the node's table; any other conjunct does not.
+#[test]
+fn the_input_where_restricts_an_anchored_optional() {
+    let q = squash(&sql("MATCH (a:User) WHERE a.age > 30 AND rand() < 2 \
+         OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) RETURN a.name, b.name"));
+    let (matches, outer) = q.split_once(") SELECT").expect("a CTE");
+    assert!(
+        matches.contains("FROM test_integration.users_test AS v0 JOIN test_integration.user_follows_test AS v1 ON v1.follower_id = v0.user_id")
+            && matches.contains("WHERE v0.age > 30"),
+        "{q}"
+    );
+    assert!(!matches.contains("randCanonical"), "{q}");
+    assert!(
+        outer.contains("WHERE (v0.age > 30 AND randCanonical() < 2)"),
+        "{q}"
+    );
+    // Read in the clause: the shared node's table.
+    has(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) WHERE b.age > a.age \
+         RETURN b.name",
+        &["FROM test_integration.users_test AS v0 JOIN test_integration.user_follows_test AS v1 ON v1.follower_id = v0.user_id"],
+    );
+}
+
+/// A shared relationship, or a variable only the WHERE reads, is read from
+/// the drive `D`: the input's distinct columns. A value only the WHERE reads
+/// joins NULL-safely (NULL decides the WHERE too).
+#[test]
+fn a_relationship_or_a_where_only_variable_drives_the_optional() {
+    has(
+        "MATCH (a:User), (x:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) \
+         WHERE b.age > x.age RETURN b.name",
+        &[
+            "optional_d2 AS ( SELECT DISTINCT w1.p2_v1_age AS \"p2_v1_age\", \
+             w1.v0__user_id AS \"v0__user_id\", w1.v1__user_id AS \"v1__user_id\" FROM with_w1 AS w1 )",
+            "FROM optional_d2 AS d2 JOIN test_integration.user_follows_test AS v2 ON v2.follower_id = d2.v0__user_id",
+            "WHERE v3.age > d2.p2_v1_age )",
+            // `x` is a node of a MATCH: never NULL, a plain key.
+            "LEFT JOIN optional_o3 AS o3 ON w1.v0__user_id = o3.v0__user_id AND w1.v1__user_id = o3.v1__user_id",
+        ],
+    );
+    has(
+        "MATCH (a:User) WITH a, a.age AS k OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) \
+         WHERE k IS NULL RETURN b.name",
+        &[
+            // The WITH's CTE is the input as it is.
+            "optional_d2 AS ( SELECT DISTINCT w1.v1__user_id AS \"v1__user_id\", w1.v2 AS \"v2\" FROM with_w1 AS w1 )",
+            "WHERE d2.v2 IS NULL )",
+            "ON w1.v1__user_id = o3.v1__user_id AND (w1.v2 = o3.v2 OR (w1.v2 IS NULL AND o3.v2 IS NULL))",
+        ],
+    );
+    has(
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) OPTIONAL MATCH (a)-[r]->(c:User) RETURN c.name",
+        &[
+            "FROM optional_d2 AS d2 JOIN test_integration.users_test AS v3 ON d2.v1__followed_id = v3.user_id \
+             WHERE d2.v1__follower_id = d2.v0__user_id )",
+            "ON w1.v0__user_id = o3.v0__user_id AND w1.v1__follow_id = o3.v1__follow_id",
+        ],
+    );
+}
+
+/// No input relation: one empty record, LEFT JOIN every match.
+#[test]
+fn a_leading_optional_match_reads_one_empty_record() {
+    has(
+        "OPTIONAL MATCH (a:User) RETURN count(a)",
+        &[
+            r#"with_w2 AS ( SELECT 1 AS "__row" )"#,
+            r#"SELECT count(o1.v0__user_id) AS "count(a)" FROM with_w2 AS w2 LEFT JOIN optional_o1 AS o1 ON 1 = 1"#,
+        ],
+    );
+}
+
+/// A pattern that cannot match leaves every input row with NULLs: no join.
+#[test]
+fn an_optional_that_cannot_match_is_null() {
+    let q = squash(&sql(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:LIKED]->(b:User) RETURN a.name, b.name, count(b), b:User",
+    ));
+    assert!(!q.contains("JOIN") && !q.contains("WHERE"), "{q}");
+    assert!(
+        q.contains(r#"NULL AS "b.name", CASE WHEN count(*) >= 0 THEN 0 ELSE 0 END AS "count(b)", NULL AS "b:User""#),
+        "{q}"
+    );
+    // A later OPTIONAL MATCH from that NULL node matches nothing either.
+    let q = squash(&sql(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:LIKED]->(b:User) \
+         OPTIONAL MATCH (b)-[:FOLLOWS]->(c:User) RETURN a.name, c.name",
+    ));
+    assert!(!q.contains("JOIN"), "{q}");
+}
+
+/// What is constant for a matched element is NULL for an unmatched one.
+#[test]
+fn an_unmatched_element_is_null_in_constant_folds() {
+    has(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[r:LIKED]->(p) RETURN p:Post, type(r), a = p",
+        &[
+            r#"CASE WHEN o1.v2__post_id IS NULL THEN NULL ELSE true END AS "p:Post""#,
+            r#"CASE WHEN o1.v1__like_id IS NULL THEN NULL ELSE 'LIKED' END AS "type(r)""#,
+            r#"CASE WHEN o1.v2__post_id IS NULL THEN NULL ELSE false END AS "a = p""#,
+        ],
+    );
+}
+
+/// A later MATCH of a variable an OPTIONAL MATCH left NULL matches nothing:
+/// a node on its own is `IS NOT NULL`, and a tie to the optional matches is
+/// a WHERE (in the LEFT JOIN's ON it would keep the row).
+#[test]
+fn a_null_optional_variable_matches_nothing_later() {
+    has(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) MATCH (b) RETURN b.name",
+        &["LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id WHERE o1.v2__user_id IS NOT NULL"],
+    );
+    has(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[r:FOLLOWS]->(b:User) MATCH (a)-[r]->(b) RETURN count(*)",
+        &["LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id \
+           WHERE (o1.v1__follower_id = v0.user_id AND o1.v1__followed_id = o1.v2__user_id"],
+    );
+    has(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) WITH b MATCH (b) RETURN count(*)",
+        &["FROM with_w2 AS w2 WHERE w2.v3__user_id IS NOT NULL"],
+    );
+}
+
+/// Review of S5: a variable only the WHERE reads that matches nothing is
+/// NULL in the matches, not a reason the clause has none (`b IS NULL`
+/// holds).
+#[test]
+fn a_null_variable_only_the_where_reads_is_null_in_the_matches() {
+    has(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:LIKED]->(b:User) \
+         OPTIONAL MATCH (a)-[:FOLLOWS]->(c:User) WHERE b IS NULL RETURN c.name",
+        &[
+            "WHERE NULL IS NULL )",
+            "LEFT JOIN optional_o1 AS o1 ON v0.user_id = o1.v0__user_id",
+        ],
+    );
+}
+
+/// Review of S5: with more than one relationship, matches in the whole
+/// graph can be far more than the result (every two-hop path), so unless
+/// the input's WHERE restricts a shared node, the drive restricts them.
+#[test]
+fn an_unrestricted_multi_hop_optional_is_driven_by_the_input() {
+    has(
+        "MATCH (x:User) WITH x OPTIONAL MATCH (x)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User) \
+         RETURN count(c)",
+        &["FROM optional_d2 AS d2 JOIN test_integration.user_follows_test AS v2 ON v2.follower_id = d2.v1__user_id"],
+    );
+    for anchored in [
+        "MATCH (x:User) WHERE x.age > 3 \
+         OPTIONAL MATCH (x)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User) RETURN count(c)",
+        "MATCH (x:User) WITH x OPTIONAL MATCH (x)-[:FOLLOWS]->(b:User) RETURN count(b)",
+    ] {
+        let q = sql(anchored);
+        assert!(!q.contains("optional_d"), "{q}");
+    }
+}
+
+/// Review of S5: a relationship identified by its endpoints (no `edge_id`)
+/// can have parallel edges with different properties, so the drive joins on
+/// the properties it holds too.
+#[test]
+fn a_driven_relationship_without_edge_id_joins_on_its_properties() {
+    let schema = GraphSchemaConfig::from_yaml_str(include_str!(
+        "../../../benchmarks/social_network/schemas/social_benchmark.yaml"
+    ))
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let got = lowered(
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) OPTIONAL MATCH (b)-[r2:FOLLOWS]->(c:User) \
+         WHERE r2.follow_date > r.follow_date RETURN count(c)",
+        &schema,
+        &LowerOptions::default(),
+    );
+    assert!(
+        got.contains(
+            "ON w1.v2__user_id = o3.v2__user_id AND (w1.p2_v1_follow_date = o3.p2_v1_follow_date \
+             OR (w1.p2_v1_follow_date IS NULL AND o3.p2_v1_follow_date IS NULL)) \
+             AND w1.v1__follower_id = o3.v1__follower_id AND w1.v1__followed_id = o3.v1__followed_id"
+        ),
+        "{got}"
     );
 }

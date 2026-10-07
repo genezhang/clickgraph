@@ -601,6 +601,83 @@ is evaluated twice. The anchor-only form above avoids that in the common case.
 The rest is measured in slice 3 against the legacy SQL on the social
 benchmark and LDBC SF1 (§8).
 
+Implemented in S5 (`Lowerer::optional_match`):
+- `Q` is a CTE `optional_o{k}`, built in a segment of its own by the MATCH
+  lowering, with the clause's WHERE inside it. The rows so far LEFT JOIN it
+  on `C`, and the introduced variables are read from its columns.
+- **Anchored form.** `C` is only nodes the pattern shares (any number,
+  including none, which joins `ON 1 = 1`). `Q` holds the pattern's matches
+  in the whole graph and no drive is built. That is used only when `Q` is
+  bounded: one relationship (at most an edge table), no shared node, or a
+  shared node restricted by the input's WHERE (below). Otherwise a
+  multi-hop `Q` can be far larger than the result (every two-hop path of
+  the graph; the review ran ClickHouse out of memory at 18 GiB), and the
+  drive form is used. A shared node is in `I`, so it
+  exists, and `Q` does not need its table: when `Q` reads nothing of it but
+  its identity, it is read from the endpoint column of its first
+  relationship in the pattern. A match whose endpoint is no input node joins
+  no row.
+- **Restriction from the input.** Some conjuncts of the input's WHERE read
+  only a shared node's own columns, as an operator tree over columns,
+  literals and parameters (no function call, so no `rand()`). Such a
+  conjunct is copied into `Q`, which then scans the node's table. A match it
+  removes has a shared node no input row has, so it joins no row.
+- **Drive form.** It is used when `C` contains a relationship, or a variable
+  that only the WHERE or the property maps read.
+  - `I` becomes a pass-through CTE. A segment that is only a WITH's CTE is
+    used as it is.
+  - `D` is `optional_d{k}`, a `SELECT DISTINCT` of `C`'s identity and
+    endpoint columns plus the properties the clause reads.
+  - A relationship identified by its endpoints (no `edge_id`) can have
+    parallel edges with other properties. It also joins on the properties
+    `D` holds, NULL-safely; otherwise each parallel edge got the other's
+    matches.
+  - A value that only the WHERE reads joins NULL-safely, as
+    `(x = y OR (x IS NULL AND y IS NULL))`, a form every dialect joins on.
+    An element only the WHERE reads joins that way when its binding is
+    nullable.
+- **Matches nothing.** A pattern that cannot match (empty label inference, a
+  label mismatch, a shared element that matches nothing) needs no join. The
+  introduced variables are NULL. A variable that matches nothing and is only
+  read by the WHERE is NULL inside `Q` (`WHERE b IS NULL` holds).
+- **NaN.** A NaN value read only by the WHERE does not equal itself, so the
+  NULL-safe key may not join it. The review saw this once in about 30 runs.
+- **NULL elements.** For a nullable binding, what is constant for a matched
+  element is guarded by its identity: `b:User`, `type(r)`, and `a = b` across
+  labels give `CASE WHEN id IS NULL THEN NULL ELSE … END`. `labels(b)` is
+  refused, because a ClickHouse array cannot be NULL.
+- **Later clauses.**
+  - A later MATCH of a nullable variable adds `id IS NOT NULL`, so `MATCH (b)`
+    on its own drops the row.
+  - A tie whose later relation is `Q`'s LEFT JOIN goes to WHERE, not to that
+    ON.
+- **List-typed properties.** ClickHouse fills an unmatched row's
+  `Array`/`Map`/`Tuple` columns with defaults even under `join_use_nulls`.
+  `Q` exports only identities, endpoints and properties, so an unmatched
+  element's list-typed property reads `[]`, as on the legacy path. Without
+  property types the lowering cannot tell which properties are lists. The
+  `__matched` guard sketched above would produce a `Variant`, and only under
+  `use_variant_as_common_type`.
+- **Measured cost**, social benchmark at scale 100 (100K users, 10M
+  follows), median of 5 runs:
+
+  | Shape | Legacy | New |
+  |---|---|---|
+  | Anchor restricted by its own WHERE (`user_id < 100`, `= 42`), 1 or 2 hops | 16–51 ms | 5–32 ms |
+  | Unselective anchor, 1 hop, 10M rows | 32 ms | 49 ms |
+  | Two chained OPTIONALs, unselective | 71 ms | 109 ms |
+  | WHERE on another variable than the anchor (`MATCH (a)-->(b) WHERE a…  OPTIONAL MATCH (b)-->(p)`) | 8 ms | 33 ms |
+  | Two hops from a WITH-carried anchor (`… WITH x OPTIONAL MATCH (x)-->(b)-->(c)`, drive) | 43 ms | 87–97 ms |
+  | Two hops after an earlier OPTIONAL (drive) | 69–80 ms | 111–139 ms |
+
+  The last row is `Q` unrestricted: the input's restriction does not reach
+  the anchor through its own columns. Restricting `Q` by `anchor IN (SELECT
+  … FROM I)`, or using the drive, was slower in every measured shape (68 ms
+  and 53 ms there), because `I` is evaluated again. Choosing the form from
+  table statistics belongs to P-5. The legacy SQL is faster there because it
+  is not a unit: it LEFT JOINs each hop, which is wrong for multi-hop
+  patterns (#1235) and WHEREs over the optional variables.
+
 ### 4.10 WITH, aggregation and exports
 
 `Project` / `Aggregate` lower to a CTE whose columns are **the output scope**.
@@ -1299,7 +1376,73 @@ slice that will handle it.
       type from the Bolt module, and Bolt reports no fields for an empty
       all-scalar result, on both paths.
 
-- [ ] S5 OPTIONAL MATCH unit
+- [x] **S5: OPTIONAL MATCH as one unit** (§4.9, "Implemented in S5").
+  - Lowered: an OPTIONAL MATCH over what S4 lowers: fixed-length directed
+    hops on the standard layout, any number of parts and hops, its WHERE, and
+    inline property maps. That covers leading, chained, after a WITH, and
+    followed by MATCH / WITH / RETURN of its variables, including whole
+    elements and `id()`. Still refused: what MATCH refuses (paths S6,
+    undirected S7, other layouts S8, pattern predicates S9), and
+    `labels()` of a nullable node.
+  - Bolt:
+    - An element whose columns are all NULL (unmatched) is NULL, and so is
+      its `id()`. Before, Bolt failed on the missing id, or hashed `NULL`
+      into an id.
+    - Graph output and embedded `query_graph` skip such elements.
+    - Fixed on both paths: the vendored PackStream serializer wrote nothing
+      for a unit value, so every Bolt record holding a NULL (`RETURN null AS
+      x`, `[1, null]`, an unmatched optional) failed in the client with
+      "Nothing to unpack". It now writes `0xC0`.
+  - Acceptance:
+    - Neo4j oracle, switch on, compared with S4c on: 0 correct → wrong; 4
+      wrong or error → correct; MATCH 365 → 369.
+      - The 17 corpus OPTIONAL queries the new path lowers on the oracle
+        schemas all equal Neo4j, except five `UNTYPED_BOOLEAN` entries
+        (`is_active` is 1/0 in the Neo4j load). With `= 1` instead of
+        `= true` on both sides, all five equal Neo4j.
+      - `test_616_fold_optional_bid_plain_predicate` goes from wrong to an
+        error: `b.id` is not declared, so it reads the missing column `id`
+        (the undeclared-property rule). The legacy path answered with wrong
+        rows.
+      - The corpus lowers 460 queries (was 405).
+    - 48 further OPTIONAL shapes (`social_integration`), on the oracle:
+      - Switch on: 47 equal Neo4j. The one difference is a LIMIT cutting
+        rows tied on the sort key; both answers are valid.
+      - Switch off: 21 wrong and 6 errors. They include multi-hop OPTIONAL
+        (#1235), a leading OPTIONAL MATCH, a WHERE reading another input
+        variable or a WITH value (NULL included), a shared relationship, a
+        later `MATCH (b)` of a NULL node, label and `type()` tests on NULL,
+        and patterns that cannot match.
+    - Bolt, switch on, over 12 whole-element and NULL shapes: every result
+      equals Neo4j. The on/off differences are legacy defects (an empty or
+      failing result, reversed endpoints, all-NULL anchor columns).
+    - Timing: §4.9 table.
+    - Live suite, switch on vs off: 46 tests differ (41 after S4c). The 5
+      new ones are the Neo4j-golden entries above: 4 recorded as wrong that
+      are now correct, and `test_616` (wrong rows → the undeclared-column
+      error). The goldens are keyed to the default path, so they report it.
+    - Review (about 220 generated OPTIONAL shapes against Neo4j, Bolt, and
+      timing at scale 100). Three findings, all fixed, each with a unit
+      test:
+      - A variable that matches nothing and is only read by the WHERE
+        emptied the clause (`… WHERE b IS NULL`: 3 rows instead of 9).
+      - A drive over a relationship without `edge_id` joined parallel edges'
+        matches to each other (92/92 instead of 68/24 on `social`).
+      - An unrestricted multi-hop `Q` (anchor carried by a WITH or an
+        earlier OPTIONAL) ran out of memory. It now uses the drive.
+
+      After the fixes, the 279 shapes (the review's plus this slice's
+      sweep) on the new path all equal Neo4j, except for `collect()` order
+      without ORDER BY, a LIMIT over tied rows, and a comparator artifact
+      for an empty list. The other differences take the legacy path. With
+      the switch off nothing regressed: the PackStream change reaches only
+      the two `to_bytes` calls in `connection.rs`, and HELLO, RUN and PULL
+      still work with the Neo4j driver.
+    - Mutation check: each of 21 rules broken in turn (the LEFT JOIN, tie
+      placement, `IS NOT NULL`, NULL-safe keys, the conjunct allowlist, the
+      NULL guards, the drive's DISTINCT and CTE reuse, the elision, the
+      restriction copy, the impossible cases, the WHERE inside `Q`, the
+      PackStream NULL, the Bolt NULL element) fails a unit test.
 - [ ] S6 paths + uniqueness + shortestPath
 - [ ] S7 UNWIND / UNION / alternatives
 - [ ] S8 layouts

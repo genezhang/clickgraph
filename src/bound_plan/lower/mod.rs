@@ -29,9 +29,12 @@
 //! Neo4j keeps is lost in SQL (`RowOrder::Lost`), and a clause relying on
 //! it is not lowered.
 //!
+//! An OPTIONAL MATCH is one unit (§4.9): the rows so far LEFT JOIN a CTE of
+//! the clause's matches, its WHERE inside (`Lowerer::optional_match`).
+//!
 //! Scope today — everything else is [`LowerError::Unsupported`] and the
 //! query is translated by the legacy pipeline:
-//! * MATCH (not OPTIONAL) over standard-layout labels and types
+//! * MATCH and OPTIONAL MATCH over standard-layout labels and types
 //!   (`NodeSchema::is_standard_own_table`, `RelationshipSchema::
 //!   is_standard_edge_table`), each node with one label and each
 //!   relationship with one type after label inference, fixed length,
@@ -159,6 +162,7 @@ pub fn lower_statement(
         filters: Vec::new(),
         empty: false,
         order: RowOrder::Unordered,
+        elided: HashMap::new(),
     };
     l.relation(input)?;
     l.finish_relation();
@@ -209,13 +213,56 @@ impl At {
     }
 }
 
-impl Scan<'_> {
+impl<'s> Scan<'s> {
     fn at(&self) -> Option<&At> {
         match self {
             Scan::Node { at, .. } | Scan::Rel { at, .. } => Some(at),
             Scan::Impossible => None,
         }
     }
+
+    /// The same element, read at `at`.
+    fn with_at(self, at: At) -> Scan<'s> {
+        match self {
+            Scan::Node { schema, label, .. } => Scan::Node { schema, label, at },
+            Scan::Rel {
+                schema, rel_type, ..
+            } => Scan::Rel {
+                schema,
+                rel_type,
+                at,
+            },
+            Scan::Impossible => Scan::Impossible,
+        }
+    }
+}
+
+/// The rows of one segment as they are being built: what [`Lowerer`] holds
+/// for the current segment, swapped out while an OPTIONAL MATCH builds its
+/// matches (`Lowerer::swap_segment`).
+#[derive(Default)]
+struct Segment<'s> {
+    scans: HashMap<VarId, Scan<'s>>,
+    values: HashMap<VarId, RenderExpr>,
+    emitted: Vec<String>,
+    from: Option<ViewTableRef>,
+    joins: Vec<Join>,
+    pending: Vec<Tie>,
+    filters: Vec<RenderExpr>,
+    empty: bool,
+    order: RowOrder,
+    elided: HashMap<VarId, VarId>,
+}
+
+/// One column an OPTIONAL MATCH's matches are joined to the input rows on:
+/// `outer` (in the input) and `inner` (in the matches), exported by the
+/// matches as `column`.
+struct Correlated {
+    column: String,
+    outer: RenderExpr,
+    inner: RenderExpr,
+    /// NULL equals NULL.
+    null_safe: bool,
 }
 
 /// An equality between columns of two scans, placed in the ON of whichever
@@ -248,6 +295,9 @@ struct Lowerer<'s> {
     empty: bool,
     /// The rows' order (§3: after an ORDER BY, until a MATCH).
     order: RowOrder,
+    /// Nodes read from a relationship's endpoint columns instead of their
+    /// own table (an OPTIONAL MATCH's shared node, `anchor_correlation`).
+    elided: HashMap<VarId, VarId>,
 }
 
 /// The order of the current rows.
@@ -342,16 +392,17 @@ impl<'s> Lowerer<'s> {
                 optional,
                 pattern,
                 predicate,
-                introduces: _,
+                introduces,
             } => {
-                if *optional {
-                    return unsupported("OPTIONAL MATCH (S5)");
-                }
                 self.relation(input)?;
-                self.lower_match(pattern)?;
-                if let Some(p) = predicate {
-                    let e = self.expr(p, &HashMap::new())?;
-                    self.filters.push(e);
+                if *optional {
+                    self.optional_match(pattern, predicate.as_ref(), introduces)?;
+                } else {
+                    self.lower_match(pattern)?;
+                    if let Some(p) = predicate {
+                        let e = self.expr(p, &HashMap::new())?;
+                        self.filters.push(e);
+                    }
                 }
                 // Joining other rows to them leaves the rows in no order.
                 self.order = RowOrder::Unordered;
@@ -423,7 +474,540 @@ impl<'s> Lowerer<'s> {
                 self.props(r.var, &r.props)?;
             }
         }
+        // A variable an OPTIONAL MATCH left NULL matches nothing here. A tie
+        // to it already fails; a node with no relationship in the pattern
+        // (`MATCH (b)`) has none.
+        let bound: Vec<VarId> = pattern
+            .parts
+            .iter()
+            .flat_map(|p| {
+                let nodes = p.nodes.iter().filter(|n| n.bound_before).map(|n| n.var);
+                nodes.chain(p.rels.iter().filter(|r| r.bound_before).map(|r| r.var))
+            })
+            .collect();
+        let mut checked = Vec::new();
+        for v in bound {
+            if !self.binding(v).nullable || checked.contains(&v) {
+                continue;
+            }
+            checked.push(v);
+            if let Some(id) = self.identity(v)? {
+                self.filters
+                    .push(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::IsNotNull,
+                        operands: vec![id[0].clone()],
+                    }));
+            }
+        }
         self.uniqueness(&clause_rels)
+    }
+
+    /// OPTIONAL MATCH as one unit (§4.9): the rows so far, `I`, LEFT JOIN
+    /// the clause's matches `Q` on the correlation `C` (the input variables
+    /// the pattern shares, then those only its WHERE / property maps read).
+    /// `Q` is a MATCH with its WHERE inside, so the WHERE decides which
+    /// matches there are and never removes an input row; an input row with
+    /// no match keeps NULL for every variable the clause introduces.
+    ///
+    /// * When `C` is only nodes of the pattern, `Q` reads them from their own
+    ///   tables (each node once), so `Q` is the pattern's matches in the
+    ///   whole graph and the join picks each input row's own. A shared node
+    ///   is in `I`, so it exists; `Q` needs no restriction to `I`.
+    /// * Otherwise (a shared relationship, or a variable only the WHERE
+    ///   reads) `Q` reads `C` from a **drive** `D = SELECT DISTINCT C FROM
+    ///   I`, so `I` becomes a CTE. A variable only the WHERE reads can be
+    ///   NULL and still decide the WHERE (`x IS NULL`), so it joins
+    ///   NULL-safely.
+    ///
+    /// ClickHouse fills an unmatched row's `Array` / `Map` / `Tuple` columns
+    /// with defaults even under `join_use_nulls = 1` (§4.15). `Q` exports
+    /// element identities, endpoints and properties only, so the one gap is
+    /// a list-typed property of an unmatched element, which reads `[]`.
+    fn optional_match(
+        &mut self,
+        pattern: &BoundPattern,
+        predicate: Option<&LogicalExpr>,
+        introduces: &[VarId],
+    ) -> Result<(), LowerError> {
+        for part in &pattern.parts {
+            if part.path_var.is_some() || part.shortest.is_some() {
+                return unsupported("a path variable or shortestPath (S6)");
+            }
+        }
+        // Rows joined to other rows are in no order.
+        self.order = RowOrder::Unordered;
+        // Input variables the clause reads: shared by the pattern, or read by
+        // its WHERE / property maps only.
+        let mut shared: Vec<VarId> = Vec::new();
+        for part in &pattern.parts {
+            let nodes = part.nodes.iter().filter(|n| n.bound_before).map(|n| n.var);
+            let rels = part.rels.iter().filter(|r| r.bound_before).map(|r| r.var);
+            for v in nodes.chain(rels) {
+                if !shared.contains(&v) {
+                    shared.push(v);
+                }
+            }
+        }
+        let mut read: Vec<&LogicalExpr> = predicate.into_iter().collect();
+        for part in &pattern.parts {
+            read.extend(
+                part.nodes
+                    .iter()
+                    .flat_map(|n| n.props.iter().map(|(_, e)| e)),
+            );
+            read.extend(
+                part.rels
+                    .iter()
+                    .flat_map(|r| r.props.iter().map(|(_, e)| e)),
+            );
+        }
+        let mut where_only: Vec<VarId> = Vec::new();
+        // Read by the clause, NULL on every input row (an element that
+        // matches nothing): a constant NULL in `Q` too, no column.
+        let mut null_inputs: Vec<VarId> = Vec::new();
+        for e in &read {
+            for v in referenced_names(e, false)
+                .iter()
+                .filter_map(|n| parse_var(n))
+            {
+                if shared.contains(&v) || where_only.contains(&v) {
+                    continue;
+                }
+                if matches!(self.scans.get(&v), Some(Scan::Impossible)) {
+                    null_inputs.push(v);
+                    continue;
+                }
+                // A constant value is read as it is, not through a column.
+                let input = self.scans.contains_key(&v)
+                    || self.values.get(&v).is_some_and(|e| !is_constant(e));
+                if input {
+                    where_only.push(v);
+                }
+            }
+        }
+        let named: Vec<VarId> = introduces
+            .iter()
+            .copied()
+            .filter(|v| self.binding(*v).name.is_some())
+            .collect();
+        // A shared element that matches nothing (NULL on every row) is in no
+        // match. (One only the WHERE reads is NULL there, and `IS NULL` can
+        // still hold.)
+        if shared
+            .iter()
+            .any(|v| matches!(self.scans.get(v), Some(Scan::Impossible)))
+        {
+            for v in named {
+                self.scans.insert(v, Scan::Impossible);
+            }
+            return Ok(());
+        }
+        // Without the drive, `Q` holds the pattern's matches in the whole
+        // graph. That is bounded by one edge table for a single
+        // relationship; with more it can be far larger than the result
+        // (every two-hop path), unless the input's WHERE restricts a shared
+        // node (copied into `Q`, `anchor_correlation`).
+        let hops: usize = pattern.parts.iter().map(|p| p.rels.len()).sum();
+        let anchor_aliases: Vec<String> = shared
+            .iter()
+            .filter(|v| matches!(self.scans.get(*v).and_then(Scan::at), Some(At::Table(a)) if *a == v.name()))
+            .map(|v| v.name())
+            .collect();
+        let restricted = self
+            .filters
+            .iter()
+            .flat_map(conjuncts)
+            .any(|c| reads_only(c, &anchor_aliases) && !table_aliases(c).is_empty());
+        let anchored = where_only.is_empty()
+            && shared
+                .iter()
+                .all(|v| matches!(self.scans.get(v), Some(Scan::Node { .. })))
+            && (hops <= 1 || shared.is_empty() || restricted);
+        let mut q = Segment {
+            // Constants are read as they are, in `Q` too.
+            values: self
+                .values
+                .iter()
+                .filter(|(_, e)| is_constant(e))
+                .map(|(v, e)| (*v, e.clone()))
+                .collect(),
+            ..Segment::default()
+        };
+        // Properties the clause reads of its variables (its pattern's own
+        // property maps included).
+        let mut read_props: Vec<(VarId, String)> = read
+            .iter()
+            .flat_map(|e| property_refs(e))
+            .filter_map(|(n, p)| Some((parse_var(&n)?, p)))
+            .collect();
+        for part in &pattern.parts {
+            for n in &part.nodes {
+                read_props.extend(n.props.iter().map(|(p, _)| (n.var, p.clone())));
+            }
+        }
+        for v in &null_inputs {
+            q.scans.insert(*v, Scan::Impossible);
+        }
+        let correlation = if anchored {
+            self.anchor_correlation(pattern, &shared, &read_props, &mut q)?
+        } else {
+            self.drive_correlation(&shared, &where_only, &read_props, &mut q)?
+        };
+        let n = self.ctes.len() + 1;
+        let (q_alias, q_name) = (format!("o{n}"), format!("optional_o{n}"));
+        let outer = self.swap_segment(q);
+        let inner = self.optional_inner(pattern, predicate, &correlation, &named, &q_alias);
+        self.swap_segment(outer);
+        let Some((q_plan, exports)) = inner? else {
+            // The pattern can match nothing: every input row keeps NULLs.
+            if !anchored {
+                self.ctes.pop(); // `D`, unused
+            }
+            for v in named {
+                self.scans.insert(v, Scan::Impossible);
+            }
+            return Ok(());
+        };
+        self.ctes.push(Cte::new(
+            q_name.clone(),
+            CteContent::Structured(Box::new(q_plan)),
+            false,
+        ));
+        if self.from.is_none() {
+            // No input relation (`OPTIONAL MATCH` first): one empty row.
+            let u = self.next_cte_alias();
+            let mut unit = empty_plan();
+            unit.select.items = vec![select(RenderExpr::Literal(Literal::Integer(1)), "__row")];
+            self.ctes.push(Cte::new(
+                format!("with_{u}"),
+                CteContent::Structured(Box::new(unit)),
+                false,
+            ));
+            self.from = Some(table_ref(format!("with_{u}"), &u));
+            self.emitted.insert(0, u);
+        }
+        let mut on: Vec<OperatorApplication> = correlation
+            .into_iter()
+            .map(|c| {
+                let inner = col_at(&q_alias, &c.column);
+                if c.null_safe {
+                    not_distinct(c.outer, inner)
+                } else {
+                    eq(c.outer, inner)
+                }
+            })
+            .collect();
+        if on.is_empty() {
+            // Nothing to correlate: every input row with every match.
+            on.push(eq(
+                RenderExpr::Literal(Literal::Integer(1)),
+                RenderExpr::Literal(Literal::Integer(1)),
+            ));
+        }
+        let mut j = join(q_name, &q_alias);
+        j.join_type = JoinType::Left;
+        j.joining_on = on;
+        self.joins.push(j);
+        self.emitted.push(q_alias);
+        for (v, scan) in exports {
+            self.scans.insert(v, scan);
+        }
+        Ok(())
+    }
+
+    /// `C` of only shared nodes: `Q` reads each from its own table, or from
+    /// the endpoint column of a relationship of the pattern when that is all
+    /// `Q` reads of it. A shared node is in the input, so it exists; a match
+    /// whose endpoint is no input node joins no row.
+    fn anchor_correlation(
+        &self,
+        pattern: &BoundPattern,
+        shared: &[VarId],
+        read_props: &[(VarId, String)],
+        q: &mut Segment<'s>,
+    ) -> Result<Vec<Correlated>, LowerError> {
+        // A conjunct of the input's WHERE over the shared nodes' own columns
+        // restricts `Q` too: a match it removes has a shared node no input
+        // row has, so it joins no row. A shared node read from its table
+        // here has the same alias in `Q` (a CTE-carried one does not).
+        let aliases: Vec<String> = shared
+            .iter()
+            .filter(|v| matches!(self.scans[*v].at(), Some(At::Table(a)) if *a == v.name()))
+            .map(|v| v.name())
+            .collect();
+        let mut restricted: Vec<String> = Vec::new();
+        for f in &self.filters {
+            for c in conjuncts(f) {
+                if reads_only(c, &aliases) {
+                    q.filters.push(c.clone());
+                    restricted.extend(table_aliases(c));
+                }
+            }
+        }
+        let mut correlation = Vec::new();
+        for v in shared {
+            let Some(Scan::Node { schema, label, .. }) = self.scans.get(v).cloned() else {
+                return unsupported(format!("internal: {v} is not a node"));
+            };
+            let columns = self.identity_physical(*v).unwrap_or_default();
+            let outer = self.identity(*v)?.unwrap_or_default();
+            let endpoint =
+                if restricted.contains(&v.name()) || read_props.iter().any(|(r, _)| r == v) {
+                    None
+                } else {
+                    self.endpoint_of(pattern, *v)
+                };
+            let (at, inner): (At, Vec<RenderExpr>) = match endpoint {
+                Some((r, cols)) if cols.len() == columns.len() => {
+                    q.elided.insert(*v, r);
+                    let alias = r.name();
+                    let inner = cols.iter().map(|c| col_at(&alias, c)).collect();
+                    let physical = columns.iter().cloned().zip(cols).collect();
+                    let props = HashMap::new();
+                    (
+                        At::Exported {
+                            alias,
+                            physical,
+                            props,
+                        },
+                        inner,
+                    )
+                }
+                _ => {
+                    let inner = columns.iter().map(|c| col_at(&v.name(), c)).collect();
+                    (At::Table(v.name()), inner)
+                }
+            };
+            for (c, (outer, inner)) in columns.iter().zip(outer.into_iter().zip(inner)) {
+                correlation.push(Correlated {
+                    column: format!("{v}__{c}"),
+                    outer,
+                    inner,
+                    null_safe: false,
+                });
+            }
+            q.scans.insert(*v, Scan::Node { schema, label, at });
+        }
+        Ok(correlation)
+    }
+
+    /// The first relationship of `pattern` at node `v`, and its endpoint
+    /// columns at `v` (stored orientation), when the relationship is a
+    /// fixed-length scan of one table.
+    fn endpoint_of(&self, pattern: &BoundPattern, v: VarId) -> Option<(VarId, Vec<String>)> {
+        let single = |n: VarId| match &self.binding(n).kind {
+            BindingKind::Node { labels } if labels.len() == 1 => labels.iter().next().cloned(),
+            _ => None,
+        };
+        for part in &pattern.parts {
+            for (i, r) in part.rels.iter().enumerate() {
+                let (left, right) = (part.nodes[i].var, part.nodes[i + 1].var);
+                if v != left && v != right {
+                    continue;
+                }
+                let (from, to) = match r.direction {
+                    RelDirection::Right => (left, right),
+                    RelDirection::Left => (right, left),
+                    RelDirection::Either => return None,
+                };
+                let types = match &self.binding(r.var).kind {
+                    BindingKind::Rel { types, .. } if types.len() == 1 => types,
+                    _ => return None,
+                };
+                if r.length.is_some() || r.bound_before || from == to {
+                    return None;
+                }
+                let (Some(fl), Some(tl)) = (single(from), single(to)) else {
+                    return None;
+                };
+                let rel_type = types.iter().next().expect("one type");
+                // No such edge: the pattern matches nothing (decided later).
+                let Ok(rs) = self.edge_schema(rel_type, &fl, &tl) else {
+                    return None;
+                };
+                let id = if v == from { &rs.from_id } else { &rs.to_id };
+                let cols = id.columns().iter().map(|c| c.to_string()).collect();
+                return Some((r.var, cols));
+            }
+        }
+        None
+    }
+
+    /// `C` with a relationship or a variable only the WHERE reads: the rows
+    /// so far become a CTE, `I`, and `Q` reads `C` from the CTE `D` of its
+    /// distinct columns: identities, endpoints, and the properties the clause
+    /// reads (`read_props`). Each column keeps its name from `I`.
+    fn drive_correlation(
+        &mut self,
+        shared: &[VarId],
+        where_only: &[VarId],
+        read_props: &[(VarId, String)],
+        q: &mut Segment<'s>,
+    ) -> Result<Vec<Correlated>, LowerError> {
+        self.finish_relation();
+        // A segment that is only its CTE (right after a WITH) is that CTE.
+        let only_a_cte = self.joins.is_empty()
+            && self.filters.is_empty()
+            && !self.empty
+            && self.emitted.len() == 1
+            && self
+                .from
+                .as_ref()
+                .is_some_and(|f| f.name == format!("with_{}", self.emitted[0]));
+        if !only_a_cte {
+            self.page(None, None)?;
+        }
+        let w = self.emitted[0].clone();
+        let d = format!("d{}", self.ctes.len() + 1);
+        let mut columns: Vec<String> = Vec::new();
+        let mut correlation = Vec::new();
+        for v in shared.iter().chain(where_only) {
+            // Shared: NULL never matches (a tie to it fails). Read by the
+            // WHERE only: NULL is a value the WHERE decides on.
+            let null_safe = where_only.contains(v) && self.binding(*v).nullable;
+            if let Some(e) = self.values.get(v) {
+                let column = column_of(e, &w)?;
+                q.values.insert(*v, col_at(&d, &column));
+                correlation.push(Correlated {
+                    column: column.clone(),
+                    outer: e.clone(),
+                    inner: col_at(&d, &column),
+                    // A value's nullability is not tracked.
+                    null_safe: where_only.contains(v),
+                });
+                columns.push(column);
+                continue;
+            }
+            let Some(scan) = self.scans.get(v).cloned() else {
+                return unsupported(format!("internal: {v} is not in scope"));
+            };
+            let Some(At::Exported {
+                physical, props, ..
+            }) = scan.at().cloned()
+            else {
+                return unsupported(format!("internal: {v} is not exported"));
+            };
+            columns.extend(physical.values().cloned());
+            let mut d_props = HashMap::new();
+            for (prop, e) in props {
+                if !read_props.iter().any(|(r, p)| r == v && *p == prop) {
+                    continue;
+                }
+                let e = if is_constant(&e) {
+                    e
+                } else {
+                    let column = column_of(&e, &w)?;
+                    columns.push(column.clone());
+                    col_at(&d, &column)
+                };
+                d_props.insert(prop, e);
+            }
+            // Joined on the identity. A node's or an `edge_id`
+            // relationship's other columns depend on it; a relationship
+            // identified by its endpoints can have parallel edges with other
+            // properties, so it also joins on those `D` holds (NULL-safely).
+            if matches!(&scan, Scan::Rel { schema, .. } if schema.edge_id.is_none()) {
+                let mut props: Vec<&RenderExpr> =
+                    d_props.values().filter(|e| !is_constant(e)).collect();
+                props.sort_by_key(|e| column_of(e, &d).unwrap_or_default());
+                for e in props {
+                    let column = column_of(e, &d)?;
+                    correlation.push(Correlated {
+                        column: column.clone(),
+                        outer: col_at(&w, &column),
+                        inner: e.clone(),
+                        null_safe: true,
+                    });
+                }
+            }
+            for c in self.identity_physical(*v).unwrap_or_default() {
+                let column = physical[&c].clone();
+                correlation.push(Correlated {
+                    column: column.clone(),
+                    outer: col_at(&w, &column),
+                    inner: col_at(&d, &column),
+                    null_safe,
+                });
+            }
+            let at = At::Exported {
+                alias: d.clone(),
+                physical,
+                props: d_props,
+            };
+            q.scans.insert(*v, scan.with_at(at));
+        }
+        columns.sort();
+        columns.dedup();
+        let mut plan = empty_plan();
+        plan.select = SelectItems {
+            items: columns.iter().map(|c| select(col_at(&w, c), c)).collect(),
+            distinct: true,
+        };
+        if plan.select.items.is_empty() {
+            plan.select.items = vec![select(RenderExpr::Literal(Literal::Integer(1)), "__row")];
+        }
+        plan.from = FromTableItem(Some(table_ref(format!("with_{w}"), &w)));
+        let name = format!("optional_{d}");
+        self.ctes.push(Cte::new(
+            name.clone(),
+            CteContent::Structured(Box::new(plan)),
+            false,
+        ));
+        q.from = Some(table_ref(name, &d));
+        q.emitted = vec![d];
+        Ok(correlation)
+    }
+
+    /// `Q` in the current (swapped-in) segment: the pattern, its WHERE, and
+    /// a SELECT of the correlation columns and the named introduced elements
+    /// (read from `Q` aliased `q_alias`). `None` when it matches nothing.
+    #[allow(clippy::type_complexity)]
+    fn optional_inner(
+        &mut self,
+        pattern: &BoundPattern,
+        predicate: Option<&LogicalExpr>,
+        correlation: &[Correlated],
+        named: &[VarId],
+        q_alias: &str,
+    ) -> Result<Option<(RenderPlan, Vec<(VarId, Scan<'s>)>)>, LowerError> {
+        self.lower_match(pattern)?;
+        if let Some(p) = predicate {
+            let e = self.expr(p, &HashMap::new())?;
+            self.filters.push(e);
+        }
+        self.finish_relation();
+        if self.empty {
+            return Ok(None);
+        }
+        let mut body = Body::default();
+        for c in correlation {
+            body.select.push(select(c.inner.clone(), &c.column));
+        }
+        let mut exports = Vec::new();
+        for v in named {
+            let scan = self.export_element(*v, *v, q_alias, &mut body.select, &mut Vec::new())?;
+            exports.push((*v, scan));
+        }
+        if body.select.is_empty() {
+            body.select
+                .push(select(RenderExpr::Literal(Literal::Integer(1)), "__row"));
+        }
+        Ok(Some((self.render(body), exports)))
+    }
+
+    /// Replace the current segment, returning it.
+    fn swap_segment(&mut self, mut s: Segment<'s>) -> Segment<'s> {
+        std::mem::swap(&mut self.scans, &mut s.scans);
+        std::mem::swap(&mut self.values, &mut s.values);
+        std::mem::swap(&mut self.emitted, &mut s.emitted);
+        std::mem::swap(&mut self.from, &mut s.from);
+        std::mem::swap(&mut self.joins, &mut s.joins);
+        std::mem::swap(&mut self.pending, &mut s.pending);
+        std::mem::swap(&mut self.filters, &mut s.filters);
+        std::mem::swap(&mut self.empty, &mut s.empty);
+        std::mem::swap(&mut self.order, &mut s.order);
+        std::mem::swap(&mut self.elided, &mut s.elided);
+        s
     }
 
     /// Decide how a node is read (once per variable).
@@ -474,22 +1058,8 @@ impl<'s> Lowerer<'s> {
             let scan = match (types.len(), self.single_label(from), self.single_label(to)) {
                 (1, Some(fl), Some(tl)) => {
                     let rel_type = types.iter().next().expect("one type").clone();
-                    let Ok(rs) =
-                        self.schema
-                            .get_rel_schema_with_nodes(&rel_type, Some(&fl), Some(&tl))
-                    else {
-                        return unsupported(format!("no schema for ({fl})-[:{rel_type}]->({tl})"));
-                    };
-                    if !rs.is_standard_edge_table() {
-                        return unsupported(format!(
-                            "type {rel_type} is not the standard layout (S8)"
-                        ));
-                    }
-                    if rs.constraints.is_some() {
-                        return unsupported("an edge `constraints:` expression (S8)");
-                    }
                     Scan::Rel {
-                        schema: rs,
+                        schema: self.edge_schema(&rel_type, &fl, &tl)?,
                         rel_type,
                         at: At::Table(r.var.name()),
                     }
@@ -516,6 +1086,31 @@ impl<'s> Lowerer<'s> {
             }
         }
         Ok(())
+    }
+
+    /// The edge definition of `(from_label)-[:rel_type]->(to_label)`, when
+    /// it is lowered (the standard layout).
+    fn edge_schema(
+        &self,
+        rel_type: &str,
+        from_label: &str,
+        to_label: &str,
+    ) -> Result<&'s RelationshipSchema, LowerError> {
+        let Ok(rs) =
+            self.schema
+                .get_rel_schema_with_nodes(rel_type, Some(from_label), Some(to_label))
+        else {
+            return unsupported(format!(
+                "no schema for ({from_label})-[:{rel_type}]->({to_label})"
+            ));
+        };
+        if !rs.is_standard_edge_table() {
+            return unsupported(format!("type {rel_type} is not the standard layout (S8)"));
+        }
+        if rs.constraints.is_some() {
+            return unsupported("an edge `constraints:` expression (S8)");
+        }
+        Ok(rs)
     }
 
     /// Written labels / types are alternatives the element must have. Labels
@@ -637,6 +1232,9 @@ impl<'s> Lowerer<'s> {
         if self.is_emitted(v) {
             return Ok(());
         }
+        if let Some(r) = self.elided.get(&v).copied() {
+            return self.emit(r); // read from the relationship's columns
+        }
         let table = match &self.scans[&v] {
             Scan::Node {
                 schema,
@@ -723,7 +1321,13 @@ impl<'s> Lowerer<'s> {
         self.position(v).is_some()
     }
 
-    fn tie(&mut self, a: VarId, b: VarId, eqs: Vec<(RenderExpr, RenderExpr)>) {
+    fn tie(&mut self, a: VarId, b: VarId, mut eqs: Vec<(RenderExpr, RenderExpr)>) {
+        // A node read from its relationship's endpoint column is tied to it
+        // already.
+        eqs.retain(|(x, y)| x != y);
+        if eqs.is_empty() {
+            return;
+        }
         let t = Tie { a, b, eqs };
         if self.is_emitted(a) && self.is_emitted(b) {
             self.place(t);
@@ -754,6 +1358,13 @@ impl<'s> Lowerer<'s> {
             .iter_mut()
             .find(|j| j.table_alias == alias)
             .expect("every emitted relation after the first is a join");
+        if join.join_type == JoinType::Left {
+            // An OPTIONAL MATCH's matches: in its ON the tie would keep the
+            // row with NULLs instead of dropping it.
+            self.filters
+                .extend(eqs.map(RenderExpr::OperatorApplicationExp));
+            return;
+        }
         join.joining_on.extend(eqs);
     }
 
@@ -1154,22 +1765,11 @@ impl<'s> Lowerer<'s> {
             keys.push(e);
             props.insert(prop.clone(), col_at(alias, &name));
         }
-        let at = At::Exported {
+        Ok(scan.with_at(At::Exported {
             alias: alias.to_string(),
             physical,
             props,
-        };
-        Ok(match scan {
-            Scan::Node { schema, label, .. } => Scan::Node { schema, label, at },
-            Scan::Rel {
-                schema, rel_type, ..
-            } => Scan::Rel {
-                schema,
-                rel_type,
-                at,
-            },
-            Scan::Impossible => Scan::Impossible,
-        })
+        }))
     }
 
     /// A WITH: the rows so far become a CTE whose columns are the WITH's
@@ -1274,12 +1874,7 @@ impl<'s> Lowerer<'s> {
         self.scans = exports.scans.into_iter().collect();
         self.values = exports.values.into_iter().collect();
         self.emitted = vec![alias.clone()];
-        self.from = Some(ViewTableRef {
-            source: Arc::new(LogicalPlan::Empty),
-            name,
-            alias: Some(alias),
-            use_final: false,
-        });
+        self.from = Some(table_ref(name, &alias));
         self.joins = Vec::new();
         self.pending = Vec::new();
         self.filters = exports.keep.into_iter().collect();
@@ -1344,24 +1939,19 @@ impl<'s> Lowerer<'s> {
             );
         }
         RenderPlan {
-            ctes: CteItems(Vec::new()),
             select: SelectItems {
                 items: body.select,
                 distinct,
             },
             from: FromTableItem(from),
             joins: JoinItems(joins),
-            array_join: ArrayJoinItem(Vec::new()),
             filters: FilterItems(and_all(filters)),
             group_by: GroupByExpressions(group_by),
             having_clause: and_all(having),
             order_by: OrderByItems(body.order_by),
             skip: SkipItem(body.skip),
             limit: LimitItem(body.limit),
-            union: UnionItems(None),
-            fixed_path_info: None,
-            is_multi_label_scan: false,
-            variable_registry: None,
+            ..empty_plan()
         }
     }
 }
@@ -1398,6 +1988,108 @@ fn join(table_name: String, alias: &str) -> Join {
         to_id_column: None,
         graph_rel: None,
         is_cartesian: false,
+    }
+}
+
+/// `name AS alias` in a FROM.
+fn table_ref(name: String, alias: &str) -> ViewTableRef {
+    ViewTableRef {
+        source: Arc::new(LogicalPlan::Empty),
+        name,
+        alias: Some(alias.to_string()),
+        use_final: false,
+    }
+}
+
+/// A plan with nothing in it.
+fn empty_plan() -> RenderPlan {
+    RenderPlan {
+        ctes: CteItems(Vec::new()),
+        select: SelectItems {
+            items: Vec::new(),
+            distinct: false,
+        },
+        from: FromTableItem(None),
+        joins: JoinItems(Vec::new()),
+        array_join: ArrayJoinItem(Vec::new()),
+        filters: FilterItems(None),
+        group_by: GroupByExpressions(Vec::new()),
+        having_clause: None,
+        order_by: OrderByItems(Vec::new()),
+        skip: SkipItem(None),
+        limit: LimitItem(None),
+        union: UnionItems(None),
+        fixed_path_info: None,
+        is_multi_label_scan: false,
+        variable_registry: None,
+    }
+}
+
+/// The column of `alias` an exported expression reads.
+fn column_of(e: &RenderExpr, alias: &str) -> Result<String, LowerError> {
+    match e {
+        RenderExpr::PropertyAccessExp(PropertyAccess {
+            table_alias,
+            column: PropertyValue::Column(c),
+        }) if table_alias.0 == alias => Ok(c.clone()),
+        _ => unsupported(format!("internal: not a column of {alias}")),
+    }
+}
+
+/// The table aliases an operator tree over columns reads.
+fn table_aliases(e: &RenderExpr) -> Vec<String> {
+    match e {
+        RenderExpr::PropertyAccessExp(pa) => vec![pa.table_alias.0.clone()],
+        RenderExpr::List(xs) => xs.iter().flat_map(table_aliases).collect(),
+        RenderExpr::OperatorApplicationExp(op) => {
+            op.operands.iter().flat_map(table_aliases).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The top-level AND operands of `e`.
+fn conjuncts(e: &RenderExpr) -> Vec<&RenderExpr> {
+    match e {
+        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::And => {
+            op.operands.iter().flat_map(conjuncts).collect()
+        }
+        _ => vec![e],
+    }
+}
+
+/// `e` is an operator tree over columns of `aliases`, literals and
+/// parameters: a deterministic function of those rows (no function call,
+/// so no `rand()`), true of the same rows wherever it is evaluated.
+fn reads_only(e: &RenderExpr, aliases: &[String]) -> bool {
+    match e {
+        RenderExpr::Literal(_) | RenderExpr::Parameter(_) => true,
+        RenderExpr::PropertyAccessExp(pa) => aliases.contains(&pa.table_alias.0),
+        RenderExpr::List(xs) => xs.iter().all(|x| reads_only(x, aliases)),
+        RenderExpr::OperatorApplicationExp(op) => {
+            op.operands.iter().all(|x| reads_only(x, aliases))
+        }
+        _ => false,
+    }
+}
+
+/// `a = b`, with NULL equal to NULL, in a form every dialect joins on.
+fn not_distinct(a: RenderExpr, b: RenderExpr) -> OperatorApplication {
+    let is_null = |e: RenderExpr| {
+        RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::IsNull,
+            operands: vec![e],
+        })
+    };
+    OperatorApplication {
+        operator: Operator::Or,
+        operands: vec![
+            RenderExpr::OperatorApplicationExp(eq(a.clone(), b.clone())),
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::And,
+                operands: vec![is_null(a), is_null(b)],
+            }),
+        ],
     }
 }
 

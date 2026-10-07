@@ -78,6 +78,17 @@ impl ReturnItemMetadata {
         }
     }
 
+    /// Every column of the item is NULL: a node or relationship an OPTIONAL
+    /// MATCH did not match, which is NULL as a whole. Known only with
+    /// explicit columns (a matched element's identity is never NULL).
+    pub fn is_null(&self, row: &HashMap<String, Value>) -> bool {
+        self.columns.as_ref().is_some_and(|columns| {
+            columns
+                .iter()
+                .all(|(_, c)| row.get(c).is_none_or(Value::is_null))
+        })
+    }
+
     /// The row as an entity transform reads it (`{field_name}.{key}`). With
     /// explicit columns: only this item's columns, under those names.
     pub fn entity_row<'r>(
@@ -665,6 +676,10 @@ pub fn transform_row(
     let mut result = Vec::new();
 
     for meta in metadata {
+        if meta.is_null(&row) {
+            result.push(BoltValue::Json(Value::Null));
+            continue;
+        }
         match &meta.item_type {
             ReturnItemType::Node { labels } => {
                 // Strip ".*" suffix from field_name if present (wildcard expansion)
@@ -3549,6 +3564,35 @@ graph_schema:
         let mut ids = super::super::id_mapper::IdMapper::new();
         let out = transform_row(row, &metadata, &schema, &mut ids).unwrap();
         assert_eq!(out.len(), 3);
+
+        // An element an OPTIONAL MATCH did not match (every column NULL), and
+        // its `id()`, are NULL, not an error or a made-up id.
+        let unmatched: HashMap<String, Value> = [("n.id", Value::Null), ("n.name_2", Value::Null)]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        let id_item = ReturnItemMetadata {
+            field_name: "id(n)".to_string(),
+            item_type: ReturnItemType::IdFunction {
+                alias: "n".to_string(),
+                labels: vec!["Person".to_string()],
+            },
+            columns: pairs(&[("id(n)", "n.id")]),
+        };
+        assert!(metadata[1].is_null(&unmatched) && id_item.is_null(&unmatched));
+        assert!(!metadata[1].is_null(&[("n.id".to_string(), Value::from(7))].into()));
+        let out = transform_row(
+            unmatched,
+            &[metadata[1].clone(), id_item],
+            &schema,
+            &mut ids,
+        )
+        .unwrap();
+        assert!(
+            out.iter()
+                .all(|v| matches!(v, BoltValue::Json(Value::Null))),
+            "{out:?}"
+        );
     }
 
     /// #486: `transform_vlp_path` must decode the standard (single-type) VLP

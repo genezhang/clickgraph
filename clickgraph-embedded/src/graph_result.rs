@@ -160,6 +160,9 @@ pub fn transform_rows_to_graph(
         };
 
         for meta in metadata {
+            if meta.is_null(&row_map) {
+                continue; // an element an OPTIONAL MATCH did not match
+            }
             match &meta.item_type {
                 ReturnItemType::Node { labels } => {
                     if let Some(node) = extract_node_from_row(
