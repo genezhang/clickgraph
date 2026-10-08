@@ -1050,7 +1050,10 @@ checked against Neo4j 5.26:
   list, in a RETURN or a WITH; the demand pass's `#key`). Otherwise the S6b
   relation is unchanged: `length(p)`, the ends, a `WITH p` that passes it
   through. Only a recovered relation has `path_nodes`; a WITH exported it
-  anyway (`WITH p RETURN length(p)` failed with Code 47).
+  anyway (`WITH p RETURN length(p)` failed with Code 47). A `shortestPath`
+  has one path per pair, so its ends would identify it without a walk; it
+  is walked anyway, for one key form with every other path (one start to
+  every end, `WITH DISTINCT p`: about 1.4 s against 1.0 s).
 - **The walk.** The search keeps each node's distance from each first
   node, its level. A shortest path to a node at distance `d` steps back to
   a node at `d - 1` with a relationship to it, and on to the first node.
@@ -1067,9 +1070,17 @@ checked against Neo4j 5.26:
     walk through every relationship, picking one per step, built a value
     for every candidate first: over 60 s for one start to every end at scale
     100.
-  - `allShortestPaths`: through every relationship from a node of the level
-    before, a row per path. The search then counts nothing and no row is
-    repeated.
+  - `allShortestPaths`: the search keeps each node's parents, once each
+    (an array), and the walk follows every parent by every relationship from
+    it: a row per path. The search then counts nothing and no row is
+    repeated. Joining every relationship into a node and keeping those from
+    the level before multiplied the paths by the in-degree first: the 940K
+    paths of `*..3` from one start at scale 100 ran out of memory (56 GiB).
+    `shortestPath` keeps a single parent, not an array: read through an
+    `ARRAY JOIN`, it made a pinned pair's walk twice as slow.
+  - Each step reads only the relationships into the frontier's nodes:
+    joined to the whole edge table, one pair's walk cost about 1.6 times as
+    much.
   - Each step's relationship satisfies the property map, as the search's
     did.
 - **Which path.** Neo4j returns any one of a pair's shortest paths. The
@@ -1091,17 +1102,17 @@ checked against Neo4j 5.26:
 
   | Shape | Legacy | New |
   |---|---|---|
-  | both ends pinned: `length(p)` / `p` / `nodes(p)` | 292–297 ms (`p`: the two ends) | 120 / 274 / 262 ms |
-  | `allShortestPaths`, both ends pinned (8 paths): `count(*)` / `p` / `DISTINCT nodes(p)` | out of memory | 153 / 288 / 283 ms |
-  | one start to every end (100K pairs): `length(p)` / `WITH DISTINCT p` / `RETURN p LIMIT 10` | out of memory | 202 / 705 / 2,066 ms |
-  | three starts to a pinned end, `RETURN p` | out of memory | 236 ms |
-  | `allShortestPaths`, one start to every end, `length(p)` | out of memory | 256 ms |
-  | both ends pinned, `*..3` with `length(p) > 1`, `RETURN p` | 168 ms (wrong answer, #1312) | 672 ms |
-  | OPTIONAL to a pinned end, `RETURN p` | refused | 265 ms |
+  | both ends pinned: `length(p)` / `p` / `nodes(p)` | 292–297 ms (`p`: the two ends) | 114 / 390 / 359 ms |
+  | `allShortestPaths`, both ends pinned (8 paths): `count(*)` / `p` / `DISTINCT nodes(p)` | out of memory | 137 / 462 / 466 ms |
+  | one start to every end (100K pairs): `length(p)` / `WITH DISTINCT p` / `RETURN p LIMIT 10` | out of memory | 213 / 730 / 962 ms |
+  | `allShortestPaths` of `*..3` from one start (940K paths): `WITH DISTINCT p` / `RETURN p LIMIT 1` | out of memory | 566 / 737 ms |
+  | three starts to a pinned end, `RETURN p` | out of memory | 349 ms |
+  | both ends pinned, `*..3` with `length(p) > 1`, `RETURN p` | 168 ms (wrong answer, #1312) | 724 ms |
+  | OPTIONAL to a pinned end, `RETURN p` | refused | 361 ms |
 
   A LIMIT does not reach into the walk: `RETURN p LIMIT 10` from one start
   recovers all 100K paths. With conditions, the trails of the failing pairs
-  build their values before the pick (672 ms, 205 ms without values), as
+  build their values before the pick (724 ms, 205 ms without values), as
   S6c's do.
 - **Relationships without `edge_id`.** Their identity is their stored pair
   (S6a), so DISTINCT counts two paths through parallel rows once:
@@ -2000,11 +2011,20 @@ slice that will handle it.
       bound above 1).
     - Bolt: 9 queries through the Neo4j Python driver equal Neo4j.
     - Live suite, switch on: the same as S6c but one timing-sensitive test.
+    - Review (about 50 further shapes against Neo4j, scratch schemas with
+      mixed id types and empty tables, a 1,500-node chain, scale 100): no
+      wrong answer. One finding, fixed: `allShortestPaths` with many paths
+      ran out of memory (940K paths from one start: 56 GiB), as the walk
+      joined every relationship into a node before keeping those from the
+      level before; it now follows the parents the search keeps (0.6–0.7 s).
     - Mutation check, by the sweep on the 16-node graph (and, for the
       shapes Neo4j refuses or property maps, which Neo4j does not take in a
-      shortest path, the unmutated answers): 17 rules broken in turn; 15
-      change answers, the other 2 cannot (any parent is a valid one; a node
-      with a relationship to a node of a lower level is one level lower).
+      shortest path, the unmutated answers): 18 rules broken in turn; 16
+      change answers. Of the other two, the greatest parent instead of the
+      least picks another shortest path (only the unmutated answers tell);
+      a walk that ignores the property map differs only on parallel
+      relationships with different properties, which the graph lacks (a
+      unit test pins it).
 - [ ] S7 UNWIND / UNION / alternatives
 - [ ] S8 layouts
 - [ ] S9 subquery expressions

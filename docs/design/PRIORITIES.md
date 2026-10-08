@@ -741,10 +741,10 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 ## 4. Merge log (newest first — append on merge)
 
 - 2026-10-08: **P-4c S6d: a shortestPath's path as a value** (#1336, `src/bound_plan/lower/path.rs` `walk_ctes`, behind `CLICKGRAPH_BOUND_PLAN=on`).
-  - A shortest path's paths are recovered when read (values, or DISTINCT / grouping by it): one recursive CTE walks back over the search's levels, reading the search once. `shortestPath` follows a parent kept per node (one path per pair; values built only for it); `allShortestPaths` every relationship from the level before (a row per path, no counting). With conditions, the passing pairs are walked and the others' trails carry their values.
+  - A shortest path's paths are recovered when read (values, or DISTINCT / grouping by it): one recursive CTE walks back over the search's levels, reading the search once, following the parents the search keeps per node: one for `shortestPath` (one path per pair; values built only for it), all for `allShortestPaths` (a row per path, no counting). With conditions, the passing pairs are walked and the others' trails carry their values.
   - Fixed: `WITH p` over a shortest path (and `WITH DISTINCT p`, grouping by `p`) failed with Code 47.
-  - 218 Neo4j-answered shapes on each of four graphs equal Neo4j (`shortestPath`: every path one of Neo4j's `allShortestPaths`); Bolt 9/9; corpus oracle unchanged (MATCH 402). Mutation check: 15 of 17 change answers, 2 equivalent.
-  - Timing (scale 100): pinned pairs 262–288 ms with values; one start to every end 2.1 s for `RETURN p` (100K paths), 0.7 s for `WITH DISTINCT p` (legacy: out of memory). Details: EXPLICIT_SCOPE §4.11.
+  - 218 Neo4j-answered shapes on each of four graphs equal Neo4j (`shortestPath`: every path one of Neo4j's `allShortestPaths`); Bolt 9/9; corpus oracle unchanged (MATCH 402). Review: no wrong answer; `allShortestPaths` with 940K paths ran out of memory, fixed by walking the kept parents. Mutation check: 16 of 18 change answers.
+  - Timing (scale 100): pinned pairs 359–466 ms with values; one start to every end 0.96 s for `RETURN p` (100K paths), 0.73 s for `WITH DISTINCT p`; 940K `allShortestPaths` 0.57–0.74 s (legacy: out of memory). Details: EXPLICIT_SCOPE §4.11.
 
 - 2026-10-08: **P-4c S6c: paths and lists as values** (#1333, `src/bound_plan/lower/value.rs`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - `p`, `nodes(p)`, `relationships(p)` and a `-[r*]->` list as RETURN / WITH items, in Neo4j's own JSON form (Query API: `elementId`, `labels`, `properties`, …; a path is its nodes and relationships in turn), with ClickGraph's element ids. Bolt decodes them into Node / Relationship / Path structures; the graph output and embedded `query_graph` take their elements.
