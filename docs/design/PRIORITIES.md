@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #PR; next: S6d a shortestPath's path as a value)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; next: S6d a shortestPath's path as a value)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -740,7 +740,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
-- 2026-10-08: **P-4c S6c: paths and lists as values** (#PR, `src/bound_plan/lower/value.rs`, behind `CLICKGRAPH_BOUND_PLAN=on`).
+- 2026-10-08: **P-4c S6c: paths and lists as values** (#1333, `src/bound_plan/lower/value.rs`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - `p`, `nodes(p)`, `relationships(p)` and a `-[r*]->` list as RETURN / WITH items, in Neo4j's own JSON form (Query API: `elementId`, `labels`, `properties`, …; a path is its nodes and relationships in turn), with ClickGraph's element ids. Bolt decodes them into Node / Relationship / Path structures; the graph output and embedded `query_graph` take their elements.
   - A variable-length part carries its nodes / relationships through its search, only when read (`PathValues` in the generator). `size()` of the lists is counted from the path. DISTINCT and grouping go by the elements' identities (two empty lists are equal).
   - The legacy path returns ids for `nodes(p)`, type names for `relationships(p)`, and a variable-length path's two ends without properties.
