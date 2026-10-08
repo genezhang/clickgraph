@@ -191,6 +191,7 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             flag: "UInt8",
             count: "UInt256",
             copies: |count| format!("range(accurateCast({count}, 'UInt64'))"),
+            distinct_list: |x| format!("groupUniqArray({x})"),
         })
     }
 

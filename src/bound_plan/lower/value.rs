@@ -50,6 +50,9 @@ pub enum GraphType {
 /// start with `#`.
 pub(super) const NODE_VALUES: &str = "#nodes";
 pub(super) const REL_VALUES: &str = "#rels";
+/// The demand-pass name of a path or list whose identity is read (DISTINCT
+/// or grouping by it): a shortest path's is in its recovered paths.
+pub(super) const PATH_KEY: &str = "#key";
 
 /// What an expression names as a graph value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -612,9 +615,18 @@ impl<'s> Lowerer<'s> {
                     schema,
                     rel_type,
                     edges,
+                    nodes,
                     reversed,
+                    shortest,
                     ..
                 }) => {
+                    // A shortest path's identity is in its recovered paths,
+                    // which the demand pass asks for (`PATH_KEY`).
+                    if shortest.is_some() && !(*edges && *nodes) {
+                        return unsupported(format!(
+                            "internal: the paths of {r} are not recovered"
+                        ));
+                    }
                     if !items.is_empty() {
                         lists.push((s.texts)(&std::mem::take(&mut items)));
                     }
@@ -658,6 +670,9 @@ impl<'s> Lowerer<'s> {
     fn vlp_keys(&self, r: VarId) -> Result<Vec<RenderExpr>, LowerError> {
         match self.scans.get(&r) {
             Some(Scan::Path { edges: true, .. }) => Ok(vec![self.physical(r, "path_edges")?]),
+            Some(Scan::Path {
+                shortest: Some(_), ..
+            }) => unsupported(format!("internal: the paths of {r} are not recovered")),
             _ => Ok(Vec::new()),
         }
     }
@@ -718,7 +733,6 @@ impl<'s> Lowerer<'s> {
 
     fn vlp_list(&self, r: VarId, column: &str, s: &GraphValues) -> Result<String, LowerError> {
         let Some(Scan::Path {
-            shortest,
             reversed,
             node_values,
             rel_values,
@@ -727,9 +741,6 @@ impl<'s> Lowerer<'s> {
         else {
             return unsupported(format!("internal: {r} is not a path relation"));
         };
-        if shortest.is_some() {
-            return unsupported("a shortestPath's nodes or relationships as a value (S6d)");
-        }
         let carried = if column == super::path::VALUE_COLUMNS[0] {
             *node_values
         } else {

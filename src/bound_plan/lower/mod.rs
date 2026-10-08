@@ -78,7 +78,7 @@ use crate::utils::cte_column_naming::cte_column_name;
 use super::expr::{calls_aggregate, property_refs, referenced_names};
 use super::types::*;
 pub use value::GraphType;
-use value::{Carried, GraphRef, NODE_VALUES, REL_VALUES};
+use value::{Carried, GraphRef, NODE_VALUES, PATH_KEY, REL_VALUES};
 
 /// Why a bound plan was not lowered.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -205,6 +205,9 @@ enum Scan<'s> {
         at: At,
         /// It has a `path_edges` column.
         edges: bool,
+        /// It has a `path_nodes` column (a shortest path's search has not,
+        /// unless its paths are recovered).
+        nodes: bool,
         /// The hop range it is generated for.
         range: (u32, Option<u32>),
         /// Of a `shortestPath` / `allShortestPaths` pattern: per pair of
@@ -271,6 +274,7 @@ impl<'s> Scan<'s> {
                 rel_type,
                 cte,
                 edges,
+                nodes,
                 range,
                 shortest,
                 reversed,
@@ -283,6 +287,7 @@ impl<'s> Scan<'s> {
                 cte,
                 at,
                 edges,
+                nodes,
                 range,
                 shortest,
                 reversed,
@@ -1305,6 +1310,7 @@ impl<'s> Lowerer<'s> {
                     cte: String::new(),
                     at: At::Table(r.var.name()),
                     edges: false,
+                    nodes: false,
                     range,
                     shortest: None,
                     reversed: false,
@@ -1405,11 +1411,11 @@ impl<'s> Lowerer<'s> {
         let last = if first == left { right } else { left };
         let backward = first != from_end;
         // Its nodes / relationships read as values (the demand pass): the
-        // search carries them. A shortest path's search keeps no paths.
-        let wants = |name: &str| {
-            shortest.is_none() && self.demand.get(&r.var).is_some_and(|d| d.contains(name))
-        };
+        // search carries them. A shortest path's are recovered from its
+        // search also when its identity is read (`PATH_KEY`).
+        let wants = |name: &str| self.demand.get(&r.var).is_some_and(|d| d.contains(name));
         let (node_values, rel_values) = (wants(NODE_VALUES), wants(REL_VALUES));
+        let walked = node_values || rel_values || wants(PATH_KEY);
         let Some(Scan::Node {
             schema: node,
             label,
@@ -1473,7 +1479,15 @@ impl<'s> Lowerer<'s> {
                 (vec![built.cte], cte, built.edges)
             }
             Some(mode) => {
-                match self.shortest_relation(call, mode, at.alias(), first, last, in_search)? {
+                match self.shortest_relation(
+                    call,
+                    mode,
+                    walked,
+                    at.alias(),
+                    first,
+                    last,
+                    in_search,
+                )? {
                     Some(relation) => relation,
                     None => {
                         // Its conditions allow no length of its range.
@@ -1492,6 +1506,7 @@ impl<'s> Lowerer<'s> {
                 cte,
                 at,
                 edges,
+                nodes: shortest.is_none() || walked,
                 range: (min, max),
                 shortest,
                 // The walk follows the stored direction unless `backward`;
@@ -1579,10 +1594,17 @@ impl<'s> Lowerer<'s> {
     /// starts at 0 (the path of none): Neo4j raises an error for such a pair
     /// otherwise, unless `cypher.forbid_shortestpath_common_nodes` is off, when
     /// it has no path.
+    ///
+    /// When `walked` (its values or its identity are read, S6d), the paths
+    /// themselves are recovered from the search (`path::walk_ctes`): the
+    /// relation has `path_nodes`, `path_edges` and the values `call` asks
+    /// for, and a pair of `allShortestPaths` has a row per path, not copies.
+    #[allow(clippy::too_many_arguments)]
     fn shortest_relation(
         &self,
         mut call: path::PathCall<'_>,
         mode: ShortestMode,
+        walked: bool,
         alias: &str,
         first: VarId,
         last: VarId,
@@ -1624,16 +1646,24 @@ impl<'s> Lowerer<'s> {
         let mut search = call.clone();
         search.min = min.min(1);
         let var = call.var.to_string();
+        // The paths are walked back over the levels the search keeps: it
+        // need not count them, and it keeps the parents a walk follows.
+        let counted = all && !walked;
+        let parents = match (walked, all) {
+            (false, _) => path::Parents::None,
+            (true, false) => path::Parents::Least,
+            (true, true) => path::Parents::All,
+        };
         if conditions.is_empty() {
             let name = format!("vlp_{var}_path");
-            return Ok(Some((
-                vec![
-                    path::search_cte(self.schema, &search, all)?,
-                    path::reached_cte(self.schema, &search, &name, all, true)?,
-                ],
-                name,
-                false,
-            )));
+            let mut ctes = vec![path::search_cte(self.schema, &search, counted, parents)?];
+            if walked {
+                let ends = path::walk_ends(self.schema, &search)?;
+                ctes.extend(path::walk_ctes(self.schema, &search, &name, &ends, all)?);
+            } else {
+                ctes.push(path::reached_cte(self.schema, &search, &name, all, true)?);
+            }
+            return Ok(Some((ctes, name, walked)));
         }
         // The ends the conditions read are joined to the paths under their
         // own aliases. A condition reading anything else (another element,
@@ -1675,18 +1705,35 @@ impl<'s> Lowerer<'s> {
             call.node.id_physical_columns()[0],
             path::failing_pairs(&var, alias, &ends, &conditions),
         )));
+        let columns = path::walked_columns(&call);
         let trails = path::path_cte(self.schema, call)?;
-        let (pick, name) = path::pick_cte(&var, alias, &ends, &conditions, min >= 1, all)?;
-        Ok(Some((
-            vec![
-                path::search_cte(self.schema, &search, all)?,
-                path::reached_cte(self.schema, &search, &near, all, false)?,
-                trails.cte,
-                pick,
-            ],
-            name,
-            false,
-        )))
+        let (pick, name) = path::pick_cte(
+            &var,
+            alias,
+            &ends,
+            &conditions,
+            min >= 1,
+            all,
+            walked.then_some((columns.as_slice(), trails.edges)),
+        )?;
+        let mut ctes = vec![
+            path::search_cte(self.schema, &search, counted, parents)?,
+            path::reached_cte(self.schema, &search, &near, counted, false)?,
+        ];
+        if walked {
+            // The pairs whose distance satisfies the conditions.
+            let ends = path::passing_ends(&var, alias, &ends, &conditions);
+            let walked_name = format!("vlp_{var}_walked");
+            ctes.extend(path::walk_ctes(
+                self.schema,
+                &search,
+                &walked_name,
+                &ends,
+                all,
+            )?);
+        }
+        ctes.extend([trails.cte, pick]);
+        Ok(Some((ctes, name, walked)))
     }
 
     /// A `shortestPath` / `allShortestPaths` pattern as Neo4j takes it: one
@@ -1932,6 +1979,7 @@ impl<'s> Lowerer<'s> {
     fn path_physical(&self, v: VarId) -> Vec<String> {
         let Some(Scan::Path {
             edges,
+            nodes,
             node_values,
             rel_values,
             ..
@@ -1940,7 +1988,9 @@ impl<'s> Lowerer<'s> {
             return Vec::new();
         };
         let mut cols: Vec<&str> = path::PATH_COLUMNS.to_vec();
-        cols.push("path_nodes");
+        if *nodes {
+            cols.push("path_nodes");
+        }
         if *edges {
             cols.push("path_edges");
         }
@@ -1988,9 +2038,12 @@ impl<'s> Lowerer<'s> {
             for b in &rels[i + 1..] {
                 let table = |v: &VarId| match self.scans.get(v) {
                     Some(Scan::Rel { schema, .. }) => Some(schema.full_table_name()),
+                    // A shortest path's relationships are its own (and
+                    // their identities texts).
                     Some(Scan::Path {
                         schema,
                         edges: true,
+                        shortest: None,
                         ..
                     }) => Some(schema.full_table_name()),
                     _ => None,
@@ -3243,6 +3296,35 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
     }
     let mut passed = Vec::new();
     pass_through(&stmt.plan, &mut passed);
+    // A path or list a DISTINCT or aggregating WITH passes through is
+    // grouped by: its identity is read.
+    fn keyed<'a>(op: &'a BoundOp, out: &mut Vec<&'a LogicalExpr>) {
+        match op {
+            BoundOp::Project { input, projection } => {
+                keyed(input, out);
+                if projection.kind == ProjectionKind::With
+                    && (projection.distinct || projection.aggregates())
+                {
+                    out.extend(
+                        projection
+                            .items
+                            .iter()
+                            .filter(|i| !i.aggregate)
+                            .map(|i| &i.expr),
+                    );
+                }
+            }
+            BoundOp::Match { input, .. }
+            | BoundOp::Unwind { input, .. }
+            | BoundOp::Sort { input, .. }
+            | BoundOp::Skip { input, .. }
+            | BoundOp::Limit { input, .. } => keyed(input, out),
+            BoundOp::Union { arms, .. } => arms.iter().for_each(|a| keyed(a, out)),
+            BoundOp::Unit => {}
+        }
+    }
+    let mut grouped = Vec::new();
+    keyed(&stmt.plan, &mut grouped);
     let mut demand: HashMap<VarId, BTreeSet<String>> = HashMap::new();
     let mut add = |v: VarId, prop: &str| {
         demand.entry(v).or_default().insert(prop.to_string());
@@ -3281,6 +3363,11 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
             add(v, what);
         }
     }
+    for e in grouped {
+        if let Some(GraphRef::Path(v) | GraphRef::List(v)) = value::graph_ref(e, &stmt.bindings) {
+            add(v, PATH_KEY);
+        }
+    }
     for part in pattern_parts(&stmt.plan) {
         for n in &part.nodes {
             n.props.iter().for_each(|(p, _)| add(n.var, p));
@@ -3305,12 +3392,16 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
             continue;
         };
         let (nodes, rels) = (wanted.contains(NODE_VALUES), wanted.contains(REL_VALUES));
+        let key = wanted.contains(PATH_KEY);
         if nodes {
             elements.extend(part.nodes.iter().map(|n| (n.var, ALL_PROPERTIES)));
         }
         for r in &part.rels {
             match r.length {
                 Some(_) => {
+                    if key {
+                        elements.push((r.var, PATH_KEY));
+                    }
                     if nodes {
                         elements.push((r.var, NODE_VALUES));
                     }
