@@ -8,11 +8,13 @@
 //! predicate, §4.8 d, and the relationship's own property map, which holds
 //! of every relationship of the path). It returns the CTE, whose columns are
 //! the contract the lowering reads:
-//! * `start_id`, `end_id`: the identities of the path's first and last node
-//!   in the stored orientation (the walk follows `from` → `to`);
+//! * `start_id`, `end_id`: the identities of the node the walk starts at and
+//!   the node it ends at (it follows the relationships `from` → `to`, or
+//!   `to` → `from` when [`PathCall::backward`]);
 //! * `hop_count`: the number of relationships;
 //! * `path_edges`: the identities of its relationships, spelled as
-//!   [`edge_identity_sql`] spells one (when [`PathCte::edges`]);
+//!   [`edge_identity_sql`] spells one, whichever way the walk goes (when
+//!   [`PathCte::edges`]);
 //! * `path_nodes`: the identities of its nodes.
 //!
 //! The generator's side channels are not used: the FROM alias it reports (the
@@ -146,7 +148,7 @@ pub(super) fn path_cte(schema: &GraphSchema, call: PathCall<'_>) -> Result<PathC
         })
         .with_schema_owned(schema.clone())
         .with_relationship_types(Some(vec![call.rel_type.to_string()]))
-        .with_edge_id(call.edge.edge_id.clone())
+        .with_edge_id(Some(edge_identity(call.edge)))
         .with_relationship_cypher_alias(Some(call.var.to_string()))
         .with_node_labels(Some(call.label.to_string()), Some(call.label.to_string()));
     context.needs_path_relationships = false;
@@ -180,24 +182,35 @@ pub(super) fn path_cte(schema: &GraphSchema, call: PathCall<'_>) -> Result<PathC
 
 /// One relationship's identity as the generator spells a `path_edges`
 /// element: the schema's `edge_id` (a column, or a tuple of columns), else
-/// the tuple of its endpoints, in the walk's order (#887).
-pub(super) fn edge_identity_sql(
-    edge: &RelationshipSchema,
-    alias: &str,
-    backward: bool,
-) -> Option<String> {
+/// the tuple of its stored endpoints (#887).
+pub(super) fn edge_identity_sql(edge: &RelationshipSchema, alias: &str) -> Option<String> {
     let (Identifier::Single(from), Identifier::Single(to)) = (&edge.from_id, &edge.to_id) else {
         return None;
     };
-    let (from, to) = if backward { (to, from) } else { (from, to) };
     Some(spell_edge_identity(
         current_function_mapper().tuple_constructor(),
-        &edge.edge_id,
+        &Some(edge_identity(edge)),
         alias,
         from,
         to,
         |c| c,
     ))
+}
+
+/// The columns identifying one relationship: its `edge_id`, else its stored
+/// `(from, to)` endpoints, in that order whichever way a walk follows it, so
+/// every path and hop of a table spells a relationship alike (#887).
+fn edge_identity(edge: &RelationshipSchema) -> Identifier {
+    edge.edge_id.clone().unwrap_or_else(|| {
+        Identifier::Composite(
+            edge.from_id
+                .columns()
+                .into_iter()
+                .chain(edge.to_id.columns())
+                .map(|c| c.to_string())
+                .collect(),
+        )
+    })
 }
 
 /// `NOT has(path.path_edges, edge)`: the path does not use the relationship.

@@ -494,6 +494,14 @@ fn what_is_not_lowered_yet() {
         "list of relationships",
     );
     not_lowered(
+        "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) WITH DISTINCT a, r RETURN count(*) AS n",
+        "DISTINCT or grouping",
+    );
+    not_lowered(
+        "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) WITH r, count(*) AS c RETURN sum(c) AS n",
+        "DISTINCT or grouping",
+    );
+    not_lowered(
         "MATCH (a:User)-[:LIKED*1..2]->(b) RETURN count(*)",
         "different labels",
     );
@@ -1345,6 +1353,14 @@ fn the_walk_starts_at_the_restricted_end() {
             "JOIN test_integration.users_test AS v2 ON v1.start_id = v2.user_id",
         ],
     );
+    // Both ends restricted: from the left one.
+    has(
+        "MATCH (a:User {user_id: 1})-[:FOLLOWS*1..2]->(b:User {user_id: 5}) RETURN count(*)",
+        &[
+            "ON start_node.user_id = rel.follower_id",
+            "WHERE (start_node.user_id = 1)",
+        ],
+    );
     // `<-[*]-` from a restricted left end: backward too.
     has(
         "MATCH (a:User {user_id: 1})<-[:FOLLOWS*1..2]-(b:User) RETURN count(*)",
@@ -1397,33 +1413,105 @@ fn relationships_of_one_match_are_unique_with_paths() {
     // Uniqueness is per MATCH clause.
     let got = sql("MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) MATCH (b)-[:FOLLOWS*1..2]->(c:User) RETURN count(*)");
     assert!(!got.contains("hasAny"), "{got}");
-    // Without an `edge_id` a relationship is its endpoint pair, in the walk's
-    // order: a backward walk spells it backward, and so does the check of a
-    // hop against it.
+    // Without an `edge_id` a relationship is its stored endpoint pair,
+    // whichever way a walk follows it: a backward walk, a hop and a forward
+    // walk spell it alike.
     let got = lowered(
         "MATCH (a:User {user_id: 1})<-[:FOLLOWS*1..2]-(b:User)<-[r:FOLLOWS]-(c:User) RETURN count(*)",
         &benchmark(),
         &LowerOptions::default(),
     );
     for part in [
-        "NOT has(vp.path_edges, tuple(rel.followed_id, rel.follower_id))",
-        "NOT has(v1.path_edges, tuple(v3.followed_id, v3.follower_id))",
+        "ON start_node.user_id = rel.followed_id",
+        "NOT has(vp.path_edges, tuple(rel.follower_id, rel.followed_id))",
+        "NOT has(v1.path_edges, tuple(v3.follower_id, v3.followed_id))",
     ] {
         assert!(got.contains(part), "missing `{part}` in\n{got}");
     }
-    // Two such paths of one table spell them alike: both walk forward.
     let got = lowered(
         "MATCH (a:User {user_id: 1})<-[:FOLLOWS*1..2]-(b:User)-[:FOLLOWS*1..2]->(c:User) RETURN count(*)",
         &benchmark(),
         &LowerOptions::default(),
     );
-    assert!(
-        !got.contains("tuple(rel.followed_id, rel.follower_id)"),
-        "{got}"
+    for part in [
+        "ON start_node.user_id = rel.followed_id",
+        "WHERE (start_node.user_id = 1)",
+        "NOT hasAny(v1.path_edges, v3.path_edges)",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+}
+
+#[test]
+fn a_path_from_a_label_the_edge_does_not_join_has_no_relationship() {
+    // Posts follow no one: `*0..2` from a post is the post itself only.
+    has(
+        "MATCH (a:Post)-[:FOLLOWS*0..2]->(b) RETURN count(*)",
+        &[
+            "0 as hop_count",
+            "FROM test_integration.posts_test AS start_node",
+        ],
     );
-    assert!(
-        got.contains("NOT hasAny(v1.path_edges, v3.path_edges)"),
-        "{got}"
+    let got = sql("MATCH (a:Post)-[:FOLLOWS*0..2]->(b) RETURN count(*)");
+    assert!(!got.contains("user_follows_test"), "{got}");
+    // A relationship is needed: nothing matches.
+    has(
+        "MATCH (a:Post)-[:FOLLOWS*1..2]->(b:Post) RETURN count(*)",
+        &["WHERE false"],
+    );
+}
+
+#[test]
+fn the_walk_starts_where_the_rows_so_far_are_tied_to_it() {
+    // `b` is only cross-joined to `a`: the walk starts at `a`, which has
+    // conjuncts of its own.
+    has(
+        "MATCH (a:User {user_id: 1}) MATCH (b:User)-[:FOLLOWS*1..2]->(a) RETURN count(*)",
+        &[
+            "ON start_node.user_id = rel.followed_id",
+            "WHERE (start_node.user_id = 1)",
+        ],
+    );
+    // `a` carried by a WITH restricts; `b`, cross-joined, does not. The
+    // semi-join reads only the relations tied to `a`.
+    has(
+        "MATCH (a:User) WHERE a.user_id = 1 WITH a MATCH (b:User)-[:FOLLOWS*1..2]->(a) RETURN count(*)",
+        &[
+            "ON start_node.user_id = rel.followed_id",
+            "WHERE (start_node.user_id IN (SELECT DISTINCT w1.v1__user_id AS \"id\" FROM with_w1 AS w1))",
+        ],
+    );
+    // Relations tied to each other but not to `a` are not in its semi-join.
+    has(
+        "MATCH (a:User) WHERE a.user_id = 1 WITH a \
+         MATCH (x:User)-[:FOLLOWS]->(y:User), (b:User)-[:FOLLOWS*1..2]->(a) RETURN count(*)",
+        &["WHERE (start_node.user_id IN (SELECT DISTINCT w1.v1__user_id AS \"id\" FROM with_w1 AS w1))"],
+    );
+    // An end carried from a CTE (here the OPTIONAL's drive) wins over one
+    // with conjuncts of its own.
+    has(
+        "MATCH (a:User) WHERE a.user_id < 5 \
+         OPTIONAL MATCH (a)-[:FOLLOWS*1..2]->(b:User) WHERE b.user_id < 50000 RETURN count(*)",
+        &[
+            "ON start_node.user_id = rel.follower_id",
+            "start_node.user_id IN (SELECT DISTINCT d2.v0__user_id",
+        ],
+    );
+    // An end with its own conjuncts wins over one the rows so far hold.
+    has(
+        "MATCH (x:User)-[:FOLLOWS]->(y:User)-[:FOLLOWS*1..2]->(b:User) WHERE b.user_id = 1 RETURN count(*)",
+        &["ON start_node.user_id = rel.followed_id", "WHERE (start_node.user_id = 1)"],
+    );
+}
+
+#[test]
+fn an_optional_path_walks_from_the_drive() {
+    // The input restricts `a`, not `x`, where the path starts: the drive
+    // holds `x`, and the walk starts at its values.
+    has(
+        "MATCH (a:User)-[:FOLLOWS]->(x:User) WHERE a.user_id = 1 \
+         OPTIONAL MATCH (x)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS]->(a) RETURN count(b) AS n",
+        &["optional_d", "start_node.user_id IN (SELECT DISTINCT d"],
     );
 }
 
@@ -1454,4 +1542,13 @@ fn optional_match_has_path_variables() {
     )
     .unwrap();
     assert!(format!("{stmt:?}").contains(r#"Some("p")"#));
+}
+
+#[test]
+fn an_optional_path_that_cannot_match_leaves_no_relation() {
+    // `c` matches nothing, so the OPTIONAL MATCH has no match; the path's
+    // relation (and the drive it reads) are dropped with it.
+    let got = sql("MATCH (a:User)-[:FOLLOWS]->(x:User) \
+         OPTIONAL MATCH (x)-[:FOLLOWS*1..2]->(b:User), (c:Nope) RETURN count(b) AS n");
+    assert!(!got.contains("vlp_") && !got.contains("optional_"), "{got}");
 }

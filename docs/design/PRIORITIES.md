@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; next: S6 paths)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #PRNUM; next: S6b shortestPath)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,16 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-07: **P-4c S6a: variable-length relationships** (#PRNUM, `src/bound_plan/lower/path.rs`, behind `CLICKGRAPH_BOUND_PLAN=on`; `OPTIONAL MATCH p = …` parses on both paths).
+  - A `-[:T*a..b]->` is a relation of paths from the recursive-CTE generator, called once with every input explicit, and tied to its endpoints like any element: closed paths, hops before/after, WITH-carried ends and chained paths need no special case (#1310, #1210, #1177 shapes on the new path).
+    - The walk starts at the most restricted end (CTE-carried, own conjuncts, tied rows), forward or backward, with those conjuncts and a semi-join on the rows tied to it inside the first step. A path relation is joined first (ClickHouse probe side).
+    - An unbounded range is unbounded (trail semantics; loud at ClickHouse's recursion limit). The legacy path silently cuts at 5 hops (#1329).
+    - Relationship uniqueness between hops and paths of one MATCH (#1203 shapes), with one identity spelling (stored pair) for every walk.
+    - `length(p)`, NULL for an unmatched OPTIONAL `p`.
+  - Neo4j oracle, switch on, vs S5: 0 correct → wrong, MATCH 369 → 396. The corpus lowers 656 queries (was 460). About 400 generated path shapes per graph on three graphs equal Neo4j; legacy gets 16–58 wrong and errors on 80.
+  - Review: five defects fixed (zero-hop from another label, DISTINCT by a path list, an anchored OPTIONAL path, a cross-joined start, forced-forward paths). Mutation check: 28 of 29 caught (the other is unreachable).
+  - Timing (scale 100): restricted shapes 65–131 ms vs 50–122 ms legacy; shapes where legacy walks from every node 7–8 s or out of memory → 72–282 ms; exact `*2` 9 → 67 ms (legacy expands exact ranges into hops). Details: EXPLICIT_SCOPE §4.11.
 
 - 2026-10-07: **P-4c S5: OPTIONAL MATCH as one unit** (#1328, `src/bound_plan/lower/`, behind `CLICKGRAPH_BOUND_PLAN=on`; Bolt NULL fix on both paths).
   - An OPTIONAL MATCH lowers to the rows so far LEFT JOIN its matches, a CTE holding the pattern with its WHERE inside, joined on the variables it shares. Its WHERE decides which matches there are and never drops an input row. Multi-hop patterns are all-or-nothing (#1235 on the new path).
