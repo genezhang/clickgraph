@@ -5,7 +5,9 @@
 
 use std::collections::HashMap;
 
-use crate::bound_plan::lower::{lower_statement, LowerOptions, ResultColumn, ResultKind};
+use crate::bound_plan::lower::{
+    lower_statement, GraphType, LowerOptions, ResultColumn, ResultKind,
+};
 use crate::graph_catalog::config::GraphSchemaConfig;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::translate::{translate_bound_plan, ReadOptions};
@@ -474,28 +476,16 @@ fn what_is_not_lowered_yet() {
         "labels() of a node an OPTIONAL MATCH may leave NULL",
     );
     not_lowered(
-        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN nodes(p) AS n",
-        "nodes() of a path",
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN [x IN nodes(p) | x.name] AS n",
+        "comprehension",
     );
     not_lowered(
-        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN p",
-        "path variable as a value",
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN head(nodes(p)) AS n",
+        "nodes() of a path other than",
     );
     not_lowered(
-        "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) RETURN size(r) AS n",
-        "list of relationships",
-    );
-    not_lowered(
-        "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) RETURN r",
-        "list of relationships",
-    );
-    not_lowered(
-        "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) WITH DISTINCT a, r RETURN count(*) AS n",
-        "DISTINCT or grouping",
-    );
-    not_lowered(
-        "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) WITH r, count(*) AS c RETURN sum(c) AS n",
-        "DISTINCT or grouping",
+        "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) RETURN r[0] AS n",
+        "list other than",
     );
     not_lowered(
         "MATCH (a:User)-[:LIKED*1..2]->(b) RETURN count(*)",
@@ -1868,5 +1858,240 @@ fn a_shortest_path_condition_may_bind_its_own_names() {
         "MATCH p = shortestPath((a:User {user_id: 1})-[:FOLLOWS*]->(b:User)) \
          WHERE reduce(s = 0, x IN range(1, length(p)) | s + x) > 5 RETURN count(*) AS c",
         &["vlp_v1_shortest AS"],
+    );
+}
+
+/// A path is the list of its nodes and relationships in turn, each in
+/// Neo4j's JSON form with ClickGraph's element ids (`value.rs`).
+#[test]
+fn a_path_is_the_list_of_its_elements() {
+    let (sql, shape) = shaped(
+        "MATCH p = (a:User)-[:FOLLOWS]->(b:User) RETURN p, nodes(p) AS ns, relationships(p) AS rs",
+        &social(),
+    );
+    let node = "map('elementId', CAST(concat('User:', toString(v0.user_id), '-'), 'Dynamic'), \
+                'labels', CAST(['User'], 'Dynamic'), 'properties', CAST(mapFilter((__k, __v) -> \
+                __v IS NOT NULL, map('age', CAST(v0.age, 'Dynamic'), ";
+    let rel = "map('elementId', CAST(concat('FOLLOWS:', toString(v1.follower_id), '->', \
+               toString(v1.followed_id), '-'), 'Dynamic'), 'startNodeElementId', \
+               CAST(concat('User:', toString(v1.follower_id), '-'), 'Dynamic'), \
+               'endNodeElementId', CAST(concat('User:', toString(v1.followed_id), '-'), \
+               'Dynamic'), 'type', CAST('FOLLOWS', 'Dynamic'), 'properties', \
+               CAST(mapFilter((__k, __v) -> __v IS NOT NULL, map('follow_date', \
+               CAST(v1.follow_date, 'Dynamic'))), 'Dynamic'))";
+    for part in [squash(node), squash(rel)] {
+        assert!(sql.contains(&part), "missing `{part}` in\n{sql}");
+    }
+    assert!(sql.starts_with("SELECT [map('elementId'"), "{sql}");
+    assert_eq!(
+        kinds(&shape),
+        vec![
+            column("p", ResultKind::Graph(GraphType::Path)),
+            column("ns", ResultKind::Graph(GraphType::List(Box::new(GraphType::Node)))),
+            column(
+                "rs",
+                ResultKind::Graph(GraphType::List(Box::new(GraphType::Relationship)))
+            ),
+        ]
+    );
+    // A node of another label, and a path of one node.
+    has(
+        "MATCH p = (u:User)-[:LIKED]->(x:Post) RETURN p",
+        &["concat('Post:', toString(v2.post_id), '-')", "CAST(['Post'], 'Dynamic')"],
+    );
+    has(
+        "MATCH p = (a:User) RETURN relationships(p) AS rs",
+        &["CAST([], 'Array(Map(String, Dynamic))') AS \"rs\""],
+    );
+}
+
+/// A variable-length relationship's nodes and relationships are carried
+/// through its search, only when a value reads them; `size()` and
+/// `length()` count without them.
+#[test]
+fn a_variable_length_path_carries_its_values() {
+    has(
+        "MATCH p = (a:User {user_id: 1})-[:FOLLOWS*1..2]->(b:User) RETURN p",
+        &[
+            "[map('elementId', CAST(concat('User:', toString(start_node.user_id), '-')",
+            "as path_node_values",
+            "arrayConcat(vp.path_node_values, [map('elementId', CAST(concat('User:', toString(end_node.user_id)",
+            "arrayConcat(vp.path_rel_values, [map('elementId', CAST(concat('FOLLOWS:', toString(rel.follower_id)",
+            "arrayFlatten(arrayMap((__r, __n) -> [__r, __n], v1.path_rel_values, arraySlice(v1.path_node_values, 2))))",
+        ],
+    );
+    // Only what is read is carried.
+    let nodes = squash(&sql("MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN nodes(p) AS ns"));
+    assert!(nodes.contains("path_node_values") && !nodes.contains("path_rel_values"), "{nodes}");
+    let rels = squash(&sql("MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) RETURN r"));
+    assert!(rels.contains("v1.path_rel_values AS \"r\"") && !rels.contains("path_node_values"), "{rels}");
+    let counted = squash(&sql(
+        "MATCH p = (a:User)-[r:FOLLOWS*1..2]->(b:User) \
+         WHERE size(nodes(p)) > 2 RETURN length(p), size(relationships(p)), size(r)",
+    ));
+    assert!(!counted.contains("_values"), "{counted}");
+    assert!(
+        counted.contains("v1.hop_count + 1 > 2")
+            && counted.contains("v1.hop_count AS \"size(relationships(p))\"")
+            && counted.contains("v1.hop_count AS \"size(r)\""),
+        "{counted}"
+    );
+    // A path of none: its start node, and no relationship.
+    has(
+        "MATCH p = (a:User)-[:FOLLOWS*0..2]->(b:User) RETURN p",
+        &[
+            "[map('elementId', CAST(concat('User:', toString(start_node.user_id), '-')",
+            "CAST([], 'Array(Map(String, Dynamic))') as path_rel_values",
+        ],
+    );
+}
+
+/// The walk's order is the path's, reversed when the walk starts at the
+/// pattern's right end or goes against the pattern's direction (a closed
+/// path written `<-`).
+#[test]
+fn a_path_walked_against_its_order_is_reversed() {
+    has(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User {user_id: 3}) RETURN nodes(p) AS ns",
+        &["arraySlice(arrayReverse(v1.path_node_values), 2)"],
+    );
+    has(
+        "MATCH p = (a:User)<-[:FOLLOWS*1..2]-(a) RETURN nodes(p) AS ns",
+        &["arraySlice(arrayReverse(v1.path_node_values), 2)"],
+    );
+    let forward = squash(&sql(
+        "MATCH p = (a:User {user_id: 1})<-[:FOLLOWS*1..2]-(b:User) RETURN nodes(p) AS ns",
+    ));
+    assert!(!forward.contains("arrayReverse"), "{forward}");
+    let closed = squash(&sql("MATCH p = (a:User)-[:FOLLOWS*1..2]->(a) RETURN nodes(p) AS ns"));
+    assert!(!closed.contains("arrayReverse"), "{closed}");
+}
+
+/// DISTINCT and grouping by a value go by its elements' identities (a list
+/// of relationships by its relationships only: empty lists are equal), the
+/// value is `any()` of the group.
+#[test]
+fn distinct_and_grouping_by_a_value_use_its_identities() {
+    has(
+        "MATCH (a:User)-[r:FOLLOWS*0..2]->(b:User) RETURN DISTINCT r",
+        &["SELECT any(v1.path_rel_values) AS \"r\"", "GROUP BY v1.path_edges"],
+    );
+    has(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN nodes(p) AS ns, count(*) AS c",
+        &["any(arrayConcat([map(", "GROUP BY v0.user_id, v1.path_nodes"],
+    );
+    has(
+        "MATCH p = (a:User)-[:FOLLOWS]->(b:User) RETURN DISTINCT p",
+        &["GROUP BY v0.user_id, v1.follow_id, v2.user_id"],
+    );
+    // A WITH groups a carried list by its relationships; its other columns
+    // are any() of the group.
+    has(
+        "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) WITH r, count(*) AS c RETURN r, c",
+        &[
+            "any(v1.start_id) AS \"v3__start_id\"",
+            "v1.path_edges AS \"v3__path_edges\"",
+            "any(v1.path_rel_values) AS \"v3__path_rel_values\"",
+            "GROUP BY v1.path_edges",
+        ],
+    );
+    // No relationship at all: one group.
+    has(
+        "MATCH (a:User)-[r:FOLLOWS*0..0]->(b:User) RETURN DISTINCT r",
+        &["any(v1.path_rel_values) AS \"r\"", "HAVING count(*) > 0"],
+    );
+}
+
+/// A WITH carries a path by its elements and rebuilds its value after; a
+/// computed list is carried as its value and keys.
+#[test]
+fn a_with_carries_paths_and_lists() {
+    has(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) WITH p RETURN p, length(p) AS l",
+        &[
+            "v1.path_node_values AS \"v1__path_node_values\"",
+            "v1.path_rel_values AS \"v1__path_rel_values\"",
+            "arraySlice(w2.v1__path_node_values, 2)",
+            "w2.v1__hop_count AS \"l\"",
+        ],
+    );
+    has(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) \
+         WITH nodes(p) AS ns RETURN ns, size(ns) AS n",
+        &[
+            "AS \"v4\"",
+            "v1.path_nodes AS \"v4__k1\"",
+            "w2.v4 AS \"ns\"",
+            "length(w2.v4) AS \"n\"",
+        ],
+    );
+    let (_, shape) = shaped(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) WITH relationships(p) AS rs RETURN rs",
+        &social(),
+    );
+    assert_eq!(
+        kinds(&shape),
+        vec![column(
+            "rs",
+            ResultKind::Graph(GraphType::List(Box::new(GraphType::Relationship)))
+        )]
+    );
+}
+
+/// An OPTIONAL MATCH's path is NULL where the clause did not match.
+#[test]
+fn an_optional_path_value_is_null_when_unmatched() {
+    has(
+        "MATCH (a:User) OPTIONAL MATCH p = (a)-[:FOLLOWS*1..2]->(b:User) RETURN p",
+        &[".v1__start_id IS NULL), NULL, CAST(arrayConcat([map(", "if((o"],
+    );
+    has(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[r:FOLLOWS*1..2]->(b:User) RETURN size(r) AS n",
+        &["CASE WHEN o3.v1__start_id IS NULL THEN NULL ELSE o3.v1__hop_count END"],
+    );
+}
+
+#[test]
+fn what_path_values_are_not_lowered() {
+    not_lowered(
+        "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) WHERE a <> b RETURN p",
+        "shortestPath's nodes or relationships as a value (S6d)",
+    );
+    not_lowered(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN collect(p) AS ps",
+        "a path other than",
+    );
+    not_lowered(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN p ORDER BY p",
+        "a path other than",
+    );
+    not_lowered(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) WITH nodes(p) AS ns RETURN ns[0] AS n",
+        "carried list",
+    );
+    not_lowered(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User), (c:User) WHERE c IN nodes(p) RETURN c",
+        "as an operand",
+    );
+}
+
+#[test]
+fn databricks_path_values_are_not_lowered() {
+    use crate::server::query_context::{set_current_schema, with_query_context_sync, QueryContext};
+    let ctx = QueryContext {
+        dialect: crate::sql_generator::SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let got = with_query_context_sync(ctx, || {
+        set_current_schema(std::sync::Arc::new(social()));
+        translate_bound_plan(
+            "MATCH p = (a:User)-[:FOLLOWS]->(b:User) RETURN p",
+            &social(),
+            &ReadOptions::default(),
+        )
+    });
+    assert!(
+        matches!(&got, Err(e) if e.contains("as a value on this dialect")),
+        "{got:?}"
     );
 }

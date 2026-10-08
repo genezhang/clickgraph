@@ -158,7 +158,7 @@ pub(crate) fn packstream(v: &Value, ty: &GraphType, ids: &mut IdMapper) -> Resul
 
 /// Every node and relationship of a value of type `ty`, in order (the graph
 /// output collects them).
-pub(crate) fn elements(
+pub fn elements(
     v: &Value,
     ty: &GraphType,
     nodes: &mut Vec<Node>,
