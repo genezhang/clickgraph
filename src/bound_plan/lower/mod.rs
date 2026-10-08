@@ -1382,10 +1382,14 @@ impl<'s> Lowerer<'s> {
         }
         if !rs.closed_properties && !self.options.neo4j_compat {
             let read = self.demand.get(&v).into_iter().flatten();
-            carried.extend(
-                read.filter(|p| !p.starts_with('#') && !rs.property_mappings.contains_key(*p))
-                    .cloned(),
-            );
+            // Not the demand pass's markers: every property (`*`, read through
+            // the mappings) or a path's (`#…`).
+            let undeclared = |p: &&String| {
+                p.as_str() != ALL_PROPERTIES
+                    && !p.starts_with('#')
+                    && !rs.property_mappings.contains_key(*p)
+            };
+            carried.extend(read.filter(undeclared).cloned());
         }
         let filter = match &rs.filter {
             Some(f) => match f.to_sql(ROW) {

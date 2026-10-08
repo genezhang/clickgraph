@@ -2636,3 +2636,13 @@ fn an_undirected_shortest_path_searches_and_walks_both_directions() {
         ],
     );
 }
+
+#[test]
+fn an_undirected_relationship_returned_whole_carries_its_mapped_columns() {
+    let got = sql("MATCH ()-[r:FOLLOWS]-() RETURN r LIMIT 25");
+    assert!(!got.contains("e.*"), "{got}");
+    assert!(
+        squash(&got).contains(r#"e.follow_date AS "follow_date""#),
+        "{got}"
+    );
+}
