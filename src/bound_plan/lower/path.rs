@@ -275,12 +275,26 @@ fn targets(t: &SearchTables, call: &PathCall<'_>) -> Option<String> {
     })
 }
 
+/// The parents a shortest-path search keeps of each node (`search_cte`),
+/// for a walk back over its levels (`walk_ctes`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Parents {
+    None,
+    /// The least node one level nearer with a relationship to it
+    /// (`parent`).
+    Least,
+    /// Every such node, once (`parents`). An array is kept only here: read
+    /// through `ARRAY JOIN`, it made a pinned pair's walk twice as slow.
+    All,
+}
+
 /// The breadth-first search of `call` (§4.11), `vlp_{var}_bfs`: for each
 /// first node `start_id`, the nodes `node` it reaches and their distance
 /// `depth`, from `call.min` (0 or 1) to `call.max`; with `all`, the number of
-/// shortest paths to each (`paths`); otherwise, with `parents`, a node one
-/// level nearer with a relationship to it (`parent`, the least; the first
-/// node's own), which a walk back follows (`walk_ctes`).
+/// shortest paths to each (`paths`); otherwise, with `parents`, the nodes
+/// one level nearer with a relationship to it that a walk back follows
+/// ([`Parents`]: `parent`, or the array `parents`; the first node's is
+/// itself).
 ///
 /// ClickHouse gives each step of a recursive CTE only the rows of the step
 /// before, so each step carries the nodes reached so far (`new = 0`) along
@@ -298,7 +312,7 @@ pub(super) fn search_cte(
     schema: &GraphSchema,
     call: &PathCall<'_>,
     all: bool,
-    parents: bool,
+    parents: Parents,
 ) -> Result<Cte, LowerError> {
     let t = search_tables(schema, call)?;
     let Some(spelling) = current_function_mapper().shortest_path_search() else {
@@ -318,8 +332,10 @@ pub(super) fn search_cte(
         .unwrap_or_default();
     let seed_paths = if all {
         format!(", CAST(1 AS {count}) AS paths")
-    } else if parents {
+    } else if parents == Parents::Least {
         format!(", start_node.{id} AS parent")
+    } else if parents == Parents::All {
+        format!(", [start_node.{id}] AS parents")
     } else {
         String::new()
     };
@@ -356,12 +372,20 @@ pub(super) fn search_cte(
                 format!("\n    GROUP BY f.start_id, end_node.{id}, f.depth"),
                 ", paths",
             )
-        } else if parents {
+        } else if parents != Parents::None {
+            let (kept, column) = match parents {
+                Parents::All => ((spelling.distinct_list)("f.node"), "parents"),
+                _ => ("min(f.node)".to_string(), "parent"),
+            };
             (
                 "",
-                ", min(f.node) AS parent".to_string(),
+                format!(", {kept} AS {column}"),
                 format!("\n    GROUP BY f.start_id, end_node.{id}, f.depth"),
-                ", parent",
+                if column == "parent" {
+                    ", parent"
+                } else {
+                    ", parents"
+                },
             )
         } else {
             ("DISTINCT ", String::new(), String::new(), "")
@@ -461,10 +485,15 @@ pub(super) fn walked_columns(call: &PathCall<'_>) -> Vec<&'static str> {
 /// the levels along while a path has more than one step left. (A CTE read
 /// inside a recursive step is evaluated again in each step: a walk joined to
 /// the search ran it once per level.)
-/// * `all`: through every relationship from a node of the level before.
-/// * Else through the node's `parent` (the search ran with `parents`), by
-///   one relationship (the least identity, of parallel ones): one path per
-///   pair, and a value is built only for it.
+/// Each step follows a node's `parents` (the search ran with them), by every
+/// relationship from each to the node:
+/// * `all` (with [`Parents::All`]): every path, a row each. Joining every
+///   relationship into the node and keeping those from the level before
+///   multiplied the paths by the nodes' in-degree first: 940K paths from one
+///   start at scale 100 ran out of memory.
+/// * Else (with [`Parents::Least`]): one parent, and one relationship of
+///   parallel ones (the least identity): one path per pair, and a value is
+///   built only for it.
 pub(super) fn walk_ctes(
     schema: &GraphSchema,
     call: &PathCall<'_>,
@@ -528,29 +557,27 @@ pub(super) fn walk_ctes(
         })
         .collect();
     let mut step = vec!["w.frontier = 1".to_string(), "w.depth > 0".to_string()];
+    // The relationships are read only into the frontier's nodes: joined to
+    // the whole edge table, a walk of one path cost twice as much (an
+    // `allShortestPaths` pair at scale 100: 710 ms against 432 ms).
     step.extend(conjunction(&call.rel));
-    // The node one level back, how it is joined, and the pick of one path.
-    let (back, levels_join, parent, pick, picked) = if all {
+    // The parents, each a row of `lv`; the pick of one path of parallel
+    // relationships.
+    let (parents, levels) = if all {
         (
-            "lv.node",
-            format!(
-                "JOIN {edge_table} AS rel ON rel.{to_id} = w.node\n        \
-                 JOIN (SELECT start_id, node, depth FROM {walk} WHERE level = 1) AS lv\n          \
-                 ON lv.start_id = w.start_id AND lv.node = rel.{from_id} AND lv.depth + 1 = w.depth"
-            ),
-            "",
-            String::new(),
-            String::new(),
+            "parents",
+            format!("SELECT start_id, node, parent FROM {walk} ARRAY JOIN parents AS parent WHERE level = 1"),
         )
     } else {
         (
-            "lv.parent",
-            format!(
-                "JOIN (SELECT start_id, node, parent FROM {walk} WHERE level = 1) AS lv\n          \
-                 ON lv.start_id = w.start_id AND lv.node = w.node\n        \
-                 JOIN {edge_table} AS rel ON rel.{from_id} = lv.parent AND rel.{to_id} = w.node"
-            ),
-            ", parent",
+            "parent",
+            format!("SELECT start_id, node, parent FROM {walk} WHERE level = 1"),
+        )
+    };
+    let (pick, picked) = if all {
+        (String::new(), String::new())
+    } else {
+        (
             format!(
                 ",\n          ROW_NUMBER() OVER (PARTITION BY w.start_id, w.end_id ORDER BY {}) AS pick",
                 (g.to_text)(&identity)
@@ -560,33 +587,35 @@ pub(super) fn walk_ctes(
     };
     let walk_sql = format!(
         "{walk} AS (\n    \
-         SELECT start_id, node, depth, node AS end_id, depth AS hop_count, {empty}{parent}, \
+         SELECT start_id, node, depth, node AS end_id, depth AS hop_count, {empty}, {parents}, \
          CAST(1 AS {flag}) AS level, CAST({ends} AS {flag}) AS frontier\n    \
          FROM {bfs}\n    \
          WHERE new = 1\n    \
          UNION ALL\n    \
-         SELECT start_id, node, depth, end_id, hop_count, {columns}{parent}, level, frontier FROM (\n        \
-         SELECT w.start_id AS start_id, {back} AS node, CAST(w.depth - 1 AS {depth}) AS depth, \
-         w.end_id AS end_id, w.hop_count AS hop_count,\n          {stepped}{back_parent},\n          \
+         SELECT start_id, node, depth, end_id, hop_count, {columns}, {parents}, level, frontier FROM (\n        \
+         SELECT w.start_id AS start_id, lv.parent AS node, CAST(w.depth - 1 AS {depth}) AS depth, \
+         w.end_id AS end_id, w.hop_count AS hop_count,\n          {stepped}, w.{parents} AS {parents},\n          \
          CAST(0 AS {flag}) AS level, CAST(1 AS {flag}) AS frontier{pick}\n        \
          FROM {walk} AS w\n        \
-         {levels_join}\n        \
+         JOIN ({levels}) AS lv\n          \
+         ON lv.start_id = w.start_id AND lv.node = w.node\n        \
+         JOIN (SELECT * FROM {edge_table} WHERE {to_id} IN \
+         (SELECT node FROM {walk} WHERE frontier = 1 AND depth > 0)) AS rel\n          \
+         ON rel.{from_id} = lv.parent AND rel.{to_id} = w.node\n        \
          JOIN {node_table} AS end_node ON end_node.{id} = w.node\n        \
          WHERE {step}\n    \
          ){picked}\n    \
          UNION ALL\n    \
-         SELECT start_id, node, depth, end_id, hop_count, {levels}{parent}, level, CAST(0 AS {flag}) AS frontier\n    \
+         SELECT start_id, node, depth, end_id, hop_count, {emptied}, {parents}, level, CAST(0 AS {flag}) AS frontier\n    \
          FROM {walk}\n    \
          WHERE level = 1 AND start_id IN (SELECT start_id FROM {walk} WHERE frontier = 1 AND depth > 1)\n\
          )",
-        // A frontier row's parent is not read.
-        back_parent = if all { String::new() } else { format!(", {back} AS parent") },
         empty = empty.join(", "),
         columns = columns.join(", "),
         stepped = stepped.join(",\n          "),
         step = step.join(" AND "),
         // A level row's values are empty.
-        levels = std::iter::once("path_nodes".to_string())
+        emptied = std::iter::once("path_nodes".to_string())
             .chain(carried[1..].iter().map(|(c, e, _)| format!("{e} AS {c}")))
             .collect::<Vec<_>>()
             .join(", "),

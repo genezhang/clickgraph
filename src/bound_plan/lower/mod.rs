@@ -1647,17 +1647,16 @@ impl<'s> Lowerer<'s> {
         search.min = min.min(1);
         let var = call.var.to_string();
         // The paths are walked back over the levels the search keeps: it
-        // need not count them, and for one path per pair it keeps a parent
-        // of each node.
+        // need not count them, and it keeps the parents a walk follows.
         let counted = all && !walked;
+        let parents = match (walked, all) {
+            (false, _) => path::Parents::None,
+            (true, false) => path::Parents::Least,
+            (true, true) => path::Parents::All,
+        };
         if conditions.is_empty() {
             let name = format!("vlp_{var}_path");
-            let mut ctes = vec![path::search_cte(
-                self.schema,
-                &search,
-                counted,
-                walked && !all,
-            )?];
+            let mut ctes = vec![path::search_cte(self.schema, &search, counted, parents)?];
             if walked {
                 let ends = path::walk_ends(self.schema, &search)?;
                 ctes.extend(path::walk_ctes(self.schema, &search, &name, &ends, all)?);
@@ -1718,7 +1717,7 @@ impl<'s> Lowerer<'s> {
             walked.then_some((columns.as_slice(), trails.edges)),
         )?;
         let mut ctes = vec![
-            path::search_cte(self.schema, &search, counted, walked && !all)?,
+            path::search_cte(self.schema, &search, counted, parents)?,
             path::reached_cte(self.schema, &search, &near, counted, false)?,
         ];
         if walked {

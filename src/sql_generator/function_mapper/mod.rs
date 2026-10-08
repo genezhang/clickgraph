@@ -438,6 +438,8 @@ pub(crate) struct ShortestPathSearch {
     /// An array of as many elements as the count `{0}` holds, failing when
     /// it is beyond the array's size type rather than wrapping.
     pub copies: fn(&str) -> String,
+    /// An aggregate: the group's distinct values of `{0}`, as an array.
+    pub distinct_list: fn(&str) -> String,
 }
 
 /// Returns the function mapper for the active SQL dialect, read from the

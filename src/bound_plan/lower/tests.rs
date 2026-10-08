@@ -2323,12 +2323,13 @@ fn a_shortest_path_is_walked_back_through_its_parents() {
              arrayConcat([end_node.user_id], w.path_nodes) AS path_nodes, \
              arrayConcat([toString(rel.follow_id)], w.path_edges) AS path_edges, \
              arrayConcat([map('elementId', CAST(concat('User:', toString(end_node.user_id), '-')",
-            "lv.parent AS parent, CAST(0 AS UInt8) AS level, CAST(1 AS UInt8) AS frontier, \
+            "w.parent AS parent, CAST(0 AS UInt8) AS level, CAST(1 AS UInt8) AS frontier, \
              ROW_NUMBER() OVER (PARTITION BY w.start_id, w.end_id ORDER BY toString(rel.follow_id)) \
              AS pick FROM vlp_v1_walk AS w \
              JOIN (SELECT start_id, node, parent FROM vlp_v1_walk WHERE level = 1) AS lv \
              ON lv.start_id = w.start_id AND lv.node = w.node \
-             JOIN test_integration.user_follows_test AS rel \
+             JOIN (SELECT * FROM test_integration.user_follows_test WHERE followed_id IN \
+             (SELECT node FROM vlp_v1_walk WHERE frontier = 1 AND depth > 0)) AS rel \
              ON rel.follower_id = lv.parent AND rel.followed_id = w.node \
              JOIN test_integration.users_test AS end_node ON end_node.user_id = w.node \
              WHERE w.frontier = 1 AND w.depth > 0 ) WHERE pick = 1 UNION ALL",
@@ -2349,27 +2350,31 @@ fn a_shortest_path_is_walked_back_through_its_parents() {
 }
 
 #[test]
-fn all_shortest_paths_are_walked_through_every_relationship() {
-    // Every relationship from a node one level nearer: a row per path, so
-    // the search counts nothing and repeats no row.
+fn all_shortest_paths_are_walked_through_every_parent() {
+    // Every parent, by every relationship from it: a row per path, so the
+    // search counts nothing and repeats no row.
     let q = "MATCH p = allShortestPaths((a:User {user_id: 1})-[:FOLLOWS*]->(b:User {user_id: 2})) \
              RETURN nodes(p) AS ns";
     has(
         q,
         &[
-            "CAST(0 AS UInt32) AS depth, CAST(1 AS UInt8) AS new",
-            "SELECT DISTINCT f.start_id AS start_id",
-            "SELECT w.start_id AS start_id, lv.node AS node, CAST(w.depth - 1 AS UInt32) AS depth",
-            "CAST(0 AS UInt8) AS level, CAST(1 AS UInt8) AS frontier FROM vlp_v1_walk AS w \
-             JOIN test_integration.user_follows_test AS rel ON rel.followed_id = w.node \
-             JOIN (SELECT start_id, node, depth FROM vlp_v1_walk WHERE level = 1) AS lv \
-             ON lv.start_id = w.start_id AND lv.node = rel.follower_id AND lv.depth + 1 = w.depth \
+            "CAST(0 AS UInt32) AS depth, [start_node.user_id] AS parents, CAST(1 AS UInt8) AS new",
+            "CAST(f.depth + 1 AS UInt32) AS depth, groupUniqArray(f.node) AS parents, \
+             CAST(1 AS UInt8) AS new",
+            "SELECT w.start_id AS start_id, lv.parent AS node, CAST(w.depth - 1 AS UInt32) AS depth",
+            "w.parents AS parents, CAST(0 AS UInt8) AS level, CAST(1 AS UInt8) AS frontier \
+             FROM vlp_v1_walk AS w \
+             JOIN (SELECT start_id, node, parent FROM vlp_v1_walk ARRAY JOIN parents AS parent \
+             WHERE level = 1) AS lv ON lv.start_id = w.start_id AND lv.node = w.node \
+             JOIN (SELECT * FROM test_integration.user_follows_test WHERE followed_id IN \
+             (SELECT node FROM vlp_v1_walk WHERE frontier = 1 AND depth > 0)) AS rel \
+             ON rel.follower_id = lv.parent AND rel.followed_id = w.node \
              JOIN test_integration.users_test AS end_node ON end_node.user_id = w.node \
              WHERE w.frontier = 1 AND w.depth > 0 ) UNION ALL",
         ],
     );
     let got = sql(q);
-    for absent in ["UInt256", "ARRAY JOIN", "parent", "pick", "path_rel_values"] {
+    for absent in ["UInt256", "copy", "min(f.node)", "pick", "path_rel_values"] {
         assert!(!got.contains(absent), "`{absent}` in\n{got}");
     }
 }
