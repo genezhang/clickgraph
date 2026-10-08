@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; next: S6d a shortestPath's path as a value)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; next: S7 UNWIND / UNION / alternatives, lists, undirected)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,12 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-08: **P-4c S6d: a shortestPath's path as a value** (#1336, `src/bound_plan/lower/path.rs` `walk_ctes`, behind `CLICKGRAPH_BOUND_PLAN=on`).
+  - A shortest path's paths are recovered when read (values, or DISTINCT / grouping by it): one recursive CTE walks back over the search's levels, reading the search once. `shortestPath` follows a parent kept per node (one path per pair; values built only for it); `allShortestPaths` every relationship from the level before (a row per path, no counting). With conditions, the passing pairs are walked and the others' trails carry their values.
+  - Fixed: `WITH p` over a shortest path (and `WITH DISTINCT p`, grouping by `p`) failed with Code 47.
+  - 218 Neo4j-answered shapes on each of four graphs equal Neo4j (`shortestPath`: every path one of Neo4j's `allShortestPaths`); Bolt 9/9; corpus oracle unchanged (MATCH 402). Mutation check: 15 of 17 change answers, 2 equivalent.
+  - Timing (scale 100): pinned pairs 262–288 ms with values; one start to every end 2.1 s for `RETURN p` (100K paths), 0.7 s for `WITH DISTINCT p` (legacy: out of memory). Details: EXPLICIT_SCOPE §4.11.
 
 - 2026-10-08: **P-4c S6c: paths and lists as values** (#1333, `src/bound_plan/lower/value.rs`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - `p`, `nodes(p)`, `relationships(p)` and a `-[r*]->` list as RETURN / WITH items, in Neo4j's own JSON form (Query API: `elementId`, `labels`, `properties`, …; a path is its nodes and relationships in turn), with ClickGraph's element ids. Bolt decodes them into Node / Relationship / Path structures; the graph output and embedded `query_graph` take their elements.
