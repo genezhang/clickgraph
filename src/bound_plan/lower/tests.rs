@@ -1897,6 +1897,13 @@ fn a_path_is_the_list_of_its_elements() {
             ),
         ]
     );
+    // `nodes(p)`: every node, in order.
+    let ns = sql.split(" AS \"p\", ").nth(1).unwrap_or_default();
+    let (first, second) = (
+        ns.find("toString(v0.user_id)").unwrap_or(usize::MAX),
+        ns.find("toString(v2.user_id)").unwrap_or(usize::MAX),
+    );
+    assert!(first < second && second < ns.find(" AS \"ns\"").unwrap_or(0), "{ns}");
     // A node of another label, and a path of one node.
     has(
         "MATCH p = (u:User)-[:LIKED]->(x:Post) RETURN p",
@@ -2091,6 +2098,11 @@ fn what_path_values_are_not_lowered() {
     not_lowered(
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) WITH nodes(p) AS ns RETURN ns[0] AS n",
         "carried list",
+    );
+    not_lowered(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) WITH nodes(p) AS ns MATCH (x:User) \
+         OPTIONAL MATCH (x)-[:FOLLOWS]->(y:User) WHERE size(ns) > 1 RETURN y.name",
+        "a path's list read by an OPTIONAL MATCH",
     );
     not_lowered(
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User), (c:User) WHERE c IN nodes(p) RETURN c",
