@@ -1479,7 +1479,15 @@ impl<'s> Lowerer<'s> {
                 (vec![built.cte], cte, built.edges)
             }
             Some(mode) => {
-                match self.shortest_relation(call, mode, walked, at.alias(), first, last, in_search)? {
+                match self.shortest_relation(
+                    call,
+                    mode,
+                    walked,
+                    at.alias(),
+                    first,
+                    last,
+                    in_search,
+                )? {
                     Some(relation) => relation,
                     None => {
                         // Its conditions allow no length of its range.
@@ -1591,6 +1599,7 @@ impl<'s> Lowerer<'s> {
     /// themselves are recovered from the search (`path::walk_ctes`): the
     /// relation has `path_nodes`, `path_edges` and the values `call` asks
     /// for, and a pair of `allShortestPaths` has a row per path, not copies.
+    #[allow(clippy::too_many_arguments)]
     fn shortest_relation(
         &self,
         mut call: path::PathCall<'_>,
@@ -1643,7 +1652,12 @@ impl<'s> Lowerer<'s> {
         let counted = all && !walked;
         if conditions.is_empty() {
             let name = format!("vlp_{var}_path");
-            let mut ctes = vec![path::search_cte(self.schema, &search, counted, walked && !all)?];
+            let mut ctes = vec![path::search_cte(
+                self.schema,
+                &search,
+                counted,
+                walked && !all,
+            )?];
             if walked {
                 let ends = path::walk_ends(self.schema, &search)?;
                 ctes.extend(path::walk_ctes(self.schema, &search, &name, &ends, all)?);
@@ -3292,7 +3306,13 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
                 if projection.kind == ProjectionKind::With
                     && (projection.distinct || projection.aggregates())
                 {
-                    out.extend(projection.items.iter().filter(|i| !i.aggregate).map(|i| &i.expr));
+                    out.extend(
+                        projection
+                            .items
+                            .iter()
+                            .filter(|i| !i.aggregate)
+                            .map(|i| &i.expr),
+                    );
                 }
             }
             BoundOp::Match { input, .. }
@@ -3345,9 +3365,8 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
         }
     }
     for e in grouped {
-        match value::graph_ref(e, &stmt.bindings) {
-            Some(GraphRef::Path(v) | GraphRef::List(v)) => add(v, PATH_KEY),
-            _ => {}
+        if let Some(GraphRef::Path(v) | GraphRef::List(v)) = value::graph_ref(e, &stmt.bindings) {
+            add(v, PATH_KEY);
         }
     }
     for part in pattern_parts(&stmt.plan) {

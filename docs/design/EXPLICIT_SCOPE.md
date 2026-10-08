@@ -875,7 +875,9 @@ Implemented in S6b (`path::search_cte`, `path::reached_cte`,
     their nodes and relationships, which are values only in S6c. Walking
     back over the levels instead enumerates the paths, but ClickHouse
     evaluates the search again in every step of the walk: 1.2 s for one
-    pair at scale 100, against 0.23 s counted.
+    pair at scale 100, against 0.23 s counted. (S6d walks back inside one
+    recursive CTE that reads the search once, and only when the paths are
+    read.)
 - **How the conditions apply.** In S6b a condition depends on a path only
   through its length, so:
   - a bound from above (`length(p) < k`, `<= k`, `= k`, either way round,
@@ -999,8 +1001,6 @@ checked against Neo4j 5.26:
   `relationships(p)`, and for a variable-length `RETURN p` a Path of its two
   ends with no properties.
 - **Not lowered:**
-  - a shortestPath's path as a value (S6d: its search keeps distances, not
-    paths);
   - a list inside another expression (an index, `head()`, `IN`, a
     comprehension, `collect()`: S7 lists);
   - ORDER BY a value;
@@ -1041,6 +1041,72 @@ checked against Neo4j 5.26:
   `edge_id` (#1334), so two parallel relationships share one: Bolt gives
   them one id, and the graph output keeps one. A Bolt Path keeps every
   relationship it steps over, as a path never repeats one.
+
+Implemented in S6d (`path::walk_ctes`, `Lowerer::shortest_relation`),
+checked against Neo4j 5.26:
+- **When.** A shortest path's paths are recovered only when they are read:
+  its values (`p`, `nodes(p)`, `relationships(p)`, its `-[r*]->` list, asked
+  for as in S6c), or its identity (DISTINCT or grouping by the path or its
+  list, in a RETURN or a WITH; the demand pass's `#key`). Otherwise the S6b
+  relation is unchanged: `length(p)`, the ends, a `WITH p` that passes it
+  through. Only a recovered relation has `path_nodes`; a WITH exported it
+  anyway (`WITH p RETURN length(p)` failed with Code 47).
+- **The walk.** The search keeps each node's distance from each first
+  node, its level. A shortest path to a node at distance `d` steps back to
+  a node at `d - 1` with a relationship to it, and on to the first node.
+  The walk (`vlp_{var}_walk`) is one recursive CTE that reads the search
+  once: its first rows are the search's (`level = 1`), the paths' last
+  nodes marked (`frontier = 1`); each step moves every path one level back,
+  prepending the node and the relationship it leaves (their identities, and
+  the values asked for), and carries the levels along while a path has more
+  than one step left. A walk that read the search inside its steps would
+  evaluate it once per step (S6b).
+  - `shortestPath`: the search keeps a parent of each node (`min` of the
+    nodes one level nearer with a relationship to it), and the walk follows
+    the parents: one path per pair, and a value is built only for it. A
+    walk through every relationship, picking one per step, built a value
+    for every candidate first: over 60 s for one start to every end at scale
+    100.
+  - `allShortestPaths`: through every relationship from a node of the level
+    before, a row per path. The search then counts nothing and no row is
+    repeated.
+  - Each step's relationship satisfies the property map, as the search's
+    did.
+- **Which path.** Neo4j returns any one of a pair's shortest paths. The
+  walk takes the least parent at each level and, of parallel relationships,
+  the least identity, so a query gives the same path every time.
+- **Conditions (§4.8).** The pairs whose distance satisfies the conditions
+  are walked, and only they (`vlp_{var}_walked`). The trails of the others
+  (S6b) carry their values as S6a's do, and the pick unions the two.
+- **Identity.** A recovered path's `path_edges` holds each relationship's
+  identity as a text (`toString` of its `edge_id` or of its stored pair):
+  the walk's first rows hold an empty list, which needs a type, and a key
+  reads the text anyway (`Lowerer::path_key`). The trails' are converted. A
+  shortest path takes no part in uniqueness (S6b), so its identities meet
+  no other relation's.
+- **Not lowered:** lists in other expressions and undirected patterns
+  (S7), the other S6c refusals.
+- **Measured cost**, social benchmark at scale 100, as in S6a. The legacy
+  path returns a path of the two ends without properties:
+
+  | Shape | Legacy | New |
+  |---|---|---|
+  | both ends pinned: `length(p)` / `p` / `nodes(p)` | 292–297 ms (`p`: the two ends) | 120 / 274 / 262 ms |
+  | `allShortestPaths`, both ends pinned (8 paths): `count(*)` / `p` / `DISTINCT nodes(p)` | out of memory | 153 / 288 / 283 ms |
+  | one start to every end (100K pairs): `length(p)` / `WITH DISTINCT p` / `RETURN p LIMIT 10` | out of memory | 202 / 705 / 2,066 ms |
+  | three starts to a pinned end, `RETURN p` | out of memory | 236 ms |
+  | `allShortestPaths`, one start to every end, `length(p)` | out of memory | 256 ms |
+  | both ends pinned, `*..3` with `length(p) > 1`, `RETURN p` | 168 ms (wrong answer, #1312) | 672 ms |
+  | OPTIONAL to a pinned end, `RETURN p` | refused | 265 ms |
+
+  A LIMIT does not reach into the walk: `RETURN p LIMIT 10` from one start
+  recovers all 100K paths. With conditions, the trails of the failing pairs
+  build their values before the pick (672 ms, 205 ms without values), as
+  S6c's do.
+- **Relationships without `edge_id`.** Their identity is their stored pair
+  (S6a), so DISTINCT counts two paths through parallel rows once:
+  `WITH DISTINCT p` gives 10,376 of the 10,379 `allShortestPaths` of `*..2`
+  from one start at scale 100 (#1331).
 
 ### 4.12 Subquery expressions
 
@@ -1912,7 +1978,33 @@ slice that will handle it.
     - Mutation check: 36 rules broken in turn; 35 fail a unit test. The
       other one, asking a shortest path's search for no values, cannot be
       observed: its value is refused afterwards.
-- [ ] S6d a shortestPath's path as a value
+- [x] **S6d: a shortestPath's path as a value** (§4.11, "Implemented in
+  S6d").
+  - Lowered: the values and identity of a `shortestPath` /
+    `allShortestPaths` path (`p`, `nodes(p)`, `relationships(p)`, its
+    `-[r*]->` list) wherever S6c lowers a variable-length path's, with
+    conditions and OPTIONAL. Fixed on the way: `WITH p` over a shortest path
+    failed in ClickHouse (Code 47: it exported a `path_nodes` column the
+    relation does not have), and so did `WITH DISTINCT p` and grouping by
+    `p`.
+  - Acceptance:
+    - Neo4j oracle, switch on, vs S6c: no query changes (MATCH 402); the
+      corpus has no shortest path read as a value.
+    - Generated shapes on the four S6c graphs (250 each: every range, both
+      directions, pinned ends, conditions, WITH, DISTINCT, grouping, other
+      parts, OPTIONAL). Neo4j answers 218 and the new path equals it on all
+      of them, on every graph. For `shortestPath`, which picks any one of a
+      pair's shortest paths, the columns other than paths and lists equal
+      Neo4j's and every row is one of Neo4j's `allShortestPaths` rows. Neo4j
+      refuses the other 32 (a pair of one node with a range from 1, a lower
+      bound above 1).
+    - Bolt: 9 queries through the Neo4j Python driver equal Neo4j.
+    - Live suite, switch on: the same as S6c but one timing-sensitive test.
+    - Mutation check, by the sweep on the 16-node graph (and, for the
+      shapes Neo4j refuses or property maps, which Neo4j does not take in a
+      shortest path, the unmutated answers): 17 rules broken in turn; 15
+      change answers, the other 2 cannot (any parent is a valid one; a node
+      with a relationship to a node of a lower level is one level lower).
 - [ ] S7 UNWIND / UNION / alternatives
 - [ ] S8 layouts
 - [ ] S9 subquery expressions

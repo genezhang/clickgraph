@@ -1849,6 +1849,16 @@ fn a_shortest_path_follows_relationships_its_property_map_allows() {
          RETURN count(*) AS c",
         &["WHERE f.new = 1 AND (rel.follow_date = '2024-01-01') AND (f.start_id, end_node.user_id)"],
     );
+    // Walked back by the relationships it allows.
+    for f in ["shortestPath", "allShortestPaths"] {
+        has(
+            &format!(
+                "MATCH p = {f}((a:User {{user_id: 1}})-[:FOLLOWS*1.. {{follow_date: '2024-01-01'}}]->(b:User)) \
+                 RETURN p"
+            ),
+            &["WHERE w.frontier = 1 AND w.depth > 0 AND (rel.follow_date = '2024-01-01') )"],
+        );
+    }
 }
 
 #[test]
@@ -2385,7 +2395,11 @@ fn a_shortest_path_is_recovered_only_when_read() {
     // Its value is read after a WITH.
     has(
         "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) WITH p RETURN p",
-        &["vlp_v1_walk", "AS path_rel_values", "v1.path_node_values AS \"v1__path_node_values\""],
+        &[
+            "vlp_v1_walk",
+            "AS path_rel_values",
+            "v1.path_node_values AS \"v1__path_node_values\"",
+        ],
     );
     // Passed through, its length read, or grouped by its length: the search
     // alone, and no `path_nodes` exported (it has none).
@@ -2444,8 +2458,12 @@ fn a_shortest_path_value_follows_the_pattern() {
         ],
     );
     // Walked from its left end against them: the pattern's order.
-    let q = "MATCH p = shortestPath((a:User {user_id: 1})<-[:FOLLOWS*]-(b:User)) RETURN nodes(p) AS ns";
-    has(q, &["ON rel.followed_id = lv.parent AND rel.follower_id = w.node"]);
+    let q =
+        "MATCH p = shortestPath((a:User {user_id: 1})<-[:FOLLOWS*]-(b:User)) RETURN nodes(p) AS ns";
+    has(
+        q,
+        &["ON rel.followed_id = lv.parent AND rel.follower_id = w.node"],
+    );
     assert!(!sql(q).contains("arrayReverse"));
 }
 

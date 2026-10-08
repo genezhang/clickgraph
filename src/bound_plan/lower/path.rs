@@ -520,7 +520,12 @@ pub(super) fn walk_ctes(
         .collect();
     let stepped: Vec<String> = carried
         .iter()
-        .map(|(c, _, one)| format!("{} AS {c}", (g.concat)(&[(g.list)(&[one.clone()]), format!("w.{c}")])))
+        .map(|(c, _, one)| {
+            format!(
+                "{} AS {c}",
+                (g.concat)(&[(g.list)(std::slice::from_ref(one)), format!("w.{c}")])
+            )
+        })
         .collect();
     let mut step = vec!["w.frontier = 1".to_string(), "w.depth > 0".to_string()];
     step.extend(conjunction(&call.rel));
@@ -589,7 +594,10 @@ pub(super) fn walk_ctes(
     // The first node, before the rest.
     let mut first = vec![format!(
         "{} AS path_nodes",
-        (g.concat)(&[(g.list)(&["w.start_id".to_string()]), "w.path_nodes".to_string()])
+        (g.concat)(&[
+            (g.list)(&["w.start_id".to_string()]),
+            "w.path_nodes".to_string()
+        ])
     )];
     first.push("w.path_edges AS path_edges".to_string());
     let mut from = format!("{walk} AS w");
@@ -597,7 +605,9 @@ pub(super) fn walk_ctes(
         first.push(format!(
             "{} AS {}",
             (g.concat)(&[
-                (g.list)(&[super::value::table_node_object(&g, call.node, call.label, START)?]),
+                (g.list)(&[super::value::table_node_object(
+                    &g, call.node, call.label, START
+                )?]),
                 format!("w.{}", VALUE_COLUMNS[0]),
             ]),
             VALUE_COLUMNS[0]
@@ -741,9 +751,7 @@ pub(super) fn pick_cte(
         _ => (String::new(), String::new()),
     };
     let first = match walked {
-        Some(_) => format!(
-            "SELECT start_id, end_id, hop_count{carried} FROM vlp_{var}_walked"
-        ),
+        Some(_) => format!("SELECT start_id, end_id, hop_count{carried} FROM vlp_{var}_walked"),
         None => format!(
             "SELECT start_id, end_id, hop_count FROM (\n        \
              SELECT {alias}.start_id AS start_id, {alias}.end_id AS end_id, \
