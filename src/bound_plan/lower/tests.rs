@@ -2089,10 +2089,6 @@ fn an_optional_path_value_is_null_when_unmatched() {
 #[test]
 fn what_path_values_are_not_lowered() {
     not_lowered(
-        "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) WHERE a <> b RETURN p",
-        "shortestPath's nodes or relationships as a value (S6d)",
-    );
-    not_lowered(
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN collect(p) AS ps",
         "a path other than",
     );
@@ -2284,5 +2280,180 @@ fn a_passed_through_path_builds_no_values() {
     has(
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) WITH p AS q RETURN nodes(q) AS ns",
         &["as path_node_values"],
+    );
+}
+
+// ------------------------------------------------------------------ S6d
+
+#[test]
+fn a_shortest_path_is_walked_back_through_its_parents() {
+    // The search keeps a parent of each node: the least node one level
+    // nearer with a relationship to it.
+    has(
+        "MATCH p = shortestPath((a:User {user_id: 1})-[:FOLLOWS*]->(b:User {user_id: 2})) \
+         RETURN p",
+        &[
+            "CAST(0 AS UInt32) AS depth, start_node.user_id AS parent, CAST(1 AS UInt8) AS new",
+            "SELECT f.start_id AS start_id, end_node.user_id AS node, \
+             CAST(f.depth + 1 AS UInt32) AS depth, min(f.node) AS parent, CAST(1 AS UInt8) AS new",
+            "GROUP BY f.start_id, end_node.user_id, f.depth UNION ALL \
+             SELECT start_id, node, depth, parent, CAST(0 AS UInt8) AS new",
+            // The search's rows are the walk's levels; it starts at the
+            // paths' last nodes.
+            "vlp_v1_walk AS ( SELECT start_id, node, depth, node AS end_id, depth AS hop_count, \
+             arraySlice([node], 1, 0) AS path_nodes, CAST([], 'Array(String)') AS path_edges, \
+             CAST([], 'Array(Map(String, Dynamic))') AS path_node_values, \
+             CAST([], 'Array(Map(String, Dynamic))') AS path_rel_values, parent, \
+             CAST(1 AS UInt8) AS level, CAST(depth >= 1 AND node IN (SELECT end_node.user_id \
+             FROM test_integration.users_test AS end_node WHERE (end_node.user_id = 2)) AS UInt8) \
+             AS frontier FROM vlp_v1_bfs WHERE new = 1 UNION ALL",
+            // Each step goes back to the node's parent by one relationship.
+            "SELECT w.start_id AS start_id, lv.parent AS node, CAST(w.depth - 1 AS UInt32) AS depth, \
+             w.end_id AS end_id, w.hop_count AS hop_count, \
+             arrayConcat([end_node.user_id], w.path_nodes) AS path_nodes, \
+             arrayConcat([toString(rel.follow_id)], w.path_edges) AS path_edges, \
+             arrayConcat([map('elementId', CAST(concat('User:', toString(end_node.user_id), '-')",
+            "lv.parent AS parent, CAST(0 AS UInt8) AS level, CAST(1 AS UInt8) AS frontier, \
+             ROW_NUMBER() OVER (PARTITION BY w.start_id, w.end_id ORDER BY toString(rel.follow_id)) \
+             AS pick FROM vlp_v1_walk AS w \
+             JOIN (SELECT start_id, node, parent FROM vlp_v1_walk WHERE level = 1) AS lv \
+             ON lv.start_id = w.start_id AND lv.node = w.node \
+             JOIN test_integration.user_follows_test AS rel \
+             ON rel.follower_id = lv.parent AND rel.followed_id = w.node \
+             JOIN test_integration.users_test AS end_node ON end_node.user_id = w.node \
+             WHERE w.frontier = 1 AND w.depth > 0 ) WHERE pick = 1 UNION ALL",
+            // The levels are carried while a path has steps left.
+            "level, CAST(0 AS UInt8) AS frontier FROM vlp_v1_walk WHERE level = 1 AND start_id IN \
+             (SELECT start_id FROM vlp_v1_walk WHERE frontier = 1 AND depth > 1) )",
+            // The paths, with their first node.
+            "vlp_v1_path AS ( SELECT w.start_id AS start_id, w.end_id AS end_id, \
+             w.hop_count AS hop_count, arrayConcat([w.start_id], w.path_nodes) AS path_nodes, \
+             w.path_edges AS path_edges, arrayConcat([map('elementId', \
+             CAST(concat('User:', toString(start_node.user_id), '-')",
+            "w.path_rel_values AS path_rel_values FROM vlp_v1_walk AS w \
+             JOIN test_integration.users_test AS start_node ON start_node.user_id = w.start_id \
+             WHERE w.frontier = 1 AND w.depth = 0 )",
+            "FROM vlp_v1_path AS v1",
+        ],
+    );
+}
+
+#[test]
+fn all_shortest_paths_are_walked_through_every_relationship() {
+    // Every relationship from a node one level nearer: a row per path, so
+    // the search counts nothing and repeats no row.
+    let q = "MATCH p = allShortestPaths((a:User {user_id: 1})-[:FOLLOWS*]->(b:User {user_id: 2})) \
+             RETURN nodes(p) AS ns";
+    has(
+        q,
+        &[
+            "CAST(0 AS UInt32) AS depth, CAST(1 AS UInt8) AS new",
+            "SELECT DISTINCT f.start_id AS start_id",
+            "SELECT w.start_id AS start_id, lv.node AS node, CAST(w.depth - 1 AS UInt32) AS depth",
+            "CAST(0 AS UInt8) AS level, CAST(1 AS UInt8) AS frontier FROM vlp_v1_walk AS w \
+             JOIN test_integration.user_follows_test AS rel ON rel.followed_id = w.node \
+             JOIN (SELECT start_id, node, depth FROM vlp_v1_walk WHERE level = 1) AS lv \
+             ON lv.start_id = w.start_id AND lv.node = rel.follower_id AND lv.depth + 1 = w.depth \
+             JOIN test_integration.users_test AS end_node ON end_node.user_id = w.node \
+             WHERE w.frontier = 1 AND w.depth > 0 ) UNION ALL",
+        ],
+    );
+    let got = sql(q);
+    for absent in ["UInt256", "ARRAY JOIN", "parent", "pick", "path_rel_values"] {
+        assert!(!got.contains(absent), "`{absent}` in\n{got}");
+    }
+}
+
+#[test]
+fn a_shortest_path_is_recovered_only_when_read() {
+    // Its identity is read: grouping or DISTINCT by the path, or by its
+    // relationships.
+    for q in [
+        "MATCH p = allShortestPaths((a:User)-[:FOLLOWS*]->(b:User)) WITH DISTINCT p \
+         RETURN count(*) AS c",
+        "MATCH p = allShortestPaths((a:User)-[:FOLLOWS*]->(b:User)) WITH p, count(*) AS c \
+         RETURN c",
+        "MATCH p = allShortestPaths((a:User)-[r:FOLLOWS*]->(b:User)) WITH DISTINCT r \
+         RETURN count(*) AS c",
+        "MATCH p = allShortestPaths((a:User)-[:FOLLOWS*]->(b:User)) WITH p WITH DISTINCT p \
+         RETURN count(*) AS c",
+    ] {
+        let got = sql(q);
+        assert!(got.contains("vlp_v1_walk"), "{q}\n{got}");
+        assert!(!got.contains("_values"), "{q}\n{got}");
+    }
+    // Its value is read after a WITH.
+    has(
+        "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) WITH p RETURN p",
+        &["vlp_v1_walk", "AS path_rel_values", "v1.path_node_values AS \"v1__path_node_values\""],
+    );
+    // Passed through, its length read, or grouped by its length: the search
+    // alone, and no `path_nodes` exported (it has none).
+    for q in [
+        "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) WITH p RETURN length(p) AS l",
+        "MATCH p = allShortestPaths((a:User)-[:FOLLOWS*]->(b:User)) WITH a, p \
+         RETURN a.name AS n, length(p) AS l",
+        "MATCH p = allShortestPaths((a:User)-[:FOLLOWS*]->(b:User)) \
+         RETURN DISTINCT length(p) AS l",
+    ] {
+        let got = sql(q);
+        assert!(!got.contains("vlp_v1_walk"), "{q}\n{got}");
+        assert!(!got.contains("path_nodes"), "{q}\n{got}");
+    }
+}
+
+#[test]
+fn a_shortest_path_condition_walks_the_pairs_it_holds_of() {
+    // The pairs whose distance satisfies the conditions are walked; the
+    // trails of the others carry their values, their relationships as texts.
+    has(
+        "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) \
+         WHERE a <> b AND length(p) > 1 RETURN p",
+        &[
+            "CAST((start_id, node) IN (SELECT v1.start_id, v1.end_id FROM vlp_v1_near AS v1 \
+             WHERE (v1.hop_count > 1)) AS UInt8) AS frontier",
+            "vlp_v1_walked AS ( SELECT w.start_id AS start_id",
+            "vlp_v1_shortest AS ( SELECT start_id, end_id, hop_count, path_nodes, path_edges, \
+             path_node_values, path_rel_values FROM vlp_v1_walked UNION ALL \
+             SELECT start_id, end_id, hop_count, path_nodes, path_edges, path_node_values, \
+             path_rel_values FROM ( SELECT v1.start_id AS start_id, v1.end_id AS end_id, \
+             v1.hop_count AS hop_count, v1.path_nodes AS path_nodes, \
+             arrayMap(__x -> concat('', toString(__x)), v1.path_edges) AS path_edges, \
+             v1.path_node_values AS path_node_values, v1.path_rel_values AS path_rel_values, \
+             ROW_NUMBER() OVER",
+            "FROM vlp_v1_shortest AS v1",
+        ],
+    );
+    // A range of `*0..0` has no relationship.
+    has(
+        "MATCH p = shortestPath((a:User)-[:FOLLOWS*0..0]->(b:User)) WHERE length(p) % 2 = 0 \
+         RETURN p",
+        &["CAST([], 'Array(String)') AS path_edges, v1.path_node_values AS path_node_values"],
+    );
+}
+
+#[test]
+fn a_shortest_path_value_follows_the_pattern() {
+    // Walked from its right end along the relationships: the reverse of the
+    // pattern's order.
+    has(
+        "MATCH p = shortestPath((a:User)<-[:FOLLOWS*]-(b:User {user_id: 1})) RETURN nodes(p) AS ns",
+        &[
+            "ON rel.follower_id = lv.parent AND rel.followed_id = w.node",
+            "arrayReverse(v1.path_node_values)",
+        ],
+    );
+    // Walked from its left end against them: the pattern's order.
+    let q = "MATCH p = shortestPath((a:User {user_id: 1})<-[:FOLLOWS*]-(b:User)) RETURN nodes(p) AS ns";
+    has(q, &["ON rel.followed_id = lv.parent AND rel.follower_id = w.node"]);
+    assert!(!sql(q).contains("arrayReverse"));
+}
+
+#[test]
+fn an_optional_shortest_path_value_is_null_when_unmatched() {
+    has(
+        "MATCH (a:User) OPTIONAL MATCH p = shortestPath((a)-[:FOLLOWS*]->(b:User {user_id: 3})) \
+         RETURN p",
+        &["vlp_v1_walk", "IS NULL), NULL, CAST(arrayConcat([map("],
     );
 }
