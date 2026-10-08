@@ -201,7 +201,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         // and a `Dynamic` as the value it holds.
         fn object(entries: &[(String, String)]) -> String {
             if entries.is_empty() {
-                return "CAST(map(), 'Map(String, Dynamic)')".to_string();
+                // `CAST(map(), 'Map(String, Dynamic)')` fails: an empty
+                // map's value type has no variant to cast from.
+                return "CAST(CAST(map(), 'Map(String, String)'), 'Map(String, Dynamic)')"
+                    .to_string();
             }
             let pairs: Vec<String> = entries
                 .iter()
@@ -238,6 +241,17 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             to_text: |x| format!("toString({x})"),
             null_if: |cond, value| format!("if({cond}, NULL, CAST({value}, 'Dynamic'))"),
             any: |value| format!("any({value})"),
+            texts: |items| {
+                if items.is_empty() {
+                    "CAST([], 'Array(String)')".to_string()
+                } else {
+                    format!("[{}]", items.join(", "))
+                }
+            },
+            prefixed_texts: |prefix, list| {
+                format!("arrayMap(__x -> concat({prefix}, toString(__x)), {list})")
+            },
+            empty_if: |cond, list| format!("if({cond}, [], {list})"),
         })
     }
 

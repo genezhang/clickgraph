@@ -289,17 +289,40 @@ impl<'s> Lowerer<'s> {
                 let Some(elements) = self.paths.get(&src).cloned() else {
                     return unsupported(format!("internal: path {src} has no elements"));
                 };
+                // Grouped (DISTINCT, aggregation) by the path's identity, not
+                // its elements': two splits of one path are one path.
+                let grouping = aggregating || body.distinct;
+                let first_column = body.select.len();
                 for e in elements.nodes.iter().chain(&elements.rels) {
                     if exported.contains(e) {
                         continue;
                     }
                     exported.push(*e);
-                    let mut keys = Vec::new();
-                    let scan = self.export_element(*e, *e, alias, body, &mut keys)?;
-                    if aggregating {
-                        body.group_by.extend(keys);
-                    }
+                    let scan = self.export_element(*e, *e, alias, body, &mut Vec::new())?;
                     exports.scans.push((*e, scan));
+                }
+                if grouping {
+                    let added: Vec<String> = body.select[first_column..]
+                        .iter()
+                        .filter_map(|i| i.col_alias.as_ref().map(|a| a.0.clone()))
+                        .collect();
+                    body.determined.extend(added);
+                    let s = spelling()?;
+                    let key = self.path_key(&elements, Part::Whole, &s)?;
+                    let all: Vec<VarId> = elements
+                        .nodes
+                        .iter()
+                        .chain(&elements.rels)
+                        .copied()
+                        .collect();
+                    let (keys, _) = self.null_safe(&s, vec![RenderExpr::Raw(key)], &all)?;
+                    for (i, k) in keys.into_iter().enumerate() {
+                        body.select
+                            .push(select(k.clone(), &format!("{}__k{i}", it.var)));
+                        if aggregating {
+                            body.group_by.push(k);
+                        }
+                    }
                 }
                 self.paths.insert(it.var, elements);
                 Ok(true)
@@ -419,6 +442,32 @@ impl<'s> Lowerer<'s> {
         ty: GraphType,
         vars: &[VarId],
     ) -> Result<GraphValue, LowerError> {
+        let (keys, cond) = self.null_safe(s, keys, vars)?;
+        Ok(match cond {
+            None => GraphValue {
+                value: RenderExpr::Raw(value),
+                keys,
+                ty,
+                nullable: false,
+            },
+            Some(cond) => GraphValue {
+                value: RenderExpr::Raw((s.null_if)(&cond, &value)),
+                keys,
+                ty,
+                nullable: true,
+            },
+        })
+    }
+
+    /// The keys of a value that is NULL where the OPTIONAL MATCH of `vars`
+    /// (any nullable one) did not match, and that condition. Every such row
+    /// has the one NULL value: its keys are the condition and no identity.
+    fn null_safe(
+        &self,
+        s: &GraphValues,
+        keys: Vec<RenderExpr>,
+        vars: &[VarId],
+    ) -> Result<(Vec<RenderExpr>, Option<String>), LowerError> {
         let mut nulls = Vec::new();
         for v in vars.iter().filter(|v| self.binding(**v).nullable) {
             let Some(id) = self.identity(*v)? else {
@@ -430,20 +479,16 @@ impl<'s> Lowerer<'s> {
             }));
         }
         if nulls.is_empty() {
-            return Ok(GraphValue {
-                value: RenderExpr::Raw(value),
-                keys,
-                ty,
-                nullable: false,
-            });
+            return Ok((keys, None));
         }
-        let cond = sql(&or_all(nulls));
-        Ok(GraphValue {
-            value: RenderExpr::Raw((s.null_if)(&cond, &value)),
-            keys,
-            ty,
-            nullable: true,
-        })
+        let cond = or_all(nulls);
+        let cond_sql = sql(&cond);
+        let mut null_keys = vec![cond];
+        null_keys.extend(
+            keys.iter()
+                .map(|k| RenderExpr::Raw((s.empty_if)(&cond_sql, &sql(k)))),
+        );
+        Ok((null_keys, Some(cond_sql)))
     }
 
     /// A path, its nodes or its relationships, in path order.
@@ -484,11 +529,9 @@ impl<'s> Lowerer<'s> {
         // elements until a variable-length relationship's list.
         let mut lists: Vec<String> = Vec::new();
         let mut items: Vec<String> = Vec::new();
-        let mut keys: Vec<RenderExpr> = Vec::new();
         let first = elements.nodes[0];
         if part != Part::Rels {
             items.push(self.node_value(first, &s)?);
-            keys.extend(self.element_keys(first)?);
         }
         for (i, r) in elements.rels.iter().enumerate() {
             let next = elements.nodes[i + 1];
@@ -496,11 +539,9 @@ impl<'s> Lowerer<'s> {
                 Some(Scan::Rel { .. }) => {
                     if part != Part::Nodes {
                         items.push(self.rel_value(*r, &s)?);
-                        keys.extend(self.element_keys(*r)?);
                     }
                     if part != Part::Rels {
                         items.push(self.node_value(next, &s)?);
-                        keys.extend(self.element_keys(next)?);
                     }
                 }
                 Some(Scan::Path { .. }) => {
@@ -508,21 +549,12 @@ impl<'s> Lowerer<'s> {
                         lists.push((s.list)(&std::mem::take(&mut items)));
                     }
                     let list = match part {
-                        Part::Whole => {
-                            keys.extend(self.vlp_keys(*r)?);
-                            (s.interleave)(
-                                &self.vlp_rels(*r, &s)?,
-                                &(s.tail)(&self.vlp_nodes(*r, &s)?),
-                            )
-                        }
-                        Part::Nodes => {
-                            keys.push(self.physical(*r, "path_nodes")?);
-                            (s.tail)(&self.vlp_nodes(*r, &s)?)
-                        }
-                        Part::Rels => {
-                            keys.extend(self.vlp_keys(*r)?);
-                            self.vlp_rels(*r, &s)?
-                        }
+                        Part::Whole => (s.interleave)(
+                            &self.vlp_rels(*r, &s)?,
+                            &(s.tail)(&self.vlp_nodes(*r, &s)?),
+                        ),
+                        Part::Nodes => (s.tail)(&self.vlp_nodes(*r, &s)?),
+                        Part::Rels => self.vlp_rels(*r, &s)?,
                     };
                     lists.push(list);
                 }
@@ -533,12 +565,91 @@ impl<'s> Lowerer<'s> {
             lists.push((s.list)(&items));
         }
         let value = (s.concat)(&lists);
-        self.finish(&s, value, keys, ty, &all)
+        let key = self.path_key(&elements, part, &s)?;
+        self.finish(&s, value, vec![RenderExpr::Raw(key)], ty, &all)
     }
 
-    /// The identity of a fixed node or relationship.
-    fn element_keys(&self, v: VarId) -> Result<Vec<RenderExpr>, LowerError> {
-        Ok(self.identity(v)?.unwrap_or_default())
+    /// The identity of a path, or of its nodes or relationships, as one list
+    /// of texts in path order: the first node and every relationship, every
+    /// node, or every relationship, each with its label or type. One list,
+    /// because the same path can split between two variable-length parts in
+    /// several ways (`*0..1` then `*0..1`); its elements' sequence cannot.
+    fn path_key(
+        &self,
+        elements: &super::PathElements,
+        part: Part,
+        s: &GraphValues,
+    ) -> Result<String, LowerError> {
+        let mut lists: Vec<String> = Vec::new();
+        let mut items: Vec<String> = Vec::new();
+        if part != Part::Rels {
+            items.push(self.node_key(elements.nodes[0], s)?);
+        }
+        for (i, r) in elements.rels.iter().enumerate() {
+            match self.scans.get(r) {
+                Some(Scan::Rel { rel_type, .. }) => {
+                    if part != Part::Nodes {
+                        let id = match self.identity(*r)?.unwrap_or_default().as_slice() {
+                            [one] => sql(one),
+                            // Spelled as a path's `path_edges` spells it.
+                            cols => format!(
+                                "{}({})",
+                                current_function_mapper().tuple_constructor(),
+                                cols.iter().map(sql).collect::<Vec<_>>().join(", ")
+                            ),
+                        };
+                        items.push((s.text)(&[
+                            string(&format!("{rel_type}:")),
+                            (s.to_text)(&id),
+                        ]));
+                    }
+                    if part != Part::Rels {
+                        items.push(self.node_key(elements.nodes[i + 1], s)?);
+                    }
+                }
+                Some(Scan::Path {
+                    schema,
+                    rel_type,
+                    edges,
+                    reversed,
+                    ..
+                }) => {
+                    if !items.is_empty() {
+                        lists.push((s.texts)(&std::mem::take(&mut items)));
+                    }
+                    let in_order = |column: &str| -> Result<String, LowerError> {
+                        let list = sql(&self.physical(*r, column)?);
+                        Ok(if *reversed { (s.reverse)(&list) } else { list })
+                    };
+                    if part != Part::Nodes && *edges {
+                        lists.push((s.prefixed_texts)(
+                            &string(&format!("{rel_type}:")),
+                            &in_order("path_edges")?,
+                        ));
+                    }
+                    if part != Part::Rels {
+                        lists.push((s.prefixed_texts)(
+                            &string(&format!("{}:", schema.to_node)),
+                            &(s.tail)(&in_order("path_nodes")?),
+                        ));
+                    }
+                }
+                _ => return unsupported(format!("internal: {r} is not a relationship scan")),
+            }
+        }
+        if !items.is_empty() || lists.is_empty() {
+            lists.push((s.texts)(&items));
+        }
+        Ok((s.concat)(&lists))
+    }
+
+    /// A node's identity as a text, with its label.
+    fn node_key(&self, v: VarId, s: &GraphValues) -> Result<String, LowerError> {
+        let Some(Scan::Node { label, .. }) = self.scans.get(&v) else {
+            return unsupported(format!("internal: {v} is not a node scan"));
+        };
+        let id = sql(&self.identity_value(v)?);
+        Ok((s.text)(&[string(&format!("{label}:")), (s.to_text)(&id)]))
     }
 
     /// A variable-length relationship's list: its relationships (two empty

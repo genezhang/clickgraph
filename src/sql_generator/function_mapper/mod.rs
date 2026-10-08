@@ -417,6 +417,12 @@ pub(crate) struct GraphValues {
     pub null_if: fn(&str, &str) -> String,
     /// Any one of a group's values (they are all equal).
     pub any: fn(&str) -> String,
+    /// A list of texts (possibly none).
+    pub texts: fn(&[String]) -> String,
+    /// The texts of a list's elements, each after the text `prefix`.
+    pub prefixed_texts: fn(&str, &str) -> String,
+    /// An empty list when the condition holds, else the list.
+    pub empty_if: fn(&str, &str) -> String,
 }
 
 /// The dialect's parts of a shortest-path search

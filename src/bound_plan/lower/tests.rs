@@ -2007,12 +2007,14 @@ fn distinct_and_grouping_by_a_value_use_its_identities() {
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN nodes(p) AS ns, count(*) AS c",
         &[
             "any(arrayConcat([map(",
-            "GROUP BY v0.user_id, v1.path_nodes",
+            "GROUP BY arrayConcat([concat('User:', toString(v0.user_id))], \
+             arrayMap(__x -> concat('User:', toString(__x)), arraySlice(v1.path_nodes, 2)))",
         ],
     );
     has(
         "MATCH p = (a:User)-[:FOLLOWS]->(b:User) RETURN DISTINCT p",
-        &["GROUP BY v0.user_id, v1.follow_id, v2.user_id"],
+        &["GROUP BY [concat('User:', toString(v0.user_id)), \
+           concat('FOLLOWS:', toString(v1.follow_id)), concat('User:', toString(v2.user_id))]"],
     );
     // A WITH groups a carried list by its relationships; its other columns
     // are any() of the group.
@@ -2050,7 +2052,7 @@ fn a_with_carries_paths_and_lists() {
          WITH nodes(p) AS ns RETURN ns, size(ns) AS n",
         &[
             "AS \"v4\"",
-            "v1.path_nodes AS \"v4__k1\"",
+            "arraySlice(v1.path_nodes, 2))) AS \"v4__k0\"",
             "w2.v4 AS \"ns\"",
             "length(w2.v4) AS \"n\"",
         ],
@@ -2150,4 +2152,113 @@ fn a_list_read_by_an_optional_where_joins_on_its_identity() {
     let drive = got.split("optional_d3 AS (").nth(1).unwrap_or_default();
     let drive = drive.split("), ").next().unwrap_or_default();
     assert!(!drive.contains("_values"), "{drive}");
+}
+
+/// Review findings (#1333): a path's identity is one list of its elements
+/// (two variable-length parts can split a path in several ways); an
+/// unmatched OPTIONAL path is one NULL; a type without properties has an
+/// empty property map; a passed-through path builds no values.
+#[test]
+fn a_path_is_grouped_by_one_list_of_its_elements() {
+    let got = squash(&sql(
+        "MATCH p = (a:User)-[:FOLLOWS*0..1]->(b:User)-[:FOLLOWS*0..1]->(c:User) RETURN DISTINCT p",
+    ));
+    let group_by = got.split("GROUP BY ").nth(1).unwrap_or_default();
+    assert!(group_by.starts_with("arrayConcat([concat('User:'"), "{got}");
+    for part in [
+        "arrayMap(__x -> concat('FOLLOWS:', toString(__x)), v1.path_edges)",
+        "arrayMap(__x -> concat('FOLLOWS:', toString(__x)), v3.path_edges)",
+    ] {
+        assert!(group_by.contains(part), "{part} in {group_by}");
+    }
+    // One key: the GROUP BY ends where its one expression does.
+    let mut depth = 0;
+    let end = group_by
+        .char_indices()
+        .find(|(_, c)| {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                _ => {}
+            }
+            depth == 0 && *c == ')'
+        })
+        .map(|(i, _)| i + 1)
+        .unwrap_or(0);
+    assert!(end > 0 && group_by[end..].trim().is_empty(), "{group_by}");
+    let with = squash(&sql(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User) \
+         WITH DISTINCT p RETURN count(*) AS n",
+    ));
+    assert!(
+        with.contains("__k0\"") && with.contains("any(v1.path_edges)"),
+        "{with}"
+    );
+}
+
+#[test]
+fn an_unmatched_optional_path_is_one_null() {
+    has(
+        "MATCH (u:User) OPTIONAL MATCH p = (u)-[:FOLLOWS]->(v:User {user_id: 99}) RETURN DISTINCT p",
+        &[
+            "GROUP BY (o1.v2__user_id IS NULL OR o1.v1__follow_id IS NULL), \
+             if((o1.v2__user_id IS NULL OR o1.v1__follow_id IS NULL), [], [concat('User:'",
+        ],
+    );
+    has(
+        "MATCH (u:User) OPTIONAL MATCH (u)-[r:FOLLOWS*1..2]->(v:User {user_id: 99}) \
+         WITH DISTINCT r RETURN r",
+        &[
+            "AS \"v3__unmatched\"",
+            "GROUP BY o3.v1__path_edges, o3.v1__start_id IS NULL",
+        ],
+    );
+}
+
+#[test]
+fn an_element_without_properties_has_an_empty_property_map() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: no_props
+graph_schema:
+  nodes:
+    - { label: N, database: db, table: n, node_id: id, property_mappings: {} }
+  edges:
+    - { type: E, database: db, table: e, from_id: a, to_id: b, from_node: N, to_node: N, property_mappings: {} }
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let got = translate_bound_plan(
+        "MATCH p = (x:N)-[:E*1..2]->(y:N) RETURN p",
+        &schema,
+        &ReadOptions::default(),
+    )
+    .unwrap()
+    .sql;
+    assert!(
+        got.contains(
+            "mapFilter((__k, __v) -> __v IS NOT NULL, \
+             CAST(CAST(map(), 'Map(String, String)'), 'Map(String, Dynamic)'))"
+        ),
+        "{got}"
+    );
+}
+
+#[test]
+fn a_passed_through_path_builds_no_values() {
+    for q in [
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) WITH p RETURN length(p) AS l",
+        "MATCH p = (a:User)-[r:FOLLOWS*1..2]->(b:User) WITH r, p RETURN size(r) AS n, count(*) AS c",
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) WITH DISTINCT p RETURN count(*) AS n",
+    ] {
+        let got = sql(q);
+        assert!(!got.contains("_values"), "{q}\n{got}");
+    }
+    // Read after the WITH: carried.
+    has(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) WITH p AS q RETURN nodes(q) AS ns",
+        &["as path_node_values"],
+    );
 }

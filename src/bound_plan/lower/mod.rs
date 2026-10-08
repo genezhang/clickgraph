@@ -2601,6 +2601,17 @@ impl<'s> Lowerer<'s> {
             physical.insert(c.clone(), name);
         }
         if matches!(scan, Scan::Path { .. }) {
+            if self.binding(src).nullable {
+                // An OPTIONAL MATCH's list that did not match is NULL, not
+                // the empty list: grouped apart.
+                let e = RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::IsNull,
+                    operands: vec![self.physical(src, "start_id")?],
+                });
+                body.select
+                    .push(select(e.clone(), &format!("{out}__unmatched")));
+                keys.push(e);
+            }
             // A list of relationships has no properties.
             return Ok(scan.with_at(At::Exported {
                 alias: alias.to_string(),
@@ -3205,6 +3216,33 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
     }
     let mut all = Vec::new();
     exprs(&stmt.plan, &mut all);
+    // A WITH item that passes a variable through reads nothing of it: what
+    // later clauses read of it is demanded of its source (below).
+    fn pass_through<'a>(op: &'a BoundOp, out: &mut Vec<&'a LogicalExpr>) {
+        match op {
+            BoundOp::Project { input, projection } => {
+                pass_through(input, out);
+                if projection.kind == ProjectionKind::With {
+                    out.extend(
+                        projection
+                            .items
+                            .iter()
+                            .map(|i| &i.expr)
+                            .filter(|e| matches!(e, LogicalExpr::TableAlias(_))),
+                    );
+                }
+            }
+            BoundOp::Match { input, .. }
+            | BoundOp::Unwind { input, .. }
+            | BoundOp::Sort { input, .. }
+            | BoundOp::Skip { input, .. }
+            | BoundOp::Limit { input, .. } => pass_through(input, out),
+            BoundOp::Union { arms, .. } => arms.iter().for_each(|a| pass_through(a, out)),
+            BoundOp::Unit => {}
+        }
+    }
+    let mut passed = Vec::new();
+    pass_through(&stmt.plan, &mut passed);
     let mut demand: HashMap<VarId, BTreeSet<String>> = HashMap::new();
     let mut add = |v: VarId, prop: &str| {
         demand.entry(v).or_default().insert(prop.to_string());
@@ -3234,6 +3272,9 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
             }
         }
         // A path or list read as a value needs its elements' values.
+        if passed.iter().any(|x| std::ptr::eq(*x, *e)) {
+            continue;
+        }
         let mut uses = Vec::new();
         graph_demand(e, &stmt.bindings, &mut uses);
         for (v, what) in uses {

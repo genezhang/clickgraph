@@ -69,7 +69,7 @@ pub(crate) fn relationship(v: &Value) -> Result<Relationship, String> {
 }
 
 /// A path from its list of nodes and relationships in turn: its distinct
-/// nodes and relationships, and for each step the relationship (1-based,
+/// nodes, its relationships, and for each step the relationship (1-based,
 /// negative when the step goes against its direction) and the node it
 /// reaches (0-based), as Bolt's Path structure has them.
 pub(crate) fn path(v: &Value) -> Result<Path, String> {
@@ -97,13 +97,10 @@ pub(crate) fn path(v: &Value) -> Result<Path, String> {
         let r = relationship(&step[0])?;
         let next = node(&step[1])?;
         let forward = r.start_node_element_id == previous.element_id;
-        let at = match rels.iter().position(|x| x.element_id == r.element_id) {
-            Some(i) => i as i64 + 1,
-            None => {
-                rels.push(r);
-                rels.len() as i64
-            }
-        };
+        // A path is a trail: no relationship twice. (Two parallel
+        // relationships can share an element id, which ignores `edge_id`.)
+        rels.push(r);
+        let at = rels.len() as i64;
         indices.push(if forward { at } else { -at });
         indices.push(node_at(next.clone(), &mut nodes));
         previous = next;
@@ -217,6 +214,14 @@ mod tests {
         assert_eq!(p.indices, vec![1, 1, -2, 2, 3, 0]);
         assert_eq!(p.nodes[0].properties["user_id"], json!(1));
         assert_eq!(p.relationships[0].rel_type, "FOLLOWS");
+    }
+
+    #[test]
+    fn parallel_relationships_of_a_path_stay_two() {
+        // Element ids ignore `edge_id`: two parallel relationships share one.
+        let p = path(&json!([n(6), r(6, 7), n(7), r(7, 6), n(6), r(6, 7), n(7)])).unwrap();
+        assert_eq!(p.relationships.len(), 3);
+        assert_eq!(p.indices, vec![1, 1, 2, 0, 3, 1]);
     }
 
     #[test]
