@@ -1296,9 +1296,9 @@ impl<'s> Lowerer<'s> {
     /// (decided by [`Self::path_scan`]) when it joins the rows so far (its
     /// `left` node is joined), and tie it to its endpoints: `start_id` is
     /// the node the walk starts at, `end_id` the other. The walk starts at a
-    /// restricted end (§4.8 d): one carried from a CTE, else one with
-    /// conjuncts over its own columns, else one the rows so far restrict,
-    /// the left one first; it follows the relationships forward or backward
+    /// restricted end (§4.8 d): one whose identity equals a constant, else
+    /// one carried from a CTE, else one with conjuncts over its own columns,
+    /// else one the rows so far restrict, the left one first; it follows the relationships forward or backward
     /// from there. Inside the search go:
     /// * the first node's values in the rows so far (a semi-join), when they
     ///   are more than its table's rows;
@@ -1334,9 +1334,11 @@ impl<'s> Lowerer<'s> {
         } else {
             left
         };
-        // Without table statistics (P-5): an end carried from a CTE (a WITH,
-        // the OPTIONAL drive) holds values already narrowed; then an end with
+        // Without table statistics (P-5): an end whose identity equals a
+        // constant is one node; an end carried from a CTE (a WITH, the
+        // OPTIONAL drive) holds values already narrowed; then an end with
         // conjuncts over its own columns; then one tied to the rows so far.
+        let pinned = |v: VarId| self.pinned(v, own);
         let carried = |v: VarId| {
             self.is_emitted(v)
                 && matches!(
@@ -1345,9 +1347,12 @@ impl<'s> Lowerer<'s> {
                 )
         };
         let own_columns = |v| !self.own_conjuncts(v, own).is_empty();
-        let first = [&carried as &dyn Fn(VarId) -> bool, &own_columns, &|v| {
-            self.joined_rows_restrict(v)
-        }]
+        let first = [
+            &pinned as &dyn Fn(VarId) -> bool,
+            &carried,
+            &own_columns,
+            &|v| self.joined_rows_restrict(v),
+        ]
         .iter()
         .find_map(|restricts| {
             if restricts(left) {
@@ -1372,14 +1377,14 @@ impl<'s> Lowerer<'s> {
         let Some(start) = self.restriction(first, own, path::START)? else {
             return Ok(()); // it matches nothing
         };
-        // `allShortestPaths` repeats a pair's row once per shortest path:
-        // only for the values the last node can have.
+        // A shortest-path search ends once it has reached every value the
+        // last node can have.
         let end = match shortest {
-            Some(ShortestMode::AllShortest) => match self.restriction(last, own, path::END)? {
+            Some(_) => match self.restriction(last, own, path::END)? {
                 Some(end) => end,
                 None => return Ok(()),
             },
-            _ => Vec::new(),
+            None => Vec::new(),
         };
         let mut rel = Vec::new();
         for (prop, value) in &r.props {
@@ -1421,7 +1426,16 @@ impl<'s> Lowerer<'s> {
                 let cte = built.cte.cte_name.clone();
                 (vec![built.cte], cte, built.edges)
             }
-            Some(mode) => self.shortest_relation(call, mode, at.alias(), first, last, in_search)?,
+            Some(mode) => {
+                match self.shortest_relation(call, mode, at.alias(), first, last, in_search)? {
+                    Some(relation) => relation,
+                    None => {
+                        // Its conditions allow no length of its range.
+                        self.scans.insert(r.var, Scan::Impossible);
+                        return Ok(());
+                    }
+                }
+            }
         };
         self.ctes.extend(ctes);
         self.scans.insert(
@@ -1492,18 +1506,23 @@ impl<'s> Lowerer<'s> {
 
     /// The relation of a `shortestPath` / `allShortestPaths` (`mode`) whose
     /// paths are `call`'s, read under `alias`, from `first` to `last` (its
-    /// CTEs, its name, whether it has `path_edges`). The search picks, per
-    /// pair of ends, the shortest paths that satisfy `in_search` (§4.8,
-    /// #1312): the WHERE conjuncts that read the path, and only it and its
-    /// ends.
-    /// * With none and a lower bound of at most 1, a breadth-first search
-    ///   (`path::shortest_ctes`): a shortest path is a shortest walk, and
-    ///   the search visits each node once per first node.
-    /// * Otherwise the paths are the trails of the range (`path::path_cte`)
-    ///   and the pick is among those that satisfy the conditions
-    ///   (`path::pick_cte`): a condition such as `length(p) > 1` can make a
-    ///   trail that revisits a node the shortest (Neo4j's exhaustive
-    ///   search), and a lower bound above 1 is such a condition.
+    /// CTEs, its name, whether it has `path_edges`), or `None` when its
+    /// conditions allow no length of its range. The search picks, per pair
+    /// of ends, the shortest paths that satisfy `in_search` (§4.8, #1312):
+    /// the WHERE conjuncts that read the path, and only it and its ends. In
+    /// S6b those depend on a path only through its length.
+    /// * A bound on the length from above (`length(p) < k`, `<= k`, `= k`)
+    ///   bounds the search.
+    /// * A breadth-first search (`path::search_cte`) finds each pair's
+    ///   distance: a shortest path is a shortest walk. Without other
+    ///   conditions (and a lower bound of at most 1), its pairs are the
+    ///   relation (`path::reached_cte`).
+    /// * Otherwise a pair whose distance satisfies them has its shortest
+    ///   paths; for the others the pick is among the trails of the range that
+    ///   satisfy them (`path::pick_cte`), from only their first nodes. A
+    ///   condition such as `length(p) > 1` can make a trail that revisits a
+    ///   node the shortest (as Neo4j's exhaustive search does), and a lower
+    ///   bound above 1 is such a condition.
     ///
     /// A pair whose two ends are one node has a path only when the range
     /// starts at 0 (the path of none): Neo4j raises an error for such a pair
@@ -1511,33 +1530,66 @@ impl<'s> Lowerer<'s> {
     /// it has no path.
     fn shortest_relation(
         &self,
-        call: path::PathCall<'_>,
+        mut call: path::PathCall<'_>,
         mode: ShortestMode,
         alias: &str,
         first: VarId,
         last: VarId,
         in_search: &[RenderExpr],
-    ) -> Result<(Vec<Cte>, String, bool), LowerError> {
+    ) -> Result<Option<(Vec<Cte>, String, bool)>, LowerError> {
         if current_function_mapper().shortest_path_search().is_none() {
             return unsupported("shortestPath in this SQL dialect");
         }
         let all = mode == ShortestMode::AllShortest;
-        if in_search.is_empty() && call.min <= 1 {
-            let (ctes, name) = path::shortest_ctes(self.schema, call, all)?;
-            return Ok((ctes, name, false));
+        // A bound on the length from above is a bound on the search: no
+        // longer path satisfies it.
+        let mut conditions = Vec::new();
+        for c in in_search {
+            match length_bound(c, alias) {
+                Some((bound, exact)) => {
+                    if bound < i64::from(call.min) {
+                        return Ok(None);
+                    }
+                    let bound = u32::try_from(bound).unwrap_or(u32::MAX);
+                    call.max = Some(call.max.map_or(bound, |m| m.min(bound)));
+                    if !exact {
+                        conditions.push(c.clone());
+                    }
+                }
+                None => conditions.push(c.clone()),
+            }
+        }
+        // A lower bound above 1 is a condition on the length.
+        let min = call.min;
+        if min > 1 {
+            conditions.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::GreaterThanEqual,
+                operands: vec![
+                    col_at(alias, "hop_count"),
+                    RenderExpr::Literal(Literal::Integer(i64::from(min))),
+                ],
+            }));
+        }
+        let mut search = call.clone();
+        search.min = min.min(1);
+        let var = call.var.to_string();
+        if conditions.is_empty() {
+            let name = format!("vlp_{var}_path");
+            return Ok(Some((
+                vec![
+                    path::search_cte(self.schema, &search, all)?,
+                    path::reached_cte(self.schema, &search, &name, all, true)?,
+                ],
+                name,
+                false,
+            )));
         }
         // The ends the conditions read are joined to the paths under their
-        // own aliases. A condition reading another relation (another
-        // element, a CTE) would need a pick per row of it.
-        let relations: Vec<String> = self
-            .scans
-            .values()
-            .filter_map(|s| s.at().map(|a| a.alias().to_string()))
-            .collect();
-        let read: Vec<String> = in_search
+        // own aliases. A condition reading anything else (another element,
+        // a CTE's column) would need a pick per row of it.
+        let read: Vec<String> = conditions
             .iter()
             .flat_map(|c| read_aliases(c).unwrap_or_default())
-            .filter(|a| relations.contains(a))
             .collect();
         let mut ends = Vec::new();
         let mut readable = vec![alias.to_string()];
@@ -1564,11 +1616,26 @@ impl<'s> Lowerer<'s> {
                 "a shortestPath condition that reads a variable other than the path and its ends",
             );
         }
-        let min = call.min;
-        let var = call.var.to_string();
-        let built = path::path_cte(self.schema, call)?;
-        let (pick, name) = path::pick_cte(&var, alias, &ends, in_search, min >= 1, all);
-        Ok((vec![built.cte, pick], name, false))
+        // The trails start only where a pair's distance fails the conditions.
+        let near = format!("vlp_{var}_near");
+        call.start.push(RenderExpr::Raw(format!(
+            "{}.{} IN (SELECT start_id FROM ({}))",
+            path::START,
+            call.node.id_physical_columns()[0],
+            path::failing_pairs(&var, alias, &ends, &conditions),
+        )));
+        let trails = path::path_cte(self.schema, call)?;
+        let (pick, name) = path::pick_cte(&var, alias, &ends, &conditions, min >= 1, all)?;
+        Ok(Some((
+            vec![
+                path::search_cte(self.schema, &search, all)?,
+                path::reached_cte(self.schema, &search, &near, all, false)?,
+                trails.cte,
+                pick,
+            ],
+            name,
+            false,
+        )))
     }
 
     /// A `shortestPath` / `allShortestPaths` pattern as Neo4j takes it: one
@@ -1604,6 +1671,27 @@ impl<'s> Lowerer<'s> {
             .flat_map(conjuncts)
             .filter(|c| reads_only(c, &aliases) && !table_aliases(c).is_empty())
             .collect()
+    }
+
+    /// Node `v` is read from its table, and a conjunct of the segment or
+    /// `own` equates its identity with a constant: it is at most one node.
+    fn pinned(&self, v: VarId, own: &[RenderExpr]) -> bool {
+        let Some(Scan::Node {
+            schema,
+            at: At::Table(alias),
+            ..
+        }) = self.scans.get(&v)
+        else {
+            return false;
+        };
+        let id = col_at(alias, &schema.id_physical_columns()[0]);
+        self.own_conjuncts(v, own).into_iter().any(|c| {
+            matches!(c, RenderExpr::OperatorApplicationExp(op)
+                if op.operator == Operator::Equal
+                    && op.operands.len() == 2
+                    && op.operands.iter().any(|o| *o == id)
+                    && op.operands.iter().any(is_constant))
+        })
     }
 
     /// The rows joined so far restrict node `v`: [`Self::rows_holding`].
@@ -2802,13 +2890,48 @@ fn table_aliases(e: &RenderExpr) -> Vec<String> {
     }
 }
 
-/// Every table alias `e` reads (lambda and binder names too), or `None` when
-/// a part of it reads what is not visible here (a subquery, raw SQL).
+/// `alias.hop_count < k` (or `<=`, `=`, either way round) for an integer
+/// `k`: the longest length it allows, and whether that is all it says.
+fn length_bound(c: &RenderExpr, alias: &str) -> Option<(i64, bool)> {
+    let RenderExpr::OperatorApplicationExp(op) = c else {
+        return None;
+    };
+    let is_length = |e: &RenderExpr| {
+        matches!(e, RenderExpr::PropertyAccessExp(PropertyAccess {
+            table_alias,
+            column: PropertyValue::Column(col),
+        }) if table_alias.0 == alias && col == "hop_count")
+    };
+    let [x, y] = op.operands.as_slice() else {
+        return None;
+    };
+    let (k, length_left) = match (x, y) {
+        (l, RenderExpr::Literal(Literal::Integer(k))) if is_length(l) => (*k, true),
+        (RenderExpr::Literal(Literal::Integer(k)), l) if is_length(l) => (*k, false),
+        _ => return None,
+    };
+    match (op.operator, length_left) {
+        (Operator::LessThan, true) | (Operator::GreaterThan, false) => Some((k - 1, true)),
+        (Operator::LessThanEqual, true) | (Operator::GreaterThanEqual, false) => Some((k, true)),
+        (Operator::Equal, _) => Some((k, false)),
+        _ => None,
+    }
+}
+
+/// Every table alias `e` reads, or `None` when a part of it reads what is
+/// not visible here (a subquery, raw SQL). The names a `reduce` binds are
+/// its own, not reads.
 fn read_aliases(e: &RenderExpr) -> Option<Vec<String>> {
     let mut read = Vec::new();
+    let mut bound = Vec::new();
     let mut opaque = false;
     let mut e = e.clone();
     visit_render_expr_mut(&mut e, &mut |x| match x {
+        RenderExpr::ReduceExpr(r) => {
+            bound.push(r.accumulator.clone());
+            bound.push(r.variable.clone());
+            MutVisit::Recurse
+        }
         RenderExpr::PropertyAccessExp(pa) => {
             read.push(pa.table_alias.0.clone());
             MutVisit::Stop
@@ -2829,6 +2952,7 @@ fn read_aliases(e: &RenderExpr) -> Option<Vec<String>> {
         }
         _ => MutVisit::Recurse,
     });
+    read.retain(|a| !bound.contains(a));
     (!opaque).then_some(read)
 }
 

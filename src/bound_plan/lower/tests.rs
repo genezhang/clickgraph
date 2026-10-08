@@ -1623,33 +1623,51 @@ fn all_shortest_paths_are_counted_by_the_search() {
 fn a_shortest_path_condition_holds_before_the_pick() {
     // #1312: the shortest path that satisfies the WHERE, not the shortest
     // path if it does. The conjunct reading the path goes into the search;
-    // the one reading only the ends stays outside.
+    // the one reading only the ends stays outside. A pair whose distance
+    // satisfies it has its shortest path; the trails are searched only from
+    // the first nodes of the others, and only for those pairs.
     let got = squash(&sql(
         "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) \
          WHERE a <> b AND length(p) > 1 RETURN length(p) AS l, count(*) AS c",
     ));
+    let failing = "SELECT v1.start_id AS start_id, v1.end_id AS end_id FROM vlp_v1_near AS v1 \
+                   WHERE NOT coalesce((v1.hop_count > 1), false)";
     for part in [
-        "WITH RECURSIVE vlp_v1_path AS (",
-        "vlp_v1_shortest AS ( SELECT start_id, end_id, hop_count FROM ( \
-         SELECT v1.start_id AS start_id, v1.end_id AS end_id, v1.hop_count AS hop_count, \
-         ROW_NUMBER() OVER (PARTITION BY v1.start_id, v1.end_id ORDER BY v1.hop_count) AS shortest \
-         FROM vlp_v1_path AS v1 WHERE (v1.hop_count > 1) AND v1.start_id <> v1.end_id \
-         ) WHERE shortest = 1 )",
-        "FROM vlp_v1_shortest AS v1",
+        "WITH RECURSIVE vlp_v1_bfs AS (".to_string(),
+        "vlp_v1_near AS ( SELECT start_id, node AS end_id, depth AS hop_count FROM vlp_v1_bfs \
+         WHERE new = 1 AND depth >= 1 )"
+            .to_string(),
+        format!("WHERE (start_node.user_id IN (SELECT start_id FROM ({failing})))"),
+        format!(
+            "vlp_v1_shortest AS ( SELECT start_id, end_id, hop_count FROM ( \
+             SELECT v1.start_id AS start_id, v1.end_id AS end_id, v1.hop_count AS hop_count \
+             FROM vlp_v1_near AS v1 WHERE (v1.hop_count > 1) ) UNION ALL \
+             SELECT start_id, end_id, hop_count FROM ( \
+             SELECT v1.start_id AS start_id, v1.end_id AS end_id, v1.hop_count AS hop_count, \
+             ROW_NUMBER() OVER (PARTITION BY v1.start_id, v1.end_id ORDER BY v1.hop_count) AS shortest \
+             FROM vlp_v1_path AS v1 WHERE (v1.hop_count > 1) \
+             AND (v1.start_id, v1.end_id) IN ({failing}) AND v1.start_id <> v1.end_id \
+             ) WHERE shortest = 1 )"
+        ),
+        "FROM vlp_v1_shortest AS v1".to_string(),
     ] {
-        assert!(got.contains(part), "missing `{part}` in\n{got}");
+        assert!(got.contains(&part), "missing `{part}` in\n{got}");
     }
-    assert!(!got.contains("vlp_v1_bfs"), "{got}");
-    // Every shortest one; a condition reading an end joins it to the paths.
+    // Every shortest one, counted; a condition reading an end joins it.
     has(
         "MATCH p = allShortestPaths((a:User)-[:FOLLOWS*]->(b:User)) \
          WHERE a <> b AND (length(p) > 2 OR a.user_id = 1) RETURN count(*) AS c",
         &[
+            "vlp_v1_near AS ( SELECT start_id, node AS end_id, depth AS hop_count, paths",
+            "SELECT v1.start_id AS start_id, v1.end_id AS end_id, v1.hop_count AS hop_count, \
+             v1.paths AS paths FROM vlp_v1_near AS v1 \
+             JOIN test_integration.users_test AS v0 ON v0.user_id = v1.start_id \
+             WHERE ((v1.hop_count > 2 OR v0.user_id = 1)) \
+             ) ARRAY JOIN range(accurateCast(paths, 'UInt64')) AS copy UNION ALL",
             "MIN(v1.hop_count) OVER (PARTITION BY v1.start_id, v1.end_id) AS shortest \
              FROM vlp_v1_path AS v1 \
-             JOIN test_integration.users_test AS v0 ON v0.user_id = v1.start_id \
-             WHERE ((v1.hop_count > 2 OR v0.user_id = 1)) AND v1.start_id <> v1.end_id \
-             ) WHERE hop_count = shortest",
+             JOIN test_integration.users_test AS v0 ON v0.user_id = v1.start_id",
+            ") WHERE hop_count = shortest )",
         ],
     );
     // From 0, a pair of one node has the path of none, or a closed trail.
@@ -1657,14 +1675,85 @@ fn a_shortest_path_condition_holds_before_the_pick() {
         "MATCH p = shortestPath((a:User)-[:FOLLOWS*0..]->(b:User)) \
          WHERE length(p) > 0 RETURN count(*) AS c",
     ));
+    assert!(got.contains("WHERE new = 1 AND depth >= 0 )"), "{got}");
     assert!(
-        got.contains("WHERE (v1.hop_count > 0) ) WHERE shortest = 1"),
+        got.contains("NOT coalesce((v1.hop_count > 0), false)) ) WHERE shortest = 1"),
         "{got}"
     );
-    // A lower bound above 1 is a condition on the path.
+    // A lower bound above 1 is a condition on the length.
     has(
         "MATCH p = shortestPath((a:User)-[:FOLLOWS*2..]->(b:User)) RETURN count(*) AS c",
-        &["FROM vlp_v1_path AS v1 WHERE v1.start_id <> v1.end_id ) WHERE shortest = 1"],
+        &[
+            "FROM vlp_v1_near AS v1 WHERE (v1.hop_count >= 2) )",
+            "WHERE new = 1 AND depth >= 1 )",
+        ],
+    );
+}
+
+#[test]
+fn a_bound_on_the_length_from_above_bounds_the_search() {
+    // No trail is longer than the bound, and no pair needs one.
+    let got = squash(&sql(
+        "MATCH p = shortestPath((a:User {user_id: 1})-[:FOLLOWS*]->(b:User {user_id: 2})) \
+         WHERE length(p) < 10 RETURN length(p) AS l",
+    ));
+    assert!(got.contains("AND f.depth < 9 AND"), "{got}");
+    assert!(
+        !got.contains("vlp_v1_near") && !got.contains("ROW_NUMBER"),
+        "{got}"
+    );
+    has(
+        "MATCH p = shortestPath((a:User)-[:FOLLOWS*..5]->(b:User)) WHERE 3 >= length(p) \
+         RETURN count(*) AS c",
+        &["AND f.depth < 3 AND"],
+    );
+    // `=` bounds it and stays a condition.
+    has(
+        "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) WHERE length(p) = 3 \
+         RETURN count(*) AS c",
+        &["AND f.depth < 3 AND", "WHERE (v1.hop_count = 3)"],
+    );
+    // Below the range: nothing.
+    let got = sql(
+        "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) WHERE length(p) < 1 \
+         RETURN count(*) AS c",
+    );
+    assert!(!got.contains("vlp_"), "{got}");
+}
+
+#[test]
+fn a_shortest_path_search_stops_at_its_ends() {
+    // Once a first node has reached every value the last node can have, it
+    // goes no further (a near end of a deep graph).
+    has(
+        "MATCH p = shortestPath((a:User {user_id: 1})-[:FOLLOWS*]->(b:User {user_id: 3})) \
+         RETURN length(p) AS l",
+        &[
+            "AND f.start_id NOT IN (SELECT start_id FROM vlp_v1_bfs GROUP BY start_id \
+             HAVING countIf(node IN (SELECT end_node.user_id FROM test_integration.users_test \
+             AS end_node WHERE (end_node.user_id = 3))) >= (SELECT count(DISTINCT end_node.user_id) \
+             FROM (SELECT end_node.user_id FROM test_integration.users_test AS end_node \
+             WHERE (end_node.user_id = 3)) AS end_node))",
+            "WHERE new = 1 AND depth >= 1 AND node IN (SELECT end_node.user_id",
+        ],
+    );
+    // `*0..0`: the first nodes only.
+    let got =
+        sql("MATCH p = shortestPath((a:User)-[:FOLLOWS*0..0]->(b:User)) RETURN count(*) AS c");
+    assert!(!got.contains("UNION ALL"), "{got}");
+}
+
+#[test]
+fn a_shortest_path_starts_at_an_end_pinned_by_its_identity() {
+    // `b` is one node; `a`'s conjunct holds of many.
+    has(
+        "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User {user_id: 5})) \
+         WHERE a.city = 'Paris' RETURN count(*) AS c",
+        &[
+            "WHERE (start_node.user_id = 5)",
+            "ON rel.followed_id = f.node",
+            "JOIN test_integration.users_test AS v2 ON v1.start_id = v2.user_id",
+        ],
     );
 }
 
@@ -1696,9 +1785,9 @@ fn an_optional_shortest_path() {
         // Inside the OPTIONAL MATCH `length(p)` is NULL when `b` is: `b` is
         // joined to the paths.
         &["FROM vlp_v1_path AS v1 \
-             JOIN test_integration.users_test AS v2 ON v2.user_id = v1.end_id \
+             JOIN test_integration.users_test AS v2 ON v2.user_id = v1.start_id \
              WHERE (CASE WHEN (v2.user_id IS NULL OR v1.start_id IS NULL) THEN NULL \
-             ELSE v1.hop_count END > 1) AND v1.start_id <> v1.end_id"],
+             ELSE v1.hop_count END > 1) AND (v1.start_id, v1.end_id) IN"],
     );
 }
 
@@ -1727,6 +1816,13 @@ fn what_shortest_paths_are_not_lowered() {
     not_lowered(
         "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)), \
          q = shortestPath((b)-[:FOLLOWS*]->(c:User)) WHERE length(p) < length(q) \
+         RETURN count(*)",
+        "reads a variable other than the path and its ends",
+    );
+    // A value carried by a WITH is a column of its CTE, not of the paths.
+    not_lowered(
+        "MATCH (c:User {user_id: 3}) WITH c.age AS k \
+         MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) WHERE length(p) * 10 > k \
          RETURN count(*)",
         "reads a variable other than the path and its ends",
     );
@@ -1762,5 +1858,15 @@ fn a_shortest_path_follows_relationships_its_property_map_allows() {
         "MATCH p = shortestPath((a:User {user_id: 1})-[:FOLLOWS*1.. {follow_date: '2024-01-01'}]->(b:User)) \
          RETURN count(*) AS c",
         &["WHERE f.new = 1 AND (rel.follow_date = '2024-01-01') AND (f.start_id, end_node.user_id)"],
+    );
+}
+
+#[test]
+fn a_shortest_path_condition_may_bind_its_own_names() {
+    // `s` and `x` are the reduce's own, not variables the pick would need.
+    has(
+        "MATCH p = shortestPath((a:User {user_id: 1})-[:FOLLOWS*]->(b:User)) \
+         WHERE reduce(s = 0, x IN range(1, length(p)) | s + x) > 5 RETURN count(*) AS c",
+        &["vlp_v1_shortest AS"],
     );
 }
