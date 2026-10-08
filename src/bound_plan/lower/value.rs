@@ -570,8 +570,9 @@ impl<'s> Lowerer<'s> {
     }
 
     /// The identity of a path, or of its nodes or relationships, as one list
-    /// of texts in path order: the first node and every relationship, every
-    /// node, or every relationship, each with its label or type. One list,
+    /// of texts in path order: the first node and every relationship (which
+    /// determine the other nodes), every node, or every relationship, each
+    /// with its label or type. One list,
     /// because the same path can split between two variable-length parts in
     /// several ways (`*0..1` then `*0..1`); its elements' sequence cannot.
     fn path_key(
@@ -603,7 +604,7 @@ impl<'s> Lowerer<'s> {
                             (s.to_text)(&id),
                         ]));
                     }
-                    if part != Part::Rels {
+                    if part == Part::Nodes {
                         items.push(self.node_key(elements.nodes[i + 1], s)?);
                     }
                 }
@@ -627,7 +628,7 @@ impl<'s> Lowerer<'s> {
                             &in_order("path_edges")?,
                         ));
                     }
-                    if part != Part::Rels {
+                    if part == Part::Nodes {
                         lists.push((s.prefixed_texts)(
                             &string(&format!("{}:", schema.to_node)),
                             &(s.tail)(&in_order("path_nodes")?),

@@ -2014,7 +2014,7 @@ fn distinct_and_grouping_by_a_value_use_its_identities() {
     has(
         "MATCH p = (a:User)-[:FOLLOWS]->(b:User) RETURN DISTINCT p",
         &["GROUP BY [concat('User:', toString(v0.user_id)), \
-           concat('FOLLOWS:', toString(v1.follow_id)), concat('User:', toString(v2.user_id))]"],
+           concat('FOLLOWS:', toString(v1.follow_id))]"],
     );
     // A WITH groups a carried list by its relationships; its other columns
     // are any() of the group.
@@ -2134,6 +2134,20 @@ fn databricks_path_values_are_not_lowered() {
         matches!(&got, Err(e) if e.contains("as a value on this dialect")),
         "{got:?}"
     );
+    // A list passed through and not read as a value needs no spelling.
+    let ctx = QueryContext {
+        dialect: crate::sql_generator::SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let got = with_query_context_sync(ctx, || {
+        set_current_schema(std::sync::Arc::new(social()));
+        translate_bound_plan(
+            "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) WITH r, b RETURN b.name, size(r) AS n",
+            &social(),
+            &ReadOptions::default(),
+        )
+    });
+    assert!(got.is_ok(), "{got:?}");
 }
 
 /// An OPTIONAL MATCH whose WHERE reads a `-[r*]->` list joins its matches
