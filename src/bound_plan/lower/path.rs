@@ -137,8 +137,8 @@ fn standard_layout(
     // `rel.to_id`.
     if let EdgeAccessStrategy::SeparateTable { from_id, to_id, .. } = &mut ctx.edge {
         if call.both.is_some() {
-            *from_id = super::both_column(super::BOTH_START, 0);
-            *to_id = super::both_column(super::BOTH_END, 0);
+            *from_id = super::indexed_column(super::BOTH_START, 0);
+            *to_id = super::indexed_column(super::BOTH_END, 0);
         } else if call.backward {
             std::mem::swap(from_id, to_id);
         }

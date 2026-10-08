@@ -21,7 +21,9 @@
 //! BY): DISTINCT and grouping use the identities of its elements
 //! ([`GraphValue::keys`]) and pick the value with `any()`.
 
-use crate::graph_catalog::element_id::{node_element_id_affixes, relationship_element_id_affixes};
+use crate::graph_catalog::element_id::{
+    node_element_id_affixes, node_element_id_separators, relationship_element_id_affixes,
+};
 use crate::graph_catalog::graph_schema::{NodeSchema, RelationshipSchema};
 use crate::query_planner::logical_expr::{self as lx, LogicalExpr};
 use crate::render_plan::render_expr::{
@@ -155,6 +157,32 @@ pub(super) fn node_object(
         (
             string("elementId"),
             (g.text)(&[string(&prefix), (g.to_text)(id), string(suffix)]),
+        ),
+        (string("labels"), labels),
+        (string("properties"), properties(g, props)),
+    ])
+}
+
+/// A node whose label is the SQL `label` (a column: one of several
+/// possible labels), else as [`node_object`]. Its properties are those of
+/// every label, NULL where its own has none, so the value has its own.
+fn labeled_node_object(
+    g: &GraphValues,
+    label: &str,
+    id: &str,
+    props: &[(String, String)],
+) -> String {
+    let (after_label, suffix) = node_element_id_separators();
+    let labels = current_function_mapper().array_literal(label);
+    (g.object)(&[
+        (
+            string("elementId"),
+            (g.text)(&[
+                label.to_string(),
+                string(after_label),
+                (g.to_text)(id),
+                string(suffix),
+            ]),
         ),
         (string("labels"), labels),
         (string("properties"), properties(g, props)),
@@ -658,11 +686,24 @@ impl<'s> Lowerer<'s> {
 
     /// A node's identity as a text, with its label.
     fn node_key(&self, v: VarId, s: &GraphValues) -> Result<String, LowerError> {
-        let Some(Scan::Node { label, .. }) = self.scans.get(&v) else {
-            return unsupported(format!("internal: {v} is not a node scan"));
-        };
-        let id = sql(&self.identity_value(v)?);
-        Ok((s.text)(&[string(&format!("{label}:")), (s.to_text)(&id)]))
+        let id = (s.to_text)(&sql(&self.node_id_value(v)?));
+        match self.scans.get(&v) {
+            Some(Scan::Node { label, .. }) => Ok((s.text)(&[string(&format!("{label}:")), id])),
+            Some(Scan::Labels { .. }) => {
+                let label = sql(&self.physical(v, super::LABEL_COLUMN)?);
+                Ok((s.text)(&[label, string(":"), id]))
+            }
+            _ => unsupported(format!("internal: {v} is not a node scan")),
+        }
+    }
+
+    /// A node's id (without its label) as one expression.
+    fn node_id_value(&self, v: VarId) -> Result<RenderExpr, LowerError> {
+        match self.id_columns(v)? {
+            Some(mut ids) if ids.len() == 1 => Ok(ids.remove(0)),
+            Some(_) => unsupported("a composite node id in a value (S8)"),
+            None => Ok(RenderExpr::Literal(Literal::Null)),
+        }
     }
 
     /// A variable-length relationship's list: its relationships (two empty
@@ -679,16 +720,30 @@ impl<'s> Lowerer<'s> {
 
     /// A fixed node of the current relation.
     fn node_value(&self, v: VarId, s: &GraphValues) -> Result<String, LowerError> {
-        let Some(Scan::Node { label, .. }) = self.scans.get(&v) else {
-            return unsupported(format!("internal: {v} is not a node scan"));
-        };
-        let id = sql(&self.identity_value(v)?);
+        let id = sql(&self.node_id_value(v)?);
         let mut props = Vec::new();
         for name in self.all_property_names(v) {
             let e = self.property(v, &name)?;
             props.push((name, sql(&e)));
         }
-        Ok(node_object(s, label, &id, &props))
+        match self.scans.get(&v) {
+            Some(Scan::Node { label, .. }) => Ok(node_object(s, label, &id, &props)),
+            Some(Scan::Labels { .. }) => {
+                let label = sql(&self.physical(v, super::LABEL_COLUMN)?);
+                Ok(labeled_node_object(s, &label, &id, &props))
+            }
+            _ => unsupported(format!("internal: {v} is not a node scan")),
+        }
+    }
+
+    /// A node of several possible labels returned whole: its value, as a
+    /// node of a path is (Bolt and the graph output read its label from it),
+    /// grouped by its identity.
+    pub(super) fn labeled_node(&self, v: VarId) -> Result<GraphValue, LowerError> {
+        let s = spelling()?;
+        let value = self.node_value(v, &s)?;
+        let keys = self.identity(v)?.unwrap_or_default();
+        self.finish(&s, value, keys, GraphType::Node, &[v])
     }
 
     /// A fixed relationship of the current relation.

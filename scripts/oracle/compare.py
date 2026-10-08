@@ -219,6 +219,11 @@ def cg_rows(results, neo_columns):
             if key in neo_columns:
                 if val is None and _bare_name(key):
                     continue
+                if isinstance(val, dict) and set(val) == _NODE_KEYS:
+                    # A node returned as a value (one of several possible
+                    # labels): flattened as Neo4j's returned node is.
+                    _flatten_entity(key, "node", val["properties"], out)
+                    continue
                 out[key] = canon_graph(val)
                 continue
             entity = next((c for c in neo_columns if key.startswith(c + ".") and c not in rec), None)
