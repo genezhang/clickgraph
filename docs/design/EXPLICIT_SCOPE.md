@@ -948,7 +948,10 @@ checked against Neo4j 5.26:
   `path_node_values` / `path_rel_values` step by step, as it does
   `path_nodes`, in the standard layout's arms.
   - The demand pass asks only for what a value reads: `nodes(p)` the nodes,
-    `relationships(p)` and a `-[r*]->` list the relationships, `p` both.
+    `relationships(p)` and a `-[r*]->` list the relationships, `p` both. A
+    WITH item that passes a path or list through reads nothing itself:
+    only what later clauses read of it is asked for (`WITH p RETURN
+    count(*)` builds no value).
   - The walk's order is reversed when the walk starts at the pattern's
     right end, or runs against the pattern's direction (a closed
     `(a)<-[*]-(a)`).
@@ -959,11 +962,20 @@ checked against Neo4j 5.26:
   list's length.
 - **Identity.** ClickHouse refuses `Dynamic` in GROUP BY, and two values are
   equal when their elements are. So DISTINCT and grouping by a value go by
-  its elements' identities, and the value is `any()` of its group
-  (`Body::determined`). The identities are node ids, relationship
-  identities, and a path relation's `path_nodes` (for its nodes) or
-  `path_edges` (for its relationships), so two empty lists are equal. A
-  `-[r*]->` list a WITH carries is grouped by its relationships.
+  one key (`Lowerer::path_key`), and the value is `any()` of its group
+  (`Body::determined`). The key is one list of texts in path order, each
+  with its label or type:
+  - for `p`, its first node and every relationship (they determine the
+    other nodes);
+  - for `nodes(p)`, every node;
+  - for `relationships(p)`, every relationship.
+
+  One list, not a key per element: two variable-length parts can split
+  one path in several ways (`*1..2` then `*1..2`), which Neo4j counts as
+  one path. Two empty lists are equal. A `-[r*]->` list is keyed by its
+  `path_edges`; a WITH that carries one is grouped by them. A WITH that
+  carries a path and is DISTINCT or aggregates is grouped by the path's
+  key, and the path's elements are `any()` of each group.
 - **WITH.** A path variable carries its elements: their identities, every
   property of a fixed element, and the path relation's values. The next
   segment builds the path's value and length from them. A computed list
@@ -971,7 +983,14 @@ checked against Neo4j 5.26:
 - **NULL.** The path of an OPTIONAL MATCH that did not match is NULL, and so
   are its lists and a `-[r*]->` list. The value is a `Dynamic` NULL, since
   an array cannot be NULL. Whether the clause matched is tested on a
-  nullable element's identity, as for `length(p)`.
+  nullable element's identity, as for `length(p)`. All such rows have one
+  NULL value: their key is that test and an empty list, so DISTINCT gives
+  one NULL row, not one per input row. A carried `-[r*]->` list exports the
+  test too, so NULL is not grouped with an empty list.
+- **Properties.** A label or type with no declared properties has an
+  empty property map, spelled `CAST(CAST(map(), 'Map(String, String)'),
+  'Map(String, Dynamic)')`: ClickHouse cannot cast an empty `map()` straight
+  to a `Dynamic` value type.
 - **OPTIONAL drive.** When an OPTIONAL MATCH's WHERE reads a `-[r*]->` list,
   the clause's matches are joined on the list's identity: its first node and
   its relationships. They used to be joined on its ends and length, which two
@@ -1005,6 +1024,23 @@ checked against Neo4j 5.26:
   Most of the cost of the 1M case is building the `Dynamic` maps. Carrying
   typed tuples through the search and building the maps at the end takes
   0.88 s instead of 1.07 s; that is left for later.
+
+  Large results cost memory. For `WHERE a.user_id < 3` with `*1..3` (2.9M
+  paths), the peaks are:
+  - `length(p)`, and `WITH p RETURN count(*)`: 0.2 s, 0.3 GiB;
+  - `relationships(p)`: 0.6 s, 3.4 GiB;
+  - `p`: 3.1 s, 10.2 GiB;
+  - `DISTINCT nodes(p)`: 14.9 s, 33.3 GiB;
+  - `DISTINCT p`: 22.3 s, 39.2 GiB.
+
+  DISTINCT keeps `any()` of each group's value, while grouping by the keys
+  alone takes 1.8 s. `LIMIT 1 BY <key>` would stream instead, but
+  `RenderPlan` has no LIMIT BY (#1335). A LIMIT short-circuits all of
+  these.
+- **Parallel relationships.** A relationship's element id ignores its
+  `edge_id` (#1334), so two parallel relationships share one: Bolt gives
+  them one id, and the graph output keeps one. A Bolt Path keeps every
+  relationship it steps over, as a path never repeats one.
 
 ### 4.12 Subquery expressions
 
@@ -1840,9 +1876,9 @@ slice that will handle it.
       composite `edge_id`; a 16-node graph of diamonds, parallel edges and
       cycles). They cover fixed and variable-length paths, every range,
       both directions, walks from either end, closed, chained and mixed-label
-      paths, DISTINCT, grouping, WITH and OPTIONAL. The new path answers 178–186
+      paths, DISTINCT, grouping, WITH and OPTIONAL. The new path answers 184–192
       shapes per graph and each equals Neo4j. The legacy path gets 104–117
-      of them wrong and errors on 58–63.
+      of them wrong and errors on 64–69.
     - Bolt: 19 queries read through the Neo4j Python driver equal Neo4j's
       answers (node order, relationship direction and endpoints, labels,
       properties).
@@ -1855,7 +1891,25 @@ slice that will handle it.
         path answers them, equal to Neo4j.
 
       They are keyed to the legacy path.
-    - Mutation check: 27 rules broken in turn; 26 fail a unit test. The
+    - Review (about 150 further shapes against Neo4j on four graphs, Bolt,
+      timing at scale 100). Findings, each fixed with a unit test:
+      - DISTINCT and grouping by a path with two variable-length parts
+        counted two splits of one path as two paths (161 vs 131 rows):
+        one key of the path's elements in order;
+      - an OPTIONAL path that did not match gave one NULL per input row
+        under DISTINCT (3 vs 1);
+      - a type or label without properties failed in ClickHouse (empty
+        `map()` cast);
+      - a WITH passing a path through built its values unread (3.9 s,
+        9.8 GiB for `WITH p RETURN count(*)`; now 0.18 s), and made
+        Databricks fall back for it;
+      - Bolt merged two parallel relationships of a path (they share an
+        element id, #1334).
+
+      Filed: #1334 (relationship element ids ignore `edge_id`), #1335
+      (DISTINCT over millions of large values). The review's shapes and
+      repros, rerun: every answer of the new path equals Neo4j.
+    - Mutation check: 36 rules broken in turn; 35 fail a unit test. The
       other one, asking a shortest path's search for no values, cannot be
       observed: its value is refused afterwards.
 - [ ] S6d a shortestPath's path as a value
