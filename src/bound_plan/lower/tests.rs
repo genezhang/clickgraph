@@ -2200,6 +2200,14 @@ fn a_path_is_grouped_by_one_list_of_its_elements() {
         .map(|(i, _)| i + 1)
         .unwrap_or(0);
     assert!(end > 0 && group_by[end..].trim().is_empty(), "{group_by}");
+    // A path's nodes follow from its first node and relationships, and how
+    // its parts split them does not: not in the key.
+    assert!(!group_by.contains("path_nodes"), "{group_by}");
+    has(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) WITH p, count(*) AS c RETURN p, c",
+        &["GROUP BY arrayConcat([concat('User:', toString(v0.user_id))], \
+           arrayMap(__x -> concat('FOLLOWS:', toString(__x)), v1.path_edges))"],
+    );
     let with = squash(&sql(
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User) \
          WITH DISTINCT p RETURN count(*) AS n",
