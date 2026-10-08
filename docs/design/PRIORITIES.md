@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #TBD; next: S7b several labels / types, then S7c UNWIND, S7d UNION, S7e lists)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; next: S7b several labels / types, then S7c UNWIND, S7d UNION, S7e lists)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -740,7 +740,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
-- 2026-10-08: **P-4c S7a: undirected relationships** (#TBD, `src/bound_plan/lower/mod.rs` `decide_rel` / `both_directions`, behind `CLICKGRAPH_BOUND_PLAN=on`).
+- 2026-10-08: **P-4c S7a: undirected relationships** (#1337, `src/bound_plan/lower/mod.rs` `decide_rel` / `both_directions`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - `(a)-[r:T]-(b)`: read in the directions the schema defines (an exact lookup); both, when they are one table, from a CTE of the table's rows as stored and reversed (a self-loop once, as Neo4j), with the stored columns under their own names, so identity, uniqueness, values and exports need no case of their own. Variable-length and shortest paths walk the same relation (`CteGenerationContext::walk_relation`).
   - Refused (S7b): a bound relationship matched undirected, two directions as two schemas, a variable-length relationship whose type has several schemas (it matched nothing for a pair of labels the type does not join, also directed: review finding).
   - Neo4j oracle: 0 correct → wrong, MATCH 402 → 405; the corpus lowers 744 queries (was 701). Generated shapes on four graphs (self-loops, parallel and mutual edges, no `edge_id`, composite `edge_id`): every lowered shape equals Neo4j (115/114/108/107); legacy is wrong on 40–77. Mutation check: 8 of 9 change answers (the other is equivalent).
