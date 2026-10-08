@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #TBD; next: S6c paths and lists as values)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; next: S6c paths and lists as values)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -740,11 +740,11 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
-- 2026-10-07: **P-4c S6b: shortestPath / allShortestPaths** (#TBD, `src/bound_plan/lower/path.rs`, behind `CLICKGRAPH_BOUND_PLAN=on`; #1312 on the new path).
+- 2026-10-07: **P-4c S6b: shortestPath / allShortestPaths** (#1332, `src/bound_plan/lower/path.rs`, behind `CLICKGRAPH_BOUND_PLAN=on`; #1312 on the new path).
   - A breadth-first search per first node (a recursive CTE carrying the visited nodes, stopping once the last node's values are reached); `allShortestPaths` counts the shortest paths per node and repeats each pair's row (UInt256, loud on overflow).
   - WHERE conditions on the path hold before the pick (#1312): bounds from above bound the search; a pair whose distance satisfies the rest has its shortest paths; the others pick among the trails that satisfy them (Neo4j's exhaustive semantics, verified). No relationship uniqueness against the rest of the MATCH (as Neo4j).
   - Rows with one node at both ends and a range from 1 have no path (Neo4j fails them at run time).
-  - Neo4j oracle: ORACLE_TBD. 216 generated shapes on three graphs equal Neo4j (legacy: 76/84/1 wrong, 20 errors).
+  - Neo4j oracle, switch on, vs S6a: 0 correct → wrong; 2 errors → correct; MATCH 396 → 398. The corpus lowers 688 queries (was 656). 216 generated shapes on each of four graphs equal Neo4j (legacy: 76/84/1/87 wrong, 20 errors).
   - Review: five defects fixed (deep graph recursion limit, trail search on any length condition, carried value, `*0..0` types, start choice); #1331 filed (parallel rows without `edge_id`, shared with legacy).
   - Timing (scale 100): pinned pairs 116–205 ms (legacy 165–348 ms, or an error); one or a few starts to every end 195–340 ms (legacy out of memory or error); `allShortestPaths` 178–274 ms. Details: EXPLICIT_SCOPE §4.11.
 

@@ -1704,13 +1704,15 @@ slice that will handle it.
     node to itself, a condition reading another variable or a carried value,
     the path as a value (S6c), other dialects.
   - Acceptance:
-    - Neo4j oracle, switch on, vs S6a: ORACLE_TBD.
-    - 236 generated shortestPath shapes on three graphs (social_integration
+    - Neo4j oracle, switch on, vs S6a: 0 correct → wrong; 2 errors → correct; MATCH 396 → 398. The corpus lowers 688 queries (was 656).
+    - 236 generated shortestPath shapes per graph (social_integration
       FOLLOWS, social_standard FOLLOWS and FRIENDS_WITH): each of the 216
       that Neo4j answers equals Neo4j on the new path; the legacy path gets
       76 / 84 / 1 wrong and errors on 20. The other 20 are ones Neo4j
-      rejects (a lower bound above 1) or LIMIT ties. A 16-node graph of
-      diamonds, parallel edges and cycles: DIAMOND_TBD.
+      rejects (a lower bound above 1) or LIMIT ties. On a 16-node graph of
+      diamonds, parallel edges and cycles (open ranges bounded at 6, as
+      both engines' exhaustive searches explode there unbounded) the same:
+      216 equal Neo4j, the legacy path gets 87 wrong.
     - The 16 shapes of `test_shortest_path_pairs`'s graph (ranges, lower
       bounds, `*0..`): every answer equals Neo4j's.
     - Live suite, switch on vs off: 102 tests differ (86 after S6a). The 17
