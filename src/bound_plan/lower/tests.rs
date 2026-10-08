@@ -2118,3 +2118,21 @@ fn databricks_path_values_are_not_lowered() {
         "{got:?}"
     );
 }
+
+/// An OPTIONAL MATCH whose WHERE reads a `-[r*]->` list joins its matches
+/// on the list's identity (its first node and relationships), and its drive
+/// holds no value.
+#[test]
+fn a_list_read_by_an_optional_where_joins_on_its_identity() {
+    let got = squash(&sql(
+        "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) OPTIONAL MATCH (b)-[:FOLLOWS]->(c:User) \
+         WHERE size(r) > 1 RETURN r, c.name",
+    ));
+    assert!(
+        got.contains("w2.v1__start_id = o4.v1__start_id AND w2.v1__path_edges = o4.v1__path_edges"),
+        "{got}"
+    );
+    let drive = got.split("optional_d3 AS (").nth(1).unwrap_or_default();
+    let drive = drive.split("), ").next().unwrap_or_default();
+    assert!(!drive.contains("_values"), "{drive}");
+}
