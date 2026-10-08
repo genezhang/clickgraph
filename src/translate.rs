@@ -133,6 +133,7 @@ fn return_item_metadata(c: &ResultColumn) -> ReturnItemMetadata {
             alias: c.name.clone(),
             labels: vec![label.clone()],
         },
+        ResultKind::Graph(ty) => ReturnItemType::Graph(ty.clone()),
     };
     ReturnItemMetadata {
         field_name: c.name.clone(),

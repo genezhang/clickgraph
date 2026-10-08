@@ -194,6 +194,50 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         })
     }
 
+    fn graph_values(&self) -> Option<super::GraphValues> {
+        // An element is a `Map(String, Dynamic)`: maps of different keys
+        // and value types share it, so one array holds nodes and
+        // relationships of any label. JSON output prints a map as an object
+        // and a `Dynamic` as the value it holds.
+        fn object(entries: &[(String, String)]) -> String {
+            if entries.is_empty() {
+                return "CAST(map(), 'Map(String, Dynamic)')".to_string();
+            }
+            let pairs: Vec<String> = entries
+                .iter()
+                .map(|(k, v)| format!("{k}, CAST({v}, 'Dynamic')"))
+                .collect();
+            format!("map({})", pairs.join(", "))
+        }
+        Some(super::GraphValues {
+            object,
+            object_without_nulls: |entries| {
+                format!("mapFilter((k, v) -> v IS NOT NULL, {})", object(entries))
+            },
+            list: |items| {
+                if items.is_empty() {
+                    "CAST([], 'Array(Map(String, Dynamic))')".to_string()
+                } else {
+                    format!("[{}]", items.join(", "))
+                }
+            },
+            concat: |lists| match lists {
+                [one] => one.clone(),
+                _ => format!("arrayConcat({})", lists.join(", ")),
+            },
+            tail: |list| format!("arraySlice({list}, 2)"),
+            reverse: |list| format!("arrayReverse({list})"),
+            interleave: |rels, nodes| {
+                format!("arrayFlatten(arrayMap((r, n) -> [r, n], {rels}, {nodes}))")
+            },
+            length: |list| format!("length({list})"),
+            text: |parts| format!("concat({})", parts.join(", ")),
+            to_text: |x| format!("toString({x})"),
+            null_if: |cond, value| format!("if({cond}, NULL, CAST({value}, 'Dynamic'))"),
+            any: |value| format!("any({value})"),
+        })
+    }
+
     fn id_order_key_nulls_clause(&self) -> &'static str {
         // No-op for CH — NULL already sorts last for both ASC and DESC by
         // default — but explicit for parity with Databricks (#556).

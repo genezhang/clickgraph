@@ -52,6 +52,7 @@
 
 mod expr;
 mod path;
+mod value;
 #[cfg(test)]
 mod tests;
 
@@ -76,6 +77,8 @@ use crate::utils::cte_column_naming::cte_column_name;
 
 use super::expr::{calls_aggregate, property_refs, referenced_names};
 use super::types::*;
+pub use value::GraphType;
+use value::{Carried, GraphRef, NODE_VALUES, REL_VALUES};
 
 /// Why a bound plan was not lowered.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -140,6 +143,9 @@ pub enum ResultKind {
     /// `id(n)` of a node with this label: column `name` holds the node's key,
     /// which Bolt returns encoded (`IdMapper`), as on the legacy pipeline.
     NodeId { label: String },
+    /// A path, or a list of nodes or relationships, in Neo4j's JSON form
+    /// (`value.rs`): column `name`.
+    Graph(GraphType),
 }
 
 /// Lower a bound statement to a render plan.
@@ -168,6 +174,7 @@ pub fn lower_statement(
         order: RowOrder::Unordered,
         elided: HashMap::new(),
         paths: HashMap::new(),
+        graph_values: HashMap::new(),
     };
     l.relation(input)?;
     l.finish_relation();
@@ -203,6 +210,13 @@ enum Scan<'s> {
         /// Of a `shortestPath` / `allShortestPaths` pattern: per pair of
         /// ends, the shortest paths only.
         shortest: Option<ShortestMode>,
+        /// The walk starts at the pattern's right end: its order is the
+        /// reverse of the path's.
+        reversed: bool,
+        /// It carries its nodes / relationships as values
+        /// (`path_node_values` / `path_rel_values`, `value.rs`).
+        node_values: bool,
+        rel_values: bool,
     },
     /// An element whose label / type set is empty: it matches nothing.
     Impossible,
@@ -259,6 +273,9 @@ impl<'s> Scan<'s> {
                 edges,
                 range,
                 shortest,
+                reversed,
+                node_values,
+                rel_values,
                 ..
             } => Scan::Path {
                 schema,
@@ -268,6 +285,9 @@ impl<'s> Scan<'s> {
                 edges,
                 range,
                 shortest,
+                reversed,
+                node_values,
+                rel_values,
             },
             Scan::Impossible => Scan::Impossible,
         }
@@ -289,6 +309,7 @@ struct Segment<'s> {
     empty: bool,
     order: RowOrder,
     elided: HashMap<VarId, VarId>,
+    graph_values: HashMap<VarId, Carried>,
 }
 
 /// One column an OPTIONAL MATCH's matches are joined to the input rows on:
@@ -337,6 +358,9 @@ struct Lowerer<'s> {
     elided: HashMap<VarId, VarId>,
     /// Path variables (`p = …`) and their elements, of every clause.
     paths: HashMap<VarId, PathElements>,
+    /// Graph values (`value.rs`) the segment's CTE carries, by variable;
+    /// each is also in `values`.
+    graph_values: HashMap<VarId, Carried>,
 }
 
 /// The elements of a path variable, in path order.
@@ -1130,6 +1154,7 @@ impl<'s> Lowerer<'s> {
         std::mem::swap(&mut self.empty, &mut s.empty);
         std::mem::swap(&mut self.order, &mut s.order);
         std::mem::swap(&mut self.elided, &mut s.elided);
+        std::mem::swap(&mut self.graph_values, &mut s.graph_values);
         s
     }
 
@@ -1272,6 +1297,9 @@ impl<'s> Lowerer<'s> {
                     edges: false,
                     range,
                     shortest: None,
+                    reversed: false,
+                    node_values: false,
+                    rel_values: false,
                 }
             }
             // A path of no relationship needs none: `*0..` with no feasible
@@ -1366,6 +1394,12 @@ impl<'s> Lowerer<'s> {
         .unwrap_or(left);
         let last = if first == left { right } else { left };
         let backward = first != from_end;
+        // Its nodes / relationships read as values (the demand pass): the
+        // search carries them. A shortest path's search keeps no paths.
+        let wants = |name: &str| {
+            shortest.is_none() && self.demand.get(&r.var).is_some_and(|d| d.contains(name))
+        };
+        let (node_values, rel_values) = (wants(NODE_VALUES), wants(REL_VALUES));
         let Some(Scan::Node {
             schema: node,
             label,
@@ -1419,6 +1453,8 @@ impl<'s> Lowerer<'s> {
             start,
             end,
             rel,
+            node_values,
+            rel_values,
         };
         let (ctes, cte, edges) = match shortest {
             None => {
@@ -1448,6 +1484,9 @@ impl<'s> Lowerer<'s> {
                 edges,
                 range: (min, max),
                 shortest,
+                reversed: first != left,
+                node_values,
+                rel_values,
             },
         );
         for (end, column) in [(first, "start_id"), (last, "end_id")] {

@@ -469,6 +469,20 @@ pub struct NodeProperty {
     pub alias: String,        // Output alias (e.g., "name" or "u1_name")
 }
 
+/// Each path's nodes and relationships as values (the bound plan's paths as
+/// values, `docs/design/EXPLICIT_SCOPE.md` §4.11, S6c), accumulated like
+/// `path_nodes` as `path_node_values` / `path_rel_values` by the standard
+/// layout's arms. Empty unless a query returns a path or its lists.
+#[derive(Debug, Clone, Default)]
+pub struct PathValues {
+    /// A node as a value: its SQL over the start node's alias, and over the
+    /// end node's.
+    pub node: Option<(String, String)>,
+    /// A relationship as a value, SQL over the relationship's alias; and the
+    /// SQL of an empty list of them (the path of no relationship).
+    pub rel: Option<(String, String)>,
+}
+
 /// Drop exact-duplicate `NodeProperty` entries (same alias, column, and output
 /// name), preserving first-seen order. A CLOSED variable-length pattern —
 /// `(a)-[:R*2..2]->(a)` / `*2..3` — resolves the SAME endpoint property once for
@@ -568,6 +582,9 @@ pub struct VariableLengthCteGenerator<'a> {
     /// shared) node label; `alias` is the Cypher property name, yielding a
     /// `path_<alias>` column. Set post-construction (see cte_manager).
     pub path_node_properties: Vec<NodeProperty>,
+    /// The bound plan's paths as values ([`PathValues`]); set
+    /// post-construction like `path_node_properties`.
+    pub path_values: PathValues,
 }
 
 /// Configuration for weighted shortest path using a pre-computed edge weight CTE
@@ -795,6 +812,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             is_undirected: false,
             undirected_single_walk: false,
             path_node_properties: Vec::new(),
+            path_values: PathValues::default(),
         }
     }
 
@@ -876,6 +894,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             is_undirected: false,
             undirected_single_walk: false,
             path_node_properties: Vec::new(),
+            path_values: PathValues::default(),
         }
     }
 
@@ -2749,6 +2768,14 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 p.alias
             ));
         }
+        // The bound plan's paths as values: at hop 0 the start node, and no
+        // relationship. Same position as in the 1-hop and recursive arms.
+        if let Some((start, _)) = &self.path_values.node {
+            select_items.push(format!("{} as path_node_values", arr(start)));
+        }
+        if let Some((_, empty)) = &self.path_values.rel {
+            select_items.push(format!("{empty} as path_rel_values"));
+        }
 
         // #628: a CLOSED `*0..N` walk enforces EDGE-uniqueness (so real cycles
         // survive — see `uses_edge_uniqueness`). The zero-hop base has no edge,
@@ -3000,6 +3027,16 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     )),
                     p.alias
                 ));
+            }
+            // The bound plan's paths as values, seeded like `path_nodes`.
+            if let Some((start, end)) = &self.path_values.node {
+                select_items.push(format!(
+                    "{} as path_node_values",
+                    arr(&format!("{start}, {end}"))
+                ));
+            }
+            if let Some((rel, _)) = &self.path_values.rel {
+                select_items.push(format!("{} as path_rel_values", arr(rel)));
             }
 
             // #598 (part 2): seed path_edges with this hop's edge identity so the
@@ -3308,6 +3345,19 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 p.alias,
                 arr(&format!("{}.{}", self.end_node_alias, p.column_name)),
                 p.alias
+            ));
+        }
+        // The bound plan's paths as values, extended like `path_nodes`.
+        if let Some((_, end)) = &self.path_values.node {
+            select_items.push(format!(
+                "{ac}(vp.path_node_values, {}) as path_node_values",
+                arr(end)
+            ));
+        }
+        if let Some((rel, _)) = &self.path_values.rel {
+            select_items.push(format!(
+                "{ac}(vp.path_rel_values, {}) as path_rel_values",
+                arr(rel)
             ));
         }
 

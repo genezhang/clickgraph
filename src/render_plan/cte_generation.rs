@@ -67,6 +67,10 @@ pub struct CteGenerationContext {
     /// Threaded to the VLP generator, which accumulates a parallel `path_<prop>`
     /// array per entry. Empty unless the query reads path-node properties.
     pub path_node_properties: Vec<NodeProperty>,
+    /// The bound plan's paths as values (`PathValues`): each path's nodes
+    /// and relationships accumulated as `path_node_values` /
+    /// `path_rel_values`. Empty for the legacy pipeline.
+    pub path_values: crate::clickhouse_query_generator::variable_length_cte::PathValues,
     /// Root plan reference for checking path variable usage across the entire query.
     /// Set at the top-level to_render_plan call so VLP extraction can check if path
     /// variables are used bare (preventing BFS optimization).

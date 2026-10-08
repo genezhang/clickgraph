@@ -275,6 +275,13 @@ impl FunctionMapper for DatabricksFunctionMapper {
         None
     }
 
+    fn graph_values(&self) -> Option<super::GraphValues> {
+        // Spark's arrays and maps hold one type: a path (nodes and
+        // relationships) or a list of nodes of different labels needs a
+        // VARIANT form not built yet. Such values stay on the legacy path.
+        None
+    }
+
     fn id_order_key_nulls_clause(&self) -> &'static str {
         // Spark/Databricks defaults to NULLS FIRST for ASC (ANSI SQL) —
         // opposite of ClickHouse's always-NULLS-LAST default. Force LAST

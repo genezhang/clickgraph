@@ -360,7 +360,7 @@ impl Lowerer<'_> {
 
     /// `length(p)`: the path's fixed relationships, plus the hops of each
     /// variable-length one. NULL for a path an OPTIONAL MATCH did not match.
-    fn path_length(&self, p: VarId) -> Result<RenderExpr, LowerError> {
+    pub(super) fn path_length(&self, p: VarId) -> Result<RenderExpr, LowerError> {
         let Some(elements) = self.paths.get(&p) else {
             return unsupported(format!("internal: path {p} has no elements"));
         };
