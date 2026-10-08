@@ -269,6 +269,12 @@ impl FunctionMapper for DatabricksFunctionMapper {
         format!("try_cast({} AS DECIMAL(38,0))", expr)
     }
 
+    fn shortest_path_search(&self) -> Option<super::ShortestPathSearch> {
+        // Not verified on Spark's recursive CTEs: shortestPath stays on the
+        // legacy path there.
+        None
+    }
+
     fn id_order_key_nulls_clause(&self) -> &'static str {
         // Spark/Databricks defaults to NULLS FIRST for ASC (ANSI SQL) —
         // opposite of ClickHouse's always-NULLS-LAST default. Force LAST

@@ -6456,8 +6456,9 @@ pub fn render_plan_to_sql_plain(mut plan: RenderPlan) -> String {
     let _array_cols_guard = ArrayColsGuard(crate::server::query_context::get_array_cte_columns());
     crate::server::query_context::set_array_cte_columns(plain_list_columns(&plan));
     // A lowered plan's CTEs, in dependency order, are WITH bodies (plain
-    // SELECTs) and the recursive path CTEs, whose text (`name AS (…)`, with
-    // the helper CTEs the path uses) comes from the path generator.
+    // SELECTs) and the path relations (`vlp_…`: the recursive searches and
+    // the selections over them), whose text (`name AS (…)`, with the helper
+    // CTEs a path uses) comes from the path generators.
     let mut sql = String::new();
     let ctes = std::mem::take(&mut plan.ctes.0);
     let recursive = ctes.iter().any(|c| c.is_recursive);
@@ -6480,7 +6481,7 @@ pub fn render_plan_to_sql_plain(mut plan: RenderPlan) -> String {
             }
             CteContent::RawSql(text) => {
                 assert!(
-                    cte.is_recursive && text.starts_with(&cte.cte_name),
+                    cte.cte_name.starts_with("vlp_") && text.starts_with(&cte.cte_name),
                     "render_plan_to_sql_plain: a raw-SQL CTE is a path relation"
                 );
                 sql.push_str(&text);

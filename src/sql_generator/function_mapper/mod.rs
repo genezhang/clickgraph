@@ -371,6 +371,29 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// `expr` and `percentile` are pre-rendered SQL fragments; `continuous`
     /// selects Cont vs Disc.
     fn percentile_aggregate(&self, expr: &str, percentile: &str, continuous: bool) -> String;
+
+    /// How the dialect spells a shortest-path search
+    /// (`bound_plan::lower::path::shortest_ctes`, EXPLICIT_SCOPE §4.11), or
+    /// `None` when its recursive CTEs are not known to evaluate it: each
+    /// step reads only the rows of the step before, a step of several
+    /// `UNION ALL` arms reads the CTE in an `IN` subquery and aggregates,
+    /// and `ARRAY JOIN` repeats a row.
+    fn shortest_path_search(&self) -> Option<ShortestPathSearch>;
+}
+
+/// The dialect's parts of a shortest-path search
+/// ([`FunctionMapper::shortest_path_search`]).
+pub(crate) struct ShortestPathSearch {
+    /// The type of a node's distance from the first node.
+    pub depth: &'static str,
+    /// The type of the "reached at this depth" flag.
+    pub flag: &'static str,
+    /// The type of a number of shortest paths, which grows exponentially
+    /// with the distance.
+    pub count: &'static str,
+    /// An array of as many elements as the count `{0}` holds, failing when
+    /// it is beyond the array's size type rather than wrapping.
+    pub copies: fn(&str) -> String,
 }
 
 /// Returns the function mapper for the active SQL dialect, read from the
