@@ -6471,12 +6471,12 @@ pub fn render_plan_to_sql_plain(mut plan: RenderPlan) -> String {
         match cte.content {
             CteContent::Structured(body) => {
                 assert!(
-                    !cte.is_recursive && body.ctes.0.is_empty() && body.union.0.is_none(),
-                    "render_plan_to_sql_plain: a CTE body is one plain SELECT"
+                    !cte.is_recursive && body.ctes.0.is_empty(),
+                    "render_plan_to_sql_plain: a CTE body is plain SELECTs"
                 );
                 sql.push_str(&cte.cte_name);
                 sql.push_str(" AS (\n");
-                sql.push_str(&plain_select_sql(*body));
+                sql.push_str(&plain_body_sql(*body));
                 sql.push(')');
             }
             CteContent::RawSql(text) => {
@@ -6548,6 +6548,30 @@ fn plain_list_columns(plan: &RenderPlan) -> HashSet<String> {
         }
     }
     lists
+}
+
+/// A CTE body of a lowered plan: one plain SELECT, or the `UNION ALL` of
+/// plain SELECTs (the body's `union` holds them; it selects nothing itself).
+fn plain_body_sql(body: RenderPlan) -> String {
+    let Some(union) = body.union.0 else {
+        return plain_select_sql(body);
+    };
+    assert!(
+        body.select.items.is_empty()
+            && body.from.0.is_none()
+            && union.union_type == UnionType::All
+            && union
+                .input
+                .iter()
+                .all(|arm| arm.union.0.is_none() && arm.ctes.0.is_empty()),
+        "render_plan_to_sql_plain: a union body is UNION ALL of plain SELECTs"
+    );
+    union
+        .input
+        .into_iter()
+        .map(plain_select_sql)
+        .collect::<Vec<_>>()
+        .join("\nUNION ALL\n")
 }
 
 /// One SELECT of a lowered plan: its own alias scope (result typing),

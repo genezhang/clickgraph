@@ -494,6 +494,72 @@ The union stays inside the element, so the rest of the query sees one
 relation. That removes the arm-0 asymmetry (root C) and the per-arm NULL
 extension of #1249.
 
+**Implemented in S7a** (undirected relationships, standard layout):
+- **Which directions.** For `(a)-[r:T]-(b)` with one label at each end, the
+  directions are those the schema defines (`Lowerer::decide_rel`, an exact
+  lookup: `get_rel_schema_with_nodes` falls back to the type's first schema
+  whatever its ends, so it cannot say whether a direction exists):
+  - one direction: the relationship is read as a directed one, in it
+    (`(p:Post)-[:LIKED]-(u:User)` is `(p)<-[:LIKED]-(u)`);
+  - both, and they are one table (the two ends have one label): the table
+    in both directions, below;
+  - both, as two relationship schemas: not lowered (S7b, with several
+    labels and types);
+  - none: it matches nothing.
+- **Both directions** are the CTE `v{N}_both` (`Lowerer::both_directions`):
+  `SELECT <columns>, from AS __cg_start_0, to AS __cg_end_0 FROM t UNION ALL
+  SELECT <columns>, to, from FROM t WHERE from <> to`. The left end is tied
+  to the node a row leaves, the right end to the node it enters. The stored
+  columns keep their own names, so a relationship's identity, endpoints
+  (`startNode` / `endNode` in a value) and properties are its own whichever
+  way it is read, and uniqueness, values and exports need no case of their
+  own. The columns are named, not `*`, which leaves out ALIAS and
+  MATERIALIZED columns in ClickHouse (review finding): the identity and
+  endpoint columns, every property mapping's columns, and the same-named
+  column of each undeclared property read (the demand pass). The table's
+  `filter:`, view parameters and FINAL apply inside both arms. A self-loop
+  is read once (reversed, it is the same row), as Neo4j matches it once, for
+  a hop and in a variable-length path alike (checked on Neo4j).
+  - An `OR` in the join (`ON r.from = a.id OR r.to = a.id`) would read the
+    table once, but ClickHouse runs it only with the `hash` join algorithm
+    (`grace_hash`, `parallel_hash`, the merge joins refuse it, Code 48).
+- **Variable-length and shortest paths** walk the same relation: the
+  generator takes it as `CteGenerationContext::walk_relation` (its standard
+  arms read `rel_source()`), walked from `__cg_start_0` to `__cg_end_0`, and
+  the shortest-path search and walk read it in place of the table. The
+  trail's identities (`path_edges`) are the stored ones, so a path does not
+  use a relationship twice in opposite directions. The walk starts at the
+  restricted end, as a directed one does; the path's order is the walk's
+  from the left end, reversed from the right end.
+- **Not lowered:** a relationship bound before (an earlier clause, or used
+  twice) matched undirected (each row would match in up to two
+  orientations; S7b), two directions as two schemas (S7b), an undirected
+  variable-length relationship between two labels (as directed), and a
+  variable-length relationship, of either direction, whose type has several
+  schemas (S7b). Its nodes need not have one label: with `T` from N to N
+  and from Z to N, `(:N)-[:T*1..2]-(:Z)` crosses from one to the other.
+  Before, a pair of labels the type does not join fell back to the type's
+  first schema (`get_rel_schema_with_nodes`), and the path matched nothing
+  (0 against Neo4j's 13; review finding, also on the directed form).
+- **Measured cost**, social benchmark at scale 100 (100K users, 10M
+  follows), with ClickHouse's join statistics on (its default). Without
+  them the first run builds the hash table on the two-direction relation,
+  whose size the planner cannot estimate: every pair `count(*)` takes
+  400 ms on that first run.
+
+  | Shape | Legacy | New (directed) |
+  |---|---|---|
+  | one hop from a pinned user, `count(*)` | Code 47 | 8 ms |
+  | every pair, `count(*)` (20M) | 5 ms (no node joins; a self-loop twice) | 58 ms (47 ms) |
+  | two hops from a pinned user | 32 ms | 39 ms |
+  | `*1..2` / `*1..3` (`count(DISTINCT b)`) from a pinned user | 69 / 200 ms | 80 / 215 ms (73 ms for `*1..2`) |
+  | `shortestPath` of a pinned pair, `length(p)` / `p` | 720 / 736 ms (2 rows, wrong) | 512 / 815 ms (111 ms) |
+  | `allShortestPaths` of a pinned pair, `count(*)` | out of memory | 708 ms |
+  | `shortestPath` from one user to every user | out of memory | 1.7 s |
+
+  An undirected search reaches about twice the nodes per level, so at
+  depth 3 it reads about eight times the relationships of a directed one.
+
 ### 4.7 Label inference
 
 Labels are inferred over the explicit pattern graph of each clause, with
@@ -748,7 +814,7 @@ Implemented in S6a (`bound_plan/lower/path.rs`, `Lowerer::path_scan` /
   no composite components are registered. Lowered: one type whose edge
   joins one label to itself, standard layout, no `filter:` / view
   parameters / FINAL on the edge or node table, single-column ids,
-  directed. Undirected paths are S7.
+  directed (undirected paths: S7a, §4.6 `Alternatives`).
 - **Labels.** Every node of a path of one or more relationships has the
   edge's label. From a node of another label only the path of none is left
   (`(a:Post)-[:FOLLOWS*0..2]->(b)` is `a` itself): the relation is generated
@@ -2025,7 +2091,45 @@ slice that will handle it.
       a walk that ignores the property map differs only on parallel
       relationships with different properties, which the graph lacks (a
       unit test pins it).
-- [ ] S7 UNWIND / UNION / alternatives
+- [ ] S7 UNWIND / UNION / alternatives, in sub-slices: S7a undirected
+  relationships, S7b several labels / types (with the two-schema and
+  bound-relationship cases S7a refuses), S7c UNWIND, S7d UNION, S7e lists.
+  - [x] **S7a: undirected relationships** (§4.6 `Alternatives`,
+    "Implemented in S7a"): fixed hops, variable-length and shortest paths,
+    standard layout, as values too.
+    - Acceptance:
+      - Neo4j oracle, switch on, vs S6d: 0 correct → wrong, 3 errors →
+        correct (MATCH 402 → 405). The corpus lowers 744 queries (was 701):
+        of the 28 new ones on the oracle schemas, 27 equal Neo4j, and the
+        other is the UNTYPED_BOOLEAN artifact (#1316).
+      - Generated shapes on four graphs (113–119 each: hops, closed and
+        chained hops, mixed with directed hops, comma parts, WITH and
+        re-matching directed, OPTIONAL, path values, one-way types, every
+        range, shortest paths with conditions, property maps). Every shape
+        the new path lowers equals Neo4j (115, 114, 108, 107); the legacy path is
+        wrong on 40–77 and errors on 14–16 per graph. Neo4j refuses or times
+        out on 4–8.
+      - Live suite, switch on, vs S6d: new failures are tests pinning the
+        legacy path (two refusals, a 4-branch SQL shape), the timing test,
+        and an `EXISTS` / `NOT` pattern predicate over an impossible pattern
+        on the FK-edge layout that legacy answers with every node, exposed
+        now that the MATCH oracle in the test returns its (empty) answer;
+        known-wrong goldens that are now correct, and the #583 xfail now
+        passing. The two shapes the legacy guard refused equal a trail
+        enumeration (204) and Neo4j's `shortestPath` rule (210).
+      - Review (scratch schemas with self-loops, parallel and mutual edges,
+        tables without `edge_id`, composite ids, ALIAS / MATERIALIZED
+        columns, a schema `filter:`, against Neo4j): two findings, fixed. A
+        variable-length relationship whose type has several schemas matched
+        nothing for a pair of labels the type does not join (now refused,
+        S7b; also the directed form); the two-direction CTE's `SELECT *`
+        left out ALIAS / MATERIALIZED columns (now named columns). Naming
+        them first dropped `RETURN r` (the demand pass's `*` marker taken for
+        a column), caught by the oracle and fixed.
+      - Mutation check on three graphs (Neo4j's answers, else the
+        unmutated build's): 9 rules broken in turn; 8 change answers
+        (13 to 290 of 349 checks each, over the 3 the unmutated build's arbitrary pick among equal shortest paths fails). The other (walking an undirected path backward) cannot
+        change one: the two-direction relation is the same either way.
 - [ ] S8 layouts
 - [ ] S9 subquery expressions
 - [ ] S10 default on

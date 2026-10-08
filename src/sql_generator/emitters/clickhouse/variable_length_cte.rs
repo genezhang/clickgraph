@@ -585,6 +585,9 @@ pub struct VariableLengthCteGenerator<'a> {
     /// The bound plan's paths as values ([`PathValues`]); set
     /// post-construction like `path_node_properties`.
     pub path_values: PathValues,
+    /// The relation the standard arms walk in place of the edge table
+    /// (`CteGenerationContext::walk_relation`); set post-construction.
+    pub walk_relation: Option<String>,
 }
 
 /// Configuration for weighted shortest path using a pre-computed edge weight CTE
@@ -813,6 +816,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             undirected_single_walk: false,
             path_node_properties: Vec::new(),
             path_values: PathValues::default(),
+            walk_relation: None,
         }
     }
 
@@ -895,6 +899,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             undirected_single_walk: false,
             path_node_properties: Vec::new(),
             path_values: PathValues::default(),
+            walk_relation: None,
         }
     }
 
@@ -1374,10 +1379,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
         )
     }
 
-    /// The relation the base/recursive standard arms join for each hop:
-    /// the doubled-edge CTE when [`Self::uses_doubled_edges`], else the raw
-    /// edge table.
+    /// The relation the base/recursive standard arms join for each hop: the
+    /// caller's [`Self::walk_relation`], else the doubled-edge CTE when
+    /// [`Self::uses_doubled_edges`], else the raw edge table.
     fn rel_source(&self) -> String {
+        if let Some(relation) = &self.walk_relation {
+            return relation.clone();
+        }
         if self.uses_doubled_edges() {
             self.doubled_edges_cte_name()
         } else {

@@ -492,8 +492,8 @@ fn what_is_not_lowered_yet() {
         "different labels",
     );
     not_lowered(
-        "MATCH (a:User)-[:FOLLOWS]-(b) RETURN count(*)",
-        "undirected",
+        "MATCH ()-[r:FOLLOWS]->() WITH r MATCH (a)-[r]-(b) RETURN count(*)",
+        "matched undirected",
     );
     not_lowered("MATCH (a:User) RETURN collect(a) AS l", "as a value");
     not_lowered("MATCH (a:User) WHERE id(a) = 1 RETURN a.name", "id()");
@@ -2478,5 +2478,171 @@ fn an_optional_shortest_path_value_is_null_when_unmatched() {
         "MATCH (a:User) OPTIONAL MATCH p = shortestPath((a)-[:FOLLOWS*]->(b:User {user_id: 3})) \
          RETURN p",
         &["vlp_v1_walk", "IS NULL), NULL, CAST(arrayConcat([map("],
+    );
+}
+
+#[test]
+fn an_undirected_relationship_reads_its_table_in_both_directions() {
+    // §4.6 `Alternatives`: each row once as stored and once reversed (a
+    // self-loop only as stored); the stored columns keep their names, so the
+    // relationship's identity and properties are its own either way.
+    has(
+        "MATCH (a:User)-[r:FOLLOWS]-(b:User) RETURN a.name, b.name, r.follow_date",
+        &[
+            r#"WITH v1_both AS ( SELECT e.follow_date AS "follow_date", e.follow_id AS "follow_id", e.followed_id AS "followed_id", e.follower_id AS "follower_id", e.follower_id AS "__cg_start_0", e.followed_id AS "__cg_end_0" FROM test_integration.user_follows_test AS e UNION ALL SELECT e.follow_date AS "follow_date", e.follow_id AS "follow_id", e.followed_id AS "followed_id", e.follower_id AS "follower_id", e.followed_id AS "__cg_start_0", e.follower_id AS "__cg_end_0" FROM test_integration.user_follows_test AS e WHERE e.follower_id <> e.followed_id )"#,
+            "FROM test_integration.users_test AS v0 \
+             JOIN v1_both AS v1 ON v1.__cg_start_0 = v0.user_id \
+             JOIN test_integration.users_test AS v2 ON v1.__cg_end_0 = v2.user_id",
+            r#"v1.follow_date AS "r.follow_date""#,
+        ],
+    );
+    // Two undirected relationships of a clause differ by their stored
+    // identity, whichever way each is read.
+    has(
+        "MATCH (a:User)-[r:FOLLOWS]-(b:User)-[s:FOLLOWS]-(c:User) RETURN count(*)",
+        &["v1.follow_id <> v3.follow_id"],
+    );
+}
+
+#[test]
+fn an_undirected_relationship_the_schema_has_one_way_is_read_that_way() {
+    let q = "MATCH (p:Post)-[:LIKED]-(u:User) RETURN count(*)";
+    has(
+        q,
+        &["FROM test_integration.posts_test AS v0 \
+           JOIN test_integration.post_likes_test AS v1 ON v1.post_id = v0.post_id \
+           JOIN test_integration.users_test AS v2 ON v1.user_id = v2.user_id"],
+    );
+    assert!(!sql(q).contains("_both"));
+}
+
+#[test]
+fn an_undirected_relationship_carries_the_columns_it_is_read_by() {
+    // Named, not `*` (ClickHouse leaves ALIAS / MATERIALIZED columns out of
+    // it): the mapped columns, and an undeclared property's same-named one.
+    has(
+        "MATCH (a:User)-[r:FOLLOWS]-(b:User) RETURN r.nope",
+        &[
+            r#"e.follower_id AS "follower_id", e.nope AS "nope", e.follower_id AS "__cg_start_0""#,
+            r#"v1.nope AS "r.nope""#,
+        ],
+    );
+}
+
+#[test]
+fn a_variable_length_relationship_of_a_type_with_several_schemas_is_not_lowered() {
+    // Its nodes need not have one label: `(:N)-[:T*2]-(:Z)` can cross from a
+    // T between Ns to one from a Z.
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: several
+graph_schema:
+  nodes:
+    - { label: N, database: db, table: n, node_id: id, property_mappings: { id: id } }
+    - { label: Z, database: db, table: z, node_id: id, property_mappings: { id: id } }
+  edges:
+    - { type: T, database: db, table: e, from_id: f, to_id: t, from_node: N, to_node: N, property_mappings: {} }
+    - { type: T, database: db, table: em, from_id: f, to_id: t, from_node: Z, to_node: N, property_mappings: {} }
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    for q in [
+        "MATCH (x:N)-[:T*1..2]-(y:Z) RETURN count(*)",
+        "MATCH (a:Z)-[:T*0..2]-(b:Z) RETURN count(*)",
+        "MATCH (a:N)-[:T*1..2]->(b:N) RETURN count(*)",
+    ] {
+        let err = translate_bound_plan(q, &schema, &ReadOptions::default()).unwrap_err();
+        assert!(err.contains("several schemas"), "{q}: {err}");
+    }
+}
+
+#[test]
+fn an_undirected_relationship_reads_its_table_options_in_both_directions() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: both_options
+graph_schema:
+  nodes:
+    - label: A
+      database: db
+      table: a
+      node_id: id
+      property_mappings: { id: id }
+  edges:
+    - type: S
+      database: db
+      table: s
+      from_id: x
+      to_id: y
+      from_node: A
+      to_node: A
+      filter: "kind = 'x'"
+      view_parameters: [tenant]
+      use_final: true
+      property_mappings: {}
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let opts = ReadOptions {
+        view_parameter_values: Some(HashMap::from([("tenant".to_string(), "t1".to_string())])),
+        ..Default::default()
+    };
+    let got = squash(
+        &translate_bound_plan("MATCH (a:A)-[:S]-(b:A) RETURN count(*)", &schema, &opts)
+            .unwrap()
+            .sql,
+    );
+    for part in [
+        "FROM db.s(tenant = 't1') AS e FINAL WHERE ((e.kind = 'x')) UNION ALL",
+        "FROM db.s(tenant = 't1') AS e FINAL WHERE (((e.kind = 'x')) AND e.x <> e.y) )",
+        "JOIN v1_both AS v1 ON v1.__cg_start_0 = v0.id",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+}
+
+#[test]
+fn an_undirected_variable_length_relationship_walks_both_directions() {
+    has(
+        "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User) RETURN count(*)",
+        &[
+            "v1_both AS ( SELECT e.follow_date",
+            "JOIN v1_both AS rel ON start_node.user_id = rel.__cg_start_0 \
+             JOIN test_integration.users_test AS end_node ON rel.__cg_end_0 = end_node.user_id",
+            // Trail uniqueness by the stored identity.
+            "NOT has(vp.path_edges, rel.follow_id)",
+        ],
+    );
+    // Walked from its restricted end: from the right one, the path is the
+    // reverse of the walk; from the left one, it is the walk.
+    let right = "MATCH p = (a:User)-[:FOLLOWS*1..2]-(b:User {user_id: 1}) RETURN nodes(p) AS ns";
+    has(right, &["arrayReverse(v1.path_node_values)"]);
+    let left = "MATCH p = (a:User {user_id: 1})-[:FOLLOWS*1..2]-(b:User) RETURN nodes(p) AS ns";
+    assert!(!sql(left).contains("arrayReverse"));
+}
+
+#[test]
+fn an_undirected_shortest_path_searches_and_walks_both_directions() {
+    has(
+        "MATCH p = shortestPath((a:User {user_id: 1})-[:FOLLOWS*]-(b:User {user_id: 2})) RETURN p",
+        &[
+            "JOIN v1_both AS rel ON rel.__cg_start_0 = f.node",
+            "JOIN (SELECT * FROM v1_both WHERE __cg_end_0 IN",
+            "ON rel.__cg_start_0 = lv.parent AND rel.__cg_end_0 = w.node",
+        ],
+    );
+}
+
+#[test]
+fn an_undirected_relationship_returned_whole_carries_its_mapped_columns() {
+    let got = sql("MATCH ()-[r:FOLLOWS]-() RETURN r LIMIT 25");
+    assert!(!got.contains("e.*"), "{got}");
+    assert!(
+        squash(&got).contains(r#"e.follow_date AS "follow_date""#),
+        "{got}"
     );
 }

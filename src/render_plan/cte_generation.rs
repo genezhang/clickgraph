@@ -71,6 +71,11 @@ pub struct CteGenerationContext {
     /// and relationships accumulated as `path_node_values` /
     /// `path_rel_values`. Empty for the legacy pipeline.
     pub path_values: crate::clickhouse_query_generator::variable_length_cte::PathValues,
+    /// The relation the walk reads in place of the edge table (the bound
+    /// plan's undirected relationship: its table in both directions, with
+    /// the walked columns named in the pattern context). `None` for the
+    /// legacy pipeline.
+    pub walk_relation: Option<String>,
     /// Root plan reference for checking path variable usage across the entire query.
     /// Set at the top-level to_render_plan call so VLP extraction can check if path
     /// variables are used bare (preventing BFS optimization).
