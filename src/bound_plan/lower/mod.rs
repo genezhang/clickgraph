@@ -1353,10 +1353,15 @@ impl<'s> Lowerer<'s> {
     /// one table, read in both (§4.6 `Alternatives`): the CTE `{v}_both` of
     /// its rows, each once as stored and once reversed, with the identities
     /// of the node the row leaves and enters (`__cg_start_{i}` /
-    /// `__cg_end_{i}`). The stored columns keep their names, so a row's
-    /// identity, endpoints and properties are the relationship's, whichever
-    /// way it is read. A self-loop is read once (reversed, it is the same
-    /// row), as Neo4j matches it once.
+    /// `__cg_end_{i}`). The stored columns it carries keep their names, so a
+    /// row's identity, endpoints and properties are the relationship's,
+    /// whichever way it is read. A self-loop is read once (reversed, it is
+    /// the same row), as Neo4j matches it once.
+    ///
+    /// It carries the columns named, not `*`: ClickHouse leaves ALIAS and
+    /// MATERIALIZED columns out of `*`. They are the identity and endpoint
+    /// columns, those of every property mapping, and the same-named column of
+    /// each undeclared property read of `v` ([`Self::property`]).
     fn both_directions(
         &mut self,
         rs: &'s RelationshipSchema,
@@ -1368,6 +1373,20 @@ impl<'s> Lowerer<'s> {
             return unsupported("endpoint id arity differs from the edge's");
         }
         const ROW: &str = "e";
+        let mut carried: BTreeSet<String> = from.iter().chain(&to).map(|c| c.to_string()).collect();
+        if let Some(id) = &rs.edge_id {
+            carried.extend(id.columns().iter().map(|c| c.to_string()));
+        }
+        for pv in rs.property_mappings.values() {
+            carried.extend(pv.get_columns());
+        }
+        if !rs.closed_properties && !self.options.neo4j_compat {
+            let read = self.demand.get(&v).into_iter().flatten();
+            carried.extend(
+                read.filter(|p| !p.starts_with('#') && !rs.property_mappings.contains_key(*p))
+                    .cloned(),
+            );
+        }
         let filter = match &rs.filter {
             Some(f) => match f.to_sql(ROW) {
                 Ok(sql) => Some(RenderExpr::Raw(format!("({sql})"))),
@@ -1381,10 +1400,8 @@ impl<'s> Lowerer<'s> {
             self.options.view_parameter_values.as_ref(),
         );
         let arm = |forward: bool| {
-            let mut items = vec![SelectItem {
-                expression: RenderExpr::Star,
-                col_alias: None,
-            }];
+            let mut items: Vec<SelectItem> =
+                carried.iter().map(|c| select(col_at(ROW, c), c)).collect();
             let (starts, ends) = if forward { (&from, &to) } else { (&to, &from) };
             for (i, c) in starts.iter().enumerate() {
                 items.push(select(col_at(ROW, c), &both_column(BOTH_START, i)));
@@ -1460,6 +1477,13 @@ impl<'s> Lowerer<'s> {
             _ if max.is_some_and(|m| m < min) => Scan::Impossible,
             (1, Some(fl), Some(tl)) => {
                 let rel_type = types.iter().next().expect("one type").clone();
+                // A path's nodes have its one schema's label (below): with
+                // several, a path can cross from one to another.
+                if self.schema.rel_schemas_for_type(&rel_type).len() > 1 {
+                    return unsupported(
+                        "a variable-length relationship whose type has several schemas (S7b)",
+                    );
+                }
                 let rs = match self.defined(&rel_type, &fl, &tl) {
                     Some(_) => self.edge_schema(&rel_type, &fl, &tl)?,
                     // The type does not join these labels: only the path of
