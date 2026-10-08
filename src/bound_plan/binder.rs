@@ -188,7 +188,7 @@ impl Binder {
                 }
                 Clause::OptionalMatch(o) => {
                     let parts: Vec<(Option<&str>, &PathPattern<'_>)> =
-                        o.path_patterns.iter().map(|p| (None, p)).collect();
+                        o.path_patterns.iter().map(|(v, p)| (*v, p)).collect();
                     let where_ = o.where_clause.as_ref().map(|w| &w.conditions);
                     (op, scope) = self.bind_match(op, scope, &parts, where_, true, idx)?;
                 }

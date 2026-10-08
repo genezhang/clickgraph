@@ -6455,29 +6455,58 @@ pub fn render_plan_to_sql_plain(mut plan: RenderPlan) -> String {
     }
     let _array_cols_guard = ArrayColsGuard(crate::server::query_context::get_array_cte_columns());
     crate::server::query_context::set_array_cte_columns(plain_list_columns(&plan));
-    // A lowered plan's CTEs are WITH bodies: plain SELECTs, in dependency
-    // order, none recursive.
+    // A lowered plan's CTEs, in dependency order, are WITH bodies (plain
+    // SELECTs) and the recursive path CTEs, whose text (`name AS (…)`, with
+    // the helper CTEs the path uses) comes from the path generator.
     let mut sql = String::new();
     let ctes = std::mem::take(&mut plan.ctes.0);
+    let recursive = ctes.iter().any(|c| c.is_recursive);
     for (i, cte) in ctes.into_iter().enumerate() {
-        let CteContent::Structured(body) = cte.content else {
-            panic!("render_plan_to_sql_plain: a raw-SQL CTE is not lowered yet");
-        };
-        assert!(
-            !cte.is_recursive && body.ctes.0.is_empty() && body.union.0.is_none(),
-            "render_plan_to_sql_plain: a CTE body is one plain SELECT"
-        );
-        sql.push_str(if i == 0 { "WITH " } else { ", \n" });
-        sql.push_str(&cte.cte_name);
-        sql.push_str(" AS (\n");
-        sql.push_str(&plain_select_sql(*body));
-        sql.push(')');
+        sql.push_str(match (i, recursive) {
+            (0, true) => "WITH RECURSIVE ",
+            (0, false) => "WITH ",
+            _ => ", \n",
+        });
+        match cte.content {
+            CteContent::Structured(body) => {
+                assert!(
+                    !cte.is_recursive && body.ctes.0.is_empty() && body.union.0.is_none(),
+                    "render_plan_to_sql_plain: a CTE body is one plain SELECT"
+                );
+                sql.push_str(&cte.cte_name);
+                sql.push_str(" AS (\n");
+                sql.push_str(&plain_select_sql(*body));
+                sql.push(')');
+            }
+            CteContent::RawSql(text) => {
+                assert!(
+                    cte.is_recursive && text.starts_with(&cte.cte_name),
+                    "render_plan_to_sql_plain: a raw-SQL CTE is a path relation"
+                );
+                sql.push_str(&text);
+            }
+        }
     }
     if !sql.is_empty() {
         sql.push('\n');
     }
     sql.push_str(&plain_select_sql(plan));
     sql
+}
+
+/// One expression of a lowered plan as SQL (its column references are final,
+/// as in [`render_plan_to_sql_plain`]): a condition handed to a generator
+/// that takes SQL text (the recursive path CTE).
+pub fn render_expr_to_sql_plain(e: &RenderExpr) -> String {
+    struct PlainGuard(bool);
+    impl Drop for PlainGuard {
+        fn drop(&mut self) {
+            crate::server::query_context::set_plain_render(self.0);
+        }
+    }
+    let _guard = PlainGuard(crate::server::query_context::is_plain_render());
+    crate::server::query_context::set_plain_render(true);
+    e.to_sql()
 }
 
 /// The list-valued CTE columns of a lowered plan. Its column names are

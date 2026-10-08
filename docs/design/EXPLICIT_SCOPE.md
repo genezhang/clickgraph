@@ -729,6 +729,109 @@ filters. The filters that used to be pushed in by `categorize_filters` are
 pushdown decisions (§4.8). shortestPath keeps the generator's pick, which is
 partitioned by (start, end) (#1183).
 
+S6 is split in three: S6a variable-length relationships and `length(p)`,
+S6b shortestPath with in-search predicates (#1312), S6c path and list values
+(`nodes(p)`, `relationships(p)`, a `-[r*]->` list, `RETURN p`, `WITH p`).
+
+Implemented in S6a (`bound_plan/lower/path.rs`, `Lowerer::path_scan` /
+`build_path`):
+- **The call.** `path_cte` builds the `PatternSchemaContext` of the edge and
+  its endpoints and calls `CteManager::generate_vlp_cte` with every input
+  explicit: the hop range, the CTE name (`vlp_v{N}_path`, unique per
+  relationship variable), the relationship identity, the start conjuncts
+  (SQL over `start_node`), and the relationship's property map (SQL over
+  `rel`). The relation is joined under the variable's own alias. Its column
+  contract is `start_id`, `end_id`, `hop_count`, `path_edges`, `path_nodes`.
+  The side channels are unused: the reported FROM alias is ignored,
+  `outer_where_filters` is refused, and composite ids are refused (S8), so
+  no composite components are registered. Lowered: one type whose edge
+  joins one label to itself, standard layout, no `filter:` / view
+  parameters / FINAL on the edge or node table, single-column ids,
+  directed. Undirected paths are S7.
+- **Labels.** Every node of a path of one or more relationships has the
+  edge's label. From a node of another label only the path of none is left
+  (`(a:Post)-[:FOLLOWS*0..2]->(b)` is `a` itself): the relation is generated
+  for `*0..0`. Label inference already empties the other cases.
+- **Ties.** `start_id` and `end_id` are tied to the endpoint nodes like any
+  element (§4.6.2), so a closed path `(a)-[*]->(a)`, a path after a fixed hop
+  or a WITH, and two paths chained or fanned in need no special case
+  (#1310, #1210, #1300 on the standard layout, #1177).
+- **Where the walk starts.** At a restricted end, the left one when both
+  are, ranked (without statistics, P-5): an end carried from a CTE (a WITH,
+  the OPTIONAL drive); then one with conjuncts over its own columns; then
+  one tied to the rows so far. From there it follows the relationships
+  forward or backward (the generator walks the edge with `from_id`/`to_id`
+  exchanged), so `start_id` is the walk's first node. Inside the walk's
+  first step go:
+  - the conjuncts of the clause and the segment that read only the first
+    node's own columns (operator trees over columns, literals and
+    parameters, as in §4.9), rewritten to `start_node`;
+  - when the rows so far restrict the first node, `start_node.id IN (SELECT
+    DISTINCT <its identity> FROM <rows> WHERE <their conjuncts>)`, where
+    the rows are the relations tied, directly or through others, to the
+    first node's (`Lowerer::rows_holding`). A cross-joined relation
+    restricts nothing and is left out. Every value the result can have is
+    in it, so it is a restriction, never a filter of results.
+
+  Each stays in the outer query too. Without them every walk starts at
+  every node: 7–8 s at scale 100, or out of memory, where the restricted
+  walk takes 70–280 ms.
+- **Unbounded.** A missing maximum (`*`, `*2..`) is unbounded. The generator
+  is given a bound beyond any recursion (`i32::MAX`), so the walk ends when
+  no trail extends, or ClickHouse fails at `max_recursive_cte_evaluation_depth`
+  (the server's `max_cte_depth`). The legacy path cuts at 5 hops (the
+  generator's `DEFAULT_MAX_HOPS`, 3 for `*0..`) and silently drops longer
+  paths: `*1..` on `social_integration` returns 367 rows where Neo4j returns
+  1821 (#1329).
+- **Uniqueness (§4.6.3).** Per MATCH clause, between relationship-bearing
+  elements of one edge table: a fixed relationship is not on a path
+  (`NOT has(p.path_edges, <its identity>)`), and two paths share none
+  (`NOT hasAny(p1.path_edges, p2.path_edges)`). A relationship's identity is
+  its `edge_id`, else its stored `(from, to)` pair in that order whichever
+  way a walk follows it: it is passed to the generator as the identity, and
+  a hop's is spelled the same way (`spell_edge_identity`), so every element
+  of a table spells a relationship alike. Within a path the generator's
+  `NOT has(vp.path_edges, …)` keeps the walk a trail. A path of `*0..0` has
+  no relationship.
+- **A path as a value** waits for S6c. A `-[r*]->` variable is carried
+  through WITH and an OPTIONAL MATCH as `start_id`, `end_id`, `hop_count`,
+  which do not identify it (two paths can share them), so DISTINCT or
+  grouping by it is refused.
+- **`length(p)`.** The number of fixed relationships of `p` plus each path's
+  `hop_count`. For an OPTIONAL `p` it is NULL when the clause did not match
+  (guarded by the identities of its introduced elements, which the
+  OPTIONAL's `Q` exports even when anonymous). `OPTIONAL MATCH p = …` now
+  parses; the legacy planner refuses it loudly.
+- **OPTIONAL MATCH.** A pattern with a path and a shared node uses the drive
+  form: the anchored form's copied restriction need not reach the node the
+  walk starts at (the review ran ClickHouse out of memory on one), and the
+  drive holds every shared node.
+- **Join order.** ClickHouse builds a hash table of every joined relation and
+  streams the FROM rows through them. A path relation is joined first
+  (`Lowerer::path_first`), the others after a relation they are tied to, and
+  each ON conjunct moves to the later of its relations (§4.6.4: every order
+  is correct because ties are equalities; only inner joins are reordered).
+  Joined last, a path of 10⁸ rows took 9.4 s; first, 1.3 s.
+- **Measured cost**, social benchmark at scale 100 (100K users, 10M
+  follows), median of 5, with ClickHouse's cache of join sizes from earlier
+  runs off (`collect_hash_table_stats_during_joins = 0`; with it, repeated
+  runs of either path get faster):
+
+  | Shape | Legacy | New |
+  |---|---|---|
+  | `(a {user_id: 1})-[*1..2]->(b)`, `*1..3`, `*0..2`, `length(p)`, ORDER BY / LIMIT, after a WITH | 50–122 ms | 65–131 ms |
+  | `(a)-[*1..2]->(b) WHERE a.user_id < 10` | 63 ms | 76 ms |
+  | after a fixed hop, backward, OPTIONAL (with or without a WHERE), restricted only at the right end | 6.9–8.0 s | 72–133 ms |
+  | the start in an earlier clause, a WITH or a comma part; hop then path restricted at the end; backward path then hop | out of memory | 73–282 ms |
+  | `WITH c MATCH (c)-->(a)-[*1..2]->(b)` (10⁸ paths) | 7.4 s | 1.4 s |
+  | a path then a fixed hop / then a `*1..1` path | 82–89 ms | 128–249 ms |
+  | `-[*2]->` from 3 starts | 9 ms | 67 ms |
+
+  The second-to-last row: the later path's semi-join evaluates the rows so
+  far again, the first path included (ClickHouse inlines CTEs). The last
+  row: the legacy path writes an exact range as fixed hops. That expansion
+  is future work (deferred until after S6).
+
 ### 4.12 Subquery expressions
 
 `Apply { kind, sub, correlation }`, where `sub` is a bound MATCH over the
@@ -1443,7 +1546,64 @@ slice that will handle it.
       NULL guards, the drive's DISTINCT and CTE reuse, the elision, the
       restriction copy, the impossible cases, the WHERE inside `Q`, the
       PackStream NULL, the Bolt NULL element) fails a unit test.
-- [ ] S6 paths + uniqueness + shortestPath
+- [x] **S6a: variable-length relationships** (§4.11, "Implemented in S6a").
+  - Lowered: `-[:T*a..b]->` / `<-[:T*a..b]-` (any range, including `*0..`,
+    `*0..0` and unbounded) of one type joining one label to itself, on the
+    standard layout, in MATCH and OPTIONAL MATCH, with property maps, chained
+    and in comma parts with fixed hops and other paths; `length(p)`;
+    `OPTIONAL MATCH p = …`. Still refused: shortestPath (S6b), a path or a
+    `-[r*]->` list as a value (`nodes(p)`, `RETURN p`, `size(r)`, DISTINCT by
+    `r`: S6c), undirected (S7), other layouts and composite ids (S8).
+  - Acceptance:
+    - Neo4j oracle, switch on, vs S5: 0 correct → wrong; 22 errors and 5
+      wrong answers → correct; MATCH 369 → 396. The corpus lowers 656
+      queries (was 460). (`collect()` without ORDER BY can come out in
+      another order between runs; it did once, on a query with no path.)
+    - About 400 generated path shapes per graph on three graphs (FOLLOWS
+      with `edge_id`, without it, FRIENDS_WITH with a composite `edge_id`):
+      every answer of the new path equals Neo4j's, except `collect()` order.
+      The legacy path gets 16–58 of them wrong and errors on 80. They include
+      the repro shapes of #1310, #1210, #1203, #1305, #1306, #1190, #1177,
+      #1178 and the standard-layout analog of #1300.
+    - Timing: §4.11 table.
+    - Live suite, switch on vs off: 86 tests differ (46 after S5). The 40
+      new ones:
+      - 28 Neo4j-golden entries recorded as known-wrong now equal Neo4j, and
+        5 `xfail` path tests of the pattern matrix pass;
+      - 3 `test_chained_vlp_trailing_hop[std]` tests: their oracle leaves a
+        hop and a path unconstrained against each other (the legacy
+        contract, #1203); the new path's 94 / 76 / 123 rows equal a
+        brute force with Cypher's uniqueness;
+      - `AUTHORED*2` returns 0 rows, as Neo4j does, where the test expects
+        the legacy refusal;
+      - 3 shapes the legacy path refuses loudly are answered, and equal
+        Neo4j.
+
+      The goldens and these tests are keyed to the default (legacy) path.
+    - Review (about 200 further shapes against Neo4j, and timing at scale
+      100). Five findings, all fixed, each with a unit test:
+      - `*0..N` from a node of another label than the edge's walked the
+        edge table from colliding ids (29 rows where Neo4j has 3).
+      - DISTINCT or grouping by a `-[r*]->` variable merged paths sharing
+        their carried columns (50 vs 55): refused until S6c.
+      - An anchored OPTIONAL whose input restriction did not reach the
+        walk's first node ran out of memory: a path uses the drive.
+      - A cross-joined end counted as restricted, so the walk started at
+        every node (out of memory): the semi-join holds only the relations
+        tied to the first node, and an end with conjuncts of its own wins.
+      - Two paths of one table without `edge_id` were walked forward to
+        spell their relationships alike, dropping a backward walk's
+        restriction (out of memory): the identity is now the stored pair
+        in every walk.
+
+      The review's shapes and the repros, rerun: every answer of the new
+      path equals Neo4j's, except `collect()` order; the out-of-memory
+      shapes take 73–282 ms.
+    - Mutation check: each of 29 rules broken in turn fails a unit test,
+      except one that label inference makes unreachable (a path from a
+      label the edge does not join that would need a relationship).
+- [ ] S6b shortestPath with in-search predicates (#1312)
+- [ ] S6c a path or a relationship list as a value
 - [ ] S7 UNWIND / UNION / alternatives
 - [ ] S8 layouts
 - [ ] S9 subquery expressions

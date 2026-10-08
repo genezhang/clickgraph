@@ -47,6 +47,9 @@ impl Lowerer<'_> {
                 schema.closed_properties,
                 at,
             ),
+            Some(Scan::Path { .. }) => {
+                return unsupported("a property of a variable-length relationship's list")
+            }
             Some(Scan::Impossible) => return Ok(RenderExpr::Literal(Literal::Null)),
             None => return unsupported("a property of a variable with no scan"),
         };
@@ -146,7 +149,9 @@ impl Lowerer<'_> {
                     Some(Scan::Node { label: l, .. }) => l == label,
                     Some(Scan::Rel { rel_type, .. }) => rel_type == label,
                     Some(Scan::Impossible) => return Ok(RenderExpr::Literal(Literal::Null)),
-                    None => return unsupported("a label test on a variable with no scan"),
+                    Some(Scan::Path { .. }) | None => {
+                        return unsupported("a label test on a list or an unscanned variable")
+                    }
                 };
                 self.unless_null(&[v], RenderExpr::Literal(Literal::Boolean(holds)))?
             }
@@ -309,6 +314,12 @@ impl Lowerer<'_> {
         }
         let b = self.binding(v);
         match (&b.kind, &b.source) {
+            (
+                BindingKind::Rel {
+                    length: Some(_), ..
+                },
+                _,
+            ) => unsupported("a variable-length relationship's list of relationships (S6c)"),
             (BindingKind::Node { .. } | BindingKind::Rel { .. }, _) => {
                 unsupported("a node or relationship as a value (in a list, collect(), CASE …)")
             }
@@ -323,17 +334,75 @@ impl Lowerer<'_> {
         }
     }
 
-    /// The node or relationship a bare variable expression names.
+    /// The node or relationship a bare variable expression names (not a
+    /// variable-length relationship: that is a list).
     fn entity(&self, e: &LogicalExpr) -> Option<VarId> {
         match e {
             LogicalExpr::TableAlias(lx::TableAlias(n)) => parse_var(n).filter(|v| {
                 matches!(
                     self.binding(*v).kind,
-                    BindingKind::Node { .. } | BindingKind::Rel { .. }
+                    BindingKind::Node { .. } | BindingKind::Rel { length: None, .. }
                 )
             }),
             _ => None,
         }
+    }
+
+    /// The path a bare variable expression names.
+    fn path_var(&self, args: &[LogicalExpr]) -> Option<VarId> {
+        match args {
+            [LogicalExpr::TableAlias(lx::TableAlias(n))] => {
+                parse_var(n).filter(|v| matches!(self.binding(*v).kind, BindingKind::Path))
+            }
+            _ => None,
+        }
+    }
+
+    /// `length(p)`: the path's fixed relationships, plus the hops of each
+    /// variable-length one. NULL for a path an OPTIONAL MATCH did not match.
+    fn path_length(&self, p: VarId) -> Result<RenderExpr, LowerError> {
+        let Some(elements) = self.paths.get(&p) else {
+            return unsupported(format!("internal: path {p} has no elements"));
+        };
+        let mut fixed = 0;
+        let mut terms = Vec::new();
+        for r in &elements.rels {
+            match self.scans.get(r) {
+                Some(Scan::Rel { .. }) => fixed += 1,
+                Some(Scan::Path { .. }) => terms.push(self.physical(*r, "hop_count")?),
+                // The relation has no rows (or the OPTIONAL MATCH no match).
+                Some(Scan::Impossible) => return Ok(RenderExpr::Literal(Literal::Null)),
+                _ => return unsupported(format!("internal: {r} is not a relationship scan")),
+            }
+        }
+        if fixed > 0 || terms.is_empty() {
+            terms.push(RenderExpr::Literal(Literal::Integer(fixed)));
+        }
+        let length = terms
+            .into_iter()
+            .reduce(|a, b| {
+                RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: lx::Operator::Addition,
+                    operands: vec![a, b],
+                })
+            })
+            .expect("a term");
+        if !self.binding(p).nullable {
+            return Ok(length);
+        }
+        let nullable: Vec<VarId> = elements
+            .nodes
+            .iter()
+            .chain(&elements.rels)
+            .copied()
+            .filter(|v| self.binding(*v).nullable)
+            .collect();
+        if nullable.is_empty() {
+            // Every element is bound before; whether the path matched is not
+            // in any column.
+            return unsupported("the length of an OPTIONAL path of bound elements");
+        }
+        self.unless_null(&nullable, length)
     }
 
     fn entity_arg(&self, args: &[LogicalExpr]) -> Option<VarId> {
@@ -344,6 +413,12 @@ impl Lowerer<'_> {
     }
 
     fn scalar_fn(&self, f: &LScalar, items: &Items) -> Result<RenderExpr, LowerError> {
+        if let Some(p) = self.path_var(&f.args) {
+            return match f.name.to_ascii_lowercase().as_str() {
+                "length" => self.path_length(p),
+                _ => unsupported(format!("{}() of a path (S6c)", f.name)),
+            };
+        }
         if let Some(v) = self.entity_arg(&f.args) {
             let lower = f.name.to_ascii_lowercase();
             return match (lower.as_str(), self.scans.get(&v)) {
