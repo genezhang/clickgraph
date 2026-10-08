@@ -832,6 +832,80 @@ Implemented in S6a (`bound_plan/lower/path.rs`, `Lowerer::path_scan` /
   row: the legacy path writes an exact range as fixed hops. That expansion
   is future work (deferred until after S6).
 
+Implemented in S6b (`path::shortest_ctes`, `path::pick_cte`,
+`Lowerer::shortest_relation`), checked against Neo4j 5.26:
+- **The pattern.** One variable-length relationship between two node
+  variables, as Neo4j requires. A fixed-length one (`shortestPath((a)-->(b))`)
+  and a path from a node to itself (`(a)-[*]->(a)`, which Neo4j fails at
+  run time) are refused.
+- **Conditions in the search (§4.8, #1312).** The WHERE conjuncts that read
+  the path's relation (its length, its relationships) hold of the paths the
+  search picks from: the pick is the shortest path *that satisfies them*.
+  They are found on the lowered conjuncts by the aliases they read, so a
+  path read inside a function or a `CASE` counts; a conjunct with a part
+  whose reads are not visible (a subquery, raw SQL) is refused. They may
+  read only the path and its two ends: a pick for each row of another
+  element would not be per pair of ends, so that is refused, as is an end
+  carried from a CTE. Conjuncts over the ends only stay outside: for one
+  pair of ends they hold of every path or of none.
+- **Uniqueness.** Neo4j searches a shortest path on its own: another
+  relationship of the same MATCH may be on it (`(a)-[r1]->(x),
+  p = shortestPath((a)-[*]->(b))` gives the same rows as two MATCH clauses,
+  and differs from adding `NOT r1 IN relationships(p)`). So the shortest
+  path takes no part in §4.6.3.
+- **Without such conditions** (and a lower bound of at most 1): a
+  breadth-first search from each first node (`vlp_v{N}_bfs`). ClickHouse
+  gives each step of a recursive CTE only the rows of the step before, so
+  each step carries the nodes reached so far (`new = 0`) with those reached
+  first at this depth (`new = 1`), and a node already reached is not
+  reached again (`(start_id, node) NOT IN (…)`). The search visits each node
+  once per first node and ends when a depth adds none; it needs no bound.
+  A node is reached through a relationship that satisfies the property map,
+  and exists in the node table. The first nodes are restricted as in S6a.
+  - `shortestPath`: one row per pair of ends, at its distance.
+  - `allShortestPaths`: the search counts the shortest paths to each node
+    (the sum over the relationships reaching it from one level nearer, in
+    `UInt256`), and a pair's row is repeated that many times, for the ends
+    the last node allows (`ARRAY JOIN range(accurateCast(paths, 'UInt64'))`:
+    a count beyond `UInt64` fails, it does not wrap). The paths of a pair
+    differ only in their nodes and relationships, which are values only in
+    S6c. Walking back over the levels instead enumerates the paths, but
+    ClickHouse evaluates the search again in every step of the walk: 1.2 s
+    for one pair at scale 100, against 0.23 s counted.
+- **With such conditions, or a lower bound above 1:** the trails of the
+  range (the S6a relation) that satisfy them, and per `(start_id, end_id)`
+  the shortest (`ROW_NUMBER`) or all of the shortest length (`MIN … OVER`),
+  in `vlp_v{N}_shortest`. The ends a condition reads are joined to the
+  trails under their own aliases. A condition can make a trail that revisits
+  a node the shortest that satisfies it (`*0..` with `length(p) > 0` from a
+  node back to itself, as Neo4j answers). Neo4j rejects a lower bound above
+  1; the legacy path takes it as the shortest path of at least that length
+  (#1205), and so does this one. The search over trails is exhaustive, as
+  Neo4j's fallback is: unbounded on a large graph it is as costly as the
+  trails are many.
+- **One node at both ends.** From 0 the path of none (or the shortest closed
+  trail that satisfies the conditions). From 1, no path: Neo4j fails such a
+  row with "The shortest path algorithm does not work when the start and end
+  nodes are the same", and names `cypher.forbid_shortestpath_common_nodes`
+  as the setting that accepts missing results for those rows instead. The
+  new path has no run-time error for it and leaves the row out.
+- **Dialect.** The spelling comes from `FunctionMapper::shortest_path_search`
+  (ClickHouse); other dialects keep the legacy path.
+- **Measured cost**, social benchmark at scale 100, as in S6a:
+
+  | Shape | Legacy | New |
+  |---|---|---|
+  | both ends pinned, `length(p)` | 296 ms (its own BFS, cut at 5 hops) | 182 ms |
+  | both ends pinned, `*..3`; and with `length(p) > 1` | 151–160 ms | 109–114 ms |
+  | both ends pinned, `a.name, b.name` | error (Code 47) | 187 ms |
+  | one start to every end; three starts; starts from a WITH | out of memory or error | 230–334 ms |
+  | `allShortestPaths`, pinned pair / one start to every end | error | 234 / 258 ms |
+  | `*..3` from one start with `length(p) > 1` | 103 ms (wrong answer, #1312) | 140 ms |
+  | OPTIONAL, both ends pinned | refused | 208 ms |
+
+  The search could stop once the ends the last node allows are all
+  reached; it does not yet.
+
 ### 4.12 Subquery expressions
 
 `Apply { kind, sub, correlation }`, where `sub` is a bound MATCH over the

@@ -185,6 +185,15 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         format!("toInt128OrNull({})", expr)
     }
 
+    fn shortest_path_search(&self) -> Option<super::ShortestPathSearch> {
+        Some(super::ShortestPathSearch {
+            depth: "UInt32",
+            flag: "UInt8",
+            count: "UInt256",
+            copies: |count| format!("range(accurateCast({count}, 'UInt64'))"),
+        })
+    }
+
     fn id_order_key_nulls_clause(&self) -> &'static str {
         // No-op for CH — NULL already sorts last for both ASC and DESC by
         // default — but explicit for parity with Databricks (#556).

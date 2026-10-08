@@ -62,7 +62,8 @@ use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema};
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::render_expr::{
-    ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+    visit_render_expr_mut, ColumnAlias, Literal, MutVisit, Operator, OperatorApplication,
+    PropertyAccess, RenderExpr, TableAlias,
 };
 use crate::render_plan::{
     ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem, GroupByExpressions, Join,
@@ -70,6 +71,7 @@ use crate::render_plan::{
     SelectItem, SelectItems, SkipItem, UnionItems, ViewTableRef,
 };
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
+use crate::sql_generator::function_mapper::current_function_mapper;
 use crate::utils::cte_column_naming::cte_column_name;
 
 use super::expr::{calls_aggregate, property_refs, referenced_names};
@@ -198,6 +200,9 @@ enum Scan<'s> {
         edges: bool,
         /// The hop range it is generated for.
         range: (u32, Option<u32>),
+        /// Of a `shortestPath` / `allShortestPaths` pattern: per pair of
+        /// ends, the shortest paths only.
+        shortest: Option<ShortestMode>,
     },
     /// An element whose label / type set is empty: it matches nothing.
     Impossible,
@@ -253,6 +258,7 @@ impl<'s> Scan<'s> {
                 cte,
                 edges,
                 range,
+                shortest,
                 ..
             } => Scan::Path {
                 schema,
@@ -261,6 +267,7 @@ impl<'s> Scan<'s> {
                 at,
                 edges,
                 range,
+                shortest,
             },
             Scan::Impossible => Scan::Impossible,
         }
@@ -488,14 +495,22 @@ impl<'s> Lowerer<'s> {
         let mut clause_rels: Vec<VarId> = Vec::new();
         for part in &pattern.parts {
             if part.shortest.is_some() {
-                return unsupported("shortestPath (S6b)");
+                Self::shortest_pattern(part)?;
             }
             for n in &part.nodes {
                 self.node_scan(n.var)?;
             }
             for (i, r) in part.rels.iter().enumerate() {
                 self.rel_scan(r, part.nodes[i].var, part.nodes[i + 1].var)?;
-                clause_rels.push(r.var);
+                if let Some(Scan::Path { shortest, .. }) = self.scans.get_mut(&r.var) {
+                    *shortest = part.shortest;
+                }
+                // The relationships of a shortest path are not unique against
+                // the clause's others (Neo4j): the search is the pattern's
+                // own.
+                if part.shortest.is_none() {
+                    clause_rels.push(r.var);
+                }
             }
             if let Some(p) = part.path_var {
                 let elements = PathElements {
@@ -525,12 +540,35 @@ impl<'s> Lowerer<'s> {
             .map(|p| self.expr(p, &HashMap::new()))
             .transpose()?;
         let own: Vec<RenderExpr> = conditions.iter().chain(&filter).cloned().collect();
+        // A shortest path's conditions (§4.8): the WHERE conjuncts that read
+        // its relation (the path, its relationships) hold of the paths the
+        // search picks from, not of the picked ones.
+        let mut in_search: HashMap<VarId, Vec<RenderExpr>> = HashMap::new();
+        for part in pattern.parts.iter().filter(|p| p.shortest.is_some()) {
+            let r = part.rels[0].var;
+            let Some(Scan::Path { at, .. }) = self.scans.get(&r) else {
+                continue; // it matches nothing
+            };
+            let alias = at.alias().to_string();
+            for c in filter.iter().flat_map(conjuncts) {
+                match read_aliases(c) {
+                    Some(read) if !read.contains(&alias) => {}
+                    Some(_) => in_search.entry(r).or_default().push(c.clone()),
+                    None => {
+                        return unsupported(
+                            "a shortestPath whose WHERE has a subquery or raw SQL condition",
+                        )
+                    }
+                }
+            }
+        }
         for part in &pattern.parts {
             self.emit(part.nodes[0].var)?;
             for (i, r) in part.rels.iter().enumerate() {
                 if let Some(Scan::Path { .. }) = self.scans.get(&r.var) {
                     let (left, right) = (part.nodes[i].var, part.nodes[i + 1].var);
-                    self.build_path(r, left, right, &own)?;
+                    let search = in_search.get(&r.var).map(Vec::as_slice).unwrap_or(&[]);
+                    self.build_path(r, left, right, &own, search)?;
                 }
                 self.emit(r.var)?;
                 self.emit(part.nodes[i + 1].var)?;
@@ -594,11 +632,6 @@ impl<'s> Lowerer<'s> {
         predicate: Option<&LogicalExpr>,
         introduces: &[VarId],
     ) -> Result<(), LowerError> {
-        for part in &pattern.parts {
-            if part.shortest.is_some() {
-                return unsupported("shortestPath (S6b)");
-            }
-        }
         // Rows joined to other rows are in no order.
         self.order = RowOrder::Unordered;
         // Input variables the clause reads: shared by the pattern, or read by
@@ -1238,6 +1271,7 @@ impl<'s> Lowerer<'s> {
                     at: At::Table(r.var.name()),
                     edges: false,
                     range,
+                    shortest: None,
                 }
             }
             // A path of no relationship needs none: `*0..` with no feasible
@@ -1281,12 +1315,14 @@ impl<'s> Lowerer<'s> {
         left: VarId,
         right: VarId,
         own: &[RenderExpr],
+        in_search: &[RenderExpr],
     ) -> Result<(), LowerError> {
         let Some(Scan::Path {
             schema: edge,
             rel_type,
             at,
             range: (min, max),
+            shortest,
             ..
         }) = self.scans.get(&r.var).cloned()
         else {
@@ -1328,35 +1364,23 @@ impl<'s> Lowerer<'s> {
         let Some(Scan::Node {
             schema: node,
             label,
-            at: first_at,
+            ..
         }) = self.scans.get(&first).cloned()
         else {
             return unsupported("internal: a path endpoint is not a node");
         };
-        let mut start = Vec::new();
-        if let At::Table(alias) = &first_at {
-            for c in self.own_conjuncts(first, own) {
-                start.push(realias(c, alias, path::START));
-            }
-        }
-        if let Some(mut rows) = self.rows_holding(first, own) {
-            let Some(id) = self.identity(first)? else {
-                return Ok(());
-            };
-            rows.select = SelectItems {
-                items: vec![select(id[0].clone(), "id")],
-                distinct: true,
-            };
-            let id_column = node.id_physical_columns();
-            start.push(RenderExpr::Raw(format!(
-                "{} IN ({})",
-                render_expr_to_sql_plain(&col_at(path::START, &id_column[0])),
-                crate::sql_generator::emitters::clickhouse::to_sql_query::render_plan_to_sql_plain(
-                    rows
-                )
-                .trim_end()
-            )));
-        }
+        let Some(start) = self.restriction(first, own, path::START)? else {
+            return Ok(()); // it matches nothing
+        };
+        // `allShortestPaths` repeats a pair's row once per shortest path:
+        // only for the values the last node can have.
+        let end = match shortest {
+            Some(ShortestMode::AllShortest) => match self.restriction(last, own, path::END)? {
+                Some(end) => end,
+                None => return Ok(()),
+            },
+            _ => Vec::new(),
+        };
         let mut rel = Vec::new();
         for (prop, value) in &r.props {
             let column = match edge.property_mappings.get(prop) {
@@ -1377,23 +1401,29 @@ impl<'s> Lowerer<'s> {
             }
             rel.push(RenderExpr::OperatorApplicationExp(eq(column, value)));
         }
-        let built = path::path_cte(
-            self.schema,
-            path::PathCall {
-                var: &r.var.name(),
-                rel_type: &rel_type,
-                edge,
-                label: &label,
-                node,
-                min,
-                max,
-                backward,
-                start,
-                rel,
-            },
-        )?;
-        let cte = built.cte.cte_name.clone();
-        self.ctes.push(built.cte);
+        let var = r.var.name();
+        let call = path::PathCall {
+            var: &var,
+            rel_type: &rel_type,
+            edge,
+            label: &label,
+            node,
+            min,
+            max,
+            backward,
+            start,
+            end,
+            rel,
+        };
+        let (ctes, cte, edges) = match shortest {
+            None => {
+                let built = path::path_cte(self.schema, call)?;
+                let cte = built.cte.cte_name.clone();
+                (vec![built.cte], cte, built.edges)
+            }
+            Some(mode) => self.shortest_relation(call, mode, at.alias(), first, last, in_search)?,
+        };
+        self.ctes.extend(ctes);
         self.scans.insert(
             r.var,
             Scan::Path {
@@ -1401,8 +1431,9 @@ impl<'s> Lowerer<'s> {
                 rel_type,
                 cte,
                 at,
-                edges: built.edges,
+                edges,
                 range: (min, max),
+                shortest,
             },
         );
         for (end, column) in [(first, "start_id"), (last, "end_id")] {
@@ -1414,6 +1445,144 @@ impl<'s> Lowerer<'s> {
                 end,
                 vec![(col_at(&r.var.name(), column), ids[0].clone())],
             );
+        }
+        Ok(())
+    }
+
+    /// Conditions every value node `v` has in the result satisfies, over its
+    /// node table read under `alias` (§4.11): the conjuncts of the segment
+    /// and `own` over its own columns, and, when the rows so far restrict
+    /// it, `alias.id IN (SELECT DISTINCT <its identity> FROM <those rows>)`
+    /// (`Self::rows_holding`). `None` when it matches nothing.
+    fn restriction(
+        &self,
+        v: VarId,
+        own: &[RenderExpr],
+        alias: &str,
+    ) -> Result<Option<Vec<RenderExpr>>, LowerError> {
+        let Some(Scan::Node { schema, at, .. }) = self.scans.get(&v) else {
+            return Ok(None);
+        };
+        let mut conds = Vec::new();
+        if let At::Table(own_alias) = at {
+            for c in self.own_conjuncts(v, own) {
+                conds.push(realias(c, own_alias, alias));
+            }
+        }
+        if let Some(mut rows) = self.rows_holding(v, own) {
+            let Some(id) = self.identity(v)? else {
+                return Ok(None);
+            };
+            rows.select = SelectItems {
+                items: vec![select(id[0].clone(), "id")],
+                distinct: true,
+            };
+            let id_column = schema.id_physical_columns();
+            conds.push(RenderExpr::Raw(format!(
+                "{} IN ({})",
+                render_expr_to_sql_plain(&col_at(alias, &id_column[0])),
+                crate::sql_generator::emitters::clickhouse::to_sql_query::render_plan_to_sql_plain(
+                    rows
+                )
+                .trim_end()
+            )));
+        }
+        Ok(Some(conds))
+    }
+
+    /// The relation of a `shortestPath` / `allShortestPaths` (`mode`) whose
+    /// paths are `call`'s, read under `alias`, from `first` to `last` (its
+    /// CTEs, its name, whether it has `path_edges`). The search picks, per
+    /// pair of ends, the shortest paths that satisfy `in_search` (§4.8,
+    /// #1312): the WHERE conjuncts that read the path, and only it and its
+    /// ends.
+    /// * With none and a lower bound of at most 1, a breadth-first search
+    ///   (`path::shortest_ctes`): a shortest path is a shortest walk, and
+    ///   the search visits each node once per first node.
+    /// * Otherwise the paths are the trails of the range (`path::path_cte`)
+    ///   and the pick is among those that satisfy the conditions
+    ///   (`path::pick_cte`): a condition such as `length(p) > 1` can make a
+    ///   trail that revisits a node the shortest (Neo4j's exhaustive
+    ///   search), and a lower bound above 1 is such a condition.
+    ///
+    /// A pair whose two ends are one node has a path only when the range
+    /// starts at 0 (the path of none): Neo4j raises an error for such a pair
+    /// otherwise, unless `cypher.forbid_shortestpath_common_nodes` is off, when
+    /// it has no path.
+    fn shortest_relation(
+        &self,
+        call: path::PathCall<'_>,
+        mode: ShortestMode,
+        alias: &str,
+        first: VarId,
+        last: VarId,
+        in_search: &[RenderExpr],
+    ) -> Result<(Vec<Cte>, String, bool), LowerError> {
+        if current_function_mapper().shortest_path_search().is_none() {
+            return unsupported("shortestPath in this SQL dialect");
+        }
+        let all = mode == ShortestMode::AllShortest;
+        if in_search.is_empty() && call.min <= 1 {
+            let (ctes, name) = path::shortest_ctes(self.schema, call, all)?;
+            return Ok((ctes, name, false));
+        }
+        // The ends the conditions read are joined to the paths under their
+        // own aliases. A condition reading another relation (another
+        // element, a CTE) would need a pick per row of it.
+        let relations: Vec<String> = self
+            .scans
+            .values()
+            .filter_map(|s| s.at().map(|a| a.alias().to_string()))
+            .collect();
+        let read: Vec<String> = in_search
+            .iter()
+            .flat_map(|c| read_aliases(c).unwrap_or_default())
+            .filter(|a| relations.contains(a))
+            .collect();
+        let mut ends = Vec::new();
+        let mut readable = vec![alias.to_string()];
+        for (end, column) in [(first, "start_id"), (last, "end_id")] {
+            if let Some(Scan::Node {
+                schema,
+                at: At::Table(a),
+                ..
+            }) = self.scans.get(&end)
+            {
+                if !self.elided.contains_key(&end) && read.contains(a) {
+                    ends.push(path::PickEnd {
+                        alias: a.clone(),
+                        table: schema.full_table_name(),
+                        id: schema.id_physical_columns()[0].clone(),
+                        column,
+                    });
+                    readable.push(a.clone());
+                }
+            }
+        }
+        if read.iter().any(|a| !readable.contains(a)) {
+            return unsupported(
+                "a shortestPath condition that reads a variable other than the path and its ends",
+            );
+        }
+        let min = call.min;
+        let var = call.var.to_string();
+        let built = path::path_cte(self.schema, call)?;
+        let (pick, name) = path::pick_cte(&var, alias, &ends, in_search, min >= 1, all);
+        Ok((vec![built.cte, pick], name, false))
+    }
+
+    /// A `shortestPath` / `allShortestPaths` pattern as Neo4j takes it: one
+    /// variable-length relationship, between two node variables.
+    fn shortest_pattern(part: &PatternPart) -> Result<(), LowerError> {
+        let [r] = part.rels.as_slice() else {
+            return unsupported("shortestPath over other than one relationship");
+        };
+        if r.length.is_none() {
+            return unsupported("shortestPath over a fixed-length relationship");
+        }
+        if part.nodes[0].var == part.nodes[1].var {
+            // Neo4j raises an error for it.
+            return unsupported("shortestPath from a node to itself");
         }
         Ok(())
     }
@@ -2631,6 +2800,36 @@ fn table_aliases(e: &RenderExpr) -> Vec<String> {
         }
         _ => Vec::new(),
     }
+}
+
+/// Every table alias `e` reads (lambda and binder names too), or `None` when
+/// a part of it reads what is not visible here (a subquery, raw SQL).
+fn read_aliases(e: &RenderExpr) -> Option<Vec<String>> {
+    let mut read = Vec::new();
+    let mut opaque = false;
+    let mut e = e.clone();
+    visit_render_expr_mut(&mut e, &mut |x| match x {
+        RenderExpr::PropertyAccessExp(pa) => {
+            read.push(pa.table_alias.0.clone());
+            MutVisit::Stop
+        }
+        RenderExpr::TableAlias(t) => {
+            read.push(t.0.clone());
+            MutVisit::Stop
+        }
+        RenderExpr::Raw(_)
+        | RenderExpr::Column(_)
+        | RenderExpr::ColumnAlias(_)
+        | RenderExpr::InSubquery(_)
+        | RenderExpr::ExistsSubquery(_)
+        | RenderExpr::PatternCount(_)
+        | RenderExpr::CteEntityRef(_) => {
+            opaque = true;
+            MutVisit::Stop
+        }
+        _ => MutVisit::Recurse,
+    });
+    (!opaque).then_some(read)
 }
 
 /// The top-level AND operands of `e`.
