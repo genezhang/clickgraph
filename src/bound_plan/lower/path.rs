@@ -87,6 +87,10 @@ pub(super) struct PathCall<'a> {
     pub max: Option<u32>,
     /// Walk against the relationships' direction (`to` → `from`).
     pub backward: bool,
+    /// Walk this relation of the edge table's rows in both directions
+    /// (`Lowerer::both_directions`: an undirected relationship), from the
+    /// node each row leaves to the node it enters, in place of the table.
+    pub both: Option<&'a str>,
     /// Conjuncts over the first node, aliased [`START`].
     pub start: Vec<RenderExpr>,
     /// Conjuncts over the last node, aliased [`END`] (the ends whose
@@ -108,7 +112,8 @@ pub(super) struct PathCte {
 }
 
 /// The schema context of `call`'s edge and nodes, walked from `from_id` to
-/// `to_id` (exchanged when [`PathCall::backward`]): the standard layout
+/// `to_id` (exchanged when [`PathCall::backward`]; over [`PathCall::both`],
+/// from the node a row leaves to the node it enters): the standard layout
 /// (the nodes and the edge each in their own table, single-column
 /// identities), or `Unsupported`.
 fn standard_layout(
@@ -128,10 +133,13 @@ fn standard_layout(
         None,
     )
     .map_err(|e| LowerError::Unsupported(format!("variable-length relationship: {e}")))?;
-    if call.backward {
-        // The walk joins `rel.from_id` to the node it is at and moves to
-        // `rel.to_id`: with the two exchanged it moves backward.
-        if let EdgeAccessStrategy::SeparateTable { from_id, to_id, .. } = &mut ctx.edge {
+    // The walk joins `rel.from_id` to the node it is at and moves to
+    // `rel.to_id`.
+    if let EdgeAccessStrategy::SeparateTable { from_id, to_id, .. } = &mut ctx.edge {
+        if call.both.is_some() {
+            *from_id = super::both_column(super::BOTH_START, 0);
+            *to_id = super::both_column(super::BOTH_END, 0);
+        } else if call.backward {
             std::mem::swap(from_id, to_id);
         }
     }
@@ -181,6 +189,7 @@ pub(super) fn path_cte(schema: &GraphSchema, call: PathCall<'_>) -> Result<PathC
         .with_relationship_cypher_alias(Some(call.var.to_string()))
         .with_node_labels(Some(call.label.to_string()), Some(call.label.to_string()));
     context.needs_path_relationships = false;
+    context.walk_relation = call.both.map(str::to_string);
     if call.node_values || call.rel_values {
         let g = super::value::spelling()?;
         let node = |alias: &str| super::value::table_node_object(&g, call.node, call.label, alias);
@@ -257,7 +266,7 @@ fn search_tables(schema: &GraphSchema, call: &PathCall<'_>) -> Result<SearchTabl
     Ok(SearchTables {
         node_table: node_table.clone(),
         id: id.clone(),
-        edge_table: edge_table.clone(),
+        edge_table: call.both.unwrap_or(edge_table).to_string(),
         from_id: from_id.clone(),
         to_id: to_id.clone(),
     })

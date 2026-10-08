@@ -69,7 +69,7 @@ use crate::render_plan::render_expr::{
 use crate::render_plan::{
     ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem, GroupByExpressions, Join,
     JoinItems, JoinType, LimitItem, OrderByItem, OrderByItems, OrderByOrder, RenderPlan,
-    SelectItem, SelectItems, SkipItem, UnionItems, ViewTableRef,
+    SelectItem, SelectItems, SkipItem, Union, UnionItems, UnionType, ViewTableRef,
 };
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::function_mapper::current_function_mapper;
@@ -195,6 +195,10 @@ enum Scan<'s> {
         schema: &'s RelationshipSchema,
         rel_type: String,
         at: At,
+        /// Read at its table from this CTE of the table's rows in both
+        /// directions ([`Lowerer::both_directions`]): an undirected
+        /// relationship whose two directions are the one table.
+        both: Option<String>,
     },
     /// A variable-length relationship: a relation of paths (`path.rs`),
     /// read from the CTE `cte`.
@@ -268,6 +272,7 @@ impl<'s> Scan<'s> {
                 schema,
                 rel_type,
                 at,
+                both: None,
             },
             Scan::Path {
                 schema,
@@ -395,6 +400,33 @@ pub(crate) fn col_at(alias: &str, column: &str) -> RenderExpr {
         table_alias: TableAlias(alias.to_string()),
         column: PropertyValue::Column(column.to_string()),
     })
+}
+
+/// The columns of a relationship read in both directions
+/// ([`Lowerer::both_directions`]) holding the identity of the node a row
+/// leaves (`BOTH_START`) and enters (`BOTH_END`), one per identity column.
+const BOTH_START: &str = "__cg_start";
+const BOTH_END: &str = "__cg_end";
+
+fn both_column(side: &str, i: usize) -> String {
+    format!("{side}_{i}")
+}
+
+fn both_columns(side: &str, arity: usize) -> Vec<String> {
+    (0..arity).map(|i| both_column(side, i)).collect()
+}
+
+/// The ends a relationship's columns tie: (end, the relationship's columns
+/// equal to its identity).
+type Ends = Vec<(VarId, Vec<String>)>;
+
+/// The ends a relationship read as stored ties: `from` by its `from_id`
+/// columns, `to` by its `to_id` columns.
+fn stored_ends(rs: &RelationshipSchema, from: VarId, to: VarId) -> Ends {
+    let cols = |id: &crate::graph_catalog::config::Identifier| {
+        id.columns().iter().map(|c| c.to_string()).collect()
+    };
+    vec![(from, cols(&rs.from_id)), (to, cols(&rs.to_id))]
 }
 
 fn eq(a: RenderExpr, b: RenderExpr) -> OperatorApplication {
@@ -1204,51 +1236,206 @@ impl<'s> Lowerer<'s> {
     }
 
     /// Decide how a relationship is read (once per variable) and tie it to
-    /// its endpoints in the stored orientation.
+    /// its endpoints: in the stored orientation, or, undirected, in either
+    /// (§4.6 `Alternatives`).
     fn rel_scan(&mut self, r: &PatRel, left: VarId, right: VarId) -> Result<(), LowerError> {
-        let (from, to) = match r.direction {
-            RelDirection::Right => (left, right),
-            RelDirection::Left => (right, left),
-            RelDirection::Either => return unsupported("an undirected relationship (S7)"),
-        };
         if let Some((min, max)) = r.length {
+            let (from, to) = match r.direction {
+                RelDirection::Left => (right, left),
+                _ => (left, right),
+            };
             return self.path_scan(r, from, to, min, max);
         }
-        if !self.scans.contains_key(&r.var) {
+        let bound = self.scans.contains_key(&r.var);
+        if r.direction == RelDirection::Either && bound {
+            // Each row would match in up to two orientations.
+            return unsupported("a relationship bound before, matched undirected (S7b)");
+        }
+        // The ends the relationship's columns tie.
+        let ends = if bound {
+            let (from, to) = match r.direction {
+                RelDirection::Left => (right, left),
+                _ => (left, right),
+            };
+            match &self.scans[&r.var] {
+                Scan::Rel { schema: rs, .. } => stored_ends(rs, from, to),
+                _ => Vec::new(),
+            }
+        } else {
             let BindingKind::Rel { types, .. } = &self.binding(r.var).kind else {
                 return unsupported("a pattern relationship that is not a relationship binding");
             };
-            let scan = match (types.len(), self.single_label(from), self.single_label(to)) {
-                (1, Some(fl), Some(tl)) => {
+            let (scan, ends) = match (
+                types.len(),
+                self.single_label(left),
+                self.single_label(right),
+            ) {
+                (1, Some(ll), Some(rl)) => {
                     let rel_type = types.iter().next().expect("one type").clone();
-                    Scan::Rel {
-                        schema: self.edge_schema(&rel_type, &fl, &tl)?,
-                        rel_type,
-                        at: At::Table(r.var.name()),
-                    }
+                    self.decide_rel(r, rel_type, (left, &ll), (right, &rl))?
                 }
                 // No feasible type, or an endpoint that matches nothing.
-                (0, ..) | (1, ..) => Scan::Impossible,
+                (0, ..) | (1, ..) => (Scan::Impossible, Vec::new()),
                 _ => return unsupported("a relationship with several possible types (S7)"),
             };
             self.scans.insert(r.var, scan);
-        }
-        if let Scan::Rel { schema: rs, .. } = self.scans[&r.var].clone() {
-            for (end, cols) in [(from, rs.from_id.columns()), (to, rs.to_id.columns())] {
-                let Some(ids) = self.identity(end)? else {
-                    continue; // an endpoint that matches nothing
-                };
-                if ids.len() != cols.len() {
-                    return unsupported("endpoint id arity differs from the edge's");
-                }
-                let mut eqs = Vec::new();
-                for (c, id) in cols.iter().zip(ids) {
-                    eqs.push((self.physical(r.var, c)?, id));
-                }
-                self.tie(r.var, end, eqs);
+            ends
+        };
+        for (end, cols) in ends {
+            let Some(ids) = self.identity(end)? else {
+                continue; // an endpoint that matches nothing
+            };
+            if ids.len() != cols.len() {
+                return unsupported("endpoint id arity differs from the edge's");
             }
+            let mut eqs = Vec::new();
+            for (c, id) in cols.iter().zip(ids) {
+                eqs.push((self.physical(r.var, c)?, id));
+            }
+            self.tie(r.var, end, eqs);
         }
         Ok(())
+    }
+
+    /// The scan of a relationship of one type between nodes of one label
+    /// each, and the ends its columns tie. Undirected, it is read in the
+    /// directions the schema has: one, as a directed relationship; both, when
+    /// they are the one table (the two ends have one label), from
+    /// [`Self::both_directions`], its left end tied to the node each row
+    /// leaves and its right end to the node it enters.
+    fn decide_rel(
+        &mut self,
+        r: &PatRel,
+        rel_type: String,
+        (left, ll): (VarId, &str),
+        (right, rl): (VarId, &str),
+    ) -> Result<(Scan<'s>, Ends), LowerError> {
+        let scan = |schema, rel_type, both| Scan::Rel {
+            schema,
+            rel_type,
+            at: At::Table(r.var.name()),
+            both,
+        };
+        let (from, to) = match r.direction {
+            RelDirection::Right => (left, right),
+            RelDirection::Left => (right, left),
+            RelDirection::Either => {
+                let defined = |f: &str, t: &str| self.defined(&rel_type, f, t).is_some();
+                match (defined(ll, rl), defined(rl, ll)) {
+                    (true, true) if ll == rl => {
+                        let rs = self.edge_schema(&rel_type, ll, rl)?;
+                        let both = self.both_directions(rs, r.var)?;
+                        let arity = rs.from_id.columns().len();
+                        let ends = vec![
+                            (left, both_columns(BOTH_START, arity)),
+                            (right, both_columns(BOTH_END, arity)),
+                        ];
+                        return Ok((scan(rs, rel_type, Some(both)), ends));
+                    }
+                    (true, true) => {
+                        return unsupported(
+                            "an undirected relationship whose two directions are two \
+                             relationship schemas (S7b)",
+                        )
+                    }
+                    (true, false) => (left, right),
+                    (false, true) => (right, left),
+                    (false, false) => return Ok((Scan::Impossible, Vec::new())),
+                }
+            }
+        };
+        let (fl, tl) = if from == left { (ll, rl) } else { (rl, ll) };
+        let rs = self.edge_schema(&rel_type, fl, tl)?;
+        Ok((scan(rs, rel_type, None), stored_ends(rs, from, to)))
+    }
+
+    /// The table of an undirected relationship whose two directions are the
+    /// one table, read in both (§4.6 `Alternatives`): the CTE `{v}_both` of
+    /// its rows, each once as stored and once reversed, with the identities
+    /// of the node the row leaves and enters (`__cg_start_{i}` /
+    /// `__cg_end_{i}`). The stored columns keep their names, so a row's
+    /// identity, endpoints and properties are the relationship's, whichever
+    /// way it is read. A self-loop is read once (reversed, it is the same
+    /// row), as Neo4j matches it once.
+    fn both_directions(
+        &mut self,
+        rs: &'s RelationshipSchema,
+        v: VarId,
+    ) -> Result<String, LowerError> {
+        let name = format!("{}_both", v.name());
+        let (from, to) = (rs.from_id.columns(), rs.to_id.columns());
+        if from.len() != to.len() {
+            return unsupported("endpoint id arity differs from the edge's");
+        }
+        const ROW: &str = "e";
+        let filter = match &rs.filter {
+            Some(f) => match f.to_sql(ROW) {
+                Ok(sql) => Some(RenderExpr::Raw(format!("({sql})"))),
+                Err(e) => return unsupported(format!("schema filter: {e}")),
+            },
+            None => None,
+        };
+        let table = ViewTableRef::parameterized_name(
+            &rs.full_table_name(),
+            rs.view_parameters.as_deref(),
+            self.options.view_parameter_values.as_ref(),
+        );
+        let arm = |forward: bool| {
+            let mut items = vec![SelectItem {
+                expression: RenderExpr::Star,
+                col_alias: None,
+            }];
+            let (starts, ends) = if forward { (&from, &to) } else { (&to, &from) };
+            for (i, c) in starts.iter().enumerate() {
+                items.push(select(col_at(ROW, c), &both_column(BOTH_START, i)));
+            }
+            for (i, c) in ends.iter().enumerate() {
+                items.push(select(col_at(ROW, c), &both_column(BOTH_END, i)));
+            }
+            let mut filters: Vec<RenderExpr> = filter.iter().cloned().collect();
+            if !forward {
+                // A self-loop is read forward.
+                let differ = from
+                    .iter()
+                    .zip(&to)
+                    .map(|(f, t)| {
+                        RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::NotEqual,
+                            operands: vec![col_at(ROW, f), col_at(ROW, t)],
+                        })
+                    })
+                    .collect();
+                filters.push(or_all(differ));
+            }
+            RenderPlan {
+                select: SelectItems {
+                    items,
+                    distinct: false,
+                },
+                from: FromTableItem(Some(ViewTableRef {
+                    source: Arc::new(LogicalPlan::Empty),
+                    name: table.clone(),
+                    alias: Some(ROW.to_string()),
+                    use_final: rs.should_use_final(),
+                })),
+                filters: FilterItems(and_all(filters)),
+                ..empty_plan()
+            }
+        };
+        let body = RenderPlan {
+            union: UnionItems(Some(Union {
+                input: vec![arm(true), arm(false)],
+                union_type: UnionType::All,
+                is_cypher_union: false,
+            })),
+            ..empty_plan()
+        };
+        self.ctes.push(Cte::new(
+            name.clone(),
+            CteContent::Structured(Box::new(body)),
+            false,
+        ));
+        Ok(name)
     }
 
     /// Decide how a variable-length relationship is read: a relation of
@@ -1273,7 +1460,15 @@ impl<'s> Lowerer<'s> {
             _ if max.is_some_and(|m| m < min) => Scan::Impossible,
             (1, Some(fl), Some(tl)) => {
                 let rel_type = types.iter().next().expect("one type").clone();
-                let rs = self.edge_schema(&rel_type, &fl, &tl)?;
+                let rs = match self.defined(&rel_type, &fl, &tl) {
+                    Some(_) => self.edge_schema(&rel_type, &fl, &tl)?,
+                    // The type does not join these labels: only the path of
+                    // none can match (below), generated over its table.
+                    None => match self.schema.rel_schemas_for_type(&rel_type).first() {
+                        Some(rs) => Self::standard_edge(&rel_type, rs)?,
+                        None => return unsupported(format!("type {rel_type} has no schema")),
+                    },
+                };
                 // Every node of a path of one or more relationships has the
                 // edge's one label. With another label at either end only
                 // the path of none is left: a node to itself.
@@ -1372,7 +1567,10 @@ impl<'s> Lowerer<'s> {
         else {
             return Ok(()); // it matches nothing
         };
-        // The `from` end of the relationships (stored orientation).
+        // The `from` end of the relationships (stored orientation). An
+        // undirected relationship is walked in both directions, from the
+        // first end, whichever it is.
+        let undirected = r.direction == RelDirection::Either;
         let from_end = if r.direction == RelDirection::Left {
             right
         } else {
@@ -1409,7 +1607,7 @@ impl<'s> Lowerer<'s> {
         })
         .unwrap_or(left);
         let last = if first == left { right } else { left };
-        let backward = first != from_end;
+        let backward = !undirected && first != from_end;
         // Its nodes / relationships read as values (the demand pass): the
         // search carries them. A shortest path's are recovered from its
         // search also when its identity is read (`PATH_KEY`).
@@ -1457,6 +1655,10 @@ impl<'s> Lowerer<'s> {
             rel.push(RenderExpr::OperatorApplicationExp(eq(column, value)));
         }
         let var = r.var.name();
+        let both = match undirected {
+            true => Some(self.both_directions(edge, r.var)?),
+            false => None,
+        };
         let call = path::PathCall {
             var: &var,
             rel_type: &rel_type,
@@ -1466,6 +1668,7 @@ impl<'s> Lowerer<'s> {
             min,
             max,
             backward,
+            both: both.as_deref(),
             start,
             end,
             rel,
@@ -1511,7 +1714,11 @@ impl<'s> Lowerer<'s> {
                 shortest,
                 // The walk follows the stored direction unless `backward`;
                 // the path's order follows it when the pattern points right.
-                reversed: backward != (r.direction == RelDirection::Left),
+                // Undirected, it goes from the first end.
+                reversed: match undirected {
+                    true => first != left,
+                    false => backward != (r.direction == RelDirection::Left),
+                },
                 node_values,
                 rel_values,
             },
@@ -1888,14 +2095,19 @@ impl<'s> Lowerer<'s> {
         from_label: &str,
         to_label: &str,
     ) -> Result<&'s RelationshipSchema, LowerError> {
-        let Ok(rs) =
-            self.schema
-                .get_rel_schema_with_nodes(rel_type, Some(from_label), Some(to_label))
-        else {
+        let Some(rs) = self.defined(rel_type, from_label, to_label) else {
             return unsupported(format!(
                 "no schema for ({from_label})-[:{rel_type}]->({to_label})"
             ));
         };
+        Self::standard_edge(rel_type, rs)
+    }
+
+    /// `rs` (of `rel_type`) if it is the standard layout.
+    fn standard_edge(
+        rel_type: &str,
+        rs: &'s RelationshipSchema,
+    ) -> Result<&'s RelationshipSchema, LowerError> {
         if !rs.is_standard_edge_table() {
             return unsupported(format!("type {rel_type} is not the standard layout (S8)"));
         }
@@ -1903,6 +2115,28 @@ impl<'s> Lowerer<'s> {
             return unsupported("an edge `constraints:` expression (S8)");
         }
         Ok(rs)
+    }
+
+    /// The schema of `rel_type` from `from_label` to `to_label`, if the
+    /// schema defines it (`get_rel_schema_with_nodes` falls back to the
+    /// type's first schema whatever its ends).
+    fn defined(
+        &self,
+        rel_type: &str,
+        from_label: &str,
+        to_label: &str,
+    ) -> Option<&'s RelationshipSchema> {
+        let all = self.schema.get_relationships_schemas();
+        let found: Vec<&'s RelationshipSchema> = self
+            .schema
+            .expand_generic_relationship_type(rel_type, Some(from_label), Some(to_label))
+            .iter()
+            .filter_map(|key| all.get(key))
+            .collect();
+        let exact = found
+            .iter()
+            .find(|rs| rs.from_node == from_label && rs.to_node == to_label);
+        exact.or(found.first()).copied()
     }
 
     /// Written labels / types are alternatives the element must have. Labels
@@ -2115,6 +2349,12 @@ impl<'s> Lowerer<'s> {
                 schema.should_use_final(),
                 schema.filter.as_ref(),
             ),
+            // Its CTE reads the table with its options and filter.
+            Scan::Rel {
+                at: At::Table(alias),
+                both: Some(both),
+                ..
+            } => (alias.clone(), both.clone(), None, false, None),
             Scan::Rel {
                 schema,
                 at: At::Table(alias),
