@@ -1903,7 +1903,10 @@ fn a_path_is_the_list_of_its_elements() {
         ns.find("toString(v0.user_id)").unwrap_or(usize::MAX),
         ns.find("toString(v2.user_id)").unwrap_or(usize::MAX),
     );
-    assert!(first < second && second < ns.find(" AS \"ns\"").unwrap_or(0), "{ns}");
+    assert!(
+        first < second && second < ns.find(" AS \"ns\"").unwrap_or(0),
+        "{ns}"
+    );
     // A node of another label, and a path of one node.
     has(
         "MATCH p = (u:User)-[:LIKED]->(x:Post) RETURN p",
