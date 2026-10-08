@@ -1887,7 +1887,10 @@ fn a_path_is_the_list_of_its_elements() {
         kinds(&shape),
         vec![
             column("p", ResultKind::Graph(GraphType::Path)),
-            column("ns", ResultKind::Graph(GraphType::List(Box::new(GraphType::Node)))),
+            column(
+                "ns",
+                ResultKind::Graph(GraphType::List(Box::new(GraphType::Node)))
+            ),
             column(
                 "rs",
                 ResultKind::Graph(GraphType::List(Box::new(GraphType::Relationship)))
@@ -1897,7 +1900,10 @@ fn a_path_is_the_list_of_its_elements() {
     // A node of another label, and a path of one node.
     has(
         "MATCH p = (u:User)-[:LIKED]->(x:Post) RETURN p",
-        &["concat('Post:', toString(v2.post_id), '-')", "CAST(['Post'], 'Dynamic')"],
+        &[
+            "concat('Post:', toString(v2.post_id), '-')",
+            "CAST(['Post'], 'Dynamic')",
+        ],
     );
     has(
         "MATCH p = (a:User) RETURN relationships(p) AS rs",
@@ -1921,14 +1927,20 @@ fn a_variable_length_path_carries_its_values() {
         ],
     );
     // Only what is read is carried.
-    let nodes = squash(&sql("MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN nodes(p) AS ns"));
-    assert!(nodes.contains("path_node_values") && !nodes.contains("path_rel_values"), "{nodes}");
-    let rels = squash(&sql("MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) RETURN r"));
-    assert!(rels.contains("v1.path_rel_values AS \"r\"") && !rels.contains("path_node_values"), "{rels}");
-    let counted = squash(&sql(
-        "MATCH p = (a:User)-[r:FOLLOWS*1..2]->(b:User) \
-         WHERE size(nodes(p)) > 2 RETURN length(p), size(relationships(p)), size(r)",
+    let nodes = squash(&sql(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN nodes(p) AS ns",
     ));
+    assert!(
+        nodes.contains("path_node_values") && !nodes.contains("path_rel_values"),
+        "{nodes}"
+    );
+    let rels = squash(&sql("MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) RETURN r"));
+    assert!(
+        rels.contains("v1.path_rel_values AS \"r\"") && !rels.contains("path_node_values"),
+        "{rels}"
+    );
+    let counted = squash(&sql("MATCH p = (a:User)-[r:FOLLOWS*1..2]->(b:User) \
+         WHERE size(nodes(p)) > 2 RETURN length(p), size(relationships(p)), size(r)"));
     assert!(!counted.contains("_values"), "{counted}");
     assert!(
         counted.contains("v1.hop_count + 1 > 2")
@@ -1963,7 +1975,9 @@ fn a_path_walked_against_its_order_is_reversed() {
         "MATCH p = (a:User {user_id: 1})<-[:FOLLOWS*1..2]-(b:User) RETURN nodes(p) AS ns",
     ));
     assert!(!forward.contains("arrayReverse"), "{forward}");
-    let closed = squash(&sql("MATCH p = (a:User)-[:FOLLOWS*1..2]->(a) RETURN nodes(p) AS ns"));
+    let closed = squash(&sql(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(a) RETURN nodes(p) AS ns",
+    ));
     assert!(!closed.contains("arrayReverse"), "{closed}");
 }
 
@@ -1974,11 +1988,17 @@ fn a_path_walked_against_its_order_is_reversed() {
 fn distinct_and_grouping_by_a_value_use_its_identities() {
     has(
         "MATCH (a:User)-[r:FOLLOWS*0..2]->(b:User) RETURN DISTINCT r",
-        &["SELECT any(v1.path_rel_values) AS \"r\"", "GROUP BY v1.path_edges"],
+        &[
+            "SELECT any(v1.path_rel_values) AS \"r\"",
+            "GROUP BY v1.path_edges",
+        ],
     );
     has(
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN nodes(p) AS ns, count(*) AS c",
-        &["any(arrayConcat([map(", "GROUP BY v0.user_id, v1.path_nodes"],
+        &[
+            "any(arrayConcat([map(",
+            "GROUP BY v0.user_id, v1.path_nodes",
+        ],
     );
     has(
         "MATCH p = (a:User)-[:FOLLOWS]->(b:User) RETURN DISTINCT p",
@@ -2043,7 +2063,10 @@ fn a_with_carries_paths_and_lists() {
 fn an_optional_path_value_is_null_when_unmatched() {
     has(
         "MATCH (a:User) OPTIONAL MATCH p = (a)-[:FOLLOWS*1..2]->(b:User) RETURN p",
-        &[".v1__start_id IS NULL), NULL, CAST(arrayConcat([map(", "if((o"],
+        &[
+            ".v1__start_id IS NULL), NULL, CAST(arrayConcat([map(",
+            "if((o",
+        ],
     );
     has(
         "MATCH (a:User) OPTIONAL MATCH (a)-[r:FOLLOWS*1..2]->(b:User) RETURN size(r) AS n",

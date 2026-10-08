@@ -927,9 +927,9 @@ pub fn transform_row(
             }
             ReturnItemType::Graph(ty) => {
                 let value = meta.value(&row).cloned().unwrap_or(Value::Null);
-                result.push(BoltValue::PackstreamBytes(
-                    super::graph_values::packstream(&value, ty, id_mapper)?,
-                ));
+                result.push(BoltValue::PackstreamBytes(super::graph_values::packstream(
+                    &value, ty, id_mapper,
+                )?));
             }
         }
     }

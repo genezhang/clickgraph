@@ -237,7 +237,13 @@ mod tests {
     fn a_list_collects_its_elements() {
         let (mut nodes, mut rels) = (Vec::new(), Vec::new());
         let ty = GraphType::List(Box::new(GraphType::Path));
-        elements(&json!([[n(1), r(1, 2), n(2)], null]), &ty, &mut nodes, &mut rels).unwrap();
+        elements(
+            &json!([[n(1), r(1, 2), n(2)], null]),
+            &ty,
+            &mut nodes,
+            &mut rels,
+        )
+        .unwrap();
         assert_eq!((nodes.len(), rels.len()), (2, 1));
         assert_eq!(rels[0].start_node_element_id, "User:1-");
     }

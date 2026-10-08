@@ -25,7 +25,7 @@ use crate::graph_catalog::element_id::{node_element_id_affixes, relationship_ele
 use crate::graph_catalog::graph_schema::{NodeSchema, RelationshipSchema};
 use crate::query_planner::logical_expr::{self as lx, LogicalExpr};
 use crate::render_plan::render_expr::{
-    Literal, OperatorApplication, Operator, PropertyAccess, RenderExpr, TableAlias,
+    Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
 };
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::function_mapper::{current_function_mapper, GraphValues};
@@ -124,7 +124,9 @@ pub(super) struct Carried {
 pub(super) fn spelling() -> Result<GraphValues, LowerError> {
     match current_function_mapper().graph_values() {
         Some(g) => Ok(g),
-        None => unsupported("a path or a list of nodes or relationships as a value on this dialect"),
+        None => {
+            unsupported("a path or a list of nodes or relationships as a value on this dialect")
+        }
     }
 }
 
@@ -138,7 +140,12 @@ fn string(s: &str) -> String {
 
 /// A node: its label, the SQL of its (single-column) id, its properties
 /// (name, SQL).
-pub(super) fn node_object(g: &GraphValues, label: &str, id: &str, props: &[(String, String)]) -> String {
+pub(super) fn node_object(
+    g: &GraphValues,
+    label: &str,
+    id: &str,
+    props: &[(String, String)],
+) -> String {
     let (prefix, suffix) = node_element_id_affixes(label);
     let labels = current_function_mapper().array_literal(&string(label));
     (g.object)(&[
@@ -187,14 +194,18 @@ pub(super) fn rel_object(
 }
 
 fn properties(g: &GraphValues, props: &[(String, String)]) -> String {
-    let entries: Vec<(String, String)> = props.iter().map(|(k, v)| (string(k), v.clone())).collect();
+    let entries: Vec<(String, String)> =
+        props.iter().map(|(k, v)| (string(k), v.clone())).collect();
     (g.object_without_nulls)(&entries)
 }
 
 /// The declared properties of a table read under `alias` (name, SQL), by
 /// name.
 fn table_props(
-    mappings: &std::collections::HashMap<String, crate::graph_catalog::expression_parser::PropertyValue>,
+    mappings: &std::collections::HashMap<
+        String,
+        crate::graph_catalog::expression_parser::PropertyValue,
+    >,
     alias: &str,
 ) -> Vec<(String, String)> {
     let mut props: Vec<(String, String)> = mappings
@@ -218,11 +229,17 @@ pub(super) fn table_node_object(
     label: &str,
     alias: &str,
 ) -> Result<String, LowerError> {
-    let [id] = schema.id_physical_columns().try_into().map_err(|_| {
-        LowerError::Unsupported("a composite node id in a value (S8)".to_string())
-    })?;
+    let [id] = schema
+        .id_physical_columns()
+        .try_into()
+        .map_err(|_| LowerError::Unsupported("a composite node id in a value (S8)".to_string()))?;
     let id = sql(&super::col_at(alias, &id));
-    Ok(node_object(g, label, &id, &table_props(&schema.property_mappings, alias)))
+    Ok(node_object(
+        g,
+        label,
+        &id,
+        &table_props(&schema.property_mappings, alias),
+    ))
 }
 
 /// A relationship of `schema`'s table read under `alias`.
@@ -336,9 +353,7 @@ impl<'s> Lowerer<'s> {
             GraphRef::Nodes(p) => Ok(plus_one(self.path_length(p)?)),
             GraphRef::Rels(p) => self.path_length(p),
             GraphRef::List(r) => match self.scans.get(&r) {
-                Some(Scan::Path { .. }) => {
-                    self.unless_null(&[r], self.physical(r, "hop_count")?)
-                }
+                Some(Scan::Path { .. }) => self.unless_null(&[r], self.physical(r, "hop_count")?),
                 Some(Scan::Impossible) => Ok(RenderExpr::Literal(Literal::Null)),
                 _ => unsupported(format!("internal: {r} is not a path relation")),
             },
@@ -374,7 +389,13 @@ impl<'s> Lowerer<'s> {
                     }
                     _ => return unsupported(format!("internal: {r} is not a path relation")),
                 };
-                self.finish(&s, value, keys, GraphType::List(Box::new(GraphType::Relationship)), &[r])
+                self.finish(
+                    &s,
+                    value,
+                    keys,
+                    GraphType::List(Box::new(GraphType::Relationship)),
+                    &[r],
+                )
             }
             GraphRef::Carried(v) => {
                 let c = &self.graph_values[&v];
@@ -436,7 +457,12 @@ impl<'s> Lowerer<'s> {
             Part::Nodes => GraphType::List(Box::new(GraphType::Node)),
             Part::Rels => GraphType::List(Box::new(GraphType::Relationship)),
         };
-        let all: Vec<VarId> = elements.nodes.iter().chain(&elements.rels).copied().collect();
+        let all: Vec<VarId> = elements
+            .nodes
+            .iter()
+            .chain(&elements.rels)
+            .copied()
+            .collect();
         if all
             .iter()
             .any(|v| matches!(self.scans.get(v), Some(Scan::Impossible)))
@@ -484,7 +510,10 @@ impl<'s> Lowerer<'s> {
                     let list = match part {
                         Part::Whole => {
                             keys.extend(self.vlp_keys(*r)?);
-                            (s.interleave)(&self.vlp_rels(*r, &s)?, &(s.tail)(&self.vlp_nodes(*r, &s)?))
+                            (s.interleave)(
+                                &self.vlp_rels(*r, &s)?,
+                                &(s.tail)(&self.vlp_nodes(*r, &s)?),
+                            )
                         }
                         Part::Nodes => {
                             keys.push(self.physical(*r, "path_nodes")?);
@@ -637,4 +666,3 @@ enum Part {
     Nodes,
     Rels,
 }
-

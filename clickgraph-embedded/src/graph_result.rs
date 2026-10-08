@@ -201,7 +201,10 @@ pub fn transform_rows_to_graph(
                     .is_ok()
                     {
                         let convert = |props: HashMap<String, JsonValue>| {
-                            props.into_iter().map(|(k, v)| (k, Value::from(v))).collect()
+                            props
+                                .into_iter()
+                                .map(|(k, v)| (k, Value::from(v)))
+                                .collect()
                         };
                         for n in nodes {
                             builder.add_node(GraphNode {
@@ -466,9 +469,7 @@ mod tests {
     #[test]
     fn a_path_value_adds_its_nodes_and_edges() {
         use clickgraph::bound_plan::lower::GraphType;
-        let node = |id: u32| {
-            serde_json::json!({"elementId": format!("User:{id}-"), "labels": ["User"], "properties": {"user_id": id}})
-        };
+        let node = |id: u32| serde_json::json!({"elementId": format!("User:{id}-"), "labels": ["User"], "properties": {"user_id": id}});
         let rel = |a: u32, b: u32| {
             serde_json::json!({
                 "elementId": format!("FOLLOWS:{a}->{b}-"),
@@ -490,9 +491,19 @@ mod tests {
         let schema = GraphSchema::build(1, "db".to_string(), HashMap::new(), HashMap::new());
         let result = transform_rows_to_graph(&rows, &meta, &schema);
         assert_eq!((result.node_count(), result.edge_count()), (2, 2));
-        let edge = result.edges().iter().find(|e| e.id == "FOLLOWS:2->1-").unwrap();
-        assert_eq!((edge.from_id.as_str(), edge.to_id.as_str()), ("User:2-", "User:1-"));
-        assert_eq!(result.nodes()[0].properties.get("user_id"), Some(&Value::Int64(1)));
+        let edge = result
+            .edges()
+            .iter()
+            .find(|e| e.id == "FOLLOWS:2->1-")
+            .unwrap();
+        assert_eq!(
+            (edge.from_id.as_str(), edge.to_id.as_str()),
+            ("User:2-", "User:1-")
+        );
+        assert_eq!(
+            result.nodes()[0].properties.get("user_id"),
+            Some(&Value::Int64(1))
+        );
     }
 
     #[test]

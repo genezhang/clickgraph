@@ -52,9 +52,9 @@
 
 mod expr;
 mod path;
-mod value;
 #[cfg(test)]
 mod tests;
+mod value;
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;

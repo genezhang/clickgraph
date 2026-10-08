@@ -212,7 +212,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         Some(super::GraphValues {
             object,
             object_without_nulls: |entries| {
-                format!("mapFilter((__k, __v) -> __v IS NOT NULL, {})", object(entries))
+                format!(
+                    "mapFilter((__k, __v) -> __v IS NOT NULL, {})",
+                    object(entries)
+                )
             },
             list: |items| {
                 if items.is_empty() {
