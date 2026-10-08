@@ -324,7 +324,7 @@ fn visit(e: &LogicalExpr, f: &mut dyn FnMut(&LogicalExpr)) {
     }
 }
 
-fn children(e: &LogicalExpr) -> Vec<&LogicalExpr> {
+pub(crate) fn children(e: &LogicalExpr) -> Vec<&LogicalExpr> {
     match e {
         LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
             op.operands.iter().collect()

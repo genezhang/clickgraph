@@ -212,7 +212,7 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         Some(super::GraphValues {
             object,
             object_without_nulls: |entries| {
-                format!("mapFilter((k, v) -> v IS NOT NULL, {})", object(entries))
+                format!("mapFilter((__k, __v) -> __v IS NOT NULL, {})", object(entries))
             },
             list: |items| {
                 if items.is_empty() {
@@ -228,7 +228,7 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             tail: |list| format!("arraySlice({list}, 2)"),
             reverse: |list| format!("arrayReverse({list})"),
             interleave: |rels, nodes| {
-                format!("arrayFlatten(arrayMap((r, n) -> [r, n], {rels}, {nodes}))")
+                format!("arrayFlatten(arrayMap((__r, __n) -> [__r, __n], {rels}, {nodes}))")
             },
             length: |list| format!("length({list})"),
             text: |parts| format!("concat({})", parts.join(", ")),

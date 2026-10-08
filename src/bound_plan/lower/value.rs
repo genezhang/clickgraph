@@ -30,8 +30,11 @@ use crate::render_plan::render_expr::{
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::function_mapper::{current_function_mapper, GraphValues};
 
-use super::{or_all, parse_var, unsupported, LowerError, Lowerer, Scan};
-use crate::bound_plan::types::{Binding, BindingKind, VarId};
+use super::{
+    col_at, or_all, parse_var, select, unsupported, Body, Exports, LowerError, Lowerer,
+    ResultColumn, ResultKind, Scan,
+};
+use crate::bound_plan::types::{Binding, BindingKind, ProjItem, VarId};
 
 /// The type of a graph value: how Bolt and the graph output read it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,19 +96,6 @@ pub(super) fn graph_ref(e: &LogicalExpr, bindings: &[Binding]) -> Option<GraphRe
                 _ => None,
             }
         }
-        _ => None,
-    }
-}
-
-/// `size(x)` of a list [`graph_ref`] names: counted from the path's
-/// structure, without its values.
-pub(super) fn structural_size(e: &LogicalExpr) -> Option<&LogicalExpr> {
-    match e {
-        LogicalExpr::ScalarFnCall(f) if f.name.eq_ignore_ascii_case("size") => match f.args.as_slice()
-        {
-            [arg] => Some(arg),
-            _ => None,
-        },
         _ => None,
     }
 }
@@ -259,7 +249,71 @@ pub(super) fn table_rel_object(
     ))
 }
 
-impl Lowerer<'_> {
+impl<'s> Lowerer<'s> {
+    /// A WITH / RETURN item that is a graph value (`cte`: the WITH's CTE
+    /// alias). Returns whether it is handled here: a WITH carries a
+    /// `-[r*]->` list as an element (`export_element`).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn graph_item(
+        &mut self,
+        g: GraphRef,
+        it: &ProjItem,
+        cte: Option<&str>,
+        aggregating: bool,
+        body: &mut Body,
+        exports: &mut Exports<'s>,
+        shape: &mut Vec<ResultColumn>,
+        exported: &mut Vec<VarId>,
+    ) -> Result<bool, LowerError> {
+        match (g, cte) {
+            // A WITH carries a path's elements; the next segment builds its
+            // value (and length) from them.
+            (GraphRef::Path(src), Some(alias)) => {
+                let Some(elements) = self.paths.get(&src).cloned() else {
+                    return unsupported(format!("internal: path {src} has no elements"));
+                };
+                for e in elements.nodes.iter().chain(&elements.rels) {
+                    if exported.contains(e) {
+                        continue;
+                    }
+                    exported.push(*e);
+                    let mut keys = Vec::new();
+                    let scan = self.export_element(*e, *e, alias, body, &mut keys)?;
+                    if aggregating {
+                        body.group_by.extend(keys);
+                    }
+                    exports.scans.push((*e, scan));
+                }
+                self.paths.insert(it.var, elements);
+                Ok(true)
+            }
+            (GraphRef::List(_), Some(_)) => Ok(false),
+            (g, None) => {
+                let v = self.graph_value(g)?;
+                let column = body.column(v.value, &it.name);
+                body.determined.push(column.clone());
+                if aggregating {
+                    body.group_by.extend(v.keys);
+                } else if body.distinct {
+                    body.distinct_keys.extend(v.keys);
+                }
+                shape.push(ResultColumn {
+                    name: it.name.clone(),
+                    kind: ResultKind::Graph(v.ty),
+                    columns: vec![(it.name.clone(), column)],
+                });
+                Ok(true)
+            }
+            (g, Some(alias)) => {
+                let v = self.graph_value(g)?;
+                let carried = export_graph(it.var, v, alias, body, aggregating);
+                exports.values.push((it.var, col_at(alias, &it.var.name())));
+                exports.graph.push((it.var, carried));
+                Ok(true)
+            }
+        }
+    }
+
     /// [`graph_ref`], and a graph value the segment's CTE carries.
     pub(super) fn graph_ref(&self, e: &LogicalExpr) -> Option<GraphRef> {
         if let LogicalExpr::TableAlias(lx::TableAlias(n)) = e {
@@ -509,12 +563,12 @@ impl Lowerer<'_> {
 
     /// A variable-length relationship's nodes, in path order.
     fn vlp_nodes(&self, r: VarId, s: &GraphValues) -> Result<String, LowerError> {
-        self.vlp_list(r, "path_node_values", s)
+        self.vlp_list(r, super::path::VALUE_COLUMNS[0], s)
     }
 
     /// A variable-length relationship's relationships, in path order.
     fn vlp_rels(&self, r: VarId, s: &GraphValues) -> Result<String, LowerError> {
-        self.vlp_list(r, "path_rel_values", s)
+        self.vlp_list(r, super::path::VALUE_COLUMNS[1], s)
     }
 
     fn vlp_list(&self, r: VarId, column: &str, s: &GraphValues) -> Result<String, LowerError> {
@@ -531,7 +585,7 @@ impl Lowerer<'_> {
         if shortest.is_some() {
             return unsupported("a shortestPath's nodes or relationships as a value (S6d)");
         }
-        let carried = if column == "path_node_values" {
+        let carried = if column == super::path::VALUE_COLUMNS[0] {
             *node_values
         } else {
             *rel_values
@@ -541,6 +595,34 @@ impl Lowerer<'_> {
         }
         let list = sql(&self.physical(r, column)?);
         Ok(if *reversed { (s.reverse)(&list) } else { list })
+    }
+}
+
+/// Export a graph value as column `out` of the CTE aliased `alias`, with its
+/// keys (`out__k{i}`): how the next segment reads it.
+pub(super) fn export_graph(
+    out: VarId,
+    v: GraphValue,
+    alias: &str,
+    body: &mut Body,
+    aggregating: bool,
+) -> Carried {
+    let name = out.name();
+    body.select.push(select(v.value, &name));
+    body.determined.push(name.clone());
+    let mut keys = Vec::new();
+    for (i, k) in v.keys.into_iter().enumerate() {
+        let column = format!("{name}__k{i}");
+        body.select.push(select(k.clone(), &column));
+        if aggregating {
+            body.group_by.push(k);
+        }
+        keys.push(col_at(alias, &column));
+    }
+    Carried {
+        keys,
+        ty: v.ty,
+        nullable: v.nullable,
     }
 }
 

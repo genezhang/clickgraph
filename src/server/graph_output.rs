@@ -20,8 +20,8 @@ use crate::{
 ///
 /// The result shape (`ReadTranslation::return_metadata`) says which return
 /// items are nodes vs relationships; the Bolt transform functions build the
-/// graph objects. Scalars and paths are skipped (paths could be added in the
-/// future).
+/// graph objects. A path or list of the bound-plan path (`Graph`) adds its
+/// nodes and relationships. Scalars and legacy paths are skipped.
 pub fn transform_to_graph(
     rows: &[Value],
     metadata: &[ReturnItemMetadata],
@@ -62,6 +62,31 @@ pub fn transform_to_graph(
                                 meta.field_name,
                                 e
                             );
+                        }
+                    }
+                }
+                ReturnItemType::Graph(ty) => {
+                    let value = meta.value(&row_map).cloned().unwrap_or(Value::Null);
+                    let (mut ns, mut rs) = (Vec::new(), Vec::new());
+                    match crate::server::bolt_protocol::graph_values::elements(
+                        &value, ty, &mut ns, &mut rs,
+                    ) {
+                        Ok(()) => {
+                            for n in ns {
+                                let gn = n.to_graph_node();
+                                if seen_nodes.insert(gn.element_id.clone()) {
+                                    nodes.push(gn);
+                                }
+                            }
+                            for r in rs {
+                                let ge = r.to_graph_edge();
+                                if seen_edges.insert(ge.element_id.clone()) {
+                                    edges.push(ge);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::debug!("Skipping '{}' in graph output: {}", meta.field_name, e)
                         }
                     }
                 }

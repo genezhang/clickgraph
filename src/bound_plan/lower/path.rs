@@ -69,6 +69,10 @@ const UNBOUNDED: u32 = i32::MAX as u32;
 /// two paths can agree on all three.
 pub(super) const PATH_COLUMNS: [&str; 3] = ["start_id", "end_id", "hop_count"];
 
+/// The columns of a path relation that carry its nodes and relationships as
+/// values (`value.rs`), when [`PathCall::node_values`] / `rel_values`.
+pub(super) const VALUE_COLUMNS: [&str; 2] = ["path_node_values", "path_rel_values"];
+
 /// What one variable-length relationship needs from the generator.
 #[derive(Clone)]
 pub(super) struct PathCall<'a> {

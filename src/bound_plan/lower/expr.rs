@@ -319,14 +319,23 @@ impl Lowerer<'_> {
                     length: Some(_), ..
                 },
                 _,
-            ) => unsupported("a variable-length relationship's list of relationships (S6c)"),
+            ) => unsupported(
+                "a variable-length relationship's list other than as a RETURN / WITH item or in \
+                 size() (S7 lists)",
+            ),
             (BindingKind::Node { .. } | BindingKind::Rel { .. }, _) => {
                 unsupported("a node or relationship as a value (in a list, collect(), CASE …)")
             }
             (BindingKind::Value, BindingSource::Local) => {
                 Ok(RenderExpr::TableAlias(TableAlias(name.to_string())))
             }
-            (BindingKind::Path, _) => unsupported("a path variable (S6)"),
+            (BindingKind::Path, _) => {
+                unsupported("a path other than as a RETURN / WITH item or in length() (S7 lists)")
+            }
+            (BindingKind::Value, _) if self.graph_values.contains_key(&v) => unsupported(
+                "a carried list of nodes or relationships other than as an item or in size() \
+                 (S7 lists)",
+            ),
             (BindingKind::Value, _) => match self.values.get(&v) {
                 Some(e) => Ok(e.clone()),
                 None => unsupported("an UNWIND value (S7)"),
@@ -413,10 +422,19 @@ impl Lowerer<'_> {
     }
 
     fn scalar_fn(&self, f: &LScalar, items: &Items) -> Result<RenderExpr, LowerError> {
+        // `size()` of a path's list: from the path's structure (`value.rs`).
+        if let (true, [arg]) = (f.name.eq_ignore_ascii_case("size"), f.args.as_slice()) {
+            if let Some(g) = self.graph_ref(arg) {
+                return self.graph_size(g);
+            }
+        }
         if let Some(p) = self.path_var(&f.args) {
             return match f.name.to_ascii_lowercase().as_str() {
                 "length" => self.path_length(p),
-                _ => unsupported(format!("{}() of a path (S6c)", f.name)),
+                _ => unsupported(format!(
+                    "{}() of a path other than as a RETURN / WITH item or in size() (S7 lists)",
+                    f.name
+                )),
             };
         }
         if let Some(v) = self.entity_arg(&f.args) {
