@@ -494,6 +494,45 @@ The union stays inside the element, so the rest of the query sees one
 relation. That removes the arm-0 asymmetry (root C) and the per-arm NULL
 extension of #1249.
 
+**Implemented in S7a** (undirected relationships, standard layout):
+- **Which directions.** For `(a)-[r:T]-(b)` with one label at each end, the
+  directions are those the schema defines (`Lowerer::decide_rel`, an exact
+  lookup: `get_rel_schema_with_nodes` falls back to the type's first schema
+  whatever its ends, so it cannot say whether a direction exists):
+  - one direction: the relationship is read as a directed one, in it
+    (`(p:Post)-[:LIKED]-(u:User)` is `(p)<-[:LIKED]-(u)`);
+  - both, and they are one table (the two ends have one label): the table
+    in both directions, below;
+  - both, as two relationship schemas: not lowered (S7b, with several
+    labels and types);
+  - none: it matches nothing.
+- **Both directions** are the CTE `v{N}_both` (`Lowerer::both_directions`):
+  `SELECT *, from AS __cg_start_0, to AS __cg_end_0 FROM t UNION ALL
+  SELECT *, to, from FROM t WHERE from <> to`. The left end is tied to the
+  node a row leaves, the right end to the node it enters. `SELECT *` keeps
+  the stored columns under their own names, so a relationship's identity,
+  endpoints (`startNode` / `endNode` in a value), properties and an
+  undeclared property's same-named column are its own whichever way it is
+  read, and uniqueness, values and exports need no case of their own. The
+  table's `filter:`, view parameters and FINAL apply inside both arms. A
+  self-loop is read once (reversed, it is the same row), as Neo4j matches it
+  once, for a hop and in a variable-length path alike (checked on Neo4j).
+  - An `OR` in the join (`ON r.from = a.id OR r.to = a.id`) would read the
+    table once, but ClickHouse runs it only with the `hash` join algorithm
+    (`grace_hash`, `parallel_hash`, the merge joins refuse it, Code 48).
+- **Variable-length and shortest paths** walk the same relation: the
+  generator takes it as `CteGenerationContext::walk_relation` (its standard
+  arms read `rel_source()`), walked from `__cg_start_0` to `__cg_end_0`, and
+  the shortest-path search and walk read it in place of the table. The
+  trail's identities (`path_edges`) are the stored ones, so a path does not
+  use a relationship twice in opposite directions. The walk starts at the
+  restricted end, as a directed one does; the path's order is the walk's
+  from the left end, reversed from the right end.
+- **Not lowered:** a relationship bound before (an earlier clause, or used
+  twice) matched undirected (each row would match in up to two
+  orientations; S7b), two directions as two schemas (S7b), an undirected
+  variable-length relationship between two labels (as directed).
+
 ### 4.7 Label inference
 
 Labels are inferred over the explicit pattern graph of each clause, with
@@ -748,7 +787,7 @@ Implemented in S6a (`bound_plan/lower/path.rs`, `Lowerer::path_scan` /
   no composite components are registered. Lowered: one type whose edge
   joins one label to itself, standard layout, no `filter:` / view
   parameters / FINAL on the edge or node table, single-column ids,
-  directed. Undirected paths are S7.
+  directed (undirected paths: S7a, §4.6 `Alternatives`).
 - **Labels.** Every node of a path of one or more relationships has the
   edge's label. From a node of another label only the path of none is left
   (`(a:Post)-[:FOLLOWS*0..2]->(b)` is `a` itself): the relation is generated
