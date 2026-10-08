@@ -51,6 +51,7 @@
 //! relation with no rows, and its properties read as NULL.
 
 mod expr;
+mod path;
 #[cfg(test)]
 mod tests;
 
@@ -68,6 +69,7 @@ use crate::render_plan::{
     JoinItems, JoinType, LimitItem, OrderByItem, OrderByItems, OrderByOrder, RenderPlan,
     SelectItem, SelectItems, SkipItem, UnionItems, ViewTableRef,
 };
+use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::utils::cte_column_naming::cte_column_name;
 
 use super::expr::{calls_aggregate, property_refs, referenced_names};
@@ -163,6 +165,7 @@ pub fn lower_statement(
         empty: false,
         order: RowOrder::Unordered,
         elided: HashMap::new(),
+        paths: HashMap::new(),
     };
     l.relation(input)?;
     l.finish_relation();
@@ -183,6 +186,19 @@ enum Scan<'s> {
         schema: &'s RelationshipSchema,
         rel_type: String,
         at: At,
+    },
+    /// A variable-length relationship: a relation of paths (`path.rs`),
+    /// read from the CTE `cte`.
+    Path {
+        schema: &'s RelationshipSchema,
+        rel_type: String,
+        cte: String,
+        at: At,
+        /// It has a `path_edges` column.
+        edges: bool,
+        /// Walked against the relationships' direction: `start_id` is their
+        /// `to` end, and `path_edges` spells them backward.
+        backward: bool,
     },
     /// An element whose label / type set is empty: it matches nothing.
     Impossible,
@@ -216,7 +232,7 @@ impl At {
 impl<'s> Scan<'s> {
     fn at(&self) -> Option<&At> {
         match self {
-            Scan::Node { at, .. } | Scan::Rel { at, .. } => Some(at),
+            Scan::Node { at, .. } | Scan::Rel { at, .. } | Scan::Path { at, .. } => Some(at),
             Scan::Impossible => None,
         }
     }
@@ -231,6 +247,21 @@ impl<'s> Scan<'s> {
                 schema,
                 rel_type,
                 at,
+            },
+            Scan::Path {
+                schema,
+                rel_type,
+                cte,
+                edges,
+                backward,
+                ..
+            } => Scan::Path {
+                schema,
+                rel_type,
+                cte,
+                at,
+                edges,
+                backward,
             },
             Scan::Impossible => Scan::Impossible,
         }
@@ -298,6 +329,15 @@ struct Lowerer<'s> {
     /// Nodes read from a relationship's endpoint columns instead of their
     /// own table (an OPTIONAL MATCH's shared node, `anchor_correlation`).
     elided: HashMap<VarId, VarId>,
+    /// Path variables (`p = …`) and their elements, of every clause.
+    paths: HashMap<VarId, PathElements>,
+}
+
+/// The elements of a path variable, in path order.
+#[derive(Debug, Clone)]
+struct PathElements {
+    nodes: Vec<VarId>,
+    rels: Vec<VarId>,
 }
 
 /// The order of the current rows.
@@ -398,11 +438,7 @@ impl<'s> Lowerer<'s> {
                 if *optional {
                     self.optional_match(pattern, predicate.as_ref(), introduces)?;
                 } else {
-                    self.lower_match(pattern)?;
-                    if let Some(p) = predicate {
-                        let e = self.expr(p, &HashMap::new())?;
-                        self.filters.push(e);
-                    }
+                    self.lower_match(pattern, predicate.as_ref())?;
                 }
                 // Joining other rows to them leaves the rows in no order.
                 self.order = RowOrder::Unordered;
@@ -440,14 +476,20 @@ impl<'s> Lowerer<'s> {
         }
     }
 
-    fn lower_match(&mut self, pattern: &BoundPattern) -> Result<(), LowerError> {
+    /// A MATCH clause: its elements joined in path order, its property maps
+    /// and WHERE (`predicate`) as filters over the join (§4.6).
+    fn lower_match(
+        &mut self,
+        pattern: &BoundPattern,
+        predicate: Option<&LogicalExpr>,
+    ) -> Result<(), LowerError> {
         // Decide every element's scan first (a relationship's table depends
         // on its endpoints' labels), then join them in path order: node,
         // relationship, node, … so each scan joins on the one before it.
         let mut clause_rels: Vec<VarId> = Vec::new();
         for part in &pattern.parts {
-            if part.path_var.is_some() || part.shortest.is_some() {
-                return unsupported("a path variable or shortestPath (S6)");
+            if part.shortest.is_some() {
+                return unsupported("shortestPath (S6b)");
             }
             for n in &part.nodes {
                 self.node_scan(n.var)?;
@@ -456,24 +498,60 @@ impl<'s> Lowerer<'s> {
                 self.rel_scan(r, part.nodes[i].var, part.nodes[i + 1].var)?;
                 clause_rels.push(r.var);
             }
+            if let Some(p) = part.path_var {
+                let elements = PathElements {
+                    nodes: part.nodes.iter().map(|n| n.var).collect(),
+                    rels: part.rels.iter().map(|r| r.var).collect(),
+                };
+                self.paths.insert(p, elements);
+            }
         }
+        // The clause's conditions: its property maps (a variable-length
+        // relationship's holds of each of its relationships, inside the
+        // search), then its WHERE.
+        let mut conditions = Vec::new();
+        for part in &pattern.parts {
+            for n in &part.nodes {
+                self.written(n.var, &n.labels);
+                conditions.extend(self.props(n.var, &n.props)?);
+            }
+            for r in &part.rels {
+                self.written(r.var, &r.types);
+                if r.length.is_none() {
+                    conditions.extend(self.props(r.var, &r.props)?);
+                }
+            }
+        }
+        let filter = predicate
+            .map(|p| self.expr(p, &HashMap::new()))
+            .transpose()?;
+        // Two paths of one table whose relationships are identified by their
+        // endpoints must spell them alike (their uniqueness compares them):
+        // those are walked forward.
+        let mut by_table: HashMap<String, usize> = HashMap::new();
+        for v in &clause_rels {
+            if let Some(Scan::Path { schema, .. }) = self.scans.get(v) {
+                if schema.edge_id.is_none() {
+                    *by_table.entry(schema.full_table_name()).or_default() += 1;
+                }
+            }
+        }
+        let own: Vec<RenderExpr> = conditions.iter().chain(&filter).cloned().collect();
         for part in &pattern.parts {
             self.emit(part.nodes[0].var)?;
             for (i, r) in part.rels.iter().enumerate() {
+                if let Some(Scan::Path { schema, .. }) = self.scans.get(&r.var) {
+                    let forward_only = by_table
+                        .get(&schema.full_table_name())
+                        .is_some_and(|n| *n > 1);
+                    let (left, right) = (part.nodes[i].var, part.nodes[i + 1].var);
+                    self.build_path(r, left, right, forward_only, &own)?;
+                }
                 self.emit(r.var)?;
                 self.emit(part.nodes[i + 1].var)?;
             }
         }
-        for part in &pattern.parts {
-            for n in &part.nodes {
-                self.written(n.var, &n.labels);
-                self.props(n.var, &n.props)?;
-            }
-            for r in &part.rels {
-                self.written(r.var, &r.types);
-                self.props(r.var, &r.props)?;
-            }
-        }
+        self.filters.extend(conditions);
         // A variable an OPTIONAL MATCH left NULL matches nothing here. A tie
         // to it already fails; a node with no relationship in the pattern
         // (`MATCH (b)`) has none.
@@ -499,7 +577,9 @@ impl<'s> Lowerer<'s> {
                     }));
             }
         }
-        self.uniqueness(&clause_rels)
+        self.uniqueness(&clause_rels)?;
+        self.filters.extend(filter);
+        Ok(())
     }
 
     /// OPTIONAL MATCH as one unit (§4.9): the rows so far, `I`, LEFT JOIN
@@ -530,8 +610,8 @@ impl<'s> Lowerer<'s> {
         introduces: &[VarId],
     ) -> Result<(), LowerError> {
         for part in &pattern.parts {
-            if part.path_var.is_some() || part.shortest.is_some() {
-                return unsupported("a path variable or shortestPath (S6)");
+            if part.shortest.is_some() {
+                return unsupported("shortestPath (S6b)");
             }
         }
         // Rows joined to other rows are in no order.
@@ -585,11 +665,24 @@ impl<'s> Lowerer<'s> {
                 }
             }
         }
-        let named: Vec<VarId> = introduces
+        // The introduced variables later clauses can read: the named ones,
+        // and the elements of a named path (its length reads them).
+        let mut named: Vec<VarId> = introduces
             .iter()
             .copied()
-            .filter(|v| self.binding(*v).name.is_some())
+            .filter(|v| {
+                let b = self.binding(*v);
+                b.name.is_some() && !matches!(b.kind, BindingKind::Path)
+            })
             .collect();
+        for part in pattern.parts.iter().filter(|p| p.path_var.is_some()) {
+            let elements = part.nodes.iter().map(|n| n.var);
+            for v in elements.chain(part.rels.iter().map(|r| r.var)) {
+                if introduces.contains(&v) && !named.contains(&v) {
+                    named.push(v);
+                }
+            }
+        }
         // A shared element that matches nothing (NULL on every row) is in no
         // match. (One only the WHERE reads is NULL there, and `IS NULL` can
         // still hold.)
@@ -607,7 +700,13 @@ impl<'s> Lowerer<'s> {
         // relationship; with more it can be far larger than the result
         // (every two-hop path), unless the input's WHERE restricts a shared
         // node (copied into `Q`, `anchor_correlation`).
-        let hops: usize = pattern.parts.iter().map(|p| p.rels.len()).sum();
+        // A variable-length relationship counts as several.
+        let hops: usize = pattern
+            .parts
+            .iter()
+            .flat_map(|p| &p.rels)
+            .map(|r| if r.length.is_some() { 2 } else { 1 })
+            .sum();
         let anchor_aliases: Vec<String> = shared
             .iter()
             .filter(|v| matches!(self.scans.get(*v).and_then(Scan::at), Some(At::Table(a)) if *a == v.name()))
@@ -655,13 +754,16 @@ impl<'s> Lowerer<'s> {
         };
         let n = self.ctes.len() + 1;
         let (q_alias, q_name) = (format!("o{n}"), format!("optional_o{n}"));
+        let ctes_before_q = self.ctes.len();
         let outer = self.swap_segment(q);
         let inner = self.optional_inner(pattern, predicate, &correlation, &named, &q_alias);
         self.swap_segment(outer);
         let Some((q_plan, exports)) = inner? else {
             // The pattern can match nothing: every input row keeps NULLs.
+            // `Q`'s paths and `D` are unused.
+            self.ctes.truncate(ctes_before_q);
             if !anchored {
-                self.ctes.pop(); // `D`, unused
+                self.ctes.pop(); // `D`
             }
             for v in named {
                 self.scans.insert(v, Scan::Impossible);
@@ -970,11 +1072,7 @@ impl<'s> Lowerer<'s> {
         named: &[VarId],
         q_alias: &str,
     ) -> Result<Option<(RenderPlan, Vec<(VarId, Scan<'s>)>)>, LowerError> {
-        self.lower_match(pattern)?;
-        if let Some(p) = predicate {
-            let e = self.expr(p, &HashMap::new())?;
-            self.filters.push(e);
-        }
+        self.lower_match(pattern, predicate)?;
         self.finish_relation();
         if self.empty {
             return Ok(None);
@@ -1043,14 +1141,14 @@ impl<'s> Lowerer<'s> {
     /// Decide how a relationship is read (once per variable) and tie it to
     /// its endpoints in the stored orientation.
     fn rel_scan(&mut self, r: &PatRel, left: VarId, right: VarId) -> Result<(), LowerError> {
-        if r.length.is_some() {
-            return unsupported("a variable-length relationship (S6)");
-        }
         let (from, to) = match r.direction {
             RelDirection::Right => (left, right),
             RelDirection::Left => (right, left),
             RelDirection::Either => return unsupported("an undirected relationship (S7)"),
         };
+        if let Some((min, max)) = r.length {
+            return self.path_scan(r, from, to, min, max);
+        }
         if !self.scans.contains_key(&r.var) {
             let BindingKind::Rel { types, .. } = &self.binding(r.var).kind else {
                 return unsupported("a pattern relationship that is not a relationship binding");
@@ -1088,6 +1186,267 @@ impl<'s> Lowerer<'s> {
         Ok(())
     }
 
+    /// Decide how a variable-length relationship is read: a relation of
+    /// paths (`path.rs`), generated by [`Self::build_path`] once the clause's
+    /// conditions are known, and tied to its endpoints in the stored
+    /// orientation (`start_id` = the `from` node, `end_id` = the `to` node).
+    fn path_scan(
+        &mut self,
+        r: &PatRel,
+        from: VarId,
+        to: VarId,
+        min: u32,
+        max: Option<u32>,
+    ) -> Result<(), LowerError> {
+        if r.bound_before {
+            return unsupported("re-matching a variable-length relationship list");
+        }
+        let BindingKind::Rel { types, .. } = &self.binding(r.var).kind else {
+            return unsupported("a pattern relationship that is not a relationship binding");
+        };
+        let scan = match (types.len(), self.single_label(from), self.single_label(to)) {
+            _ if max.is_some_and(|m| m < min) => Scan::Impossible,
+            (1, Some(fl), Some(tl)) => {
+                let rel_type = types.iter().next().expect("one type").clone();
+                let rs = self.edge_schema(&rel_type, &fl, &tl)?;
+                // Every node of the path has the edge's one label.
+                if fl != tl || rs.from_node != rs.to_node {
+                    return unsupported(
+                        "a variable-length relationship between nodes of different labels",
+                    );
+                }
+                let ns = self.schema.node_schema_opt(&fl).expect("a scanned label");
+                let plain = |filter: bool, params: bool, fin: bool| !filter && !params && !fin;
+                if !plain(
+                    rs.filter.is_some(),
+                    rs.view_parameters.is_some(),
+                    rs.should_use_final(),
+                ) || !plain(
+                    ns.filter.is_some(),
+                    ns.view_parameters.is_some(),
+                    ns.should_use_final(),
+                ) {
+                    return unsupported(
+                        "a variable-length relationship over a table with a filter, view \
+                         parameters or FINAL (S8)",
+                    );
+                }
+                Scan::Path {
+                    schema: rs,
+                    rel_type,
+                    cte: String::new(),
+                    at: At::Table(r.var.name()),
+                    edges: false,
+                    backward: false,
+                }
+            }
+            // A path of no relationship needs none: `*0..` with no feasible
+            // type still matches each node to itself.
+            (0, ..) if min == 0 => {
+                return unsupported("a zero-length path with no feasible relationship type")
+            }
+            // No feasible type, or an endpoint that matches nothing.
+            (0, ..) | (1, ..) => Scan::Impossible,
+            _ => return unsupported("a relationship with several possible types (S7)"),
+        };
+        if let (Scan::Path { .. }, Some(ids)) = (&scan, self.identity(from)?) {
+            if ids.len() != 1 {
+                return unsupported("a variable-length relationship between composite ids (S8)");
+            }
+        }
+        self.scans.insert(r.var, scan);
+        Ok(())
+    }
+
+    /// Generate the relation of paths of a variable-length relationship
+    /// (decided by [`Self::path_scan`]) when it joins the rows so far (its
+    /// `left` node is joined), and tie it to its endpoints: `start_id` is
+    /// the node the walk starts at, `end_id` the other. The walk starts at a
+    /// restricted end (§4.8 d), the left one when both or neither are, and
+    /// follows the relationships forward or backward from there
+    /// (`forward_only`: from their `from` end). Inside the search go:
+    /// * the first node's values in the rows so far (a semi-join), when they
+    ///   are more than its table's rows;
+    /// * conjuncts that read only the first node's own columns, from the
+    ///   segment's filters and the clause's own conditions (`own`);
+    /// * the relationship's property map, which every relationship of the
+    ///   path satisfies.
+    ///
+    /// Each holds of the result's rows, and stays where it is: pushing is
+    /// never needed for correctness.
+    fn build_path(
+        &mut self,
+        r: &PatRel,
+        left: VarId,
+        right: VarId,
+        forward_only: bool,
+        own: &[RenderExpr],
+    ) -> Result<(), LowerError> {
+        let Some(Scan::Path {
+            schema: edge,
+            rel_type,
+            at,
+            ..
+        }) = self.scans.get(&r.var).cloned()
+        else {
+            return Ok(()); // it matches nothing
+        };
+        let (min, max) = r.length.expect("a variable-length relationship");
+        // The `from` end of the relationships (stored orientation).
+        let from_end = if r.direction == RelDirection::Left {
+            right
+        } else {
+            left
+        };
+        let first = if forward_only {
+            from_end
+        } else if !self.restricted(left, own) && self.restricted(right, own) {
+            right
+        } else {
+            left
+        };
+        let last = if first == left { right } else { left };
+        let backward = first != from_end;
+        let Some(Scan::Node {
+            schema: node,
+            label,
+            at: first_at,
+        }) = self.scans.get(&first).cloned()
+        else {
+            return unsupported("internal: a path endpoint is not a node");
+        };
+        let mut start = Vec::new();
+        if let At::Table(alias) = &first_at {
+            for c in self.own_conjuncts(first, own) {
+                start.push(realias(c, alias, path::START));
+            }
+        }
+        if self.joined_rows_restrict(first) {
+            let Some(id) = self.identity(first)? else {
+                return Ok(());
+            };
+            let mut rows = empty_plan();
+            rows.select = SelectItems {
+                items: vec![select(id[0].clone(), "id")],
+                distinct: true,
+            };
+            rows.from = FromTableItem(self.from.clone());
+            rows.joins = JoinItems(self.joins.clone());
+            let held: Vec<RenderExpr> = self
+                .filters
+                .iter()
+                .chain(own)
+                .flat_map(conjuncts)
+                .filter(|c| reads_only(c, &self.emitted))
+                .cloned()
+                .collect();
+            rows.filters = FilterItems(and_all(held));
+            let id_column = node.id_physical_columns();
+            start.push(RenderExpr::Raw(format!(
+                "{} IN ({})",
+                render_expr_to_sql_plain(&col_at(path::START, &id_column[0])),
+                crate::sql_generator::emitters::clickhouse::to_sql_query::render_plan_to_sql_plain(
+                    rows
+                )
+                .trim_end()
+            )));
+        }
+        let mut rel = Vec::new();
+        for (prop, value) in &r.props {
+            let column = match edge.property_mappings.get(prop) {
+                Some(pv) => RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(path::REL.to_string()),
+                    column: pv.clone(),
+                }),
+                None if edge.closed_properties || self.options.neo4j_compat => {
+                    RenderExpr::Literal(Literal::Null)
+                }
+                None => col_at(path::REL, prop),
+            };
+            let value = self.expr(value, &HashMap::new())?;
+            if !is_constant(&value) {
+                return unsupported(
+                    "a variable-length relationship's property map reading a variable",
+                );
+            }
+            rel.push(RenderExpr::OperatorApplicationExp(eq(column, value)));
+        }
+        let built = path::path_cte(
+            self.schema,
+            path::PathCall {
+                var: &r.var.name(),
+                rel_type: &rel_type,
+                edge,
+                label: &label,
+                node,
+                min,
+                max,
+                backward,
+                start,
+                rel,
+            },
+        )?;
+        let cte = built.cte.cte_name.clone();
+        self.ctes.push(built.cte);
+        self.scans.insert(
+            r.var,
+            Scan::Path {
+                schema: edge,
+                rel_type,
+                cte,
+                at,
+                edges: built.edges,
+                backward,
+            },
+        );
+        for (end, column) in [(first, "start_id"), (last, "end_id")] {
+            let Some(ids) = self.identity(end)? else {
+                continue; // an endpoint that matches nothing
+            };
+            self.tie(
+                r.var,
+                end,
+                vec![(col_at(&r.var.name(), column), ids[0].clone())],
+            );
+        }
+        Ok(())
+    }
+
+    /// Conjuncts of the segment's filters and `own` that read only node
+    /// `v`'s own table (it is read from its table): they restrict `v`.
+    fn own_conjuncts<'e>(&'e self, v: VarId, own: &'e [RenderExpr]) -> Vec<&'e RenderExpr> {
+        let Some(Scan::Node {
+            at: At::Table(alias),
+            ..
+        }) = self.scans.get(&v)
+        else {
+            return Vec::new();
+        };
+        let aliases = [alias.clone()];
+        self.filters
+            .iter()
+            .chain(own)
+            .flat_map(conjuncts)
+            .filter(|c| reads_only(c, &aliases) && !table_aliases(c).is_empty())
+            .collect()
+    }
+
+    /// The rows joined so far hold node `v` and are more than its table's
+    /// rows (a join, or a CTE): they restrict `v`.
+    fn joined_rows_restrict(&self, v: VarId) -> bool {
+        let own_table_only = matches!(
+            self.scans.get(&v).and_then(Scan::at),
+            Some(At::Table(a)) if self.emitted.len() == 1 && self.emitted[0] == *a
+        );
+        self.is_emitted(v) && !own_table_only && !self.empty
+    }
+
+    /// Something restricts node `v` (a path walked from it starts at fewer
+    /// nodes than its table holds).
+    fn restricted(&self, v: VarId, own: &[RenderExpr]) -> bool {
+        !self.own_conjuncts(v, own).is_empty() || self.joined_rows_restrict(v)
+    }
+
     /// The edge definition of `(from_label)-[:rel_type]->(to_label)`, when
     /// it is lowered (the standard layout).
     fn edge_schema(
@@ -1123,7 +1482,7 @@ impl<'s> Lowerer<'s> {
         }
         let holds = match &self.scans[&v] {
             Scan::Node { label, .. } => written.contains(label),
-            Scan::Rel { rel_type, .. } => written.contains(rel_type),
+            Scan::Rel { rel_type, .. } | Scan::Path { rel_type, .. } => written.contains(rel_type),
             Scan::Impossible => false,
         };
         if !holds {
@@ -1132,14 +1491,19 @@ impl<'s> Lowerer<'s> {
     }
 
     /// Inline property maps: `v.prop = value`.
-    fn props(&mut self, v: VarId, props: &[(String, LogicalExpr)]) -> Result<(), LowerError> {
-        for (prop, value) in props {
-            let lhs = self.property(v, prop)?;
-            let rhs = self.expr(value, &HashMap::new())?;
-            self.filters
-                .push(RenderExpr::OperatorApplicationExp(eq(lhs, rhs)));
-        }
-        Ok(())
+    fn props(
+        &self,
+        v: VarId,
+        props: &[(String, LogicalExpr)],
+    ) -> Result<Vec<RenderExpr>, LowerError> {
+        props
+            .iter()
+            .map(|(prop, value)| {
+                let lhs = self.property(v, prop)?;
+                let rhs = self.expr(value, &HashMap::new())?;
+                Ok(RenderExpr::OperatorApplicationExp(eq(lhs, rhs)))
+            })
+            .collect()
     }
 
     /// The node's label when it has exactly one (its scan is a table).
@@ -1165,6 +1529,7 @@ impl<'s> Lowerer<'s> {
                     .map(|c| c.to_string())
                     .collect(),
             }),
+            Scan::Path { .. } => Some(path::PATH_COLUMNS.iter().map(|c| c.to_string()).collect()),
             Scan::Impossible => None,
         }
     }
@@ -1195,32 +1560,74 @@ impl<'s> Lowerer<'s> {
         }
     }
 
-    /// Relationships of one MATCH are pairwise distinct. Only two scans of
-    /// the same edge table can be the same relationship.
+    /// Relationships of one MATCH are pairwise distinct (§4.6.3). Only scans
+    /// of the same edge table can share a relationship: two relationships
+    /// differ in identity, a relationship is not on a path, two paths share
+    /// none. (Within a path the recursive CTE keeps them distinct.)
     fn uniqueness(&mut self, rels: &[VarId]) -> Result<(), LowerError> {
         for (i, a) in rels.iter().enumerate() {
             for b in &rels[i + 1..] {
-                let (Some(Scan::Rel { schema: sa, .. }), Some(Scan::Rel { schema: sb, .. })) =
-                    (self.scans.get(a), self.scans.get(b))
-                else {
+                let table = |v: &VarId| match self.scans.get(v) {
+                    Some(Scan::Rel { schema, .. }) => Some(schema.full_table_name()),
+                    Some(Scan::Path {
+                        schema,
+                        edges: true,
+                        ..
+                    }) => Some(schema.full_table_name()),
+                    _ => None,
+                };
+                let (Some(ta), Some(tb)) = (table(a), table(b)) else {
                     continue;
                 };
-                if sa.full_table_name() != sb.full_table_name() {
+                if ta != tb {
                     continue;
                 }
-                let ia = self.identity(*a)?.expect("a relationship scan");
-                let ib = self.identity(*b)?.expect("a relationship scan");
-                let differs: Vec<RenderExpr> = ia
-                    .into_iter()
-                    .zip(ib)
-                    .map(|(x, y)| {
-                        RenderExpr::OperatorApplicationExp(OperatorApplication {
-                            operator: Operator::NotEqual,
-                            operands: vec![x, y],
-                        })
-                    })
-                    .collect();
-                self.filters.push(or_all(differs));
+                let differs = match (&self.scans[a], &self.scans[b]) {
+                    (Scan::Rel { .. }, Scan::Rel { .. }) => {
+                        let ia = self.identity(*a)?.expect("a relationship scan");
+                        let ib = self.identity(*b)?.expect("a relationship scan");
+                        or_all(
+                            ia.into_iter()
+                                .zip(ib)
+                                .map(|(x, y)| {
+                                    RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                        operator: Operator::NotEqual,
+                                        operands: vec![x, y],
+                                    })
+                                })
+                                .collect(),
+                        )
+                    }
+                    (
+                        Scan::Rel { schema, at, .. },
+                        Scan::Path {
+                            at: p, backward, ..
+                        },
+                    )
+                    | (
+                        Scan::Path {
+                            at: p, backward, ..
+                        },
+                        Scan::Rel { schema, at, .. },
+                    ) => {
+                        let At::Table(edge) = at else {
+                            return unsupported(
+                                "a relationship from an earlier clause and a variable-length \
+                                 relationship of the same table in one MATCH",
+                            );
+                        };
+                        let Some(identity) = path::edge_identity_sql(schema, edge, *backward)
+                        else {
+                            return unsupported("a composite relationship endpoint (S8)");
+                        };
+                        path::path_avoids_edge(p.alias(), &identity)
+                    }
+                    (Scan::Path { at: x, .. }, Scan::Path { at: y, .. }) => {
+                        path::paths_disjoint(x.alias(), y.alias())
+                    }
+                    _ => continue,
+                };
+                self.filters.push(differs);
             }
         }
         Ok(())
@@ -1258,11 +1665,20 @@ impl<'s> Lowerer<'s> {
                 schema.should_use_final(),
                 schema.filter.as_ref(),
             ),
+            Scan::Path {
+                cte,
+                at: At::Table(alias),
+                ..
+            } => (alias.clone(), cte.clone(), None, false, None),
             Scan::Node {
                 at: At::Exported { .. },
                 ..
             }
             | Scan::Rel {
+                at: At::Exported { .. },
+                ..
+            }
+            | Scan::Path {
                 at: At::Exported { .. },
                 ..
             } => return unsupported("internal: a CTE element outside its segment"),
@@ -1436,7 +1852,7 @@ impl<'s> Lowerer<'s> {
             };
             if let Some(src) = element {
                 if matches!(self.binding(src).kind, BindingKind::Path) {
-                    return unsupported("a path variable (S6)");
+                    return unsupported("a path variable as a value (S6c)");
                 }
                 // In this projection's ORDER BY / WHERE the item is the
                 // element itself.
@@ -1651,6 +2067,9 @@ impl<'s> Lowerer<'s> {
                     to_label: schema.to_node.clone(),
                 }
             }
+            Some(Scan::Path { .. }) => {
+                return unsupported("a variable-length relationship's list of relationships (S6c)")
+            }
             Some(Scan::Impossible) => return Ok(None),
             None => return unsupported(format!("internal: {v} has no scan")),
         };
@@ -1798,13 +2217,19 @@ impl<'s> Lowerer<'s> {
             ..Body::default()
         };
         let mut exports = Exports::default();
-        // The scope: every named element and value of this segment.
+        // The scope: every named element and value of this segment, and the
+        // elements of a named path (its length reads them).
+        let in_named_path = |v: &VarId| {
+            self.paths.iter().any(|(p, e)| {
+                self.binding(*p).name.is_some() && (e.nodes.contains(v) || e.rels.contains(v))
+            })
+        };
         let mut vars: Vec<VarId> = self
             .scans
             .keys()
             .chain(self.values.keys())
             .copied()
-            .filter(|v| self.binding(*v).name.is_some())
+            .filter(|v| self.binding(*v).name.is_some() || in_named_path(v))
             .collect();
         vars.sort();
         vars.dedup();
@@ -1892,8 +2317,92 @@ impl<'s> Lowerer<'s> {
         Ok((self.render(body), shape))
     }
 
+    /// Join order (§4.6.4) for ClickHouse, which builds a hash table of each
+    /// joined relation and streams the FROM rows through them: a path
+    /// relation, the largest of a clause in every shape measured (a path
+    /// multiplies its start rows by the walks from each), goes first. The
+    /// others follow in their order, each after a relation it is tied to,
+    /// and every ON conjunct moves to the ON of the later of its relations
+    /// (the tie rule of [`Self::place`]). Only a join of inner joins is
+    /// reordered (an equality of inner joins holds in any order); a FROM
+    /// read with FINAL stays first (a join prints no FINAL).
+    fn path_first(&mut self) {
+        if self.joins.iter().any(|j| j.join_type != JoinType::Join)
+            || self.from.as_ref().is_none_or(|f| f.use_final)
+        {
+            return;
+        }
+        let Some(root) = self.emitted.iter().skip(1).find(|a| {
+            self.scans
+                .values()
+                .any(|s| matches!(s, Scan::Path { at: At::Table(p), .. } if p == *a))
+        }) else {
+            return;
+        };
+        let root = root.clone();
+        // (alias, table) of each relation, in join order, and every ON
+        // conjunct with the relation it was placed at.
+        let from = self.from.take().expect("checked");
+        let mut relations = vec![(from.alias.clone().unwrap_or_default(), from.name.clone())];
+        let mut conjuncts: Vec<(String, OperatorApplication)> = Vec::new();
+        for j in std::mem::take(&mut self.joins) {
+            relations.push((j.table_alias.clone(), j.table_name.clone()));
+            for c in j.joining_on {
+                conjuncts.push((j.table_alias.clone(), c));
+            }
+        }
+        let reads =
+            |c: &OperatorApplication| table_aliases(&RenderExpr::OperatorApplicationExp(c.clone()));
+        let mut order: Vec<String> = vec![root];
+        while order.len() < relations.len() {
+            let next = relations
+                .iter()
+                .map(|(a, _)| a)
+                .filter(|a| !order.contains(a))
+                .find(|a| {
+                    conjuncts.iter().any(|(_, c)| {
+                        let r = reads(c);
+                        r.contains(a) && r.iter().any(|x| order.contains(x))
+                    })
+                })
+                .or_else(|| {
+                    relations
+                        .iter()
+                        .map(|(a, _)| a)
+                        .find(|a| !order.contains(a))
+                })
+                .expect("a relation left")
+                .clone();
+            order.push(next);
+        }
+        let table = |a: &str| {
+            relations
+                .iter()
+                .find(|(x, _)| x == a)
+                .map(|(_, t)| t.clone())
+                .expect("a relation")
+        };
+        let mut joins: Vec<Join> = order[1..].iter().map(|a| join(table(a), a)).collect();
+        for (placed, c) in conjuncts {
+            let at = reads(&c)
+                .iter()
+                .filter_map(|a| order.iter().position(|o| o == a))
+                .max()
+                .unwrap_or_else(|| order.iter().position(|o| *o == placed).expect("placed"));
+            if at == 0 {
+                self.filters.push(RenderExpr::OperatorApplicationExp(c));
+            } else {
+                joins[at - 1].joining_on.push(c);
+            }
+        }
+        self.from = Some(table_ref(table(&order[0]), &order[0]));
+        self.joins = joins;
+        self.emitted = order;
+    }
+
     /// The current relation under `body`'s SELECT.
     fn render(&mut self, body: Body) -> RenderPlan {
+        self.path_first();
         // A relation that matches nothing keeps its scans (expressions may
         // read them) and filters every row out. With no scan at all (every
         // element impossible, or no MATCH: `RETURN 1 + 1`) there is no FROM.
@@ -2070,6 +2579,27 @@ fn reads_only(e: &RenderExpr, aliases: &[String]) -> bool {
             op.operands.iter().all(|x| reads_only(x, aliases))
         }
         _ => false,
+    }
+}
+
+/// `e` (an operator tree, [`reads_only`]) with the columns of `from` read
+/// from `to`.
+fn realias(e: &RenderExpr, from: &str, to: &str) -> RenderExpr {
+    match e {
+        RenderExpr::PropertyAccessExp(pa) if pa.table_alias.0 == from => {
+            RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(to.to_string()),
+                column: pa.column.clone(),
+            })
+        }
+        RenderExpr::List(xs) => RenderExpr::List(xs.iter().map(|x| realias(x, from, to)).collect()),
+        RenderExpr::OperatorApplicationExp(op) => {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator,
+                operands: op.operands.iter().map(|x| realias(x, from, to)).collect(),
+            })
+        }
+        other => other.clone(),
     }
 }
 

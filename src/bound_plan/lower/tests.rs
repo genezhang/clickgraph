@@ -474,8 +474,28 @@ fn what_is_not_lowered_yet() {
         "labels() of a node an OPTIONAL MATCH may leave NULL",
     );
     not_lowered(
-        "MATCH (a:User)-[:FOLLOWS*1..2]->(b) RETURN count(*)",
-        "variable-length",
+        "MATCH p = shortestPath((a:User)-[:FOLLOWS*1..2]->(b:User)) RETURN count(*)",
+        "shortestPath",
+    );
+    not_lowered(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN nodes(p) AS n",
+        "nodes() of a path",
+    );
+    not_lowered(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN p",
+        "path variable as a value",
+    );
+    not_lowered(
+        "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) RETURN size(r) AS n",
+        "list of relationships",
+    );
+    not_lowered(
+        "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) RETURN r",
+        "list of relationships",
+    );
+    not_lowered(
+        "MATCH (a:User)-[:LIKED*1..2]->(b) RETURN count(*)",
+        "different labels",
     );
     not_lowered(
         "MATCH (a:User)-[:FOLLOWS]-(b) RETURN count(*)",
@@ -484,10 +504,6 @@ fn what_is_not_lowered_yet() {
     not_lowered("MATCH (a:User) RETURN collect(a) AS l", "as a value");
     not_lowered("MATCH (a:User) WHERE id(a) = 1 RETURN a.name", "id()");
     not_lowered("MATCH (n) RETURN count(*)", "several possible labels");
-    not_lowered(
-        "MATCH p = (a:User)-[:FOLLOWS]->(b) RETURN count(*)",
-        "path variable",
-    );
     not_lowered(
         "MATCH (a:User) RETURN [x IN [1, 2] | x * 2] AS l",
         "comprehension",
@@ -1278,4 +1294,164 @@ fn a_driven_relationship_without_edge_id_joins_on_its_properties() {
         ),
         "{got}"
     );
+}
+
+fn benchmark() -> GraphSchema {
+    GraphSchemaConfig::from_yaml_str(include_str!(
+        "../../../benchmarks/social_network/schemas/social_benchmark.yaml"
+    ))
+    .unwrap()
+    .to_graph_schema()
+    .unwrap()
+}
+
+#[test]
+fn a_variable_length_relationship_is_a_relation_of_paths() {
+    // The path relation comes first (the probe side of ClickHouse's hash
+    // joins), tied to its endpoints; the start node's own conjuncts are also
+    // evaluated inside the walk.
+    has(
+        "MATCH (a:User {user_id: 1})-[:FOLLOWS*1..2]->(b:User) RETURN b.name",
+        &[
+            "WITH RECURSIVE vlp_v1_path AS (",
+            "FROM test_integration.users_test AS start_node \
+             JOIN test_integration.user_follows_test AS rel ON start_node.user_id = rel.follower_id",
+            "WHERE (start_node.user_id = 1) UNION ALL",
+            "WHERE vp.hop_count < 2 AND NOT has(vp.path_edges, rel.follow_id)",
+            "FROM vlp_v1_path AS v1 \
+             JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id \
+             JOIN test_integration.users_test AS v2 ON v1.end_id = v2.user_id \
+             WHERE v0.user_id = 1",
+        ],
+    );
+    // A missing maximum is no bound of our own: the walk ends when no trail
+    // extends (or at ClickHouse's recursion limit, loudly).
+    has(
+        "MATCH (a:User)-[:FOLLOWS*2..]->(b:User) RETURN count(*)",
+        &["vp.hop_count < 2147483647", "WHERE hop_count >= 2"],
+    );
+}
+
+#[test]
+fn the_walk_starts_at_the_restricted_end() {
+    // Only `b` is restricted: the walk starts there and follows the
+    // relationships backward, so `start_id` is `b`.
+    has(
+        "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User {user_id: 5}) RETURN a.name",
+        &[
+            "JOIN test_integration.user_follows_test AS rel ON start_node.user_id = rel.followed_id",
+            "WHERE (start_node.user_id = 5)",
+            "JOIN test_integration.users_test AS v0 ON v1.end_id = v0.user_id",
+            "JOIN test_integration.users_test AS v2 ON v1.start_id = v2.user_id",
+        ],
+    );
+    // `<-[*]-` from a restricted left end: backward too.
+    has(
+        "MATCH (a:User {user_id: 1})<-[:FOLLOWS*1..2]-(b:User) RETURN count(*)",
+        &[
+            "ON start_node.user_id = rel.followed_id",
+            "WHERE (start_node.user_id = 1)",
+            "JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id",
+        ],
+    );
+}
+
+#[test]
+fn a_path_starts_at_the_rows_so_far() {
+    // After a hop: the walk starts at the values of its first node there.
+    has(
+        "MATCH (a:User {user_id: 1})-[r:FOLLOWS]->(x:User)-[:FOLLOWS*1..]->(b:User) RETURN count(*)",
+        &[
+            "WHERE (start_node.user_id IN (SELECT DISTINCT v2.user_id AS \"id\" \
+             FROM test_integration.users_test AS v0 \
+             JOIN test_integration.user_follows_test AS v1 ON v1.follower_id = v0.user_id \
+             JOIN test_integration.users_test AS v2 ON v1.followed_id = v2.user_id \
+             WHERE v0.user_id = 1))",
+            // the hop and the path are distinct relationships
+            "NOT has(v3.path_edges, v1.follow_id)",
+        ],
+    );
+    // A node carried by a WITH: the values of its CTE column.
+    has(
+        "MATCH (a:User {user_id: 1}) WITH a MATCH (a)<-[:FOLLOWS*0..2]-(b:User) RETURN count(*)",
+        &[
+            "WHERE (start_node.user_id IN (SELECT DISTINCT w1.v1__user_id AS \"id\" FROM with_w1 AS w1))",
+            "FROM vlp_v2_path AS v2 JOIN with_w1 AS w1 ON v2.start_id = w1.v1__user_id",
+        ],
+    );
+}
+
+#[test]
+fn relationships_of_one_match_are_unique_with_paths() {
+    // Two paths of one table share no relationship; the property map holds
+    // of every relationship of its path, inside the walk.
+    has(
+        "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User), \
+         (a)-[:FOLLOWS*1..2 {follow_date: '2023-01-01'}]->(c:User) RETURN count(*)",
+        &[
+            "AND (rel.follow_date = '2023-01-01') UNION ALL",
+            "AND NOT has(vp.path_edges, rel.follow_id) AND (rel.follow_date = '2023-01-01') )",
+            "WHERE NOT hasAny(v1.path_edges, v3.path_edges)",
+        ],
+    );
+    // Uniqueness is per MATCH clause.
+    let got = sql("MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) MATCH (b)-[:FOLLOWS*1..2]->(c:User) RETURN count(*)");
+    assert!(!got.contains("hasAny"), "{got}");
+    // Without an `edge_id` a relationship is its endpoint pair, in the walk's
+    // order: a backward walk spells it backward, and so does the check of a
+    // hop against it.
+    let got = lowered(
+        "MATCH (a:User {user_id: 1})<-[:FOLLOWS*1..2]-(b:User)<-[r:FOLLOWS]-(c:User) RETURN count(*)",
+        &benchmark(),
+        &LowerOptions::default(),
+    );
+    for part in [
+        "NOT has(vp.path_edges, tuple(rel.followed_id, rel.follower_id))",
+        "NOT has(v1.path_edges, tuple(v3.followed_id, v3.follower_id))",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    // Two such paths of one table spell them alike: both walk forward.
+    let got = lowered(
+        "MATCH (a:User {user_id: 1})<-[:FOLLOWS*1..2]-(b:User)-[:FOLLOWS*1..2]->(c:User) RETURN count(*)",
+        &benchmark(),
+        &LowerOptions::default(),
+    );
+    assert!(
+        !got.contains("tuple(rel.followed_id, rel.follower_id)"),
+        "{got}"
+    );
+    assert!(
+        got.contains("NOT hasAny(v1.path_edges, v3.path_edges)"),
+        "{got}"
+    );
+}
+
+#[test]
+fn length_of_a_path() {
+    has(
+        "MATCH p = (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS*0..2]->(c:User) RETURN length(p) AS l",
+        &[r#"v3.hop_count + 1 AS "l""#],
+    );
+    has(
+        "MATCH p = (a:User)-[:FOLLOWS]->(b:User) RETURN length(p) AS l",
+        &[r#"1 AS "l""#],
+    );
+    // NULL when the OPTIONAL MATCH has no match; its anonymous elements are
+    // carried for it.
+    has(
+        "MATCH (a:User) OPTIONAL MATCH p = (a)-[:FOLLOWS*1..2]->(c:User) RETURN length(p) AS l",
+        &[
+            r#"CASE WHEN (o3.v2__user_id IS NULL OR o3.v1__start_id IS NULL) THEN NULL ELSE o3.v1__hop_count END AS "l""#,
+        ],
+    );
+}
+
+#[test]
+fn optional_match_has_path_variables() {
+    let (_, stmt) = crate::open_cypher_parser::clause_list::parse_clause_statement(
+        "MATCH (a:User) OPTIONAL MATCH p = (a)-->(b) RETURN length(p)",
+    )
+    .unwrap();
+    assert!(format!("{stmt:?}").contains(r#"Some("p")"#));
 }

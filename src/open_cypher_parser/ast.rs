@@ -107,7 +107,7 @@ pub struct MatchClause<'a> {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct OptionalMatchClause<'a> {
-    pub path_patterns: Vec<PathPattern<'a>>,
+    pub path_patterns: Vec<(Option<&'a str>, PathPattern<'a>)>, // (optional path_var, pattern), as in MATCH
     pub where_clause: Option<WhereClause<'a>>,
 }
 

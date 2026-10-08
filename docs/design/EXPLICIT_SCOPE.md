@@ -729,6 +729,89 @@ filters. The filters that used to be pushed in by `categorize_filters` are
 pushdown decisions (§4.8). shortestPath keeps the generator's pick, which is
 partitioned by (start, end) (#1183).
 
+S6 is split in three: S6a variable-length relationships and `length(p)`,
+S6b shortestPath with in-search predicates (#1312), S6c path and list values
+(`nodes(p)`, `relationships(p)`, a `-[r*]->` list, `RETURN p`, `WITH p`).
+
+Implemented in S6a (`bound_plan/lower/path.rs`, `Lowerer::path_scan` /
+`build_path`):
+- **The call.** `path_cte` builds the `PatternSchemaContext` of the edge and
+  its endpoints and calls `CteManager::generate_vlp_cte` with every input
+  explicit: the hop range, the CTE name (`vlp_v{N}_path`, unique per
+  relationship variable), the start conjuncts (SQL over `start_node`), and
+  the relationship's property map (SQL over `rel`). The relation is joined
+  under the variable's own alias. Its column contract is `start_id`,
+  `end_id`, `hop_count`, `path_edges`, `path_nodes`. The side channels are
+  unused: the reported FROM alias is ignored, `outer_where_filters` is
+  refused, and composite ids are refused (S8), so no composite components
+  are registered. Lowered: one type whose edge joins one label to itself,
+  standard layout, no `filter:` / view parameters / FINAL on the edge or
+  node table, single-column ids, directed. Undirected paths are S7.
+- **Ties.** `start_id` and `end_id` are tied to the endpoint nodes like any
+  element (§4.6.2), so a closed path `(a)-[*]->(a)`, a path after a fixed hop
+  or a WITH, and two paths chained or fanned in need no special case
+  (#1310, #1210, #1300 on the standard layout, #1177).
+- **Where the walk starts.** At a restricted end: one with conjuncts over its
+  own columns, or one the rows so far restrict (joined after other elements,
+  or carried by a WITH or the OPTIONAL drive); the left end when both or
+  neither are. From there it follows the relationships forward or backward
+  (the generator walks the edge with `from_id`/`to_id` exchanged), so
+  `start_id` is the walk's first node. Inside the walk's first step go:
+  - the conjuncts of the clause and the segment that read only the first
+    node's own columns (operator trees over columns, literals and
+    parameters, as in §4.9), rewritten to `start_node`;
+  - when the rows so far hold the first node and are more than its table,
+    `start_node.id IN (SELECT DISTINCT <its identity> FROM <the rows so
+    far> WHERE <their conjuncts>)`: a semi-join on the join built before
+    the path. It holds every value the result can have, so it is a
+    restriction, never a filter of results.
+
+  Each stays in the outer query too. Without them every walk starts at
+  every node: 7–8 s at scale 100 where the restricted walk takes 70–140 ms.
+- **Unbounded.** A missing maximum (`*`, `*2..`) is unbounded. The generator
+  is given a bound beyond any recursion (`i32::MAX`), so the walk ends when
+  no trail extends, or ClickHouse fails at `max_recursive_cte_evaluation_depth`
+  (the server's `max_cte_depth`). The legacy path cuts at 5 hops (the
+  generator's `DEFAULT_MAX_HOPS`, 3 for `*0..`) and silently drops longer
+  paths: `*1..` on `social_integration` returns 367 rows where Neo4j returns
+  1821 (#1329).
+- **Uniqueness (§4.6.3).** Per MATCH clause, between relationship-bearing
+  elements of one edge table: a fixed relationship is not on a path
+  (`NOT has(p.path_edges, <its identity>)`), and two paths share none
+  (`NOT hasAny(p1.path_edges, p2.path_edges)`). The identity is spelled as
+  the generator spells a `path_edges` element (`spell_edge_identity`): the
+  `edge_id`, else the endpoint tuple in the walk's order. Two paths of one
+  table without `edge_id` must spell their tuples alike, so both walk
+  forward. Within a path the generator's `NOT has(vp.path_edges, …)` keeps
+  the walk a trail. A path of `*0..0` has no relationship.
+- **`length(p)`.** The number of fixed relationships of `p` plus each path's
+  `hop_count`. For an OPTIONAL `p` it is NULL when the clause did not match
+  (guarded by the identities of its introduced elements, which the
+  OPTIONAL's `Q` exports even when anonymous). `OPTIONAL MATCH p = …` now
+  parses; the legacy planner refuses it loudly.
+- **Join order.** ClickHouse builds a hash table of every joined relation and
+  streams the FROM rows through them. A path relation is joined first
+  (`Lowerer::path_first`), the others after a relation they are tied to, and
+  each ON conjunct moves to the later of its relations (§4.6.4: every order
+  is correct because ties are equalities; only inner joins are reordered).
+  Joined last, a path of 10⁸ rows took 9.4 s; first, 1.3 s.
+- **Measured cost**, social benchmark at scale 100 (100K users, 10M
+  follows), median of 5, with ClickHouse's cache of join sizes from earlier
+  runs off (`collect_hash_table_stats_during_joins = 0`; with it, repeated
+  runs of either path get faster):
+
+  | Shape | Legacy | New |
+  |---|---|---|
+  | `(a {user_id: 1})-[*1..2]->(b)`, `*1..3`, `*0..2`, `length(p)`, ORDER BY / LIMIT | 48–105 ms | 60–112 ms |
+  | `(a)-[*1..2]->(b) WHERE a.user_id < 10` | 61 ms | 75 ms |
+  | after a fixed hop, backward, OPTIONAL, restricted only at the right end | 6.9–7.8 s | 67–118 ms |
+  | `WITH c MATCH (c)-->(a)-[*1..2]->(b)` (10⁸ paths) | 7.1 s | 1.3 s |
+  | a path then a fixed hop | 80 ms | 116 ms |
+  | `-[*2]->` from 3 starts | 8 ms | 63 ms |
+
+  The last row: the legacy path writes an exact range as fixed hops. That
+  expansion is future work (it was deferred until after S6).
+
 ### 4.12 Subquery expressions
 
 `Apply { kind, sub, correlation }`, where `sub` is a bound MATCH over the

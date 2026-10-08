@@ -41,7 +41,7 @@ pub fn parse_match_clause(
 }
 
 /// Parse optional "varname = " followed by pattern
-fn parse_pattern_with_optional_variable(
+pub(super) fn parse_pattern_with_optional_variable(
     input: &str,
 ) -> IResult<&str, (Option<&str>, PathPattern<'_>), OpenCypherParsingError<'_>> {
     let mut input_after_var = input;

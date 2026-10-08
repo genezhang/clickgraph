@@ -94,7 +94,10 @@ fn collect_declared_aliases(query_ast: &OpenCypherQueryAst) -> HashSet<String> {
     }
 
     fn collect_optional(om: &OptionalMatchClause, out: &mut HashSet<String>) {
-        for pattern in &om.path_patterns {
+        for (path_var, pattern) in &om.path_patterns {
+            if let Some(v) = path_var {
+                out.insert(v.to_string());
+            }
             walk_path_pattern(pattern, out);
         }
     }

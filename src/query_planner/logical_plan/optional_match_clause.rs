@@ -85,14 +85,23 @@ pub fn evaluate_optional_match_clause<'a>(
 
     crate::debug_print!("🔔 DEBUG OPTIONAL_MATCH: Enabled optional match mode");
 
+    // A path variable of an OPTIONAL MATCH is bound only on the bound-plan
+    // path (`CLICKGRAPH_BOUND_PLAN`, P-4c S6); this planner has no NULL path.
+    if optional_match_clause
+        .path_patterns
+        .iter()
+        .any(|(v, _)| v.is_some())
+    {
+        return Err(super::errors::LogicalPlanError::QueryPlanningError(
+            "a path variable in OPTIONAL MATCH (`OPTIONAL MATCH p = ...`) is not supported"
+                .to_string(),
+        ));
+    }
+
     // Create a temporary MatchClause from the OptionalMatchClause
     // This allows us to reuse the existing match clause logic
     let temp_match_clause = ast::MatchClause {
-        path_patterns: optional_match_clause
-            .path_patterns
-            .iter()
-            .map(|p| (None, p.clone())) // Wrap each pattern with None for path_variable
-            .collect(),
+        path_patterns: optional_match_clause.path_patterns.clone(),
         where_clause: None, // WHERE clause handled separately for OPTIONAL MATCH
     };
 
@@ -442,11 +451,14 @@ mod tests {
     #[test]
     fn test_evaluate_optional_match_simple_node() {
         let optional_match = ast::OptionalMatchClause {
-            path_patterns: vec![ast::PathPattern::Node(ast::NodePattern {
-                name: Some("a"),
-                labels: Some(vec!["User"]),
-                properties: None,
-            })],
+            path_patterns: vec![(
+                None,
+                ast::PathPattern::Node(ast::NodePattern {
+                    name: Some("a"),
+                    labels: Some(vec!["User"]),
+                    properties: None,
+                }),
+            )],
             where_clause: None,
         };
 
@@ -463,11 +475,14 @@ mod tests {
     #[test]
     fn test_evaluate_optional_match_with_where() {
         let optional_match = ast::OptionalMatchClause {
-            path_patterns: vec![ast::PathPattern::Node(ast::NodePattern {
-                name: Some("a"),
-                labels: Some(vec!["User"]),
-                properties: None,
-            })],
+            path_patterns: vec![(
+                None,
+                ast::PathPattern::Node(ast::NodePattern {
+                    name: Some("a"),
+                    labels: Some(vec!["User"]),
+                    properties: None,
+                }),
+            )],
             where_clause: Some(ast::WhereClause {
                 conditions: ast::Expression::OperatorApplicationExp(ast::OperatorApplication {
                     operator: ast::Operator::GreaterThan,
