@@ -2205,8 +2205,10 @@ fn a_path_is_grouped_by_one_list_of_its_elements() {
     assert!(!group_by.contains("path_nodes"), "{group_by}");
     has(
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) WITH p, count(*) AS c RETURN p, c",
-        &["GROUP BY arrayConcat([concat('User:', toString(v0.user_id))], \
-           arrayMap(__x -> concat('FOLLOWS:', toString(__x)), v1.path_edges))"],
+        &[
+            "GROUP BY arrayConcat([concat('User:', toString(v0.user_id))], \
+           arrayMap(__x -> concat('FOLLOWS:', toString(__x)), v1.path_edges))",
+        ],
     );
     let with = squash(&sql(
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User) \
