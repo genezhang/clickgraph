@@ -44,7 +44,9 @@ use crate::render_plan::cte_manager::CteManager;
 use crate::render_plan::render_expr::RenderExpr;
 use crate::render_plan::{CategorizedFilters, Cte, CteContent};
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
-use crate::sql_generator::emitters::clickhouse::variable_length_cte::spell_edge_identity;
+use crate::sql_generator::emitters::clickhouse::variable_length_cte::{
+    spell_edge_identity, PathValues,
+};
 use crate::sql_generator::function_mapper::current_function_mapper;
 
 use super::{unsupported, LowerError};
@@ -67,6 +69,10 @@ const UNBOUNDED: u32 = i32::MAX as u32;
 /// two paths can agree on all three.
 pub(super) const PATH_COLUMNS: [&str; 3] = ["start_id", "end_id", "hop_count"];
 
+/// The columns of a path relation that carry its nodes and relationships as
+/// values (`value.rs`), when [`PathCall::node_values`] / `rel_values`.
+pub(super) const VALUE_COLUMNS: [&str; 2] = ["path_node_values", "path_rel_values"];
+
 /// What one variable-length relationship needs from the generator.
 #[derive(Clone)]
 pub(super) struct PathCall<'a> {
@@ -88,6 +94,10 @@ pub(super) struct PathCall<'a> {
     pub end: Vec<RenderExpr>,
     /// Conjuncts every relationship of the path satisfies, aliased [`REL`].
     pub rel: Vec<RenderExpr>,
+    /// Carry each path's nodes / relationships as values
+    /// (`path_node_values` / `path_rel_values`, `value.rs`).
+    pub node_values: bool,
+    pub rel_values: bool,
 }
 
 /// The generated relation.
@@ -171,6 +181,23 @@ pub(super) fn path_cte(schema: &GraphSchema, call: PathCall<'_>) -> Result<PathC
         .with_relationship_cypher_alias(Some(call.var.to_string()))
         .with_node_labels(Some(call.label.to_string()), Some(call.label.to_string()));
     context.needs_path_relationships = false;
+    if call.node_values || call.rel_values {
+        let g = super::value::spelling()?;
+        let node = |alias: &str| super::value::table_node_object(&g, call.node, call.label, alias);
+        context.path_values = PathValues {
+            node: match call.node_values {
+                true => Some((node(START)?, node(END)?)),
+                false => None,
+            },
+            rel: match call.rel_values {
+                true => Some((
+                    super::value::table_rel_object(&g, call.edge, call.rel_type, REL)?,
+                    (g.list)(&[]),
+                )),
+                false => None,
+            },
+        };
+    }
     let filters = CategorizedFilters {
         start_node_filters: None,
         end_node_filters: None,

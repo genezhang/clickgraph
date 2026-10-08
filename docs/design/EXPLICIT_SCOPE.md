@@ -729,9 +729,10 @@ filters. The filters that used to be pushed in by `categorize_filters` are
 pushdown decisions (§4.8). shortestPath keeps the generator's pick, which is
 partitioned by (start, end) (#1183).
 
-S6 is split in three: S6a variable-length relationships and `length(p)`,
+S6 is split in four: S6a variable-length relationships and `length(p)`,
 S6b shortestPath with in-search predicates (#1312), S6c path and list values
-(`nodes(p)`, `relationships(p)`, a `-[r*]->` list, `RETURN p`, `WITH p`).
+(`nodes(p)`, `relationships(p)`, a `-[r*]->` list, `RETURN p`, `WITH p`), S6d
+a shortestPath's path as a value.
 
 Implemented in S6a (`bound_plan/lower/path.rs`, `Lowerer::path_scan` /
 `build_path`):
@@ -793,10 +794,7 @@ Implemented in S6a (`bound_plan/lower/path.rs`, `Lowerer::path_scan` /
   of a table spells a relationship alike. Within a path the generator's
   `NOT has(vp.path_edges, …)` keeps the walk a trail. A path of `*0..0` has
   no relationship.
-- **A path as a value** waits for S6c. A `-[r*]->` variable is carried
-  through WITH and an OPTIONAL MATCH as `start_id`, `end_id`, `hop_count`,
-  which do not identify it (two paths can share them), so DISTINCT or
-  grouping by it is refused.
+- **A path as a value**: S6c, below.
 - **`length(p)`.** The number of fixed relationships of `p` plus each path's
   `hop_count`. For an OPTIONAL `p` it is NULL when the clause did not match
   (guarded by the identities of its introduced elements, which the
@@ -924,6 +922,125 @@ Implemented in S6b (`path::search_cte`, `path::reached_cte`,
   | `allShortestPaths`, pinned pair / one start to every end | error | 178 / 274 ms |
   | `*..3` from one start with `length(p) > 1` (the direct pairs need trails) | 116 ms (wrong answer, #1312) | 424 ms |
   | OPTIONAL, both ends pinned; with `length(p) > 1` | refused | 173 / 243 ms |
+
+Implemented in S6c (`bound_plan/lower/value.rs`, `Lowerer::graph_item`),
+checked against Neo4j 5.26:
+- **The form.** A value is in Neo4j's own JSON form (its Query API's): a
+  node is `{elementId, labels, properties}`, a relationship `{elementId,
+  startNodeElementId, endNodeElementId, type, properties}`, a path the list
+  of its nodes and relationships in turn. The element ids are ClickGraph's
+  (`Label:id-`, `TYPE:from->to-`), which the SQL and Bolt spell from one
+  place (`graph_catalog::element_id`); the properties are the declared ones
+  that are not NULL (Neo4j stores no NULL property).
+  - HTTP rows carry the value as it is.
+  - Bolt decodes it by the item's type (`ResultKind::Graph`: node,
+    relationship, path, list) into Node, Relationship and Path structures
+    (`bolt_protocol::graph_values`).
+  - The graph output and embedded `query_graph` take its nodes and edges.
+
+  On ClickHouse an element is a `Map(String, Dynamic)`, so one list holds
+  nodes and relationships of any label (`FunctionMapper::graph_values`).
+  Other dialects keep the legacy path.
+- **Where a value comes from.** A fixed node or relationship's value is
+  built from its columns (its table, or the CTE that carried it). A
+  variable-length relationship's nodes and relationships are carried through
+  its search: asked for them (`PathValues`), the generator accumulates
+  `path_node_values` / `path_rel_values` step by step, as it does
+  `path_nodes`, in the standard layout's arms.
+  - The demand pass asks only for what a value reads: `nodes(p)` the nodes,
+    `relationships(p)` and a `-[r*]->` list the relationships, `p` both. A
+    WITH item that passes a path or list through reads nothing itself:
+    only what later clauses read of it is asked for (`WITH p RETURN
+    count(*)` builds no value).
+  - The walk's order is reversed when the walk starts at the pattern's
+    right end, or runs against the pattern's direction (a closed
+    `(a)<-[*]-(a)`).
+- **Where a value may appear.** `p`, `nodes(p)`, `relationships(p)` and a
+  `-[r*]->` list may be RETURN and WITH items. `size()` of them is counted
+  from the path, also in a WHERE, without its values: `length(p) + 1`,
+  `length(p)`, `hop_count`. `size()` of a list a WITH carried is the
+  list's length.
+- **Identity.** ClickHouse refuses `Dynamic` in GROUP BY, and two values are
+  equal when their elements are. So DISTINCT and grouping by a value go by
+  one key (`Lowerer::path_key`), and the value is `any()` of its group
+  (`Body::determined`). The key is one list of texts in path order, each
+  with its label or type:
+  - for `p`, its first node and every relationship (they determine the
+    other nodes);
+  - for `nodes(p)`, every node;
+  - for `relationships(p)`, every relationship.
+
+  One list, not a key per element: two variable-length parts can split
+  one path in several ways (`*1..2` then `*1..2`), which Neo4j counts as
+  one path. Two empty lists are equal. A `-[r*]->` list is keyed by its
+  `path_edges`; a WITH that carries one is grouped by them. A WITH that
+  carries a path and is DISTINCT or aggregates is grouped by the path's
+  key, and the path's elements are `any()` of each group.
+- **WITH.** A path variable carries its elements: their identities, every
+  property of a fixed element, and the path relation's values. The next
+  segment builds the path's value and length from them. A computed list
+  (`WITH nodes(p) AS ns`) carries its value and its keys.
+- **NULL.** The path of an OPTIONAL MATCH that did not match is NULL, and so
+  are its lists and a `-[r*]->` list. The value is a `Dynamic` NULL, since
+  an array cannot be NULL. Whether the clause matched is tested on a
+  nullable element's identity, as for `length(p)`. All such rows have one
+  NULL value: their key is that test and an empty list, so DISTINCT gives
+  one NULL row, not one per input row. A carried `-[r*]->` list exports the
+  test too, so NULL is not grouped with an empty list.
+- **Properties.** A label or type with no declared properties has an
+  empty property map, spelled `CAST(CAST(map(), 'Map(String, String)'),
+  'Map(String, Dynamic)')`: ClickHouse cannot cast an empty `map()` straight
+  to a `Dynamic` value type.
+- **OPTIONAL drive.** When an OPTIONAL MATCH's WHERE reads a `-[r*]->` list,
+  the clause's matches are joined on the list's identity: its first node and
+  its relationships. They used to be joined on its ends and length, which two
+  paths can share. The drive holds no values.
+- **The legacy path** returns ids for `nodes(p)`, type names for
+  `relationships(p)`, and for a variable-length `RETURN p` a Path of its two
+  ends with no properties.
+- **Not lowered:**
+  - a shortestPath's path as a value (S6d: its search keeps distances, not
+    paths);
+  - a list inside another expression (an index, `head()`, `IN`, a
+    comprehension, `collect()`: S7 lists);
+  - ORDER BY a value;
+  - a carried list read by an OPTIONAL MATCH;
+  - composite ids (S8);
+  - other dialects.
+- **Measured cost**, social benchmark at scale 100, as in S6a. The legacy
+  path builds no values (ids, type names or a marker tuple), so its times
+  are of less work:
+
+  | Shape | Legacy | New |
+  |---|---|---|
+  | `(a {user_id: 1})-[*1..2]->(b)` (10K paths): `length(p)` / `nodes(p)` / `p` | 50 ms | 67 / 91 / 106 ms |
+  | the same `*1..3` (1M paths): `length(p)` / `relationships(p)` / `p` | 92–99 ms | 108 / 239 / 1,066 ms |
+  | `-[r*1..2]->` from 9 starts, `RETURN r` (100K lists) | 61 ms | 92 ms |
+  | two fixed hops, `RETURN p` (10K) | 31 ms | 46 ms |
+  | `*1..2` to a pinned end, `RETURN p` | out of memory | 177 ms |
+  | `RETURN DISTINCT nodes(p)` / `WITH p RETURN p` (10K) | 141 / 53 ms | 185 / 111 ms |
+  | OPTIONAL to a pinned end from 9 starts, `RETURN p` | refused | 131 ms |
+
+  Most of the cost of the 1M case is building the `Dynamic` maps. Carrying
+  typed tuples through the search and building the maps at the end takes
+  0.88 s instead of 1.07 s; that is left for later.
+
+  Large results cost memory. For `WHERE a.user_id < 3` with `*1..3` (2.9M
+  paths), the peaks are:
+  - `length(p)`, and `WITH p RETURN count(*)`: 0.2 s, 0.3 GiB;
+  - `relationships(p)`: 0.6 s, 3.4 GiB;
+  - `p`: 3.1 s, 10.2 GiB;
+  - `DISTINCT nodes(p)`: 14.9 s, 33.3 GiB;
+  - `DISTINCT p`: 22.3 s, 39.2 GiB.
+
+  DISTINCT keeps `any()` of each group's value, while grouping by the keys
+  alone takes 1.8 s. `LIMIT 1 BY <key>` would stream instead, but
+  `RenderPlan` has no LIMIT BY (#1335). A LIMIT short-circuits all of
+  these.
+- **Parallel relationships.** A relationship's element id ignores its
+  `edge_id` (#1334), so two parallel relationships share one: Bolt gives
+  them one id, and the graph output keeps one. A Bolt Path keeps every
+  relationship it steps over, as a path never repeats one.
 
 ### 4.12 Subquery expressions
 
@@ -1739,7 +1856,63 @@ slice that will handle it.
     - Mutation check: 33 rules broken in turn; 32 fail a unit test. The
       other (shortest relationships left out of uniqueness) also holds by
       construction: their relation has no `path_edges`.
-- [ ] S6c a path or a relationship list as a value
+- [x] **S6c: a path or a list of nodes or relationships as a value** (§4.11,
+  "Implemented in S6c").
+  - Lowered: `p`, `nodes(p)`, `relationships(p)` and a `-[r*]->` list as
+    RETURN and WITH items (also DISTINCT, grouped, OPTIONAL) for paths of
+    fixed hops and S6a variable-length parts; `size()` of them. Still
+    refused: a shortestPath's value (S6d), lists in other expressions (S7),
+    ORDER BY a value, composite ids (S8), other dialects.
+  - Acceptance:
+    - Neo4j oracle, switch on, vs S6b, both with the new comparator: 0
+      correct → wrong; 3 wrong answers and 1 error → correct; MATCH 398 →
+      402. The corpus lowers 701 queries (was 688). The comparator now
+      compares values in Neo4j's Query API form (it asks Neo4j's Query API,
+      as the tx API's `meta` flattens lists) and keeps an empty list's
+      column (S4c's comparator artifact). Rerun on S6b, it changes only 5
+      path queries, from INCOMPARABLE to MISMATCH (the legacy values).
+    - Generated shapes on four graphs (social_integration FOLLOWS and
+      LIKED; social_standard FOLLOWS without `edge_id`, FRIENDS_WITH with a
+      composite `edge_id`; a 16-node graph of diamonds, parallel edges and
+      cycles). They cover fixed and variable-length paths, every range,
+      both directions, walks from either end, closed, chained and mixed-label
+      paths, DISTINCT, grouping, WITH and OPTIONAL. The new path answers 184–192
+      shapes per graph and each equals Neo4j. The legacy path gets 104–117
+      of them wrong and errors on 64–69.
+    - Bolt: 19 queries read through the Neo4j Python driver equal Neo4j's
+      answers (node order, relationship direction and endpoints, labels,
+      properties).
+    - Live suite, switch on vs off: 110 tests differ (104 by the same
+      count after S6b). The 6 new ones:
+      - a Neo4j golden recorded as known-wrong is now correct;
+      - 5 tests expect the legacy refusal of a path made of a hop and a
+        variable-length part (`nodes(p)`, `relationships(p)`, `p`,
+        `size(nodes(p))`, and `size(nodes(p)) > 3` in a WHERE). The new
+        path answers them, equal to Neo4j.
+
+      They are keyed to the legacy path.
+    - Review (about 150 further shapes against Neo4j on four graphs, Bolt,
+      timing at scale 100). Findings, each fixed with a unit test:
+      - DISTINCT and grouping by a path with two variable-length parts
+        counted two splits of one path as two paths (161 vs 131 rows):
+        one key of the path's elements in order;
+      - an OPTIONAL path that did not match gave one NULL per input row
+        under DISTINCT (3 vs 1);
+      - a type or label without properties failed in ClickHouse (empty
+        `map()` cast);
+      - a WITH passing a path through built its values unread (3.9 s,
+        9.8 GiB for `WITH p RETURN count(*)`; now 0.18 s), and made
+        Databricks fall back for it;
+      - Bolt merged two parallel relationships of a path (they share an
+        element id, #1334).
+
+      Filed: #1334 (relationship element ids ignore `edge_id`), #1335
+      (DISTINCT over millions of large values). The review's shapes and
+      repros, rerun: every answer of the new path equals Neo4j.
+    - Mutation check: 36 rules broken in turn; 35 fail a unit test. The
+      other one, asking a shortest path's search for no values, cannot be
+      observed: its value is refused afterwards.
+- [ ] S6d a shortestPath's path as a value
 - [ ] S7 UNWIND / UNION / alternatives
 - [ ] S8 layouts
 - [ ] S9 subquery expressions

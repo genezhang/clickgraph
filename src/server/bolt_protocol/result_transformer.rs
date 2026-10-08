@@ -159,6 +159,11 @@ pub enum ReturnItemType {
     },
     /// Scalar value (property access, expression, aggregate) - return as-is
     Scalar,
+    /// A value holding nodes, relationships or paths in Neo4j's JSON form
+    /// (`elementId`, `labels`, `properties`, …; a path is the list of its
+    /// nodes and relationships in turn), of this type: the bound-plan path's
+    /// paths and lists (`bound_plan::lower::value`).
+    Graph(crate::bound_plan::lower::GraphType),
 }
 
 /// Extract return metadata from logical plan and plan context
@@ -919,6 +924,12 @@ pub fn transform_row(
                 // For scalars, just extract the value and wrap in BoltValue::Json
                 let value = meta.value(&row).cloned().unwrap_or(Value::Null);
                 result.push(BoltValue::Json(value));
+            }
+            ReturnItemType::Graph(ty) => {
+                let value = meta.value(&row).cloned().unwrap_or(Value::Null);
+                result.push(BoltValue::PackstreamBytes(super::graph_values::packstream(
+                    &value, ty, id_mapper,
+                )?));
             }
         }
     }

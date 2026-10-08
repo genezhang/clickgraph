@@ -194,6 +194,67 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         })
     }
 
+    fn graph_values(&self) -> Option<super::GraphValues> {
+        // An element is a `Map(String, Dynamic)`: maps of different keys
+        // and value types share it, so one array holds nodes and
+        // relationships of any label. JSON output prints a map as an object
+        // and a `Dynamic` as the value it holds.
+        fn object(entries: &[(String, String)]) -> String {
+            if entries.is_empty() {
+                // `CAST(map(), 'Map(String, Dynamic)')` fails: an empty
+                // map's value type has no variant to cast from.
+                return "CAST(CAST(map(), 'Map(String, String)'), 'Map(String, Dynamic)')"
+                    .to_string();
+            }
+            let pairs: Vec<String> = entries
+                .iter()
+                .map(|(k, v)| format!("{k}, CAST({v}, 'Dynamic')"))
+                .collect();
+            format!("map({})", pairs.join(", "))
+        }
+        Some(super::GraphValues {
+            object,
+            object_without_nulls: |entries| {
+                format!(
+                    "mapFilter((__k, __v) -> __v IS NOT NULL, {})",
+                    object(entries)
+                )
+            },
+            list: |items| {
+                if items.is_empty() {
+                    "CAST([], 'Array(Map(String, Dynamic))')".to_string()
+                } else {
+                    format!("[{}]", items.join(", "))
+                }
+            },
+            concat: |lists| match lists {
+                [one] => one.clone(),
+                _ => format!("arrayConcat({})", lists.join(", ")),
+            },
+            tail: |list| format!("arraySlice({list}, 2)"),
+            reverse: |list| format!("arrayReverse({list})"),
+            interleave: |rels, nodes| {
+                format!("arrayFlatten(arrayMap((__r, __n) -> [__r, __n], {rels}, {nodes}))")
+            },
+            length: |list| format!("length({list})"),
+            text: |parts| format!("concat({})", parts.join(", ")),
+            to_text: |x| format!("toString({x})"),
+            null_if: |cond, value| format!("if({cond}, NULL, CAST({value}, 'Dynamic'))"),
+            any: |value| format!("any({value})"),
+            texts: |items| {
+                if items.is_empty() {
+                    "CAST([], 'Array(String)')".to_string()
+                } else {
+                    format!("[{}]", items.join(", "))
+                }
+            },
+            prefixed_texts: |prefix, list| {
+                format!("arrayMap(__x -> concat({prefix}, toString(__x)), {list})")
+            },
+            empty_if: |cond, list| format!("if({cond}, [], {list})"),
+        })
+    }
+
     fn id_order_key_nulls_clause(&self) -> &'static str {
         // No-op for CH — NULL already sorts last for both ASC and DESC by
         // default — but explicit for parity with Databricks (#556).

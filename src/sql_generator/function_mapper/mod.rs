@@ -379,6 +379,50 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// `UNION ALL` arms reads the CTE in an `IN` subquery and aggregates,
     /// and `ARRAY JOIN` repeats a row.
     fn shortest_path_search(&self) -> Option<ShortestPathSearch>;
+
+    /// How the dialect spells a node, relationship or path as a value
+    /// (`bound_plan::lower::value`, EXPLICIT_SCOPE §4.11, S6c), or `None`
+    /// when it has no type that holds elements of different labels and
+    /// kinds in one list.
+    fn graph_values(&self) -> Option<GraphValues>;
+}
+
+/// The dialect's parts of a graph value ([`FunctionMapper::graph_values`]).
+/// An element is an object of entries whose values differ in type (Neo4j's
+/// JSON form: `elementId`, `labels`, `properties`, …); a list or a path is a
+/// list of such objects, whatever their labels and kinds. Every argument is
+/// SQL; an object key is an SQL string literal.
+pub(crate) struct GraphValues {
+    /// An object of `(key, value)` entries.
+    pub object: fn(&[(String, String)]) -> String,
+    /// An object of the entries whose value is not NULL.
+    pub object_without_nulls: fn(&[(String, String)]) -> String,
+    /// A list of objects (possibly none).
+    pub list: fn(&[String]) -> String,
+    /// The lists one after another.
+    pub concat: fn(&[String]) -> String,
+    /// A list without its first element.
+    pub tail: fn(&str) -> String,
+    pub reverse: fn(&str) -> String,
+    /// `[r1, n1, r2, n2, …]` from the lists `[r1, r2, …]` and `[n1, n2, …]`
+    /// of one length.
+    pub interleave: fn(&str, &str) -> String,
+    /// The number of elements of a list.
+    pub length: fn(&str) -> String,
+    /// A string of the parts (SQL strings) one after another.
+    pub text: fn(&[String]) -> String,
+    /// A scalar as a string.
+    pub to_text: fn(&str) -> String,
+    /// NULL when the condition holds, else the value (an object or a list).
+    pub null_if: fn(&str, &str) -> String,
+    /// Any one of a group's values (they are all equal).
+    pub any: fn(&str) -> String,
+    /// A list of texts (possibly none).
+    pub texts: fn(&[String]) -> String,
+    /// The texts of a list's elements, each after the text `prefix`.
+    pub prefixed_texts: fn(&str, &str) -> String,
+    /// An empty list when the condition holds, else the list.
+    pub empty_if: fn(&str, &str) -> String,
 }
 
 /// The dialect's parts of a shortest-path search

@@ -17,6 +17,7 @@ pub mod auth;
 pub mod connection;
 pub mod errors;
 pub mod graph_objects;
+pub mod graph_values;
 pub mod handler;
 pub mod messages;
 pub mod result_transformer;

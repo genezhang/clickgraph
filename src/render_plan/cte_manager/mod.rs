@@ -1985,6 +1985,9 @@ impl VariableLengthCteStrategy {
         // is safe: the parallel `path_<prop>` arrays are emitted only by the
         // standard base/recursive/zero-hop arms.
         generator.path_node_properties = context.path_node_properties.clone();
+        // The bound plan's paths as values: set only by its standard-layout
+        // call (`bound_plan::lower::path`), emitted by the standard arms.
+        generator.path_values = context.path_values.clone();
 
         // #1103: every flag that selects a generator shape is now set, so ask
         // whether this shape routes AROUND the wrapper that applies a

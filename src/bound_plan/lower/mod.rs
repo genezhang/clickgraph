@@ -54,6 +54,7 @@ mod expr;
 mod path;
 #[cfg(test)]
 mod tests;
+mod value;
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -76,6 +77,8 @@ use crate::utils::cte_column_naming::cte_column_name;
 
 use super::expr::{calls_aggregate, property_refs, referenced_names};
 use super::types::*;
+pub use value::GraphType;
+use value::{Carried, GraphRef, NODE_VALUES, REL_VALUES};
 
 /// Why a bound plan was not lowered.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -140,6 +143,9 @@ pub enum ResultKind {
     /// `id(n)` of a node with this label: column `name` holds the node's key,
     /// which Bolt returns encoded (`IdMapper`), as on the legacy pipeline.
     NodeId { label: String },
+    /// A path, or a list of nodes or relationships, in Neo4j's JSON form
+    /// (`value.rs`): column `name`.
+    Graph(GraphType),
 }
 
 /// Lower a bound statement to a render plan.
@@ -168,6 +174,7 @@ pub fn lower_statement(
         order: RowOrder::Unordered,
         elided: HashMap::new(),
         paths: HashMap::new(),
+        graph_values: HashMap::new(),
     };
     l.relation(input)?;
     l.finish_relation();
@@ -203,6 +210,13 @@ enum Scan<'s> {
         /// Of a `shortestPath` / `allShortestPaths` pattern: per pair of
         /// ends, the shortest paths only.
         shortest: Option<ShortestMode>,
+        /// The walk starts at the pattern's right end: its order is the
+        /// reverse of the path's.
+        reversed: bool,
+        /// It carries its nodes / relationships as values
+        /// (`path_node_values` / `path_rel_values`, `value.rs`).
+        node_values: bool,
+        rel_values: bool,
     },
     /// An element whose label / type set is empty: it matches nothing.
     Impossible,
@@ -259,6 +273,9 @@ impl<'s> Scan<'s> {
                 edges,
                 range,
                 shortest,
+                reversed,
+                node_values,
+                rel_values,
                 ..
             } => Scan::Path {
                 schema,
@@ -268,6 +285,9 @@ impl<'s> Scan<'s> {
                 edges,
                 range,
                 shortest,
+                reversed,
+                node_values,
+                rel_values,
             },
             Scan::Impossible => Scan::Impossible,
         }
@@ -289,6 +309,7 @@ struct Segment<'s> {
     empty: bool,
     order: RowOrder,
     elided: HashMap<VarId, VarId>,
+    graph_values: HashMap<VarId, Carried>,
 }
 
 /// One column an OPTIONAL MATCH's matches are joined to the input rows on:
@@ -337,6 +358,9 @@ struct Lowerer<'s> {
     elided: HashMap<VarId, VarId>,
     /// Path variables (`p = …`) and their elements, of every clause.
     paths: HashMap<VarId, PathElements>,
+    /// Graph values (`value.rs`) the segment's CTE carries, by variable;
+    /// each is also in `values`.
+    graph_values: HashMap<VarId, Carried>,
 }
 
 /// The elements of a path variable, in path order.
@@ -398,6 +422,10 @@ struct Body {
     order_lost: bool,
     /// DISTINCT also by these unreturned expressions (an element's identity).
     distinct_keys: Vec<RenderExpr>,
+    /// Columns (by name) whose value follows from the others' and is not
+    /// grouped by: a graph value (`value.rs`, ClickHouse refuses `Dynamic` in
+    /// GROUP BY). When the rows are grouped, each is `any()` of its group.
+    determined: Vec<String>,
     skip: Option<i64>,
     limit: Option<i64>,
 }
@@ -992,6 +1020,9 @@ impl<'s> Lowerer<'s> {
             // Shared: NULL never matches (a tie to it fails). Read by the
             // WHERE only: NULL is a value the WHERE decides on.
             let null_safe = where_only.contains(v) && self.binding(*v).nullable;
+            if self.graph_values.contains_key(v) {
+                return unsupported("a path's list read by an OPTIONAL MATCH");
+            }
             if let Some(e) = self.values.get(v) {
                 let column = column_of(e, &w)?;
                 q.values.insert(*v, col_at(&d, &column));
@@ -1014,6 +1045,9 @@ impl<'s> Lowerer<'s> {
             else {
                 return unsupported(format!("internal: {v} is not exported"));
             };
+            // `Q` reads no value: a list's values stay out of `D`.
+            let mut physical = physical;
+            physical.retain(|c, _| !path::VALUE_COLUMNS.contains(&c.as_str()));
             columns.extend(physical.values().cloned());
             let mut d_props = HashMap::new();
             for (prop, e) in props {
@@ -1108,7 +1142,7 @@ impl<'s> Lowerer<'s> {
         }
         let mut exports = Vec::new();
         for v in named {
-            let scan = self.export_element(*v, *v, q_alias, &mut body.select, &mut Vec::new())?;
+            let scan = self.export_element(*v, *v, q_alias, &mut body, &mut Vec::new())?;
             exports.push((*v, scan));
         }
         if body.select.is_empty() {
@@ -1130,6 +1164,7 @@ impl<'s> Lowerer<'s> {
         std::mem::swap(&mut self.empty, &mut s.empty);
         std::mem::swap(&mut self.order, &mut s.order);
         std::mem::swap(&mut self.elided, &mut s.elided);
+        std::mem::swap(&mut self.graph_values, &mut s.graph_values);
         s
     }
 
@@ -1272,6 +1307,9 @@ impl<'s> Lowerer<'s> {
                     edges: false,
                     range,
                     shortest: None,
+                    reversed: false,
+                    node_values: false,
+                    rel_values: false,
                 }
             }
             // A path of no relationship needs none: `*0..` with no feasible
@@ -1366,6 +1404,12 @@ impl<'s> Lowerer<'s> {
         .unwrap_or(left);
         let last = if first == left { right } else { left };
         let backward = first != from_end;
+        // Its nodes / relationships read as values (the demand pass): the
+        // search carries them. A shortest path's search keeps no paths.
+        let wants = |name: &str| {
+            shortest.is_none() && self.demand.get(&r.var).is_some_and(|d| d.contains(name))
+        };
+        let (node_values, rel_values) = (wants(NODE_VALUES), wants(REL_VALUES));
         let Some(Scan::Node {
             schema: node,
             label,
@@ -1419,6 +1463,8 @@ impl<'s> Lowerer<'s> {
             start,
             end,
             rel,
+            node_values,
+            rel_values,
         };
         let (ctes, cte, edges) = match shortest {
             None => {
@@ -1448,6 +1494,11 @@ impl<'s> Lowerer<'s> {
                 edges,
                 range: (min, max),
                 shortest,
+                // The walk follows the stored direction unless `backward`;
+                // the path's order follows it when the pattern points right.
+                reversed: backward != (r.direction == RelDirection::Left),
+                node_values,
+                rel_values,
             },
         );
         for (end, column) in [(first, "start_id"), (last, "end_id")] {
@@ -1864,9 +1915,42 @@ impl<'s> Lowerer<'s> {
                     .map(|c| c.to_string())
                     .collect(),
             }),
-            Scan::Path { .. } => Some(path::PATH_COLUMNS.iter().map(|c| c.to_string()).collect()),
+            // The walk's first node and relationships: the path relation's
+            // rows differ in them (a path of none has no relationship).
+            Scan::Path { edges, .. } => Some(
+                ["start_id", "path_edges"][..if *edges { 2 } else { 1 }]
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect(),
+            ),
             Scan::Impossible => None,
         }
+    }
+
+    /// The columns a path relation exports through a CTE: its identity,
+    /// ends, length, nodes, and the values it carries.
+    fn path_physical(&self, v: VarId) -> Vec<String> {
+        let Some(Scan::Path {
+            edges,
+            node_values,
+            rel_values,
+            ..
+        }) = self.scans.get(&v)
+        else {
+            return Vec::new();
+        };
+        let mut cols: Vec<&str> = path::PATH_COLUMNS.to_vec();
+        cols.push("path_nodes");
+        if *edges {
+            cols.push("path_edges");
+        }
+        if *node_values {
+            cols.push(path::VALUE_COLUMNS[0]);
+        }
+        if *rel_values {
+            cols.push(path::VALUE_COLUMNS[1]);
+        }
+        cols.into_iter().map(str::to_string).collect()
     }
 
     /// An element's identity, one expression per identity column; `None` for
@@ -2165,7 +2249,24 @@ impl<'s> Lowerer<'s> {
         let mut items_env: HashMap<VarId, RenderExpr> = HashMap::new();
         // `id(n)` items: their column is the node's key, not the id returned.
         let mut id_items: Vec<VarId> = Vec::new();
+        // Path elements a WITH already exports (`WITH p, p AS q`).
+        let mut exported: Vec<VarId> = Vec::new();
         for it in &p.items {
+            if let Some(g) = self.graph_ref(&it.expr).filter(|_| !it.aggregate) {
+                let handled = self.graph_item(
+                    g,
+                    it,
+                    cte,
+                    aggregating,
+                    &mut body,
+                    &mut exports,
+                    &mut shape,
+                    &mut exported,
+                )?;
+                if handled {
+                    continue;
+                }
+            }
             let element = match &it.expr {
                 LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(n)) => {
                     parse_var(n).filter(|v| {
@@ -2176,16 +2277,7 @@ impl<'s> Lowerer<'s> {
             };
             if let Some(src) = element {
                 if matches!(self.binding(src).kind, BindingKind::Path) {
-                    return unsupported("a path variable as a value (S6c)");
-                }
-                // A path's carried columns do not identify it (two paths can
-                // share them): no DISTINCT or grouping by it.
-                if matches!(self.scans.get(&src), Some(Scan::Path { .. }))
-                    && (p.distinct || aggregating)
-                {
-                    return unsupported(
-                        "DISTINCT or grouping by a variable-length relationship's list (S6c)",
-                    );
+                    return unsupported(format!("internal: path {src} not projected as a value"));
                 }
                 // In this projection's ORDER BY / WHERE the item is the
                 // element itself.
@@ -2198,7 +2290,7 @@ impl<'s> Lowerer<'s> {
                     continue;
                 };
                 let mut keys = Vec::new();
-                let out = self.export_element(src, it.var, alias, &mut body.select, &mut keys)?;
+                let out = self.export_element(src, it.var, alias, &mut body, &mut keys)?;
                 if aggregating {
                     body.group_by.extend(keys);
                 }
@@ -2470,13 +2562,16 @@ impl<'s> Lowerer<'s> {
         src: VarId,
         out: VarId,
         alias: &str,
-        select_list: &mut Vec<SelectItem>,
+        body: &mut Body,
         keys: &mut Vec<RenderExpr>,
     ) -> Result<Scan<'s>, LowerError> {
         let Some(scan) = self.scans.get(&src).cloned() else {
             return unsupported(format!("internal: {src} has no scan"));
         };
-        let mut physical_cols = self.identity_physical(src).unwrap_or_default();
+        let mut physical_cols = match &scan {
+            Scan::Path { .. } => self.path_physical(src),
+            _ => self.identity_physical(src).unwrap_or_default(),
+        };
         if let Scan::Rel { schema, .. } = &scan {
             for c in schema
                 .from_id
@@ -2496,9 +2591,33 @@ impl<'s> Lowerer<'s> {
         for c in &physical_cols {
             let name = format!("{out}__{c}");
             let e = self.physical(src, c)?;
-            select_list.push(select(e.clone(), &name));
-            keys.push(e);
+            body.select.push(select(e.clone(), &name));
+            match &scan {
+                // Grouped by as a list: by its relationships (`value.rs`);
+                // its other columns follow from them where they are read.
+                Scan::Path { .. } if c != "path_edges" => body.determined.push(name.clone()),
+                _ => keys.push(e),
+            }
             physical.insert(c.clone(), name);
+        }
+        if matches!(scan, Scan::Path { .. }) {
+            if self.binding(src).nullable {
+                // An OPTIONAL MATCH's list that did not match is NULL, not
+                // the empty list: grouped apart.
+                let e = RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::IsNull,
+                    operands: vec![self.physical(src, "start_id")?],
+                });
+                body.select
+                    .push(select(e.clone(), &format!("{out}__unmatched")));
+                keys.push(e);
+            }
+            // A list of relationships has no properties.
+            return Ok(scan.with_at(At::Exported {
+                alias: alias.to_string(),
+                physical,
+                props: HashMap::new(),
+            }));
         }
         let mut props = HashMap::new();
         let demanded = self.demand.get(&out);
@@ -2513,7 +2632,7 @@ impl<'s> Lowerer<'s> {
                 continue;
             }
             let name = cte_column_name(&out.name(), prop);
-            select_list.push(select(e.clone(), &name));
+            body.select.push(select(e.clone(), &name));
             keys.push(e);
             props.insert(prop.clone(), col_at(alias, &name));
         }
@@ -2568,6 +2687,18 @@ impl<'s> Lowerer<'s> {
         vars.dedup();
         for v in vars {
             if let Some(e) = self.values.get(&v).cloned() {
+                if let Some(c) = self.graph_values.get(&v).cloned() {
+                    let value = value::GraphValue {
+                        value: e,
+                        keys: c.keys,
+                        ty: c.ty,
+                        nullable: c.nullable,
+                    };
+                    let carried = value::export_graph(v, value, &alias, &mut body, false);
+                    exports.values.push((v, col_at(&alias, &v.name())));
+                    exports.graph.push((v, carried));
+                    continue;
+                }
                 if is_constant(&e) {
                     exports.values.push((v, e));
                 } else {
@@ -2576,7 +2707,7 @@ impl<'s> Lowerer<'s> {
                 }
                 continue;
             }
-            let scan = self.export_element(v, v, &alias, &mut body.select, &mut Vec::new())?;
+            let scan = self.export_element(v, v, &alias, &mut body, &mut Vec::new())?;
             exports.scans.push((v, scan));
         }
         self.close_segment(body, exports, alias)
@@ -2631,6 +2762,7 @@ impl<'s> Lowerer<'s> {
         // visible.
         self.scans = exports.scans.into_iter().collect();
         self.values = exports.values.into_iter().collect();
+        self.graph_values = exports.graph.into_iter().collect();
         self.emitted = vec![alias.clone()];
         self.from = Some(table_ref(name, &alias));
         self.joins = Vec::new();
@@ -2751,19 +2883,35 @@ impl<'s> Lowerer<'s> {
         let mut group_by = body.group_by;
         let mut having = body.having;
         let mut distinct = body.distinct;
-        if distinct && !body.distinct_keys.is_empty() {
+        let mut grouped = body.grouped;
+        let mut select = body.select;
+        let determined = |i: &SelectItem| {
+            i.col_alias
+                .as_ref()
+                .is_some_and(|a| body.determined.contains(&a.0))
+        };
+        if distinct && (!body.distinct_keys.is_empty() || select.iter().any(determined)) {
             // DISTINCT by the returned columns and keys that are not returned:
             // a GROUP BY of both (a plain projection, so no aggregate).
-            group_by = body
-                .select
+            group_by = select
                 .iter()
+                .filter(|i| !determined(i))
                 .map(|i| i.expression.clone())
                 .chain(body.distinct_keys)
                 .collect();
             distinct = false;
+            grouped = true;
         }
         group_by.retain(|g| !is_constant(g));
-        if body.grouped && group_by.is_empty() {
+        if grouped || !group_by.is_empty() {
+            if let Some(g) = current_function_mapper().graph_values() {
+                for i in select.iter_mut().filter(|i| determined(i)) {
+                    i.expression =
+                        RenderExpr::Raw((g.any)(&render_expr_to_sql_plain(&i.expression)));
+                }
+            }
+        }
+        if grouped && group_by.is_empty() {
             having.insert(
                 0,
                 RenderExpr::OperatorApplicationExp(OperatorApplication {
@@ -2782,7 +2930,7 @@ impl<'s> Lowerer<'s> {
         }
         RenderPlan {
             select: SelectItems {
-                items: body.select,
+                items: select,
                 distinct,
             },
             from: FromTableItem(from),
@@ -2817,6 +2965,8 @@ struct Exports<'s> {
     /// A filter the next segment applies first (a WITH's WHERE after its
     /// SKIP / LIMIT).
     keep: Option<RenderExpr>,
+    /// Graph values among `values`.
+    graph: Vec<(VarId, Carried)>,
 }
 
 fn join(table_name: String, alias: &str) -> Join {
@@ -3066,6 +3216,33 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
     }
     let mut all = Vec::new();
     exprs(&stmt.plan, &mut all);
+    // A WITH item that passes a variable through reads nothing of it: what
+    // later clauses read of it is demanded of its source (below).
+    fn pass_through<'a>(op: &'a BoundOp, out: &mut Vec<&'a LogicalExpr>) {
+        match op {
+            BoundOp::Project { input, projection } => {
+                pass_through(input, out);
+                if projection.kind == ProjectionKind::With {
+                    out.extend(
+                        projection
+                            .items
+                            .iter()
+                            .map(|i| &i.expr)
+                            .filter(|e| matches!(e, LogicalExpr::TableAlias(_))),
+                    );
+                }
+            }
+            BoundOp::Match { input, .. }
+            | BoundOp::Unwind { input, .. }
+            | BoundOp::Sort { input, .. }
+            | BoundOp::Skip { input, .. }
+            | BoundOp::Limit { input, .. } => pass_through(input, out),
+            BoundOp::Union { arms, .. } => arms.iter().for_each(|a| pass_through(a, out)),
+            BoundOp::Unit => {}
+        }
+    }
+    let mut passed = Vec::new();
+    pass_through(&stmt.plan, &mut passed);
     let mut demand: HashMap<VarId, BTreeSet<String>> = HashMap::new();
     let mut add = |v: VarId, prop: &str| {
         demand.entry(v).or_default().insert(prop.to_string());
@@ -3088,11 +3265,20 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
             }
         }
     }
-    for e in all {
+    for e in &all {
         for (name, prop) in property_refs(e) {
             if let Some(v) = parse_var(&name) {
                 add(v, &prop);
             }
+        }
+        // A path or list read as a value needs its elements' values.
+        if passed.iter().any(|x| std::ptr::eq(*x, *e)) {
+            continue;
+        }
+        let mut uses = Vec::new();
+        graph_demand(e, &stmt.bindings, &mut uses);
+        for (v, what) in uses {
+            add(v, what);
         }
     }
     for part in pattern_parts(&stmt.plan) {
@@ -3111,7 +3297,68 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
             }
         }
     }
+    // A path's value is its elements': every property of a fixed node or
+    // relationship, the carried values of a variable-length one.
+    let mut elements: Vec<(VarId, &str)> = Vec::new();
+    for part in pattern_parts(&stmt.plan) {
+        let Some(wanted) = part.path_var.and_then(|p| demand.get(&p)) else {
+            continue;
+        };
+        let (nodes, rels) = (wanted.contains(NODE_VALUES), wanted.contains(REL_VALUES));
+        if nodes {
+            elements.extend(part.nodes.iter().map(|n| (n.var, ALL_PROPERTIES)));
+        }
+        for r in &part.rels {
+            match r.length {
+                Some(_) => {
+                    if nodes {
+                        elements.push((r.var, NODE_VALUES));
+                    }
+                    if rels {
+                        elements.push((r.var, REL_VALUES));
+                    }
+                }
+                None if rels => elements.push((r.var, ALL_PROPERTIES)),
+                None => {}
+            }
+        }
+    }
+    for (v, what) in elements {
+        demand.entry(v).or_default().insert(what.to_string());
+    }
     demand
+}
+
+/// The graph values (`value.rs`) an expression reads: (variable, what of
+/// it). `length(p)` and `size()` of a list are counted from the path's
+/// structure and read none.
+fn graph_demand(e: &LogicalExpr, bindings: &[Binding], out: &mut Vec<(VarId, &'static str)>) {
+    let structural = match e {
+        LogicalExpr::ScalarFnCall(f) => match f.args.as_slice() {
+            [arg] if f.name.eq_ignore_ascii_case("size") => {
+                value::graph_ref(arg, bindings).is_some()
+            }
+            [arg] if f.name.eq_ignore_ascii_case("length") => {
+                matches!(value::graph_ref(arg, bindings), Some(GraphRef::Path(_)))
+            }
+            _ => false,
+        },
+        _ => false,
+    };
+    if structural {
+        return;
+    }
+    match value::graph_ref(e, bindings) {
+        Some(GraphRef::Path(p)) => out.extend([(p, NODE_VALUES), (p, REL_VALUES)]),
+        Some(GraphRef::Nodes(p)) => out.push((p, NODE_VALUES)),
+        Some(GraphRef::Rels(p)) => out.push((p, REL_VALUES)),
+        Some(GraphRef::List(r)) => out.push((r, REL_VALUES)),
+        Some(GraphRef::Carried(_)) | None => {
+            for c in crate::bound_plan::expr::children(e) {
+                graph_demand(c, bindings, out);
+            }
+        }
+    }
 }
 
 fn pattern_parts(op: &BoundOp) -> Vec<&PatternPart> {

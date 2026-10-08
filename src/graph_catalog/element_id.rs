@@ -102,13 +102,16 @@ pub fn generate_node_element_id(label: &str, id_values: &[&str]) -> String {
     // otherwise it falls back to legacy id() mode and tries `parseInt(elementId)`,
     // which yields NaN → 0 for our `Label:id` format and breaks click-to-expand.
     // Parsers strip the trailing `-` so internal callers see the same value.
-    if id_values.len() == 1 {
-        // Single ID: "Label:id-"
-        format!("{}:{}-", label, id_values[0])
-    } else {
-        // Composite ID: "Label:id1|id2|id3-"
-        format!("{}:{}-", label, id_values.join("|"))
-    }
+    // Single ID: "Label:id-"; composite ID: "Label:id1|id2|id3-".
+    let (prefix, suffix) = node_element_id_affixes(label);
+    format!("{prefix}{}{suffix}", id_values.join("|"))
+}
+
+/// The text around a node's id in its element id
+/// ([`generate_node_element_id`]): the bound plan spells the same element id
+/// in SQL for a node inside a value (a path, `nodes(p)`), so the two agree.
+pub fn node_element_id_affixes(label: &str) -> (String, &'static str) {
+    (format!("{label}:"), "-")
 }
 
 /// Parse a Neo4j node elementId back into its components.
@@ -208,7 +211,15 @@ pub fn generate_relationship_element_id(rel_type: &str, from_id: &str, to_id: &s
     // Trailing `-` is a Neo4j-Browser-compat sentinel; see node generator.
     // The arrow `->` already contains a `-` in practice, but for relationships
     // returned without nodes, Browser still inspects the string. Be consistent.
-    format!("{}:{}->{}-", rel_type, from_id, to_id)
+    let (prefix, between, suffix) = relationship_element_id_affixes(rel_type);
+    format!("{prefix}{from_id}{between}{to_id}{suffix}")
+}
+
+/// The text around a relationship's endpoint ids in its element id
+/// ([`generate_relationship_element_id`]): before the `from` id, between the
+/// two, after the `to` id.
+pub fn relationship_element_id_affixes(rel_type: &str) -> (String, &'static str, &'static str) {
+    (format!("{rel_type}:"), "->", "-")
 }
 
 /// Parse a Neo4j relationship elementId back into its components.

@@ -191,7 +191,40 @@ pub fn transform_rows_to_graph(
                         builder.add_edge(edge);
                     }
                 }
-                // Scalars, paths, id functions -- skip for graph output
+                // A path or list of the bound-plan path: its nodes and edges.
+                ReturnItemType::Graph(ty) => {
+                    let value = meta.value(&row_map).cloned().unwrap_or(JsonValue::Null);
+                    let (mut nodes, mut rels) = (Vec::new(), Vec::new());
+                    if clickgraph::server::bolt_protocol::graph_values::elements(
+                        &value, ty, &mut nodes, &mut rels,
+                    )
+                    .is_ok()
+                    {
+                        let convert = |props: HashMap<String, JsonValue>| {
+                            props
+                                .into_iter()
+                                .map(|(k, v)| (k, Value::from(v)))
+                                .collect()
+                        };
+                        for n in nodes {
+                            builder.add_node(GraphNode {
+                                id: n.element_id,
+                                labels: n.labels,
+                                properties: convert(n.properties),
+                            });
+                        }
+                        for r in rels {
+                            builder.add_edge(GraphEdge {
+                                id: r.element_id,
+                                type_name: r.rel_type,
+                                from_id: r.start_node_element_id,
+                                to_id: r.end_node_element_id,
+                                properties: convert(r.properties),
+                            });
+                        }
+                    }
+                }
+                // Scalars, legacy paths, id functions -- skip for graph output
                 _ => {}
             }
         }
@@ -430,6 +463,48 @@ fn json_value_to_string(v: &JsonValue) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A path of the bound-plan path (Neo4j's JSON form) adds its nodes and
+    /// edges, once each.
+    #[test]
+    fn a_path_value_adds_its_nodes_and_edges() {
+        use clickgraph::bound_plan::lower::GraphType;
+        let node = |id: u32| serde_json::json!({"elementId": format!("User:{id}-"), "labels": ["User"], "properties": {"user_id": id}});
+        let rel = |a: u32, b: u32| {
+            serde_json::json!({
+                "elementId": format!("FOLLOWS:{a}->{b}-"),
+                "startNodeElementId": format!("User:{a}-"),
+                "endNodeElementId": format!("User:{b}-"),
+                "type": "FOLLOWS",
+                "properties": {}
+            })
+        };
+        let rows = vec![
+            serde_json::json!({"p": [node(1), rel(1, 2), node(2), rel(2, 1), node(1)]}),
+            serde_json::json!({"p": null}),
+        ];
+        let meta = vec![ReturnItemMetadata {
+            field_name: "p".to_string(),
+            item_type: ReturnItemType::Graph(GraphType::Path),
+            columns: Some(vec![("p".to_string(), "p".to_string())]),
+        }];
+        let schema = GraphSchema::build(1, "db".to_string(), HashMap::new(), HashMap::new());
+        let result = transform_rows_to_graph(&rows, &meta, &schema);
+        assert_eq!((result.node_count(), result.edge_count()), (2, 2));
+        let edge = result
+            .edges()
+            .iter()
+            .find(|e| e.id == "FOLLOWS:2->1-")
+            .unwrap();
+        assert_eq!(
+            (edge.from_id.as_str(), edge.to_id.as_str()),
+            ("User:2-", "User:1-")
+        );
+        assert_eq!(
+            result.nodes()[0].properties.get("user_id"),
+            Some(&Value::Int64(1))
+        );
+    }
 
     #[test]
     fn test_graph_node_construction() {

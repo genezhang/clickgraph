@@ -79,13 +79,13 @@ def test_union_arm_limit_is_unverified():
     assert verdict(q, scalar_rows("v", [1, 2]), [{"v": 1}, {"v": 2}, {"v": 3}]) == "UNVERIFIED"
 
 
-def test_id_functions_and_paths_are_incomparable():
+def test_id_functions_and_tx_paths_are_incomparable():
+    # A path in the tx API's form: its answer is the Query API's (needs_typed).
+    tx_path = neo(["p"], [[([{"a": 1}, {}, {"b": 2}], [{"type": "node"}, {"type": "relationship"}, {"type": "node"}])]])
+    assert compare.needs_typed(tx_path)
     for cypher, result in [
         ("MATCH (n) WHERE id(n) = 1 RETURN n", neo(["n"], [])),
-        (
-            "MATCH p=()-->() RETURN p",
-            neo(["p"], [[([{"a": 1}, {}, {"b": 2}], [{"type": "node"}, {"type": "relationship"}, {"type": "node"}])]]),
-        ),
+        ("MATCH p=()-->() RETURN p", tx_path),
     ]:
         try:
             compare.expected_from_neo4j(cypher, result)
@@ -99,3 +99,34 @@ def test_wrong_outcome_signature_is_stable_and_specific():
     assert a == compare.signature("MISMATCH", "y", [{"n": 1}])
     assert a != compare.signature("MISMATCH", "x", [{"n": 2}])
     assert compare.signature("CG_ERROR", "Code 47 t12", None) == compare.signature("CG_ERROR", "Code 47 t3", None)
+
+
+def _node(i, **props):
+    return {"elementId": f"x{i}", "labels": ["User"], "properties": {"__cg_id": f"[{i}]", **props}}
+
+
+def _cg_node(i, **props):
+    return {"elementId": f"User:{i}-", "labels": ["User"], "properties": props}
+
+
+def test_paths_compare_by_elements_on_the_query_api():
+    neo_rel = {"elementId": "r", "startNodeElementId": "x1", "endNodeElementId": "x2", "type": "T",
+               "properties": {"__cg_from": "[1]", "__cg_to": "[2]", "w": 1.0}}
+    cg_rel = {"elementId": "T:1->2-", "startNodeElementId": "User:1-", "endNodeElementId": "User:2-",
+              "type": "T", "properties": {"w": 1, "gone": None}}
+    typed = {"data": {"fields": ["p", "n"], "values": [[[_node(1, a=1), neo_rel, _node(2, a=2)], 3]]}}
+    exp = compare.expected_from_neo4j("MATCH p = (a)-->(b) RETURN p, 3 AS n", typed)
+    cg = [{"p": [_cg_node(1, a=1), cg_rel, _cg_node(2, a=2)], "n": 3}]
+    assert compare.compare_expected("q", exp, cg)[0] == "MATCH"
+    # Reversed endpoints, or another property, differ.
+    flipped = dict(cg_rel, startNodeElementId="User:2-", endNodeElementId="User:1-")
+    assert compare.compare_expected("q", exp, [{"p": [_cg_node(1, a=1), flipped, _cg_node(2, a=2)], "n": 3}])[0] == "MISMATCH"
+    assert compare.compare_expected("q", exp, [{"p": [_cg_node(1, a=9), cg_rel, _cg_node(2, a=2)], "n": 3}])[0] == "MISMATCH"
+
+
+def test_an_empty_list_keeps_its_column_in_the_tx_api():
+    # The tx API's meta has no entry for an empty list.
+    result = {"columns": ["l", "n"], "data": [{"row": [[], 1], "meta": [None]}]}
+    assert not compare.needs_typed(result)
+    exp = compare.expected_from_neo4j("RETURN [] AS l, 1 AS n", result)
+    assert compare.compare_expected("RETURN [] AS l, 1 AS n", exp, [{"l": [], "n": 1}])[0] == "MATCH"
