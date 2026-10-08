@@ -19,8 +19,14 @@ Entities
     `col.from_id` / `col.to_id`.
   * a NULL entity (an unmatched OPTIONAL variable) is no columns on either
     side.
-  * paths are not comparable yet (ClickGraph encodes them differently):
-    INCOMPARABLE, never MATCH.
+  * a path, or a node or relationship inside a list or map, is in Neo4j's
+    Query API form on both sides (ClickGraph's bound-plan path returns that
+    form; for Neo4j the query is re-run on its Query API, as the tx API's
+    `meta` flattens lists): a node compares by its properties, a
+    relationship by its properties and its endpoints (the loader's
+    `__cg_from` / `__cg_to` on Neo4j, the ids in ClickGraph's
+    `startNodeElementId` / `endNodeElementId`), a path element by element.
+    Labels and element ids are not compared (engine-internal).
   * ClickGraph's unlabeled multi-label node encoding (`x.__label__`, ...) is
     compared by row count only; equal counts are INCOMPARABLE, not MATCH.
 
@@ -74,6 +80,89 @@ def _endpoint(value):
     return norm_value(ids[0] if len(ids) == 1 else ids)
 
 
+_NODE_KEYS = {"elementId", "labels", "properties"}
+_REL_KEYS = {"elementId", "startNodeElementId", "endNodeElementId", "type", "properties"}
+
+
+def _props(props):
+    return {k: norm_value(v) for k, v in sorted(props.items()) if k not in LOADER_KEYS and v is not None}
+
+
+def _loader_endpoint(raw):
+    ids = json.loads(raw)
+    return "|".join(str(norm_value(i)) for i in ids)
+
+
+def _element_id_endpoint(element_id):
+    """The id in ClickGraph's node element id `Label:id-`."""
+    text = element_id.split(":", 1)[1]
+    return text[:-1] if text.endswith("-") else text
+
+
+def canon_graph(v):
+    """A value with nodes, relationships or paths in Neo4j's Query API form
+    (either engine) -> comparable form; any other value -> norm_value."""
+    if isinstance(v, dict) and set(v) == _NODE_KEYS:
+        return {"__node__": _props(v["properties"])}
+    if isinstance(v, dict) and set(v) == _REL_KEYS:
+        p = v["properties"]
+        if "__cg_from" in p:  # Neo4j: the loader's endpoint ids
+            ends = (_loader_endpoint(p["__cg_from"]), _loader_endpoint(p["__cg_to"]))
+        else:
+            ends = (_element_id_endpoint(v["startNodeElementId"]), _element_id_endpoint(v["endNodeElementId"]))
+        return {"__rel__": _props(p), "__from__": ends[0], "__to__": ends[1]}
+    if isinstance(v, list):
+        return [canon_graph(x) for x in v]
+    if isinstance(v, dict):
+        return {k: canon_graph(x) for k, x in sorted(v.items()) if k not in LOADER_KEYS}
+    return norm_value(v)
+
+
+def needs_typed(result):
+    """The tx-API result holds a node or relationship inside a list or a
+    path, whose `meta` the tx API flattens: re-run on the Query API."""
+    def entities(m):
+        if isinstance(m, list):
+            return any(entities(x) for x in m)
+        return isinstance(m, dict) and m.get("type") in ("node", "relationship")
+    for rec in result["data"]:
+        meta = rec["meta"]
+        if not entities(meta):
+            continue
+        if len(meta) != len(result["columns"]) or any(isinstance(m, list) for m in meta):
+            return True
+        if any(isinstance(v, list) for v in rec["row"]):
+            return True
+    return False
+
+
+def result_columns(result):
+    """The column names of a tx-API or Query API result."""
+    if isinstance(result.get("data"), dict):
+        return result["data"]["fields"]
+    return result["columns"]
+
+
+def neo_rows_typed(result):
+    """Neo4j Query API result -> canonical row dicts: a returned node or
+    relationship is flattened as in neo_rows; one inside a value is
+    canon_graph's."""
+    cols = result["data"]["fields"]
+    rows = []
+    for rec in result["data"]["values"]:
+        out = {}
+        for col, val in zip(cols, rec):
+            if isinstance(val, dict) and set(val) in (_NODE_KEYS, _REL_KEYS):
+                kind = "node" if set(val) == _NODE_KEYS else "relationship"
+                _flatten_entity(col, kind, val["properties"], out)
+            elif val is None and _bare_name(col):
+                continue
+            else:
+                out[col] = canon_graph(val)
+        rows.append(out)
+    return rows
+
+
 def _flatten_entity(col, kind, props, out):
     for k, v in props.items():
         if k in LOADER_KEYS or v is None:
@@ -94,9 +183,13 @@ def neo_rows(result):
     rows = []
     for rec in result["data"]:
         out = {}
-        for col, val, meta in zip(cols, rec["row"], rec["meta"]):
-            if isinstance(meta, list) and any(isinstance(m, dict) for m in meta):
-                raise Incomparable(f"column {col!r} holds a path or an entity list")
+        # `meta` has an entry per list element, not per column: aligned with
+        # the columns only without lists. Without entities every column is a
+        # value; with entities in lists `needs_typed` holds (Query API).
+        metas = rec["meta"] if len(rec["meta"]) == len(cols) else [None] * len(cols)
+        if needs_typed({"columns": cols, "data": [rec]}):
+            raise Incomparable("an entity inside a list: compare the Query API's answer")
+        for col, val, meta in zip(cols, rec["row"], metas):
             kind = meta.get("type") if isinstance(meta, dict) else None
             if kind in ("node", "relationship"):
                 if not isinstance(val, dict):
@@ -126,7 +219,7 @@ def cg_rows(results, neo_columns):
             if key in neo_columns:
                 if val is None and _bare_name(key):
                     continue
-                out[key] = norm_value(val)
+                out[key] = canon_graph(val)
                 continue
             entity = next((c for c in neo_columns if key.startswith(c + ".") and c not in rec), None)
             if entity is not None and val is None:
@@ -192,11 +285,13 @@ def expected_from_neo4j(cypher, neo_result, neo_full_result=None):
     `neo_full_result` is the answer without the trailing LIMIT, if any."""
     if _ID_FN.search(cypher):
         raise Incomparable("uses id()/elementId() (engine-internal values)")
-    rows = neo_rows(neo_result)
+    typed = isinstance(neo_result.get("data"), dict)
+    rows = neo_rows_typed(neo_result) if typed else neo_rows(neo_result)
+    columns = result_columns(neo_result)
     exp = {
-        "columns": neo_result["columns"],
+        "columns": columns,
         "rows": canon(rows),
-        "order_keys": order_keys(cypher, neo_result["columns"]),
+        "order_keys": order_keys(cypher, columns),
     }
     if isinstance(exp["order_keys"], list):
         exp["key_sequence"] = [[r.get(k) for k in exp["order_keys"]] for r in rows]
@@ -204,7 +299,8 @@ def expected_from_neo4j(cypher, neo_result, neo_full_result=None):
     if limit is not None:
         exp["limit"] = limit
         if neo_full_result is not None:
-            exp["full_rows"] = canon(neo_rows(neo_full_result))
+            full_typed = isinstance(neo_full_result.get("data"), dict)
+            exp["full_rows"] = canon(neo_rows_typed(neo_full_result) if full_typed else neo_rows(neo_full_result))
     return exp
 
 

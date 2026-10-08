@@ -75,6 +75,21 @@ def neo_query(neo_url, cypher):
     return r["results"][0], None
 
 
+def neo_query_typed(neo_url, cypher):
+    """The Query API's answer (nodes, relationships and paths self-described
+    inside lists, which the tx API's `meta` flattens)."""
+    url = neo_url.replace("/tx/commit", "/query/v2")
+    body = json.dumps({"statement": cypher}).encode()
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+    try:
+        r = json.loads(urllib.request.urlopen(req, timeout=120).read())
+    except urllib.error.HTTPError as e:
+        return None, f"HTTP {e.code}: {e.read().decode()[:300]}"
+    if r.get("errors"):
+        return None, r["errors"][0]["message"][:300]
+    return r, None
+
+
 def register(cg_query_url, corpus_schema, private_name):
     base = cg_query_url.rsplit("/query", 1)[0]
     body = json.dumps({
@@ -116,10 +131,16 @@ def neo_expected(args, cypher):
     neo, err = neo_query(args.neo, cypher)
     if err:
         return None, ("NEO_ERROR", err)
+    query = neo_query
+    if compare.needs_typed(neo):
+        query = neo_query_typed
+        neo, err = query(args.neo, cypher)
+        if err:
+            return None, ("NEO_ERROR", err)
     full = None
     stripped = compare.without_trailing_limit(cypher)
     if stripped:
-        full, ferr = neo_query(args.neo, stripped)
+        full, ferr = query(args.neo, stripped)
         if ferr:
             full = None
     try:

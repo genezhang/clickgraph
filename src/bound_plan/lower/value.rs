@@ -507,14 +507,18 @@ impl<'s> Lowerer<'s> {
         self.finish(&s, value, keys, ty, &all)
     }
 
-    /// The identity of a fixed node or relationship, or of a path relation
-    /// (its first node and relationships).
+    /// The identity of a fixed node or relationship.
     fn element_keys(&self, v: VarId) -> Result<Vec<RenderExpr>, LowerError> {
         Ok(self.identity(v)?.unwrap_or_default())
     }
 
+    /// A variable-length relationship's list: its relationships (two empty
+    /// lists are equal, whatever node they are at).
     fn vlp_keys(&self, r: VarId) -> Result<Vec<RenderExpr>, LowerError> {
-        self.element_keys(r)
+        match self.scans.get(&r) {
+            Some(Scan::Path { edges: true, .. }) => Ok(vec![self.physical(r, "path_edges")?]),
+            _ => Ok(Vec::new()),
+        }
     }
 
     /// A fixed node of the current relation.

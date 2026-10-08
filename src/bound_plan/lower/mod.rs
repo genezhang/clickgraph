@@ -1045,6 +1045,9 @@ impl<'s> Lowerer<'s> {
             else {
                 return unsupported(format!("internal: {v} is not exported"));
             };
+            // `Q` reads no value: a list's values stay out of `D`.
+            let mut physical = physical;
+            physical.retain(|c, _| !path::VALUE_COLUMNS.contains(&c.as_str()));
             columns.extend(physical.values().cloned());
             let mut d_props = HashMap::new();
             for (prop, e) in props {
@@ -1491,7 +1494,9 @@ impl<'s> Lowerer<'s> {
                 edges,
                 range: (min, max),
                 shortest,
-                reversed: first != left,
+                // The walk follows the stored direction unless `backward`;
+                // the path's order follows it when the pattern points right.
+                reversed: backward != (r.direction == RelDirection::Left),
                 node_values,
                 rel_values,
             },
@@ -2587,12 +2592,11 @@ impl<'s> Lowerer<'s> {
             let name = format!("{out}__{c}");
             let e = self.physical(src, c)?;
             body.select.push(select(e.clone(), &name));
-            if path::VALUE_COLUMNS.contains(&c.as_str()) {
-                // Values follow from the path's identity and are not
-                // grouped by (`value.rs`).
-                body.determined.push(name.clone());
-            } else {
-                keys.push(e);
+            match &scan {
+                // Grouped by as a list: by its relationships (`value.rs`);
+                // its other columns follow from them where they are read.
+                Scan::Path { .. } if c != "path_edges" => body.determined.push(name.clone()),
+                _ => keys.push(e),
             }
             physical.insert(c.clone(), name);
         }
