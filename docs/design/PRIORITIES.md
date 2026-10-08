@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; next: S6c paths and lists as values)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #PR; next: S6d a shortestPath's path as a value)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,14 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-08: **P-4c S6c: paths and lists as values** (#PR, `src/bound_plan/lower/value.rs`, behind `CLICKGRAPH_BOUND_PLAN=on`).
+  - `p`, `nodes(p)`, `relationships(p)` and a `-[r*]->` list as RETURN / WITH items, in Neo4j's own JSON form (Query API: `elementId`, `labels`, `properties`, …; a path is its nodes and relationships in turn), with ClickGraph's element ids. Bolt decodes them into Node / Relationship / Path structures; the graph output and embedded `query_graph` take their elements.
+  - A variable-length part carries its nodes / relationships through its search, only when read (`PathValues` in the generator). `size()` of the lists is counted from the path. DISTINCT and grouping go by the elements' identities (two empty lists are equal).
+  - The legacy path returns ids for `nodes(p)`, type names for `relationships(p)`, and a variable-length path's two ends without properties.
+  - Neo4j oracle, switch on, vs S6b (new comparator on both): 0 correct → wrong; 4 → correct; MATCH 398 → 402. The corpus lowers 701 queries (was 688). 178–186 generated shapes on each of four graphs equal Neo4j (legacy: 104–117 wrong, 58–63 errors). Bolt through the Neo4j driver equals Neo4j on 19 queries.
+  - Oracle comparator: values compare in Neo4j's Query API form; an empty list keeps its column (the S4c comparator artifact).
+  - Timing (scale 100): 10K paths with values 91–106 ms (50 ms for ids only on legacy); 1M paths 1.07 s for `p`. Details: EXPLICIT_SCOPE §4.11.
 
 - 2026-10-07: **P-4c S6b: shortestPath / allShortestPaths** (#1332, `src/bound_plan/lower/path.rs`, behind `CLICKGRAPH_BOUND_PLAN=on`; #1312 on the new path).
   - A breadth-first search per first node (a recursive CTE carrying the visited nodes, stopping once the last node's values are reached); `allShortestPaths` counts the shortest paths per node and repeats each pair's row (UInt256, loud on overflow).
