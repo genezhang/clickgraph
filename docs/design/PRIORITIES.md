@@ -740,6 +740,14 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-10-07: **P-4c S6b: shortestPath / allShortestPaths** (#TBD, `src/bound_plan/lower/path.rs`, behind `CLICKGRAPH_BOUND_PLAN=on`; #1312 on the new path).
+  - A breadth-first search per first node (a recursive CTE carrying the visited nodes, stopping once the last node's values are reached); `allShortestPaths` counts the shortest paths per node and repeats each pair's row (UInt256, loud on overflow).
+  - WHERE conditions on the path hold before the pick (#1312): bounds from above bound the search; a pair whose distance satisfies the rest has its shortest paths; the others pick among the trails that satisfy them (Neo4j's exhaustive semantics, verified). No relationship uniqueness against the rest of the MATCH (as Neo4j).
+  - Rows with one node at both ends and a range from 1 have no path (Neo4j fails them at run time).
+  - Neo4j oracle: ORACLE_TBD. 216 generated shapes on three graphs equal Neo4j (legacy: 76/84/1 wrong, 20 errors).
+  - Review: five defects fixed (deep graph recursion limit, trail search on any length condition, carried value, `*0..0` types, start choice); #1331 filed (parallel rows without `edge_id`, shared with legacy).
+  - Timing (scale 100): pinned pairs 116–205 ms (legacy 165–348 ms, or an error); one or a few starts to every end 195–340 ms (legacy out of memory or error); `allShortestPaths` 178–274 ms. Details: EXPLICIT_SCOPE §4.11.
+
 - 2026-10-07: **P-4c S6a: variable-length relationships** (#1330, `src/bound_plan/lower/path.rs`, behind `CLICKGRAPH_BOUND_PLAN=on`; `OPTIONAL MATCH p = …` parses on both paths).
   - A `-[:T*a..b]->` is a relation of paths from the recursive-CTE generator, called once with every input explicit, and tied to its endpoints like any element: closed paths, hops before/after, WITH-carried ends and chained paths need no special case (#1310, #1210, #1177 shapes on the new path).
     - The walk starts at the most restricted end (CTE-carried, own conjuncts, tied rows), forward or backward, with those conjuncts and a semi-join on the rows tied to it inside the first step. A path relation is joined first (ClickHouse probe side).

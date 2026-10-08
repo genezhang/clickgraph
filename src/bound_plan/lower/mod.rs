@@ -1689,7 +1689,7 @@ impl<'s> Lowerer<'s> {
             matches!(c, RenderExpr::OperatorApplicationExp(op)
                 if op.operator == Operator::Equal
                     && op.operands.len() == 2
-                    && op.operands.iter().any(|o| *o == id)
+                    && op.operands.contains(&id)
                     && op.operands.iter().any(is_constant))
         })
     }

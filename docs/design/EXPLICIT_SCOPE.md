@@ -832,8 +832,8 @@ Implemented in S6a (`bound_plan/lower/path.rs`, `Lowerer::path_scan` /
   row: the legacy path writes an exact range as fixed hops. That expansion
   is future work (deferred until after S6).
 
-Implemented in S6b (`path::shortest_ctes`, `path::pick_cte`,
-`Lowerer::shortest_relation`), checked against Neo4j 5.26:
+Implemented in S6b (`path::search_cte`, `path::reached_cte`,
+`path::pick_cte`, `Lowerer::shortest_relation`), checked against Neo4j 5.26:
 - **The pattern.** One variable-length relationship between two node
   variables, as Neo4j requires. A fixed-length one (`shortestPath((a)-->(b))`)
   and a path from a node to itself (`(a)-[*]->(a)`, which Neo4j fails at
@@ -853,58 +853,77 @@ Implemented in S6b (`path::shortest_ctes`, `path::pick_cte`,
   p = shortestPath((a)-[*]->(b))` gives the same rows as two MATCH clauses,
   and differs from adding `NOT r1 IN relationships(p)`). So the shortest
   path takes no part in §4.6.3.
-- **Without such conditions** (and a lower bound of at most 1): a
-  breadth-first search from each first node (`vlp_v{N}_bfs`). ClickHouse
-  gives each step of a recursive CTE only the rows of the step before, so
-  each step carries the nodes reached so far (`new = 0`) with those reached
-  first at this depth (`new = 1`), and a node already reached is not
-  reached again (`(start_id, node) NOT IN (…)`). The search visits each node
-  once per first node and ends when a depth adds none; it needs no bound.
-  A node is reached through a relationship that satisfies the property map,
-  and exists in the node table. The first nodes are restricted as in S6a.
+- **The search.** A breadth-first search from each first node
+  (`vlp_v{N}_bfs`). ClickHouse gives each step of a recursive CTE only the
+  rows of the step before, so each step carries the nodes reached so far
+  (`new = 0`) with those reached first at this depth (`new = 1`), and a node
+  already reached is not reached again (`(start_id, node) NOT IN (…)`). It
+  visits each node once per first node and ends when a depth adds none, or,
+  when the last node is restricted (its own conjuncts, the rows that hold
+  it), once a first node has reached every value the last node can have:
+  on a 1,500-node chain the search from 0 to 3 is three steps where the
+  whole chain would exceed ClickHouse's recursion limit (100 by default,
+  the server's `max_cte_depth`), which is where an end more than about 98
+  steps away still fails, loudly. A node is reached through a relationship
+  that satisfies the property map, and exists in the node table. The first
+  nodes are restricted as in S6a; an end whose identity equals a constant
+  is preferred as the first node (it is one node).
   - `shortestPath`: one row per pair of ends, at its distance.
   - `allShortestPaths`: the search counts the shortest paths to each node
     (the sum over the relationships reaching it from one level nearer, in
-    `UInt256`), and a pair's row is repeated that many times, for the ends
-    the last node allows (`ARRAY JOIN range(accurateCast(paths, 'UInt64'))`:
-    a count beyond `UInt64` fails, it does not wrap). The paths of a pair
-    differ only in their nodes and relationships, which are values only in
-    S6c. Walking back over the levels instead enumerates the paths, but
-    ClickHouse evaluates the search again in every step of the walk: 1.2 s
-    for one pair at scale 100, against 0.23 s counted.
-- **With such conditions, or a lower bound above 1:** the trails of the
-  range (the S6a relation) that satisfy them, and per `(start_id, end_id)`
-  the shortest (`ROW_NUMBER`) or all of the shortest length (`MIN … OVER`),
-  in `vlp_v{N}_shortest`. The ends a condition reads are joined to the
-  trails under their own aliases. A condition can make a trail that revisits
-  a node the shortest that satisfies it (`*0..` with `length(p) > 0` from a
-  node back to itself, as Neo4j answers). Neo4j rejects a lower bound above
-  1; the legacy path takes it as the shortest path of at least that length
-  (#1205), and so does this one. The search over trails is exhaustive, as
-  Neo4j's fallback is: unbounded on a large graph it is as costly as the
-  trails are many.
+    `UInt256`), and a pair's row is repeated that many times
+    (`ARRAY JOIN range(accurateCast(paths, 'UInt64'))`: a count beyond
+    `UInt64` fails, it does not wrap). The paths of a pair differ only in
+    their nodes and relationships, which are values only in S6c. Walking
+    back over the levels instead enumerates the paths, but ClickHouse
+    evaluates the search again in every step of the walk: 1.2 s for one
+    pair at scale 100, against 0.23 s counted.
+- **How the conditions apply.** In S6b a condition depends on a path only
+  through its length, so:
+  - a bound from above (`length(p) < k`, `<= k`, `= k`, either way round,
+    `k` an integer) bounds the search; `=` stays a condition too, and a
+    bound below the range leaves no path;
+  - a lower bound of the range above 1 is the condition
+    `length(p) >= min` (Neo4j rejects such a range; the legacy path takes
+    it as the shortest path of at least that length, #1205);
+  - a pair whose distance satisfies the conditions has its shortest paths
+    (no path is shorter) (`vlp_v{N}_near`, then the first arm of
+    `vlp_v{N}_shortest`);
+  - for the other pairs (`NOT coalesce(<conditions>, false)`) the pick is
+    among the trails of the range that satisfy them (the S6a relation,
+    walked only from those pairs' first nodes): the shortest
+    (`ROW_NUMBER`) or all of the shortest length (`MIN … OVER`), per
+    `(start_id, end_id)`. A condition can make a trail that revisits a node
+    the shortest that satisfies it (`length(p) >= 2` from 1 to 3 over
+    1→2→5→1→3, as Neo4j answers; `*0..` with `length(p) > 0` from a node
+    back to itself). That search is exhaustive, as Neo4j's fallback is:
+    on a large graph it is as costly as the trails of those pairs are many.
+
+  The ends a condition reads are joined to the pairs under their own
+  aliases.
 - **One node at both ends.** From 0 the path of none (or the shortest closed
   trail that satisfies the conditions). From 1, no path: Neo4j fails such a
   row with "The shortest path algorithm does not work when the start and end
   nodes are the same", and names `cypher.forbid_shortestpath_common_nodes`
   as the setting that accepts missing results for those rows instead. The
   new path has no run-time error for it and leaves the row out.
+- **Relationships without `edge_id`.** A relationship's identity is its
+  stored pair (S6a), so two rows with the same ends are one relationship to
+  the trails, which no trail uses twice, while the search counts both. The
+  legacy path does the same (#1331).
 - **Dialect.** The spelling comes from `FunctionMapper::shortest_path_search`
   (ClickHouse); other dialects keep the legacy path.
 - **Measured cost**, social benchmark at scale 100, as in S6a:
 
   | Shape | Legacy | New |
   |---|---|---|
-  | both ends pinned, `length(p)` | 296 ms (its own BFS, cut at 5 hops) | 182 ms |
-  | both ends pinned, `*..3`; and with `length(p) > 1` | 151–160 ms | 109–114 ms |
-  | both ends pinned, `a.name, b.name` | error (Code 47) | 187 ms |
-  | one start to every end; three starts; starts from a WITH | out of memory or error | 230–334 ms |
-  | `allShortestPaths`, pinned pair / one start to every end | error | 234 / 258 ms |
-  | `*..3` from one start with `length(p) > 1` | 103 ms (wrong answer, #1312) | 140 ms |
-  | OPTIONAL, both ends pinned | refused | 208 ms |
-
-  The search could stop once the ends the last node allows are all
-  reached; it does not yet.
+  | both ends pinned, `length(p)`; with `length(p) < 10`; `> 1`; `*..5` and `> 1` | 329–348 ms (its own BFS, cut at 5 hops) | 128–203 ms |
+  | both ends pinned, `*..3`; and with `length(p) > 1` | 165–185 ms | 122–205 ms |
+  | both ends pinned, `a.name, b.name` | error (Code 47) | 116 ms |
+  | one start to every end; three starts; starts from a WITH; 10K starts by a property to a pinned end | out of memory or error | 195–340 ms |
+  | `allShortestPaths`, pinned pair / one start to every end | error | 178 / 274 ms |
+  | `*..3` from one start with `length(p) > 1` (the direct pairs need trails) | 116 ms (wrong answer, #1312) | 424 ms |
+  | OPTIONAL, both ends pinned; with `length(p) > 1` | refused | 173 / 243 ms |
 
 ### 4.12 Subquery expressions
 
@@ -1676,7 +1695,48 @@ slice that will handle it.
     - Mutation check: each of 29 rules broken in turn fails a unit test,
       except one that label inference makes unreachable (a path from a
       label the edge does not join that would need a relationship).
-- [ ] S6b shortestPath with in-search predicates (#1312)
+- [x] **S6b: shortestPath / allShortestPaths** (§4.11, "Implemented in S6b";
+  #1312).
+  - Lowered: `shortestPath` / `allShortestPaths` over one variable-length
+    relationship as S6a lowers it, in MATCH and OPTIONAL MATCH, with WHERE
+    conditions on the path (its length, with its ends) applied before the
+    pick. Still refused: a fixed-length relationship in it, a path from a
+    node to itself, a condition reading another variable or a carried value,
+    the path as a value (S6c), other dialects.
+  - Acceptance:
+    - Neo4j oracle, switch on, vs S6a: ORACLE_TBD.
+    - 236 generated shortestPath shapes on three graphs (social_integration
+      FOLLOWS, social_standard FOLLOWS and FRIENDS_WITH): each of the 216
+      that Neo4j answers equals Neo4j on the new path; the legacy path gets
+      76 / 84 / 1 wrong and errors on 20. The other 20 are ones Neo4j
+      rejects (a lower bound above 1) or LIMIT ties. A 16-node graph of
+      diamonds, parallel edges and cycles: DIAMOND_TBD.
+    - The 16 shapes of `test_shortest_path_pairs`'s graph (ranges, lower
+      bounds, `*0..`): every answer equals Neo4j's.
+    - Live suite, switch on vs off: 102 tests differ (86 after S6a). The 17
+      new ones: 3 `test_pattern_matrix` shortest-path `xfail`s pass; 2
+      Neo4j goldens recorded as known-wrong are now correct; 2
+      `test_where_on_length_matches_the_length_histogram` shortestPath
+      cases expect the condition to filter the picked paths (#1312);
+      10 `test_lower_bound_is_applied_before_the_shortest_pick_1205` cases
+      expect simple paths where Neo4j's search allows trails (verified on
+      their graph: Neo4j has the same three extra pairs). They are keyed to
+      the legacy path.
+    - Review (about 90 shapes on crafted graphs, timing at scale 100).
+      Findings, fixed with a unit test each: a near end of a deep graph hit
+      the recursion limit (the search now stops at the last node's values);
+      any condition on `length(p)` searched every trail and ran out of
+      memory at scale 100 (bounds from above now bound the search, and a
+      pair whose distance satisfies the conditions needs no trail); a
+      condition reading a WITH-carried value failed in ClickHouse (now
+      refused); `*0..0` from a label the edge does not join failed on
+      types; a start chosen by a property over a pinned end ran out of
+      memory (an end pinned by identity is now the first node). Parallel
+      rows of a table without `edge_id` are one relationship to the trails
+      (shared with legacy and S6a: #1331).
+    - Mutation check: 33 rules broken in turn; 32 fail a unit test. The
+      other (shortest relationships left out of uniqueness) also holds by
+      construction: their relation has no `path_edges`.
 - [ ] S6c a path or a relationship list as a value
 - [ ] S7 UNWIND / UNION / alternatives
 - [ ] S8 layouts
