@@ -456,6 +456,11 @@ pub(crate) struct Unwind {
     pub list_only: fn(&str) -> String,
     /// The number of a row in the order of the keys `{0}` (`ORDER BY` text).
     pub row_number: fn(&str) -> String,
+    /// Whether the value `{0}` is NULL, as a function call (no operator
+    /// precedence to get wrong: `NOT a IS NULL` is `NOT (a IS NULL)`).
+    pub is_null: fn(&str) -> String,
+    /// The list of the value `{0}`, of nothing when it is NULL.
+    pub value_list: fn(&str) -> String,
 }
 
 /// The dialect's parts of a shortest-path search

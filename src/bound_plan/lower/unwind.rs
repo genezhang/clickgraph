@@ -26,13 +26,14 @@
 use std::collections::HashMap;
 
 use crate::graph_catalog::expression_parser::PropertyValue;
+use crate::graph_catalog::schema_types::SchemaType;
 use crate::query_planner::logical_expr::{self as lx, LogicalExpr};
-use crate::render_plan::render_expr::{Literal, RenderExpr, TableAlias};
+use crate::render_plan::render_expr::{Literal, RenderCase, RenderExpr, TableAlias};
 use crate::render_plan::{ArrayJoin, OrderByItem, OrderByOrder};
 use crate::sql_generator::emitters::clickhouse::to_sql_query::{
     order_keys_to_sql_plain, render_expr_to_sql_plain,
 };
-use crate::sql_generator::function_mapper::current_function_mapper;
+use crate::sql_generator::function_mapper::{current_function_mapper, Unwind};
 
 use super::{
     col_at, parse_var, select, table_ref, unsupported, Body, Exports, LowerError, Lowerer, RowOrder,
@@ -55,6 +56,9 @@ pub(super) enum Kind {
     Null,
     /// Not a list (possibly NULL).
     Scalar,
+    /// A boolean (possibly NULL): ClickHouse holds it as `UInt8`, so a
+    /// column of it is cast for the result to show `true` / `false`.
+    Boolean,
     /// A list, of elements of this kind.
     List(Box<Kind>),
     /// Not known here.
@@ -66,7 +70,9 @@ impl Kind {
     fn either(self, other: Kind) -> Kind {
         match (self, other) {
             (a, b) if a == b => a,
-            (Kind::Null, Kind::Scalar) | (Kind::Scalar, Kind::Null) => Kind::Scalar,
+            (Kind::Null, k @ (Kind::Scalar | Kind::Boolean))
+            | (k @ (Kind::Scalar | Kind::Boolean), Kind::Null) => k,
+            (Kind::Scalar | Kind::Boolean, Kind::Scalar | Kind::Boolean) => Kind::Scalar,
             (Kind::List(a), Kind::List(b)) => Kind::List(Box::new(a.either(*b))),
             // A list that may be NULL: a ClickHouse array is never NULL.
             _ => Kind::Unknown,
@@ -77,9 +83,7 @@ impl Kind {
     fn element(&self) -> Kind {
         match self {
             Kind::List(e) => (**e).clone(),
-            Kind::Scalar => Kind::Scalar,
-            Kind::Null => Kind::Null,
-            Kind::Unknown => Kind::Unknown,
+            k @ (Kind::Scalar | Kind::Boolean | Kind::Null | Kind::Unknown) => k.clone(),
         }
     }
 }
@@ -90,6 +94,7 @@ impl<'s> Lowerer<'s> {
         use lx::Operator as O;
         match e {
             LogicalExpr::Literal(lx::Literal::Null) => Kind::Null,
+            LogicalExpr::Literal(lx::Literal::Boolean(_)) => Kind::Boolean,
             LogicalExpr::Literal(_) | LogicalExpr::MapLiteral(_) => Kind::Scalar,
             LogicalExpr::List(xs) => Kind::List(Box::new(
                 xs.iter()
@@ -115,17 +120,26 @@ impl<'s> Lowerer<'s> {
                         _ => Kind::Unknown,
                     },
                     (O::Addition | O::Distinct, _) => Kind::Unknown,
-                    _ => Kind::Scalar,
+                    (
+                        O::Subtraction
+                        | O::Multiplication
+                        | O::Division
+                        | O::ModuloDivision
+                        | O::Exponentiation,
+                        _,
+                    ) => Kind::Scalar,
+                    _ => Kind::Boolean,
                 }
             }
             LogicalExpr::ScalarFnCall(f) => {
                 let arg = |i: usize| f.args.get(i).map_or(Kind::Unknown, |a| self.kind(a));
                 match f.name.to_ascii_lowercase().as_str() {
                     "range" | "split" | "keys" => Kind::List(Box::new(Kind::Scalar)),
-                    "size" | "length" | "tostring" | "tointeger" | "tofloat" | "toboolean"
-                    | "abs" | "ceil" | "floor" | "round" | "sign" | "sqrt" | "exp" | "log"
-                    | "log10" | "rand" | "tolower" | "toupper" | "trim" | "ltrim" | "rtrim"
-                    | "substring" | "replace" | "left" | "right" | "type" => Kind::Scalar,
+                    "toboolean" => Kind::Boolean,
+                    "size" | "length" | "tostring" | "tointeger" | "tofloat" | "abs" | "ceil"
+                    | "floor" | "round" | "sign" | "sqrt" | "exp" | "log" | "log10" | "rand"
+                    | "tolower" | "toupper" | "trim" | "ltrim" | "rtrim" | "substring"
+                    | "replace" | "left" | "right" | "type" => Kind::Scalar,
                     "tail" => match arg(0) {
                         l @ Kind::List(_) => l,
                         _ => Kind::Unknown,
@@ -150,15 +164,10 @@ impl<'s> Lowerer<'s> {
                 let arg = f.args.first().map_or(Kind::Unknown, |a| self.kind(a));
                 match f.name.to_ascii_lowercase().as_str() {
                     // NULLs are not collected: an element is never NULL.
-                    "collect" => Kind::List(Box::new(match arg {
-                        Kind::Null => Kind::Null,
-                        Kind::Scalar => Kind::Scalar,
-                        Kind::List(e) => Kind::List(e),
-                        Kind::Unknown => Kind::Unknown,
-                    })),
+                    "collect" => Kind::List(Box::new(arg)),
                     "count" | "sum" | "avg" => Kind::Scalar,
                     "min" | "max" => match arg {
-                        Kind::Scalar | Kind::Null => Kind::Scalar,
+                        Kind::Scalar | Kind::Boolean | Kind::Null => Kind::Scalar,
                         _ => Kind::Unknown,
                     },
                     _ => Kind::Unknown,
@@ -185,25 +194,36 @@ impl<'s> Lowerer<'s> {
     /// What property `p` of node or relationship `v` is: a value of the
     /// type every label / type of `v` declares, if they do.
     fn property_kind(&self, v: VarId, p: &str) -> Kind {
-        let declared = match &self.binding(v).kind {
-            BindingKind::Node { labels } => labels.iter().all(|l| {
-                self.schema
-                    .node_schema_opt(l)
-                    .is_some_and(|s| s.property_types.contains_key(p))
-            }),
+        let declared: Vec<Option<&SchemaType>> = match &self.binding(v).kind {
+            BindingKind::Node { labels } => labels
+                .iter()
+                .map(|l| {
+                    self.schema
+                        .node_schema_opt(l)
+                        .and_then(|s| s.property_types.get(p))
+                })
+                .collect(),
             BindingKind::Rel {
                 types,
                 length: None,
-            } => types.iter().all(|t| {
-                let defs = self.schema.rel_schemas_for_type(t);
-                !defs.is_empty() && defs.iter().all(|s| s.property_types.contains_key(p))
-            }),
-            _ => false,
+            } => types
+                .iter()
+                .flat_map(|t| {
+                    let defs = self.schema.rel_schemas_for_type(t);
+                    if defs.is_empty() {
+                        vec![None]
+                    } else {
+                        defs.iter().map(|s| s.property_types.get(p)).collect()
+                    }
+                })
+                .collect(),
+            _ => vec![None],
         };
-        if declared {
-            Kind::Scalar
-        } else {
-            Kind::Unknown
+        match declared.as_slice() {
+            [] => Kind::Unknown,
+            ts if ts.iter().all(|t| t == &Some(&SchemaType::Boolean)) => Kind::Boolean,
+            ts if ts.iter().all(Option::is_some) => Kind::Scalar,
+            _ => Kind::Unknown,
         }
     }
 
@@ -231,22 +251,14 @@ impl<'s> Lowerer<'s> {
             self.number_rows()?;
         }
         let e = self.expr(expr, &HashMap::new())?;
+        let e = self.split_of_null(expr, e, &spelling)?;
+        let element = kind.element();
         let list = match kind {
             Kind::List(_) => e,
             // The list of the value, or of none when it is NULL.
-            Kind::Scalar => RenderExpr::Case(crate::render_plan::render_expr::RenderCase {
-                expr: None,
-                when_then: vec![(
-                    RenderExpr::OperatorApplicationExp(
-                        crate::render_plan::render_expr::OperatorApplication {
-                            operator: lx::Operator::IsNull,
-                            operands: vec![e.clone()],
-                        },
-                    ),
-                    RenderExpr::List(Vec::new()),
-                )],
-                else_expr: Some(Box::new(RenderExpr::List(vec![e]))),
-            }),
+            Kind::Scalar | Kind::Boolean => {
+                RenderExpr::Raw((spelling.value_list)(&render_expr_to_sql_plain(&e)))
+            }
             Kind::Unknown | Kind::Null => {
                 RenderExpr::Raw((spelling.list_only)(&render_expr_to_sql_plain(&e)))
             }
@@ -255,10 +267,11 @@ impl<'s> Lowerer<'s> {
         let mut body = Body::default();
         let mut exports = Exports::default();
         self.export_scope(&alias, &mut body, &mut exports)?;
-        body.select.push(select(
-            RenderExpr::TableAlias(TableAlias(ELEMENT.to_string())),
-            &var.name(),
-        ));
+        let value = match element {
+            Kind::Boolean => RenderExpr::Raw(current_function_mapper().cast_bool(ELEMENT)),
+            _ => RenderExpr::TableAlias(TableAlias(ELEMENT.to_string())),
+        };
+        body.select.push(select(value, &var.name()));
         exports.values.push((var, col_at(&alias, &var.name())));
         // The rows' order: each row's elements follow it, in list order.
         let keys = match &self.order {
@@ -302,6 +315,35 @@ impl<'s> Lowerer<'s> {
         self.close_segment(body, exports, alias)?;
         self.one_row = false;
         Ok(())
+    }
+
+    /// `split(s, d)` is NULL when `s` or `d` is (Cypher), and ClickHouse's
+    /// split of NULL is `['']`: UNWIND of it gives no rows.
+    fn split_of_null(
+        &self,
+        expr: &LogicalExpr,
+        list: RenderExpr,
+        spelling: &Unwind,
+    ) -> Result<RenderExpr, LowerError> {
+        let LogicalExpr::ScalarFnCall(f) = expr else {
+            return Ok(list);
+        };
+        if !f.name.eq_ignore_ascii_case("split") || f.args.is_empty() {
+            return Ok(list);
+        }
+        let mut null = Vec::new();
+        for a in &f.args {
+            let a = render_expr_to_sql_plain(&self.expr(a, &HashMap::new())?);
+            null.push((spelling.is_null)(&a));
+        }
+        Ok(RenderExpr::Case(RenderCase {
+            expr: None,
+            when_then: vec![(
+                RenderExpr::Raw(null.join(" OR ")),
+                RenderExpr::List(Vec::new()),
+            )],
+            else_expr: Some(Box::new(list)),
+        }))
     }
 
     /// The rows so far, in their order, become a CTE exporting the scope and

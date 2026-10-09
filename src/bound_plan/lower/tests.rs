@@ -3499,7 +3499,22 @@ fn an_unwind_of_what_is_not_a_list() {
     );
     has(
         "UNWIND 5 AS x RETURN x",
-        &["ARRAY JOIN CASE WHEN 5 IS NULL THEN [] ELSE [5] END AS __cg_element"],
+        &["ARRAY JOIN if(isNull(5), [], [5]) AS __cg_element"],
+    );
+    // `isNull()`, not `IS NULL`: `NOT a IS NULL` is `NOT (a IS NULL)`.
+    has(
+        "MATCH (a:User) UNWIND NOT (a.age > 2) AS b RETURN b",
+        &["ARRAY JOIN if(isNull(NOT v0.age > 2), [], [NOT v0.age > 2]) AS __cg_element"],
+    );
+    // A boolean element shows as true / false.
+    has(
+        "MATCH (a:User) UNWIND [a.age > 2, a.age IS NULL] AS b RETURN b",
+        &[r#"CAST(__cg_element AS Nullable(Bool)) AS "v1""#],
+    );
+    // `split()` of NULL is NULL: no rows (ClickHouse's is `['']`).
+    has(
+        "MATCH (a:User) UNWIND split(a.name, ',') AS s RETURN s",
+        &["ARRAY JOIN CASE WHEN isNull(v0.full_name) OR isNull(',') THEN [] ELSE"],
     );
     has(
         "MATCH (a:User) UNWIND a.name AS x RETURN x",
@@ -3528,9 +3543,7 @@ graph_schema:
         &LowerOptions::default(),
     );
     assert!(
-        got.contains(
-            "ARRAY JOIN CASE WHEN v0.age IS NULL THEN [] ELSE [v0.age] END AS __cg_element"
-        ),
+        got.contains("ARRAY JOIN if(isNull(v0.age), [], [v0.age]) AS __cg_element"),
         "{got}"
     );
 }
