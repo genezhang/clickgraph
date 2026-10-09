@@ -3763,10 +3763,9 @@ fn a_union_keeps_elements_apart_by_identity() {
     assert!(
         sql.contains(r#"v1.weight AS "__cg_w1_c2", 1 AS "__cg_w1_c3", v1.kid AS "__cg_w1_k0" FROM"#)
             && sql.contains(r#"w2.__cg_w2_k0 AS "__cg_k0" FROM with_w2 AS w2"#)
-            // An element is grouped by its identity alone, a value by its
-            // key.
+            // Grouped by every column's key and the identity.
             && sql.contains(r#"SELECT any(w3.__cg_c0) AS "k.from_id","#)
-            && sql.contains(r#"GROUP BY tuple(multiIf(dynamicType(CAST(w3.__cg_c3, "#)
+            && sql.contains(r#"GROUP BY tuple(multiIf(dynamicType(CAST(w3.__cg_c0, "#)
             && sql.ends_with(r#"toString(w3.__cg_c3))), w3.__cg_k0"#),
         "{sql}"
     );
