@@ -111,7 +111,15 @@ pub fn generate_node_element_id(label: &str, id_values: &[&str]) -> String {
 /// ([`generate_node_element_id`]): the bound plan spells the same element id
 /// in SQL for a node inside a value (a path, `nodes(p)`), so the two agree.
 pub fn node_element_id_affixes(label: &str) -> (String, &'static str) {
-    (format!("{label}:"), "-")
+    let (after_label, suffix) = node_element_id_separators();
+    (format!("{label}{after_label}"), suffix)
+}
+
+/// The text after a node's label and after its id in its element id
+/// ([`generate_node_element_id`]): the bound plan spells the element id of a
+/// node whose label is a column (one of several possible labels) from them.
+pub fn node_element_id_separators() -> (&'static str, &'static str) {
+    (":", "-")
 }
 
 /// Parse a Neo4j node elementId back into its components.

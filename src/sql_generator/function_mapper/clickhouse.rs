@@ -195,6 +195,19 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         })
     }
 
+    fn one_type_guard(&self, column: &str) -> Option<String> {
+        // With no common type ClickHouse gives a union column a `Variant`
+        // (`use_variant_as_common_type`, on by default), whose NULL `count`
+        // and `groupArray` count and whose `8` and `8.0` DISTINCT keeps
+        // apart. Cast to its own type, or to a type name that does not
+        // exist: an error while the query is analysed, rows or none.
+        Some(format!(
+            "CAST({column}, if(toTypeName({column}) LIKE 'Variant(%', \
+             'ClickGraph_property_has_different_types_on_different_labels', \
+             toTypeName({column})))"
+        ))
+    }
+
     fn graph_values(&self) -> Option<super::GraphValues> {
         // An element is a `Map(String, Dynamic)`: maps of different keys
         // and value types share it, so one array holds nodes and

@@ -88,7 +88,7 @@ def _id_cols(spec):
     return [c if isinstance(c, str) else c["column"] for c in v]
 
 
-NODE_KEYS = {"label", "database", "table", "node_id", "property_mappings", "property_types"}
+NODE_KEYS = {"label", "database", "table", "node_id", "property_mappings", "property_types", "filter"}
 EDGE_KEYS = {
     "type", "database", "table", "from_id", "to_id", "edge_id", "from_node", "to_node",
     "property_mappings", "property_types",
@@ -126,7 +126,10 @@ def build_graph(gs, ch):
         pm = n.get("property_mappings") or {}
         idc = [pm.get(p, p) for p in _id_cols(n["node_id"])]
         cols = sorted(set(idc) | set(pm.values()))
-        rows = ch(f"SELECT {', '.join(f'`{c}`' for c in cols)} FROM `{n['database']}`.`{n['table']}`")
+        # A schema `filter:` is SQL over the table's columns: the label's nodes
+        # are the rows it holds of.
+        where = f" WHERE {n['filter']}" if n.get("filter") else ""
+        rows = ch(f"SELECT {', '.join(f'`{c}`' for c in cols)} FROM `{n['database']}`.`{n['table']}`{where}")
         for r in rows:
             key = tuple(r[c] for c in idc)
             pt = n.get("property_types") or {}

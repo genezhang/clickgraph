@@ -560,6 +560,55 @@ extension of #1249.
   An undirected search reaches about twice the nodes per level, so at
   depth 3 it reads about eight times the relationships of a directed one.
 
+**Implemented in S7b1** (a node of several possible labels, standard
+layout; `Scan::Labels`, `Lowerer::label_union`):
+- **One relation.** The node is the CTE `v{N}_labels`: one arm per label
+  (`SELECT 'L' AS __cg_label, <id> AS __cg_id_0, <properties> FROM <table>`,
+  with the table's `filter:`, view parameters and FINAL), `UNION ALL`. A node
+  is its label and its id: its identity is `(__cg_label, __cg_id_i…)`, so a
+  post and a user with one id are two nodes (`a = b` compares both,
+  `count(DISTINCT n)` counts the pair, NULL when an OPTIONAL MATCH left it
+  NULL). The labels' ids must have one arity (else S8).
+- **Properties.** The arms carry the properties read of the node (the
+  demand pass, now also carrying a path value's demand back through a WITH):
+  each label's mapping; NULL in a label that does not declare it when
+  another label does (the node has no such property, as in Neo4j, which has
+  no schema and reads NULL for any property a node lacks); and when no label
+  declares it, the undeclared-property rule in every arm (the same-named
+  column; NULL for discovered columns and in Neo4j-compat mode). The cost
+  (review finding, kept by user decision 2026-10-08 as the closer to
+  Neo4j): when a label's table has a same-named column it does not declare,
+  `(n:Robot|Company).name` is NULL for robots while `(r:Robot).name` reads
+  the column.
+- **Types.** A column keeps each arm's own type, and ClickHouse gives the
+  union the arms' common type. With none (a string in one arm, a number in
+  another) it takes a `Variant` (`use_variant_as_common_type`, on by
+  default in 26.x), which answers differently: `count` and `groupArray`
+  count its NULLs, `toString` of its NULL is `''`, and `8` and `8.0` are two
+  values to DISTINCT (review finding). A column several arms have a value in
+  is read through `FunctionMapper::one_type_guard`: on ClickHouse, cast to
+  its own type, or to a type name that does not exist when it is a
+  `Variant`, an error while the query is analysed, rows or none. (A setting
+  in the CTE does not reach the union's type; a query-level setting would
+  need every executor to send it.)
+- **Relationships.** A relationship of one type at a node of several labels
+  is read between the one pair of labels the schema joins it at
+  (`Lowerer::end_labels`, in either orientation when undirected), and that
+  end is filtered on its label (`Lowerer::holds_label`). Variable inference
+  narrows a node the clause introduces already; this is for a node carried
+  from an earlier clause. Several pairs are S7b2; a variable-length
+  relationship at such a node is S7b3.
+- **Labels.** `n:L` is `__cg_label = 'L'` (NULL where an OPTIONAL MATCH left
+  the node NULL), `labels(n)` is `[__cg_label]`, and a written label on a
+  carried node filters its label column.
+- **Returned whole**, the node is a node value (§4.11's `GraphType::Node`,
+  elementId and labels from the label column, the properties of every label,
+  NULL ones dropped): Bolt, the graph output and embedded `query_graph` take
+  its label from each row. The HTTP rows hold the value (a single-label node
+  keeps its `n.<prop>` columns).
+- **Not lowered:** `n.*` and `id(n)` of such a node, and the S7b2 / S7b3
+  shapes above.
+
 ### 4.7 Label inference
 
 Labels are inferred over the explicit pattern graph of each clause, with
@@ -2094,6 +2143,9 @@ slice that will handle it.
 - [ ] S7 UNWIND / UNION / alternatives, in sub-slices: S7a undirected
   relationships, S7b several labels / types (with the two-schema and
   bound-relationship cases S7a refuses), S7c UNWIND, S7d UNION, S7e lists.
+  S7b is itself three: S7b1 a node of several labels, S7b2 a relationship of
+  several types or joining several label pairs (with S7a's refusals), S7b3
+  variable-length relationships over them.
   - [x] **S7a: undirected relationships** (§4.6 `Alternatives`,
     "Implemented in S7a"): fixed hops, variable-length and shortest paths,
     standard layout, as values too.
@@ -2130,6 +2182,42 @@ slice that will handle it.
         unmutated build's): 9 rules broken in turn; 8 change answers
         (13 to 290 of 349 checks each, over the 3 the unmutated build's arbitrary pick among equal shortest paths fails). The other (walking an undirected path backward) cannot
         change one: the two-direction relation is the same either way.
+  - [x] **S7b1: a node of several possible labels** (§4.6 "Implemented in
+    S7b1"): one relation of its labels' tables, identity (label, id), a
+    relationship of one type at it, label tests, values.
+    - Acceptance:
+      - Neo4j oracle, switch on, vs S7a: 0 correct → wrong; one match →
+        error, `MATCH (n) WHERE n.nonexistent_xyz_999 = 123`: a property no
+        label declares reads the same-named column, as on a node of one label
+        (the undeclared-property rule). The corpus lowers 754 queries (was
+        744).
+      - Generated shapes on a scratch graph (five labels, ids shared across
+        labels, two labels of one table split by `filter:`; 83 shapes:
+        unlabeled nodes, label tests and alternatives, identity comparisons,
+        WITH and re-matching, OPTIONAL, path values, aggregation, grouping and
+        ordering by a node returned whole). With one property typed
+        differently on two labels, every shape that does not read it equals
+        Neo4j and every one that does is an error; with none, every shape
+        lowered equals Neo4j but one reading an undeclared property (the
+        rule). Legacy is wrong on 35–38 and errors on 16–19. S7a's four
+        undirected sweeps are unchanged (every lowered shape equals Neo4j).
+      - Review (scratch graphs with parallel edges, composite ids, a number
+        typed differently on two labels, FINAL, an expression mapping, a
+        `filter:`, a parameterized view; about 230 queries against Neo4j):
+        three findings. A property typed differently on two labels answered
+        differently (a ClickHouse `Variant`: its NULLs counted, `8` and `8.0`
+        distinct), now an error (`one_type_guard`); `RETURN DISTINCT n ORDER
+        BY n.name` was Code 215, now grouped by the node's properties too; a
+        label's undeclared same-named column reads NULL where another label
+        declares the property (kept, user decision, above).
+      - Mutation check: 11 rules broken in turn; 10 change answers, the
+        other (taking the first of several label pairs) is a refusal the unit
+        tests pin.
+      - Timing (scale 100): unlabeled `count(*)` 3 ms, a node by property
+        2 ms, `RETURN n LIMIT 25` 68 ms (legacy 11 ms, with no labels),
+        `count(DISTINCT n)` 169 ms (legacy 167 ms), a carried node re-matched
+        to a relationship 145 ms (legacy: no SQL), `a = b` 96 ms (legacy:
+        Code 47).
 - [ ] S8 layouts
 - [ ] S9 subquery expressions
 - [ ] S10 default on

@@ -13,8 +13,12 @@
 //! * a projected item (ORDER BY after RETURN) is the item's expression;
 //! * an element or value carried by a WITH is read from the WITH's CTE.
 //!
-//! The conversion is structural and reads no task-local state. Shapes that
-//! need more than that are `Unsupported`.
+//! The conversion is structural; it reads the dialect's spellings from its
+//! `FunctionMapper`. Shapes that need more than that are `Unsupported`.
+//!
+//! A node of several possible labels (`Scan::Labels`) is its label and id:
+//! `n:L` and `labels(n)` read its label column, and it equals a node of the
+//! same label and id.
 
 use std::collections::HashMap;
 
@@ -27,6 +31,9 @@ use crate::render_plan::render_expr::{
     AggregateFnCall, Literal, OperatorApplication, PropertyAccess, ReduceExpr, RenderCase,
     RenderExpr, ScalarFnCall, TableAlias,
 };
+use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
+use crate::sql_generator::function_mapper::current_function_mapper;
+use crate::utils::cte_column_naming::cte_column_name;
 
 use super::{parse_var, unsupported, At, LowerError, Lowerer, Scan};
 use crate::bound_plan::types::{BindingKind, BindingSource, VarId};
@@ -37,6 +44,20 @@ impl Lowerer<'_> {
     /// `v.prop` for a node or relationship binding.
     pub(super) fn property(&self, v: VarId, prop: &str) -> Result<RenderExpr, LowerError> {
         let (mapping, closed, at) = match self.scans.get(&v) {
+            // Its CTE's column (the demand pass names what it carries).
+            Some(Scan::Labels { arms, of, at, .. }) => {
+                return match at {
+                    At::Table(alias) if self.label_union_props(*of, arms).contains(prop) => {
+                        let column = super::col_at(alias, &cte_column_name(&of.name(), prop));
+                        self.one_type(column, self.label_union_mixed(prop, arms))
+                    }
+                    At::Table(_) => unsupported(format!("internal: {v}.{prop} is not carried")),
+                    At::Exported { props, .. } => match props.get(prop) {
+                        Some(e) => Ok(e.clone()),
+                        None => unsupported(format!("internal: {v}.{prop} is not exported")),
+                    },
+                };
+            }
             Some(Scan::Node { schema, at, .. }) => (
                 schema.property_mappings.get(prop),
                 schema.closed_properties,
@@ -79,6 +100,19 @@ impl Lowerer<'_> {
             table_alias: TableAlias(alias.clone()),
             column,
         }))
+    }
+
+    /// A column of a union whose arms are different tables, when several
+    /// arms have values (`mixed`): of one type, or an error
+    /// (`FunctionMapper::one_type_guard`).
+    fn one_type(&self, column: RenderExpr, mixed: bool) -> Result<RenderExpr, LowerError> {
+        if !mixed {
+            return Ok(column);
+        }
+        match current_function_mapper().one_type_guard(&render_expr_to_sql_plain(&column)) {
+            Some(sql) => Ok(RenderExpr::Raw(sql)),
+            None => unsupported("a property several labels have, in this SQL dialect"),
+        }
     }
 
     /// `value`, a constant for matched elements, as NULL when one of `vars`
@@ -147,6 +181,17 @@ impl Lowerer<'_> {
                 };
                 let holds = match self.scans.get(&v) {
                     Some(Scan::Node { label: l, .. }) => l == label,
+                    // NULL where an OPTIONAL MATCH left it NULL, as Cypher.
+                    Some(Scan::Labels { arms, .. }) if arms.iter().any(|(l, _)| l == label) => {
+                        return Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: lx::Operator::Equal,
+                            operands: vec![
+                                self.physical(v, super::LABEL_COLUMN)?,
+                                RenderExpr::Literal(Literal::String(label.clone())),
+                            ],
+                        }));
+                    }
+                    Some(Scan::Labels { .. }) => false,
                     Some(Scan::Rel { rel_type, .. }) => rel_type == label,
                     Some(Scan::Impossible) => return Ok(RenderExpr::Literal(Literal::Null)),
                     Some(Scan::Path { .. }) | None => {
@@ -242,6 +287,16 @@ impl Lowerer<'_> {
         b: VarId,
         equal: bool,
     ) -> Result<RenderExpr, LowerError> {
+        let labels = |v: VarId| match self.scans.get(&v) {
+            Some(Scan::Node { label, .. }) => Some(vec![label.clone()]),
+            Some(Scan::Labels { arms, .. }) => Some(arms.iter().map(|(l, _)| l.clone()).collect()),
+            _ => None,
+        };
+        if let (Some(la), Some(lb)) = (labels(a), labels(b)) {
+            if la.len() > 1 || lb.len() > 1 {
+                return self.labeled_identity_comparison(a, b, &la, &lb, equal);
+            }
+        }
         let same_kind = match (self.scans.get(&a), self.scans.get(&b)) {
             (Some(Scan::Node { label: x, .. }), Some(Scan::Node { label: y, .. })) => x == y,
             // One type can have several edge definitions (one per endpoint
@@ -276,6 +331,53 @@ impl Lowerer<'_> {
                 })
             })
             .collect();
+        Ok(if equal {
+            super::and_all(per_column).expect("an identity has columns")
+        } else {
+            super::or_all(per_column)
+        })
+    }
+
+    /// `a = b` / `a <> b` between nodes, one of several possible labels:
+    /// equal when they have the same label and id. A label column and a
+    /// table's constant label compare as values, so an OPTIONAL MATCH's
+    /// NULL node compares as NULL.
+    fn labeled_identity_comparison(
+        &self,
+        a: VarId,
+        b: VarId,
+        la: &[String],
+        lb: &[String],
+        equal: bool,
+    ) -> Result<RenderExpr, LowerError> {
+        if !la.iter().any(|l| lb.contains(l)) {
+            return self.unless_null(&[a, b], RenderExpr::Literal(Literal::Boolean(!equal)));
+        }
+        let label = |v: VarId, labels: &[String]| -> Result<RenderExpr, LowerError> {
+            match labels {
+                [one] => self.unless_null(&[v], RenderExpr::Literal(Literal::String(one.clone()))),
+                _ => self.physical(v, super::LABEL_COLUMN),
+            }
+        };
+        let (Some(ia), Some(ib)) = (self.id_columns(a)?, self.id_columns(b)?) else {
+            return Ok(RenderExpr::Literal(Literal::Null));
+        };
+        if ia.len() != ib.len() {
+            return unsupported("comparing nodes whose ids have different arities (S8)");
+        }
+        let op = if equal {
+            lx::Operator::Equal
+        } else {
+            lx::Operator::NotEqual
+        };
+        let cmp = |x: RenderExpr, y: RenderExpr| {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op,
+                operands: vec![x, y],
+            })
+        };
+        let mut per_column = vec![cmp(label(a, la)?, label(b, lb)?)];
+        per_column.extend(ia.into_iter().zip(ib).map(|(x, y)| cmp(x, y)));
         Ok(if equal {
             super::and_all(per_column).expect("an identity has columns")
         } else {
@@ -453,9 +555,14 @@ impl Lowerer<'_> {
                 }
                 // NULL for an unmatched node, and a ClickHouse array cannot
                 // be NULL.
-                ("labels", Some(Scan::Node { .. })) if self.binding(v).nullable => {
+                ("labels", Some(Scan::Node { .. } | Scan::Labels { .. }))
+                    if self.binding(v).nullable =>
+                {
                     unsupported("labels() of a node an OPTIONAL MATCH may leave NULL")
                 }
+                ("labels", Some(Scan::Labels { .. })) => Ok(RenderExpr::List(vec![
+                    self.physical(v, super::LABEL_COLUMN)?
+                ])),
                 ("labels", Some(Scan::Node { label, .. })) => {
                     Ok(RenderExpr::List(vec![RenderExpr::Literal(
                         Literal::String(label.clone()),
@@ -489,7 +596,26 @@ impl Lowerer<'_> {
                 // An element that matches nothing: no values to count.
                 None => return Ok(aggregate_constant(RenderExpr::Literal(Literal::Integer(0)))),
                 Some(mut cols) if cols.len() == 1 || !distinct => cols.remove(0),
-                Some(_) => return unsupported("count(DISTINCT) of a composite identity"),
+                // Its columns as one value, NULL where the first is (an
+                // OPTIONAL MATCH left the element NULL): not counted.
+                Some(cols) => {
+                    let first = cols[0].clone();
+                    let tuple = RenderExpr::ScalarFnCall(ScalarFnCall {
+                        name: current_function_mapper().tuple_constructor().to_string(),
+                        args: cols,
+                    });
+                    RenderExpr::Case(RenderCase {
+                        expr: None,
+                        when_then: vec![(
+                            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                operator: lx::Operator::IsNull,
+                                operands: vec![first],
+                            }),
+                            RenderExpr::Literal(Literal::Null),
+                        )],
+                        else_expr: Some(Box::new(tuple)),
+                    })
+                }
             };
             let arg = if distinct {
                 RenderExpr::OperatorApplicationExp(OperatorApplication {

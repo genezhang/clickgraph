@@ -497,7 +497,20 @@ fn what_is_not_lowered_yet() {
     );
     not_lowered("MATCH (a:User) RETURN collect(a) AS l", "as a value");
     not_lowered("MATCH (a:User) WHERE id(a) = 1 RETURN a.name", "id()");
-    not_lowered("MATCH (n) RETURN count(*)", "several possible labels");
+    not_lowered(
+        "MATCH (a)-[r]->(b) RETURN count(*)",
+        "several possible types (S7b2)",
+    );
+    not_lowered(
+        "MATCH (n) WITH n MATCH (n)-[:LIKED]-(m) RETURN count(*)",
+        "joins in several ways (S7b2)",
+    );
+    not_lowered(
+        "MATCH (n) WITH n MATCH (n)-[:FOLLOWS*1..2]->(m) RETURN count(*)",
+        "several possible labels (S7b3)",
+    );
+    not_lowered("MATCH (n) RETURN n.*", "`n.*` of a node of several");
+    not_lowered("MATCH (n) RETURN id(n)", "id()");
     not_lowered(
         "MATCH (a:User) RETURN [x IN [1, 2] | x * 2] AS l",
         "comprehension",
@@ -2645,4 +2658,209 @@ fn an_undirected_relationship_returned_whole_carries_its_mapped_columns() {
         squash(&got).contains(r#"e.follow_date AS "follow_date""#),
         "{got}"
     );
+}
+
+// ------------------------------------------------------------------ S7b1
+
+#[test]
+fn a_node_of_several_labels_is_one_relation_of_its_labels_tables() {
+    // §4.6 `Alternatives`: one arm per label, each row with its label and
+    // id; a property another label declares is NULL in an arm without it.
+    has(
+        "MATCH (n) WHERE n.user_id = 1 RETURN n.name, labels(n)",
+        &[
+            r#"WITH v0_labels AS ( SELECT 'Post' AS "__cg_label", e.post_id AS "__cg_id_0", NULL AS "p2_v0_name", NULL AS "p2_v0_user_id" FROM test_integration.posts_test AS e UNION ALL SELECT 'User' AS "__cg_label", e.user_id AS "__cg_id_0", e.full_name AS "p2_v0_name", e.user_id AS "p2_v0_user_id" FROM test_integration.users_test AS e )"#,
+            r#"SELECT v0.p2_v0_name AS "n.name", [v0.__cg_label] AS "labels(n)" FROM v0_labels AS v0 WHERE v0.p2_v0_user_id = 1"#,
+        ],
+    );
+    // A label test reads the label column.
+    has(
+        "MATCH (n) WHERE n:User RETURN n.name",
+        &["FROM v0_labels AS v0 WHERE v0.__cg_label = 'User'"],
+    );
+}
+
+#[test]
+fn a_property_no_label_declares_follows_the_undeclared_property_rule() {
+    // The same-named column in every arm; NULL in Neo4j-compat mode.
+    has(
+        "MATCH (n) RETURN n.nickname",
+        &[
+            r#"e.post_id AS "__cg_id_0", e.nickname AS "p2_v0_nickname" FROM test_integration.posts_test"#,
+            r#"e.user_id AS "__cg_id_0", e.nickname AS "p2_v0_nickname" FROM test_integration.users_test"#,
+        ],
+    );
+    has_compat(
+        "MATCH (n) RETURN n.nickname",
+        &[r#"e.post_id AS "__cg_id_0", NULL AS "p2_v0_nickname""#],
+    );
+    // Values of two tables: one type, or an error (review finding: with no
+    // common type ClickHouse makes a `Variant`, whose NULLs `count` counts).
+    has(
+        "MATCH (n) RETURN count(n.nickname)",
+        &[
+            "count(CAST(v0.p2_v0_nickname, if(toTypeName(v0.p2_v0_nickname) LIKE 'Variant(%', \
+           'ClickGraph_property_has_different_types_on_different_labels', \
+           toTypeName(v0.p2_v0_nickname))))",
+        ],
+    );
+    // A property one label has is that label's column type: unguarded.
+    has(
+        "MATCH (n) RETURN n.name",
+        &[r#"SELECT v0.p2_v0_name AS "n.name""#],
+    );
+}
+
+#[test]
+fn nodes_of_several_labels_are_equal_by_label_and_id() {
+    // A post and a user with the same id are two nodes.
+    has(
+        "MATCH (a), (b) WHERE a = b RETURN count(*)",
+        &["WHERE (v0.__cg_label = v1.__cg_label AND v0.__cg_id_0 = v1.__cg_id_0)"],
+    );
+    has(
+        "MATCH (a:User), (b) WHERE a = b RETURN count(*)",
+        &["WHERE ('User' = v1.__cg_label AND v0.user_id = v1.__cg_id_0)"],
+    );
+    // Counted by both, NULL (not counted) where an OPTIONAL MATCH left it so.
+    has(
+        "MATCH (n) RETURN count(DISTINCT n)",
+        &["count(DISTINCT CASE WHEN v0.__cg_label IS NULL THEN NULL ELSE tuple(v0.__cg_label, v0.__cg_id_0) END)"],
+    );
+}
+
+#[test]
+fn a_relationship_holds_its_label_at_a_node_of_several_labels() {
+    // Carried by a WITH, the node is its label and id: the relationship's
+    // end is a User here.
+    has(
+        "MATCH (n) WITH n MATCH (n)-[:FOLLOWS]->(m) RETURN m.name",
+        &[
+            r#"with_w2 AS ( SELECT v0.__cg_label AS "v1____cg_label", v0.__cg_id_0 AS "v1____cg_id_0" FROM v0_labels AS v0 )"#,
+            "FROM with_w2 AS w2 JOIN test_integration.user_follows_test AS v2 ON v2.follower_id = w2.v1____cg_id_0",
+            "WHERE w2.v1____cg_label = 'User'",
+        ],
+    );
+    // A written label is one of its labels.
+    has(
+        "MATCH (n) WITH n MATCH (n:User) RETURN count(*)",
+        &["FROM with_w2 AS w2 WHERE w2.v1____cg_label = 'User'"],
+    );
+}
+
+#[test]
+fn a_node_of_several_labels_returned_whole_is_a_node_value() {
+    // Its label differs by row: Bolt, the graph output and embedded read it
+    // from the value, as for a node of a path.
+    let (sql, shape) = shaped("MATCH (n) RETURN n", &social());
+    assert!(
+        sql.contains(
+            "map('elementId', CAST(concat(v0.__cg_label, ':', toString(v0.__cg_id_0), '-'), \
+             'Dynamic'), 'labels', CAST([v0.__cg_label], 'Dynamic'), 'properties'"
+        ),
+        "{sql}"
+    );
+    assert_eq!(
+        kinds(&shape),
+        vec![column("n", ResultKind::Graph(GraphType::Node))]
+    );
+    // DISTINCT by its identity (ClickHouse groups no `Dynamic`).
+    let (sql, _) = shaped("MATCH (n) RETURN DISTINCT n", &social());
+    assert!(
+        sql.contains("GROUP BY v0.__cg_label, v0.__cg_id_0"),
+        "{sql}"
+    );
+    // ... and by its properties, which an ORDER BY can read (review finding:
+    // Code 215 without them).
+    let (sql, _) = shaped("MATCH (n) RETURN DISTINCT n ORDER BY n.title", &social());
+    let key = "v0.p2_v0_title";
+    let (group, order) = sql.split_once(" ORDER BY ").unwrap();
+    assert!(
+        group
+            .split(" GROUP BY ")
+            .nth(1)
+            .is_some_and(|g| g.contains(key))
+            && order.starts_with(key),
+        "{sql}"
+    );
+}
+
+/// Labels with table options, and one with a composite id.
+fn labels_schema() -> GraphSchema {
+    GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_labels
+graph_schema:
+  nodes:
+    - label: A
+      database: db
+      table: a
+      node_id: id
+      filter: "kind = 'x'"
+      view_parameters: [tenant]
+      property_mappings: { id: id, name: a_name }
+    - label: B
+      database: db
+      table: b
+      node_id: id
+      use_final: true
+      property_mappings: { id: id, name: b_name }
+  edges: []
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap()
+}
+
+#[test]
+fn a_node_of_several_labels_reads_each_table_with_its_options() {
+    let options = ReadOptions {
+        view_parameter_values: Some(HashMap::from([("tenant".to_string(), "t1".to_string())])),
+        ..ReadOptions::default()
+    };
+    let sql = squash(
+        &translate_bound_plan("MATCH (n) RETURN n.name", &labels_schema(), &options)
+            .unwrap()
+            .sql,
+    );
+    for part in [
+        r#"SELECT 'A' AS "__cg_label", e.id AS "__cg_id_0", e.a_name AS "p2_v0_name" FROM db.a(tenant = 't1') AS e WHERE ((e.kind = 'x'))"#,
+        r#"SELECT 'B' AS "__cg_label", e.id AS "__cg_id_0", e.b_name AS "p2_v0_name" FROM db.b AS e FINAL"#,
+    ] {
+        assert!(sql.contains(part), "missing `{part}` in\n{sql}");
+    }
+}
+
+#[test]
+fn a_node_whose_labels_ids_differ_in_arity_is_not_lowered() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_arity
+graph_schema:
+  nodes:
+    - label: A
+      database: db
+      table: a
+      node_id: id
+      property_mappings: { id: id }
+    - label: B
+      database: db
+      table: b
+      node_id: [x, y]
+      property_mappings: { x: x, y: y }
+  edges: []
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    match translate_bound_plan(
+        "MATCH (n) RETURN count(*)",
+        &schema,
+        &ReadOptions::default(),
+    ) {
+        Err(e) if e.contains("different arities (S8)") => {}
+        other => panic!("expected not lowered, got {:?}", other.map(|t| t.sql)),
+    }
 }

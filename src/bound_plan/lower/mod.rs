@@ -36,9 +36,11 @@
 //! query is translated by the legacy pipeline:
 //! * MATCH and OPTIONAL MATCH over standard-layout labels and types
 //!   (`NodeSchema::is_standard_own_table`, `RelationshipSchema::
-//!   is_standard_edge_table`), each node with one label and each
-//!   relationship with one type after label inference, fixed length,
-//!   directed;
+//!   is_standard_edge_table`), each relationship with one type after label
+//!   inference, joining one pair of labels; fixed length or variable length,
+//!   directed or undirected (S6, S7a). A node of several possible labels is
+//!   one relation of its labels' tables (`Scan::Labels`, S7b1), its rows
+//!   carrying their label;
 //! * WITH and RETURN with aggregation, DISTINCT, ORDER BY, SKIP, LIMIT and
 //!   (WITH) WHERE, evaluated in that order; free-standing ORDER BY, SKIP and
 //!   LIMIT;
@@ -191,6 +193,17 @@ enum Scan<'s> {
         label: String,
         at: At,
     },
+    /// A node with several possible labels (§4.6 `Alternatives`): read
+    /// from the CTE `cte` of one arm per label ([`Lowerer::label_union`]),
+    /// whose rows carry their label (`LABEL_COLUMN`), identity
+    /// (`__cg_id_{i}`) and the properties read of the node.
+    Labels {
+        arms: Vec<(String, &'s NodeSchema)>,
+        cte: String,
+        /// The node the CTE was built for: its columns are named after it.
+        of: VarId,
+        at: At,
+    },
     Rel {
         schema: &'s RelationshipSchema,
         rel_type: String,
@@ -257,7 +270,10 @@ impl At {
 impl<'s> Scan<'s> {
     fn at(&self) -> Option<&At> {
         match self {
-            Scan::Node { at, .. } | Scan::Rel { at, .. } | Scan::Path { at, .. } => Some(at),
+            Scan::Node { at, .. }
+            | Scan::Labels { at, .. }
+            | Scan::Rel { at, .. }
+            | Scan::Path { at, .. } => Some(at),
             Scan::Impossible => None,
         }
     }
@@ -266,6 +282,7 @@ impl<'s> Scan<'s> {
     fn with_at(self, at: At) -> Scan<'s> {
         match self {
             Scan::Node { schema, label, .. } => Scan::Node { schema, label, at },
+            Scan::Labels { arms, cte, of, .. } => Scan::Labels { arms, cte, of, at },
             Scan::Rel {
                 schema, rel_type, ..
             } => Scan::Rel {
@@ -408,17 +425,23 @@ pub(crate) fn col_at(alias: &str, column: &str) -> RenderExpr {
 const BOTH_START: &str = "__cg_start";
 const BOTH_END: &str = "__cg_end";
 
-fn both_column(side: &str, i: usize) -> String {
+/// The columns of a node with several possible labels
+/// ([`Lowerer::label_union`]): its label, and its identity, one column per
+/// identity column (`LABEL_ID_{i}`).
+const LABEL_COLUMN: &str = "__cg_label";
+const LABEL_ID: &str = "__cg_id";
+
+fn indexed_column(side: &str, i: usize) -> String {
     format!("{side}_{i}")
 }
 
-fn both_columns(side: &str, arity: usize) -> Vec<String> {
-    (0..arity).map(|i| both_column(side, i)).collect()
+fn indexed_columns(side: &str, arity: usize) -> Vec<String> {
+    (0..arity).map(|i| indexed_column(side, i)).collect()
 }
 
-/// The ends a relationship's columns tie: (end, the relationship's columns
-/// equal to its identity).
-type Ends = Vec<(VarId, Vec<String>)>;
+/// The ends a relationship's columns tie: (end, its label there, the
+/// relationship's columns equal to its identity).
+type Ends = Vec<(VarId, String, Vec<String>)>;
 
 /// The ends a relationship read as stored ties: `from` by its `from_id`
 /// columns, `to` by its `to_id` columns.
@@ -426,7 +449,10 @@ fn stored_ends(rs: &RelationshipSchema, from: VarId, to: VarId) -> Ends {
     let cols = |id: &crate::graph_catalog::config::Identifier| {
         id.columns().iter().map(|c| c.to_string()).collect()
     };
-    vec![(from, cols(&rs.from_id)), (to, cols(&rs.to_id))]
+    vec![
+        (from, rs.from_node.clone(), cols(&rs.from_id)),
+        (to, rs.to_node.clone(), cols(&rs.to_id)),
+    ]
 }
 
 fn eq(a: RenderExpr, b: RenderExpr) -> OperatorApplication {
@@ -591,11 +617,11 @@ impl<'s> Lowerer<'s> {
         let mut conditions = Vec::new();
         for part in &pattern.parts {
             for n in &part.nodes {
-                self.written(n.var, &n.labels);
+                self.written(n.var, &n.labels)?;
                 conditions.extend(self.props(n.var, &n.props)?);
             }
             for r in &part.rels {
-                self.written(r.var, &r.types);
+                self.written(r.var, &r.types)?;
                 if r.length.is_none() {
                     conditions.extend(self.props(r.var, &r.props)?);
                 }
@@ -808,9 +834,12 @@ impl<'s> Lowerer<'s> {
             .flat_map(|p| &p.rels)
             .any(|r| r.length.is_some());
         let anchored = where_only.is_empty()
-            && shared
-                .iter()
-                .all(|v| matches!(self.scans.get(v), Some(Scan::Node { .. })))
+            && shared.iter().all(|v| {
+                matches!(
+                    self.scans.get(v),
+                    Some(Scan::Node { .. } | Scan::Labels { .. })
+                )
+            })
             && (shared.is_empty() || (!has_path && (hops <= 1 || restricted)));
         let mut q = Segment {
             // Constants are read as they are, in `Q` too.
@@ -938,7 +967,8 @@ impl<'s> Lowerer<'s> {
         }
         let mut correlation = Vec::new();
         for v in shared {
-            let Some(Scan::Node { schema, label, .. }) = self.scans.get(v).cloned() else {
+            let Some(scan @ (Scan::Node { .. } | Scan::Labels { .. })) = self.scans.get(v).cloned()
+            else {
                 return unsupported(format!("internal: {v} is not a node"));
             };
             let columns = self.identity_physical(*v).unwrap_or_default();
@@ -978,7 +1008,7 @@ impl<'s> Lowerer<'s> {
                     null_safe: false,
                 });
             }
-            q.scans.insert(*v, Scan::Node { schema, label, at });
+            q.scans.insert(*v, scan.with_at(at));
         }
         Ok(correlation)
     }
@@ -1213,26 +1243,226 @@ impl<'s> Lowerer<'s> {
         let BindingKind::Node { labels } = &self.binding(v).kind else {
             return unsupported("a pattern node that is not a node binding");
         };
-        let scan = match labels.len() {
+        let mut arms = Vec::new();
+        for label in labels {
+            let Some(ns) = self.schema.node_schema_opt(label) else {
+                return unsupported(format!("label {label} has no node schema"));
+            };
+            if !ns.is_standard_own_table() {
+                return unsupported(format!("label {label} is not the standard layout (S8)"));
+            }
+            arms.push((label.clone(), ns));
+        }
+        let scan = match arms.len() {
             0 => Scan::Impossible,
             1 => {
-                let label = labels.iter().next().expect("one label").clone();
-                let Some(ns) = self.schema.node_schema_opt(&label) else {
-                    return unsupported(format!("label {label} has no node schema"));
-                };
-                if !ns.is_standard_own_table() {
-                    return unsupported(format!("label {label} is not the standard layout (S8)"));
-                }
+                let (label, schema) = arms.remove(0);
                 Scan::Node {
-                    schema: ns,
+                    schema,
                     label,
                     at: At::Table(v.name()),
                 }
             }
-            _ => return unsupported("a node with several possible labels (S7)"),
+            _ => Scan::Labels {
+                cte: self.label_union(v, &arms)?,
+                arms,
+                of: v,
+                at: At::Table(v.name()),
+            },
         };
         self.scans.insert(v, scan);
         Ok(())
+    }
+
+    /// The nodes of several labels, as one relation (§4.6 `Alternatives`):
+    /// the CTE `{v}_labels`, one arm per label reading its table (with its
+    /// `filter:`, view parameters and FINAL), its rows carrying
+    ///
+    /// * their label (`LABEL_COLUMN`) and identity (`LABEL_ID_{i}`): a node
+    ///   is its label and its id, so two labels' equal ids are two nodes;
+    /// * each property read of `v` (the demand pass), as the column
+    ///   `cte_column_name(v, prop)`: the label's mapping, else NULL when
+    ///   another label declares the property (Cypher: the node has no such
+    ///   property), else the rule of an undeclared one
+    ///   ([`Self::label_arm_value`]).
+    ///
+    /// A column keeps each arm's own type, and ClickHouse gives the union the
+    /// arms' common type. With none (a string in one arm, a number in
+    /// another) it would take a `Variant`, which answers differently (its
+    /// NULLs are counted, `8` and `8.0` are two values): a property several
+    /// arms have is read through `FunctionMapper::one_type_guard`, an error
+    /// instead.
+    fn label_union(
+        &mut self,
+        v: VarId,
+        arms: &[(String, &'s NodeSchema)],
+    ) -> Result<String, LowerError> {
+        let name = format!("{}_labels", v.name());
+        let arity = arms[0].1.id_physical_columns().len();
+        if arms
+            .iter()
+            .any(|(_, ns)| ns.id_physical_columns().len() != arity)
+        {
+            return unsupported("a node whose labels' ids have different arities (S8)");
+        }
+        const ROW: &str = "e";
+        let props = self.label_union_props(v, arms);
+        let mut input = Vec::new();
+        for (label, ns) in arms {
+            let mut items = vec![select(
+                RenderExpr::Literal(Literal::String(label.clone())),
+                LABEL_COLUMN,
+            )];
+            for (i, c) in ns.id_physical_columns().iter().enumerate() {
+                items.push(select(col_at(ROW, c), &indexed_column(LABEL_ID, i)));
+            }
+            for p in &props {
+                let value = self
+                    .label_arm_value(ns, p, arms)
+                    .unwrap_or(RenderExpr::Literal(Literal::Null));
+                items.push(select(value, &cte_column_name(&v.name(), p)));
+            }
+            let filters = match &ns.filter {
+                Some(f) => match f.to_sql(ROW) {
+                    Ok(sql) => Some(RenderExpr::Raw(format!("({sql})"))),
+                    Err(e) => return unsupported(format!("schema filter: {e}")),
+                },
+                None => None,
+            };
+            let table = ViewTableRef::parameterized_name(
+                &ns.full_table_name(),
+                ns.view_parameters.as_deref(),
+                self.options.view_parameter_values.as_ref(),
+            );
+            input.push(RenderPlan {
+                select: SelectItems {
+                    items,
+                    distinct: false,
+                },
+                from: FromTableItem(Some(ViewTableRef {
+                    source: Arc::new(LogicalPlan::Empty),
+                    name: table,
+                    alias: Some(ROW.to_string()),
+                    use_final: ns.should_use_final(),
+                })),
+                filters: FilterItems(filters),
+                ..empty_plan()
+            });
+        }
+        let body = RenderPlan {
+            union: UnionItems(Some(Union {
+                input,
+                union_type: UnionType::All,
+                is_cypher_union: false,
+            })),
+            ..empty_plan()
+        };
+        self.ctes.push(Cte::new(
+            name.clone(),
+            CteContent::Structured(Box::new(body)),
+            false,
+        ));
+        Ok(name)
+    }
+
+    /// Property `p` in the arm of `ns` ([`Self::label_union`], read under
+    /// `e`): the label's mapping; else NULL (`None`) when another label of
+    /// the node declares it (the node has no such property, as in Neo4j),
+    /// for discovered columns and in Neo4j-compat mode; else, declared by
+    /// no label, the undeclared-property rule ([`Self::property`]: the
+    /// same-named column, a missing one a ClickHouse error).
+    fn label_arm_value(
+        &self,
+        ns: &NodeSchema,
+        p: &str,
+        arms: &[(String, &NodeSchema)],
+    ) -> Option<RenderExpr> {
+        match ns.property_mappings.get(p) {
+            Some(pv) => Some(RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias("e".to_string()),
+                column: pv.clone(),
+            })),
+            None if ns.closed_properties
+                || self.options.neo4j_compat
+                || arms
+                    .iter()
+                    .any(|(_, o)| o.property_mappings.contains_key(p)) =>
+            {
+                None
+            }
+            None => Some(col_at("e", p)),
+        }
+    }
+
+    /// Property `p` of a node of several labels has a value in more than
+    /// one arm: the union's column takes their common type, if they have
+    /// one (`FunctionMapper::one_type_guard`).
+    fn label_union_mixed(&self, p: &str, arms: &[(String, &NodeSchema)]) -> bool {
+        arms.iter()
+            .filter(|(_, ns)| self.label_arm_value(ns, p, arms).is_some())
+            .count()
+            > 1
+    }
+
+    /// The properties the CTE of a node of several labels carries
+    /// ([`Self::label_union`]): those read of it, every one when it is read
+    /// whole.
+    fn label_union_props(&self, v: VarId, arms: &[(String, &NodeSchema)]) -> BTreeSet<String> {
+        let mut props = BTreeSet::new();
+        for p in self.demand.get(&v).into_iter().flatten() {
+            if p == ALL_PROPERTIES {
+                props.extend(Self::label_property_names(arms));
+            } else if !p.starts_with('#') {
+                props.insert(p.clone());
+            }
+        }
+        props
+    }
+
+    /// Every property some label of `arms` declares, by name.
+    fn label_property_names(arms: &[(String, &NodeSchema)]) -> BTreeSet<String> {
+        arms.iter()
+            .flat_map(|(_, ns)| ns.property_mappings.keys().cloned())
+            .collect()
+    }
+
+    /// The labels a node can have here: one for a table scan, several for a
+    /// union of labels, none when it matches nothing.
+    fn labels_of(&self, v: VarId) -> Result<Vec<String>, LowerError> {
+        match self.scans.get(&v) {
+            Some(Scan::Node { label, .. }) => Ok(vec![label.clone()]),
+            Some(Scan::Labels { arms, .. }) => Ok(arms.iter().map(|(l, _)| l.clone()).collect()),
+            Some(Scan::Impossible) => Ok(Vec::new()),
+            _ => unsupported(format!("internal: {v} is not a node")),
+        }
+    }
+
+    /// Node `v` has label `label` here (a relationship's end that only nodes
+    /// of `label` can be): for a node of several possible labels, a filter on
+    /// its label column.
+    fn holds_label(&mut self, v: VarId, label: &str) -> Result<(), LowerError> {
+        if let Some(Scan::Labels { arms, .. }) = self.scans.get(&v) {
+            if !arms.iter().any(|(l, _)| l == label) {
+                self.empty = true;
+                return Ok(());
+            }
+            let column = self.physical(v, LABEL_COLUMN)?;
+            self.filters.push(RenderExpr::OperatorApplicationExp(eq(
+                column,
+                RenderExpr::Literal(Literal::String(label.to_string())),
+            )));
+        }
+        Ok(())
+    }
+
+    /// A node's identity without its label (a union of labels carries it
+    /// first): what a relationship's endpoint columns equal.
+    fn id_columns(&self, v: VarId) -> Result<Option<Vec<RenderExpr>>, LowerError> {
+        let ids = self.identity(v)?;
+        Ok(match self.scans.get(&v) {
+            Some(Scan::Labels { .. }) => ids.map(|mut ids| ids.split_off(1)),
+            _ => ids,
+        })
     }
 
     /// Decide how a relationship is read (once per variable) and tie it to
@@ -1265,24 +1495,30 @@ impl<'s> Lowerer<'s> {
             let BindingKind::Rel { types, .. } = &self.binding(r.var).kind else {
                 return unsupported("a pattern relationship that is not a relationship binding");
             };
-            let (scan, ends) = match (
-                types.len(),
-                self.single_label(left),
-                self.single_label(right),
-            ) {
-                (1, Some(ll), Some(rl)) => {
+            let (scan, ends) = match types.len() {
+                // No feasible type.
+                0 => (Scan::Impossible, Vec::new()),
+                1 => {
                     let rel_type = types.iter().next().expect("one type").clone();
-                    self.decide_rel(r, rel_type, (left, &ll), (right, &rl))?
+                    let (ll, rl) = (self.labels_of(left)?, self.labels_of(right)?);
+                    match self.end_labels(&rel_type, r.direction, &ll, &rl)? {
+                        Some((ll, rl)) => {
+                            self.decide_rel(r, rel_type, (left, &ll), (right, &rl))?
+                        }
+                        // No two labels it joins (or an end that matches
+                        // nothing).
+                        None => (Scan::Impossible, Vec::new()),
+                    }
                 }
-                // No feasible type, or an endpoint that matches nothing.
-                (0, ..) | (1, ..) => (Scan::Impossible, Vec::new()),
-                _ => return unsupported("a relationship with several possible types (S7)"),
+                _ => return unsupported("a relationship with several possible types (S7b2)"),
             };
             self.scans.insert(r.var, scan);
             ends
         };
-        for (end, cols) in ends {
-            let Some(ids) = self.identity(end)? else {
+        for (end, label, cols) in ends {
+            // An end of several possible labels has this one here.
+            self.holds_label(end, &label)?;
+            let Some(ids) = self.id_columns(end)? else {
                 continue; // an endpoint that matches nothing
             };
             if ids.len() != cols.len() {
@@ -1297,8 +1533,44 @@ impl<'s> Lowerer<'s> {
         Ok(())
     }
 
+    /// The labels at the left and right ends of a relationship of type
+    /// `rel_type` written in `direction`, of the ends' possible labels
+    /// (`ll`, `rl`): the one pair the schema defines it between (in either
+    /// orientation, undirected). `None` when there is none.
+    fn end_labels(
+        &self,
+        rel_type: &str,
+        direction: RelDirection,
+        ll: &[String],
+        rl: &[String],
+    ) -> Result<Option<(String, String)>, LowerError> {
+        let defined = |f: &str, t: &str| self.defined(rel_type, f, t).is_some();
+        let mut pairs = Vec::new();
+        for l in ll {
+            for r in rl {
+                let feasible = match direction {
+                    RelDirection::Right => defined(l, r),
+                    RelDirection::Left => defined(r, l),
+                    RelDirection::Either => defined(l, r) || defined(r, l),
+                };
+                if feasible {
+                    pairs.push((l.clone(), r.clone()));
+                }
+            }
+        }
+        match pairs.len() {
+            0 => Ok(None),
+            1 => Ok(pairs.pop()),
+            _ => unsupported(
+                "a relationship between nodes of several possible labels it joins in several \
+                 ways (S7b2)",
+            ),
+        }
+    }
+
     /// The scan of a relationship of one type between nodes of one label
-    /// each, and the ends its columns tie. Undirected, it is read in the
+    /// each (the labels it has at its ends here: [`Self::end_labels`]), and
+    /// the ends its columns tie. Undirected, it is read in the
     /// directions the schema has: one, as a directed relationship; both, when
     /// they are the one table (the two ends have one label), from
     /// [`Self::both_directions`], its left end tied to the node each row
@@ -1327,8 +1599,8 @@ impl<'s> Lowerer<'s> {
                         let both = self.both_directions(rs, r.var)?;
                         let arity = rs.from_id.columns().len();
                         let ends = vec![
-                            (left, both_columns(BOTH_START, arity)),
-                            (right, both_columns(BOTH_END, arity)),
+                            (left, ll.to_string(), indexed_columns(BOTH_START, arity)),
+                            (right, rl.to_string(), indexed_columns(BOTH_END, arity)),
                         ];
                         return Ok((scan(rs, rel_type, Some(both)), ends));
                     }
@@ -1408,10 +1680,10 @@ impl<'s> Lowerer<'s> {
                 carried.iter().map(|c| select(col_at(ROW, c), c)).collect();
             let (starts, ends) = if forward { (&from, &to) } else { (&to, &from) };
             for (i, c) in starts.iter().enumerate() {
-                items.push(select(col_at(ROW, c), &both_column(BOTH_START, i)));
+                items.push(select(col_at(ROW, c), &indexed_column(BOTH_START, i)));
             }
             for (i, c) in ends.iter().enumerate() {
-                items.push(select(col_at(ROW, c), &both_column(BOTH_END, i)));
+                items.push(select(col_at(ROW, c), &indexed_column(BOTH_END, i)));
             }
             let mut filters: Vec<RenderExpr> = filter.iter().cloned().collect();
             if !forward {
@@ -1477,6 +1749,12 @@ impl<'s> Lowerer<'s> {
         let BindingKind::Rel { types, .. } = &self.binding(r.var).kind else {
             return unsupported("a pattern relationship that is not a relationship binding");
         };
+        let several = |v: VarId| matches!(self.scans.get(&v), Some(Scan::Labels { .. }));
+        if several(from) || several(to) {
+            return unsupported(
+                "a variable-length relationship at a node of several possible labels (S7b3)",
+            );
+        }
         let scan = match (types.len(), self.single_label(from), self.single_label(to)) {
             _ if max.is_some_and(|m| m < min) => Scan::Impossible,
             (1, Some(fl), Some(tl)) => {
@@ -1548,7 +1826,11 @@ impl<'s> Lowerer<'s> {
             }
             // No feasible type, or an endpoint that matches nothing.
             (0, ..) | (1, ..) => Scan::Impossible,
-            _ => return unsupported("a relationship with several possible types (S7)"),
+            _ => {
+                return unsupported(
+                    "a variable-length relationship with several possible types (S7b3)",
+                )
+            }
         };
         if let (Scan::Path { .. }, Some(ids)) = (&scan, self.identity(from)?) {
             if ids.len() != 1 {
@@ -2167,22 +2449,49 @@ impl<'s> Lowerer<'s> {
         exact.or(found.first()).copied()
     }
 
-    /// Written labels / types are alternatives the element must have. Labels
-    /// are static (one per scan), so this is decided here: a variable from an
+    /// Written labels / types are alternatives the element must have. A
+    /// table's label is static, so this is decided here: a variable from an
     /// earlier clause written with a label it does not have (`MATCH (a:User)
-    /// MATCH (a:Post)`) makes the clause match nothing.
-    fn written(&mut self, v: VarId, written: &[String]) {
+    /// MATCH (a:Post)`) makes the clause match nothing. A node of several
+    /// possible labels is filtered on its label column.
+    fn written(&mut self, v: VarId, written: &[String]) -> Result<(), LowerError> {
         if written.is_empty() {
-            return;
+            return Ok(());
         }
-        let holds = match &self.scans[&v] {
+        let scan = self.scans[&v].clone();
+        let holds = match &scan {
             Scan::Node { label, .. } => written.contains(label),
+            // Of several possible labels, the written ones.
+            Scan::Labels { arms, .. } => {
+                let held: Vec<String> = arms
+                    .iter()
+                    .map(|(l, _)| l.clone())
+                    .filter(|l| written.contains(l))
+                    .collect();
+                if !held.is_empty() && held.len() < arms.len() {
+                    let column = self.physical(v, LABEL_COLUMN)?;
+                    let is = held
+                        .into_iter()
+                        .map(|l| {
+                            RenderExpr::OperatorApplicationExp(eq(
+                                column.clone(),
+                                RenderExpr::Literal(Literal::String(l)),
+                            ))
+                        })
+                        .collect();
+                    self.filters.push(or_all(is));
+                    true
+                } else {
+                    !held.is_empty()
+                }
+            }
             Scan::Rel { rel_type, .. } | Scan::Path { rel_type, .. } => written.contains(rel_type),
             Scan::Impossible => false,
         };
         if !holds {
             self.empty = true;
         }
+        Ok(())
     }
 
     /// Inline property maps: `v.prop = value`.
@@ -2214,6 +2523,16 @@ impl<'s> Lowerer<'s> {
     fn identity_physical(&self, v: VarId) -> Option<Vec<String>> {
         match self.scans.get(&v)? {
             Scan::Node { schema, .. } => Some(schema.id_physical_columns()),
+            // Its label first: NULL exactly when an OPTIONAL MATCH left it
+            // NULL, as a table's first identity column is.
+            Scan::Labels { arms, .. } => {
+                let arity = arms[0].1.id_physical_columns().len();
+                Some(
+                    std::iter::once(LABEL_COLUMN.to_string())
+                        .chain(indexed_columns(LABEL_ID, arity))
+                        .collect(),
+                )
+            }
             Scan::Rel { schema, .. } => Some(match &schema.edge_id {
                 Some(id) => id.columns().iter().map(|c| c.to_string()).collect(),
                 None => schema
@@ -2377,7 +2696,12 @@ impl<'s> Lowerer<'s> {
                 schema.should_use_final(),
                 schema.filter.as_ref(),
             ),
-            // Its CTE reads the table with its options and filter.
+            // Its CTE reads the tables with their options and filters.
+            Scan::Labels {
+                cte,
+                at: At::Table(alias),
+                ..
+            } => (alias.clone(), cte.clone(), None, false, None),
             Scan::Rel {
                 at: At::Table(alias),
                 both: Some(both),
@@ -2400,6 +2724,10 @@ impl<'s> Lowerer<'s> {
                 ..
             } => (alias.clone(), cte.clone(), None, false, None),
             Scan::Node {
+                at: At::Exported { .. },
+                ..
+            }
+            | Scan::Labels {
                 at: At::Exported { .. },
                 ..
             }
@@ -2624,6 +2952,9 @@ impl<'s> Lowerer<'s> {
             if cte.is_none() {
                 // `RETURN n.*`: the node's properties, named as for `RETURN n`.
                 if let Some(src) = self.all_properties_of(&it.expr) {
+                    if let Some(Scan::Labels { .. }) = self.scans.get(&src) {
+                        return unsupported("`n.*` of a node of several possible labels");
+                    }
                     let name = it.name.strip_suffix(".*").unwrap_or(&it.name);
                     shape.push(self.return_element(src, name, aggregating, &mut body)?);
                     continue;
@@ -2733,6 +3064,30 @@ impl<'s> Lowerer<'s> {
         aggregating: bool,
         body: &mut Body,
     ) -> Result<ResultColumn, LowerError> {
+        if let Some(Scan::Labels { .. }) = self.scans.get(&src) {
+            // Its label differs by row: returned as a value, grouped by its
+            // identity and its properties (which an ORDER BY can read; they
+            // are the identity's).
+            let v = self.labeled_node(src)?;
+            let column = body.column(v.value, name);
+            body.determined.push(column.clone());
+            let mut keys = v.keys;
+            if let Some(Scan::Labels { arms, of, .. }) = self.scans.get(&src) {
+                for prop in self.label_union_props(*of, arms) {
+                    keys.push(self.property(src, &prop)?);
+                }
+            }
+            if aggregating {
+                body.group_by.extend(keys);
+            } else if body.distinct {
+                body.distinct_keys.extend(keys);
+            }
+            return Ok(ResultColumn {
+                name: name.to_string(),
+                kind: ResultKind::Graph(v.ty),
+                columns: vec![(name.to_string(), column)],
+            });
+        }
         let Some((columns, kind)) = self.element_columns(src)? else {
             // An element that matches nothing: the relation has no rows.
             let column = body.column(RenderExpr::Literal(Literal::Null), name);
@@ -2816,6 +3171,10 @@ impl<'s> Lowerer<'s> {
             Some(Scan::Path { .. }) => {
                 return unsupported("a variable-length relationship's list of relationships (S6c)")
             }
+            // Its value (`Lowerer::labeled_node`).
+            Some(Scan::Labels { .. }) => {
+                return unsupported("internal: a node of several labels as columns")
+            }
             Some(Scan::Impossible) => return Ok(None),
             None => return unsupported(format!("internal: {v} has no scan")),
         };
@@ -2829,6 +3188,9 @@ impl<'s> Lowerer<'s> {
     /// Every property of an element's label / type, by name.
     fn all_property_names(&self, v: VarId) -> Vec<String> {
         let mapped = match self.scans.get(&v) {
+            Some(Scan::Labels { arms, .. }) => {
+                return Self::label_property_names(arms).into_iter().collect()
+            }
             Some(Scan::Node { schema, .. }) => &schema.property_mappings,
             Some(Scan::Rel { schema, .. }) => &schema.property_mappings,
             _ => return Vec::new(),
@@ -3644,14 +4006,19 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
             r.props.iter().for_each(|(p, _)| add(r.var, p));
         }
     }
-    // A pass-through item is a later binding than its source.
-    for b in stmt.bindings.iter().rev() {
-        if let BindingSource::Projection { of: Some(src), .. } = b.source {
-            if let Some(props) = demand.get(&b.id).cloned() {
-                demand.entry(src).or_default().extend(props);
+    // What is read of a pass-through item is read of its source (a later
+    // binding than its source): a node of several labels carries it from
+    // its first scan ([`Lowerer::label_union`]).
+    let pass_through = |demand: &mut HashMap<VarId, BTreeSet<String>>| {
+        for b in stmt.bindings.iter().rev() {
+            if let BindingSource::Projection { of: Some(src), .. } = b.source {
+                if let Some(props) = demand.get(&b.id).cloned() {
+                    demand.entry(src).or_default().extend(props);
+                }
             }
         }
-    }
+    };
+    pass_through(&mut demand);
     // A path's value is its elements': every property of a fixed node or
     // relationship, the carried values of a variable-length one.
     let mut elements: Vec<(VarId, &str)> = Vec::new();
@@ -3685,6 +4052,7 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
     for (v, what) in elements {
         demand.entry(v).or_default().insert(what.to_string());
     }
+    pass_through(&mut demand);
     demand
 }
 

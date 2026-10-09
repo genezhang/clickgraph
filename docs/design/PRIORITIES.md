@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; next: S7b several labels / types, then S7c UNWIND, S7d UNION, S7e lists)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; next: S7b2 several types / label pairs, S7b3 variable-length over them, then S7c UNWIND, S7d UNION, S7e lists)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,10 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-08: **P-4c S7b1: a node of several possible labels** (#1338, `src/bound_plan/lower/mod.rs` `label_union` / `end_labels` / `holds_label`, behind `CLICKGRAPH_BOUND_PLAN=on`). S7b split: S7b1 labels, S7b2 several types / label pairs (with S7a's refusals), S7b3 variable-length over them.
+  - `MATCH (n)`, `(n:A|B)`, a carried node: one CTE of an arm per label (its `filter:`, view parameters, FINAL), identity (label, id); a relationship of one type at it reads the one label pair it joins and filters the node's label; `n:L`, `labels(n)`, written labels read the label column; `RETURN n` is a node value. A property another label declares is NULL in an arm without it (as Neo4j; user decision); one several arms have is cast to one type or fails (`FunctionMapper::one_type_guard`: ClickHouse's `Variant` answered differently, review finding).
+  - Neo4j oracle: 0 correct → wrong (one match → error: an undeclared property, the rule); the corpus lowers 754 queries (was 744). Scratch-graph sweeps (83 shapes): every lowered shape equals Neo4j or, reading a differently typed property, errors; legacy wrong on 35–38. Mutation check: 10 of 11 change answers (the other is a pinned refusal). Timing (scale 100): 2–169 ms, at most legacy's except `RETURN n LIMIT 25` 68 ms (legacy 11 ms, without labels).
 
 - 2026-10-08: **P-4c S7a: undirected relationships** (#1337, `src/bound_plan/lower/mod.rs` `decide_rel` / `both_directions`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - `(a)-[r:T]-(b)`: read in the directions the schema defines (an exact lookup); both, when they are one table, from a CTE of the table's rows as stored and reversed (a self-loop once, as Neo4j), with the stored columns under their own names, so identity, uniqueness, values and exports need no case of their own. Variable-length and shortest paths walk the same relation (`CteGenerationContext::walk_relation`).
