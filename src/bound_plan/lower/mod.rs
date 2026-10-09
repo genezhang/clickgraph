@@ -2240,13 +2240,15 @@ impl<'s> Lowerer<'s> {
         arms.iter()
             .map(|a| {
                 self.rel_arm_value(a.schema, p, arms)?;
-                Some(match valued.iter().position(|s| std::ptr::eq(*s, a.schema)) {
-                    Some(k) => k,
-                    None => {
-                        valued.push(a.schema);
-                        valued.len() - 1
-                    }
-                })
+                Some(
+                    match valued.iter().position(|s| std::ptr::eq(*s, a.schema)) {
+                        Some(k) => k,
+                        None => {
+                            valued.push(a.schema);
+                            valued.len() - 1
+                        }
+                    },
+                )
             })
             .collect()
     }

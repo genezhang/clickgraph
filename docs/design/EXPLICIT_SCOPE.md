@@ -578,17 +578,22 @@ layout; `Scan::Labels`, `Lowerer::label_union`):
   Neo4j): when a label's table has a same-named column it does not declare,
   `(n:Robot|Company).name` is NULL for robots while `(r:Robot).name` reads
   the column.
-- **Types.** A column keeps each arm's own type, and ClickHouse gives the
-  union the arms' common type. With none (a string in one arm, a number in
-  another) it takes a `Variant` (`use_variant_as_common_type`, on by
-  default in 26.x), which answers differently: `count` and `groupArray`
-  count its NULLs, `toString` of its NULL is `''`, and `8` and `8.0` are two
-  values to DISTINCT (review finding). A column several arms have a value in
-  is read through `FunctionMapper::one_type_guard`: on ClickHouse, cast to
-  its own type, or to a type name that does not exist when it is a
-  `Variant`, an error while the query is analysed, rows or none. (A setting
-  in the CTE does not reach the union's type; a query-level setting would
-  need every executor to send it.)
+- **Types.** A union's column takes its arms' common type, converting
+  values (`Bool` and `UInt8`, `Float32` to `Float64`, `Date` to
+  `DateTime`; S7b2 review finding), or with none a `Variant`
+  (`use_variant_as_common_type`, on by default in 26.x), which answers
+  differently: `count` and `groupArray` count its NULLs, `toString` of its
+  NULL is `''`, and `8` and `8.0` are two values to DISTINCT (S7b1 review
+  finding). So a property several labels have a value of is one column per
+  label (`…__cg{k}`, NULL in the other labels' rows), read as their
+  `coalesce` through `FunctionMapper::one_type_guard`: on ClickHouse, cast
+  to its own type when the columns' types are the same up to integer width,
+  string representation (`String`, `FixedString`, `LowCardinality`) and
+  nullability, which change no value; else to a type name that does not
+  exist, an error while the query is analysed, rows or none (an integer on
+  one label and a float on another is an error too: Neo4j returns each as
+  its own type). A setting in the CTE does not reach the union's type; a
+  query-level setting would need every executor to send it.
 - **Relationships.** A relationship of one type at a node of several labels
   is read between the one pair of labels the schema joins it at
   (`Lowerer::end_labels`, in either orientation when undirected), and that
@@ -641,9 +646,11 @@ pairs, standard layout; `Scan::Rels`, `Lowerer::rel_union`):
 - **Properties** follow S7b1's rule (user decision 2026-10-08): the
   definition's mapping; NULL in a definition that does not declare it when
   another does; the undeclared-property rule when none does. A property
-  several definitions have a value for is read through `one_type_guard`
-  (a string on one type and a number on another is an error while the query
-  is analysed; numbers of two widths take their common type).
+  several definitions have a value for is one column per definition (the
+  two orientations of one share it), read through `one_type_guard` as on a
+  node of several labels: one value when their types differ only in integer
+  width, string representation or nullability, else an error while the
+  query is analysed.
 - **Identity.** `type(r)` and `r:T` read the type column; `r = s` compares
   definitions, then identities NULL-safely (the padding); `count(DISTINCT r)`
   counts the tuple. Relationship uniqueness compares the definition and
@@ -671,6 +678,12 @@ pairs, standard layout; `Scan::Rels`, `Lowerer::rel_union`):
   relationship as its definition and identity, NULL padding as empty text.
 - **Not lowered:** `r.*` of such a relationship, and a variable-length
   relationship of several types or at a node of several labels (S7b3).
+- **Known gaps** (loud): definitions whose identity or end ids are a string
+  in one and a number in another make a `Variant` column, which ClickHouse
+  refuses to group by (`RETURN DISTINCT r`, Code 44) or to compare with a
+  number (`r = s`, uniqueness, Code 386). Element ids carry no end labels
+  (`T:1->1-`), so two definitions' relationships between equal ids share one
+  (as parallel relationships of one definition already did).
 - **Measured cost**, social benchmark at scale 100 (100K users, 10M
   follows, 2M authored, 5M likes), join statistics on:
 
@@ -2326,6 +2339,21 @@ slice that will handle it.
         needed new shapes: a written type on a carried relationship whose
         ends do not narrow it, and a carried relationship re-matched between
         two bound nodes of other labels).
+      - Review (five scratch graphs, about 300 shapes against Neo4j: composite
+        node and edge ids, identities of different widths, parallel edges,
+        self-loops, carried relationships through WITH / DISTINCT /
+        aggregation, OPTIONAL, paths, unions beside variable-length paths):
+        two findings, fixed. A relationship bound before matched undirected
+        in a MATCH with a variable-length relationship was Code 47
+        (`path_first` placed a tie, read inside a `CASE`, before the
+        orientation join; `table_aliases` now reads every expression); a
+        property whose definitions' column types have a common type was
+        converted (`Bool` read as `UInt8`, `WHERE r.flag = 2` matching
+        nothing, `Float32` as `Float64`, `Date` as `DateTime`), also on nodes
+        of several labels: now one column per definition and an error unless
+        the types agree up to width, representation and nullability.
+        Mixed string / number ids across definitions are loud errors (known
+        gaps, above).
       - Live suite, switch on, vs S7b1: one known-wrong golden now correct
         (`MATCH ()-[r:LIKED]-() RETURN r LIMIT 25`), nothing else changed.
       - Timing: above (§4.6).

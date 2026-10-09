@@ -3100,8 +3100,13 @@ fn a_relationship_read_both_ways_beside_a_path_joins_after_its_orientation() {
     let sql = rels_sql(
         "MATCH (a:Person)-[r:KNOWS|LIKES]->(b) WITH r MATCH (x)-[r]-(y)-[:KNOWS*1..2]-(z) RETURN count(*)",
     );
-    let select = sql.rsplit_once(r#"SELECT count(*) AS "count(*)""#).unwrap().1;
-    let turns = select.find("JOIN v3_turns5 AS v3_t5").expect("the orientation join");
+    let select = sql
+        .rsplit_once(r#"SELECT count(*) AS "count(*)""#)
+        .unwrap()
+        .1;
+    let turns = select
+        .find("JOIN v3_turns5 AS v3_t5")
+        .expect("the orientation join");
     let first_read = select.find("v3_t5.__cg_turn").expect("a tie through it");
     assert!(turns < first_read, "{select}");
 }

@@ -127,8 +127,7 @@ impl Lowerer<'_> {
         prop: &str,
         defs: &[Option<usize>],
     ) -> Result<RenderExpr, LowerError> {
-        let columns =
-            super::union_property_columns(of, prop, super::definitions_with_value(defs));
+        let columns = super::union_property_columns(of, prop, super::definitions_with_value(defs));
         if let [one] = columns.as_slice() {
             return Ok(super::col_at(alias, one));
         }
