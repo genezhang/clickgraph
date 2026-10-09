@@ -1226,7 +1226,12 @@ impl Walk<'_> {
 /// them (`union_path_ctes`): `vlp_{var}_ends`, with [`START_LABEL`],
 /// `start_id`, [`END_LABEL`], `end_id` (each end the row of `nodes` of its
 /// identity), `hop_count` and `columns`.
-pub(super) fn union_ends_cte(var: &str, nodes: &str, keyed: &str, columns: &[&str]) -> (Cte, String) {
+pub(super) fn union_ends_cte(
+    var: &str,
+    nodes: &str,
+    keyed: &str,
+    columns: &[&str],
+) -> (Cte, String) {
     let name = format!("vlp_{var}_ends");
     let (label, id, key) = (
         super::LABEL_COLUMN,

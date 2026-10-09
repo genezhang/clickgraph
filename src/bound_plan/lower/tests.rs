@@ -487,10 +487,6 @@ fn what_is_not_lowered_yet() {
         "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) RETURN r[0] AS n",
         "list other than",
     );
-    not_lowered(
-        "MATCH p = shortestPath((a:User)-[:FOLLOWS|LIKED*1..3]->(b:User)) RETURN length(p)",
-        "shortestPath over several labels or types (S7b3b)",
-    );
     // A path from a user to a post can use AUTHORED, an FK edge.
     not_lowered(
         "MATCH (a:User)-[*1..2]->(b:Post) RETURN count(*)",
@@ -3171,14 +3167,14 @@ fn a_variable_length_relationship_of_several_types_walks_their_union() {
     ] {
         assert!(got.contains(part), "missing `{part}` in\n{got}");
     }
-    // A first node of several labels: by label and id.
+    // A first node of several labels: by label and id (each label the walk
+    // visits is one of its: no condition on the label).
     let got = rels_sql(
         "MATCH (a:Person|Post)-[:KNOWS|MENTIONS*1..2]->(b) WHERE a.title = 'x' \
          RETURN count(*)",
     );
     for part in [
-        "WHERE ((start_node.__cg_label = 'Person' OR start_node.__cg_label = 'Post')) \
-         AND ((start_node.__cg_label, start_node.__cg_id_0) IN (SELECT DISTINCT \
+        "WHERE ((start_node.__cg_label, start_node.__cg_id_0) IN (SELECT DISTINCT \
          v0.__cg_label AS \"label\", v0.__cg_id_0 AS \"id\" FROM v0_labels AS v0",
         "v1.start_label = v0.__cg_label",
     ] {
@@ -3305,4 +3301,74 @@ fn a_walk_of_an_unknown_type_from_zero_is_the_path_of_none() {
     // From one hop it matches nothing.
     let got = rels_sql("MATCH (a:Person)-[:NOPE*1..2]->(b) RETURN count(*)");
     assert!(!got.contains("_trails"), "walked: {got}");
+}
+
+#[test]
+fn a_shortest_path_over_several_types_searches_their_union() {
+    // Nodes by their identities as texts, through every definition.
+    let got = rels_sql(
+        "MATCH p = shortestPath((a:Person)-[:KNOWS|LIKES*]->(b)) WHERE a.id = 1 RETURN length(p)",
+    );
+    for part in [
+        "concat('Person', ':', toString(e.pid)) AS \"__cg_start_key\", \
+         concat('Company', ':', toString(e.cid)) AS \"__cg_end_key\" FROM db.likes_co AS e FINAL",
+        "SELECT DISTINCT start_node.__cg_key AS start_id, start_node.__cg_key AS node",
+        "JOIN v1_rels AS rel ON rel.__cg_start_key = f.node \
+         JOIN vlp_v1_nodes AS end_node ON end_node.__cg_key = rel.__cg_end_key",
+        // The pairs' ends: the nodes of those identities.
+        "vlp_v1_ends AS ( SELECT start_node.__cg_label AS start_label, \
+         start_node.__cg_id_0 AS start_id, end_node.__cg_label AS end_label, \
+         end_node.__cg_id_0 AS end_id, p.hop_count AS hop_count FROM vlp_v1_path AS p \
+         JOIN vlp_v1_nodes AS start_node ON start_node.__cg_key = p.start_id \
+         JOIN vlp_v1_nodes AS end_node ON end_node.__cg_key = p.end_id )",
+        "FROM vlp_v1_ends AS v1",
+        "v1.end_label = v2.__cg_label AND v1.end_id = v2.__cg_id_0",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    // Every node the walk visits can be its last: nothing to reach first.
+    assert!(!got.contains("countIf"), "{got}");
+    // A restricted last node bounds the search; every path is walked back.
+    let got = rels_sql(
+        "MATCH p = allShortestPaths((a:Person)-[:KNOWS|MENTIONS*]-(b:Post {id: 2})) \
+         WHERE a.id = 1 RETURN p",
+    );
+    for part in [
+        "HAVING countIf(node IN (SELECT end_node.__cg_key FROM vlp_v1_nodes AS end_node \
+         WHERE (end_node.__cg_label = 'Post') AND ((end_node.__cg_label, end_node.__cg_id_0) \
+         IN (SELECT DISTINCT 'Post' AS \"label\", v2.id AS \"id\" FROM db.posts AS v2 \
+         WHERE v2.id = 2))))",
+        "groupUniqArray(f.node) AS parents",
+        "arrayConcat([rel.__cg_key], w.path_edges) AS path_edges",
+        "arrayConcat([end_node.__cg_value], w.path_node_values) AS path_node_values",
+        "JOIN vlp_v1_nodes AS start_node ON start_node.__cg_key = w.start_id",
+        "p.path_nodes AS path_nodes, p.path_edges AS path_edges",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    // Conditions: the trails of the pairs whose distance fails them, keyed
+    // as the search is; an end they read joined by its identity as a text.
+    let got = rels_sql(
+        "MATCH p = shortestPath((a:Person)-[:KNOWS|LIKES*]->(b:Company)) \
+         WHERE length(p) > 1 AND length(p) < b.id RETURN p",
+    );
+    for part in [
+        "JOIN db.companies AS v2 ON concat('Company', ':', toString(v2.id)) = v1.end_id",
+        "start_node.__cg_key AS start_key, start_node.__cg_key AS end_key",
+        "vp.start_key AS start_key, end_node.__cg_key AS end_key",
+        "SELECT start_key AS start_id, end_key AS end_id, hop_count",
+        "start_node.__cg_key IN (SELECT start_id FROM (SELECT v1.start_id AS start_id",
+        "vlp_v1_shortest",
+        "FROM vlp_v1_shortest AS p",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    // An end of several labels: its union, by label and id.
+    let got = rels_sql(
+        "MATCH p = shortestPath((a:Person)-[:KNOWS|LIKES*]->(b:Post|Company)) \
+         WHERE length(p) < size(b.title) RETURN length(p)",
+    );
+    let part = "JOIN v2_labels AS v2 ON concat(v2.__cg_label, ':', toString(v2.__cg_id_0)) \
+                = v1.end_id";
+    assert!(got.contains(part), "missing `{part}` in\n{got}");
 }

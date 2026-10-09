@@ -2248,7 +2248,9 @@ impl<'s> Lowerer<'s> {
                     }
                 }
             } else if node_keys {
-                return unsupported("a shortestPath over several labels or types in this SQL dialect");
+                return unsupported(
+                    "a shortestPath over several labels or types in this SQL dialect",
+                );
             }
             for (p, defs) in &definitions {
                 let value = self.rel_arm_value(rs, p, arms);
@@ -2650,7 +2652,16 @@ impl<'s> Lowerer<'s> {
             Walked::One { schema, rel_type } => (schema, rel_type),
             Walked::Union { types, .. } => {
                 let ends = (left, right);
-                return self.build_union_path(r, types, at, (min, max), shortest, ends, own, in_search);
+                return self.build_union_path(
+                    r,
+                    types,
+                    at,
+                    (min, max),
+                    shortest,
+                    ends,
+                    own,
+                    in_search,
+                );
             }
         };
         // The `from` end of the relationships (stored orientation). An
@@ -2841,14 +2852,21 @@ impl<'s> Lowerer<'s> {
             self.scans.insert(r.var, Scan::Impossible);
             return Ok(());
         }
-        let Some(start) = self.walk_restriction(first, own, path::START)? else {
+        let mut labels = first_labels.clone();
+        for a in &arms {
+            let (s, e) = a.ends();
+            labels.extend([s.to_string(), e.to_string()]);
+        }
+        labels.sort();
+        labels.dedup();
+        let Some(start) = self.walk_restriction(first, own, path::START, &labels)? else {
             self.scans.insert(r.var, Scan::Impossible);
             return Ok(());
         };
         // A shortest-path search ends once it has reached every value the
         // last node can have.
         let end = match shortest {
-            Some(_) => match self.walk_restriction(last, own, path::END)? {
+            Some(_) => match self.walk_restriction(last, own, path::END, &labels)? {
                 Some(end) => end,
                 None => {
                     self.scans.insert(r.var, Scan::Impossible);
@@ -2857,13 +2875,6 @@ impl<'s> Lowerer<'s> {
             },
             None => Vec::new(),
         };
-        let mut labels = first_labels.clone();
-        for a in &arms {
-            let (s, e) = a.ends();
-            labels.extend([s.to_string(), e.to_string()]);
-        }
-        labels.sort();
-        labels.dedup();
         let wants = |name: &str| self.demand.get(&r.var).is_some_and(|d| d.contains(name));
         let (node_values, rel_values) = (wants(NODE_VALUES), wants(REL_VALUES));
         // A shortest path's are recovered from its search also when its
@@ -2873,13 +2884,9 @@ impl<'s> Lowerer<'s> {
         let props: BTreeSet<String> = r.props.iter().map(|(p, _)| p.clone()).collect();
         let rels = match arms.is_empty() {
             true => None,
-            false => Some(self.rel_union_of(
-                r.var,
-                &arms,
-                &props,
-                rel_values,
-                shortest.is_some(),
-            )?),
+            false => {
+                Some(self.rel_union_of(r.var, &arms, &props, rel_values, shortest.is_some())?)
+            }
         };
         let mut rel = Vec::new();
         for (prop, value) in &r.props {
@@ -3154,17 +3161,19 @@ impl<'s> Lowerer<'s> {
         Ok(name)
     }
 
-    /// Conditions on a row of a walk's nodes ([`Self::walk_nodes`]) read
-    /// under `alias` that hold of the values node `v` has in the result: one
-    /// of its labels, and, when the rows so far or its own conjuncts
-    /// restrict it, `(label, id) IN (SELECT DISTINCT …)` of those
-    /// ([`Self::rows_holding`], else `v`'s own relation under those
-    /// conjuncts). `None` when it matches nothing.
+    /// Conditions on a row of a walk's nodes ([`Self::walk_nodes`], of
+    /// labels `among`) read under `alias` that hold of the values node `v`
+    /// has in the result: one of its labels (unless it has each of
+    /// `among`), and, when the rows so far or its own conjuncts restrict it,
+    /// `(label, id) IN (SELECT DISTINCT …)` of those ([`Self::rows_holding`],
+    /// else `v`'s own relation under those conjuncts). `None` when it
+    /// matches nothing.
     fn walk_restriction(
         &self,
         v: VarId,
         own: &[RenderExpr],
         alias: &str,
+        among: &[String],
     ) -> Result<Option<Vec<RenderExpr>>, LowerError> {
         let labels = self.labels_of(v)?;
         if labels.is_empty() {
@@ -3174,17 +3183,20 @@ impl<'s> Lowerer<'s> {
             col_at(alias, LABEL_COLUMN),
             col_at(alias, &indexed_column(LABEL_ID, 0)),
         );
-        let mut conds = vec![or_all(
-            labels
-                .iter()
-                .map(|l| {
-                    RenderExpr::OperatorApplicationExp(eq(
-                        label_column.clone(),
-                        RenderExpr::Literal(Literal::String(l.clone())),
-                    ))
-                })
-                .collect(),
-        )];
+        let mut conds = Vec::new();
+        if among.iter().any(|l| !labels.contains(l)) {
+            conds.push(or_all(
+                labels
+                    .iter()
+                    .map(|l| {
+                        RenderExpr::OperatorApplicationExp(eq(
+                            label_column.clone(),
+                            RenderExpr::Literal(Literal::String(l.clone())),
+                        ))
+                    })
+                    .collect(),
+            ));
+        }
         let rows = match self.rows_holding(v, own) {
             Some(rows) => Some(rows),
             None => {
@@ -3441,30 +3453,44 @@ impl<'s> Lowerer<'s> {
         let mut ends = Vec::new();
         let mut readable = vec![alias.to_string()];
         for (end, column) in [(first, "start_id"), (last, "end_id")] {
-            if let Some(Scan::Node {
-                schema,
-                label,
-                at: At::Table(a),
-                ..
-            }) = self.scans.get(&end)
-            {
-                if !self.elided.contains_key(&end) && read.contains(a) {
-                    // Joined by its identity as the search spells a node.
-                    let id = format!("{a}.{}", schema.id_physical_columns()[0]);
-                    let key = match &walk {
-                        path::Walk::One(_) => id,
-                        path::Walk::Union(_) => {
-                            value::node_key_text(&value::spelling()?, &value::string(label), &id)
-                        }
-                    };
-                    ends.push(path::PickEnd {
-                        alias: a.clone(),
-                        table: schema.full_table_name(),
-                        key,
-                        column,
-                    });
-                    readable.push(a.clone());
-                }
+            // Its relation, label and id, joined by its identity as the
+            // search spells a node: a union's search by label and id.
+            let (table, label, id, a) = match self.scans.get(&end) {
+                Some(Scan::Node {
+                    schema,
+                    label,
+                    at: At::Table(a),
+                    ..
+                }) => (
+                    schema.full_table_name(),
+                    value::string(label),
+                    format!("{a}.{}", schema.id_physical_columns()[0]),
+                    a,
+                ),
+                Some(Scan::Labels {
+                    cte,
+                    at: At::Table(a),
+                    ..
+                }) if matches!(walk, path::Walk::Union(_)) => (
+                    cte.clone(),
+                    format!("{a}.{LABEL_COLUMN}"),
+                    format!("{a}.{}", indexed_column(LABEL_ID, 0)),
+                    a,
+                ),
+                _ => continue,
+            };
+            if !self.elided.contains_key(&end) && read.contains(a) {
+                let key = match &walk {
+                    path::Walk::One(_) => id,
+                    path::Walk::Union(_) => value::node_key_text(&value::spelling()?, &label, &id),
+                };
+                ends.push(path::PickEnd {
+                    alias: a.clone(),
+                    table,
+                    key,
+                    column,
+                });
+                readable.push(a.clone());
             }
         }
         if read.iter().any(|a| !readable.contains(a)) {
