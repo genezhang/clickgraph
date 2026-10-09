@@ -42,7 +42,10 @@
 //!   label; a fixed-length relationship of several possible types or label
 //!   pairs is one relation of its definitions' tables (`Scan::Rels`, S7b2),
 //!   its rows carrying their type and their ends' labels. A variable-length
-//!   relationship has one type and joins nodes of one label each (S7b3);
+//!   relationship of one type of one definition between nodes of its one
+//!   label walks its table; any other walks the union of its definitions
+//!   between nodes keyed by label and id (`Walked::Union`, S7b3a), except as
+//!   a shortest path (S7b3b);
 //! * WITH and RETURN with aggregation, DISTINCT, ORDER BY, SKIP, LIMIT and
 //!   (WITH) WHERE, evaluated in that order; free-standing ORDER BY, SKIP and
 //!   LIMIT;
@@ -267,7 +270,7 @@ enum Walked<'s> {
         rel_type: String,
     },
     /// The definitions of its types, between nodes of any labels (§4.6
-    /// `Alternatives`, S7b3): a relation of them walked from node to node by
+    /// `Alternatives`, S7b3a): a relation of them walked from node to node by
     /// label and id (`path::union_path_ctes`). `arms` are the definitions,
     /// in the orientations the walk follows them, that a path between its
     /// ends can use; decided with the walk (none before, and none when only
@@ -2445,7 +2448,7 @@ impl<'s> Lowerer<'s> {
     /// conditions are known, and tied to its endpoints. A relationship of
     /// one type of one definition between nodes of its one label is the
     /// generator's walk of its table (`Walked::One`); any other is a walk of
-    /// its definitions between nodes of any labels (`Walked::Union`, S7b3).
+    /// its definitions between nodes of any labels (`Walked::Union`, S7b3a).
     fn path_scan(
         &mut self,
         r: &PatRel,
@@ -2767,7 +2770,7 @@ impl<'s> Lowerer<'s> {
 
     /// Generate the relation of paths of a variable-length relationship of
     /// several types, definitions or labels (`Walked::Union`, §4.6
-    /// `Alternatives`, S7b3) and tie it to its endpoints. The walk starts at
+    /// `Alternatives`, S7b3a) and tie it to its endpoints. The walk starts at
     /// the end [`Self::walk_first`] picks, restricted as a directed walk's
     /// first node is ([`Self::walk_restriction`]), and follows the arms
     /// ([`Self::walk_arms`]) in the orientations that lead away from it: a

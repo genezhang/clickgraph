@@ -30,6 +30,12 @@
 //! (`max_recursive_cte_evaluation_depth`, the server's `max_cte_depth`). It
 //! is never cut at a depth of its own (the generator's default bound for a
 //! missing maximum, which drops longer paths silently).
+//!
+//! A relationship of several types, definitions or labels (S7b3a) is walked
+//! here instead ([`union_path_ctes`]): over the union of its definitions,
+//! from node to node by label and id, its relationships and nodes kept as
+//! texts (`value::rel_key`, `value::node_key_text`), with the same columns
+//! and the labels of its ends.
 
 use std::sync::Arc;
 
@@ -891,7 +897,7 @@ pub(super) fn paths_disjoint(a: &str, b: &str) -> RenderExpr {
 }
 
 /// What a walk over the definitions of several types or labels needs
-/// (`Lowerer::build_union_path`, S7b3).
+/// (`Lowerer::build_union_path`, S7b3a).
 pub(super) struct UnionWalk<'a> {
     /// The relationship's binding name (`v{N}`): the relation is
     /// `vlp_v{N}_path`.
@@ -915,7 +921,7 @@ pub(super) struct UnionWalk<'a> {
     pub rel_values: bool,
 }
 
-/// The relation of paths of `w` (§4.11, S7b3) and its CTEs: the recursive
+/// The relation of paths of `w` (§4.11, S7b3a) and its CTEs: the recursive
 /// `vlp_{var}_trails`, whose first rows are the paths of none at each first
 /// node and whose every step extends each path by a relationship that
 /// leaves its last node (the row's start label and id are the node's) to a

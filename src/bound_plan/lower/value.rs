@@ -165,7 +165,7 @@ pub(super) fn rel_key_prefix(rel_type: &str, from_label: &str, to_label: &str) -
 
 /// A relationship's identity as a text, as a path's identity spells it
 /// (`Lowerer::path_key`) and a walk over several definitions keeps it
-/// (`path_edges`, S7b3): its definition (type, labels of its stored ends)
+/// (`path_edges`, S7b3a): its definition (type, labels of its stored ends)
 /// and its identity columns (SQL `ids`: the `edge_id`, else the stored ends,
 /// #887). Every scan of a relationship spells it alike, so a path that
 /// splits between its parts in several ways has one identity.
