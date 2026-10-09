@@ -572,14 +572,25 @@ layout; `Scan::Labels`, `Lowerer::label_union`):
 - **Properties.** The arms carry the properties read of the node (the
   demand pass, now also carrying a path value's demand back through a WITH):
   each label's mapping; NULL in a label that does not declare it when
-  another label does (the node has no such property, as in Neo4j); and when
-  no label declares it, the undeclared-property rule in every arm (the
-  same-named column; NULL for discovered columns and in Neo4j-compat mode).
-  A column keeps each arm's own type. ClickHouse gives the union the arms'
-  common type, or with none (a string in one arm, a number in another) a
-  `Variant`, which it refuses to compare, order, aggregate or join on (Code
-  386 / 44 / 43, checked): an error, never another answer. Returning such a
-  column gives each row its own value.
+  another label does (the node has no such property, as in Neo4j, which has
+  no schema and reads NULL for any property a node lacks); and when no label
+  declares it, the undeclared-property rule in every arm (the same-named
+  column; NULL for discovered columns and in Neo4j-compat mode). The cost
+  (review finding, kept by user decision 2026-10-08 as the closer to
+  Neo4j): when a label's table has a same-named column it does not declare,
+  `(n:Robot|Company).name` is NULL for robots while `(r:Robot).name` reads
+  the column.
+- **Types.** A column keeps each arm's own type, and ClickHouse gives the
+  union the arms' common type. With none (a string in one arm, a number in
+  another) it takes a `Variant` (`use_variant_as_common_type`, on by
+  default in 26.x), which answers differently: `count` and `groupArray`
+  count its NULLs, `toString` of its NULL is `''`, and `8` and `8.0` are two
+  values to DISTINCT (review finding). A column several arms have a value in
+  is read through `FunctionMapper::one_type_guard`: on ClickHouse, cast to
+  its own type, or to a type name that does not exist when it is a
+  `Variant`, an error while the query is analysed, rows or none. (A setting
+  in the CTE does not reach the union's type; a query-level setting would
+  need every executor to send it.)
 - **Relationships.** A relationship of one type at a node of several labels
   is read between the one pair of labels the schema joins it at
   (`Lowerer::end_labels`, in either orientation when undirected), and that
@@ -2175,11 +2186,8 @@ slice that will handle it.
     S7b1"): one relation of its labels' tables, identity (label, id), a
     relationship of one type at it, label tests, values.
     - Acceptance:
-      - Neo4j oracle, switch on, vs S7a: 0 correct → wrong; one match →
-        error, `MATCH (n) WHERE n.nonexistent_xyz_999 = 123`: a property no
-        label declares reads the same-named column, as on a node of one label
-        (the undeclared-property rule). The corpus lowers 754 queries (was
-        744).
+      - Neo4j oracle, switch on, vs S7a: 0 correct → wrong; ORACLE_TBD.
+        The corpus lowers 754 queries (was 744).
       - Generated shapes on a scratch graph (five labels, ids shared across
         labels, two labels of one table split by `filter:`, a property name
         typed differently on two labels; 74 shapes: unlabeled nodes, label

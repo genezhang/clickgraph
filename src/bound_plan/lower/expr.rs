@@ -47,9 +47,9 @@ impl Lowerer<'_> {
             // Its CTE's column (the demand pass names what it carries).
             Some(Scan::Labels { arms, of, at, .. }) => {
                 return match at {
-                    At::Table(alias) if self.label_union_props(*of, arms).read.contains(prop) => {
+                    At::Table(alias) if self.label_union_props(*of, arms).contains(prop) => {
                         let column = super::col_at(alias, &cte_column_name(&of.name(), prop));
-                        self.one_type(column, self.label_union_mixed(prop, arms, false))
+                        self.one_type(column, self.label_union_mixed(prop, arms))
                     }
                     At::Table(_) => unsupported(format!("internal: {v}.{prop} is not carried")),
                     At::Exported { props, .. } => match props.get(prop) {
@@ -100,26 +100,6 @@ impl Lowerer<'_> {
             table_alias: TableAlias(alias.clone()),
             column,
         }))
-    }
-
-    /// A property of a node of several labels as part of its value: its own
-    /// label's declared property, NULL for another label's
-    /// (`UnionProps::whole`). A node of one label reads [`Self::property`].
-    pub(super) fn own_property(&self, v: VarId, prop: &str) -> Result<RenderExpr, LowerError> {
-        let Some(Scan::Labels { arms, of, at, .. }) = self.scans.get(&v) else {
-            return self.property(v, prop);
-        };
-        match at {
-            At::Table(alias) if self.label_union_props(*of, arms).whole.contains(prop) => {
-                let column = super::col_at(alias, &super::own_column(*of, prop));
-                self.one_type(column, self.label_union_mixed(prop, arms, true))
-            }
-            At::Table(_) => unsupported(format!("internal: {v}'s own {prop} is not carried")),
-            At::Exported { props, .. } => match props.get(&super::own_key(prop)) {
-                Some(e) => Ok(e.clone()),
-                None => unsupported(format!("internal: {v}'s own {prop} is not exported")),
-            },
-        }
     }
 
     /// A column of a union whose arms are different tables, when several

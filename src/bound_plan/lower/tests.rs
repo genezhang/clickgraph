@@ -2665,13 +2665,12 @@ fn an_undirected_relationship_returned_whole_carries_its_mapped_columns() {
 #[test]
 fn a_node_of_several_labels_is_one_relation_of_its_labels_tables() {
     // §4.6 `Alternatives`: one arm per label, each row with its label and
-    // id; each arm reads a property as a node of its label does (an
-    // undeclared one, the same-named column).
+    // id; a property another label declares is NULL in an arm without it.
     has(
         "MATCH (n) WHERE n.user_id = 1 RETURN n.name, labels(n)",
         &[
-            r#"WITH v0_labels AS ( SELECT 'Post' AS "__cg_label", e.post_id AS "__cg_id_0", e.name AS "p2_v0_name", e.user_id AS "p2_v0_user_id" FROM test_integration.posts_test AS e UNION ALL SELECT 'User' AS "__cg_label", e.user_id AS "__cg_id_0", e.full_name AS "p2_v0_name", e.user_id AS "p2_v0_user_id" FROM test_integration.users_test AS e )"#,
-            r#"[v0.__cg_label] AS "labels(n)" FROM v0_labels AS v0 WHERE CAST(v0.p2_v0_user_id,"#,
+            r#"WITH v0_labels AS ( SELECT 'Post' AS "__cg_label", e.post_id AS "__cg_id_0", NULL AS "p2_v0_name", NULL AS "p2_v0_user_id" FROM test_integration.posts_test AS e UNION ALL SELECT 'User' AS "__cg_label", e.user_id AS "__cg_id_0", e.full_name AS "p2_v0_name", e.user_id AS "p2_v0_user_id" FROM test_integration.users_test AS e )"#,
+            r#"SELECT v0.p2_v0_name AS "n.name", [v0.__cg_label] AS "labels(n)" FROM v0_labels AS v0 WHERE v0.p2_v0_user_id = 1"#,
         ],
     );
     // A label test reads the label column.
@@ -2699,13 +2698,17 @@ fn a_property_no_label_declares_follows_the_undeclared_property_rule() {
     // common type ClickHouse makes a `Variant`, whose NULLs `count` counts).
     has(
         "MATCH (n) RETURN count(n.nickname)",
-        &["count(CAST(v0.p2_v0_nickname, if(toTypeName(v0.p2_v0_nickname) LIKE 'Variant(%', \
+        &[
+            "count(CAST(v0.p2_v0_nickname, if(toTypeName(v0.p2_v0_nickname) LIKE 'Variant(%', \
            'ClickGraph_property_has_different_types_on_different_labels', \
-           toTypeName(v0.p2_v0_nickname))))"],
+           toTypeName(v0.p2_v0_nickname))))",
+        ],
     );
-    // A property one arm has (here: the others are NULL in Neo4j-compat
-    // mode) is that arm's column type: unguarded.
-    has_compat("MATCH (n) RETURN n.name", &[r#"SELECT v0.p2_v0_name AS "n.name""#]);
+    // A property one label has is that label's column type: unguarded.
+    has(
+        "MATCH (n) RETURN n.name",
+        &[r#"SELECT v0.p2_v0_name AS "n.name""#],
+    );
 }
 
 #[test]
@@ -2770,18 +2773,14 @@ fn a_node_of_several_labels_returned_whole_is_a_node_value() {
     // ... and by its properties, which an ORDER BY can read (review finding:
     // Code 215 without them).
     let (sql, _) = shaped("MATCH (n) RETURN DISTINCT n ORDER BY n.title", &social());
-    let key = "CAST(v0.p2_v0_title, if(toTypeName(v0.p2_v0_title) LIKE 'Variant(%', \
-               'ClickGraph_property_has_different_types_on_different_labels', \
-               toTypeName(v0.p2_v0_title)))";
+    let key = "v0.p2_v0_title";
     let (group, order) = sql.split_once(" ORDER BY ").unwrap();
     assert!(
-        group.split(" GROUP BY ").nth(1).is_some_and(|g| g.contains(key)) && order.starts_with(key),
-        "{sql}"
-    );
-    // Its value has its own label's properties only (`__cg_own_…`, NULL in
-    // the other label's arm), whatever `n.p` reads.
-    assert!(
-        sql.contains(r#"NULL AS "__cg_own_p2_v0_name", e.post_id AS "__cg_own_p2_v0_post_id""#),
+        group
+            .split(" GROUP BY ")
+            .nth(1)
+            .is_some_and(|g| g.contains(key))
+            && order.starts_with(key),
         "{sql}"
     );
 }

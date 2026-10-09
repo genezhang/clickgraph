@@ -431,29 +431,6 @@ const BOTH_END: &str = "__cg_end";
 const LABEL_COLUMN: &str = "__cg_label";
 const LABEL_ID: &str = "__cg_id";
 
-/// The properties the CTE of a node of several labels carries
-/// (`Lowerer::label_union_props`).
-#[derive(Default)]
-struct UnionProps {
-    /// Read as `n.p`: each arm as a node of its label reads `p`.
-    read: BTreeSet<String>,
-    /// The node's own properties (it is read whole: its value): each arm its
-    /// label's, NULL for the others' (`own_column`).
-    whole: BTreeSet<String>,
-}
-
-/// The column of a node of several labels holding its own property `p`
-/// ([`UnionProps::whole`]).
-fn own_column(v: VarId, p: &str) -> String {
-    format!("__cg_own_{}", cte_column_name(&v.name(), p))
-}
-
-/// The key of an exported node's own property `p` (`At::Exported::props`;
-/// a property name cannot start with `#`).
-fn own_key(p: &str) -> String {
-    format!("#own:{p}")
-}
-
 fn indexed_column(side: &str, i: usize) -> String {
     format!("{side}_{i}")
 }
@@ -1304,8 +1281,10 @@ impl<'s> Lowerer<'s> {
     /// * their label (`LABEL_COLUMN`) and identity (`LABEL_ID_{i}`): a node
     ///   is its label and its id, so two labels' equal ids are two nodes;
     /// * each property read of `v` (the demand pass), as the column
-    ///   `cte_column_name(v, prop)`, read in each arm as a node of that
-    ///   label reads it ([`Self::label_arm_value`]).
+    ///   `cte_column_name(v, prop)`: the label's mapping, else NULL when
+    ///   another label declares the property (Cypher: the node has no such
+    ///   property), else the rule of an undeclared one
+    ///   ([`Self::label_arm_value`]).
     ///
     /// A column keeps each arm's own type, and ClickHouse gives the union the
     /// arms' common type. With none (a string in one arm, a number in
@@ -1337,22 +1316,11 @@ impl<'s> Lowerer<'s> {
             for (i, c) in ns.id_physical_columns().iter().enumerate() {
                 items.push(select(col_at(ROW, c), &indexed_column(LABEL_ID, i)));
             }
-            for p in &props.read {
+            for p in &props {
                 let value = self
-                    .label_arm_value(ns, p)
+                    .label_arm_value(ns, p, arms)
                     .unwrap_or(RenderExpr::Literal(Literal::Null));
                 items.push(select(value, &cte_column_name(&v.name(), p)));
-            }
-            // The node's own properties, the value of a node of this label.
-            for p in &props.whole {
-                let value = match ns.property_mappings.get(p) {
-                    Some(pv) => RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: TableAlias(ROW.to_string()),
-                        column: pv.clone(),
-                    }),
-                    None => RenderExpr::Literal(Literal::Null),
-                };
-                items.push(select(value, &own_column(v, p)));
             }
             let filters = match &ns.filter {
                 Some(f) => match f.to_sql(ROW) {
@@ -1398,18 +1366,30 @@ impl<'s> Lowerer<'s> {
     }
 
     /// Property `p` in the arm of `ns` ([`Self::label_union`], read under
-    /// `e`), as a node of that one label reads it ([`Self::property`]): the
-    /// label's mapping, else, undeclared, NULL (`None`) for discovered
-    /// columns and in Neo4j-compat mode, else the same-named column (a
-    /// missing one is a ClickHouse error). Each arm follows its own label,
-    /// whatever the others declare.
-    fn label_arm_value(&self, ns: &NodeSchema, p: &str) -> Option<RenderExpr> {
+    /// `e`): the label's mapping; else NULL (`None`) when another label of
+    /// the node declares it (the node has no such property, as in Neo4j),
+    /// for discovered columns and in Neo4j-compat mode; else, declared by
+    /// no label, the undeclared-property rule ([`Self::property`]: the
+    /// same-named column, a missing one a ClickHouse error).
+    fn label_arm_value(
+        &self,
+        ns: &NodeSchema,
+        p: &str,
+        arms: &[(String, &NodeSchema)],
+    ) -> Option<RenderExpr> {
         match ns.property_mappings.get(p) {
             Some(pv) => Some(RenderExpr::PropertyAccessExp(PropertyAccess {
                 table_alias: TableAlias("e".to_string()),
                 column: pv.clone(),
             })),
-            None if ns.closed_properties || self.options.neo4j_compat => None,
+            None if ns.closed_properties
+                || self.options.neo4j_compat
+                || arms
+                    .iter()
+                    .any(|(_, o)| o.property_mappings.contains_key(p)) =>
+            {
+                None
+            }
             None => Some(col_at("e", p)),
         }
     }
@@ -1417,26 +1397,23 @@ impl<'s> Lowerer<'s> {
     /// Property `p` of a node of several labels has a value in more than
     /// one arm: the union's column takes their common type, if they have
     /// one (`FunctionMapper::one_type_guard`).
-    fn label_union_mixed(&self, p: &str, arms: &[(String, &NodeSchema)], own: bool) -> bool {
+    fn label_union_mixed(&self, p: &str, arms: &[(String, &NodeSchema)]) -> bool {
         arms.iter()
-            .filter(|(_, ns)| match own {
-                true => ns.property_mappings.contains_key(p),
-                false => self.label_arm_value(ns, p).is_some(),
-            })
+            .filter(|(_, ns)| self.label_arm_value(ns, p, arms).is_some())
             .count()
             > 1
     }
 
     /// The properties the CTE of a node of several labels carries
-    /// ([`Self::label_union`]): those read of it (`n.p`), and every declared
-    /// one when it is read whole.
-    fn label_union_props(&self, v: VarId, arms: &[(String, &NodeSchema)]) -> UnionProps {
-        let mut props = UnionProps::default();
+    /// ([`Self::label_union`]): those read of it, every one when it is read
+    /// whole.
+    fn label_union_props(&self, v: VarId, arms: &[(String, &NodeSchema)]) -> BTreeSet<String> {
+        let mut props = BTreeSet::new();
         for p in self.demand.get(&v).into_iter().flatten() {
             if p == ALL_PROPERTIES {
-                props.whole = Self::label_property_names(arms);
+                props.extend(Self::label_property_names(arms));
             } else if !p.starts_with('#') {
-                props.read.insert(p.clone());
+                props.insert(p.clone());
             }
         }
         props
@@ -3095,11 +3072,8 @@ impl<'s> Lowerer<'s> {
             let column = body.column(v.value, name);
             body.determined.push(column.clone());
             let mut keys = v.keys;
-            for prop in self.all_property_names(src) {
-                keys.push(self.own_property(src, &prop)?);
-            }
             if let Some(Scan::Labels { arms, of, .. }) = self.scans.get(&src) {
-                for prop in self.label_union_props(*of, arms).read {
+                for prop in self.label_union_props(*of, arms) {
                     keys.push(self.property(src, &prop)?);
                 }
             }
@@ -3331,19 +3305,7 @@ impl<'s> Lowerer<'s> {
         let mut props = HashMap::new();
         let demanded = self.demand.get(&out);
         let mut names: BTreeSet<String> = demanded.into_iter().flatten().cloned().collect();
-        let whole = names.remove(ALL_PROPERTIES);
-        if let (true, Scan::Labels { .. }) = (whole, &scan) {
-            // Its value's properties (its own label's), apart from those
-            // read as `n.p`.
-            for prop in self.all_property_names(src) {
-                let e = self.own_property(src, &prop)?;
-                let name = format!("__cg_own_{}", cte_column_name(&out.name(), &prop));
-                body.select.push(select(e.clone(), &name));
-                keys.push(e);
-                props.insert(own_key(&prop), col_at(alias, &name));
-            }
-            names.retain(|p| !p.starts_with('#'));
-        } else if whole {
+        if names.remove(ALL_PROPERTIES) {
             names.extend(self.all_property_names(src));
         }
         for prop in &names {
