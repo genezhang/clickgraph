@@ -839,8 +839,11 @@ types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
   (12 relationships of the S7b2 graph), from two first nodes, they are 12.8
   million trails of up to 18 relationships. Without values the query takes
   6 s; with `RETURN p` each trail carries its values and ClickHouse runs out
-  of memory (an error). Building values after the pick
-  is the S7b3a follow-up (values after the join).
+  of memory (an error). Over five types (all of the graph's relationships),
+  even one first node without values exceeds a 4 GB limit within seconds
+  (the review). An upper bound (`*..6`) answers in 0.4 s. Building values
+  after the pick is the S7b3a follow-up (values after the join); the trails
+  themselves are S6b's design.
 - **Measured cost**, social benchmark at scale 100, pinned ends, on a
   shared machine (load average about 8):
 
@@ -2515,6 +2518,18 @@ slice that will handle it.
         identity and no right-end walk's order; 14 shapes were added for
         them. A cross-check keeps every answer (the search reaching every
         node: the ties restrict the ends anyway).
+      - Adversarial review (about 250 shapes on six graphs: ids shared
+        across labels, dangling and parallel relationships across tables,
+        FINAL, filters, labels on one table, overlapping label sets; one
+        table's SQL byte-identical to `main`'s; S7b3a's review set
+        unchanged): one silent wrong answer, fixed. The pick joined a
+        one-label end a condition reads to its raw table, without its
+        `filter:` and FINAL, so a stale or filtered-out version of a node
+        joined once more: `allShortestPaths` counted paths twice, and
+        `shortestPath ... WHERE length(p) >= 3 OR a.name = 'a1'` read a
+        stale name (14 rows against Neo4j's 9). The end is now its label's
+        relation (`Lowerer::node_relation_sql`); the reviewer's shapes equal
+        Neo4j.
   - [x] **S7b3a: variable-length relationships of several types,
     definitions or labels** (§4.6 "Implemented in S7b3a"): a walk of the
     union of their definitions between nodes keyed by label and id, pruned
