@@ -65,8 +65,6 @@ pub(super) const END: &str = "end_node";
 /// The alias of the relationship of each hop: the relationship's property
 /// map reads it.
 pub(super) const REL: &str = "rel";
-/// The alias of a walk's step before the node it enters (`union_path_ctes`).
-const HOP: &str = "hop";
 
 /// The bound passed for a missing maximum: beyond any recursion ClickHouse
 /// evaluates.
@@ -957,15 +955,15 @@ pub(super) fn union_path_ctes(w: &UnionWalk<'_>) -> Result<(Vec<Cte>, String), L
             "path_edges",
             (g.texts)(&[]),
             (g.concat)(&[
-                format!("{HOP}.path_edges"),
-                (g.texts)(&[format!("{HOP}.rel_key")]),
+                "vp.path_edges".to_string(),
+                (g.texts)(&[format!("{REL}.{key}")]),
             ]),
         ),
         (
             "path_nodes",
             (g.texts)(&[format!("{START}.{key}")]),
             (g.concat)(&[
-                format!("{HOP}.path_nodes"),
+                "vp.path_nodes".to_string(),
                 (g.texts)(&[format!("{END}.{key}")]),
             ]),
         ),
@@ -976,7 +974,7 @@ pub(super) fn union_path_ctes(w: &UnionWalk<'_>) -> Result<(Vec<Cte>, String), L
             VALUE_COLUMNS[0],
             (g.list)(&[format!("{START}.{value}")]),
             (g.concat)(&[
-                format!("{HOP}.{}", VALUE_COLUMNS[0]),
+                format!("vp.{}", VALUE_COLUMNS[0]),
                 (g.list)(&[format!("{END}.{value}")]),
             ]),
         ));
@@ -987,8 +985,8 @@ pub(super) fn union_path_ctes(w: &UnionWalk<'_>) -> Result<(Vec<Cte>, String), L
             VALUE_COLUMNS[1],
             (g.list)(&[]),
             (g.concat)(&[
-                format!("{HOP}.{}", VALUE_COLUMNS[1]),
-                (g.list)(&[format!("{HOP}.rel_value")]),
+                format!("vp.{}", VALUE_COLUMNS[1]),
+                (g.list)(&[format!("{REL}.{value}")]),
             ]),
         ));
     }
@@ -1021,44 +1019,23 @@ pub(super) fn union_path_ctes(w: &UnionWalk<'_>) -> Result<(Vec<Cte>, String), L
             m.array_contains()
         ));
         step.extend(conjunction(&w.rel));
-        // The frontier's paths, each with a relationship leaving its last
-        // node (`HOP`), then the node it enters. The relations are streamed
-        // on the left: ClickHouse builds a join's hash table from its right
-        // side, and cannot size a CTE to swap them, so the node union on the
-        // right was hashed at every step (half the time of a pinned walk at
-        // scale 100).
-        let mut hop: Vec<String> = ["start_label", "start_id", "hop_count"]
-            .iter()
-            .chain(&columns)
-            .map(|c| format!("vp.{c} AS {c}"))
-            .collect();
-        hop.push(format!("{REL}.{key} AS rel_key"));
-        if w.rel_values {
-            hop.push(format!("{REL}.{value} AS rel_value"));
-        }
-        hop.push(format!("{REL}.{} AS rel_end_label", super::REL_END_LABEL));
-        hop.push(format!(
-            "{REL}.{} AS rel_end_id",
-            super::indexed_column(super::BOTH_END, 0)
-        ));
         sql.push_str(&format!(
             "\n    UNION ALL\n    \
-             SELECT {HOP}.{START_LABEL} AS {START_LABEL}, {HOP}.start_id AS start_id, \
+             SELECT vp.{START_LABEL} AS {START_LABEL}, vp.start_id AS start_id, \
              {END}.{label} AS {END_LABEL}, {END}.{id} AS end_id, \
-             CAST({HOP}.hop_count + 1 AS {depth}) AS hop_count, {}\n    \
-             FROM {nodes} AS {END}\n    \
-             JOIN (\n        \
-             SELECT {}\n        \
-             FROM {rels} AS {REL}\n        \
-             JOIN {trails} AS vp ON {REL}.{start_label} = vp.{END_LABEL} \
-             AND {REL}.{start_id} = vp.end_id\n        \
-             WHERE {}\n    \
-             ) AS {HOP} ON {END}.{label} = {HOP}.rel_end_label AND {END}.{id} = {HOP}.rel_end_id",
+             CAST(vp.hop_count + 1 AS {depth}) AS hop_count, {}\n    \
+             FROM {trails} AS vp\n    \
+             JOIN {rels} AS {REL} ON {REL}.{start_label} = vp.{END_LABEL} \
+             AND {REL}.{start_id} = vp.end_id\n    \
+             JOIN {nodes} AS {END} ON {END}.{label} = {REL}.{end_label} \
+             AND {END}.{id} = {REL}.{end_id}\n    \
+             WHERE {}",
             stepped.join(", "),
-            hop.join(", "),
-            step.join("\n          AND "),
+            step.join("\n      AND "),
             start_label = super::REL_START_LABEL,
             start_id = super::indexed_column(super::BOTH_START, 0),
+            end_label = super::REL_END_LABEL,
+            end_id = super::indexed_column(super::BOTH_END, 0),
         ));
     }
     sql.push_str("\n)");
