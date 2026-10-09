@@ -774,6 +774,30 @@ union of its definitions, whose nodes are each a label and an id:
   end's labels and the condition holds after it (correct, slower). Ids of
   different types across the walk's labels or definitions make a `Variant`
   column, as in S7b2 (an error, not a wrong answer).
+- **Measured cost**, social benchmark at scale 100 (100K users, 10M
+  follows, 2M posts, 5M likes), on a shared machine (load average about
+  22: the absolute times are inflated, legacy's alike), from a pinned user
+  unless said:
+
+  | Shape | Legacy | New |
+  |---|---|---|
+  | untyped `*1..2`, by label | 108 ms | 679 ms |
+  | `[:FOLLOWS\|LIKED*1..2]` | 80 ms | 654 ms |
+  | untyped `*1..3` to a user (walks FOLLOWS only) | 201 ms | 444 ms (`[:FOLLOWS*1..3]`, one table: 232 ms) |
+  | untyped undirected `*1..2` | 327 ms | 817 ms |
+  | untyped `*1..2` into a pinned user | 17.7 s | 300 ms |
+  | `[:FOLLOWS\|AUTHORED*1..2]`, `RETURN p LIMIT 25` | 80 ms | 1.5 s |
+
+  Legacy expands a fixed range into fixed-length chains over the base
+  tables, which ClickHouse orders by their sizes; a walk's steps read the
+  unions as CTEs, which it cannot size, so each step builds its hash tables
+  on the relationship union and the node union (the node join is about 60%
+  of a pinned walk). Streaming the node union instead (the step's paths
+  hashed) halved a two-hop walk but was five times slower at depth 3 (its
+  frontier of 100K paths, with their arrays, hashed): not taken. A value of
+  a path builds every node's and relationship's value in the unions, for
+  every row, at every step; building them after the join is left for later,
+  with joining each arm to its end's own table (S7b2).
 
 ### 4.7 Label inference
 
@@ -2311,7 +2335,8 @@ slice that will handle it.
   bound-relationship cases S7a refuses), S7c UNWIND, S7d UNION, S7e lists.
   S7b is itself three: S7b1 a node of several labels, S7b2 a relationship of
   several types or joining several label pairs (with S7a's refusals), S7b3
-  variable-length relationships over them.
+  variable-length relationships over them (S7b3a walks, S7b3b shortest
+  paths).
   - [x] **S7a: undirected relationships** (§4.6 `Alternatives`,
     "Implemented in S7a"): fixed hops, variable-length and shortest paths,
     standard layout, as values too.
@@ -2384,6 +2409,43 @@ slice that will handle it.
         `count(DISTINCT n)` 169 ms (legacy 167 ms), a carried node re-matched
         to a relationship 145 ms (legacy: no SQL), `a = b` 96 ms (legacy:
         Code 47).
+  - [x] **S7b3a: variable-length relationships of several types,
+    definitions or labels** (§4.6 "Implemented in S7b3a"): a walk of the
+    union of their definitions between nodes keyed by label and id, pruned
+    to the definitions a path between its ends can use; one spelling of a
+    relationship's identity for every scan. `shortestPath` over them is
+    S7b3b.
+    - Acceptance:
+      - Neo4j oracle, switch on, vs S7b2: 0 correct → wrong, 4 → correct
+        (MATCH 404 → 408: `(a)-[r*1..2]->(a)` and a `*0..1` closed path, both
+        legacy errors, an untyped `*1..3` with `nodes(p)` under a `LIMIT`,
+        and a collect order).
+      - Generated shapes on the S7b2 scratch graph (73 shapes: untyped,
+        alternative types, a type of several definitions, ends of several
+        labels, every direction and range, pinned at either end, path values,
+        property maps, uniqueness against hops and walks of one or several
+        definitions, adjacent `*0..1` parts, WITH, OPTIONAL), on three
+        property typings, and on the S7b1 label graph (17 shapes: labels of
+        one table split by `filter:`, unlabeled ends): every lowered shape
+        equals Neo4j, except those reading a property typed differently on
+        two labels or types (an error, `one_type_guard`). Legacy errors on 51
+        and is wrong on 19 of the first. S7a's four, S7b1's two and S7b2's
+        three sweeps are unchanged (one shape legacy errored on now lowered
+        and correct).
+      - Found by the sweep, fixed: S7b2's union hop spelled a relationship's
+        identity unlike a walk of one table, so `DISTINCT p` over
+        `[:KNOWS*0..1]->()-[r:KNOWS|FOLLOWS]->()-[:KNOWS*0..1]` counted 19
+        paths against Neo4j's 16.
+      - Live suite, switch on, vs S7b2: three GraphRAG parameterized-view
+        walks now run and pass; two known-wrong goldens are now correct (the
+        scorecard keeps the legacy answers until S10). Found by it, fixed: a
+        walk over a polymorphic edge (`$any` end) matched nothing, as its
+        declared labels pruned it away; any definition whose rows carry their
+        own labels is now refused (`RelationshipSchema::
+        has_fixed_endpoint_labels`).
+      - Mutation check (both graphs): 14 rules broken in turn, 14 change
+        answers; two cross-checks keep every answer (every path of one table
+        walked as a union; every union walk started at its right end).
   - [x] **S7b2: a relationship of several possible types or label pairs**
     (§4.6 "Implemented in S7b2"): one relation of its definitions' tables
     in their orientations, identity (definition, id), ties to its ends'

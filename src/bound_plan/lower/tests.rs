@@ -3144,24 +3144,6 @@ fn a_relationship_read_both_ways_beside_a_path_joins_after_its_orientation() {
     assert!(turns < first_read, "{select}");
 }
 
-// SCRATCH: remove before commit.
-#[test]
-#[ignore]
-fn scratch_why() {
-    let schema = GraphSchemaConfig::from_yaml_str(
-        &std::fs::read_to_string(std::env::var("WHY_SCHEMA").unwrap()).unwrap(),
-    )
-    .unwrap()
-    .to_graph_schema()
-    .unwrap();
-    for q in std::env::var("WHY_Q").unwrap().split(";;") {
-        match translate_bound_plan(q, &schema, &ReadOptions::default()) {
-            Ok(_) => println!("WHY OK {q}"),
-            Err(e) => println!("WHY ERR {q}\n    {e}"),
-        }
-    }
-}
-
 /// S7b3: a variable-length relationship of several types walks their union
 /// from the restricted end, its nodes keyed by label and id. The first
 /// node is restricted by its own conjuncts (a node of several labels too),
@@ -3269,27 +3251,6 @@ fn a_carried_walk_of_several_types_keeps_its_end_labels() {
         "MATCH p = (a:Person)-[:KNOWS|LIKES*1..2]->(b) WITH p, b RETURN p, labels(b) AS l",
         &["AS \"v1__start_label\"", "AS \"v1__end_label\""],
     );
-}
-
-// SCRATCH: remove before commit.
-#[test]
-#[ignore]
-fn scratch_defs() {
-    let schema = GraphSchemaConfig::from_yaml_str(
-        &std::fs::read_to_string(std::env::var("WHY_SCHEMA").unwrap()).unwrap(),
-    )
-    .unwrap()
-    .to_graph_schema()
-    .unwrap();
-    for rs in schema.rel_schemas_for_type(&std::env::var("WHY_T").unwrap()) {
-        println!(
-            "DEF {} -> {} std={} table={}",
-            rs.from_node,
-            rs.to_node,
-            rs.is_standard_edge_table(),
-            rs.full_table_name()
-        );
-    }
 }
 
 /// S7b3a review: a walk prunes definitions by the labels the schema gives
