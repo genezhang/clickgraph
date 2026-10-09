@@ -561,8 +561,16 @@ impl RelationshipSchema {
     /// Its endpoints must also be standard (`NodeSchema::is_standard_own_table`)
     /// for the edge to be scanned with node-table joins.
     pub fn is_standard_edge_table(&self) -> bool {
-        self.is_plain_edge_table()
-            && !self.is_polymorphic()
+        self.is_plain_edge_table() && self.has_fixed_endpoint_labels()
+    }
+
+    /// P-4c S7b3a: every row of the relationship joins a node of `from_node`
+    /// to one of `to_node` — the schema fixes its endpoints' labels (no type
+    /// or label discriminator column, no `$any` side), whatever its table
+    /// layout. Otherwise a row's labels are its own, and the declared ones
+    /// say nothing about which labels a path through it can reach.
+    pub fn has_fixed_endpoint_labels(&self) -> bool {
+        !self.is_polymorphic()
             && self.from_label_column.is_none()
             && self.to_label_column.is_none()
             && self.from_node != "$any"

@@ -531,10 +531,11 @@ extension of #1249.
   use a relationship twice in opposite directions. The walk starts at the
   restricted end, as a directed one does; the path's order is the walk's
   from the left end, reversed from the right end.
-- **Not lowered:** an undirected variable-length relationship between two
-  labels (as directed), and a variable-length relationship, of either
-  direction, whose type has several schemas (S7b3). (A relationship bound
-  before matched undirected, and two directions as two schemas, are S7b2.) Its nodes need not have one label: with `T` from N to N
+- **Not lowered here:** an undirected variable-length relationship between
+  two labels (as directed), and a variable-length relationship, of either
+  direction, whose type has several schemas, are walks of a union (S7b3a,
+  below). (A relationship bound before matched undirected, and two
+  directions as two schemas, are S7b2.) Its nodes need not have one label: with `T` from N to N
   and from Z to N, `(:N)-[:T*1..2]-(:Z)` crosses from one to the other.
   Before, a pair of labels the type does not join fell back to the type's
   first schema (`get_rel_schema_with_nodes`), and the path matched nothing
@@ -600,7 +601,8 @@ layout; `Scan::Labels`, `Lowerer::label_union`):
   end is filtered on its label (`Lowerer::holds_label`). Variable inference
   narrows a node the clause introduces already; this is for a node carried
   from an earlier clause. Several pairs are a union of arms (S7b2, below);
-  a variable-length relationship at such a node is S7b3.
+  a variable-length relationship at such a node is a walk of a union
+  (S7b3a).
 - **Labels.** `n:L` is `__cg_label = 'L'` (NULL where an OPTIONAL MATCH left
   the node NULL), `labels(n)` is `[__cg_label]`, and a written label on a
   carried node filters its label column.
@@ -609,8 +611,7 @@ layout; `Scan::Labels`, `Lowerer::label_union`):
   NULL ones dropped): Bolt, the graph output and embedded `query_graph` take
   its label from each row. The HTTP rows hold the value (a single-label node
   keeps its `n.<prop>` columns).
-- **Not lowered:** `n.*` and `id(n)` of such a node, and the S7b3 shapes
-  above.
+- **Not lowered:** `n.*` and `id(n)` of such a node.
 
 **Implemented in S7b2** (a relationship of several possible types or label
 pairs, standard layout; `Scan::Rels`, `Lowerer::rel_union`):
@@ -675,9 +676,9 @@ pairs, standard layout; `Scan::Rels`, `Lowerer::rel_union`):
   columns, the properties of every definition, NULL ones dropped), grouped by
   its identity and its carried properties (as a node of several labels). A
   path value reads its relationships the same way; a path key spells a union
-  relationship as its definition and identity, NULL padding as empty text.
-- **Not lowered:** `r.*` of such a relationship, and a variable-length
-  relationship of several types or at a node of several labels (S7b3).
+  relationship as its row's `__cg_key` (S7b3a: as every scan spells it).
+- **Not lowered:** `r.*` of such a relationship. (A variable-length
+  relationship of several types or at a node of several labels is S7b3a.)
 - **Known gaps** (loud): definitions whose identity or end ids are a string
   in one and a number in another make a `Variant` column, which ClickHouse
   refuses to group by (`RETURN DISTINCT r`, Code 44) or to compare with a
@@ -703,6 +704,100 @@ pairs, standard layout; `Scan::Rels`, `Lowerer::rel_union`):
   labels' tables on (label, id), where legacy joins each type to its own
   table; joining each arm to its end's own table is an optimization left
   for later.
+
+**Implemented in S7b3a** (a variable-length relationship of several types,
+definitions or labels, standard layout; `Walked::Union`,
+`Lowerer::build_union_path`, `path::union_path_ctes`). A relationship of one
+type of one definition between nodes of its one label is still the
+generator's walk of its table (`Walked::One`); any other is a walk of the
+union of its definitions, whose nodes are each a label and an id:
+- **Arms.** Every definition of each of its types, in the orientations that
+  lead away from the end the walk starts at (`Lowerer::walk_arms`): as stored
+  or reversed for a directed relationship (reversed when the walk starts at
+  its `to` end), both for an undirected one. Only those a path between its
+  ends can use are read: a relationship leaves a node of the label the one
+  before it entered, so an arm whose rows leave a label no walk from the
+  first end's labels reaches, or enter one from which no walk reaches the
+  last end's labels, matches nothing here, whatever its layout. (An
+  untyped path from a user to a user on the social schema reads FOLLOWS
+  only.) The arms are a relationship union (`Lowerer::rel_union_of`, S7b2's
+  relation, each row with the node it leaves and enters), whose rows also
+  carry their identity as a text (`__cg_key`, below) and, when the path is a
+  value, their relationship's value.
+- **Nodes.** The nodes a path can visit are one relation (`vlp_{r}_nodes`:
+  an arm per label an arm leaves or enters, and the first end's labels, each
+  its table with its `filter:`, view parameters and FINAL), each row its
+  label, id, identity as a text and, when the path is a value, its value. A
+  walk joins the node of each relationship it follows here, so it visits
+  only nodes there are, as a walk of one table does.
+- **Walk** (`vlp_{r}_trails`, recursive): its first rows are the paths of
+  none at each first node (a row of the nodes of the first end's labels,
+  restricted by `(label, id) IN` the rows so far or the end's own conjuncts:
+  §4.8 d, as a walk of one table is); each step extends a path by a
+  relationship whose start label and id are its last node's, not on it
+  already (`NOT has(path_edges, key)`: a trail), that satisfies the
+  relationship's property map (each definition's spelling of the property,
+  read through `one_type_guard`). `vlp_{r}_path` is those of the range.
+  Columns: `start_label`, `start_id`, `end_label`, `end_id`, `hop_count`,
+  `path_edges` and `path_nodes` (texts), and the values. Each end is tied
+  by label and id (`Lowerer::tie_end`): a node of several labels by its
+  label column, one of one label by a filter on the path's end label where
+  the path can end at another. The walk starts at the restricted end, as a
+  walk of one table does; its order is the path's from the left end,
+  reversed from the right. An unbounded range is unbounded.
+- **Identity as a text** (`value::rel_key`, `value::node_key_text`): a
+  relationship is `type:from_label:to_label:` and the text of its identity
+  (its `edge_id`, else its stored ends: one column, or their tuple, as a
+  path's `path_edges` spell it); a node is `label:` and its id. Every scan
+  spells one alike: a table's relationship from its columns, a
+  relationship union's row from its own `__cg_key` (computed in its arm,
+  from the arm's own column types), a walk of one table by prefixing its
+  `path_edges`, a union walk's as they are. So a path that splits between
+  its parts in several ways (`*0..1`, a hop, `*0..1`) has one identity. Before
+  (S7b2), a union hop spelled its identity column by column while a walk of
+  one table spelled `type:` and a tuple: `DISTINCT p` over
+  `[:KNOWS*0..1]->()-[r:KNOWS|FOLLOWS]->()-[:KNOWS*0..1]` counted 19 paths
+  against Neo4j's 16 (found by this slice's sweep, fixed by the spelling).
+- **Uniqueness.** A union walk and another relationship of one MATCH with a
+  definition in common differ by these texts (`Lowerer::key_differs`): a
+  relationship's is not on the walk's `path_edges`; two paths' do not
+  overlap.
+- **Carried** through a WITH, a union walk exports its end labels with its
+  ends; it is grouped by its first node and relationships, as a walk of one
+  table is.
+- **Not lowered:** a `shortestPath` / `allShortestPaths` over several
+  labels or types (S7b3b), and a walk any of whose arms (after the pruning
+  above) or nodes is not the standard layout or has composite ids (S8).
+- **Known gaps:** a property several labels have, read in a condition on
+  the first end, is the dialect's guarded `coalesce` (raw SQL), which the
+  conjunct analysis does not read: the walk starts at every node of the
+  end's labels and the condition holds after it (correct, slower). Ids of
+  different types across the walk's labels or definitions make a `Variant`
+  column, as in S7b2 (an error, not a wrong answer).
+- **Measured cost**, social benchmark at scale 100 (100K users, 10M
+  follows, 2M posts, 5M likes), on a shared machine (load average about
+  22: the absolute times are inflated, legacy's alike), from a pinned user
+  unless said:
+
+  | Shape | Legacy | New |
+  |---|---|---|
+  | untyped `*1..2`, by label | 108 ms | 679 ms |
+  | `[:FOLLOWS\|LIKED*1..2]` | 80 ms | 654 ms |
+  | untyped `*1..3` to a user (walks FOLLOWS only) | 201 ms | 444 ms (`[:FOLLOWS*1..3]`, one table: 232 ms) |
+  | untyped undirected `*1..2` | 327 ms | 817 ms |
+  | untyped `*1..2` into a pinned user | 17.7 s | 300 ms |
+  | `[:FOLLOWS\|AUTHORED*1..2]`, `RETURN p LIMIT 25` | 80 ms | 1.5 s |
+
+  Legacy expands a fixed range into fixed-length chains over the base
+  tables, which ClickHouse orders by their sizes; a walk's steps read the
+  unions as CTEs, which it cannot size, so each step builds its hash tables
+  on the relationship union and the node union (the node join is about 60%
+  of a pinned walk). Streaming the node union instead (the step's paths
+  hashed) halved a two-hop walk but was five times slower at depth 3 (its
+  frontier of 100K paths, with their arrays, hashed): not taken. A value of
+  a path builds every node's and relationship's value in the unions, for
+  every row, at every step; building them after the join is left for later,
+  with joining each arm to its end's own table (S7b2).
 
 ### 4.7 Label inference
 
@@ -2240,7 +2335,8 @@ slice that will handle it.
   bound-relationship cases S7a refuses), S7c UNWIND, S7d UNION, S7e lists.
   S7b is itself three: S7b1 a node of several labels, S7b2 a relationship of
   several types or joining several label pairs (with S7a's refusals), S7b3
-  variable-length relationships over them.
+  variable-length relationships over them (S7b3a walks, S7b3b shortest
+  paths).
   - [x] **S7a: undirected relationships** (§4.6 `Alternatives`,
     "Implemented in S7a"): fixed hops, variable-length and shortest paths,
     standard layout, as values too.
@@ -2313,6 +2409,51 @@ slice that will handle it.
         `count(DISTINCT n)` 169 ms (legacy 167 ms), a carried node re-matched
         to a relationship 145 ms (legacy: no SQL), `a = b` 96 ms (legacy:
         Code 47).
+  - [x] **S7b3a: variable-length relationships of several types,
+    definitions or labels** (§4.6 "Implemented in S7b3a"): a walk of the
+    union of their definitions between nodes keyed by label and id, pruned
+    to the definitions a path between its ends can use; one spelling of a
+    relationship's identity for every scan. `shortestPath` over them is
+    S7b3b.
+    - Acceptance:
+      - Neo4j oracle, switch on, vs S7b2: 0 correct → wrong, 4 → correct
+        (MATCH 404 → 408: `(a)-[r*1..2]->(a)` and a `*0..1` closed path, both
+        legacy errors, an untyped `*1..3` with `nodes(p)` under a `LIMIT`,
+        and a collect order).
+      - Generated shapes on the S7b2 scratch graph (73 shapes: untyped,
+        alternative types, a type of several definitions, ends of several
+        labels, every direction and range, pinned at either end, path values,
+        property maps, uniqueness against hops and walks of one or several
+        definitions, adjacent `*0..1` parts, WITH, OPTIONAL), on three
+        property typings, and on the S7b1 label graph (17 shapes: labels of
+        one table split by `filter:`, unlabeled ends): every lowered shape
+        equals Neo4j, except those reading a property typed differently on
+        two labels or types (an error, `one_type_guard`). Legacy errors on 51
+        and is wrong on 19 of the first. S7a's four, S7b1's two and S7b2's
+        three sweeps are unchanged (one shape legacy errored on now lowered
+        and correct).
+      - Found by the sweep, fixed: S7b2's union hop spelled a relationship's
+        identity unlike a walk of one table, so `DISTINCT p` over
+        `[:KNOWS*0..1]->()-[r:KNOWS|FOLLOWS]->()-[:KNOWS*0..1]` counted 19
+        paths against Neo4j's 16.
+      - Live suite, switch on, vs S7b2: three GraphRAG parameterized-view
+        walks now run and pass; two known-wrong goldens are now correct (the
+        scorecard keeps the legacy answers until S10). Found by it, fixed: a
+        walk over a polymorphic edge (`$any` end) matched nothing, as its
+        declared labels pruned it away; any definition whose rows carry their
+        own labels is now refused (`RelationshipSchema::
+        has_fixed_endpoint_labels`).
+      - Mutation check (both graphs): 14 rules broken in turn, 14 change
+        answers; two cross-checks keep every answer (every path of one table
+        walked as a union; every union walk started at its right end).
+      - Adversarial review (own graphs: definitions of one type between
+        several label pairs, FK and FINAL tables, view parameters, cycles):
+        one regression, fixed: a type the schema doesn't have at a zero lower
+        bound (`[:NOPE*0..2]`, also `RETURN p`, OPTIONAL) matched nothing,
+        where Neo4j matches the path of none. The binder drops the type, and
+        an empty set of types read as none written. Not from this slice,
+        left as found: a path key over an impossible end is an internal
+        error that falls back to legacy (wrong: 10 vs 0; on main too).
   - [x] **S7b2: a relationship of several possible types or label pairs**
     (§4.6 "Implemented in S7b2"): one relation of its definitions' tables
     in their orientations, identity (definition, id), ties to its ends'

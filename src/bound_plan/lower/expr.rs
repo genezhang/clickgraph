@@ -120,7 +120,7 @@ impl Lowerer<'_> {
     /// Property `prop` of union element `of` read under `alias`: its column,
     /// or, with values of several definitions (`defs`), their columns as one
     /// value of one type, or an error (`FunctionMapper::one_type_guard`).
-    fn one_type(
+    pub(super) fn one_type(
         &self,
         alias: &str,
         of: VarId,

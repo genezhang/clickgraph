@@ -30,6 +30,12 @@
 //! (`max_recursive_cte_evaluation_depth`, the server's `max_cte_depth`). It
 //! is never cut at a depth of its own (the generator's default bound for a
 //! missing maximum, which drops longer paths silently).
+//!
+//! A relationship of several types, definitions or labels (S7b3a) is walked
+//! here instead ([`union_path_ctes`]): over the union of its definitions,
+//! from node to node by label and id, its relationships and nodes kept as
+//! texts (`value::rel_key`, `value::node_key_text`), with the same columns
+//! and the labels of its ends.
 
 use std::sync::Arc;
 
@@ -63,6 +69,11 @@ pub(super) const REL: &str = "rel";
 /// The bound passed for a missing maximum: beyond any recursion ClickHouse
 /// evaluates.
 const UNBOUNDED: u32 = i32::MAX as u32;
+
+/// The columns of a walk over several labels or types (`union_path_ctes`)
+/// holding the labels of its first and last nodes.
+pub(super) const START_LABEL: &str = "start_label";
+pub(super) const END_LABEL: &str = "end_label";
 
 /// Columns of a path relation that stand for it where an element's identity
 /// would (carried through a CTE, tested for NULL). A path is not an element:
@@ -883,4 +894,166 @@ pub(super) fn path_avoids_edge(path_alias: &str, edge: &str) -> RenderExpr {
 pub(super) fn paths_disjoint(a: &str, b: &str) -> RenderExpr {
     let overlap = current_function_mapper().arrays_overlap();
     RenderExpr::Raw(format!("NOT {overlap}({a}.path_edges, {b}.path_edges)"))
+}
+
+/// What a walk over the definitions of several types or labels needs
+/// (`Lowerer::build_union_path`, S7b3a).
+pub(super) struct UnionWalk<'a> {
+    /// The relationship's binding name (`v{N}`): the relation is
+    /// `vlp_v{N}_path`.
+    pub var: &'a str,
+    /// The CTE of the nodes a path can visit (`Lowerer::walk_nodes`): their
+    /// label, id, identity as a text and, with `node_values`, value.
+    pub nodes: &'a str,
+    /// The CTE of its relationships in the orientations the walk follows
+    /// them (`Lowerer::rel_union_of`: the node each row leaves and enters,
+    /// its identity as a text and, with `rel_values`, value); none when only
+    /// the path of none can match.
+    pub rels: Option<&'a str>,
+    pub min: u32,
+    pub max: Option<u32>,
+    /// Conjuncts over the first node, a row of `nodes` aliased [`START`].
+    pub start: Vec<RenderExpr>,
+    /// Conjuncts every relationship of the path satisfies, a row of `rels`
+    /// aliased [`REL`].
+    pub rel: Vec<RenderExpr>,
+    pub node_values: bool,
+    pub rel_values: bool,
+}
+
+/// The relation of paths of `w` (§4.11, S7b3a) and its CTEs: the recursive
+/// `vlp_{var}_trails`, whose first rows are the paths of none at each first
+/// node and whose every step extends each path by a relationship that
+/// leaves its last node (the row's start label and id are the node's) to a
+/// node there is, not on the path already (a trail); and `vlp_{var}_path`,
+/// those of the range. Columns: [`START_LABEL`], `start_id`, [`END_LABEL`],
+/// `end_id`, `hop_count`, `path_edges` and `path_nodes` (the identities of
+/// its relationships and nodes as texts, as a path's identity spells them),
+/// and the values `w` carries. An unbounded range is unbounded, as a walk of
+/// one table's is.
+pub(super) fn union_path_ctes(w: &UnionWalk<'_>) -> Result<(Vec<Cte>, String), LowerError> {
+    let m = current_function_mapper();
+    let (Some(spelling), Some(g)) = (m.shortest_path_search(), m.graph_values()) else {
+        return unsupported(
+            "a variable-length relationship over several labels or types in this SQL dialect",
+        );
+    };
+    let depth = spelling.depth;
+    let (label, id, key, value) = (
+        super::LABEL_COLUMN,
+        super::indexed_column(super::LABEL_ID, 0),
+        super::KEY,
+        super::ELEMENT_VALUE,
+    );
+    let trails = format!("vlp_{}_trails", w.var);
+    let name = format!("vlp_{}_path", w.var);
+    let nodes = w.nodes;
+    let mut columns = vec!["path_edges", "path_nodes"];
+    // (column, its value at the first node, its value one step on).
+    let mut carried: Vec<(&str, String, String)> = vec![
+        (
+            "path_edges",
+            (g.texts)(&[]),
+            (g.concat)(&[
+                "vp.path_edges".to_string(),
+                (g.texts)(&[format!("{REL}.{key}")]),
+            ]),
+        ),
+        (
+            "path_nodes",
+            (g.texts)(&[format!("{START}.{key}")]),
+            (g.concat)(&[
+                "vp.path_nodes".to_string(),
+                (g.texts)(&[format!("{END}.{key}")]),
+            ]),
+        ),
+    ];
+    if w.node_values {
+        columns.push(VALUE_COLUMNS[0]);
+        carried.push((
+            VALUE_COLUMNS[0],
+            (g.list)(&[format!("{START}.{value}")]),
+            (g.concat)(&[
+                format!("vp.{}", VALUE_COLUMNS[0]),
+                (g.list)(&[format!("{END}.{value}")]),
+            ]),
+        ));
+    }
+    if w.rel_values {
+        columns.push(VALUE_COLUMNS[1]);
+        carried.push((
+            VALUE_COLUMNS[1],
+            (g.list)(&[]),
+            (g.concat)(&[
+                format!("vp.{}", VALUE_COLUMNS[1]),
+                (g.list)(&[format!("{REL}.{value}")]),
+            ]),
+        ));
+    }
+    let at_first: Vec<String> = carried
+        .iter()
+        .map(|(c, first, _)| format!("{first} AS {c}"))
+        .collect();
+    let mut sql = format!(
+        "{trails} AS (\n    \
+         SELECT {START}.{label} AS {START_LABEL}, {START}.{id} AS start_id, \
+         {START}.{label} AS {END_LABEL}, {START}.{id} AS end_id, \
+         CAST(0 AS {depth}) AS hop_count, {}\n    \
+         FROM {nodes} AS {START}",
+        at_first.join(", ")
+    );
+    if let Some(c) = conjunction(&w.start) {
+        sql.push_str(&format!("\n    WHERE {c}"));
+    }
+    if let (Some(rels), false) = (w.rels, w.max == Some(0)) {
+        let stepped: Vec<String> = carried
+            .iter()
+            .map(|(c, _, step)| format!("{step} AS {c}"))
+            .collect();
+        let mut step = Vec::new();
+        if let Some(max) = w.max {
+            step.push(format!("vp.hop_count < {max}"));
+        }
+        step.push(format!(
+            "NOT {}(vp.path_edges, {REL}.{key})",
+            m.array_contains()
+        ));
+        step.extend(conjunction(&w.rel));
+        sql.push_str(&format!(
+            "\n    UNION ALL\n    \
+             SELECT vp.{START_LABEL} AS {START_LABEL}, vp.start_id AS start_id, \
+             {END}.{label} AS {END_LABEL}, {END}.{id} AS end_id, \
+             CAST(vp.hop_count + 1 AS {depth}) AS hop_count, {}\n    \
+             FROM {trails} AS vp\n    \
+             JOIN {rels} AS {REL} ON {REL}.{start_label} = vp.{END_LABEL} \
+             AND {REL}.{start_id} = vp.end_id\n    \
+             JOIN {nodes} AS {END} ON {END}.{label} = {REL}.{end_label} \
+             AND {END}.{id} = {REL}.{end_id}\n    \
+             WHERE {}",
+            stepped.join(", "),
+            step.join("\n      AND "),
+            start_label = super::REL_START_LABEL,
+            start_id = super::indexed_column(super::BOTH_START, 0),
+            end_label = super::REL_END_LABEL,
+            end_id = super::indexed_column(super::BOTH_END, 0),
+        ));
+    }
+    sql.push_str("\n)");
+    let mut range = String::new();
+    if w.min > 0 {
+        range = format!("\n    WHERE hop_count >= {}", w.min);
+    }
+    let path = format!(
+        "{name} AS (\n    \
+         SELECT {START_LABEL}, start_id, {END_LABEL}, end_id, hop_count, {}\n    \
+         FROM {trails}{range}\n)",
+        columns.join(", ")
+    );
+    Ok((
+        vec![
+            Cte::new(trails, CteContent::RawSql(sql), true),
+            Cte::new(name.clone(), CteContent::RawSql(path), false),
+        ],
+        name,
+    ))
 }
