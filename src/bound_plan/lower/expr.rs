@@ -36,7 +36,6 @@ use crate::render_plan::render_expr::{
 };
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::function_mapper::current_function_mapper;
-use crate::utils::cte_column_naming::cte_column_name;
 
 use super::{parse_var, unsupported, At, LowerError, Lowerer, Scan};
 use crate::bound_plan::types::{BindingKind, BindingSource, VarId};
@@ -51,8 +50,8 @@ impl Lowerer<'_> {
             Some(Scan::Labels { arms, of, at, .. }) => {
                 return match at {
                     At::Table(alias) if self.label_union_props(*of, arms).contains(prop) => {
-                        let column = super::col_at(alias, &cte_column_name(&of.name(), prop));
-                        self.one_type(column, self.label_union_mixed(prop, arms))
+                        let defs = self.label_value_definitions(prop, arms);
+                        self.one_type(alias, *of, prop, &defs)
                     }
                     At::Table(_) => unsupported(format!("internal: {v}.{prop} is not carried")),
                     At::Exported { props, .. } => match props.get(prop) {
@@ -64,8 +63,8 @@ impl Lowerer<'_> {
             Some(Scan::Rels { arms, of, at, .. }) => {
                 return match at {
                     At::Table(alias) if self.rel_union_props(*of, arms).contains(prop) => {
-                        let column = super::col_at(alias, &cte_column_name(&of.name(), prop));
-                        self.one_type(column, self.rel_union_mixed(prop, arms))
+                        let defs = self.rel_value_definitions(prop, arms);
+                        self.one_type(alias, *of, prop, &defs)
                     }
                     At::Table(_) => unsupported(format!("internal: {v}.{prop} is not carried")),
                     At::Exported { props, .. } => match props.get(prop) {
@@ -118,16 +117,28 @@ impl Lowerer<'_> {
         }))
     }
 
-    /// A column of a union whose arms are different tables, when several
-    /// arms have values (`mixed`): of one type, or an error
-    /// (`FunctionMapper::one_type_guard`).
-    fn one_type(&self, column: RenderExpr, mixed: bool) -> Result<RenderExpr, LowerError> {
-        if !mixed {
-            return Ok(column);
+    /// Property `prop` of union element `of` read under `alias`: its column,
+    /// or, with values of several definitions (`defs`), their columns as one
+    /// value of one type, or an error (`FunctionMapper::one_type_guard`).
+    fn one_type(
+        &self,
+        alias: &str,
+        of: VarId,
+        prop: &str,
+        defs: &[Option<usize>],
+    ) -> Result<RenderExpr, LowerError> {
+        let columns =
+            super::union_property_columns(of, prop, super::definitions_with_value(defs));
+        if let [one] = columns.as_slice() {
+            return Ok(super::col_at(alias, one));
         }
-        match current_function_mapper().one_type_guard(&render_expr_to_sql_plain(&column)) {
+        let sql: Vec<String> = columns
+            .iter()
+            .map(|c| render_expr_to_sql_plain(&super::col_at(alias, c)))
+            .collect();
+        match current_function_mapper().one_type_guard(&sql) {
             Some(sql) => Ok(RenderExpr::Raw(sql)),
-            None => unsupported("a property several labels have, in this SQL dialect"),
+            None => unsupported("a property several labels or types have, in this SQL dialect"),
         }
     }
 

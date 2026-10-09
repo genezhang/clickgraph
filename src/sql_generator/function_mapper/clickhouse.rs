@@ -195,16 +195,34 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         })
     }
 
-    fn one_type_guard(&self, column: &str) -> Option<String> {
-        // With no common type ClickHouse gives a union column a `Variant`
-        // (`use_variant_as_common_type`, on by default), whose NULL `count`
-        // and `groupArray` count and whose `8` and `8.0` DISTINCT keeps
-        // apart. Cast to its own type, or to a type name that does not
-        // exist: an error while the query is analysed, rows or none.
+    fn one_type_guard(&self, columns: &[String]) -> Option<String> {
+        // A union's column takes the arms' common type, converting values
+        // (`Bool` and `UInt8`, `Float32` to `Float64`, `Date` to
+        // `DateTime`), or with none a `Variant` (`use_variant_as_common_type`,
+        // on by default), whose NULLs `count` counts and whose `8` and `8.0`
+        // DISTINCT keeps apart. Each definition's values are their own
+        // column: the value is their `coalesce`, cast to its own type when
+        // every column's type is the same up to integer width, string
+        // representation and nullability (which change no value), else to a
+        // type name that does not exist: an error while the query is
+        // analysed, rows or none.
+        let class = |c: &str| {
+            format!(
+                "replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName({c}), \
+                 'Nullable\\\\(|LowCardinality\\\\(|\\\\)', ''), '^U?Int\\\\d+$', 'Int'), \
+                 '^(String|FixedString\\\\(\\\\d+)$', 'String')"
+            )
+        };
+        let value = format!("coalesce({})", columns.join(", "));
+        let mut same: Vec<String> = columns[1..]
+            .iter()
+            .map(|c| format!("{} = {}", class(&columns[0]), class(c)))
+            .collect();
+        same.push(format!("toTypeName({value}) NOT LIKE 'Variant(%'"));
         Some(format!(
-            "CAST({column}, if(toTypeName({column}) LIKE 'Variant(%', \
-             'ClickGraph_property_has_different_types_on_different_labels_or_types', \
-             toTypeName({column})))"
+            "CAST({value}, if({}, toTypeName({value}), \
+             'ClickGraph_property_has_different_types_on_different_labels_or_types'))",
+            same.join(" AND ")
         ))
     }
 

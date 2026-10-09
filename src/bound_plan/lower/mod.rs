@@ -580,6 +580,49 @@ fn rel_union_shape(arms: &[RelArm]) -> Result<RelUnionShape, LowerError> {
     })
 }
 
+/// The number of definitions (labels, relationship definitions) with a
+/// value of a property, of each arm's index among them.
+fn definitions_with_value(defs: &[Option<usize>]) -> usize {
+    defs.iter().flatten().max().map_or(0, |k| k + 1)
+}
+
+/// The CTE columns holding property `p` of union element `of` whose arms'
+/// values come from `definitions` definitions: one, or one per definition
+/// (`…__cg{k}`, NULL outside its rows), so each keeps its own type
+/// (`FunctionMapper::one_type_guard`).
+fn union_property_columns(of: VarId, p: &str, definitions: usize) -> Vec<String> {
+    let base = cte_column_name(&of.name(), p);
+    if definitions <= 1 {
+        return vec![base];
+    }
+    (0..definitions).map(|k| format!("{base}__cg{k}")).collect()
+}
+
+/// The SELECT items of property `p` in arm `arm` of a union for element
+/// `of` ([`union_property_columns`]): the arm's value (`None`: NULL) in its
+/// definition's column (`defs[arm]`), NULL in the others.
+fn union_property_items(
+    of: VarId,
+    p: &str,
+    defs: &[Option<usize>],
+    arm: usize,
+    value: Option<RenderExpr>,
+) -> Vec<SelectItem> {
+    let columns = union_property_columns(of, p, definitions_with_value(defs));
+    let one = columns.len() == 1;
+    columns
+        .iter()
+        .enumerate()
+        .map(|(k, c)| {
+            let e = match &value {
+                Some(e) if one || defs[arm] == Some(k) => e.clone(),
+                _ => RenderExpr::Literal(Literal::Null),
+            };
+            select(e, c)
+        })
+        .collect()
+}
+
 fn eq(a: RenderExpr, b: RenderExpr) -> OperatorApplication {
     OperatorApplication {
         operator: Operator::Equal,
@@ -1423,12 +1466,14 @@ impl<'s> Lowerer<'s> {
     ///   property), else the rule of an undeclared one
     ///   ([`Self::label_arm_value`]).
     ///
-    /// A column keeps each arm's own type, and ClickHouse gives the union the
-    /// arms' common type. With none (a string in one arm, a number in
-    /// another) it would take a `Variant`, which answers differently (its
-    /// NULLs are counted, `8` and `8.0` are two values): a property several
-    /// arms have is read through `FunctionMapper::one_type_guard`, an error
-    /// instead.
+    /// A union's column takes its arms' common type, converting values
+    /// (`Bool` and `UInt8`, `Float32` and `Float64`, `Date` and `DateTime`;
+    /// review finding), or with none a `Variant`, which answers differently
+    /// (its NULLs are counted, `8` and `8.0` are two values). A property
+    /// several labels have a value of is one column per label
+    /// ([`union_property_items`]), read through
+    /// `FunctionMapper::one_type_guard`: an error unless their types differ
+    /// only in what changes no value.
     fn label_union(
         &mut self,
         v: VarId,
@@ -1445,7 +1490,11 @@ impl<'s> Lowerer<'s> {
         const ROW: &str = "e";
         let props = self.label_union_props(v, arms);
         let mut input = Vec::new();
-        for (label, ns) in arms {
+        let definitions: Vec<(&String, Vec<Option<usize>>)> = props
+            .iter()
+            .map(|p| (p, self.label_value_definitions(p, arms)))
+            .collect();
+        for (arm, (label, ns)) in arms.iter().enumerate() {
             let mut items = vec![select(
                 RenderExpr::Literal(Literal::String(label.clone())),
                 LABEL_COLUMN,
@@ -1453,11 +1502,9 @@ impl<'s> Lowerer<'s> {
             for (i, c) in ns.id_physical_columns().iter().enumerate() {
                 items.push(select(col_at(ROW, c), &indexed_column(LABEL_ID, i)));
             }
-            for p in &props {
-                let value = self
-                    .label_arm_value(ns, p, arms)
-                    .unwrap_or(RenderExpr::Literal(Literal::Null));
-                items.push(select(value, &cte_column_name(&v.name(), p)));
+            for (p, defs) in &definitions {
+                let value = self.label_arm_value(ns, p, arms);
+                items.extend(union_property_items(v, p, defs, arm, value));
             }
             let filters = match &ns.filter {
                 Some(f) => match f.to_sql(ROW) {
@@ -1540,14 +1587,22 @@ impl<'s> Lowerer<'s> {
         }
     }
 
-    /// Property `p` of a node of several labels has a value in more than
-    /// one arm: the union's column takes their common type, if they have
-    /// one (`FunctionMapper::one_type_guard`).
-    fn label_union_mixed(&self, p: &str, arms: &[(String, &NodeSchema)]) -> bool {
+    /// For each arm of a node of several labels, the index of its label
+    /// among those with a value of property `p` ([`union_property_items`]).
+    fn label_value_definitions(
+        &self,
+        p: &str,
+        arms: &[(String, &NodeSchema)],
+    ) -> Vec<Option<usize>> {
+        let mut n = 0;
         arms.iter()
-            .filter(|(_, ns)| self.label_arm_value(ns, p, arms).is_some())
-            .count()
-            > 1
+            .map(|(_, ns)| {
+                self.label_arm_value(ns, p, arms).map(|_| {
+                    n += 1;
+                    n - 1
+                })
+            })
+            .collect()
     }
 
     /// The properties the CTE of a node of several labels carries
@@ -2046,8 +2101,9 @@ impl<'s> Lowerer<'s> {
     /// * the ids of their stored ends (`REL_FROM_{i}`, `REL_TO_{i}`), and the
     ///   label and id of the node they leave and enter here;
     /// * each property read of `v` (the demand pass), as on a node of several
-    ///   labels ([`Self::arm_value`]), read through `one_type_guard` where
-    ///   several definitions have a value ([`Self::rel_union_mixed`]).
+    ///   labels ([`Self::arm_value`]): one column per definition where several
+    ///   have a value ([`union_property_items`]), read through
+    ///   `one_type_guard`.
     ///
     /// A definition between nodes of one label read in both orientations
     /// (undirected) reads a self-loop once, as stored, as Neo4j matches it
@@ -2058,8 +2114,12 @@ impl<'s> Lowerer<'s> {
         const ROW: &str = "e";
         let props = self.rel_union_props(v, arms);
         let string = |s: &str| RenderExpr::Literal(Literal::String(s.to_string()));
+        let definitions: Vec<(&String, Vec<Option<usize>>)> = props
+            .iter()
+            .map(|p| (p, self.rel_value_definitions(p, arms)))
+            .collect();
         let mut input = Vec::new();
-        for arm in arms {
+        for (i, arm) in arms.iter().enumerate() {
             let rs = arm.schema;
             let (from, to) = (rs.from_id.columns(), rs.to_id.columns());
             let identity: Vec<&str> = match &rs.edge_id {
@@ -2095,11 +2155,9 @@ impl<'s> Lowerer<'s> {
             }
             items.push(select(string(left), REL_START_LABEL));
             items.push(select(string(right), REL_END_LABEL));
-            for p in &props {
-                let value = self
-                    .rel_arm_value(rs, p, arms)
-                    .unwrap_or(RenderExpr::Literal(Literal::Null));
-                items.push(select(value, &cte_column_name(&v.name(), p)));
+            for (p, defs) in &definitions {
+                let value = self.rel_arm_value(rs, p, arms);
+                items.extend(union_property_items(v, p, defs, i, value));
             }
             let mut filters = Vec::new();
             if let Some(f) = &rs.filter {
@@ -2174,19 +2232,23 @@ impl<'s> Lowerer<'s> {
         self.arm_value(&rs.property_mappings, rs.closed_properties, declared, p)
     }
 
-    /// Property `p` of a relationship union has a value in the arms of more
-    /// than one definition: the union's column takes their common type, if
-    /// they have one (`FunctionMapper::one_type_guard`).
-    fn rel_union_mixed(&self, p: &str, arms: &[RelArm]) -> bool {
+    /// For each arm of a relationship union, the index of its definition
+    /// among those with a value of property `p` (the two orientations of
+    /// one definition share it; [`union_property_items`]).
+    fn rel_value_definitions(&self, p: &str, arms: &[RelArm]) -> Vec<Option<usize>> {
         let mut valued: Vec<&RelationshipSchema> = Vec::new();
-        for a in arms {
-            if self.rel_arm_value(a.schema, p, arms).is_some()
-                && !valued.iter().any(|s| std::ptr::eq(*s, a.schema))
-            {
-                valued.push(a.schema);
-            }
-        }
-        valued.len() > 1
+        arms.iter()
+            .map(|a| {
+                self.rel_arm_value(a.schema, p, arms)?;
+                Some(match valued.iter().position(|s| std::ptr::eq(*s, a.schema)) {
+                    Some(k) => k,
+                    None => {
+                        valued.push(a.schema);
+                        valued.len() - 1
+                    }
+                })
+            })
+            .collect()
     }
 
     /// The properties the CTE of a relationship union carries
@@ -4460,16 +4522,21 @@ fn column_of(e: &RenderExpr, alias: &str) -> Result<String, LowerError> {
     }
 }
 
-/// The table aliases an operator tree over columns reads.
+/// The table aliases an expression reads.
 fn table_aliases(e: &RenderExpr) -> Vec<String> {
-    match e {
-        RenderExpr::PropertyAccessExp(pa) => vec![pa.table_alias.0.clone()],
-        RenderExpr::List(xs) => xs.iter().flat_map(table_aliases).collect(),
-        RenderExpr::OperatorApplicationExp(op) => {
-            op.operands.iter().flat_map(table_aliases).collect()
+    // Every column read, however deep (a `CASE` of a relationship read in
+    // both orientations, `turned_ends`; review finding: one missed placed a
+    // tie before the relation it reads).
+    let mut read = Vec::new();
+    let mut e = e.clone();
+    visit_render_expr_mut(&mut e, &mut |x| match x {
+        RenderExpr::PropertyAccessExp(pa) => {
+            read.push(pa.table_alias.0.clone());
+            MutVisit::Stop
         }
-        _ => Vec::new(),
-    }
+        _ => MutVisit::Recurse,
+    });
+    read
 }
 
 /// `alias.hop_count < k` (or `<=`, `=`, either way round) for an integer

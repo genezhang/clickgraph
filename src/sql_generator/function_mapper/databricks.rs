@@ -275,7 +275,7 @@ impl FunctionMapper for DatabricksFunctionMapper {
         None
     }
 
-    fn one_type_guard(&self, _column: &str) -> Option<String> {
+    fn one_type_guard(&self, _columns: &[String]) -> Option<String> {
         // Spark widens a union's column to a common type (a number and a
         // string to a string), which compares differently.
         None
