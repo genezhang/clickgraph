@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #PRNUM; next: S7d UNION, then S7e lists)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; next: S7d UNION, then S7e lists)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -740,7 +740,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
-- 2026-10-09: **P-4c S7c: UNWIND of a list of values** (#PRNUM, `src/bound_plan/lower/unwind.rs`, `FunctionMapper::unwind`, behind `CLICKGRAPH_BOUND_PLAN=on`).
+- 2026-10-09: **P-4c S7c: UNWIND of a list of values** (#1342, `src/bound_plan/lower/unwind.rs`, `FunctionMapper::unwind`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - The rows so far become a CTE whose SELECT repeats each row per element (`ARRAY JOIN` after the joins), exporting the scope plus the element. Whether the expression is a list is decided from it (`Kind`): an empty list / NULL gives no rows, a value that is not a list is the list of itself, a value of unknown type must be a list (`arrayConcat` fails otherwise, instead of a map's entries becoming rows). Order: one input row → by position; ordered rows → numbered, then by position; several rows in no order → `Lost` (a later SKIP / LIMIT / `collect()` not lowered).
   - Sweep (138 shapes, 38 row for row): 120 lowered, 117 equal Neo4j, 1 a map literal's value type (S4), 2 loud; legacy wrong on 14, errors on 25. Mutation check: 13 rules, 10 caught by the sweep, 3 by unit tests. Oracle and live suite unchanged. Review (about 280 shapes on three graphs): no wrong row count; fixed boolean elements (1/0), `split()` of NULL, and the `NOT a IS NULL` precedence of the NULL test.
   - Not lowered: lists of nodes / relationships / paths and a property of a map element (S7e); Databricks. Shapes only the clause-list parser takes (`MATCH .. UNWIND .. MATCH`) still fail to parse on the server until the seam parses with it first.
