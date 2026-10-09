@@ -2467,12 +2467,60 @@ slice that will handle it.
         `count(DISTINCT n)` 169 ms (legacy 167 ms), a carried node re-matched
         to a relationship 145 ms (legacy: no SQL), `a = b` 96 ms (legacy:
         Code 47).
+  - [x] **S7b3b: `shortestPath` / `allShortestPaths` over several types,
+    definitions or labels** (§4.6 "Implemented in S7b3b"): the search of
+    S6b / S6d over a union walk's relations, a node identified by its
+    identity as a text; the pairs' ends recovered by label and id.
+    - Acceptance:
+      - Generated shapes on the S7b2 scratch graph, on three property
+        typings (452 each: both functions; several types, a type of several
+        definitions, untyped; ends of one, several or no labels; every
+        direction and range; conditions on the length, alone and with an
+        end; values (`p`, `nodes(p)`, `relationships(p)`, path identity);
+        pinned ends, WITH, OPTIONAL, other parts, aggregates, unknown
+        types). 426 are lowered: 424 equal Neo4j (for `shortestPath`, the
+        rows equal Neo4j's or, with paths, each is one of
+        `allShortestPaths`'); legacy is wrong on 306 of them and errors on
+        98. The other 2, OPTIONAL with a condition, failed (Code 47: a
+        condition there read the path's identity for NULL through
+        `start_label`, which the search's relations lack; a union path's
+        identity now has `start_id` first) and now equal Neo4j's rows except
+        where Neo4j is wrong: Neo4j 5.26.31 drops a value of the incoming
+        row (`a.id`, `id(a)`, or a value a WITH projected before the
+        OPTIONAL MATCH) in the rows its exhaustive fallback produces under
+        OPTIONAL MATCH, for a walk of one type too. Not lowered: 12
+        conditions that read `b.id` of an end of several labels (the raw
+        guard; legacy wrong on 8, errors on 4); 8 list comprehensions over
+        `nodes(p)` / `relationships(p)` (S7e; both pipelines error). Neo4j rejects 6 (a property map in
+        `shortestPath`, a start that is the end, 2 timeouts).
+      - Walks from the right end read in the path's order (`p`, from a
+        pinned last node) and `WITH DISTINCT p`: 14 more shapes, each equal
+        to Neo4j (added when the mutation check showed the set lacked
+        them).
+      - Conditions reading an end of several labels (by a property one label
+        declares): 4 shapes equal Neo4j; a fifth compares a string with a
+        number (`coalesce(a.code, 1)`), a ClickHouse type error as any such
+        comparison is.
+      - Neo4j oracle, switch on, vs S7b3a: unchanged (MATCH 408; the corpus
+        has no shortest path over several labels or types).
+      - Live suite, switch on, vs S7b3a: unchanged but for
+        `test_filter_early_vs_late`, which times one query twice and fails
+        either build at random (S7b3a's: 3 of 5 runs).
+      - Mutation check (224 of the shapes): 10 rules broken in turn (the
+        relationships' node keys, the pairs' ends, the keyed trails, the
+        walk's relationship spelling, a condition's end join, the path's
+        order, the vacuous label condition, the property map in the search,
+        a several-label end's label, the last end's restriction), 10 change
+        answers. Two first survived: the set read no shortest path's
+        identity and no right-end walk's order; 14 shapes were added for
+        them. A cross-check keeps every answer (the search reaching every
+        node: the ties restrict the ends anyway).
   - [x] **S7b3a: variable-length relationships of several types,
     definitions or labels** (§4.6 "Implemented in S7b3a"): a walk of the
     union of their definitions between nodes keyed by label and id, pruned
     to the definitions a path between its ends can use; one spelling of a
     relationship's identity for every scan. `shortestPath` over them is
-    S7b3b.
+    S7b3b (above).
     - Acceptance:
       - Neo4j oracle, switch on, vs S7b2: 0 correct → wrong, 4 → correct
         (MATCH 404 → 408: `(a)-[r*1..2]->(a)` and a `*0..1` closed path, both
