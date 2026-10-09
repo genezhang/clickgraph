@@ -281,6 +281,13 @@ impl FunctionMapper for DatabricksFunctionMapper {
         None
     }
 
+    fn cypher_union(&self) -> Option<super::CypherUnion> {
+        // Spark has no column type of values of any type (`VARIANT` is not
+        // verified against the lowering's shapes): UNION stays on the legacy
+        // path there.
+        None
+    }
+
     fn unwind(&self) -> Option<super::Unwind> {
         // `LATERAL VIEW explode` is not verified against the lowering's
         // shapes: UNWIND stays on the legacy path there.

@@ -241,12 +241,16 @@ impl Lowerer<'_> {
                 self.operator(op, items)?
             }
             LogicalExpr::List(xs) => RenderExpr::List(self.all(xs, items)?),
-            LogicalExpr::MapLiteral(entries) => RenderExpr::MapLiteral(
-                entries
+            LogicalExpr::MapLiteral(entries) => {
+                // In key order: maps are equal by their entries (DISTINCT,
+                // grouping, UNION), and ClickHouse compares them in order.
+                let mut entries = entries
                     .iter()
                     .map(|(k, v)| Ok((k.clone(), self.expr(v, items)?)))
-                    .collect::<Result<_, LowerError>>()?,
-            ),
+                    .collect::<Result<Vec<_>, LowerError>>()?;
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
+                RenderExpr::MapLiteral(entries)
+            }
             LogicalExpr::ScalarFnCall(f) => self.scalar_fn(f, items)?,
             LogicalExpr::AggregateFnCall(f) => self.aggregate_fn(f, items)?,
             LogicalExpr::Case(c) => RenderExpr::Case(self.case(c, items)?),

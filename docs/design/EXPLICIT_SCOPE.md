@@ -419,6 +419,67 @@ The binder walks the clause list once, keeping the *current scope*:
       to parse on the server. The seam parses with the legacy parser first,
       until slice 10.
 - **UNION.** Each arm is bound from an empty scope. Output names must match.
+
+  **Implemented in S7d** (`bound_plan/lower/union.rs`):
+  - **Arms.** Each arm is lowered on its own, continuing the CTE names, to a
+    CTE of its RETURN's columns in the UNION's column order (matched by
+    name). Its ORDER BY, SKIP and LIMIT stay in it, as in Neo4j, where an
+    ORDER BY / LIMIT after the last arm belongs to that arm. A CTE is the
+    `UNION ALL` of a SELECT of each arm's CTE; the final SELECT reads it.
+  - **Values of any type.** A column of values can hold an integer in one
+    arm and a boolean in another. ClickHouse's common type would convert
+    one of them (the common type of `Bool` and `UInt8` is `Bool`, so `5`
+    becomes `true`; that of `Bool` and `Int64` is `Int64`, so `true`
+    becomes `1`). Each arm's value is therefore cast to `Dynamic`, which
+    keeps every value's own type. A node, relationship, graph value or
+    `id()` keeps its columns' types; it must be of one label or type in
+    every arm.
+  - **UNION ALL order.** Neo4j returns each arm's rows in turn, in their
+    order. When an arm's rows are ordered (its RETURN's ORDER BY, or input
+    still ordered as in §3: an ORDER BY not followed by a MATCH, DISTINCT
+    or aggregation), the result is ordered by arm, then by the row's
+    number in its arm. `row_number()` over the sort keys the arm's CTE
+    exports is taken after the arm's own DISTINCT and LIMIT. Arms with no
+    order are numbered 0. When no arm is ordered (a constant key orders
+    nothing), the result has no order: Neo4j does not promise one.
+  - **UNION (DISTINCT).** One row per group of rows equal in every column:
+    - Every column is compared by `(kind, text)`, which is Cypher's
+      DISTINCT equality: `1` = `1.0` = an `Int64` 1 = a `UInt8` 1, and
+      `1` ≠ `'1'` ≠ `true`.
+      - The kinds are NULL, boolean, number, list / map / tuple, and string.
+        String covers everything else, including what the output shows as a
+        string: FixedString, Enum, UUID and dates.
+      - A number's text is normalized (`-0` is `0`), and a FixedString's is
+        padded back to its width (`toString` drops the zero bytes the
+        output shows).
+      - The key is not JSON: `toJSONString` quotes a 64-bit integer under
+        `output_format_json_quote_64bit_integers`.
+      - Comparing through the key also lets ClickHouse group a `Dynamic`
+        column.
+    - Each arm also exports the identity of every node, relationship and
+      graph value it returns, for two reasons. Rows equal in every returned
+      column can be different relationships (an `edge_id` that is not a
+      property). And a relationship's graph value carries only its ends'
+      `elementId`. An element's columns are compared too: a relationship
+      with no `edge_id` is identified by its ends, and parallel ones differ
+      by their properties.
+    - A map literal is lowered with its entries in key order, so maps
+      written in different orders are equal (in DISTINCT and grouping too).
+    - The result has no order (Neo4j keeps the first-seen order). Of rows
+      that are equal but differ in type (`1`, `1.0`), any one is returned;
+      Neo4j returns the first. Every output prints them alike.
+  - **Not lowered:**
+    - a column that is a node in one arm and a value, or a node of another
+      label, in another (Neo4j answers; legacy errors or is wrong);
+    - identities of different columns in different arms;
+    - UNION in the Databricks dialect (no column type of any value).
+  - **Known gaps:**
+    - A map literal's values are strings (S4).
+    - A map column's equality depends on its key order. This is older, and
+      the same on both paths and in DISTINCT.
+    - Relationships with no `edge_id` that are parallel and equal in every
+      property are one in DISTINCT, UNION and paths. This is older, and the
+      same on both paths.
 - **Subquery expressions.** A child scope whose parent is the current scope.
   The parent's variables used inside become the subquery's **correlation
   set**, an explicit `Vec<VarId>`.
@@ -2449,8 +2510,8 @@ slice that will handle it.
       unit test pins it).
 - [ ] S7 UNWIND / UNION / alternatives, in sub-slices: S7a undirected
   relationships, S7b several labels / types (with the two-schema and
-  bound-relationship cases S7a refuses), S7c UNWIND (done), S7d UNION, S7e
-  lists.
+  bound-relationship cases S7a refuses), S7c UNWIND (done), S7d UNION
+  (done), S7e lists.
   S7b is itself three: S7b1 a node of several labels, S7b2 a relationship of
   several types or joining several label pairs (with S7a's refusals), S7b3
   variable-length relationships over them (S7b3a walks, S7b3b shortest
@@ -2527,6 +2588,61 @@ slice that will handle it.
         `count(DISTINCT n)` 169 ms (legacy 167 ms), a carried node re-matched
         to a relationship 145 ms (legacy: no SQL), `a = b` 96 ms (legacy:
         Code 47).
+  - [x] **S7d: Cypher UNION** (§4.4 "Implemented in S7d"): each arm a CTE
+    of its columns in the UNION's order, a `UNION ALL` of them, values
+    read as `Dynamic`; UNION ALL ordered by arm and row when an arm is
+    ordered, UNION grouped by Cypher's equality and the elements' identity.
+    - Acceptance:
+      - Generated shapes on a scratch graph with a `Bool`, a `Float64`, a
+        `LowCardinality(String)`, a list property and a relationship whose
+        `edge_id` is not a property (152: literals and values of mixed
+        types, booleans against numbers, strings against numbers, lists,
+        columns matched by name, aggregates, nodes, relationships, OPTIONAL
+        nulls, paths, nodes of several labels, relationships of several
+        types, per-arm ORDER BY / SKIP / LIMIT, arms ordered by a list,
+        WITH / UNWIND / VLP / shortest paths in arms, three arms; 26 checked
+        row for row). 145 are lowered: 143 equal Neo4j; the other 2 differ
+        by a map literal's value type (S4). Legacy is wrong on 42 of them,
+        errors on 53 and orders 2 differently. Not lowered: a node against a
+        value, a node of another label or a relationship of another kind
+        (legacy wrong on 1, errors on 3), and the 3 Neo4j refuses.
+      - Neo4j oracle, switch on, vs S7c: MATCH 408 → 409 (a UNION whose arm
+        has two undirected OPTIONAL MATCHes, an error before, equals Neo4j;
+        `test_914`, `collect()` over an unordered MATCH, flips as in S7c).
+      - Live suite, switch on, vs S7c: unchanged but for the scorecard
+        entry of that UNION, now correct (`known-wrong entry is now
+        CORRECT`). An earlier run also failed `test_filter_early_vs_late`,
+        the timing test.
+      - Mutation check: 19 rules broken in turn, and the sweeps catch all
+        19:
+        - the `Dynamic` cast; the exported identities;
+        - the columns' order by name; an arm's ORDER BY under its LIMIT;
+        - the sort keys exported; the row numbering, its direction, and the
+          order by arm;
+        - the arms' demand; UNION read as UNION ALL;
+        - a graph value's and a several-label element's identity;
+        - values grouped as they are; an element's columns grouped;
+        - in the key: the string kind, the number kind, the list kind,
+          `-0`, FixedString padding, and FixedString / Enum as strings.
+
+        A boolean kind in an earlier key survived because it was redundant
+        (a boolean's text is never a number's), and was removed.
+      - Adversarial review (about 250 queries beyond the sweep): no wrong
+        row count from the arms, ordering, identity or column matching.
+        Fixed from it:
+        - the DISTINCT key took only `String` as a string, so FixedString,
+          Enum, UUID and dates merged with numbers or booleans of the same
+          text, or stayed apart from equal strings (now kinds by type, with
+          FixedString padding);
+        - `-0.0` ≠ `0`;
+        - map literals of different key order were different;
+        - a node with a `Dynamic` column failed (Code 44, now grouped
+          through the key).
+
+        A sweep of the review's types (24 shapes) equals Neo4j but for
+        S4's map values and a harness artifact. Left as found: native map
+        columns' key order, and parallel relationships with no `edge_id`
+        (both older).
   - [x] **S7c: UNWIND** (§4.4 "Implemented in S7c"): a list of values;
     the rows so far become a CTE that repeats each row per element
     (`ARRAY JOIN`), keeping the order Neo4j keeps.

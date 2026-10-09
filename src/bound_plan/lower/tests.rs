@@ -3609,3 +3609,206 @@ fn databricks_unwind_is_not_lowered() {
         "{got:?}"
     );
 }
+
+/// UNION (S7d): each arm is a CTE of its RETURN's columns in the UNION's
+/// order (matched by name); a CTE is the UNION ALL of the arms, each value
+/// read as a value of any type; UNION groups rows by Cypher's equality.
+#[test]
+fn a_union_reads_each_arm_from_its_own_cte() {
+    has(
+        "MATCH (u:User) RETURN u.name AS n, u.user_id AS i \
+         UNION ALL MATCH (p:Post) RETURN p.post_id AS i, p.title AS n",
+        &[
+            r#"WITH with_w1 AS ( SELECT v0.full_name AS "__cg_w1_c0", v0.user_id AS "__cg_w1_c1" FROM test_integration.users_test AS v0 )"#,
+            // The second arm's columns in the UNION's order.
+            r#"with_w2 AS ( SELECT v3.post_title AS "__cg_w2_c0", v3.post_id AS "__cg_w2_c1" FROM"#,
+            r#"with_w3 AS ( SELECT CAST(w1.__cg_w1_c0, 'Dynamic') AS "__cg_c0", CAST(w1.__cg_w1_c1, 'Dynamic') AS "__cg_c1" FROM with_w1 AS w1 UNION ALL SELECT CAST(w2.__cg_w2_c0, 'Dynamic') AS "__cg_c0", CAST(w2.__cg_w2_c1, 'Dynamic') AS "__cg_c1" FROM with_w2 AS w2 )"#,
+            r#"SELECT w3.__cg_c0 AS "n", w3.__cg_c1 AS "i" FROM with_w3 AS w3"#,
+        ],
+    );
+    // UNION: one row per group of equal rows, in no order.
+    let got = squash(&sql("RETURN 1 AS a UNION RETURN 1.0 AS a"));
+    assert!(
+        got.contains(
+            r#"SELECT any(w3.__cg_c0) AS "a" FROM with_w3 AS w3 GROUP BY tuple(multiIf(dynamicType(CAST(w3.__cg_c0, 'Dynamic')) = 'None', '', "#
+        ) && got.ends_with(r#"toString(w3.__cg_c0)))"#),
+        "{got}"
+    );
+    // Three arms; the arms' WITH segments continue the CTE names.
+    has(
+        "MATCH (u:User) WITH u.name AS n RETURN n UNION ALL RETURN 'x' AS n \
+         UNION ALL UNWIND ['y'] AS n RETURN n",
+        &[
+            "with_w1 AS ( SELECT v0.full_name AS \"v1\"",
+            "with_w2 AS ( SELECT w1.v1 AS \"__cg_w2_c0\" FROM with_w1 AS w1 )",
+            "with_w3 AS ( SELECT 'x' AS \"__cg_w3_c0\" )",
+            "with_w5 AS ( SELECT w4.v4 AS \"__cg_w5_c0\"",
+            "FROM with_w5 AS w5 ) SELECT w6.__cg_c0 AS \"n\" FROM with_w6 AS w6",
+        ],
+    );
+}
+
+/// An arm's ORDER BY, SKIP and LIMIT are its own (Neo4j: an ORDER BY /
+/// LIMIT after the last arm is that arm's); UNION ALL keeps each arm's rows
+/// in turn, in their order.
+#[test]
+fn a_union_arm_orders_and_pages_its_own_rows() {
+    has(
+        "MATCH (u:User) RETURN u.name AS n \
+         UNION ALL MATCH (u:User) RETURN u.name AS n ORDER BY n DESC LIMIT 2",
+        &[
+            // The first arm has no order.
+            r#"with_w1 AS ( SELECT v0.full_name AS "__cg_w1_c0" FROM test_integration.users_test AS v0 )"#,
+            r#"with_w2 AS ( SELECT v2.full_name AS "__cg_w2_c0", v2.full_name AS "__cg_w2_o0" FROM test_integration.users_test AS v2 ORDER BY v2.full_name DESC NULLS FIRST LIMIT 2)"#,
+            // Each arm's rows numbered in its order, after its LIMIT.
+            r#"SELECT CAST(w1.__cg_w1_c0, 'Dynamic') AS "__cg_c0", 0 AS "__cg_arm", 0 AS "__cg_row" FROM with_w1 AS w1 UNION ALL SELECT CAST(w2.__cg_w2_c0, 'Dynamic') AS "__cg_c0", 1 AS "__cg_arm", row_number() OVER (ORDER BY w2.__cg_w2_o0 DESC NULLS FIRST) AS "__cg_row" FROM with_w2 AS w2"#,
+            r#"ORDER BY w3.__cg_arm ASC, w3.__cg_row ASC"#,
+        ],
+    );
+    // An ordered arm with no SKIP / LIMIT needs no ORDER BY in its CTE.
+    let got = squash(&sql(
+        "RETURN 1 AS n UNION ALL MATCH (u:User) RETURN u.user_id AS n ORDER BY n",
+    ));
+    assert!(
+        got.contains(r#"with_w2 AS ( SELECT v1.user_id AS "__cg_w2_c0", v1.user_id AS "__cg_w2_o0" FROM test_integration.users_test AS v1 )"#),
+        "{got}"
+    );
+    // UNION has no order: the arms export no sort key.
+    let got = squash(&sql(
+        "RETURN 1 AS n UNION MATCH (u:User) RETURN u.user_id AS n ORDER BY n LIMIT 1",
+    ));
+    assert!(
+        got.contains(r#"with_w2 AS ( SELECT v1.user_id AS "__cg_w2_c0" FROM test_integration.users_test AS v1 ORDER BY v1.user_id ASC LIMIT 1)"#)
+            && !got.contains("__cg_arm"),
+        "{got}"
+    );
+}
+
+/// Nodes and relationships keep their columns (one label or type in every
+/// arm), and the result shape is the first arm's.
+#[test]
+fn a_union_of_elements() {
+    let (sql, shape) = shaped(
+        "MATCH (a:User) RETURN a, a.name AS n UNION MATCH (b:User)-[:FOLLOWS]->(:User) \
+         RETURN b.name AS n, b AS a",
+        &social(),
+    );
+    assert_eq!(
+        kinds(&shape),
+        vec![column("a", user()), column("n", ResultKind::Value)]
+    );
+    assert!(
+        sql.contains(r#"SELECT any(w3.__cg_c0) AS "a.age","#)
+            // The node's columns keep their types; the value is any type.
+            && sql.contains(r#"SELECT w1.__cg_w1_c0 AS "__cg_c0","#)
+            && sql.contains(r#"CAST(w2.__cg_w2_c8, 'Dynamic') AS "__cg_c8", w2.__cg_w2_k0 AS "__cg_k0" FROM with_w2 AS w2"#),
+        "{sql}"
+    );
+    let (_, shape) = shaped(
+        "MATCH (:T)-[c:C]->(:T) RETURN c UNION ALL MATCH (:T)-[c:C]->(:T) RETURN c",
+        &shapes_schema(),
+    );
+    assert_eq!(
+        shape[0].columns[0],
+        ("from_id_1".to_string(), "c.from_id_1".to_string())
+    );
+}
+
+/// A map literal's entries are in key order: maps of the same entries are
+/// equal (DISTINCT, grouping, UNION), whatever order they were written in.
+#[test]
+fn a_map_literal_is_in_key_order() {
+    has(
+        "RETURN {b: 2, a: 1} AS m",
+        &["map('a', toString(1), 'b', toString(2)) AS \"m\""],
+    );
+}
+
+/// Every arm's RETURN reads the properties of the elements it returns whole
+/// (here from an OPTIONAL MATCH's CTE).
+#[test]
+fn a_union_arm_reads_what_it_returns() {
+    has(
+        "MATCH (u:User) OPTIONAL MATCH (u)-[:FOLLOWS]->(f:User) RETURN f AS x \
+         UNION MATCH (x:User) RETURN x",
+        &[r#"o1.p2_v2_name AS "__cg_w2_c5""#],
+    );
+}
+
+#[test]
+fn a_union_of_columns_read_differently_is_not_lowered() {
+    not_lowered(
+        "MATCH (a:User) RETURN a AS x UNION MATCH (p:Post) RETURN p AS x",
+        "UNION column `x` of a different kind or label in another arm",
+    );
+    not_lowered(
+        "MATCH (a:User) RETURN a AS x UNION ALL RETURN 1 AS x",
+        "UNION column `x` of a different kind or label in another arm",
+    );
+    not_lowered(
+        "MATCH (a:User) RETURN id(a) AS x UNION ALL MATCH (p:Post) RETURN id(p) AS x",
+        "UNION column `x` of a different kind or label in another arm",
+    );
+}
+
+/// UNION groups by each returned element's identity too: rows equal in
+/// every returned column can be different relationships (the `edge_id` is
+/// not a property).
+#[test]
+fn a_union_keeps_elements_apart_by_identity() {
+    let (sql, _) = shaped(
+        "MATCH (:U)-[k:K]->(:U) RETURN k, 1 AS one UNION MATCH (:U)-[k:K]->(:U) RETURN k, 1 AS one",
+        &shapes_schema(),
+    );
+    assert!(
+        sql.contains(r#"v1.weight AS "__cg_w1_c2", 1 AS "__cg_w1_c3", v1.kid AS "__cg_w1_k0" FROM"#)
+            && sql.contains(r#"w2.__cg_w2_k0 AS "__cg_k0" FROM with_w2 AS w2"#)
+            // Grouped by every column's key and the identity.
+            && sql.contains(r#"SELECT any(w3.__cg_c0) AS "k.from_id","#)
+            && sql.contains(r#"GROUP BY tuple(multiIf(dynamicType(CAST(w3.__cg_c0, "#)
+            && sql.ends_with(r#"toString(w3.__cg_c3))), w3.__cg_k0"#),
+        "{sql}"
+    );
+    // A relationship of several types is a graph value, whose `elementId`
+    // is its ends': its identity is exported too.
+    let (sql, _) = shaped(
+        "MATCH (:User)-[r:FOLLOWS|LIKED]->() RETURN r \
+         UNION MATCH (:User)-[r:LIKED|FOLLOWS]->() WHERE r.follow_date IS NULL RETURN r",
+        &social(),
+    );
+    assert!(
+        sql.contains(r#"v1.__cg_rid_0 AS "__cg_w3_k3""#)
+            && sql.ends_with(
+                "toString(w7.__cg_c0))), w7.__cg_k0, w7.__cg_k1, w7.__cg_k2, w7.__cg_k3"
+            ),
+        "{sql}"
+    );
+    // UNION ALL needs no identity.
+    let (sql, _) = shaped(
+        "MATCH (:U)-[k:K]->(:U) RETURN k UNION ALL MATCH (:U)-[k:K]->(:U) RETURN k",
+        &shapes_schema(),
+    );
+    assert!(!sql.contains("__cg_k0"), "{sql}");
+}
+
+#[test]
+fn databricks_union_is_not_lowered() {
+    use crate::server::query_context::{set_current_schema, with_query_context_sync, QueryContext};
+    let ctx = QueryContext {
+        dialect: crate::sql_generator::SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let got = with_query_context_sync(ctx, || {
+        set_current_schema(std::sync::Arc::new(social()));
+        translate_bound_plan(
+            "RETURN 1 AS x UNION RETURN 2 AS x",
+            &social(),
+            &ReadOptions::default(),
+        )
+        .map(|t| t.sql)
+    });
+    assert!(
+        matches!(&got, Err(e) if e.contains("UNION in this SQL dialect")),
+        "{got:?}"
+    );
+}

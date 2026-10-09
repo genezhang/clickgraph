@@ -401,6 +401,11 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// EXPLICIT_SCOPE §4.4, S7c), or `None` when the lowering does not emit
     /// it (the query stays on the legacy path).
     fn unwind(&self) -> Option<Unwind>;
+
+    /// How the dialect spells a Cypher UNION's columns
+    /// (`bound_plan::lower::union`, EXPLICIT_SCOPE §4.4, S7d), or `None` when
+    /// the lowering does not emit it (the query stays on the legacy path).
+    fn cypher_union(&self) -> Option<CypherUnion>;
 }
 
 /// The dialect's parts of a graph value ([`FunctionMapper::graph_values`]).
@@ -461,6 +466,24 @@ pub(crate) struct Unwind {
     pub is_null: fn(&str) -> String,
     /// The list of the value `{0}`, of nothing when it is NULL.
     pub value_list: fn(&str) -> String,
+}
+
+/// The dialect's parts of a Cypher UNION ([`FunctionMapper::cypher_union`]).
+/// The arms are one SQL `UNION ALL`; a column of values may hold values of
+/// different types in different arms (or rows), as in Cypher, so it must not
+/// be converted to one type: ClickHouse's common type of `Bool` and an
+/// integer turns `5` into `true`, or `true` into `1`.
+pub(crate) struct CypherUnion {
+    /// The value `{0}` in a column that keeps every value's own type.
+    pub any_type: fn(&str) -> String,
+    /// A key of the value `{0}` (of either kind of column) that is equal
+    /// for two values exactly when Cypher's DISTINCT takes them as equal:
+    /// `1` and `1.0` are, `1` and `true` or `'1'` are not.
+    pub distinct_key: fn(&str) -> String,
+    /// An aggregate: any one of a group's values of `{0}`.
+    pub any: fn(&str) -> String,
+    /// The number of a row in the order of the keys `{0}` (`ORDER BY` text).
+    pub row_number: fn(&str) -> String,
 }
 
 /// The dialect's parts of a shortest-path search

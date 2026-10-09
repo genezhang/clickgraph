@@ -51,6 +51,8 @@
 //!   LIMIT;
 //! * UNWIND of a list of values (`unwind.rs`, S7c): like a SKIP / LIMIT it
 //!   ends a segment, whose CTE repeats each row per element;
+//! * UNION and UNION ALL (`union.rs`, S7d): each arm lowered on its own to a
+//!   CTE, read through one `UNION ALL`;
 //! * a final RETURN of values, whole nodes and relationships (`n`, `n.*`)
 //!   and `id(n)`, with the result shape that Bolt, the HTTP graph output and
 //!   embedded `query_graph` read (§4.13, [`ResultColumn`]).
@@ -63,6 +65,7 @@ mod expr;
 mod path;
 #[cfg(test)]
 mod tests;
+mod union;
 mod unwind;
 mod value;
 
@@ -165,35 +168,102 @@ pub fn lower_statement(
     schema: &GraphSchema,
     options: &LowerOptions,
 ) -> Result<Lowered, LowerError> {
-    let BoundOp::Project { input, projection } = &stmt.plan else {
-        return unsupported("a statement that does not end in RETURN (UNION: S7)");
-    };
-    let mut l = Lowerer {
+    let demand = demand(stmt);
+    if let BoundOp::Union {
+        arms,
+        arm_columns,
+        all,
+    } = &stmt.plan
+    {
+        return union::lower(
+            &Query {
+                stmt,
+                schema,
+                options,
+                demand: &demand,
+            },
+            arms,
+            arm_columns,
+            *all,
+        );
+    }
+    let mut ctes = Vec::new();
+    let arm = Query {
+        stmt,
         schema,
-        bindings: &stmt.bindings,
         options,
-        demand: demand(stmt),
-        ctes: Vec::new(),
-        scans: HashMap::new(),
-        values: HashMap::new(),
-        emitted: Vec::new(),
-        from: None,
-        joins: Vec::new(),
-        pending: Vec::new(),
-        filters: Vec::new(),
-        empty: false,
-        order: RowOrder::Unordered,
-        elided: HashMap::new(),
-        paths: HashMap::new(),
-        graph_values: HashMap::new(),
-        kinds: HashMap::new(),
-        one_row: true,
-    };
-    l.relation(input)?;
-    l.finish_relation();
-    let (mut plan, shape) = l.project(projection)?;
-    plan.ctes = CteItems(std::mem::take(&mut l.ctes));
-    Ok(Lowered { plan, shape })
+        demand: &demand,
+    }
+    .lower(&stmt.plan, &mut ctes)?;
+    let mut plan = arm.plan;
+    plan.ctes = CteItems(ctes);
+    Ok(Lowered {
+        plan,
+        shape: arm.shape,
+    })
+}
+
+/// What lowering one query (the statement, or an arm of a UNION) reads.
+struct Query<'a> {
+    stmt: &'a BoundStatement,
+    schema: &'a GraphSchema,
+    options: &'a LowerOptions,
+    demand: &'a HashMap<VarId, BTreeSet<String>>,
+}
+
+/// A lowered query ending in RETURN ([`Query::lower`]).
+struct LoweredQuery {
+    /// The final SELECT, without CTEs.
+    plan: RenderPlan,
+    shape: Vec<ResultColumn>,
+    /// The identity of each node, relationship or graph value the RETURN
+    /// returns, by item name: what a DISTINCT keeps it apart by (a
+    /// relationship's graph value is not: its `elementId` is its ends').
+    identities: Vec<(String, Vec<RenderExpr>)>,
+}
+
+impl Query<'_> {
+    /// Lower `op`, a query ending in RETURN, appending its CTEs to `ctes`
+    /// (whose names it continues, so the CTEs of several queries never
+    /// share one).
+    fn lower(&self, op: &BoundOp, ctes: &mut Vec<Cte>) -> Result<LoweredQuery, LowerError> {
+        let BoundOp::Project { input, projection } = op else {
+            return unsupported("internal: a query that does not end in RETURN");
+        };
+        let mut l = Lowerer {
+            schema: self.schema,
+            bindings: &self.stmt.bindings,
+            options: self.options,
+            demand: self.demand.clone(),
+            ctes: std::mem::take(ctes),
+            scans: HashMap::new(),
+            values: HashMap::new(),
+            emitted: Vec::new(),
+            from: None,
+            joins: Vec::new(),
+            pending: Vec::new(),
+            filters: Vec::new(),
+            empty: false,
+            order: RowOrder::Unordered,
+            elided: HashMap::new(),
+            paths: HashMap::new(),
+            graph_values: HashMap::new(),
+            kinds: HashMap::new(),
+            one_row: true,
+            identities: Vec::new(),
+        };
+        let lowered = l
+            .relation(input)
+            .map(|()| l.finish_relation())
+            .and_then(|()| l.project(projection));
+        *ctes = std::mem::take(&mut l.ctes);
+        let (plan, shape) = lowered?;
+        Ok(LoweredQuery {
+            plan,
+            shape,
+            identities: l.identities,
+        })
+    }
 }
 
 /// How a pattern element is read.
@@ -460,6 +530,9 @@ struct Lowerer<'s> {
     /// The rows so far are at most one (no MATCH yet, or an aggregation with
     /// no grouping item since).
     one_row: bool,
+    /// The identity of each node, relationship or graph value the final
+    /// RETURN returns, by item name ([`LoweredQuery::identities`]).
+    identities: Vec<(String, Vec<RenderExpr>)>,
 }
 
 /// The elements of a path variable, in path order.
@@ -4654,7 +4727,7 @@ impl<'s> Lowerer<'s> {
     /// A node or relationship item of the final RETURN: its columns, named
     /// `name.<…>` as on the legacy pipeline. Returns what the item is.
     fn return_element(
-        &self,
+        &mut self,
         src: VarId,
         name: &str,
         aggregating: bool,
@@ -4675,6 +4748,7 @@ impl<'s> Lowerer<'s> {
         if let Some((v, props)) = union {
             let column = body.column(v.value, name);
             body.determined.push(column.clone());
+            self.identities.push((name.to_string(), v.keys.clone()));
             let mut keys = v.keys;
             for prop in props {
                 keys.push(self.property(src, &prop)?);
@@ -4702,6 +4776,7 @@ impl<'s> Lowerer<'s> {
         let Some(identity) = self.identity(src)? else {
             return unsupported(format!("internal: {src} has columns but no identity"));
         };
+        self.identities.push((name.to_string(), identity.clone()));
         let unreturned: Vec<RenderExpr> = identity
             .iter()
             .filter(|i| !columns.iter().any(|(_, e)| e == *i))
@@ -5597,9 +5672,16 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
     let mut add = |v: VarId, prop: &str| {
         demand.entry(v).or_default().insert(prop.to_string());
     };
-    // A node or relationship the final RETURN returns whole: every property
-    // (`v.*` is a property ref).
-    if let BoundOp::Project { projection, .. } = &stmt.plan {
+    // A node or relationship a final RETURN (the statement's, or a UNION
+    // arm's) returns whole: every property (`v.*` is a property ref).
+    let finals = match &stmt.plan {
+        BoundOp::Union { arms, .. } => arms.iter().collect(),
+        op => vec![op],
+    };
+    for op in finals {
+        let BoundOp::Project { projection, .. } = op else {
+            continue;
+        };
         for it in projection.items.iter().filter(|i| !i.aggregate) {
             if let LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(n)) =
                 &it.expr
