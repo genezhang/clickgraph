@@ -2576,10 +2576,13 @@ graph_schema:
         "concat('T:N:N:', toString(tuple(e.f, e.t))) AS \"__cg_key\" FROM db.e AS e UNION ALL",
         "FROM db.e AS e WHERE e.f <> e.t",
         "concat('T:Z:N:', toString(tuple(e.f, e.t))) AS \"__cg_key\" FROM db.em AS e UNION ALL",
-        "JOIN v1_rels AS rel ON rel.__cg_start_label = vp.end_label AND rel.__cg_start_0 = vp.end_id \
-         JOIN vlp_v1_nodes AS end_node ON end_node.__cg_label = rel.__cg_end_label \
-         AND end_node.__cg_id_0 = rel.__cg_end_0 \
-         WHERE vp.hop_count < 2 AND NOT has(vp.path_edges, rel.__cg_key)",
+        // The node union streamed on the left, the step on the right.
+        "FROM vlp_v1_nodes AS end_node JOIN ( SELECT vp.start_label AS start_label",
+        "rel.__cg_key AS rel_key, rel.__cg_end_label AS rel_end_label, \
+         rel.__cg_end_0 AS rel_end_id FROM v1_rels AS rel JOIN vlp_v1_trails AS vp \
+         ON rel.__cg_start_label = vp.end_label AND rel.__cg_start_0 = vp.end_id \
+         WHERE vp.hop_count < 2 AND NOT has(vp.path_edges, rel.__cg_key) ) AS hop \
+         ON end_node.__cg_label = hop.rel_end_label AND end_node.__cg_id_0 = hop.rel_end_id",
         "WHERE hop_count >= 1",
         "v1.end_label = 'Z'",
     ] {
@@ -3182,7 +3185,8 @@ fn a_variable_length_relationship_of_several_types_walks_their_union() {
         "e.liked_on AS \"p2_v1_since__cg1\"",
         // Values: each node's and relationship's own.
         "[start_node.__cg_value] AS path_node_values",
-        "arrayConcat(vp.path_rel_values, [rel.__cg_value]) AS path_rel_values",
+        "arrayConcat(hop.path_rel_values, [hop.rel_value]) AS path_rel_values",
+        "rel.__cg_value AS rel_value",
         "FROM db.likes_co AS e FINAL",
         "FROM db.likes(tenant = 't1') AS e",
         "arraySlice(v1.path_node_values, 2)",
