@@ -91,7 +91,7 @@ def _id_cols(spec):
 NODE_KEYS = {"label", "database", "table", "node_id", "property_mappings", "property_types", "filter"}
 EDGE_KEYS = {
     "type", "database", "table", "from_id", "to_id", "edge_id", "from_node", "to_node",
-    "property_mappings", "property_types",
+    "property_mappings", "property_types", "filter",
     # Not a schema field (serde ignores it): documents that the edge lives in
     # a node table (an FK edge). Loading it row by row is the same rule.
     "is_denormalized",
@@ -142,7 +142,9 @@ def build_graph(gs, ch):
         fc, tc = _id_cols(e["from_id"]), _id_cols(e["to_id"])
         pm = e.get("property_mappings") or {}
         cols = sorted(set(fc) | set(tc) | set(pm.values()))
-        rows = ch(f"SELECT {', '.join(f'`{c}`' for c in cols)} FROM `{e['database']}`.`{e['table']}`")
+        # A schema `filter:`: the type's relationships are the rows it holds of.
+        where = f" WHERE {e['filter']}" if e.get("filter") else ""
+        rows = ch(f"SELECT {', '.join(f'`{c}`' for c in cols)} FROM `{e['database']}`.`{e['table']}`{where}")
         dangling = 0
         for r in rows:
             fk, tk = tuple(r[c] for c in fc), tuple(r[c] for c in tc)

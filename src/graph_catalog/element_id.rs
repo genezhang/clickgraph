@@ -227,7 +227,16 @@ pub fn generate_relationship_element_id(rel_type: &str, from_id: &str, to_id: &s
 /// ([`generate_relationship_element_id`]): before the `from` id, between the
 /// two, after the `to` id.
 pub fn relationship_element_id_affixes(rel_type: &str) -> (String, &'static str, &'static str) {
-    (format!("{rel_type}:"), "->", "-")
+    let (after_type, between, suffix) = relationship_element_id_separators();
+    (format!("{rel_type}{after_type}"), between, suffix)
+}
+
+/// The text after a relationship's type, between its endpoint ids and after
+/// them in its element id ([`generate_relationship_element_id`]): the bound
+/// plan spells the element id of a relationship whose type is a column (one
+/// of several possible types) from them.
+pub fn relationship_element_id_separators() -> (&'static str, &'static str, &'static str) {
+    (":", "->", "-")
 }
 
 /// Parse a Neo4j relationship elementId back into its components.

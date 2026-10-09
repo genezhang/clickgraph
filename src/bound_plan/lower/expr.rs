@@ -18,7 +18,10 @@
 //!
 //! A node of several possible labels (`Scan::Labels`) is its label and id:
 //! `n:L` and `labels(n)` read its label column, and it equals a node of the
-//! same label and id.
+//! same label and id. A relationship of several possible types or label
+//! pairs (`Scan::Rels`) is its definition and identity: `type(r)` and `r:T`
+//! read its type column, and it equals a relationship of the same definition
+//! and identity.
 
 use std::collections::HashMap;
 
@@ -33,7 +36,6 @@ use crate::render_plan::render_expr::{
 };
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::function_mapper::current_function_mapper;
-use crate::utils::cte_column_naming::cte_column_name;
 
 use super::{parse_var, unsupported, At, LowerError, Lowerer, Scan};
 use crate::bound_plan::types::{BindingKind, BindingSource, VarId};
@@ -48,8 +50,21 @@ impl Lowerer<'_> {
             Some(Scan::Labels { arms, of, at, .. }) => {
                 return match at {
                     At::Table(alias) if self.label_union_props(*of, arms).contains(prop) => {
-                        let column = super::col_at(alias, &cte_column_name(&of.name(), prop));
-                        self.one_type(column, self.label_union_mixed(prop, arms))
+                        let defs = self.label_value_definitions(prop, arms);
+                        self.one_type(alias, *of, prop, &defs)
+                    }
+                    At::Table(_) => unsupported(format!("internal: {v}.{prop} is not carried")),
+                    At::Exported { props, .. } => match props.get(prop) {
+                        Some(e) => Ok(e.clone()),
+                        None => unsupported(format!("internal: {v}.{prop} is not exported")),
+                    },
+                };
+            }
+            Some(Scan::Rels { arms, of, at, .. }) => {
+                return match at {
+                    At::Table(alias) if self.rel_union_props(*of, arms).contains(prop) => {
+                        let defs = self.rel_value_definitions(prop, arms);
+                        self.one_type(alias, *of, prop, &defs)
                     }
                     At::Table(_) => unsupported(format!("internal: {v}.{prop} is not carried")),
                     At::Exported { props, .. } => match props.get(prop) {
@@ -102,16 +117,27 @@ impl Lowerer<'_> {
         }))
     }
 
-    /// A column of a union whose arms are different tables, when several
-    /// arms have values (`mixed`): of one type, or an error
-    /// (`FunctionMapper::one_type_guard`).
-    fn one_type(&self, column: RenderExpr, mixed: bool) -> Result<RenderExpr, LowerError> {
-        if !mixed {
-            return Ok(column);
+    /// Property `prop` of union element `of` read under `alias`: its column,
+    /// or, with values of several definitions (`defs`), their columns as one
+    /// value of one type, or an error (`FunctionMapper::one_type_guard`).
+    fn one_type(
+        &self,
+        alias: &str,
+        of: VarId,
+        prop: &str,
+        defs: &[Option<usize>],
+    ) -> Result<RenderExpr, LowerError> {
+        let columns = super::union_property_columns(of, prop, super::definitions_with_value(defs));
+        if let [one] = columns.as_slice() {
+            return Ok(super::col_at(alias, one));
         }
-        match current_function_mapper().one_type_guard(&render_expr_to_sql_plain(&column)) {
+        let sql: Vec<String> = columns
+            .iter()
+            .map(|c| render_expr_to_sql_plain(&super::col_at(alias, c)))
+            .collect();
+        match current_function_mapper().one_type_guard(&sql) {
             Some(sql) => Ok(RenderExpr::Raw(sql)),
-            None => unsupported("a property several labels have, in this SQL dialect"),
+            None => unsupported("a property several labels or types have, in this SQL dialect"),
         }
     }
 
@@ -192,6 +218,17 @@ impl Lowerer<'_> {
                         }));
                     }
                     Some(Scan::Labels { .. }) => false,
+                    // NULL where an OPTIONAL MATCH left it NULL, as Cypher.
+                    Some(Scan::Rels { arms, .. }) if arms.iter().any(|a| a.rel_type == *label) => {
+                        return Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: lx::Operator::Equal,
+                            operands: vec![
+                                self.physical(v, super::REL_TYPE)?,
+                                RenderExpr::Literal(Literal::String(label.clone())),
+                            ],
+                        }));
+                    }
+                    Some(Scan::Rels { .. }) => false,
                     Some(Scan::Rel { rel_type, .. }) => rel_type == label,
                     Some(Scan::Impossible) => return Ok(RenderExpr::Literal(Literal::Null)),
                     Some(Scan::Path { .. }) | None => {
@@ -264,10 +301,15 @@ impl Lowerer<'_> {
                 (O::Equal | O::NotEqual, 2, [a, b]) => {
                     self.identity_comparison(*a, *b, op.operator == O::Equal)
                 }
+                // NULL exactly where its first identity column is.
                 (O::IsNull | O::IsNotNull, 1, [a]) => {
+                    let first = match self.identity(*a)? {
+                        Some(mut cols) => cols.remove(0),
+                        None => RenderExpr::Literal(Literal::Null),
+                    };
                     Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
                         operator: op.operator,
-                        operands: vec![self.identity_value(*a)?],
+                        operands: vec![first],
                     }))
                 }
                 _ => unsupported("a node or relationship as an operand (needs its value)"),
@@ -298,16 +340,20 @@ impl Lowerer<'_> {
             }
         }
         let same_kind = match (self.scans.get(&a), self.scans.get(&b)) {
+            // An element that matches nothing: the relation has no rows.
+            (Some(Scan::Impossible), _) | (_, Some(Scan::Impossible)) => {
+                return Ok(RenderExpr::Literal(Literal::Null))
+            }
+            (Some(Scan::Rels { .. }), Some(Scan::Rel { .. } | Scan::Rels { .. }))
+            | (Some(Scan::Rel { .. }), Some(Scan::Rels { .. })) => {
+                return self.defined_identity_comparison(a, b, equal)
+            }
             (Some(Scan::Node { label: x, .. }), Some(Scan::Node { label: y, .. })) => x == y,
             // One type can have several edge definitions (one per endpoint
             // label pair, each its own table): only rows of the same
             // definition can be the same relationship.
             (Some(Scan::Rel { schema: x, .. }), Some(Scan::Rel { schema: y, .. })) => {
                 std::ptr::eq(*x, *y)
-            }
-            // An element that matches nothing: the relation has no rows.
-            (Some(Scan::Impossible), _) | (_, Some(Scan::Impossible)) => {
-                return Ok(RenderExpr::Literal(Literal::Null))
             }
             _ => false,
         };
@@ -336,6 +382,41 @@ impl Lowerer<'_> {
         } else {
             super::or_all(per_column)
         })
+    }
+
+    /// `a = b` / `a <> b` between relationships, one of several possible
+    /// types or label pairs: equal when they have the same definition (type,
+    /// labels of the stored ends) and identity. Past a definition's own arity
+    /// a union's identity is NULL in both, so it compares NULL-safely.
+    fn defined_identity_comparison(
+        &self,
+        a: VarId,
+        b: VarId,
+        equal: bool,
+    ) -> Result<RenderExpr, LowerError> {
+        let (ia, ib) = (self.definition_identity(a)?, self.definition_identity(b)?);
+        let same: Vec<RenderExpr> = ia
+            .into_iter()
+            .zip(ib)
+            .enumerate()
+            .map(|(i, (x, y))| {
+                RenderExpr::OperatorApplicationExp(if i < 3 {
+                    super::eq(x, y)
+                } else {
+                    super::not_distinct(x, y)
+                })
+            })
+            .collect();
+        let same = super::and_all(same).expect("a definition has columns");
+        let value = if equal {
+            same
+        } else {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: lx::Operator::Not,
+                operands: vec![same],
+            })
+        };
+        self.unless_null(&[a, b], value)
     }
 
     /// `a = b` / `a <> b` between nodes, one of several possible labels:
@@ -479,7 +560,7 @@ impl Lowerer<'_> {
         let mut terms = Vec::new();
         for r in &elements.rels {
             match self.scans.get(r) {
-                Some(Scan::Rel { .. }) => fixed += 1,
+                Some(Scan::Rel { .. } | Scan::Rels { .. }) => fixed += 1,
                 Some(Scan::Path { .. }) => terms.push(self.physical(*r, "hop_count")?),
                 // The relation has no rows (or the OPTIONAL MATCH no match).
                 Some(Scan::Impossible) => return Ok(RenderExpr::Literal(Literal::Null)),
@@ -553,6 +634,8 @@ impl Lowerer<'_> {
                 ("type", Some(Scan::Rel { rel_type, .. })) => {
                     self.unless_null(&[v], RenderExpr::Literal(Literal::String(rel_type.clone())))
                 }
+                // NULL where an OPTIONAL MATCH left it NULL.
+                ("type", Some(Scan::Rels { .. })) => self.physical(v, super::REL_TYPE),
                 // NULL for an unmatched node, and a ClickHouse array cannot
                 // be NULL.
                 ("labels", Some(Scan::Node { .. } | Scan::Labels { .. }))

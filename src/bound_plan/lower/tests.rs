@@ -491,25 +491,17 @@ fn what_is_not_lowered_yet() {
         "MATCH (a:User)-[:LIKED*1..2]->(b) RETURN count(*)",
         "different labels",
     );
-    not_lowered(
-        "MATCH ()-[r:FOLLOWS]->() WITH r MATCH (a)-[r]-(b) RETURN count(*)",
-        "matched undirected",
-    );
     not_lowered("MATCH (a:User) RETURN collect(a) AS l", "as a value");
     not_lowered("MATCH (a:User) WHERE id(a) = 1 RETURN a.name", "id()");
-    not_lowered(
-        "MATCH (a)-[r]->(b) RETURN count(*)",
-        "several possible types (S7b2)",
-    );
-    not_lowered(
-        "MATCH (n) WITH n MATCH (n)-[:LIKED]-(m) RETURN count(*)",
-        "joins in several ways (S7b2)",
-    );
     not_lowered(
         "MATCH (n) WITH n MATCH (n)-[:FOLLOWS*1..2]->(m) RETURN count(*)",
         "several possible labels (S7b3)",
     );
-    not_lowered("MATCH (n) RETURN n.*", "`n.*` of a node of several");
+    not_lowered("MATCH (n) RETURN n.*", "`v.*` of an element of several");
+    not_lowered(
+        "MATCH (:User)-[r:FOLLOWS|LIKED]->() RETURN r.*",
+        "`v.*` of an element of several",
+    );
     not_lowered("MATCH (n) RETURN id(n)", "id()");
     not_lowered(
         "MATCH (a:User) RETURN [x IN [1, 2] | x * 2] AS l",
@@ -2686,22 +2678,26 @@ fn a_property_no_label_declares_follows_the_undeclared_property_rule() {
     has(
         "MATCH (n) RETURN n.nickname",
         &[
-            r#"e.post_id AS "__cg_id_0", e.nickname AS "p2_v0_nickname" FROM test_integration.posts_test"#,
-            r#"e.user_id AS "__cg_id_0", e.nickname AS "p2_v0_nickname" FROM test_integration.users_test"#,
+            r#"e.post_id AS "__cg_id_0", e.nickname AS "p2_v0_nickname__cg0", NULL AS "p2_v0_nickname__cg1" FROM test_integration.posts_test"#,
+            r#"e.user_id AS "__cg_id_0", NULL AS "p2_v0_nickname__cg0", e.nickname AS "p2_v0_nickname__cg1" FROM test_integration.users_test"#,
         ],
     );
     has_compat(
         "MATCH (n) RETURN n.nickname",
         &[r#"e.post_id AS "__cg_id_0", NULL AS "p2_v0_nickname""#],
     );
-    // Values of two tables: one type, or an error (review finding: with no
-    // common type ClickHouse makes a `Variant`, whose NULLs `count` counts).
+    // Values of two tables: one column each, read as one value of one type
+    // or an error (review findings: with no common type ClickHouse makes a
+    // `Variant`, whose NULLs `count` counts; a common type converts `Bool`
+    // to `UInt8`, `Float32` to `Float64`, `Date` to `DateTime`).
     has(
         "MATCH (n) RETURN count(n.nickname)",
         &[
-            "count(CAST(v0.p2_v0_nickname, if(toTypeName(v0.p2_v0_nickname) LIKE 'Variant(%', \
-           'ClickGraph_property_has_different_types_on_different_labels', \
-           toTypeName(v0.p2_v0_nickname))))",
+            "count(CAST(coalesce(v0.p2_v0_nickname__cg0, v0.p2_v0_nickname__cg1), \
+             if(replaceRegexpOne(replaceRegexpOne(replaceRegexpAll(toTypeName(v0.p2_v0_nickname__cg0), ",
+            "toTypeName(coalesce(v0.p2_v0_nickname__cg0, v0.p2_v0_nickname__cg1)) NOT LIKE 'Variant(%', \
+             toTypeName(coalesce(v0.p2_v0_nickname__cg0, v0.p2_v0_nickname__cg1)), \
+             'ClickGraph_property_has_different_types_on_different_labels_or_types')))",
         ],
     );
     // A property one label has is that label's column type: unguarded.
@@ -2825,8 +2821,8 @@ fn a_node_of_several_labels_reads_each_table_with_its_options() {
             .sql,
     );
     for part in [
-        r#"SELECT 'A' AS "__cg_label", e.id AS "__cg_id_0", e.a_name AS "p2_v0_name" FROM db.a(tenant = 't1') AS e WHERE ((e.kind = 'x'))"#,
-        r#"SELECT 'B' AS "__cg_label", e.id AS "__cg_id_0", e.b_name AS "p2_v0_name" FROM db.b AS e FINAL"#,
+        r#"SELECT 'A' AS "__cg_label", e.id AS "__cg_id_0", e.a_name AS "p2_v0_name__cg0", NULL AS "p2_v0_name__cg1" FROM db.a(tenant = 't1') AS e WHERE ((e.kind = 'x'))"#,
+        r#"SELECT 'B' AS "__cg_label", e.id AS "__cg_id_0", NULL AS "p2_v0_name__cg0", e.b_name AS "p2_v0_name__cg1" FROM db.b AS e FINAL"#,
     ] {
         assert!(sql.contains(part), "missing `{part}` in\n{sql}");
     }
@@ -2863,4 +2859,254 @@ graph_schema:
         Err(e) if e.contains("different arities (S8)") => {}
         other => panic!("expected not lowered, got {:?}", other.map(|t| t.sql)),
     }
+}
+
+/// Relationship types of several definitions: `LIKES` to two labels (one
+/// with an `edge_id`), `MENTIONS` both ways between two labels, with table
+/// options.
+fn rels_schema() -> GraphSchema {
+    GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_rels
+graph_schema:
+  nodes:
+    - label: Person
+      database: db
+      table: people
+      node_id: id
+      property_mappings: { id: id, name: name }
+    - label: Post
+      database: db
+      table: posts
+      node_id: id
+      property_mappings: { id: id, title: title }
+    - label: Company
+      database: db
+      table: companies
+      node_id: id
+      property_mappings: { id: id, name: name }
+  edges:
+    - type: KNOWS
+      database: db
+      table: knows
+      from_id: a
+      to_id: b
+      from_node: Person
+      to_node: Person
+      property_mappings: { since: since, w: w }
+    - type: LIKES
+      database: db
+      table: likes
+      edge_id: eid
+      from_id: pid
+      to_id: post
+      from_node: Person
+      to_node: Post
+      view_parameters: [tenant]
+      property_mappings: { since: since }
+    - type: LIKES
+      database: db
+      table: likes_co
+      from_id: pid
+      to_id: cid
+      from_node: Person
+      to_node: Company
+      use_final: true
+      property_mappings: { since: liked_on }
+    - type: MENTIONS
+      database: db
+      table: pm
+      from_id: post
+      to_id: person
+      from_node: Post
+      to_node: Person
+      filter: "visible = 1"
+      property_mappings: {}
+    - type: MENTIONS
+      database: db
+      table: mp
+      from_id: person
+      to_id: post
+      from_node: Person
+      to_node: Post
+      property_mappings: {}
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap()
+}
+
+fn rels_sql(q: &str) -> String {
+    let options = ReadOptions {
+        view_parameter_values: Some(HashMap::from([("tenant".to_string(), "t1".to_string())])),
+        ..ReadOptions::default()
+    };
+    squash(
+        &translate_bound_plan(q, &rels_schema(), &options)
+            .unwrap_or_else(|e| panic!("{q}: {e}"))
+            .sql,
+    )
+}
+
+fn rels_has(q: &str, parts: &[&str]) {
+    let got = rels_sql(q);
+    for p in parts {
+        assert!(got.contains(p), "{q}\nmissing `{p}` in\n{got}");
+    }
+}
+
+#[test]
+fn a_relationship_of_several_types_is_one_relation_of_their_definitions() {
+    // One arm per definition, each its table with its options; the identity
+    // of the narrower definition is NULL-padded; the rows carry their type
+    // and the labels and ids of the nodes they leave and enter.
+    rels_has(
+        "MATCH (p:Person)-[r:KNOWS|LIKES]->(x) RETURN type(r) AS t, x.id AS i",
+        &[
+            r#"SELECT 'KNOWS' AS "__cg_type", 'Person' AS "__cg_from_label", 'Person' AS "__cg_to_label", e.a AS "__cg_rid_0", e.b AS "__cg_rid_1", e.a AS "__cg_from_0", e.b AS "__cg_to_0", e.a AS "__cg_start_0", e.b AS "__cg_end_0", 'Person' AS "__cg_start_label", 'Person' AS "__cg_end_label" FROM db.knows AS e"#,
+            r#"SELECT 'LIKES' AS "__cg_type", 'Person' AS "__cg_from_label", 'Company' AS "__cg_to_label", e.pid AS "__cg_rid_0", e.cid AS "__cg_rid_1", e.pid AS "__cg_from_0", e.cid AS "__cg_to_0", e.pid AS "__cg_start_0", e.cid AS "__cg_end_0", 'Person' AS "__cg_start_label", 'Company' AS "__cg_end_label" FROM db.likes_co AS e FINAL"#,
+            r#"SELECT 'LIKES' AS "__cg_type", 'Person' AS "__cg_from_label", 'Post' AS "__cg_to_label", e.eid AS "__cg_rid_0", NULL AS "__cg_rid_1", e.pid AS "__cg_from_0", e.post AS "__cg_to_0", e.pid AS "__cg_start_0", e.post AS "__cg_end_0", 'Person' AS "__cg_start_label", 'Post' AS "__cg_end_label" FROM db.likes(tenant = 't1') AS e"#,
+            r#"SELECT v1.__cg_type AS "t""#,
+            // A node of several labels holds the label the row enters.
+            "FROM db.people AS v0 JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.id JOIN v2_labels AS v2 ON v1.__cg_end_label = v2.__cg_label AND v1.__cg_end_0 = v2.__cg_id_0",
+        ],
+    );
+}
+
+#[test]
+fn an_undirected_relationship_of_two_definitions_reads_each_its_way() {
+    // `pm` as stored, `mp` reversed: every row leaves the post. A definition
+    // between nodes of one label read both ways reads a self-loop once.
+    rels_has(
+        "MATCH (p:Post)-[r:MENTIONS]-(q:Person) RETURN count(*)",
+        &[
+            r#"e.post AS "__cg_start_0", e.person AS "__cg_end_0", 'Post' AS "__cg_start_label", 'Person' AS "__cg_end_label" FROM db.pm AS e WHERE ((e.visible = 1))"#,
+            r#"e.post AS "__cg_start_0", e.person AS "__cg_end_0", 'Post' AS "__cg_start_label", 'Person' AS "__cg_end_label" FROM db.mp AS e"#,
+        ],
+    );
+    let sql = rels_sql("MATCH (a:Person)-[r:KNOWS|MENTIONS]-(b) RETURN count(*)");
+    assert!(
+        sql.contains(r#"'Person' AS "__cg_end_label" FROM db.knows AS e WHERE e.a <> e.b"#),
+        "{sql}"
+    );
+    assert_eq!(sql.matches("WHERE e.a <> e.b").count(), 1, "{sql}");
+}
+
+#[test]
+fn a_property_of_several_types_reads_each_definitions_mapping() {
+    // Each definition's mapping; NULL where another type declares it; read
+    // through the one-type guard where several definitions have a value.
+    rels_has(
+        "MATCH (p:Person)-[r:KNOWS|LIKES]->(x) RETURN r.since AS s, r.w AS w",
+        &[
+            // `since` of three definitions: a column each, the two
+            // orientations of one sharing it.
+            r#"e.since AS "p2_v1_since__cg0", NULL AS "p2_v1_since__cg1", NULL AS "p2_v1_since__cg2", e.w AS "p2_v1_w" FROM db.knows"#,
+            r#"NULL AS "p2_v1_since__cg0", e.liked_on AS "p2_v1_since__cg1", NULL AS "p2_v1_since__cg2", NULL AS "p2_v1_w" FROM db.likes_co"#,
+            "CAST(coalesce(v1.p2_v1_since__cg0, v1.p2_v1_since__cg1, v1.p2_v1_since__cg2), if(",
+            r#"v1.p2_v1_w AS "w""#,
+        ],
+    );
+}
+
+#[test]
+fn relationships_of_several_types_are_equal_by_definition_and_identity() {
+    // Its definition, then its identity (NULL-safely: past a definition's
+    // own arity it is NULL); and relationships of one MATCH differ.
+    rels_has(
+        "MATCH (a:Person)-[r:KNOWS|LIKES]->(b), (c:Person)-[s:LIKES]->(d:Post) WHERE r = s RETURN count(*)",
+        &[
+            "(v1.__cg_type <> 'LIKES' OR v1.__cg_from_label <> 'Person' OR v1.__cg_to_label <> 'Post' OR v1.__cg_rid_0 <> v4.eid)",
+            "(v1.__cg_type = 'LIKES' AND v1.__cg_from_label = 'Person' AND v1.__cg_to_label = 'Post' AND (v1.__cg_rid_0 = v4.eid OR (v1.__cg_rid_0 IS NULL AND v4.eid IS NULL)))",
+        ],
+    );
+    // Of no definition in common: never the same.
+    let sql = rels_sql(
+        "MATCH (a:Person)-[r:KNOWS|LIKES]->(b), (c:Post)-[s:MENTIONS]->(d) RETURN count(*)",
+    );
+    assert!(!sql.contains("<> 'MENTIONS'"), "{sql}");
+}
+
+#[test]
+fn a_relationship_of_several_types_returned_whole_is_a_relationship_value() {
+    let (sql, shape) = shaped(
+        "MATCH (a:Person)-[r:KNOWS|LIKES]->(b) RETURN DISTINCT r",
+        &rels_schema(),
+    );
+    for part in [
+        "map('elementId', CAST(concat(v1.__cg_type, ':', toString(v1.__cg_from_0), '->', toString(v1.__cg_to_0), '-'), 'Dynamic')",
+        "'startNodeElementId', CAST(concat(v1.__cg_from_label, ':', toString(v1.__cg_from_0), '-'), 'Dynamic')",
+        "'type', CAST(v1.__cg_type, 'Dynamic')",
+        // Grouped by its definition, identity and properties.
+        "GROUP BY v1.__cg_type, v1.__cg_from_label, v1.__cg_to_label, v1.__cg_rid_0, v1.__cg_rid_1,",
+    ] {
+        assert!(sql.contains(part), "missing `{part}` in\n{sql}");
+    }
+    assert_eq!(
+        kinds(&shape),
+        vec![column("r", ResultKind::Graph(GraphType::Relationship))]
+    );
+}
+
+#[test]
+fn a_carried_relationship_of_several_types_ties_its_stored_ends() {
+    // Its stored ends' labels and ids: a node of one label holds the row's
+    // label, one of several equals it.
+    rels_has(
+        "MATCH (a)-[r]->(b) WITH r MATCH (x:Person)-[r]->(y) RETURN count(*)",
+        &[
+            r#"v1.__cg_from_0 AS "v3____cg_from_0", v1.__cg_to_0 AS "v3____cg_to_0""#,
+            "JOIN db.people AS v4 ON w4.v3____cg_from_0 = v4.id",
+            "JOIN v5_labels AS v5 ON w4.v3____cg_to_label = v5.__cg_label AND w4.v3____cg_to_0 = v5.__cg_id_0",
+            "WHERE w4.v3____cg_from_label = 'Person'",
+        ],
+    );
+    // A written type is one of its types.
+    rels_has(
+        "MATCH (a)-[r]->(b) WITH r MATCH ()-[r:KNOWS|MENTIONS]->() RETURN count(*)",
+        &["(w4.v3____cg_type = 'KNOWS' OR w4.v3____cg_type = 'MENTIONS')"],
+    );
+}
+
+#[test]
+fn a_relationship_bound_before_matched_undirected_is_read_both_ways() {
+    // The rows so far, each in two orientations: the left end is the stored
+    // `from` as stored, the `to` reversed; a self-loop is read once.
+    has(
+        "MATCH ()-[r:FOLLOWS]->() WITH r MATCH (a)-[r]-(b) RETURN count(*)",
+        &[
+            r#"v3_turns2 AS ( SELECT 0 AS "__cg_turn" UNION ALL SELECT 1 AS "__cg_turn" )"#,
+            "FROM with_w1 AS w1 JOIN v3_turns2 AS v3_t2 ON 1 = 1",
+            "JOIN test_integration.users_test AS v4 ON CASE WHEN v3_t2.__cg_turn = 1 THEN w1.v3__followed_id ELSE w1.v3__follower_id END = v4.user_id",
+            "JOIN test_integration.users_test AS v5 ON CASE WHEN v3_t2.__cg_turn = 1 THEN w1.v3__follower_id ELSE w1.v3__followed_id END = v5.user_id",
+            "WHERE (w1.v3__follower_id <> w1.v3__followed_id OR NOT v3_t2.__cg_turn = 1)",
+        ],
+    );
+    // Ends joined before the orientation are tied in WHERE.
+    has(
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) MATCH (b)-[r]-(a) RETURN count(*)",
+        &[
+            "JOIN test_integration.users_test AS v2 ON v1.followed_id = v2.user_id JOIN v1_turns1 AS v1_t1 ON 1 = 1",
+            "CASE WHEN v1_t1.__cg_turn = 1 THEN v1.followed_id ELSE v1.follower_id END = v2.user_id",
+        ],
+    );
+}
+#[test]
+fn a_relationship_read_both_ways_beside_a_path_joins_after_its_orientation() {
+    // The path's relation goes first (`path_first`), and each tie follows
+    // the relations it reads, inside a `CASE` too (review finding: the tie
+    // preceded the orientation join, Code 47).
+    let sql = rels_sql(
+        "MATCH (a:Person)-[r:KNOWS|LIKES]->(b) WITH r MATCH (x)-[r]-(y)-[:KNOWS*1..2]-(z) RETURN count(*)",
+    );
+    let select = sql
+        .rsplit_once(r#"SELECT count(*) AS "count(*)""#)
+        .unwrap()
+        .1;
+    let turns = select
+        .find("JOIN v3_turns5 AS v3_t5")
+        .expect("the orientation join");
+    let first_read = select.find("v3_t5.__cg_turn").expect("a tie through it");
+    assert!(turns < first_read, "{select}");
 }
