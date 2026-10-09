@@ -372,15 +372,23 @@ The binder walks the clause list once, keeping the *current scope*:
     legacy path there.
   - **What is a list** is decided from the expression (`Kind`): a list
     literal, `collect`, `range`, `split`, `keys`, a slice, a projected or
-    unwound value of those. An empty list literal or NULL gives no rows (an
-    empty relation: ClickHouse refuses `ARRAY JOIN []` and a NULL array). A
-    literal, an arithmetic or comparison, or a property whose type the schema
-    declares is not a list: it is the list of itself, or of nothing when NULL
-    (`CASE WHEN e IS NULL THEN [] ELSE [e] END`). A value of unknown type (a
+    unwound value of those. An empty list literal, NULL, or a property that
+    is NULL by the schema (of an element that matches nothing) gives no rows
+    (an empty relation: ClickHouse refuses `ARRAY JOIN []` and a NULL array).
+    A literal, an arithmetic or comparison, or a property whose type the
+    schema declares is not a list: it is the list of itself, or of nothing
+    when NULL (`if(isNull(e), [], [e])`; a function, since `NOT a IS NULL`
+    reads as `NOT (a IS NULL)`). A value of unknown type (a
     parameter, an undeclared property, a function the classifier does not
     know) is read as a list through `arrayConcat`, which fails the query when
     it is not one. Without that check a map would silently become one row
     per entry.
+  - **Values.** A boolean element (a comparison, a declared boolean
+    property) is cast to `Nullable(Bool)`: ClickHouse holds it as `UInt8`,
+    which would show 1 / 0. An element that is always NULL (of `[]`,
+    `[null]`) is the NULL constant: ClickHouse cannot project the element of
+    an `Array(Nothing)`. `split(s, d)` of a NULL `s` or `d` is NULL in
+    Cypher, but `['']` in ClickHouse: UNWIND of it gives no rows.
   - **Order.** Neo4j emits each row's elements together, in list order.
     - One input row (no MATCH yet, or an aggregation with no grouping item
       since): the rows are ordered by the element's position.
@@ -396,6 +404,14 @@ The binder walks the clause list once, keeping the *current scope*:
   - **Known gaps:**
     - A map literal's values are strings (`RETURN {a: 1}` on the new path
       too, from S4).
+    - Older value gaps an UNWIND makes easy to reach, the same on both
+      paths: `split()` of NULL elsewhere is `['']`; a list of booleans is
+      `[0]`; `x / 2` of an integer element is a float division (`intDiv` only
+      for integer constants, #847); `size()` of a string counts bytes; an
+      OPTIONAL MATCH's unmatched node returned whole shows its list
+      properties as `[]`.
+    - Loud where Neo4j answers: a NULL inside a list of lists (Code 386), a
+      parameter that is NULL, `[]` or not a list.
     - `+` of strings from an UNWIND is ClickHouse `plus` (Code 43, loud): the
       element's type is not known.
     - A shape only the clause-list parser takes, such as
@@ -2433,7 +2449,8 @@ slice that will handle it.
       unit test pins it).
 - [ ] S7 UNWIND / UNION / alternatives, in sub-slices: S7a undirected
   relationships, S7b several labels / types (with the two-schema and
-  bound-relationship cases S7a refuses), S7c UNWIND, S7d UNION, S7e lists.
+  bound-relationship cases S7a refuses), S7c UNWIND (done), S7d UNION, S7e
+  lists.
   S7b is itself three: S7b1 a node of several labels, S7b2 a relationship of
   several types or joining several label pairs (with S7a's refusals), S7b3
   variable-length relationships over them (S7b3a walks, S7b3b shortest
@@ -2510,6 +2527,44 @@ slice that will handle it.
         `count(DISTINCT n)` 169 ms (legacy 167 ms), a carried node re-matched
         to a relationship 145 ms (legacy: no SQL), `a = b` 96 ms (legacy:
         Code 47).
+  - [x] **S7c: UNWIND** (§4.4 "Implemented in S7c"): a list of values;
+    the rows so far become a CTE that repeats each row per element
+    (`ARRAY JOIN`), keeping the order Neo4j keeps.
+    - Acceptance:
+      - Generated shapes on a scratch graph with list properties (138:
+        literals, empty / NULL / nested lists, `range`, `split`, `keys`,
+        slices, CASE, `coalesce`, list properties, declared and undeclared
+        scalar properties, booleans, UNWIND first, after MATCH, OPTIONAL,
+        WITH, aggregation, ORDER BY with ties, SKIP / LIMIT, several UNWINDs,
+        then MATCH / OPTIONAL MATCH, paths, shortest paths, undirected;
+        38 checked row for row). 120 are lowered: 117 equal Neo4j, a list of
+        map literals differs by its values' type (S4's map literal), and 2 are
+        loud (an undeclared string property; `+` of strings from an
+        UNWIND). Legacy is wrong on 14 of them and errors on 25.
+      - Neo4j oracle, switch on, vs S7b3b: unchanged (MATCH 408; the
+        corpus's 13 UNWIND queries keep their verdicts). One run showed 407:
+        `collect()` over an unordered MATCH (no UNWIND) listed the same ages
+        in another order, as it may.
+      - Live suite, switch on, vs S7b3b: unchanged but for
+        `test_filter_early_vs_late` (the timing test, passing this time).
+      - Mutation check (13 rules broken in turn: the empty list, a NULL
+        value, the numbering of ordered rows, the positions' direction, the
+        one-row rule after an UNWIND and after an aggregation, rows in no
+        order, the projected values' kinds, a declared property, the zipped
+        ARRAY JOIN, a list's elements, the numbering's direction, the NULL
+        literal): the sweep catches 10. The other 3 only change an order
+        ClickHouse keeps anyway on small inputs, or refuse shapes the
+        legacy path answers right; the unit tests catch them.
+      - Adversarial review (about 280 shapes on three graphs: declared
+        types, two labels and two types with `filter:`, FK edges, FINAL):
+        no wrong row count. Fixed from it: a boolean element showed 1 / 0
+        (now cast to Bool), `split()` of NULL gave a row of `''`, and the
+        NULL test of a value was the `IS NULL` operator, which reads `NOT a
+        IS NULL` as `NOT (a IS NULL)` (found while fixing: `UNWIND NOT
+        (p.id > 2)` dropped every row; now `isNull()`). Also made to answer
+        instead of failing: a list that is NULL by the schema, and lists
+        whose elements are all NULL (`WITH [] AS l UNWIND l`). Left as found
+        (older, both paths): the value gaps listed in §4.4.
   - [x] **S7b3b: `shortestPath` / `allShortestPaths` over several types,
     definitions or labels** (§4.6 "Implemented in S7b3b"): the search of
     S6b / S6d over a union walk's relations, a node identified by its
