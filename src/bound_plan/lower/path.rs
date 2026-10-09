@@ -35,7 +35,9 @@
 //! here instead ([`union_path_ctes`]): over the union of its definitions,
 //! from node to node by label and id, its relationships and nodes kept as
 //! texts (`value::rel_key`, `value::node_key_text`), with the same columns
-//! and the labels of its ends.
+//! and the labels of its ends. A shortest-path search reads either walk's
+//! relations through [`Search`] (S7b3b: a union's nodes identified by their
+//! identities as texts, its pairs' ends then recovered, [`union_ends_cte`]).
 
 use std::sync::Arc;
 

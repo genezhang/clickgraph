@@ -44,8 +44,8 @@
 //!   its rows carrying their type and their ends' labels. A variable-length
 //!   relationship of one type of one definition between nodes of its one
 //!   label walks its table; any other walks the union of its definitions
-//!   between nodes keyed by label and id (`Walked::Union`, S7b3a), except as
-//!   a shortest path (S7b3b);
+//!   between nodes keyed by label and id (`Walked::Union`, S7b3a), as a
+//!   shortest path by a search over the same union (S7b3b);
 //! * WITH and RETURN with aggregation, DISTINCT, ORDER BY, SKIP, LIMIT and
 //!   (WITH) WHERE, evaluated in that order; free-standing ORDER BY, SKIP and
 //!   LIMIT;
@@ -3876,13 +3876,15 @@ impl<'s> Lowerer<'s> {
                 )
             }
             // The walk's first node and relationships: the path relation's
-            // rows differ in them (a path of none has no relationship).
+            // rows differ in them (a path of none has no relationship). Its
+            // id first, which a shortest path's search relations have too
+            // (as a text): a condition there reads it for NULL.
             Scan::Path {
                 walked: Walked::Union { .. },
                 edges,
                 ..
             } => Some(
-                [path::START_LABEL, "start_id", "path_edges"][..if *edges { 3 } else { 2 }]
+                ["start_id", path::START_LABEL, "path_edges"][..if *edges { 3 } else { 2 }]
                     .iter()
                     .map(|c| c.to_string())
                     .collect(),

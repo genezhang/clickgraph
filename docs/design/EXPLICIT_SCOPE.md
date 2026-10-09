@@ -765,9 +765,9 @@ union of its definitions, whose nodes are each a label and an id:
 - **Carried** through a WITH, a union walk exports its end labels with its
   ends; it is grouped by its first node and relationships, as a walk of one
   table is.
-- **Not lowered:** a `shortestPath` / `allShortestPaths` over several
-  labels or types (S7b3b), and a walk any of whose arms (after the pruning
-  above) or nodes is not the standard layout or has composite ids (S8).
+- **Not lowered:** a walk any of whose arms (after the pruning above) or
+  nodes is not the standard layout or has composite ids (S8). (A
+  `shortestPath` / `allShortestPaths` over them is S7b3b, below.)
 - **Known gaps:** a property several labels have, read in a condition on
   the first end, is the dialect's guarded `coalesce` (raw SQL), which the
   conjunct analysis does not read: the walk starts at every node of the
@@ -798,6 +798,64 @@ union of its definitions, whose nodes are each a label and an id:
   a path builds every node's and relationship's value in the unions, for
   every row, at every step; building them after the join is left for later,
   with joining each arm to its end's own table (S7b2).
+
+**Implemented in S7b3b** (a `shortestPath` / `allShortestPaths` over several
+types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
+`path::UnionWalk::search`, `path::union_ends_cte`). The search of §4.11
+(S6b, S6d) runs over a union walk's relations:
+- **Search.** The breadth-first search, the walk back over its levels and
+  the pick read a `path::Search`: the relations of the nodes and the
+  relationships, the column that identifies a node, the range, the
+  conditions on the first node, the last node and every relationship, and
+  how a relationship's identity and each element's value are spelled. A walk
+  of one table builds it from its tables (`PathCall::search`, the SQL
+  unchanged). A union walk builds it from its nodes (`vlp_{r}_nodes`) and
+  relationships (`{r}_rels`). A node is then identified by its identity as
+  a text (`__cg_key`, `label:id`), and each relationship row carries the
+  identities of the nodes it leaves and enters (`__cg_start_key`,
+  `__cg_end_key`). The identity is one column, so the search, the walk back
+  and the pick are the same SQL as a table's. The texts are those a path's
+  identity spells, so `path_nodes` and `path_edges` are a union walk's as
+  they are.
+- **Ends.** The last node is restricted as the first is (by label and id
+  `IN` the rows so far or its own conjuncts, §4.8 d), and the search stops
+  once it has reached every value the last node can have. A label condition
+  that every node the walk visits satisfies is left out, at either end:
+  otherwise every step would check targets that hold of all nodes. The pairs'
+  ends are the nodes of their identities (`vlp_{r}_ends`: `start_label`,
+  `start_id`, `end_label`, `end_id`), tied as a union walk's ends are.
+- **Conditions** (§4.11): the trails the pick reads are the union walk's
+  (`vlp_{r}_trails`), carrying their ends' identities (`UnionWalk::keyed`).
+  An end a condition reads is joined by its identity: a node of one label
+  from its table, one of several from its labels' union.
+- **Not lowered:** a condition on the path that reads a property declared
+  by several of an end's labels. That read is the guarded `coalesce`, raw
+  SQL the conjunct analysis cannot read (S7b3a's known gap), so the legacy
+  pipeline answers it, as it answered every shortest path over several
+  labels or types before.
+- **Known cost:** under a condition on the path, the pick reads every trail
+  from the first nodes of the pairs whose distance fails it (S6b), as a walk
+  of one table does. Unbounded and undirected over a dozen relationships
+  (12 relationships of the S7b2 graph), from two first nodes, they are 12.8
+  million trails of up to 18 relationships. Without values the query takes
+  6 s; with `RETURN p` each trail carries its values and ClickHouse runs out
+  of memory (an error). Building values after the pick
+  is the S7b3a follow-up (values after the join).
+- **Measured cost**, social benchmark at scale 100, pinned ends, on a
+  shared machine (load average about 8):
+
+  | Shape | Legacy | New |
+  |---|---|---|
+  | `shortestPath`, `[:FOLLOWS*]`, one table | 307 ms | 121 ms |
+  | `shortestPath`, `[:FOLLOWS\|LIKED*]` undirected, `length(p)` | 117 ms (93 rows, wrong) | 1.9 s |
+  | the same, `RETURN p` | 162 ms (93 rows, wrong) | 2.6 s |
+  | `allShortestPaths`, the same, `RETURN p` (93 paths) | 170 ms | 3.1 s |
+  | `shortestPath`, `[:FOLLOWS\|LIKED*..4]->` to a pinned post | 16 ms | 529 ms |
+  | `shortestPath` from a user to each post with `post_id < 1000` within 3 | 19 ms (298, wrong) | 544 ms (250) |
+
+  Each step of the search joins the relationship union on text keys and
+  the node union (CTEs ClickHouse cannot size), against one table's integer
+  joins.
 
 ### 4.7 Label inference
 
