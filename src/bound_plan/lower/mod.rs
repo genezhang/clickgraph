@@ -506,6 +506,11 @@ const REL_FROM: &str = "__cg_from";
 const REL_TO: &str = "__cg_to";
 const REL_START_LABEL: &str = "__cg_start_label";
 const REL_END_LABEL: &str = "__cg_end_label";
+/// The identities as texts (`value::node_key_text`, a walk's node `KEY`) of
+/// the node a row of a walk's relationships leaves and enters, for a
+/// shortest-path search over them (S7b3b).
+const REL_START_KEY: &str = "__cg_start_key";
+const REL_END_KEY: &str = "__cg_end_key";
 /// The column of a relationship's orientation ([`Lowerer::turns`]): 1 where
 /// a row reads it reversed.
 const TURN: &str = "__cg_turn";
@@ -2139,19 +2144,22 @@ impl<'s> Lowerer<'s> {
     /// once.
     fn rel_union(&mut self, v: VarId, arms: &[RelArm<'s>]) -> Result<String, LowerError> {
         let props = self.rel_union_props(v, arms);
-        self.rel_union_of(v, arms, &props, false)
+        self.rel_union_of(v, arms, &props, false, false)
     }
 
     /// [`Self::rel_union`] carrying the properties `props`, and with `values`
     /// each row's relationship as a value (`ELEMENT_VALUE`, for a walk).
     /// Each row also carries its identity as a text (`KEY`) where the
-    /// dialect spells one.
+    /// dialect spells one, and, with `node_keys`, those of the nodes it
+    /// leaves and enters (`REL_START_KEY` / `REL_END_KEY`, for a
+    /// shortest-path search).
     fn rel_union_of(
         &mut self,
         v: VarId,
         arms: &[RelArm<'s>],
         props: &BTreeSet<String>,
         values: bool,
+        node_keys: bool,
     ) -> Result<String, LowerError> {
         let name = format!("{}_rels", v.name());
         let shape = rel_union_shape(arms)?;
@@ -2220,6 +2228,27 @@ impl<'s> Lowerer<'s> {
                         ELEMENT_VALUE,
                     ));
                 }
+                if node_keys {
+                    for (label, cols, column) in
+                        [(left, starts, REL_START_KEY), (right, ends, REL_END_KEY)]
+                    {
+                        let [id] = cols.as_slice() else {
+                            return unsupported(
+                                "a variable-length relationship between composite ids (S8)",
+                            );
+                        };
+                        items.push(select(
+                            RenderExpr::Raw(value::node_key_text(
+                                g,
+                                &value::string(label),
+                                &render_expr_to_sql_plain(&col_at(ROW, id)),
+                            )),
+                            column,
+                        ));
+                    }
+                }
+            } else if node_keys {
+                return unsupported("a shortestPath over several labels or types in this SQL dialect");
             }
             for (p, defs) in &definitions {
                 let value = self.rel_arm_value(rs, p, arms);
@@ -2620,10 +2649,8 @@ impl<'s> Lowerer<'s> {
         let (edge, rel_type) = match walked {
             Walked::One { schema, rel_type } => (schema, rel_type),
             Walked::Union { types, .. } => {
-                if shortest.is_some() {
-                    return unsupported("a shortestPath over several labels or types (S7b3b)");
-                }
-                return self.build_union_path(r, types, at, (min, max), left, right, own);
+                let ends = (left, right);
+                return self.build_union_path(r, types, at, (min, max), shortest, ends, own, in_search);
             }
         };
         // The `from` end of the relationships (stored orientation). An
@@ -2713,7 +2740,7 @@ impl<'s> Lowerer<'s> {
             }
             Some(mode) => {
                 match self.shortest_relation(
-                    call,
+                    path::Walk::One(call),
                     mode,
                     walked,
                     at.alias(),
@@ -2780,6 +2807,12 @@ impl<'s> Lowerer<'s> {
     /// ([`Self::rel_union_of`]), which keeps the relationship's property map
     /// inside the walk (one value per definition, as a property of a union
     /// is read).
+    ///
+    /// A `shortestPath` / `allShortestPaths` (S7b3b) is the search of
+    /// [`Self::shortest_relation`] over the same nodes and relationships, a
+    /// node identified by its identity as a text (`path::UnionWalk::search`),
+    /// its last node restricted as its first is; its pairs' ends are then
+    /// the nodes of those identities (`path::union_ends_cte`).
     #[allow(clippy::too_many_arguments)]
     fn build_union_path(
         &mut self,
@@ -2787,9 +2820,10 @@ impl<'s> Lowerer<'s> {
         types: BTreeSet<String>,
         at: At,
         (min, max): (u32, Option<u32>),
-        left: VarId,
-        right: VarId,
+        shortest: Option<ShortestMode>,
+        (left, right): (VarId, VarId),
         own: &[RenderExpr],
+        in_search: &[RenderExpr],
     ) -> Result<(), LowerError> {
         let first = self.walk_first(left, right, own);
         let last = if first == left { right } else { left };
@@ -2811,6 +2845,18 @@ impl<'s> Lowerer<'s> {
             self.scans.insert(r.var, Scan::Impossible);
             return Ok(());
         };
+        // A shortest-path search ends once it has reached every value the
+        // last node can have.
+        let end = match shortest {
+            Some(_) => match self.walk_restriction(last, own, path::END)? {
+                Some(end) => end,
+                None => {
+                    self.scans.insert(r.var, Scan::Impossible);
+                    return Ok(());
+                }
+            },
+            None => Vec::new(),
+        };
         let mut labels = first_labels.clone();
         for a in &arms {
             let (s, e) = a.ends();
@@ -2820,11 +2866,20 @@ impl<'s> Lowerer<'s> {
         labels.dedup();
         let wants = |name: &str| self.demand.get(&r.var).is_some_and(|d| d.contains(name));
         let (node_values, rel_values) = (wants(NODE_VALUES), wants(REL_VALUES));
+        // A shortest path's are recovered from its search also when its
+        // identity is read.
+        let walked = node_values || rel_values || wants(PATH_KEY);
         let nodes = self.walk_nodes(r.var, &labels, node_values)?;
         let props: BTreeSet<String> = r.props.iter().map(|(p, _)| p.clone()).collect();
         let rels = match arms.is_empty() {
             true => None,
-            false => Some(self.rel_union_of(r.var, &arms, &props, rel_values)?),
+            false => Some(self.rel_union_of(
+                r.var,
+                &arms,
+                &props,
+                rel_values,
+                shortest.is_some(),
+            )?),
         };
         let mut rel = Vec::new();
         for (prop, value) in &r.props {
@@ -2839,29 +2894,60 @@ impl<'s> Lowerer<'s> {
             rel.push(RenderExpr::OperatorApplicationExp(eq(column, value)));
         }
         let var = r.var.name();
-        let (ctes, cte) = path::union_path_ctes(&path::UnionWalk {
+        let walk = path::UnionWalk {
             var: &var,
             nodes: &nodes,
             rels: rels.as_deref(),
             min,
             max,
             start,
+            end,
             rel,
             node_values,
             rel_values,
-        })?;
-        self.ctes.extend(ctes);
+            keyed: shortest.is_some(),
+        };
         let alias = at.alias().to_string();
+        let (ctes, cte, edges) = match shortest {
+            None => {
+                let (ctes, cte) = path::union_path_ctes(&walk)?;
+                (ctes, cte, true)
+            }
+            Some(mode) => {
+                let columns = match walked {
+                    true => walk.search().walked_columns(),
+                    false => Vec::new(),
+                };
+                let found = self.shortest_relation(
+                    path::Walk::Union(walk),
+                    mode,
+                    walked,
+                    &alias,
+                    first,
+                    last,
+                    in_search,
+                )?;
+                let Some((mut ctes, keyed, edges)) = found else {
+                    // Its conditions allow no length of its range.
+                    self.scans.insert(r.var, Scan::Impossible);
+                    return Ok(());
+                };
+                let (ends, cte) = path::union_ends_cte(&var, &nodes, &keyed, &columns);
+                ctes.push(ends);
+                (ctes, cte, edges)
+            }
+        };
+        self.ctes.extend(ctes);
         self.scans.insert(
             r.var,
             Scan::Path {
                 walked: Walked::Union { types, arms },
                 cte,
                 at,
-                edges: true,
-                nodes: true,
+                edges,
+                nodes: shortest.is_none() || walked,
                 range: (min, max),
-                shortest: None,
+                shortest,
                 // The walk's order is the path's from its left end.
                 reversed: first != left,
                 node_values,
@@ -3249,7 +3335,8 @@ impl<'s> Lowerer<'s> {
     }
 
     /// The relation of a `shortestPath` / `allShortestPaths` (`mode`) whose
-    /// paths are `call`'s, read under `alias`, from `first` to `last` (its
+    /// paths are `walk`'s (of one table, or of a union, whose relation's ends
+    /// are then identities as texts), read under `alias`, from `first` to `last` (its
     /// CTEs, its name, whether it has `path_edges`), or `None` when its
     /// conditions allow no length of its range. The search picks, per pair
     /// of ends, the shortest paths that satisfy `in_search` (§4.8, #1312):
@@ -3280,7 +3367,7 @@ impl<'s> Lowerer<'s> {
     #[allow(clippy::too_many_arguments)]
     fn shortest_relation(
         &self,
-        mut call: path::PathCall<'_>,
+        mut walk: path::Walk<'_>,
         mode: ShortestMode,
         walked: bool,
         alias: &str,
@@ -3298,11 +3385,12 @@ impl<'s> Lowerer<'s> {
         for c in in_search {
             match length_bound(c, alias) {
                 Some((bound, exact)) => {
-                    if bound < i64::from(call.min) {
+                    if bound < i64::from(walk.min()) {
                         return Ok(None);
                     }
                     let bound = u32::try_from(bound).unwrap_or(u32::MAX);
-                    call.max = Some(call.max.map_or(bound, |m| m.min(bound)));
+                    let max = walk.max_mut();
+                    *max = Some(max.map_or(bound, |m| m.min(bound)));
                     if !exact {
                         conditions.push(c.clone());
                     }
@@ -3311,7 +3399,7 @@ impl<'s> Lowerer<'s> {
             }
         }
         // A lower bound above 1 is a condition on the length.
-        let min = call.min;
+        let min = walk.min();
         if min > 1 {
             conditions.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
                 operator: Operator::GreaterThanEqual,
@@ -3321,9 +3409,9 @@ impl<'s> Lowerer<'s> {
                 ],
             }));
         }
-        let mut search = call.clone();
+        let mut search = walk.search(self.schema)?;
         search.min = min.min(1);
-        let var = call.var.to_string();
+        let var = search.var.clone();
         // The paths are walked back over the levels the search keeps: it
         // need not count them, and it keeps the parents a walk follows.
         let counted = all && !walked;
@@ -3334,12 +3422,12 @@ impl<'s> Lowerer<'s> {
         };
         if conditions.is_empty() {
             let name = format!("vlp_{var}_path");
-            let mut ctes = vec![path::search_cte(self.schema, &search, counted, parents)?];
+            let mut ctes = vec![path::search_cte(&search, counted, parents)?];
             if walked {
-                let ends = path::walk_ends(self.schema, &search)?;
-                ctes.extend(path::walk_ctes(self.schema, &search, &name, &ends, all)?);
+                let ends = path::ends_reached(&search);
+                ctes.extend(path::walk_ctes(&search, &name, &ends, all)?);
             } else {
-                ctes.push(path::reached_cte(self.schema, &search, &name, all, true)?);
+                ctes.push(path::reached_cte(&search, &name, all, true)?);
             }
             return Ok(Some((ctes, name, walked)));
         }
@@ -3355,15 +3443,24 @@ impl<'s> Lowerer<'s> {
         for (end, column) in [(first, "start_id"), (last, "end_id")] {
             if let Some(Scan::Node {
                 schema,
+                label,
                 at: At::Table(a),
                 ..
             }) = self.scans.get(&end)
             {
                 if !self.elided.contains_key(&end) && read.contains(a) {
+                    // Joined by its identity as the search spells a node.
+                    let id = format!("{a}.{}", schema.id_physical_columns()[0]);
+                    let key = match &walk {
+                        path::Walk::One(_) => id,
+                        path::Walk::Union(_) => {
+                            value::node_key_text(&value::spelling()?, &value::string(label), &id)
+                        }
+                    };
                     ends.push(path::PickEnd {
                         alias: a.clone(),
                         table: schema.full_table_name(),
-                        id: schema.id_physical_columns()[0].clone(),
+                        key,
                         column,
                     });
                     readable.push(a.clone());
@@ -3377,14 +3474,14 @@ impl<'s> Lowerer<'s> {
         }
         // The trails start only where a pair's distance fails the conditions.
         let near = format!("vlp_{var}_near");
-        call.start.push(RenderExpr::Raw(format!(
+        walk.start_mut().push(RenderExpr::Raw(format!(
             "{}.{} IN (SELECT start_id FROM ({}))",
             path::START,
-            call.node.id_physical_columns()[0],
+            search.id,
             path::failing_pairs(&var, alias, &ends, &conditions),
         )));
-        let columns = path::walked_columns(&call);
-        let trails = path::path_cte(self.schema, call)?;
+        let columns = search.walked_columns();
+        let (trails, trail_edges) = walk.trails(self.schema)?;
         let (pick, name) = path::pick_cte(
             &var,
             alias,
@@ -3392,25 +3489,20 @@ impl<'s> Lowerer<'s> {
             &conditions,
             min >= 1,
             all,
-            walked.then_some((columns.as_slice(), trails.edges)),
+            walked.then_some((columns.as_slice(), trail_edges)),
         )?;
         let mut ctes = vec![
-            path::search_cte(self.schema, &search, counted, parents)?,
-            path::reached_cte(self.schema, &search, &near, counted, false)?,
+            path::search_cte(&search, counted, parents)?,
+            path::reached_cte(&search, &near, counted, false)?,
         ];
         if walked {
             // The pairs whose distance satisfies the conditions.
             let ends = path::passing_ends(&var, alias, &ends, &conditions);
             let walked_name = format!("vlp_{var}_walked");
-            ctes.extend(path::walk_ctes(
-                self.schema,
-                &search,
-                &walked_name,
-                &ends,
-                all,
-            )?);
+            ctes.extend(path::walk_ctes(&search, &walked_name, &ends, all)?);
         }
-        ctes.extend([trails.cte, pick]);
+        ctes.extend(trails);
+        ctes.push(pick);
         Ok(Some((ctes, name, walked)))
     }
 
@@ -3761,9 +3853,10 @@ impl<'s> Lowerer<'s> {
             // rows differ in them (a path of none has no relationship).
             Scan::Path {
                 walked: Walked::Union { .. },
+                edges,
                 ..
             } => Some(
-                [path::START_LABEL, "start_id", "path_edges"]
+                [path::START_LABEL, "start_id", "path_edges"][..if *edges { 3 } else { 2 }]
                     .iter()
                     .map(|c| c.to_string())
                     .collect(),
