@@ -2446,6 +2446,14 @@ slice that will handle it.
       - Mutation check (both graphs): 14 rules broken in turn, 14 change
         answers; two cross-checks keep every answer (every path of one table
         walked as a union; every union walk started at its right end).
+      - Adversarial review (own graphs: definitions of one type between
+        several label pairs, FK and FINAL tables, view parameters, cycles):
+        one regression, fixed: a type the schema doesn't have at a zero lower
+        bound (`[:NOPE*0..2]`, also `RETURN p`, OPTIONAL) matched nothing,
+        where Neo4j matches the path of none. The binder drops the type, and
+        an empty set of types read as none written. Not from this slice,
+        left as found: a path key over an impossible end is an internal
+        error that falls back to legacy (wrong: 10 vs 0; on main too).
   - [x] **S7b2: a relationship of several possible types or label pairs**
     (§4.6 "Implemented in S7b2"): one relation of its definitions' tables
     in their orientations, identity (definition, id), ties to its ends'

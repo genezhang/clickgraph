@@ -3681,11 +3681,13 @@ impl<'s> Lowerer<'s> {
                 ..
             } => written.contains(rel_type),
             // Unbound before (a list is not re-matched): its types are the
-            // written ones.
+            // binder's feasible ones of the written. With none (an unknown
+            // type), only the path of none can match, and it has no
+            // relationship to check.
             Scan::Path {
                 walked: Walked::Union { types, .. },
                 ..
-            } => types.iter().any(|t| written.contains(t)),
+            } => types.iter().all(|t| written.contains(t)),
             Scan::Impossible => false,
         };
         if !holds {

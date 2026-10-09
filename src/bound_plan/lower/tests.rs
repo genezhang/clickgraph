@@ -3289,3 +3289,20 @@ graph_schema:
         assert!(err.contains("not the standard layout (S8)"), "{q}: {err}");
     }
 }
+
+#[test]
+fn a_walk_of_an_unknown_type_from_zero_is_the_path_of_none() {
+    // The binder drops the type the schema doesn't have: only the path of no
+    // relationship can match, and it has no type to check.
+    for q in [
+        "MATCH (a:Person)-[:NOPE*0..2]->(b) RETURN count(*)",
+        "MATCH (a:Person) OPTIONAL MATCH (a)-[:NOPE*0..1]->(b) RETURN a.id, b.id",
+    ] {
+        let got = rels_sql(q);
+        assert!(got.contains("_trails"), "not walked: {q}\n{got}");
+        assert!(!got.contains("WHERE false"), "matches nothing: {q}\n{got}");
+    }
+    // From one hop it matches nothing.
+    let got = rels_sql("MATCH (a:Person)-[:NOPE*1..2]->(b) RETURN count(*)");
+    assert!(!got.contains("_trails"), "walked: {got}");
+}
