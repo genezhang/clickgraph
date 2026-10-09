@@ -448,6 +448,7 @@ impl<'s> Lowerer<'s> {
                 let v = self.graph_value(g)?;
                 let column = body.column(v.value, &it.name);
                 body.determined.push(column.clone());
+                self.identities.push((it.name.clone(), v.keys.clone()));
                 if aggregating {
                     body.group_by.extend(v.keys);
                 } else if body.distinct {

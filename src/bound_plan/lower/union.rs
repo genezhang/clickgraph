@@ -21,9 +21,12 @@
 //! * UNION: one row per group of rows equal in every column by
 //!   `CypherUnion::distinct_key` (Cypher's DISTINCT: `1` equals `1.0`, not
 //!   `true` or `'1'`), and of the same nodes and relationships: each arm's
-//!   CTE also exports the identity of each one it returns as columns (rows
-//!   equal in every returned column can be different relationships, whose
-//!   `edge_id` is not a property). The result has no order.
+//!   CTE also exports the identity of each one it returns, alone or in a
+//!   graph value, as columns (rows equal in every returned column can be
+//!   different relationships, whose `edge_id` is not a property, and a
+//!   relationship's graph value has its ends' `elementId`). The identities
+//!   must have the same columns in every arm (the same labels' or types'
+//!   ids), or the UNION is not lowered. The result has no order.
 
 use std::collections::HashMap;
 
@@ -100,16 +103,16 @@ pub(super) fn lower(
         if !items.is_empty() {
             return unsupported("internal: a RETURN column outside the result shape");
         }
-        // Each returned element's identity, in the UNION's column order (one
-        // label or type per column, so as many columns in every arm).
+        // Each returned element or graph value's identity, in the UNION's
+        // column order.
         let mut identity_columns = 0;
         if !all {
             for c in &shape {
-                if !matches!(c.kind, ResultKind::Node { .. } | ResultKind::Rel { .. }) {
-                    continue;
-                }
                 let Some((_, identity)) = identities.iter().find(|(n, _)| *n == c.name) else {
-                    return unsupported(format!("internal: no identity of {}", c.name));
+                    if matches!(c.kind, ResultKind::Node { .. } | ResultKind::Rel { .. }) {
+                        return unsupported(format!("internal: no identity of {}", c.name));
+                    }
+                    continue;
                 };
                 for e in identity {
                     plan.select.items.push(select(
@@ -144,7 +147,9 @@ pub(super) fn lower(
             .first()
             .is_some_and(|a| a.identity_columns != identity_columns)
         {
-            return unsupported("internal: UNION arms of different identity columns");
+            return unsupported(
+                "UNION of nodes or relationships identified by different columns in different arms",
+            );
         }
         lowered.push(Arm {
             alias,

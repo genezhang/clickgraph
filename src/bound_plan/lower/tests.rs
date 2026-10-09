@@ -3713,6 +3713,17 @@ fn a_union_of_elements() {
     );
 }
 
+/// Every arm's RETURN reads the properties of the elements it returns whole
+/// (here from an OPTIONAL MATCH's CTE).
+#[test]
+fn a_union_arm_reads_what_it_returns() {
+    has(
+        "MATCH (u:User) OPTIONAL MATCH (u)-[:FOLLOWS]->(f:User) RETURN f AS x \
+         UNION MATCH (x:User) RETURN x",
+        &[r#"o1.p2_v2_name AS "__cg_w2_c5""#],
+    );
+}
+
 #[test]
 fn a_union_of_columns_read_differently_is_not_lowered() {
     not_lowered(
@@ -3747,6 +3758,19 @@ fn a_union_keeps_elements_apart_by_identity() {
             && sql.ends_with(r#"toString(w3.__cg_c3)), w3.__cg_k0"#),
         "{sql}"
     );
+    // A relationship of several types is a graph value, whose `elementId`
+    // is its ends': its identity is exported too.
+    let (sql, _) = shaped(
+        "MATCH (:User)-[r:FOLLOWS|LIKED]->() RETURN r \
+         UNION MATCH (:User)-[r:LIKED|FOLLOWS]->() WHERE r.follow_date IS NULL RETURN r",
+        &social(),
+    );
+    assert!(
+        sql.contains(r#"v1.__cg_rid_0 AS "__cg_w3_k3""#)
+            && sql
+                .ends_with("toString(w7.__cg_c0)), w7.__cg_k0, w7.__cg_k1, w7.__cg_k2, w7.__cg_k3"),
+        "{sql}"
+    );
     // UNION ALL needs no identity.
     let (sql, _) = shaped(
         "MATCH (:U)-[k:K]->(:U) RETURN k UNION ALL MATCH (:U)-[k:K]->(:U) RETURN k",
@@ -3775,21 +3799,4 @@ fn databricks_union_is_not_lowered() {
         matches!(&got, Err(e) if e.contains("UNION in this SQL dialect")),
         "{got:?}"
     );
-}
-
-#[test]
-#[ignore]
-fn tmp_why() {
-    let schema = GraphSchemaConfig::from_yaml_str(
-        &std::fs::read_to_string(std::env::var("WHY_SCHEMA").unwrap()).unwrap(),
-    )
-    .unwrap()
-    .to_graph_schema()
-    .unwrap();
-    for q in std::env::var("WHY_Q").unwrap().split(";;") {
-        println!(
-            "{q}\n  => {:?}",
-            translate_bound_plan(q, &schema, &ReadOptions::default()).map(|_| "lowered")
-        );
-    }
 }

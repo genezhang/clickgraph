@@ -214,8 +214,9 @@ struct LoweredQuery {
     /// The final SELECT, without CTEs.
     plan: RenderPlan,
     shape: Vec<ResultColumn>,
-    /// The identity of each node or relationship the RETURN returns as its
-    /// columns, by item name.
+    /// The identity of each node, relationship or graph value the RETURN
+    /// returns, by item name: what a DISTINCT keeps it apart by (a
+    /// relationship's graph value is not: its `elementId` is its ends').
     identities: Vec<(String, Vec<RenderExpr>)>,
 }
 
@@ -527,8 +528,8 @@ struct Lowerer<'s> {
     /// The rows so far are at most one (no MATCH yet, or an aggregation with
     /// no grouping item since).
     one_row: bool,
-    /// The identity of each node or relationship the final RETURN returns
-    /// as its columns, by item name ([`LoweredQuery::identities`]).
+    /// The identity of each node, relationship or graph value the final
+    /// RETURN returns, by item name ([`LoweredQuery::identities`]).
     identities: Vec<(String, Vec<RenderExpr>)>,
 }
 
@@ -4745,6 +4746,7 @@ impl<'s> Lowerer<'s> {
         if let Some((v, props)) = union {
             let column = body.column(v.value, name);
             body.determined.push(column.clone());
+            self.identities.push((name.to_string(), v.keys.clone()));
             let mut keys = v.keys;
             for prop in props {
                 keys.push(self.property(src, &prop)?);
