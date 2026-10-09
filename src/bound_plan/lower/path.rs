@@ -35,7 +35,9 @@
 //! here instead ([`union_path_ctes`]): over the union of its definitions,
 //! from node to node by label and id, its relationships and nodes kept as
 //! texts (`value::rel_key`, `value::node_key_text`), with the same columns
-//! and the labels of its ends.
+//! and the labels of its ends. A shortest-path search reads either walk's
+//! relations through [`Search`] (S7b3b: a union's nodes identified by their
+//! identities as texts, its pairs' ends then recovered, [`union_ends_cte`]).
 
 use std::sync::Arc;
 
@@ -246,53 +248,133 @@ pub(super) fn path_cte(schema: &GraphSchema, call: PathCall<'_>) -> Result<PathC
     })
 }
 
-/// The tables a shortest-path search reads, walked as [`standard_layout`]
-/// walks them.
-struct SearchTables {
+/// What a shortest-path search reads (§4.11): the relations of its nodes
+/// and relationships, each node identified by one column, the range and the
+/// conditions. Of one table ([`PathCall::search`], walked as
+/// [`standard_layout`] walks it) or of a union of definitions
+/// ([`UnionWalk::search`], S7b3b: its nodes identified by their identities
+/// as texts, as a path's identity spells them).
+#[derive(Clone)]
+pub(super) struct Search {
+    pub var: String,
+    /// The nodes, and the column identifying one.
     node_table: String,
-    id: String,
-    edge_table: String,
+    pub id: String,
+    /// The relationships, from the node in `from_id` to the node in `to_id`
+    /// (none: only the path of none can match).
+    edge_table: Option<String>,
     from_id: String,
     to_id: String,
+    pub min: u32,
+    pub max: Option<u32>,
+    /// Conjuncts over the first node, aliased [`START`].
+    pub start: Vec<RenderExpr>,
+    /// Conjuncts over the last node, aliased [`END`].
+    pub end: Vec<RenderExpr>,
+    /// Conjuncts every relationship satisfies, aliased [`REL`].
+    pub rel: Vec<RenderExpr>,
+    /// A relationship's identity as a text, over [`REL`] (`None`: not
+    /// spelled, a path is not recovered).
+    edge_text: Option<String>,
+    /// A node's value over [`START`] and over [`END`], and a relationship's
+    /// over [`REL`], when the paths carry them.
+    node_value: Option<(String, String)>,
+    rel_value: Option<String>,
 }
 
-fn search_tables(schema: &GraphSchema, call: &PathCall<'_>) -> Result<SearchTables, LowerError> {
-    let ctx = standard_layout(schema, call)?;
-    let (
-        NodeAccessStrategy::OwnTable {
-            table: node_table,
-            id_column: Identifier::Single(id),
-            ..
-        },
-        EdgeAccessStrategy::SeparateTable {
-            table: edge_table,
-            from_id,
-            to_id,
-            ..
-        },
-    ) = (&ctx.left_node, &ctx.edge)
-    else {
-        return unsupported("internal: the standard layout without its tables");
-    };
-    Ok(SearchTables {
-        node_table: node_table.clone(),
-        id: id.clone(),
-        edge_table: call.both.unwrap_or(edge_table).to_string(),
-        from_id: from_id.clone(),
-        to_id: to_id.clone(),
-    })
+impl Search {
+    /// The columns of a walked relation (`walk_ctes`) after `start_id`,
+    /// `end_id` and `hop_count`: its nodes' identities, its relationships'
+    /// (as texts), and the values it carries.
+    pub(super) fn walked_columns(&self) -> Vec<&'static str> {
+        let mut columns = vec!["path_nodes", "path_edges"];
+        if self.node_value.is_some() {
+            columns.push(VALUE_COLUMNS[0]);
+        }
+        if self.rel_value.is_some() {
+            columns.push(VALUE_COLUMNS[1]);
+        }
+        columns
+    }
+
+    /// The values the last node can have (`end`), as a SELECT of one column,
+    /// or `None` when nothing restricts it.
+    fn targets(&self) -> Option<String> {
+        conjunction(&self.end).map(|c| {
+            format!(
+                "SELECT {END}.{id} FROM {table} AS {END} WHERE {c}",
+                id = self.id,
+                table = self.node_table
+            )
+        })
+    }
 }
 
-/// The values the last node of `call` can have (`call.end`), as a SELECT of
-/// one column, or `None` when nothing restricts it.
-fn targets(t: &SearchTables, call: &PathCall<'_>) -> Option<String> {
-    conjunction(&call.end).map(|c| {
-        format!(
-            "SELECT {END}.{id} FROM {table} AS {END} WHERE {c}",
-            id = t.id,
-            table = t.node_table
-        )
-    })
+impl PathCall<'_> {
+    /// The search of these paths, with `end` the conjuncts over the last
+    /// node.
+    pub(super) fn search(&self, schema: &GraphSchema) -> Result<Search, LowerError> {
+        let ctx = standard_layout(schema, self)?;
+        let (
+            NodeAccessStrategy::OwnTable {
+                table: node_table,
+                id_column: Identifier::Single(id),
+                ..
+            },
+            EdgeAccessStrategy::SeparateTable {
+                table: edge_table,
+                from_id,
+                to_id,
+                ..
+            },
+        ) = (&ctx.left_node, &ctx.edge)
+        else {
+            return unsupported("internal: the standard layout without its tables");
+        };
+        let g = current_function_mapper().graph_values();
+        let values = |wanted: bool| -> Result<_, LowerError> {
+            match (wanted, &g) {
+                (false, _) => Ok(None),
+                (true, None) => unsupported("a shortestPath's path in this SQL dialect"),
+                (true, Some(g)) => Ok(Some(g)),
+            }
+        };
+        let node_value = match values(self.node_values)? {
+            Some(g) => Some((
+                super::value::table_node_object(g, self.node, self.label, START)?,
+                super::value::table_node_object(g, self.node, self.label, END)?,
+            )),
+            None => None,
+        };
+        let rel_value = match values(self.rel_values)? {
+            Some(g) => Some(super::value::table_rel_object(
+                g,
+                self.edge,
+                self.rel_type,
+                REL,
+            )?),
+            None => None,
+        };
+        Ok(Search {
+            var: self.var.to_string(),
+            node_table: node_table.clone(),
+            id: id.clone(),
+            edge_table: Some(self.both.unwrap_or(edge_table).to_string()),
+            from_id: from_id.clone(),
+            to_id: to_id.clone(),
+            min: self.min,
+            max: self.max,
+            start: self.start.clone(),
+            end: self.end.clone(),
+            rel: self.rel.clone(),
+            edge_text: match (&g, edge_identity_sql(self.edge, REL)) {
+                (Some(g), Some(identity)) => Some((g.to_text)(&identity)),
+                _ => None,
+            },
+            node_value,
+            rel_value,
+        })
+    }
 }
 
 /// The parents a shortest-path search keeps of each node (`search_cte`),
@@ -328,24 +410,18 @@ pub(super) enum Parents {
 /// value the last node can have (`call.end`) goes no further: the farther
 /// nodes are no path's end (a deep graph would otherwise reach ClickHouse's
 /// recursion limit before a near end is known to be all).
-pub(super) fn search_cte(
-    schema: &GraphSchema,
-    call: &PathCall<'_>,
-    all: bool,
-    parents: Parents,
-) -> Result<Cte, LowerError> {
-    let t = search_tables(schema, call)?;
+pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<Cte, LowerError> {
     let Some(spelling) = current_function_mapper().shortest_path_search() else {
         return unsupported("shortestPath in this SQL dialect");
     };
     let (depth, flag, count) = (spelling.depth, spelling.flag, spelling.count);
-    let SearchTables {
+    let Search {
         node_table,
         id,
-        edge_table,
         from_id,
         to_id,
-    } = &t;
+        ..
+    } = call;
     let bfs = format!("vlp_{}_bfs", call.var);
     let seed_where = conjunction(&call.start)
         .map(|c| format!("\n    WHERE {c}"))
@@ -366,7 +442,7 @@ pub(super) fn search_cte(
          FROM {node_table} AS start_node{seed_where}"
     );
     // `*0..0`: the first nodes only (the edge may join other labels).
-    if call.max != Some(0) {
+    if let (Some(edge_table), false) = (&call.edge_table, call.max == Some(0)) {
         let mut step = vec!["f.new = 1".to_string()];
         if let Some(max) = call.max {
             step.push(format!("f.depth < {max}"));
@@ -375,7 +451,7 @@ pub(super) fn search_cte(
         step.push(format!(
             "(f.start_id, end_node.{id}) NOT IN (SELECT start_id, node FROM {bfs})"
         ));
-        if let Some(targets) = targets(&t, call) {
+        if let Some(targets) = call.targets() {
             step.push(format!(
                 "f.start_id NOT IN (SELECT start_id FROM {bfs} GROUP BY start_id \
                  HAVING {count_if}(node IN ({targets})) >= \
@@ -432,9 +508,9 @@ pub(super) fn search_cte(
 /// The condition a row of the search of `call` (`search_cte`: `start_id`,
 /// `node`, `depth`) meets when its node is a path's last: at a distance in
 /// the range, and a value the last node can have.
-fn ends_reached(t: &SearchTables, call: &PathCall<'_>) -> String {
+pub(super) fn ends_reached(call: &Search) -> String {
     let mut reached = format!("depth >= {}", call.min);
-    if let Some(targets) = targets(t, call) {
+    if let Some(targets) = call.targets() {
         reached.push_str(&format!("\n      AND node IN ({targets})"));
     }
     reached
@@ -446,18 +522,16 @@ fn ends_reached(t: &SearchTables, call: &PathCall<'_>) -> String {
 /// shortest path (a count beyond the dialect's array size fails, it does not
 /// wrap); with `all` alone, the count is the column `paths`.
 pub(super) fn reached_cte(
-    schema: &GraphSchema,
-    call: &PathCall<'_>,
+    call: &Search,
     name: &str,
     all: bool,
     copies: bool,
 ) -> Result<Cte, LowerError> {
-    let t = search_tables(schema, call)?;
     let Some(spelling) = current_function_mapper().shortest_path_search() else {
         return unsupported("shortestPath in this SQL dialect");
     };
     let bfs = format!("vlp_{}_bfs", call.var);
-    let reached = format!("new = 1 AND {}", ends_reached(&t, call));
+    let reached = format!("new = 1 AND {}", ends_reached(call));
     let (paths, copy) = match (all, copies) {
         (true, true) => (
             "",
@@ -472,20 +546,6 @@ pub(super) fn reached_cte(
          WHERE {reached}\n)"
     );
     Ok(Cte::new(name.to_string(), CteContent::RawSql(sql), false))
-}
-
-/// The columns of a walked relation (`walk_ctes`) after `start_id`,
-/// `end_id` and `hop_count`: its nodes' identities, its relationships'
-/// (as texts), and the values `call` carries.
-pub(super) fn walked_columns(call: &PathCall<'_>) -> Vec<&'static str> {
-    let mut columns = vec!["path_nodes", "path_edges"];
-    if call.node_values {
-        columns.push(VALUE_COLUMNS[0]);
-    }
-    if call.rel_values {
-        columns.push(VALUE_COLUMNS[1]);
-    }
-    columns
 }
 
 /// The shortest paths of `call` to the rows of its search (`search_cte`, run
@@ -515,31 +575,29 @@ pub(super) fn walked_columns(call: &PathCall<'_>) -> Vec<&'static str> {
 ///   parallel ones (the least identity): one path per pair, and a value is
 ///   built only for it.
 pub(super) fn walk_ctes(
-    schema: &GraphSchema,
-    call: &PathCall<'_>,
+    call: &Search,
     name: &str,
     ends: &str,
     all: bool,
 ) -> Result<[Cte; 2], LowerError> {
-    let t = search_tables(schema, call)?;
     let m = current_function_mapper();
     let (Some(spelling), Some(g)) = (m.shortest_path_search(), m.graph_values()) else {
         return unsupported("a shortestPath's path in this SQL dialect");
     };
-    let Some(identity) = edge_identity_sql(call.edge, REL) else {
+    let Some(edge_text) = &call.edge_text else {
         return unsupported("a variable-length relationship between composite ids (S8)");
     };
     let (depth, flag) = (spelling.depth, spelling.flag);
-    let SearchTables {
+    let Search {
         node_table,
         id,
-        edge_table,
         from_id,
         to_id,
-    } = &t;
+        ..
+    } = call;
     let bfs = format!("vlp_{}_bfs", call.var);
     let walk = format!("vlp_{}_walk", call.var);
-    let columns = walked_columns(call);
+    let columns = call.walked_columns();
     // The values carried, each with its value when empty and one step's.
     let mut carried: Vec<(&str, String, String)> = vec![
         (
@@ -547,21 +605,13 @@ pub(super) fn walk_ctes(
             m.array_slice(&m.array_literal("node"), "1", Some("0")),
             format!("end_node.{id}"),
         ),
-        ("path_edges", (g.texts)(&[]), (g.to_text)(&identity)),
+        ("path_edges", (g.texts)(&[]), edge_text.clone()),
     ];
-    if call.node_values {
-        carried.push((
-            VALUE_COLUMNS[0],
-            (g.list)(&[]),
-            super::value::table_node_object(&g, call.node, call.label, END)?,
-        ));
+    if let Some((_, end)) = &call.node_value {
+        carried.push((VALUE_COLUMNS[0], (g.list)(&[]), end.clone()));
     }
-    if call.rel_values {
-        carried.push((
-            VALUE_COLUMNS[1],
-            (g.list)(&[]),
-            super::value::table_rel_object(&g, call.edge, call.rel_type, REL)?,
-        ));
+    if let Some(rel) = &call.rel_value {
+        carried.push((VALUE_COLUMNS[1], (g.list)(&[]), rel.clone()));
     }
     let empty: Vec<String> = carried
         .iter()
@@ -599,18 +649,23 @@ pub(super) fn walk_ctes(
     } else {
         (
             format!(
-                ",\n          ROW_NUMBER() OVER (PARTITION BY w.start_id, w.end_id ORDER BY {}) AS pick",
-                (g.to_text)(&identity)
+                ",\n          ROW_NUMBER() OVER (PARTITION BY w.start_id, w.end_id ORDER BY {edge_text}) AS pick",
             ),
             " WHERE pick = 1".to_string(),
         )
     };
-    let walk_sql = format!(
+    let mut walk_sql = format!(
         "{walk} AS (\n    \
          SELECT start_id, node, depth, node AS end_id, depth AS hop_count, {empty}, {parents}, \
          CAST(1 AS {flag}) AS level, CAST({ends} AS {flag}) AS frontier\n    \
          FROM {bfs}\n    \
-         WHERE new = 1\n    \
+         WHERE new = 1",
+        empty = empty.join(", "),
+    );
+    // Without relationships the paths are those of none: the first rows.
+    if let Some(edge_table) = &call.edge_table {
+        walk_sql.push_str(&format!(
+            "\n    \
          UNION ALL\n    \
          SELECT start_id, node, depth, end_id, hop_count, {columns}, {parents}, level, frontier FROM (\n        \
          SELECT w.start_id AS start_id, lv.parent AS node, CAST(w.depth - 1 AS {depth}) AS depth, \
@@ -628,18 +683,18 @@ pub(super) fn walk_ctes(
          UNION ALL\n    \
          SELECT start_id, node, depth, end_id, hop_count, {emptied}, {parents}, level, CAST(0 AS {flag}) AS frontier\n    \
          FROM {walk}\n    \
-         WHERE level = 1 AND start_id IN (SELECT start_id FROM {walk} WHERE frontier = 1 AND depth > 1)\n\
-         )",
-        empty = empty.join(", "),
-        columns = columns.join(", "),
-        stepped = stepped.join(",\n          "),
-        step = step.join(" AND "),
-        // A level row's values are empty.
-        emptied = std::iter::once("path_nodes".to_string())
-            .chain(carried[1..].iter().map(|(c, e, _)| format!("{e} AS {c}")))
-            .collect::<Vec<_>>()
-            .join(", "),
-    );
+         WHERE level = 1 AND start_id IN (SELECT start_id FROM {walk} WHERE frontier = 1 AND depth > 1)",
+            columns = columns.join(", "),
+            stepped = stepped.join(",\n          "),
+            step = step.join(" AND "),
+            // A level row's values are empty.
+            emptied = std::iter::once("path_nodes".to_string())
+                .chain(carried[1..].iter().map(|(c, e, _)| format!("{e} AS {c}")))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
+    }
+    walk_sql.push_str("\n)");
     // The first node, before the rest.
     let mut first = vec![format!(
         "{} AS path_nodes",
@@ -650,13 +705,11 @@ pub(super) fn walk_ctes(
     )];
     first.push("w.path_edges AS path_edges".to_string());
     let mut from = format!("{walk} AS w");
-    if call.node_values {
+    if let Some((start, _)) = &call.node_value {
         first.push(format!(
             "{} AS {}",
             (g.concat)(&[
-                (g.list)(&[super::value::table_node_object(
-                    &g, call.node, call.label, START
-                )?]),
+                (g.list)(std::slice::from_ref(start)),
                 format!("w.{}", VALUE_COLUMNS[0]),
             ]),
             VALUE_COLUMNS[0]
@@ -665,7 +718,7 @@ pub(super) fn walk_ctes(
             "\n    JOIN {node_table} AS {START} ON {START}.{id} = w.start_id"
         ));
     }
-    if call.rel_values {
+    if call.rel_value.is_some() {
         first.push(format!("w.{c} AS {c}", c = VALUE_COLUMNS[1]));
     }
     let paths_sql = format!(
@@ -679,12 +732,6 @@ pub(super) fn walk_ctes(
         Cte::new(walk, CteContent::RawSql(walk_sql), true),
         Cte::new(name.to_string(), CteContent::RawSql(paths_sql), false),
     ])
-}
-
-/// The rows of the search of `call` (`search_cte`) whose node is a path's
-/// last: [`ends_reached`].
-pub(super) fn walk_ends(schema: &GraphSchema, call: &PathCall<'_>) -> Result<String, LowerError> {
-    Ok(ends_reached(&search_tables(schema, call)?, call))
 }
 
 /// The rows of the search of `var` whose node is the last of a path that
@@ -703,12 +750,23 @@ pub(super) fn passing_ends(
     )
 }
 
+/// How the trails a shortestPath picks among (`pick_cte`) have their
+/// relationships: none (`*0..0`), as the generator's typed identities (a
+/// table's walk), or as texts already (a union's, `union_path_ctes`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum TrailEdges {
+    None,
+    Typed,
+    Texts,
+}
+
 /// An end node of a path read by a condition of a shortestPath search:
 /// joined to the paths under its own alias.
 pub(super) struct PickEnd {
     pub alias: String,
     pub table: String,
-    pub id: String,
+    /// Its identity over `alias`, as the search spells a node ([`Search::id`]).
+    pub key: String,
     /// `start_id` or `end_id`.
     pub column: &'static str,
 }
@@ -718,8 +776,8 @@ fn with_ends(relation: &str, alias: &str, ends: &[PickEnd]) -> String {
     let mut from = format!("{relation} AS {alias}");
     for e in ends {
         from.push_str(&format!(
-            "\n        JOIN {} AS {} ON {}.{} = {alias}.{}",
-            e.table, e.alias, e.alias, e.id, e.column
+            "\n        JOIN {} AS {} ON {} = {alias}.{}",
+            e.table, e.alias, e.key, e.column
         ));
     }
     from
@@ -754,8 +812,8 @@ pub(super) fn failing_pairs(
 ///   the shortest length. With `distinct_ends`, a node is no path's other
 ///   end.
 ///
-/// With `walked` (the [`walked_columns`], and whether the trails have
-/// relationships), the paths are recovered: the first pairs' are
+/// With `walked` (the [`Search::walked_columns`], and how the trails spell
+/// their relationships), the paths are recovered: the first pairs' are
 /// `vlp_{var}_walked` (`walk_ctes`, walked from only them), and the trails
 /// carry theirs.
 pub(super) fn pick_cte(
@@ -765,7 +823,7 @@ pub(super) fn pick_cte(
     conditions: &[RenderExpr],
     distinct_ends: bool,
     all: bool,
-    walked: Option<(&[&str], bool)>,
+    walked: Option<(&[&str], TrailEdges)>,
 ) -> Result<(Cte, String), LowerError> {
     let m = current_function_mapper();
     let Some(spelling) = m.shortest_path_search() else {
@@ -783,10 +841,12 @@ pub(super) fn pick_cte(
         };
         for c in columns {
             carried.push_str(&format!(", {c}"));
-            let value = match *c {
-                "path_edges" if trail_edges => (g.prefixed_texts)("''", &format!("{alias}.{c}")),
+            let value = match (*c, trail_edges) {
+                ("path_edges", TrailEdges::Typed) => {
+                    (g.prefixed_texts)("''", &format!("{alias}.{c}"))
+                }
                 // `*0..0`: no relationship.
-                "path_edges" => (g.texts)(&[]),
+                ("path_edges", TrailEdges::None) => (g.texts)(&[]),
                 _ => format!("{alias}.{c}"),
             };
             of_trail.push_str(&format!(", {value} AS {c}"));
@@ -914,11 +974,49 @@ pub(super) struct UnionWalk<'a> {
     pub max: Option<u32>,
     /// Conjuncts over the first node, a row of `nodes` aliased [`START`].
     pub start: Vec<RenderExpr>,
+    /// Conjuncts over the last node, a row of `nodes` aliased [`END`] (a
+    /// shortest-path search's, [`UnionWalk::search`]).
+    pub end: Vec<RenderExpr>,
     /// Conjuncts every relationship of the path satisfies, a row of `rels`
     /// aliased [`REL`].
     pub rel: Vec<RenderExpr>,
     pub node_values: bool,
     pub rel_values: bool,
+    /// The relation's `start_id` and `end_id` are its ends' identities as
+    /// texts (the nodes' `KEY`), as a shortest-path search has them, without
+    /// their labels.
+    pub keyed: bool,
+}
+
+impl UnionWalk<'_> {
+    /// The shortest-path search of these paths (S7b3b): over the walk's
+    /// nodes and relationships, a node identified by its identity as a text
+    /// (`rels` carries those of the nodes its rows leave and enter,
+    /// `REL_START_KEY` / `REL_END_KEY`).
+    pub(super) fn search(&self) -> Search {
+        let at = |alias: &str, column: &str| format!("{alias}.{column}");
+        Search {
+            var: self.var.to_string(),
+            node_table: self.nodes.to_string(),
+            id: super::KEY.to_string(),
+            edge_table: self.rels.map(str::to_string),
+            from_id: super::REL_START_KEY.to_string(),
+            to_id: super::REL_END_KEY.to_string(),
+            min: self.min,
+            max: self.max,
+            start: self.start.clone(),
+            end: self.end.clone(),
+            rel: self.rel.clone(),
+            edge_text: Some(at(REL, super::KEY)),
+            node_value: self.node_values.then(|| {
+                (
+                    at(START, super::ELEMENT_VALUE),
+                    at(END, super::ELEMENT_VALUE),
+                )
+            }),
+            rel_value: self.rel_values.then(|| at(REL, super::ELEMENT_VALUE)),
+        }
+    }
 }
 
 /// The relation of paths of `w` (§4.11, S7b3a) and its CTEs: the recursive
@@ -994,11 +1092,24 @@ pub(super) fn union_path_ctes(w: &UnionWalk<'_>) -> Result<(Vec<Cte>, String), L
         .iter()
         .map(|(c, first, _)| format!("{first} AS {c}"))
         .collect();
+    // Keyed, its ends' identities as texts are carried along.
+    let (first_keys, step_keys, ends) = match w.keyed {
+        true => (
+            format!(", {START}.{key} AS start_key, {START}.{key} AS end_key"),
+            format!(", vp.start_key AS start_key, {END}.{key} AS end_key"),
+            "start_key AS start_id, end_key AS end_id".to_string(),
+        ),
+        false => (
+            String::new(),
+            String::new(),
+            format!("{START_LABEL}, start_id, {END_LABEL}, end_id"),
+        ),
+    };
     let mut sql = format!(
         "{trails} AS (\n    \
          SELECT {START}.{label} AS {START_LABEL}, {START}.{id} AS start_id, \
          {START}.{label} AS {END_LABEL}, {START}.{id} AS end_id, \
-         CAST(0 AS {depth}) AS hop_count, {}\n    \
+         CAST(0 AS {depth}) AS hop_count, {}{first_keys}\n    \
          FROM {nodes} AS {START}",
         at_first.join(", ")
     );
@@ -1023,7 +1134,7 @@ pub(super) fn union_path_ctes(w: &UnionWalk<'_>) -> Result<(Vec<Cte>, String), L
             "\n    UNION ALL\n    \
              SELECT vp.{START_LABEL} AS {START_LABEL}, vp.start_id AS start_id, \
              {END}.{label} AS {END_LABEL}, {END}.{id} AS end_id, \
-             CAST(vp.hop_count + 1 AS {depth}) AS hop_count, {}\n    \
+             CAST(vp.hop_count + 1 AS {depth}) AS hop_count, {}{step_keys}\n    \
              FROM {trails} AS vp\n    \
              JOIN {rels} AS {REL} ON {REL}.{start_label} = vp.{END_LABEL} \
              AND {REL}.{start_id} = vp.end_id\n    \
@@ -1045,7 +1156,7 @@ pub(super) fn union_path_ctes(w: &UnionWalk<'_>) -> Result<(Vec<Cte>, String), L
     }
     let path = format!(
         "{name} AS (\n    \
-         SELECT {START_LABEL}, start_id, {END_LABEL}, end_id, hop_count, {}\n    \
+         SELECT {ends}, hop_count, {}\n    \
          FROM {trails}{range}\n)",
         columns.join(", ")
     );
@@ -1056,4 +1167,87 @@ pub(super) fn union_path_ctes(w: &UnionWalk<'_>) -> Result<(Vec<Cte>, String), L
         ],
         name,
     ))
+}
+
+/// The paths a shortestPath search picks among (`Lowerer::shortest_relation`):
+/// of one table's walk, or of a union's (S7b3b, `keyed`).
+pub(super) enum Walk<'a> {
+    One(PathCall<'a>),
+    Union(UnionWalk<'a>),
+}
+
+impl Walk<'_> {
+    pub(super) fn min(&self) -> u32 {
+        match self {
+            Walk::One(c) => c.min,
+            Walk::Union(w) => w.min,
+        }
+    }
+
+    pub(super) fn max_mut(&mut self) -> &mut Option<u32> {
+        match self {
+            Walk::One(c) => &mut c.max,
+            Walk::Union(w) => &mut w.max,
+        }
+    }
+
+    /// Conjuncts over the first node, aliased [`START`].
+    pub(super) fn start_mut(&mut self) -> &mut Vec<RenderExpr> {
+        match self {
+            Walk::One(c) => &mut c.start,
+            Walk::Union(w) => &mut w.start,
+        }
+    }
+
+    pub(super) fn search(&self, schema: &GraphSchema) -> Result<Search, LowerError> {
+        match self {
+            Walk::One(c) => c.search(schema),
+            Walk::Union(w) => Ok(w.search()),
+        }
+    }
+
+    /// The trails of the range, as the relation `vlp_{var}_path` (its CTEs),
+    /// and how they spell their relationships.
+    pub(super) fn trails(self, schema: &GraphSchema) -> Result<(Vec<Cte>, TrailEdges), LowerError> {
+        match self {
+            Walk::One(c) => {
+                let built = path_cte(schema, c)?;
+                let edges = match built.edges {
+                    true => TrailEdges::Typed,
+                    false => TrailEdges::None,
+                };
+                Ok((vec![built.cte], edges))
+            }
+            Walk::Union(w) => Ok((union_path_ctes(&w)?.0, TrailEdges::Texts)),
+        }
+    }
+}
+
+/// The shortest paths of a union (S7b3b), the relation `keyed` whose ends
+/// are identities as texts (`UnionWalk::keyed`), as a walk's relation has
+/// them (`union_path_ctes`): `vlp_{var}_ends`, with [`START_LABEL`],
+/// `start_id`, [`END_LABEL`], `end_id` (each end the row of `nodes` of its
+/// identity), `hop_count` and `columns`.
+pub(super) fn union_ends_cte(
+    var: &str,
+    nodes: &str,
+    keyed: &str,
+    columns: &[&str],
+) -> (Cte, String) {
+    let name = format!("vlp_{var}_ends");
+    let (label, id, key) = (
+        super::LABEL_COLUMN,
+        super::indexed_column(super::LABEL_ID, 0),
+        super::KEY,
+    );
+    let carried: String = columns.iter().map(|c| format!(", p.{c} AS {c}")).collect();
+    let sql = format!(
+        "{name} AS (\n    \
+         SELECT {START}.{label} AS {START_LABEL}, {START}.{id} AS start_id, \
+         {END}.{label} AS {END_LABEL}, {END}.{id} AS end_id, p.hop_count AS hop_count{carried}\n    \
+         FROM {keyed} AS p\n    \
+         JOIN {nodes} AS {START} ON {START}.{key} = p.start_id\n    \
+         JOIN {nodes} AS {END} ON {END}.{key} = p.end_id\n)"
+    );
+    (Cte::new(name.clone(), CteContent::RawSql(sql), false), name)
 }

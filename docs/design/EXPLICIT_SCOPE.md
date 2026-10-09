@@ -765,9 +765,9 @@ union of its definitions, whose nodes are each a label and an id:
 - **Carried** through a WITH, a union walk exports its end labels with its
   ends; it is grouped by its first node and relationships, as a walk of one
   table is.
-- **Not lowered:** a `shortestPath` / `allShortestPaths` over several
-  labels or types (S7b3b), and a walk any of whose arms (after the pruning
-  above) or nodes is not the standard layout or has composite ids (S8).
+- **Not lowered:** a walk any of whose arms (after the pruning above) or
+  nodes is not the standard layout or has composite ids (S8). (A
+  `shortestPath` / `allShortestPaths` over them is S7b3b, below.)
 - **Known gaps:** a property several labels have, read in a condition on
   the first end, is the dialect's guarded `coalesce` (raw SQL), which the
   conjunct analysis does not read: the walk starts at every node of the
@@ -798,6 +798,67 @@ union of its definitions, whose nodes are each a label and an id:
   a path builds every node's and relationship's value in the unions, for
   every row, at every step; building them after the join is left for later,
   with joining each arm to its end's own table (S7b2).
+
+**Implemented in S7b3b** (a `shortestPath` / `allShortestPaths` over several
+types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
+`path::UnionWalk::search`, `path::union_ends_cte`). The search of §4.11
+(S6b, S6d) runs over a union walk's relations:
+- **Search.** The breadth-first search, the walk back over its levels and
+  the pick read a `path::Search`: the relations of the nodes and the
+  relationships, the column that identifies a node, the range, the
+  conditions on the first node, the last node and every relationship, and
+  how a relationship's identity and each element's value are spelled. A walk
+  of one table builds it from its tables (`PathCall::search`, the SQL
+  unchanged). A union walk builds it from its nodes (`vlp_{r}_nodes`) and
+  relationships (`{r}_rels`). A node is then identified by its identity as
+  a text (`__cg_key`, `label:id`), and each relationship row carries the
+  identities of the nodes it leaves and enters (`__cg_start_key`,
+  `__cg_end_key`). The identity is one column, so the search, the walk back
+  and the pick are the same SQL as a table's. The texts are those a path's
+  identity spells, so `path_nodes` and `path_edges` are a union walk's as
+  they are.
+- **Ends.** The last node is restricted as the first is (by label and id
+  `IN` the rows so far or its own conjuncts, §4.8 d), and the search stops
+  once it has reached every value the last node can have. A label condition
+  that every node the walk visits satisfies is left out, at either end:
+  otherwise every step would check targets that hold of all nodes. The pairs'
+  ends are the nodes of their identities (`vlp_{r}_ends`: `start_label`,
+  `start_id`, `end_label`, `end_id`), tied as a union walk's ends are.
+- **Conditions** (§4.11): the trails the pick reads are the union walk's
+  (`vlp_{r}_trails`), carrying their ends' identities (`UnionWalk::keyed`).
+  An end a condition reads is joined by its identity: a node of one label
+  from its table, one of several from its labels' union.
+- **Not lowered:** a condition on the path that reads a property declared
+  by several of an end's labels. That read is the guarded `coalesce`, raw
+  SQL the conjunct analysis cannot read (S7b3a's known gap), so the legacy
+  pipeline answers it, as it answered every shortest path over several
+  labels or types before.
+- **Known cost:** under a condition on the path, the pick reads every trail
+  from the first nodes of the pairs whose distance fails it (S6b), as a walk
+  of one table does. Unbounded and undirected over a dozen relationships
+  (12 relationships of the S7b2 graph), from two first nodes, they are 12.8
+  million trails of up to 18 relationships. Without values the query takes
+  6 s; with `RETURN p` each trail carries its values and ClickHouse runs out
+  of memory (an error). Over five types (all of the graph's relationships),
+  even one first node without values exceeds a 4 GB limit within seconds
+  (the review). An upper bound (`*..6`) answers in 0.4 s. Building values
+  after the pick is the S7b3a follow-up (values after the join); the trails
+  themselves are S6b's design.
+- **Measured cost**, social benchmark at scale 100, pinned ends, on a
+  shared machine (load average about 8):
+
+  | Shape | Legacy | New |
+  |---|---|---|
+  | `shortestPath`, `[:FOLLOWS*]`, one table | 307 ms | 121 ms |
+  | `shortestPath`, `[:FOLLOWS\|LIKED*]` undirected, `length(p)` | 117 ms (93 rows, wrong) | 1.9 s |
+  | the same, `RETURN p` | 162 ms (93 rows, wrong) | 2.6 s |
+  | `allShortestPaths`, the same, `RETURN p` (93 paths) | 170 ms | 3.1 s |
+  | `shortestPath`, `[:FOLLOWS\|LIKED*..4]->` to a pinned post | 16 ms | 529 ms |
+  | `shortestPath` from a user to each post with `post_id < 1000` within 3 | 19 ms (298, wrong) | 544 ms (250) |
+
+  Each step of the search joins the relationship union on text keys and
+  the node union (CTEs ClickHouse cannot size), against one table's integer
+  joins.
 
 ### 4.7 Label inference
 
@@ -2409,12 +2470,72 @@ slice that will handle it.
         `count(DISTINCT n)` 169 ms (legacy 167 ms), a carried node re-matched
         to a relationship 145 ms (legacy: no SQL), `a = b` 96 ms (legacy:
         Code 47).
+  - [x] **S7b3b: `shortestPath` / `allShortestPaths` over several types,
+    definitions or labels** (§4.6 "Implemented in S7b3b"): the search of
+    S6b / S6d over a union walk's relations, a node identified by its
+    identity as a text; the pairs' ends recovered by label and id.
+    - Acceptance:
+      - Generated shapes on the S7b2 scratch graph, on three property
+        typings (452 each: both functions; several types, a type of several
+        definitions, untyped; ends of one, several or no labels; every
+        direction and range; conditions on the length, alone and with an
+        end; values (`p`, `nodes(p)`, `relationships(p)`, path identity);
+        pinned ends, WITH, OPTIONAL, other parts, aggregates, unknown
+        types). 426 are lowered: 424 equal Neo4j (for `shortestPath`, the
+        rows equal Neo4j's or, with paths, each is one of
+        `allShortestPaths`'); legacy is wrong on 306 of them and errors on
+        98. The other 2, OPTIONAL with a condition, failed (Code 47: a
+        condition there read the path's identity for NULL through
+        `start_label`, which the search's relations lack; a union path's
+        identity now has `start_id` first) and now equal Neo4j's rows except
+        where Neo4j is wrong: Neo4j 5.26.31 drops a value of the incoming
+        row (`a.id`, `id(a)`, or a value a WITH projected before the
+        OPTIONAL MATCH) in the rows its exhaustive fallback produces under
+        OPTIONAL MATCH, for a walk of one type too. Not lowered: 12
+        conditions that read `b.id` of an end of several labels (the raw
+        guard; legacy wrong on 8, errors on 4); 8 list comprehensions over
+        `nodes(p)` / `relationships(p)` (S7e; both pipelines error). Neo4j rejects 6 (a property map in
+        `shortestPath`, a start that is the end, 2 timeouts).
+      - Walks from the right end read in the path's order (`p`, from a
+        pinned last node) and `WITH DISTINCT p`: 14 more shapes, each equal
+        to Neo4j (added when the mutation check showed the set lacked
+        them).
+      - Conditions reading an end of several labels (by a property one label
+        declares): 4 shapes equal Neo4j; a fifth compares a string with a
+        number (`coalesce(a.code, 1)`), a ClickHouse type error as any such
+        comparison is.
+      - Neo4j oracle, switch on, vs S7b3a: unchanged (MATCH 408; the corpus
+        has no shortest path over several labels or types).
+      - Live suite, switch on, vs S7b3a: unchanged but for
+        `test_filter_early_vs_late`, which times one query twice and fails
+        either build at random (S7b3a's: 3 of 5 runs).
+      - Mutation check (224 of the shapes): 10 rules broken in turn (the
+        relationships' node keys, the pairs' ends, the keyed trails, the
+        walk's relationship spelling, a condition's end join, the path's
+        order, the vacuous label condition, the property map in the search,
+        a several-label end's label, the last end's restriction), 10 change
+        answers. Two first survived: the set read no shortest path's
+        identity and no right-end walk's order; 14 shapes were added for
+        them. A cross-check keeps every answer (the search reaching every
+        node: the ties restrict the ends anyway).
+      - Adversarial review (about 250 shapes on six graphs: ids shared
+        across labels, dangling and parallel relationships across tables,
+        FINAL, filters, labels on one table, overlapping label sets; one
+        table's SQL byte-identical to `main`'s; S7b3a's review set
+        unchanged): one silent wrong answer, fixed. The pick joined a
+        one-label end a condition reads to its raw table, without its
+        `filter:` and FINAL, so a stale or filtered-out version of a node
+        joined once more: `allShortestPaths` counted paths twice, and
+        `shortestPath ... WHERE length(p) >= 3 OR a.name = 'a1'` read a
+        stale name (14 rows against Neo4j's 9). The end is now its label's
+        relation (`Lowerer::node_relation_sql`); the reviewer's shapes equal
+        Neo4j.
   - [x] **S7b3a: variable-length relationships of several types,
     definitions or labels** (§4.6 "Implemented in S7b3a"): a walk of the
     union of their definitions between nodes keyed by label and id, pruned
     to the definitions a path between its ends can use; one spelling of a
     relationship's identity for every scan. `shortestPath` over them is
-    S7b3b.
+    S7b3b (above).
     - Acceptance:
       - Neo4j oracle, switch on, vs S7b2: 0 correct → wrong, 4 → correct
         (MATCH 404 → 408: `(a)-[r*1..2]->(a)` and a `*0..1` closed path, both
