@@ -3630,7 +3630,7 @@ fn a_union_reads_each_arm_from_its_own_cte() {
     let got = squash(&sql("RETURN 1 AS a UNION RETURN 1.0 AS a"));
     assert!(
         got.ends_with(
-            r#"SELECT any(w3.__cg_c0) AS "a" FROM with_w3 AS w3 GROUP BY tuple(multiIf(dynamicType(CAST(w3.__cg_c0, 'Dynamic')) IN ('String', 'LowCardinality(String)'), 's', dynamicType(CAST(w3.__cg_c0, 'Dynamic')) = 'Bool', 'b', ''), toString(w3.__cg_c0))"#
+            r#"SELECT any(w3.__cg_c0) AS "a" FROM with_w3 AS w3 GROUP BY tuple(dynamicType(CAST(w3.__cg_c0, 'Dynamic')) IN ('String', 'LowCardinality(String)'), toString(w3.__cg_c0))"#
         ),
         "{got}"
     );
@@ -3755,7 +3755,7 @@ fn a_union_keeps_elements_apart_by_identity() {
             && sql.contains(r#"w2.__cg_w2_k0 AS "__cg_k0" FROM with_w2 AS w2"#)
             // An element's columns are grouped by as they are, a value by
             // its key.
-            && sql.contains(r#"GROUP BY w3.__cg_c0, w3.__cg_c1, w3.__cg_c2, tuple(multiIf("#)
+            && sql.contains(r#"GROUP BY w3.__cg_c0, w3.__cg_c1, w3.__cg_c2, tuple(dynamicType("#)
             && sql.ends_with(r#"toString(w3.__cg_c3)), w3.__cg_k0"#),
         "{sql}"
     );
