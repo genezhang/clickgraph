@@ -2587,7 +2587,16 @@ slice that will handle it.
       - Live suite, switch on, vs S7c: unchanged but for the scorecard
         entry of that UNION, now correct (`known-wrong entry is now
         CORRECT`), and `test_filter_early_vs_late` (the timing test).
-      - Mutation check: MUTATION_RESULTS
+      - Mutation check: 14 rules broken in turn (the `Dynamic` cast, the
+        string class of the DISTINCT key, the exported identities, the
+        columns' order by name, an arm's ORDER BY under its LIMIT, the sort
+        keys exported, the row numbering, its direction, the order by arm,
+        the arms' demand, UNION read as UNION ALL, a graph value's and a
+        several-label element's identity, values grouped as they are): the
+        sweep catches all 14. A 15th rule, a boolean class in the key,
+        survived because it was redundant (a boolean's text is never a
+        number's, and the string class keeps `'true'` apart); it was
+        removed.
       - Adversarial review: REVIEW_RESULTS
   - [x] **S7c: UNWIND** (§4.4 "Implemented in S7c"): a list of values;
     the rows so far become a CTE that repeats each row per element

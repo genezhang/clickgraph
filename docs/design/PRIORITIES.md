@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; next: S7d UNION, then S7e lists)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; next: S7e lists)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -740,6 +740,10 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-10-09: **P-4c S7d: Cypher UNION / UNION ALL** (#1343, `src/bound_plan/lower/union.rs`, `FunctionMapper::cypher_union`, behind `CLICKGRAPH_BOUND_PLAN=on`).
+  - Each arm is lowered on its own to a CTE of its RETURN's columns in the UNION's order (matched by name), keeping its ORDER BY / SKIP / LIMIT; one `UNION ALL` CTE reads them. Values are cast to `Dynamic` (ClickHouse's common type of `Bool` and an integer converts one into the other). UNION ALL with an ordered arm: ordered by arm, then by `row_number()` over the arm's keys. UNION: grouped by `(is a string, toString(v))` (`1` = `1.0`, ≠ `'1'` ≠ `true`) and by each returned element's identity (an `edge_id` that is not a property; a relationship's graph value has its ends' `elementId`). Fixed on the way: the demand pass ignored the arms' RETURNs (an OPTIONAL or several-label element failed "not exported").
+  - Sweep (152 shapes, 26 row for row): 145 lowered, 143 equal Neo4j, 2 a map literal's value type (S4); legacy wrong on 42, errors on 53, orders 2 differently. Mutation check: 14 of 14. Oracle MATCH 408 → 409; live suite unchanged but for that UNION's scorecard entry (now correct).
+  - Not lowered: a node against a value or a node of another label in one column; Databricks.
 - 2026-10-09: **P-4c S7c: UNWIND of a list of values** (#1342, `src/bound_plan/lower/unwind.rs`, `FunctionMapper::unwind`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - The rows so far become a CTE whose SELECT repeats each row per element (`ARRAY JOIN` after the joins), exporting the scope plus the element. Whether the expression is a list is decided from it (`Kind`): an empty list / NULL gives no rows, a value that is not a list is the list of itself, a value of unknown type must be a list (`arrayConcat` fails otherwise, instead of a map's entries becoming rows). Order: one input row → by position; ordered rows → numbered, then by position; several rows in no order → `Lost` (a later SKIP / LIMIT / `collect()` not lowered).
   - Sweep (138 shapes, 38 row for row): 120 lowered, 117 equal Neo4j, 1 a map literal's value type (S4), 2 loud; legacy wrong on 14, errors on 25. Mutation check: 13 rules, 10 caught by the sweep, 3 by unit tests. Oracle and live suite unchanged. Review (about 280 shapes on three graphs): no wrong row count; fixed boolean elements (1/0), `split()` of NULL, and the `NOT a IS NULL` precedence of the NULL test.
