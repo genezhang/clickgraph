@@ -2896,7 +2896,11 @@ impl<'s> Lowerer<'s> {
     ) -> Result<Vec<RelArm<'s>>, LowerError> {
         let mut all: Vec<RelArm<'s>> = Vec::new();
         for rel_type in types {
-            for rs in self.schema.rel_schemas_for_type(rel_type) {
+            let definitions = self.schema.rel_schemas_for_type(rel_type);
+            if definitions.is_empty() {
+                return unsupported(format!("type {rel_type} has no schema"));
+            }
+            for rs in definitions {
                 for &reversed in orientations {
                     if !all
                         .iter()
@@ -2910,6 +2914,15 @@ impl<'s> Lowerer<'s> {
                     }
                 }
             }
+        }
+        // Which labels a definition joins is what the pruning below reads:
+        // one whose rows carry their own (a polymorphic edge) is not lowered
+        // whether or not a path could use it.
+        if let Some(a) = all.iter().find(|a| !a.schema.has_fixed_endpoint_labels()) {
+            return unsupported(format!(
+                "type {} is not the standard layout (S8)",
+                a.rel_type
+            ));
         }
         // The labels reached from `from_labels` (forward), and those that
         // reach `to_labels` (backward).

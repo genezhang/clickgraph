@@ -3270,3 +3270,61 @@ fn a_carried_walk_of_several_types_keeps_its_end_labels() {
         &["AS \"v1__start_label\"", "AS \"v1__end_label\""],
     );
 }
+
+// SCRATCH: remove before commit.
+#[test]
+#[ignore]
+fn scratch_defs() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        &std::fs::read_to_string(std::env::var("WHY_SCHEMA").unwrap()).unwrap(),
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    for rs in schema.rel_schemas_for_type(&std::env::var("WHY_T").unwrap()) {
+        println!(
+            "DEF {} -> {} std={} table={}",
+            rs.from_node,
+            rs.to_node,
+            rs.is_standard_edge_table(),
+            rs.full_table_name()
+        );
+    }
+}
+
+/// S7b3a review: a walk prunes definitions by the labels the schema gives
+/// their ends; a polymorphic edge's rows carry their own (`$any`), so a walk
+/// over one is not lowered (it matched nothing: the legacy path answers it).
+#[test]
+fn a_walk_over_a_polymorphic_edge_is_not_lowered() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: poly_walk
+graph_schema:
+  nodes:
+    - { label: User, database: db, table: users, node_id: id, property_mappings: { id: id, name: name } }
+    - { label: Group, database: db, table: groups, node_id: id, property_mappings: { id: id, name: name } }
+  edges:
+    - polymorphic: true
+      database: db
+      table: memberships
+      from_id: member_id
+      to_id: group_id
+      from_label_column: member_type
+      from_label_values: [User, Group]
+      to_node: Group
+      type_values: [MEMBER_OF]
+      property_mappings: {}
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    for q in [
+        "MATCH (u:User)-[:MEMBER_OF*1..5]->(g:Group) RETURN g.name",
+        "MATCH (u:User)-[*1..2]-(g) RETURN count(*)",
+    ] {
+        let err = translate_bound_plan(q, &schema, &ReadOptions::default()).unwrap_err();
+        assert!(err.contains("not the standard layout (S8)"), "{q}: {err}");
+    }
+}
