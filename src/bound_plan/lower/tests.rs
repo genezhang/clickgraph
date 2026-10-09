@@ -504,7 +504,6 @@ fn what_is_not_lowered_yet() {
         "MATCH (a:User) RETURN [x IN [1, 2] | x * 2] AS l",
         "comprehension",
     );
-    not_lowered("UNWIND [1, 2] AS x RETURN x", "UNWIND");
 }
 
 /// §4.1: the bound-plan path depends on neither the analyzer nor the render
@@ -727,7 +726,7 @@ fn rows_keep_their_order_until_a_match_or_an_aggregation() {
     );
     not_lowered(
         "MATCH (a:User) WITH a ORDER BY a.name WITH DISTINCT a.country AS c LIMIT 2 RETURN c",
-        "SKIP / LIMIT over ordered rows after DISTINCT or aggregation",
+        "SKIP / LIMIT over ordered rows after DISTINCT, aggregation or UNWIND",
     );
 }
 
@@ -787,7 +786,7 @@ fn an_order_the_sql_cannot_keep_is_not_relied_on() {
     not_lowered(
         "MATCH (a:User) WITH a ORDER BY a.name DESC WITH DISTINCT a.country AS c \
          WITH c LIMIT 3 RETURN c",
-        "SKIP / LIMIT over ordered rows after DISTINCT or aggregation",
+        "SKIP / LIMIT over ordered rows after DISTINCT, aggregation or UNWIND",
     );
     not_lowered(
         "MATCH (a:User) WITH a ORDER BY a.name DESC WITH DISTINCT a \
@@ -796,7 +795,7 @@ fn an_order_the_sql_cannot_keep_is_not_relied_on() {
     );
     not_lowered(
         "MATCH (a:User) ORDER BY a.name WITH DISTINCT a.country AS c LIMIT 2 RETURN c",
-        "SKIP / LIMIT over ordered rows after DISTINCT or aggregation",
+        "SKIP / LIMIT over ordered rows after DISTINCT, aggregation or UNWIND",
     );
     // An unordered final RETURN does not rely on it.
     sql("MATCH (a:User) WITH a ORDER BY a.name WITH DISTINCT a.country AS c RETURN c");
@@ -3419,4 +3418,194 @@ graph_schema:
     let part = "JOIN (SELECT * FROM db.a AS e FINAL WHERE ((e.cur = 1))) AS v0 ON \
                 concat('A', ':', toString(v0.id)) = v1.start_id";
     assert!(got.contains(part), "missing `{part}` in\n{got}");
+}
+
+/// S7c: UNWIND repeats each row once per element (`ARRAY JOIN`) in a CTE
+/// exporting the scope plus the element.
+#[test]
+fn an_unwind_repeats_each_row_per_element() {
+    // The one row: the elements in list order.
+    has(
+        "UNWIND [1, 2, 3] AS x RETURN x",
+        &[
+            r#"WITH with_w1 AS ( SELECT __cg_element AS "v0", __cg_position AS "__o0" FROM system.one AS __cg_one ARRAY JOIN [1, 2, 3] AS __cg_element, arrayEnumerate([1, 2, 3]) AS __cg_position )"#,
+            r#"SELECT w1.v0 AS "x" FROM with_w1 AS w1 ORDER BY w1.__o0 ASC"#,
+        ],
+    );
+    // Rows in no order: no position (and no order a later clause may use).
+    has(
+        "MATCH (a:User) UNWIND [1, 2] AS x RETURN a.name, x",
+        &[
+            r#"SELECT v0.user_id AS "v0__user_id", v0.full_name AS "p2_v0_name", __cg_element AS "v1" FROM test_integration.users_test AS v0 ARRAY JOIN [1, 2] AS __cg_element )"#,
+            r#"SELECT w1.p2_v0_name AS "a.name", w1.v1 AS "x" FROM with_w1 AS w1"#,
+        ],
+    );
+    assert!(!sql("MATCH (a:User) UNWIND [1, 2] AS x RETURN a.name, x").contains("ORDER BY"));
+    not_lowered(
+        "MATCH (a:User) UNWIND [1, 2] AS x RETURN x LIMIT 1",
+        "SKIP / LIMIT over ordered rows after DISTINCT, aggregation or UNWIND",
+    );
+    // After an aggregation with no grouping item: one row.
+    has(
+        "MATCH (a:User) WITH collect(a.name) AS ns UNWIND ns AS n RETURN n",
+        &[
+            "FROM with_w1 AS w1 ARRAY JOIN w1.v1 AS __cg_element, arrayEnumerate(w1.v1) AS __cg_position",
+            "ORDER BY w2.__o0 ASC",
+        ],
+    );
+    // A list of lists: each element is a list.
+    has(
+        "UNWIND [[1, 2], [3]] AS l UNWIND l AS x RETURN x",
+        &["ARRAY JOIN w2.v0 AS __cg_element, arrayEnumerate(w2.v0) AS __cg_position"],
+    );
+    // An unwound value ties a later MATCH.
+    has(
+        "UNWIND [1, 2] AS i MATCH (a:User {user_id: i}) RETURN a.name",
+        &["FROM with_w1 AS w1 CROSS JOIN test_integration.users_test AS v1 WHERE v1.user_id = w1.v0"],
+    );
+}
+
+/// S7c: rows in an order keep it, each row's elements after it in list
+/// order: the rows are numbered first.
+#[test]
+fn an_unwind_keeps_the_order_of_ordered_rows() {
+    has(
+        "MATCH (a:User) WITH a ORDER BY a.name UNWIND [1, 2] AS x RETURN a.name, x",
+        &[
+            r#"row_number() OVER (ORDER BY w1.__o0 ASC) AS "__cg_row" FROM with_w1 AS w1 )"#,
+            r#"w2.__cg_row AS "__o0", __cg_position AS "__o1" FROM with_w2 AS w2 ARRAY JOIN [1, 2] AS __cg_element, arrayEnumerate([1, 2]) AS __cg_position )"#,
+            "ORDER BY w3.__o0 ASC, w3.__o1 ASC",
+        ],
+    );
+    // `collect` would rely on that order.
+    not_lowered(
+        "UNWIND [3, 1] AS x RETURN collect(x) AS l",
+        "collect() over ordered rows",
+    );
+}
+
+/// S7c: an empty list or NULL gives no rows; a value that is not a list is
+/// the list of itself (none when NULL); a value of unknown type must be a
+/// list.
+#[test]
+fn an_unwind_of_what_is_not_a_list() {
+    has(
+        "UNWIND [] AS x RETURN x",
+        &[r#"SELECT NULL AS "x" WHERE false"#],
+    );
+    has(
+        "UNWIND null AS x RETURN x",
+        &[r#"SELECT NULL AS "x" WHERE false"#],
+    );
+    // NULL by the schema: a property of an element that matches nothing.
+    has(
+        "MATCH (c:Nope) UNWIND c.tags AS x RETURN count(*)",
+        &["WHERE false"],
+    );
+    // Elements that are all NULL: the value is NULL (ClickHouse cannot
+    // project the element of an `Array(Nothing)`).
+    has(
+        "WITH [] AS l UNWIND l AS x RETURN count(x)",
+        &[
+            "ARRAY JOIN [] AS __cg_element",
+            "CASE WHEN count(*) >= 0 THEN 0 ELSE 0 END",
+        ],
+    );
+    has(
+        "UNWIND 5 AS x RETURN x",
+        &["ARRAY JOIN if(isNull(5), [], [5]) AS __cg_element"],
+    );
+    // `isNull()`, not `IS NULL`: `NOT a IS NULL` is `NOT (a IS NULL)`.
+    has(
+        "MATCH (a:User) UNWIND NOT (a.age > 2) AS b RETURN b",
+        &["ARRAY JOIN if(isNull(NOT v0.age > 2), [], [NOT v0.age > 2]) AS __cg_element"],
+    );
+    // A boolean element shows as true / false.
+    has(
+        "MATCH (a:User) UNWIND [a.age > 2, a.age IS NULL] AS b RETURN b",
+        &[r#"CAST(__cg_element AS Nullable(Bool)) AS "v1""#],
+    );
+    // `split()` of NULL is NULL: no rows (ClickHouse's is `['']`).
+    has(
+        "MATCH (a:User) UNWIND split(a.name, ',') AS s RETURN s",
+        &["ARRAY JOIN CASE WHEN isNull(v0.full_name) OR isNull(',') THEN [] ELSE"],
+    );
+    has(
+        "MATCH (a:User) UNWIND a.name AS x RETURN x",
+        &["ARRAY JOIN arrayConcat(v0.full_name) AS __cg_element"],
+    );
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: typed
+graph_schema:
+  nodes:
+    - label: A
+      database: db
+      table: a
+      node_id: id
+      property_mappings: { id: id, age: age }
+      property_types: { age: integer }
+  edges: []
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let got = lowered(
+        "MATCH (a:A) UNWIND a.age AS x RETURN x",
+        &schema,
+        &LowerOptions::default(),
+    );
+    assert!(
+        got.contains("ARRAY JOIN if(isNull(v0.age), [], [v0.age]) AS __cg_element"),
+        "{got}"
+    );
+}
+
+/// S7c: a list of nodes, relationships or paths, and a property of an
+/// element, are lists S7e lowers.
+#[test]
+fn an_unwind_of_graph_values_is_not_lowered_yet() {
+    not_lowered(
+        "MATCH (a:User) UNWIND [a] AS x RETURN x",
+        "a node or relationship as a value",
+    );
+    not_lowered(
+        "MATCH p = (a:User)-[:FOLLOWS]->(b:User) UNWIND nodes(p) AS n RETURN n",
+        "nodes() of a path other than",
+    );
+    not_lowered(
+        "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) UNWIND r AS x RETURN x",
+        "list other than",
+    );
+    not_lowered(
+        "MATCH (a:User) WITH collect(a) AS l UNWIND l AS x RETURN x",
+        "as a value",
+    );
+    not_lowered(
+        "UNWIND [{k: 1}] AS m RETURN m.k AS k",
+        "a property of a value",
+    );
+}
+
+#[test]
+fn databricks_unwind_is_not_lowered() {
+    use crate::server::query_context::{set_current_schema, with_query_context_sync, QueryContext};
+    let ctx = QueryContext {
+        dialect: crate::sql_generator::SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let got = with_query_context_sync(ctx, || {
+        set_current_schema(std::sync::Arc::new(social()));
+        translate_bound_plan(
+            "UNWIND [1, 2] AS x RETURN x",
+            &social(),
+            &ReadOptions::default(),
+        )
+        .map(|t| t.sql)
+    });
+    assert!(
+        matches!(&got, Err(e) if e.contains("UNWIND in this SQL dialect")),
+        "{got:?}"
+    );
 }

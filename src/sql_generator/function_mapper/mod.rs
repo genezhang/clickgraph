@@ -396,6 +396,11 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// converting them; `None` when the dialect cannot (the union is then not
     /// lowered).
     fn one_type_guard(&self, columns: &[String]) -> Option<String>;
+
+    /// How the dialect spells UNWIND (`bound_plan::lower::Lowerer::unwind`,
+    /// EXPLICIT_SCOPE §4.4, S7c), or `None` when the lowering does not emit
+    /// it (the query stays on the legacy path).
+    fn unwind(&self) -> Option<Unwind>;
 }
 
 /// The dialect's parts of a graph value ([`FunctionMapper::graph_values`]).
@@ -434,6 +439,28 @@ pub(crate) struct GraphValues {
     pub prefixed_texts: fn(&str, &str) -> String,
     /// An empty list when the condition holds, else the list.
     pub empty_if: fn(&str, &str) -> String,
+}
+
+/// The dialect's parts of UNWIND ([`FunctionMapper::unwind`]). A SELECT
+/// repeats each of its rows once per element of a list with `ARRAY JOIN
+/// <list> AS <element>[, <list2> AS <element2>]` (the lists of one row have
+/// one length and are read in step), placed after its joins; a list of no
+/// elements drops the row.
+pub(crate) struct Unwind {
+    /// A table of one row: the FROM of a SELECT that reads no table.
+    pub one_row: &'static str,
+    /// The positions `[1, 2, …]` of the elements of the list `{0}`.
+    pub positions: fn(&str) -> String,
+    /// The list `{0}`, failing the query when it is not a list (ARRAY JOIN
+    /// would repeat a row once per entry of a map).
+    pub list_only: fn(&str) -> String,
+    /// The number of a row in the order of the keys `{0}` (`ORDER BY` text).
+    pub row_number: fn(&str) -> String,
+    /// Whether the value `{0}` is NULL, as a function call (no operator
+    /// precedence to get wrong: `NOT a IS NULL` is `NOT (a IS NULL)`).
+    pub is_null: fn(&str) -> String,
+    /// The list of the value `{0}`, of nothing when it is NULL.
+    pub value_list: fn(&str) -> String,
 }
 
 /// The dialect's parts of a shortest-path search

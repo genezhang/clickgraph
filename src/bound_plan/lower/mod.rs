@@ -49,6 +49,8 @@
 //! * WITH and RETURN with aggregation, DISTINCT, ORDER BY, SKIP, LIMIT and
 //!   (WITH) WHERE, evaluated in that order; free-standing ORDER BY, SKIP and
 //!   LIMIT;
+//! * UNWIND of a list of values (`unwind.rs`, S7c): like a SKIP / LIMIT it
+//!   ends a segment, whose CTE repeats each row per element;
 //! * a final RETURN of values, whole nodes and relationships (`n`, `n.*`)
 //!   and `id(n)`, with the result shape that Bolt, the HTTP graph output and
 //!   embedded `query_graph` read (§4.13, [`ResultColumn`]).
@@ -61,6 +63,7 @@ mod expr;
 mod path;
 #[cfg(test)]
 mod tests;
+mod unwind;
 mod value;
 
 use std::collections::{BTreeSet, HashMap};
@@ -74,9 +77,10 @@ use crate::render_plan::render_expr::{
     PropertyAccess, RenderCase, RenderExpr, TableAlias,
 };
 use crate::render_plan::{
-    ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem, GroupByExpressions, Join,
-    JoinItems, JoinType, LimitItem, OrderByItem, OrderByItems, OrderByOrder, RenderPlan,
-    SelectItem, SelectItems, SkipItem, Union, UnionItems, UnionType, ViewTableRef,
+    ArrayJoin, ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem,
+    GroupByExpressions, Join, JoinItems, JoinType, LimitItem, OrderByItem, OrderByItems,
+    OrderByOrder, RenderPlan, SelectItem, SelectItems, SkipItem, Union, UnionItems, UnionType,
+    ViewTableRef,
 };
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::function_mapper::current_function_mapper;
@@ -182,6 +186,8 @@ pub fn lower_statement(
         elided: HashMap::new(),
         paths: HashMap::new(),
         graph_values: HashMap::new(),
+        kinds: HashMap::new(),
+        one_row: true,
     };
     l.relation(input)?;
     l.finish_relation();
@@ -449,6 +455,11 @@ struct Lowerer<'s> {
     /// Graph values (`value.rs`) the segment's CTE carries, by variable;
     /// each is also in `values`.
     graph_values: HashMap<VarId, Carried>,
+    /// What each projected or unwound value is (`unwind.rs`).
+    kinds: HashMap<VarId, unwind::Kind>,
+    /// The rows so far are at most one (no MATCH yet, or an aggregation with
+    /// no grouping item since).
+    one_row: bool,
 }
 
 /// The elements of a path variable, in path order.
@@ -467,8 +478,9 @@ enum RowOrder {
     /// Sorted by these keys over the current relation.
     Keys(Vec<OrderByItem>),
     /// Neo4j would keep an order here (DISTINCT and aggregation keep the
-    /// first-seen order of their input) that the SQL does not: a later
-    /// clause that relies on it is not lowered.
+    /// first-seen order of their input; UNWIND of rows in no order keeps
+    /// each row's elements together, in list order) that the SQL does not:
+    /// a later clause that relies on it is not lowered.
     Lost,
 }
 
@@ -693,6 +705,8 @@ struct Body {
     determined: Vec<String>,
     skip: Option<i64>,
     limit: Option<i64>,
+    /// An UNWIND's lists, read in step (`unwind.rs`).
+    array_join: Vec<ArrayJoin>,
 }
 
 impl Body {
@@ -741,6 +755,7 @@ impl<'s> Lowerer<'s> {
                 }
                 // Joining other rows to them leaves the rows in no order.
                 self.order = RowOrder::Unordered;
+                self.one_row = false;
                 Ok(())
             }
             BoundOp::Project { input, projection } => {
@@ -749,6 +764,14 @@ impl<'s> Lowerer<'s> {
                 }
                 self.relation(input)?;
                 self.finish_relation();
+                for item in &projection.items {
+                    let kind = self.kind(&item.expr);
+                    self.kinds.insert(item.var, kind);
+                }
+                // Aggregating with no grouping item: one row.
+                if projection.aggregates() && projection.items.iter().all(|i| i.aggregate) {
+                    self.one_row = true;
+                }
                 self.with(projection)
             }
             BoundOp::Sort { input, keys } => {
@@ -770,7 +793,11 @@ impl<'s> Lowerer<'s> {
                 self.finish_relation();
                 self.page(None, Some(*count))
             }
-            BoundOp::Unwind { .. } => unsupported("UNWIND (S7)"),
+            BoundOp::Unwind { input, expr, var } => {
+                self.relation(input)?;
+                self.finish_relation();
+                self.unwind(expr, *var)
+            }
             BoundOp::Union { .. } => unsupported("UNION (S7)"),
         }
     }
@@ -4600,7 +4627,7 @@ impl<'s> Lowerer<'s> {
                 RowOrder::Keys(_) | RowOrder::Lost => {
                     if paged {
                         return unsupported(
-                            "SKIP / LIMIT over ordered rows after DISTINCT or aggregation",
+                            "SKIP / LIMIT over ordered rows after DISTINCT, aggregation or UNWIND",
                         );
                     }
                     body.order_lost = true;
@@ -4934,7 +4961,9 @@ impl<'s> Lowerer<'s> {
             RowOrder::Keys(keys) => keys.clone(),
             RowOrder::Unordered => Vec::new(),
             RowOrder::Lost => {
-                return unsupported("SKIP / LIMIT over ordered rows after DISTINCT or aggregation")
+                return unsupported(
+                    "SKIP / LIMIT over ordered rows after DISTINCT, aggregation or UNWIND",
+                )
             }
         };
         let mut body = Body {
@@ -4944,8 +4973,19 @@ impl<'s> Lowerer<'s> {
             ..Body::default()
         };
         let mut exports = Exports::default();
-        // The scope: every named element and value of this segment, and the
-        // elements of a named path (its length reads them).
+        self.export_scope(&alias, &mut body, &mut exports)?;
+        self.close_segment(body, exports, alias)
+    }
+
+    /// Export the scope unchanged from the CTE aliased `alias` of the rows
+    /// so far: every named element and value of this segment, and the
+    /// elements of a named path (its length reads them).
+    fn export_scope(
+        &self,
+        alias: &str,
+        body: &mut Body,
+        exports: &mut Exports<'s>,
+    ) -> Result<(), LowerError> {
         let in_named_path = |v: &VarId| {
             self.paths.iter().any(|(p, e)| {
                 self.binding(*p).name.is_some() && (e.nodes.contains(v) || e.rels.contains(v))
@@ -4969,8 +5009,8 @@ impl<'s> Lowerer<'s> {
                         ty: c.ty,
                         nullable: c.nullable,
                     };
-                    let carried = value::export_graph(v, value, &alias, &mut body, false);
-                    exports.values.push((v, col_at(&alias, &v.name())));
+                    let carried = value::export_graph(v, value, alias, body, false);
+                    exports.values.push((v, col_at(alias, &v.name())));
                     exports.graph.push((v, carried));
                     continue;
                 }
@@ -4978,14 +5018,14 @@ impl<'s> Lowerer<'s> {
                     exports.values.push((v, e));
                 } else {
                     body.select.push(select(e, &v.name()));
-                    exports.values.push((v, col_at(&alias, &v.name())));
+                    exports.values.push((v, col_at(alias, &v.name())));
                 }
                 continue;
             }
-            let scan = self.export_element(v, v, &alias, &mut body, &mut Vec::new())?;
+            let scan = self.export_element(v, v, alias, body, &mut Vec::new())?;
             exports.scans.push((v, scan));
         }
-        self.close_segment(body, exports, alias)
+        Ok(())
     }
 
     fn next_cte_alias(&self) -> String {
@@ -5216,6 +5256,7 @@ impl<'s> Lowerer<'s> {
             order_by: OrderByItems(body.order_by),
             skip: SkipItem(body.skip),
             limit: LimitItem(body.limit),
+            array_join: ArrayJoinItem(body.array_join),
             ..empty_plan()
         }
     }
