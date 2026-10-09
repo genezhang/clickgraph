@@ -214,10 +214,9 @@ struct LoweredQuery {
     /// The final SELECT, without CTEs.
     plan: RenderPlan,
     shape: Vec<ResultColumn>,
-    /// A returned node or relationship's identity is not all among its
-    /// returned columns: rows equal in every column can be different
-    /// elements.
-    identity_unreturned: bool,
+    /// The identity of each node or relationship the RETURN returns as its
+    /// columns, by item name.
+    identities: Vec<(String, Vec<RenderExpr>)>,
 }
 
 impl Query<'_> {
@@ -248,7 +247,7 @@ impl Query<'_> {
             graph_values: HashMap::new(),
             kinds: HashMap::new(),
             one_row: true,
-            identity_unreturned: false,
+            identities: Vec::new(),
         };
         let lowered = l
             .relation(input)
@@ -259,7 +258,7 @@ impl Query<'_> {
         Ok(LoweredQuery {
             plan,
             shape,
-            identity_unreturned: l.identity_unreturned,
+            identities: l.identities,
         })
     }
 }
@@ -528,9 +527,9 @@ struct Lowerer<'s> {
     /// The rows so far are at most one (no MATCH yet, or an aggregation with
     /// no grouping item since).
     one_row: bool,
-    /// The final RETURN returns an element whose identity is not all among
-    /// its returned columns.
-    identity_unreturned: bool,
+    /// The identity of each node or relationship the final RETURN returns
+    /// as its columns, by item name ([`LoweredQuery::identities`]).
+    identities: Vec<(String, Vec<RenderExpr>)>,
 }
 
 /// The elements of a path variable, in path order.
@@ -4773,12 +4772,12 @@ impl<'s> Lowerer<'s> {
         let Some(identity) = self.identity(src)? else {
             return unsupported(format!("internal: {src} has columns but no identity"));
         };
+        self.identities.push((name.to_string(), identity.clone()));
         let unreturned: Vec<RenderExpr> = identity
             .iter()
             .filter(|i| !columns.iter().any(|(_, e)| e == *i))
             .cloned()
             .collect();
-        self.identity_unreturned |= !unreturned.is_empty();
         if body.distinct && !unreturned.is_empty() {
             // Rows equal in every returned column can be different elements
             // (a relationship whose `edge_id` is not a property): DISTINCT
@@ -5669,9 +5668,16 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
     let mut add = |v: VarId, prop: &str| {
         demand.entry(v).or_default().insert(prop.to_string());
     };
-    // A node or relationship the final RETURN returns whole: every property
-    // (`v.*` is a property ref).
-    if let BoundOp::Project { projection, .. } = &stmt.plan {
+    // A node or relationship a final RETURN (the statement's, or a UNION
+    // arm's) returns whole: every property (`v.*` is a property ref).
+    let finals = match &stmt.plan {
+        BoundOp::Union { arms, .. } => arms.iter().collect(),
+        op => vec![op],
+    };
+    for op in finals {
+        let BoundOp::Project { projection, .. } = op else {
+            continue;
+        };
         for it in projection.items.iter().filter(|i| !i.aggregate) {
             if let LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(n)) =
                 &it.expr

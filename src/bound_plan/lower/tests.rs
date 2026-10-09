@@ -3700,7 +3700,7 @@ fn a_union_of_elements() {
         sql.contains(r#"SELECT any(w3.__cg_c0) AS "a.age","#)
             // The node's columns keep their types; the value is any type.
             && sql.contains(r#"SELECT w1.__cg_w1_c0 AS "__cg_c0","#)
-            && sql.contains(r#"CAST(w2.__cg_w2_c8, 'Dynamic') AS "__cg_c8" FROM with_w2 AS w2"#),
+            && sql.contains(r#"CAST(w2.__cg_w2_c8, 'Dynamic') AS "__cg_c8", w2.__cg_w2_k0 AS "__cg_k0" FROM with_w2 AS w2"#),
         "{sql}"
     );
     let (_, shape) = shaped(
@@ -3727,18 +3727,32 @@ fn a_union_of_columns_read_differently_is_not_lowered() {
         "MATCH (a:User) RETURN id(a) AS x UNION ALL MATCH (p:Post) RETURN id(p) AS x",
         "UNION column `x` of a different kind or label in another arm",
     );
-    // Rows equal in every column can be different relationships (the
-    // `edge_id` is not a property): UNION (DISTINCT) is not lowered, UNION
-    // ALL is.
-    let union = "MATCH (:U)-[k:K]->(:U) RETURN k UNION MATCH (:U)-[k:K]->(:U) RETURN k";
-    assert!(
-        matches!(
-            translate_bound_plan(union, &shapes_schema(), &ReadOptions::default()),
-            Err(e) if e.contains("whose identity is not among its returned columns")
-        ),
-        "{union}"
+}
+
+/// UNION groups by each returned element's identity too: rows equal in
+/// every returned column can be different relationships (the `edge_id` is
+/// not a property).
+#[test]
+fn a_union_keeps_elements_apart_by_identity() {
+    let (sql, _) = shaped(
+        "MATCH (:U)-[k:K]->(:U) RETURN k, 1 AS one UNION MATCH (:U)-[k:K]->(:U) RETURN k, 1 AS one",
+        &shapes_schema(),
     );
-    shaped(&union.replace("UNION", "UNION ALL"), &shapes_schema());
+    assert!(
+        sql.contains(r#"v1.weight AS "__cg_w1_c2", 1 AS "__cg_w1_c3", v1.kid AS "__cg_w1_k0" FROM"#)
+            && sql.contains(r#"w2.__cg_w2_k0 AS "__cg_k0" FROM with_w2 AS w2"#)
+            // An element's columns are grouped by as they are, a value by
+            // its key.
+            && sql.contains(r#"GROUP BY w3.__cg_c0, w3.__cg_c1, w3.__cg_c2, tuple(multiIf("#)
+            && sql.ends_with(r#"toString(w3.__cg_c3)), w3.__cg_k0"#),
+        "{sql}"
+    );
+    // UNION ALL needs no identity.
+    let (sql, _) = shaped(
+        "MATCH (:U)-[k:K]->(:U) RETURN k UNION ALL MATCH (:U)-[k:K]->(:U) RETURN k",
+        &shapes_schema(),
+    );
+    assert!(!sql.contains("__cg_k0"), "{sql}");
 }
 
 #[test]
@@ -3761,4 +3775,21 @@ fn databricks_union_is_not_lowered() {
         matches!(&got, Err(e) if e.contains("UNION in this SQL dialect")),
         "{got:?}"
     );
+}
+
+#[test]
+#[ignore]
+fn tmp_why() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        &std::fs::read_to_string(std::env::var("WHY_SCHEMA").unwrap()).unwrap(),
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    for q in std::env::var("WHY_Q").unwrap().split(";;") {
+        println!(
+            "{q}\n  => {:?}",
+            translate_bound_plan(q, &schema, &ReadOptions::default()).map(|_| "lowered")
+        );
+    }
 }

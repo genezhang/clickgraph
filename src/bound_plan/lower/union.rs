@@ -20,9 +20,10 @@
 //!   returns each arm's rows in turn, in their order.
 //! * UNION: one row per group of rows equal in every column by
 //!   `CypherUnion::distinct_key` (Cypher's DISTINCT: `1` equals `1.0`, not
-//!   `true` or `'1'`). A node or relationship is equal by its columns, so an
-//!   element whose identity is not among its returned columns is not
-//!   lowered. The result has no order.
+//!   `true` or `'1'`), and of the same nodes and relationships: each arm's
+//!   CTE also exports the identity of each one it returns as columns (rows
+//!   equal in every returned column can be different relationships, whose
+//!   `edge_id` is not a property). The result has no order.
 
 use std::collections::HashMap;
 
@@ -44,11 +45,13 @@ use crate::bound_plan::types::{BoundOp, ProjItem, VarId};
 /// key `k` (`__cg_o{i}_{k}`).
 const ARM: &str = "__cg_arm";
 
-/// One arm's CTE: its alias, and the order of each sort key it exports
-/// (none unless the rows are ordered and the UNION is ALL).
+/// One arm's CTE: its alias, the order of each sort key it exports (none
+/// unless the rows are ordered and the UNION is ALL), and the number of
+/// identity columns it exports (none unless the UNION is DISTINCT).
 struct Arm {
     alias: String,
     keys: Vec<OrderByOrder>,
+    identity_columns: usize,
 }
 
 /// Lower the UNION of `arms`, arm `i` returning the bindings
@@ -72,13 +75,8 @@ pub(super) fn lower(
         let LoweredQuery {
             mut plan,
             shape,
-            identity_unreturned,
+            identities,
         } = q.lower(arm, &mut ctes)?;
-        if !all && identity_unreturned {
-            return unsupported(
-                "UNION of a node or relationship whose identity is not among its returned columns",
-            );
-        }
         let shape = in_union_order(shape, &projection.items, columns)?;
         if let Some(first) = &first {
             same_kinds(first, &shape)?;
@@ -102,6 +100,26 @@ pub(super) fn lower(
         if !items.is_empty() {
             return unsupported("internal: a RETURN column outside the result shape");
         }
+        // Each returned element's identity, in the UNION's column order (one
+        // label or type per column, so as many columns in every arm).
+        let mut identity_columns = 0;
+        if !all {
+            for c in &shape {
+                if !matches!(c.kind, ResultKind::Node { .. } | ResultKind::Rel { .. }) {
+                    continue;
+                }
+                let Some((_, identity)) = identities.iter().find(|(n, _)| *n == c.name) else {
+                    return unsupported(format!("internal: no identity of {}", c.name));
+                };
+                for e in identity {
+                    plan.select.items.push(select(
+                        e.clone(),
+                        &format!("__cg_{alias}_k{identity_columns}"),
+                    ));
+                    identity_columns += 1;
+                }
+            }
+        }
         // The CTE exports the sort keys (`close_segment`); it needs an ORDER
         // BY only for its SKIP / LIMIT.
         let mut keys = Vec::new();
@@ -122,24 +140,34 @@ pub(super) fn lower(
             CteContent::Structured(Box::new(plan)),
             false,
         ));
-        lowered.push(Arm { alias, keys });
+        if lowered
+            .first()
+            .is_some_and(|a| a.identity_columns != identity_columns)
+        {
+            return unsupported("internal: UNION arms of different identity columns");
+        }
+        lowered.push(Arm {
+            alias,
+            keys,
+            identity_columns,
+        });
         first.get_or_insert(shape);
     }
     let shape = first.ok_or_else(|| LowerError::Unsupported("internal: no UNION arm".into()))?;
-    let values: Vec<bool> = shape
+    let kinds: Vec<&ResultKind> = shape
         .iter()
-        .flat_map(|c| c.columns.iter().map(|_| c.kind == ResultKind::Value))
+        .flat_map(|c| c.columns.iter().map(|_| &c.kind))
         .collect();
     let ordered = lowered.iter().any(|a| !a.keys.is_empty());
     let mut selects = Vec::new();
     for (i, arm) in lowered.iter().enumerate() {
         let a = &arm.alias;
-        let mut items: Vec<SelectItem> = values
+        let mut items: Vec<SelectItem> = kinds
             .iter()
             .enumerate()
-            .map(|(n, value)| {
+            .map(|(n, kind)| {
                 let column = col_at(a, &format!("__cg_{a}_c{n}"));
-                let e = if *value {
+                let e = if **kind == ResultKind::Value {
                     RenderExpr::Raw((spelling.any_type)(&render_expr_to_sql_plain(&column)))
                 } else {
                     column
@@ -147,6 +175,10 @@ pub(super) fn lower(
                 select(e, &format!("__cg_c{n}"))
             })
             .collect();
+        items.extend(
+            (0..arm.identity_columns)
+                .map(|m| select(col_at(a, &format!("__cg_{a}_k{m}")), &format!("__cg_k{m}"))),
+        );
         if ordered {
             items.push(select(RenderExpr::Literal(Literal::Integer(i as i64)), ARM));
             for (j, other) in lowered.iter().enumerate() {
@@ -183,25 +215,35 @@ pub(super) fn lower(
         false,
     ));
     // The final SELECT: the UNION's columns, named as the first arm's.
+    // UNION: grouped by each value's key; a node, relationship or `id()`
+    // column is of one type in every arm, and grouped by as it is.
     let names = shape.iter().flat_map(|c| c.columns.iter().map(|(_, n)| n));
     let mut plan = RenderPlan {
         from: FromTableItem(Some(table_ref(format!("with_{u}"), &u))),
         ..empty_plan()
     };
-    for (n, name) in names.enumerate() {
+    for ((n, name), kind) in names.enumerate().zip(&kinds) {
         let column = col_at(&u, &format!("__cg_c{n}"));
         if all {
             plan.select.items.push(select(column, name));
-        } else {
-            let sql = render_expr_to_sql_plain(&column);
-            plan.select
-                .items
-                .push(select(RenderExpr::Raw((spelling.any)(&sql)), name));
-            plan.group_by
-                .0
-                .push(RenderExpr::Raw((spelling.distinct_key)(&sql)));
+            continue;
         }
+        let sql = render_expr_to_sql_plain(&column);
+        plan.select
+            .items
+            .push(select(RenderExpr::Raw((spelling.any)(&sql)), name));
+        plan.group_by.0.push(match kind {
+            ResultKind::Value | ResultKind::Graph(_) => {
+                RenderExpr::Raw((spelling.distinct_key)(&sql))
+            }
+            ResultKind::Node { .. } | ResultKind::Rel { .. } | ResultKind::NodeId { .. } => column,
+        });
     }
+    // Identity columns are of one type in every arm.
+    let identity_columns = lowered.first().map_or(0, |a| a.identity_columns);
+    plan.group_by
+        .0
+        .extend((0..identity_columns).map(|m| col_at(&u, &format!("__cg_k{m}"))));
     if ordered {
         plan.order_by.0.push(OrderByItem {
             expression: col_at(&u, ARM),
