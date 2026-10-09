@@ -49,6 +49,8 @@
 //! * WITH and RETURN with aggregation, DISTINCT, ORDER BY, SKIP, LIMIT and
 //!   (WITH) WHERE, evaluated in that order; free-standing ORDER BY, SKIP and
 //!   LIMIT;
+//! * UNWIND of a list of values (`unwind.rs`, S7c): like a SKIP / LIMIT it
+//!   ends a segment, whose CTE repeats each row per element;
 //! * a final RETURN of values, whole nodes and relationships (`n`, `n.*`)
 //!   and `id(n)`, with the result shape that Bolt, the HTTP graph output and
 //!   embedded `query_graph` read (§4.13, [`ResultColumn`]).

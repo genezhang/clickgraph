@@ -362,6 +362,46 @@ The binder walks the clause list once, keeping the *current scope*:
     scope. A map projection `n{.*}` demands all of `n`'s properties.
 - **UNWIND.** Adds a `Value` binding (a whole node or relationship when the
   element type is known).
+
+  **Implemented in S7c** (`bound_plan/lower/unwind.rs`), for a list of values:
+  - **Rows.** UNWIND ends a segment like a SKIP / LIMIT: the rows so far
+    become a CTE whose SELECT repeats each row once per element (ClickHouse
+    `ARRAY JOIN`, after the joins) and exports the scope plus the element. A
+    first UNWIND reads the one-row table. The spelling comes from
+    `FunctionMapper::unwind`; Databricks has none, so UNWIND stays on the
+    legacy path there.
+  - **What is a list** is decided from the expression (`Kind`): a list
+    literal, `collect`, `range`, `split`, `keys`, a slice, a projected or
+    unwound value of those. An empty list literal or NULL gives no rows (an
+    empty relation: ClickHouse refuses `ARRAY JOIN []` and a NULL array). A
+    literal, an arithmetic or comparison, or a property whose type the schema
+    declares is not a list: it is the list of itself, or of nothing when NULL
+    (`CASE WHEN e IS NULL THEN [] ELSE [e] END`). A value of unknown type (a
+    parameter, an undeclared property, a function the classifier does not
+    know) is read as a list through `arrayConcat`, which fails the query when
+    it is not one. Without that check a map would silently become one row
+    per entry.
+  - **Order.** Neo4j emits each row's elements together, in list order.
+    - One input row (no MATCH yet, or an aggregation with no grouping item
+      since): the rows are ordered by the element's position.
+    - Rows in an order (after an ORDER BY): the rows are numbered in that
+      order first (`row_number()`, one more CTE), then ordered by number,
+      then by position.
+    - Several rows in no order: the order is `Lost`, so a later SKIP / LIMIT
+      or `collect()` that relies on it is not lowered. (Collecting over
+      ordered rows is not lowered either.)
+  - **Not lowered:** a list of nodes, relationships or paths (`[a]`,
+    `nodes(p)`, `-[r*]->`, `collect(n)`), and a property of an element
+    (`m.k` of a map), both S7e; UNWIND in the Databricks dialect.
+  - **Known gaps:**
+    - A map literal's values are strings (`RETURN {a: 1}` on the new path
+      too, from S4).
+    - `+` of strings from an UNWIND is ClickHouse `plus` (Code 43, loud): the
+      element's type is not known.
+    - A shape only the clause-list parser takes, such as
+      `MATCH .. UNWIND .. MATCH ..` or two UNWINDs after a WITH, still fails
+      to parse on the server. The seam parses with the legacy parser first,
+      until slice 10.
 - **UNION.** Each arm is bound from an empty scope. Output names must match.
 - **Subquery expressions.** A child scope whose parent is the current scope.
   The parent's variables used inside become the subquery's **correlation
