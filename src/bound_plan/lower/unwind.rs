@@ -240,9 +240,10 @@ impl<'s> Lowerer<'s> {
             (_, Kind::Null) => true,
             _ => false,
         };
-        if empty {
-            // An expression can still be refused (a node in a list).
-            self.expr(expr, &HashMap::new())?;
+        // An expression can still be refused (a node in a list), and can be
+        // NULL by the schema (a property of an element that matches nothing).
+        let probe = self.expr(expr, &HashMap::new())?;
+        if empty || matches!(probe, RenderExpr::Literal(Literal::Null)) {
             self.empty = true;
             self.values.insert(var, RenderExpr::Literal(Literal::Null));
             return Ok(());
@@ -267,12 +268,21 @@ impl<'s> Lowerer<'s> {
         let mut body = Body::default();
         let mut exports = Exports::default();
         self.export_scope(&alias, &mut body, &mut exports)?;
-        let value = match element {
-            Kind::Boolean => RenderExpr::Raw(current_function_mapper().cast_bool(ELEMENT)),
-            _ => RenderExpr::TableAlias(TableAlias(ELEMENT.to_string())),
-        };
-        body.select.push(select(value, &var.name()));
-        exports.values.push((var, col_at(&alias, &var.name())));
+        match element {
+            // Every element is NULL (ClickHouse cannot project the element
+            // of a list typed `Array(Nothing)`).
+            Kind::Null => exports
+                .values
+                .push((var, RenderExpr::Literal(Literal::Null))),
+            _ => {
+                let value = match element {
+                    Kind::Boolean => RenderExpr::Raw(current_function_mapper().cast_bool(ELEMENT)),
+                    _ => RenderExpr::TableAlias(TableAlias(ELEMENT.to_string())),
+                };
+                body.select.push(select(value, &var.name()));
+                exports.values.push((var, col_at(&alias, &var.name())));
+            }
+        }
         // The rows' order: each row's elements follow it, in list order.
         let keys = match &self.order {
             RowOrder::Keys(keys) => Some(keys.clone()),

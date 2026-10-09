@@ -3497,6 +3497,20 @@ fn an_unwind_of_what_is_not_a_list() {
         "UNWIND null AS x RETURN x",
         &[r#"SELECT NULL AS "x" WHERE false"#],
     );
+    // NULL by the schema: a property of an element that matches nothing.
+    has(
+        "MATCH (c:Nope) UNWIND c.tags AS x RETURN count(*)",
+        &["WHERE false"],
+    );
+    // Elements that are all NULL: the value is NULL (ClickHouse cannot
+    // project the element of an `Array(Nothing)`).
+    has(
+        "WITH [] AS l UNWIND l AS x RETURN count(x)",
+        &[
+            "ARRAY JOIN [] AS __cg_element",
+            "CASE WHEN count(*) >= 0 THEN 0 ELSE 0 END",
+        ],
+    );
     has(
         "UNWIND 5 AS x RETURN x",
         &["ARRAY JOIN if(isNull(5), [], [5]) AS __cg_element"],
