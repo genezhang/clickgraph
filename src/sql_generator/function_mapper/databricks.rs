@@ -275,6 +275,12 @@ impl FunctionMapper for DatabricksFunctionMapper {
         None
     }
 
+    fn one_type_guard(&self, _column: &str) -> Option<String> {
+        // Spark widens a union's column to a common type (a number and a
+        // string to a string), which compares differently.
+        None
+    }
+
     fn graph_values(&self) -> Option<super::GraphValues> {
         // Spark's arrays and maps hold one type: a path (nodes and
         // relationships) or a list of nodes of different labels needs a

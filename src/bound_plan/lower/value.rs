@@ -723,7 +723,7 @@ impl<'s> Lowerer<'s> {
         let id = sql(&self.node_id_value(v)?);
         let mut props = Vec::new();
         for name in self.all_property_names(v) {
-            let e = self.property(v, &name)?;
+            let e = self.own_property(v, &name)?;
             props.push((name, sql(&e)));
         }
         match self.scans.get(&v) {
