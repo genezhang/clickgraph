@@ -482,6 +482,8 @@ pub(crate) struct CypherUnion {
     pub distinct_key: fn(&str) -> String,
     /// An aggregate: any one of a group's values of `{0}`.
     pub any: fn(&str) -> String,
+    /// The number of a row in the order of the keys `{0}` (`ORDER BY` text).
+    pub row_number: fn(&str) -> String,
 }
 
 /// The dialect's parts of a shortest-path search

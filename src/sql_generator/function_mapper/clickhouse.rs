@@ -258,6 +258,7 @@ impl FunctionMapper for ClickhouseFunctionMapper {
                 )
             },
             any: |v| format!("any({v})"),
+            row_number: |keys| format!("row_number() OVER (ORDER BY {keys})"),
         })
     }
 

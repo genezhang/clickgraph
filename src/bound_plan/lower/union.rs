@@ -16,8 +16,10 @@
 //!   in every arm (otherwise the UNION is not lowered), and keep their
 //!   columns' types.
 //! * UNION ALL: when an arm's rows are ordered (an ORDER BY), the result is
-//!   ordered by arm, then by that arm's sort keys, exported by its CTE: Neo4j
-//!   returns each arm's rows in turn, in their order.
+//!   ordered by arm, then by row: each arm's SELECT numbers its rows in the
+//!   order of the sort keys its CTE exports (after the arm's own DISTINCT and
+//!   LIMIT). Neo4j returns each arm's rows in turn, in their order. The keys
+//!   stay in their arm, so arms need not have keys of one type.
 //! * UNION: one row per group of rows equal in every column by
 //!   `CypherUnion::distinct_key` (Cypher's DISTINCT: `1` equals `1.0`, not
 //!   `true` or `'1'`), and of the same nodes and relationships: each arm's
@@ -35,7 +37,9 @@ use crate::render_plan::{
     Cte, CteContent, CteItems, FromTableItem, OrderByItem, OrderByOrder, RenderPlan, SelectItem,
     SelectItems, Union, UnionItems, UnionType,
 };
-use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
+use crate::sql_generator::emitters::clickhouse::to_sql_query::{
+    order_keys_to_sql_plain, render_expr_to_sql_plain,
+};
 use crate::sql_generator::function_mapper::current_function_mapper;
 
 use super::{
@@ -44,16 +48,17 @@ use super::{
 };
 use crate::bound_plan::types::{BoundOp, ProjItem, VarId};
 
-/// The UNION's column of arm rows' order (`__cg_arm`), and of arm `i`'s sort
-/// key `k` (`__cg_o{i}_{k}`).
+/// The UNION's columns of its rows' order: the arm, and the row's number in
+/// its arm.
 const ARM: &str = "__cg_arm";
+const ROW: &str = "__cg_row";
 
-/// One arm's CTE: its alias, the order of each sort key it exports (none
-/// unless the rows are ordered and the UNION is ALL), and the number of
-/// identity columns it exports (none unless the UNION is DISTINCT).
+/// One arm's CTE: its alias, the sort keys it exports (none unless the rows
+/// are ordered and the UNION is ALL), and the number of identity columns it
+/// exports (none unless the UNION is DISTINCT).
 struct Arm {
     alias: String,
-    keys: Vec<OrderByOrder>,
+    keys: Vec<OrderByItem>,
     identity_columns: usize,
 }
 
@@ -128,11 +133,14 @@ pub(super) fn lower(
         let mut keys = Vec::new();
         if all {
             for (k, key) in plan.order_by.0.iter().enumerate() {
-                plan.select.items.push(select(
-                    key.expression.clone(),
-                    &format!("__cg_{alias}_o{k}"),
-                ));
-                keys.push(key.order.clone());
+                let name = format!("__cg_{alias}_o{k}");
+                plan.select
+                    .items
+                    .push(select(key.expression.clone(), &name));
+                keys.push(OrderByItem {
+                    expression: col_at(&alias, &name),
+                    order: key.order.clone(),
+                });
             }
         }
         if plan.skip.0.is_none() && plan.limit.0.is_none() {
@@ -186,16 +194,12 @@ pub(super) fn lower(
         );
         if ordered {
             items.push(select(RenderExpr::Literal(Literal::Integer(i as i64)), ARM));
-            for (j, other) in lowered.iter().enumerate() {
-                for k in 0..other.keys.len() {
-                    let e = if i == j {
-                        col_at(a, &format!("__cg_{a}_o{k}"))
-                    } else {
-                        RenderExpr::Literal(Literal::Null)
-                    };
-                    items.push(select(e, &format!("__cg_o{j}_{k}")));
-                }
-            }
+            let row = if arm.keys.is_empty() {
+                RenderExpr::Literal(Literal::Integer(0))
+            } else {
+                RenderExpr::Raw((spelling.row_number)(&order_keys_to_sql_plain(&arm.keys)))
+            };
+            items.push(select(row, ROW));
         }
         selects.push(RenderPlan {
             select: SelectItems {
@@ -250,18 +254,13 @@ pub(super) fn lower(
         .0
         .extend((0..identity_columns).map(|m| col_at(&u, &format!("__cg_k{m}"))));
     if ordered {
-        plan.order_by.0.push(OrderByItem {
-            expression: col_at(&u, ARM),
-            order: OrderByOrder::Asc,
-        });
-        for (j, arm) in lowered.iter().enumerate() {
-            for (k, order) in arm.keys.iter().enumerate() {
-                plan.order_by.0.push(OrderByItem {
-                    expression: col_at(&u, &format!("__cg_o{j}_{k}")),
-                    order: order.clone(),
-                });
-            }
-        }
+        plan.order_by.0 = [ARM, ROW]
+            .iter()
+            .map(|c| OrderByItem {
+                expression: col_at(&u, c),
+                order: OrderByOrder::Asc,
+            })
+            .collect();
     }
     plan.ctes = CteItems(ctes);
     Ok(Lowered { plan, shape })

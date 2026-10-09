@@ -3660,8 +3660,9 @@ fn a_union_arm_orders_and_pages_its_own_rows() {
             // The first arm has no order.
             r#"with_w1 AS ( SELECT v0.full_name AS "__cg_w1_c0" FROM test_integration.users_test AS v0 )"#,
             r#"with_w2 AS ( SELECT v2.full_name AS "__cg_w2_c0", v2.full_name AS "__cg_w2_o0" FROM test_integration.users_test AS v2 ORDER BY v2.full_name DESC NULLS FIRST LIMIT 2)"#,
-            r#"SELECT CAST(w1.__cg_w1_c0, 'Dynamic') AS "__cg_c0", 0 AS "__cg_arm", NULL AS "__cg_o1_0" FROM with_w1 AS w1 UNION ALL SELECT CAST(w2.__cg_w2_c0, 'Dynamic') AS "__cg_c0", 1 AS "__cg_arm", w2.__cg_w2_o0 AS "__cg_o1_0" FROM with_w2 AS w2"#,
-            r#"ORDER BY w3.__cg_arm ASC, w3.__cg_o1_0 DESC NULLS FIRST"#,
+            // Each arm's rows numbered in its order, after its LIMIT.
+            r#"SELECT CAST(w1.__cg_w1_c0, 'Dynamic') AS "__cg_c0", 0 AS "__cg_arm", 0 AS "__cg_row" FROM with_w1 AS w1 UNION ALL SELECT CAST(w2.__cg_w2_c0, 'Dynamic') AS "__cg_c0", 1 AS "__cg_arm", row_number() OVER (ORDER BY w2.__cg_w2_o0 DESC NULLS FIRST) AS "__cg_row" FROM with_w2 AS w2"#,
+            r#"ORDER BY w3.__cg_arm ASC, w3.__cg_row ASC"#,
         ],
     );
     // An ordered arm with no SKIP / LIMIT needs no ORDER BY in its CTE.
