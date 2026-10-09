@@ -231,8 +231,8 @@ enum Scan<'s> {
     /// A variable-length relationship: a relation of paths (`path.rs`),
     /// read from the CTE `cte`.
     Path {
-        schema: &'s RelationshipSchema,
-        rel_type: String,
+        /// The relationships it walks.
+        walked: Walked<'s>,
         cte: String,
         at: At,
         /// It has a `path_edges` column.
@@ -255,6 +255,27 @@ enum Scan<'s> {
     },
     /// An element whose label / type set is empty: it matches nothing.
     Impossible,
+}
+
+/// The relationships a variable-length relationship walks ([`Scan::Path`]).
+#[derive(Debug, Clone)]
+enum Walked<'s> {
+    /// One definition between nodes of its one label: its table, walked by
+    /// the generator (`path::path_cte`); a path's nodes are ids.
+    One {
+        schema: &'s RelationshipSchema,
+        rel_type: String,
+    },
+    /// The definitions of its types, between nodes of any labels (§4.6
+    /// `Alternatives`, S7b3): a relation of them walked from node to node by
+    /// label and id (`path::union_path_ctes`). `arms` are the definitions,
+    /// in the orientations the walk follows them, that a path between its
+    /// ends can use; decided with the walk (none before, and none when only
+    /// the path of none can match).
+    Union {
+        types: BTreeSet<String>,
+        arms: Vec<RelArm<'s>>,
+    },
 }
 
 /// One arm of a relationship of several possible types or label pairs
@@ -331,8 +352,7 @@ impl<'s> Scan<'s> {
             },
             Scan::Rels { arms, cte, of, .. } => Scan::Rels { arms, cte, of, at },
             Scan::Path {
-                schema,
-                rel_type,
+                walked,
                 cte,
                 edges,
                 nodes,
@@ -343,8 +363,7 @@ impl<'s> Scan<'s> {
                 rel_values,
                 ..
             } => Scan::Path {
-                schema,
-                rel_type,
+                walked,
                 cte,
                 at,
                 edges,
@@ -487,6 +506,13 @@ const REL_END_LABEL: &str = "__cg_end_label";
 /// The column of a relationship's orientation ([`Lowerer::turns`]): 1 where
 /// a row reads it reversed.
 const TURN: &str = "__cg_turn";
+/// An element's identity as a text, with its label or definition
+/// (`value::node_key_text` / `value::rel_key`), in the rows of a union of
+/// relationships and of a walk's nodes: how a path's identity spells it.
+const KEY: &str = "__cg_key";
+/// An element's value (`value.rs`) in the rows of a walk's nodes and
+/// relationships.
+const ELEMENT_VALUE: &str = "__cg_value";
 
 fn indexed_column(side: &str, i: usize) -> String {
     format!("{side}_{i}")
@@ -2109,10 +2135,25 @@ impl<'s> Lowerer<'s> {
     /// (undirected) reads a self-loop once, as stored, as Neo4j matches it
     /// once.
     fn rel_union(&mut self, v: VarId, arms: &[RelArm<'s>]) -> Result<String, LowerError> {
+        let props = self.rel_union_props(v, arms);
+        self.rel_union_of(v, arms, &props, false)
+    }
+
+    /// [`Self::rel_union`] carrying the properties `props`, and with `values`
+    /// each row's relationship as a value (`ELEMENT_VALUE`, for a walk).
+    /// Each row also carries its identity as a text (`KEY`) where the
+    /// dialect spells one.
+    fn rel_union_of(
+        &mut self,
+        v: VarId,
+        arms: &[RelArm<'s>],
+        props: &BTreeSet<String>,
+        values: bool,
+    ) -> Result<String, LowerError> {
         let name = format!("{}_rels", v.name());
         let shape = rel_union_shape(arms)?;
         const ROW: &str = "e";
-        let props = self.rel_union_props(v, arms);
+        let g = current_function_mapper().graph_values();
         let string = |s: &str| RenderExpr::Literal(Literal::String(s.to_string()));
         let definitions: Vec<(&String, Vec<Option<usize>>)> = props
             .iter()
@@ -2155,6 +2196,28 @@ impl<'s> Lowerer<'s> {
             }
             items.push(select(string(left), REL_START_LABEL));
             items.push(select(string(right), REL_END_LABEL));
+            if let Some(g) = &g {
+                let ids: Vec<String> = identity
+                    .iter()
+                    .map(|c| render_expr_to_sql_plain(&col_at(ROW, c)))
+                    .collect();
+                items.push(select(
+                    RenderExpr::Raw(value::rel_key(
+                        g,
+                        &arm.rel_type,
+                        &rs.from_node,
+                        &rs.to_node,
+                        &ids,
+                    )),
+                    KEY,
+                ));
+                if values {
+                    items.push(select(
+                        RenderExpr::Raw(value::table_rel_object(g, rs, &arm.rel_type, ROW)?),
+                        ELEMENT_VALUE,
+                    ));
+                }
+            }
             for (p, defs) in &definitions {
                 let value = self.rel_arm_value(rs, p, arms);
                 items.extend(union_property_items(v, p, defs, i, value));
@@ -2379,8 +2442,10 @@ impl<'s> Lowerer<'s> {
 
     /// Decide how a variable-length relationship is read: a relation of
     /// paths (`path.rs`), generated by [`Self::build_path`] once the clause's
-    /// conditions are known, and tied to its endpoints in the stored
-    /// orientation (`start_id` = the `from` node, `end_id` = the `to` node).
+    /// conditions are known, and tied to its endpoints. A relationship of
+    /// one type of one definition between nodes of its one label is the
+    /// generator's walk of its table (`Walked::One`); any other is a walk of
+    /// its definitions between nodes of any labels (`Walked::Union`, S7b3).
     fn path_scan(
         &mut self,
         r: &PatRel,
@@ -2395,96 +2460,123 @@ impl<'s> Lowerer<'s> {
         let BindingKind::Rel { types, .. } = &self.binding(r.var).kind else {
             return unsupported("a pattern relationship that is not a relationship binding");
         };
-        let several = |v: VarId| matches!(self.scans.get(&v), Some(Scan::Labels { .. }));
-        if several(from) || several(to) {
-            return unsupported(
-                "a variable-length relationship at a node of several possible labels (S7b3)",
-            );
-        }
-        let scan = match (types.len(), self.single_label(from), self.single_label(to)) {
-            _ if max.is_some_and(|m| m < min) => Scan::Impossible,
-            (1, Some(fl), Some(tl)) => {
-                let rel_type = types.iter().next().expect("one type").clone();
-                // A path's nodes have its one schema's label (below): with
-                // several, a path can cross from one to another.
-                if self.schema.rel_schemas_for_type(&rel_type).len() > 1 {
-                    return unsupported(
-                        "a variable-length relationship whose type has several schemas (S7b)",
-                    );
-                }
-                let rs = match self.defined(&rel_type, &fl, &tl) {
-                    Some(_) => self.edge_schema(&rel_type, &fl, &tl)?,
-                    // The type does not join these labels: only the path of
-                    // none can match (below), generated over its table.
-                    None => match self.schema.rel_schemas_for_type(&rel_type).first() {
-                        Some(rs) => Self::standard_edge(&rel_type, rs)?,
-                        None => return unsupported(format!("type {rel_type} has no schema")),
-                    },
-                };
-                // Every node of a path of one or more relationships has the
-                // edge's one label. With another label at either end only
-                // the path of none is left: a node to itself.
-                if rs.from_node != rs.to_node {
-                    return unsupported(
-                        "a variable-length relationship between nodes of different labels",
-                    );
-                }
-                let walks = fl == rs.from_node && tl == rs.to_node;
-                if !walks && (fl != tl || min > 0) {
-                    self.scans.insert(r.var, Scan::Impossible);
-                    return Ok(());
-                }
-                let range = if walks { (min, max) } else { (0, Some(0)) };
-                let ns = self.schema.node_schema_opt(&fl).expect("a scanned label");
-                let plain = |filter: bool, params: bool, fin: bool| !filter && !params && !fin;
-                if !plain(
-                    rs.filter.is_some(),
-                    rs.view_parameters.is_some(),
-                    rs.should_use_final(),
-                ) || !plain(
-                    ns.filter.is_some(),
-                    ns.view_parameters.is_some(),
-                    ns.should_use_final(),
-                ) {
-                    return unsupported(
-                        "a variable-length relationship over a table with a filter, view \
-                         parameters or FINAL (S8)",
-                    );
-                }
-                Scan::Path {
-                    schema: rs,
-                    rel_type,
-                    cte: String::new(),
-                    at: At::Table(r.var.name()),
-                    edges: false,
-                    nodes: false,
-                    range,
-                    shortest: None,
-                    reversed: false,
-                    node_values: false,
-                    rel_values: false,
-                }
-            }
-            // A path of no relationship needs none: `*0..` with no feasible
-            // type still matches each node to itself.
-            (0, ..) if min == 0 => {
-                return unsupported("a zero-length path with no feasible relationship type")
-            }
-            // No feasible type, or an endpoint that matches nothing.
-            (0, ..) | (1, ..) => Scan::Impossible,
-            _ => {
-                return unsupported(
-                    "a variable-length relationship with several possible types (S7b3)",
-                )
-            }
+        let types = types.clone();
+        let impossible = |v: VarId| matches!(self.scans.get(&v), Some(Scan::Impossible));
+        let path = |walked: Walked<'s>, range: (u32, Option<u32>)| Scan::Path {
+            walked,
+            cte: String::new(),
+            at: At::Table(r.var.name()),
+            edges: false,
+            nodes: false,
+            range,
+            shortest: None,
+            reversed: false,
+            node_values: false,
+            rel_values: false,
         };
-        if let (Scan::Path { .. }, Some(ids)) = (&scan, self.identity(from)?) {
-            if ids.len() != 1 {
-                return unsupported("a variable-length relationship between composite ids (S8)");
+        let scan = if max.is_some_and(|m| m < min) || impossible(from) || impossible(to) {
+            Scan::Impossible
+        } else if let Some(scan) = self.one_definition_path(r.var, &types, from, to, min, max)? {
+            scan
+        } else if types.is_empty() && min > 0 {
+            // No feasible type: only the path of none could match.
+            Scan::Impossible
+        } else {
+            path(
+                Walked::Union {
+                    types,
+                    arms: Vec::new(),
+                },
+                (min, max),
+            )
+        };
+        if let Scan::Path { .. } = &scan {
+            for end in [from, to] {
+                if self.id_columns(end)?.is_some_and(|ids| ids.len() != 1) {
+                    return unsupported(
+                        "a variable-length relationship between composite ids (S8)",
+                    );
+                }
             }
         }
         self.scans.insert(r.var, scan);
         Ok(())
+    }
+
+    /// The scan of a variable-length relationship of one type of one
+    /// definition between nodes of its one label (`Walked::One`, the
+    /// generator), or `None` for any other.
+    fn one_definition_path(
+        &self,
+        r: VarId,
+        types: &BTreeSet<String>,
+        from: VarId,
+        to: VarId,
+        min: u32,
+        max: Option<u32>,
+    ) -> Result<Option<Scan<'s>>, LowerError> {
+        let types: Vec<&String> = types.iter().collect();
+        let ([rel_type], Some(fl), Some(tl)) = (
+            types.as_slice(),
+            self.single_label(from),
+            self.single_label(to),
+        ) else {
+            return Ok(None);
+        };
+        let rel_type = (*rel_type).clone();
+        let schemas = self.schema.rel_schemas_for_type(&rel_type);
+        let [only] = schemas.as_slice() else {
+            return Ok(None);
+        };
+        // Every node of a path of one or more relationships has the edge's
+        // one label.
+        if only.from_node != only.to_node {
+            return Ok(None);
+        }
+        let rs = match self.defined(&rel_type, &fl, &tl) {
+            Some(_) => self.edge_schema(&rel_type, &fl, &tl)?,
+            // The type does not join these labels: only the path of none can
+            // match (below), generated over its table.
+            None => Self::standard_edge(&rel_type, only)?,
+        };
+        // With another label at either end only the path of none is left: a
+        // node to itself.
+        let walks = fl == rs.from_node && tl == rs.to_node;
+        if !walks && (fl != tl || min > 0) {
+            return Ok(Some(Scan::Impossible));
+        }
+        let range = if walks { (min, max) } else { (0, Some(0)) };
+        let ns = self.schema.node_schema_opt(&fl).expect("a scanned label");
+        let plain = |filter: bool, params: bool, fin: bool| !filter && !params && !fin;
+        if !plain(
+            rs.filter.is_some(),
+            rs.view_parameters.is_some(),
+            rs.should_use_final(),
+        ) || !plain(
+            ns.filter.is_some(),
+            ns.view_parameters.is_some(),
+            ns.should_use_final(),
+        ) {
+            return unsupported(
+                "a variable-length relationship over a table with a filter, view \
+                 parameters or FINAL (S8)",
+            );
+        }
+        Ok(Some(Scan::Path {
+            walked: Walked::One {
+                schema: rs,
+                rel_type,
+            },
+            cte: String::new(),
+            at: At::Table(r.name()),
+            edges: false,
+            nodes: false,
+            range,
+            shortest: None,
+            reversed: false,
+            node_values: false,
+            rel_values: false,
+        }))
     }
 
     /// Generate the relation of paths of a variable-length relationship
@@ -2513,8 +2605,7 @@ impl<'s> Lowerer<'s> {
         in_search: &[RenderExpr],
     ) -> Result<(), LowerError> {
         let Some(Scan::Path {
-            schema: edge,
-            rel_type,
+            walked,
             at,
             range: (min, max),
             shortest,
@@ -2522,6 +2613,15 @@ impl<'s> Lowerer<'s> {
         }) = self.scans.get(&r.var).cloned()
         else {
             return Ok(()); // it matches nothing
+        };
+        let (edge, rel_type) = match walked {
+            Walked::One { schema, rel_type } => (schema, rel_type),
+            Walked::Union { types, .. } => {
+                if shortest.is_some() {
+                    return unsupported("a shortestPath over several labels or types (S7b3b)");
+                }
+                return self.build_union_path(r, types, at, (min, max), left, right, own);
+            }
         };
         // The `from` end of the relationships (stored orientation). An
         // undirected relationship is walked in both directions, from the
@@ -2532,36 +2632,7 @@ impl<'s> Lowerer<'s> {
         } else {
             left
         };
-        // Without table statistics (P-5): an end whose identity equals a
-        // constant is one node; an end carried from a CTE (a WITH, the
-        // OPTIONAL drive) holds values already narrowed; then an end with
-        // conjuncts over its own columns; then one tied to the rows so far.
-        let pinned = |v: VarId| self.pinned(v, own);
-        let carried = |v: VarId| {
-            self.is_emitted(v)
-                && matches!(
-                    self.scans.get(&v).and_then(Scan::at),
-                    Some(At::Exported { .. })
-                )
-        };
-        let own_columns = |v| !self.own_conjuncts(v, own).is_empty();
-        let first = [
-            &pinned as &dyn Fn(VarId) -> bool,
-            &carried,
-            &own_columns,
-            &|v| self.joined_rows_restrict(v),
-        ]
-        .iter()
-        .find_map(|restricts| {
-            if restricts(left) {
-                Some(left)
-            } else if restricts(right) {
-                Some(right)
-            } else {
-                None
-            }
-        })
-        .unwrap_or(left);
+        let first = self.walk_first(left, right, own);
         let last = if first == left { right } else { left };
         let backward = !undirected && first != from_end;
         // Its nodes / relationships read as values (the demand pass): the
@@ -2660,8 +2731,10 @@ impl<'s> Lowerer<'s> {
         self.scans.insert(
             r.var,
             Scan::Path {
-                schema: edge,
-                rel_type,
+                walked: Walked::One {
+                    schema: edge,
+                    rel_type,
+                },
                 cte,
                 at,
                 edges,
@@ -2690,6 +2763,432 @@ impl<'s> Lowerer<'s> {
             );
         }
         Ok(())
+    }
+
+    /// Generate the relation of paths of a variable-length relationship of
+    /// several types, definitions or labels (`Walked::Union`, §4.6
+    /// `Alternatives`, S7b3) and tie it to its endpoints. The walk starts at
+    /// the end [`Self::walk_first`] picks, restricted as a directed walk's
+    /// first node is ([`Self::walk_restriction`]), and follows the arms
+    /// ([`Self::walk_arms`]) in the orientations that lead away from it: a
+    /// relationship leaves the node the one before it entered, by label and
+    /// id. Its nodes are each a row of the nodes it can visit
+    /// ([`Self::walk_nodes`]), its relationships each a row of their union
+    /// ([`Self::rel_union_of`]), which keeps the relationship's property map
+    /// inside the walk (one value per definition, as a property of a union
+    /// is read).
+    #[allow(clippy::too_many_arguments)]
+    fn build_union_path(
+        &mut self,
+        r: &PatRel,
+        types: BTreeSet<String>,
+        at: At,
+        (min, max): (u32, Option<u32>),
+        left: VarId,
+        right: VarId,
+        own: &[RenderExpr],
+    ) -> Result<(), LowerError> {
+        let first = self.walk_first(left, right, own);
+        let last = if first == left { right } else { left };
+        let orientations: &[bool] = match (r.direction, first == left) {
+            (RelDirection::Either, _) => &[false, true],
+            (RelDirection::Right, true) | (RelDirection::Left, false) => &[false],
+            _ => &[true],
+        };
+        let (first_labels, last_labels) = (self.labels_of(first)?, self.labels_of(last)?);
+        let arms = match max {
+            Some(0) => Vec::new(),
+            _ => self.walk_arms(&types, orientations, &first_labels, &last_labels)?,
+        };
+        if arms.is_empty() && min > 0 {
+            self.scans.insert(r.var, Scan::Impossible);
+            return Ok(());
+        }
+        let Some(start) = self.walk_restriction(first, own, path::START)? else {
+            self.scans.insert(r.var, Scan::Impossible);
+            return Ok(());
+        };
+        let mut labels = first_labels.clone();
+        for a in &arms {
+            let (s, e) = a.ends();
+            labels.extend([s.to_string(), e.to_string()]);
+        }
+        labels.sort();
+        labels.dedup();
+        let wants = |name: &str| self.demand.get(&r.var).is_some_and(|d| d.contains(name));
+        let (node_values, rel_values) = (wants(NODE_VALUES), wants(REL_VALUES));
+        let nodes = self.walk_nodes(r.var, &labels, node_values)?;
+        let props: BTreeSet<String> = r.props.iter().map(|(p, _)| p.clone()).collect();
+        let rels = match arms.is_empty() {
+            true => None,
+            false => Some(self.rel_union_of(r.var, &arms, &props, rel_values)?),
+        };
+        let mut rel = Vec::new();
+        for (prop, value) in &r.props {
+            let defs = self.rel_value_definitions(prop, &arms);
+            let column = self.one_type(path::REL, r.var, prop, &defs)?;
+            let value = self.expr(value, &HashMap::new())?;
+            if !is_constant(&value) {
+                return unsupported(
+                    "a variable-length relationship's property map reading a variable",
+                );
+            }
+            rel.push(RenderExpr::OperatorApplicationExp(eq(column, value)));
+        }
+        let var = r.var.name();
+        let (ctes, cte) = path::union_path_ctes(&path::UnionWalk {
+            var: &var,
+            nodes: &nodes,
+            rels: rels.as_deref(),
+            min,
+            max,
+            start,
+            rel,
+            node_values,
+            rel_values,
+        })?;
+        self.ctes.extend(ctes);
+        let alias = at.alias().to_string();
+        self.scans.insert(
+            r.var,
+            Scan::Path {
+                walked: Walked::Union { types, arms },
+                cte,
+                at,
+                edges: true,
+                nodes: true,
+                range: (min, max),
+                shortest: None,
+                // The walk's order is the path's from its left end.
+                reversed: first != left,
+                node_values,
+                rel_values,
+            },
+        );
+        let column = |c: &str| col_at(&alias, c);
+        let ends = [
+            (first, first_labels, path::START_LABEL, "start_id"),
+            (last, labels, path::END_LABEL, "end_id"),
+        ];
+        for (end, held, label, id) in ends {
+            let label = EndLabel::of(held, column(label));
+            self.tie_end(r.var, end, label, vec![column(id)], false)?;
+        }
+        Ok(())
+    }
+
+    /// The arms a walk of a relationship of one of `types` follows
+    /// (`Walked::Union`): every definition of each type, in each of
+    /// `orientations` (reversed or as stored), that a path from a node of
+    /// `from_labels` to a node of `to_labels` can use: its rows leave a label
+    /// a walk from `from_labels` reaches, and enter one from which it reaches
+    /// `to_labels` (a relationship leaves a node of the label the one before
+    /// entered). The others match nothing here, whatever their layout.
+    fn walk_arms(
+        &self,
+        types: &BTreeSet<String>,
+        orientations: &[bool],
+        from_labels: &[String],
+        to_labels: &[String],
+    ) -> Result<Vec<RelArm<'s>>, LowerError> {
+        let mut all: Vec<RelArm<'s>> = Vec::new();
+        for rel_type in types {
+            for rs in self.schema.rel_schemas_for_type(rel_type) {
+                for &reversed in orientations {
+                    if !all
+                        .iter()
+                        .any(|a| std::ptr::eq(a.schema, rs) && a.reversed == reversed)
+                    {
+                        all.push(RelArm {
+                            rel_type: rel_type.clone(),
+                            schema: rs,
+                            reversed,
+                        });
+                    }
+                }
+            }
+        }
+        // The labels reached from `from_labels` (forward), and those that
+        // reach `to_labels` (backward).
+        let closure = |seed: &[String], forward: bool| {
+            let mut held: BTreeSet<String> = seed.iter().cloned().collect();
+            loop {
+                let mut more = false;
+                for a in &all {
+                    let (s, e) = a.ends();
+                    let (at, to) = if forward { (s, e) } else { (e, s) };
+                    if held.contains(at) && held.insert(to.to_string()) {
+                        more = true;
+                    }
+                }
+                if !more {
+                    return held;
+                }
+            }
+        };
+        let (reached, reaching) = (closure(from_labels, true), closure(to_labels, false));
+        let arms: Vec<RelArm<'s>> = all
+            .iter()
+            .filter(|a| {
+                let (s, e) = a.ends();
+                reached.contains(s) && reaching.contains(e)
+            })
+            .cloned()
+            .collect();
+        for a in &arms {
+            Self::standard_edge(&a.rel_type, a.schema)?;
+            for label in [&a.schema.from_node, &a.schema.to_node] {
+                match self.schema.node_schema_opt(label) {
+                    Some(ns) if ns.is_standard_own_table() => {}
+                    Some(_) => {
+                        return unsupported(format!(
+                            "label {label} is not the standard layout (S8)"
+                        ))
+                    }
+                    None => return unsupported(format!("label {label} has no node schema")),
+                }
+            }
+        }
+        if !arms.is_empty() {
+            let shape = rel_union_shape(&arms)?;
+            if shape.start != 1 || shape.end != 1 {
+                return unsupported("a variable-length relationship between composite ids (S8)");
+            }
+        }
+        Ok(arms)
+    }
+
+    /// The nodes a walk of `v` can visit (`Walked::Union`), of `labels`, as
+    /// one relation: the CTE `vlp_{v}_nodes`, an arm per label reading its
+    /// table (with its `filter:`, view parameters and FINAL), its rows
+    /// carrying their label (`LABEL_COLUMN`), id (`LABEL_ID_0`), identity as
+    /// a text (`KEY`: as a path's identity spells a node) and, with `values`,
+    /// their value (`ELEMENT_VALUE`). A walk joins a node of each
+    /// relationship it follows here, so it visits only nodes there are.
+    fn walk_nodes(
+        &mut self,
+        v: VarId,
+        labels: &[String],
+        values: bool,
+    ) -> Result<String, LowerError> {
+        let g = value::spelling()?;
+        let name = format!("vlp_{}_nodes", v.name());
+        const ROW: &str = "e";
+        let mut input = Vec::new();
+        for label in labels {
+            let Some(ns) = self.schema.node_schema_opt(label) else {
+                return unsupported(format!("label {label} has no node schema"));
+            };
+            if !ns.is_standard_own_table() {
+                return unsupported(format!("label {label} is not the standard layout (S8)"));
+            }
+            let [id] = ns.id_physical_columns().try_into().map_err(|_| {
+                LowerError::Unsupported(
+                    "a variable-length relationship between composite ids (S8)".to_string(),
+                )
+            })?;
+            let id = col_at(ROW, &id);
+            let mut items = vec![
+                select(
+                    RenderExpr::Literal(Literal::String(label.clone())),
+                    LABEL_COLUMN,
+                ),
+                select(id.clone(), &indexed_column(LABEL_ID, 0)),
+                select(
+                    RenderExpr::Raw(value::node_key_text(
+                        &g,
+                        &value::string(label),
+                        &render_expr_to_sql_plain(&id),
+                    )),
+                    KEY,
+                ),
+            ];
+            if values {
+                items.push(select(
+                    RenderExpr::Raw(value::table_node_object(&g, ns, label, ROW)?),
+                    ELEMENT_VALUE,
+                ));
+            }
+            let filters = match &ns.filter {
+                Some(f) => match f.to_sql(ROW) {
+                    Ok(sql) => Some(RenderExpr::Raw(format!("({sql})"))),
+                    Err(e) => return unsupported(format!("schema filter: {e}")),
+                },
+                None => None,
+            };
+            let table = ViewTableRef::parameterized_name(
+                &ns.full_table_name(),
+                ns.view_parameters.as_deref(),
+                self.options.view_parameter_values.as_ref(),
+            );
+            input.push(RenderPlan {
+                select: SelectItems {
+                    items,
+                    distinct: false,
+                },
+                from: FromTableItem(Some(ViewTableRef {
+                    source: Arc::new(LogicalPlan::Empty),
+                    name: table,
+                    alias: Some(ROW.to_string()),
+                    use_final: ns.should_use_final(),
+                })),
+                filters: FilterItems(filters),
+                ..empty_plan()
+            });
+        }
+        let body = RenderPlan {
+            union: UnionItems(Some(Union {
+                input,
+                union_type: UnionType::All,
+                is_cypher_union: false,
+            })),
+            ..empty_plan()
+        };
+        self.ctes.push(Cte::new(
+            name.clone(),
+            CteContent::Structured(Box::new(body)),
+            false,
+        ));
+        Ok(name)
+    }
+
+    /// Conditions on a row of a walk's nodes ([`Self::walk_nodes`]) read
+    /// under `alias` that hold of the values node `v` has in the result: one
+    /// of its labels, and, when the rows so far or its own conjuncts
+    /// restrict it, `(label, id) IN (SELECT DISTINCT …)` of those
+    /// ([`Self::rows_holding`], else `v`'s own relation under those
+    /// conjuncts). `None` when it matches nothing.
+    fn walk_restriction(
+        &self,
+        v: VarId,
+        own: &[RenderExpr],
+        alias: &str,
+    ) -> Result<Option<Vec<RenderExpr>>, LowerError> {
+        let labels = self.labels_of(v)?;
+        if labels.is_empty() {
+            return Ok(None);
+        }
+        let (label_column, id_column) = (
+            col_at(alias, LABEL_COLUMN),
+            col_at(alias, &indexed_column(LABEL_ID, 0)),
+        );
+        let mut conds = vec![or_all(
+            labels
+                .iter()
+                .map(|l| {
+                    RenderExpr::OperatorApplicationExp(eq(
+                        label_column.clone(),
+                        RenderExpr::Literal(Literal::String(l.clone())),
+                    ))
+                })
+                .collect(),
+        )];
+        let rows = match self.rows_holding(v, own) {
+            Some(rows) => Some(rows),
+            None => {
+                let conjuncts: Vec<RenderExpr> =
+                    self.own_conjuncts(v, own).into_iter().cloned().collect();
+                let source = match self.scans.get(&v) {
+                    Some(Scan::Node {
+                        schema,
+                        at: At::Table(a),
+                        ..
+                    }) => Some((
+                        ViewTableRef::parameterized_name(
+                            &schema.full_table_name(),
+                            schema.view_parameters.as_deref(),
+                            self.options.view_parameter_values.as_ref(),
+                        ),
+                        a.clone(),
+                        schema.should_use_final(),
+                    )),
+                    Some(Scan::Labels {
+                        cte,
+                        at: At::Table(a),
+                        ..
+                    }) => Some((cte.clone(), a.clone(), false)),
+                    _ => None,
+                };
+                match (conjuncts.is_empty(), source) {
+                    (false, Some((name, a, use_final))) => {
+                        let mut rows = empty_plan();
+                        rows.from = FromTableItem(Some(ViewTableRef {
+                            source: Arc::new(LogicalPlan::Empty),
+                            name,
+                            alias: Some(a),
+                            use_final,
+                        }));
+                        rows.filters = FilterItems(and_all(conjuncts));
+                        Some(rows)
+                    }
+                    _ => None,
+                }
+            }
+        };
+        if let Some(mut rows) = rows {
+            let Some(ids) = self.identity(v)? else {
+                return Ok(None);
+            };
+            let (label, id) = match (self.scans.get(&v), ids.as_slice()) {
+                (Some(Scan::Labels { .. }), [label, id]) => (label.clone(), id.clone()),
+                (Some(Scan::Node { label, .. }), [id]) => (
+                    RenderExpr::Literal(Literal::String(label.clone())),
+                    id.clone(),
+                ),
+                _ => {
+                    return unsupported("a variable-length relationship between composite ids (S8)")
+                }
+            };
+            rows.select = SelectItems {
+                items: vec![select(label, "label"), select(id, "id")],
+                distinct: true,
+            };
+            conds.push(RenderExpr::Raw(format!(
+                "({}, {}) IN ({})",
+                render_expr_to_sql_plain(&label_column),
+                render_expr_to_sql_plain(&id_column),
+                crate::sql_generator::emitters::clickhouse::to_sql_query::render_plan_to_sql_plain(
+                    rows
+                )
+                .trim_end()
+            )));
+        }
+        Ok(Some(conds))
+    }
+
+    /// The end a variable-length relationship between `left` and `right` is
+    /// walked from: a restricted one (§4.8 d). Without table statistics
+    /// (P-5): an end whose identity equals a constant is one node; an end
+    /// carried from a CTE (a WITH, the OPTIONAL drive) holds values already
+    /// narrowed; then an end with conjuncts over its own columns; then one
+    /// tied to the rows so far; the left one first.
+    fn walk_first(&self, left: VarId, right: VarId, own: &[RenderExpr]) -> VarId {
+        let pinned = |v: VarId| self.pinned(v, own);
+        let carried = |v: VarId| {
+            self.is_emitted(v)
+                && matches!(
+                    self.scans.get(&v).and_then(Scan::at),
+                    Some(At::Exported { .. })
+                )
+        };
+        let own_columns = |v| !self.own_conjuncts(v, own).is_empty();
+        [
+            &pinned as &dyn Fn(VarId) -> bool,
+            &carried,
+            &own_columns,
+            &|v| self.joined_rows_restrict(v),
+        ]
+        .iter()
+        .find_map(|restricts| {
+            if restricts(left) {
+                Some(left)
+            } else if restricts(right) {
+                Some(right)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(left)
     }
 
     /// Conditions every value node `v` has in the result satisfies, over its
@@ -2916,12 +3415,17 @@ impl<'s> Lowerer<'s> {
     }
 
     /// Conjuncts of the segment's filters and `own` that read only node
-    /// `v`'s own table (it is read from its table): they restrict `v`.
+    /// `v`'s own relation (it is read from its table, or its union of
+    /// labels): they restrict `v`.
     fn own_conjuncts<'e>(&'e self, v: VarId, own: &'e [RenderExpr]) -> Vec<&'e RenderExpr> {
-        let Some(Scan::Node {
+        let (Some(Scan::Node {
             at: At::Table(alias),
             ..
-        }) = self.scans.get(&v)
+        })
+        | Some(Scan::Labels {
+            at: At::Table(alias),
+            ..
+        })) = self.scans.get(&v)
         else {
             return Vec::new();
         };
@@ -3155,7 +3659,17 @@ impl<'s> Lowerer<'s> {
                 }
                 holds
             }
-            Scan::Rel { rel_type, .. } | Scan::Path { rel_type, .. } => written.contains(rel_type),
+            Scan::Rel { rel_type, .. }
+            | Scan::Path {
+                walked: Walked::One { rel_type, .. },
+                ..
+            } => written.contains(rel_type),
+            // Unbound before (a list is not re-matched): its types are the
+            // written ones.
+            Scan::Path {
+                walked: Walked::Union { types, .. },
+                ..
+            } => types.iter().any(|t| written.contains(t)),
             Scan::Impossible => false,
         };
         if !holds {
@@ -3227,6 +3741,15 @@ impl<'s> Lowerer<'s> {
             }
             // The walk's first node and relationships: the path relation's
             // rows differ in them (a path of none has no relationship).
+            Scan::Path {
+                walked: Walked::Union { .. },
+                ..
+            } => Some(
+                [path::START_LABEL, "start_id", "path_edges"]
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect(),
+            ),
             Scan::Path { edges, .. } => Some(
                 ["start_id", "path_edges"][..if *edges { 2 } else { 1 }]
                     .iter()
@@ -3241,6 +3764,7 @@ impl<'s> Lowerer<'s> {
     /// ends, length, nodes, and the values it carries.
     fn path_physical(&self, v: VarId) -> Vec<String> {
         let Some(Scan::Path {
+            walked,
             edges,
             nodes,
             node_values,
@@ -3251,6 +3775,9 @@ impl<'s> Lowerer<'s> {
             return Vec::new();
         };
         let mut cols: Vec<&str> = path::PATH_COLUMNS.to_vec();
+        if let Walked::Union { .. } = walked {
+            cols.extend([path::START_LABEL, path::END_LABEL]);
+        }
         if *nodes {
             cols.push("path_nodes");
         }
@@ -3299,6 +3826,21 @@ impl<'s> Lowerer<'s> {
     fn uniqueness(&mut self, rels: &[VarId]) -> Result<(), LowerError> {
         for (i, a) in rels.iter().enumerate() {
             for b in &rels[i + 1..] {
+                let walk = |v: &VarId| {
+                    matches!(
+                        self.scans.get(v),
+                        Some(Scan::Path {
+                            walked: Walked::Union { .. },
+                            ..
+                        })
+                    )
+                };
+                if walk(a) || walk(b) {
+                    if let Some(differs) = self.key_differs(*a, *b)? {
+                        self.filters.push(differs);
+                    }
+                    continue;
+                }
                 let union = |v: &VarId| matches!(self.scans.get(v), Some(Scan::Rels { .. }));
                 if union(a) || union(b) {
                     if let Some(differs) = self.union_differs(*a, *b)? {
@@ -3311,7 +3853,7 @@ impl<'s> Lowerer<'s> {
                     // A shortest path's relationships are its own (and
                     // their identities texts).
                     Some(Scan::Path {
-                        schema,
+                        walked: Walked::One { schema, .. },
                         edges: true,
                         shortest: None,
                         ..
@@ -3369,22 +3911,7 @@ impl<'s> Lowerer<'s> {
     /// their identity (a relationship is not on a path). `None` when they
     /// have no definition in common.
     fn union_differs(&self, a: VarId, b: VarId) -> Result<Option<RenderExpr>, LowerError> {
-        let definitions = |v: VarId| -> Vec<&'s RelationshipSchema> {
-            match self.scans.get(&v) {
-                Some(Scan::Rel { schema, .. }) => vec![*schema],
-                Some(Scan::Rels { arms, .. }) => arms.iter().map(|a| a.schema).collect(),
-                // A shortest path's relationships are its own.
-                Some(Scan::Path {
-                    schema,
-                    edges: true,
-                    shortest: None,
-                    ..
-                }) => vec![*schema],
-                _ => Vec::new(),
-            }
-        };
-        let (da, db) = (definitions(a), definitions(b));
-        if !da.iter().any(|x| db.iter().any(|y| std::ptr::eq(*x, *y))) {
+        if !self.share_definition(a, b) {
             return Ok(None);
         }
         let differ = |x: RenderExpr, y: RenderExpr| {
@@ -3396,8 +3923,7 @@ impl<'s> Lowerer<'s> {
         let string = |s: &str| RenderExpr::Literal(Literal::String(s.to_string()));
         let path = |v: VarId| match self.scans.get(&v) {
             Some(Scan::Path {
-                schema,
-                rel_type,
+                walked: Walked::One { schema, rel_type },
                 at,
                 ..
             }) => Some((*schema, rel_type.clone(), at.alias().to_string())),
@@ -3437,6 +3963,87 @@ impl<'s> Lowerer<'s> {
         Ok(Some(or_all(
             ia.into_iter().zip(ib).map(|(x, y)| differ(x, y)).collect(),
         )))
+    }
+
+    /// The definitions relationship `v` of a MATCH can be (none for a
+    /// shortest path: its relationships are its own).
+    fn definitions(&self, v: VarId) -> Vec<&'s RelationshipSchema> {
+        match self.scans.get(&v) {
+            Some(Scan::Rel { schema, .. }) => vec![*schema],
+            Some(Scan::Rels { arms, .. }) => arms.iter().map(|a| a.schema).collect(),
+            Some(Scan::Path {
+                walked: Walked::One { schema, .. },
+                edges: true,
+                shortest: None,
+                ..
+            }) => vec![*schema],
+            Some(Scan::Path {
+                walked: Walked::Union { arms, .. },
+                shortest: None,
+                ..
+            }) => arms.iter().map(|a| a.schema).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Relationships `a` and `b` can be one relationship: they have a
+    /// definition in common.
+    fn share_definition(&self, a: VarId, b: VarId) -> bool {
+        let (da, db) = (self.definitions(a), self.definitions(b));
+        da.iter().any(|x| db.iter().any(|y| std::ptr::eq(*x, *y)))
+    }
+
+    /// Relationships `a` and `b` of one MATCH, one a walk over several
+    /// definitions (`Walked::Union`), differ: by their identities as texts
+    /// (`value::rel_key`), a relationship's not on a path's, two paths'
+    /// apart. `None` when they have no definition in common.
+    fn key_differs(&self, a: VarId, b: VarId) -> Result<Option<RenderExpr>, LowerError> {
+        if !self.share_definition(a, b) {
+            return Ok(None);
+        }
+        let g = value::spelling()?;
+        let m = current_function_mapper();
+        let sql = |e: RenderExpr| render_expr_to_sql_plain(&e);
+        // One relationship's text, or a path's list of them.
+        let keys = |v: VarId| -> Result<Result<String, String>, LowerError> {
+            Ok(match self.scans.get(&v) {
+                Some(Scan::Rel {
+                    schema, rel_type, ..
+                }) => {
+                    let ids: Vec<String> = self
+                        .identity(v)?
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(sql)
+                        .collect();
+                    Ok(value::rel_key(
+                        &g,
+                        rel_type,
+                        &schema.from_node,
+                        &schema.to_node,
+                        &ids,
+                    ))
+                }
+                Some(Scan::Rels { .. }) => Ok(sql(self.physical(v, KEY)?)),
+                Some(Scan::Path {
+                    walked: Walked::One { schema, rel_type },
+                    ..
+                }) => Err((g.prefixed_texts)(
+                    &value::rel_key_prefix(rel_type, &schema.from_node, &schema.to_node),
+                    &sql(self.physical(v, "path_edges")?),
+                )),
+                Some(Scan::Path { .. }) => Err(sql(self.physical(v, "path_edges")?)),
+                _ => return unsupported(format!("internal: {v} is not a relationship scan")),
+            })
+        };
+        let differs = match (keys(a)?, keys(b)?) {
+            (Ok(one), Err(list)) | (Err(list), Ok(one)) => {
+                format!("NOT {}({list}, {one})", m.array_contains())
+            }
+            (Err(x), Err(y)) => format!("NOT {}({x}, {y})", m.arrays_overlap()),
+            (Ok(_), Ok(_)) => return unsupported("internal: no walk to compare"),
+        };
+        Ok(Some(RenderExpr::Raw(differs)))
     }
 
     /// A relationship's definition (type, labels of its stored ends) and
@@ -4079,6 +4686,11 @@ impl<'s> Lowerer<'s> {
             let shape = rel_union_shape(arms)?;
             physical_cols.extend(indexed_columns(REL_FROM, shape.from));
             physical_cols.extend(indexed_columns(REL_TO, shape.to));
+            // Its identity as a text, where the dialect spells one (a path's
+            // identity reads it).
+            if current_function_mapper().graph_values().is_some() {
+                physical_cols.push(KEY.to_string());
+            }
         }
         if matches!(scan, Scan::Impossible) {
             return Ok(Scan::Impossible);
@@ -4092,6 +4704,8 @@ impl<'s> Lowerer<'s> {
                 // Grouped by as a list: by its relationships (`value.rs`);
                 // its other columns follow from them where they are read.
                 Scan::Path { .. } if c != "path_edges" => body.determined.push(name.clone()),
+                // Follows from its identity.
+                Scan::Rels { .. } if c == KEY => body.determined.push(name.clone()),
                 _ => keys.push(e),
             }
             physical.insert(c.clone(), name);

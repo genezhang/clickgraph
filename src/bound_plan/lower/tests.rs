@@ -488,15 +488,16 @@ fn what_is_not_lowered_yet() {
         "list other than",
     );
     not_lowered(
-        "MATCH (a:User)-[:LIKED*1..2]->(b) RETURN count(*)",
-        "different labels",
+        "MATCH p = shortestPath((a:User)-[:FOLLOWS|LIKED*1..3]->(b:User)) RETURN length(p)",
+        "shortestPath over several labels or types (S7b3b)",
+    );
+    // A path from a user to a post can use AUTHORED, an FK edge.
+    not_lowered(
+        "MATCH (a:User)-[*1..2]->(b:Post) RETURN count(*)",
+        "not the standard layout (S8)",
     );
     not_lowered("MATCH (a:User) RETURN collect(a) AS l", "as a value");
     not_lowered("MATCH (a:User) WHERE id(a) = 1 RETURN a.name", "id()");
-    not_lowered(
-        "MATCH (n) WITH n MATCH (n)-[:FOLLOWS*1..2]->(m) RETURN count(*)",
-        "several possible labels (S7b3)",
-    );
     not_lowered("MATCH (n) RETURN n.*", "`v.*` of an element of several");
     not_lowered(
         "MATCH (:User)-[r:FOLLOWS|LIKED]->() RETURN r.*",
@@ -2022,14 +2023,14 @@ fn distinct_and_grouping_by_a_value_use_its_identities() {
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN nodes(p) AS ns, count(*) AS c",
         &[
             "any(arrayConcat([map(",
-            "GROUP BY arrayConcat([concat('User:', toString(v0.user_id))], \
+            "GROUP BY arrayConcat([concat('User', ':', toString(v0.user_id))], \
              arrayMap(__x -> concat('User:', toString(__x)), arraySlice(v1.path_nodes, 2)))",
         ],
     );
     has(
         "MATCH p = (a:User)-[:FOLLOWS]->(b:User) RETURN DISTINCT p",
-        &["GROUP BY [concat('User:', toString(v0.user_id)), \
-           concat('FOLLOWS:', toString(v1.follow_id))]"],
+        &["GROUP BY [concat('User', ':', toString(v0.user_id)), \
+           concat('FOLLOWS:User:User:', toString(v1.follow_id))]"],
     );
     // A WITH groups a carried list by its relationships; its other columns
     // are any() of the group.
@@ -2189,10 +2190,13 @@ fn a_path_is_grouped_by_one_list_of_its_elements() {
         "MATCH p = (a:User)-[:FOLLOWS*0..1]->(b:User)-[:FOLLOWS*0..1]->(c:User) RETURN DISTINCT p",
     ));
     let group_by = got.split("GROUP BY ").nth(1).unwrap_or_default();
-    assert!(group_by.starts_with("arrayConcat([concat('User:'"), "{got}");
+    assert!(
+        group_by.starts_with("arrayConcat([concat('User', ':'"),
+        "{got}"
+    );
     for part in [
-        "arrayMap(__x -> concat('FOLLOWS:', toString(__x)), v1.path_edges)",
-        "arrayMap(__x -> concat('FOLLOWS:', toString(__x)), v3.path_edges)",
+        "arrayMap(__x -> concat('FOLLOWS:User:User:', toString(__x)), v1.path_edges)",
+        "arrayMap(__x -> concat('FOLLOWS:User:User:', toString(__x)), v3.path_edges)",
     ] {
         assert!(group_by.contains(part), "{part} in {group_by}");
     }
@@ -2217,8 +2221,8 @@ fn a_path_is_grouped_by_one_list_of_its_elements() {
     has(
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) WITH p, count(*) AS c RETURN p, c",
         &[
-            "GROUP BY arrayConcat([concat('User:', toString(v0.user_id))], \
-           arrayMap(__x -> concat('FOLLOWS:', toString(__x)), v1.path_edges))",
+            "GROUP BY arrayConcat([concat('User', ':', toString(v0.user_id))], \
+           arrayMap(__x -> concat('FOLLOWS:User:User:', toString(__x)), v1.path_edges))",
         ],
     );
     let with = squash(&sql(
@@ -2237,7 +2241,7 @@ fn an_unmatched_optional_path_is_one_null() {
         "MATCH (u:User) OPTIONAL MATCH p = (u)-[:FOLLOWS]->(v:User {user_id: 99}) RETURN DISTINCT p",
         &[
             "GROUP BY (o1.v2__user_id IS NULL OR o1.v1__follow_id IS NULL), \
-             if((o1.v2__user_id IS NULL OR o1.v1__follow_id IS NULL), [], [concat('User:'",
+             if((o1.v2__user_id IS NULL OR o1.v1__follow_id IS NULL), [], [concat('User', ':'",
         ],
     );
     has(
@@ -2534,10 +2538,12 @@ fn an_undirected_relationship_carries_the_columns_it_is_read_by() {
     );
 }
 
+/// S7b3: a variable-length relationship whose type has several schemas is a
+/// walk of their union, between nodes of any label: `(:N)-[:T*2]-(:Z)` can
+/// cross from a T between Ns to one from a Z. The walk follows only the
+/// definitions a path between its ends can use, and ties each end's label.
 #[test]
-fn a_variable_length_relationship_of_a_type_with_several_schemas_is_not_lowered() {
-    // Its nodes need not have one label: `(:N)-[:T*2]-(:Z)` can cross from a
-    // T between Ns to one from a Z.
+fn a_variable_length_relationship_of_a_type_with_several_schemas_walks_each() {
     let schema = GraphSchemaConfig::from_yaml_str(
         r#"
 name: several
@@ -2553,14 +2559,41 @@ graph_schema:
     .unwrap()
     .to_graph_schema()
     .unwrap();
-    for q in [
-        "MATCH (x:N)-[:T*1..2]-(y:Z) RETURN count(*)",
-        "MATCH (a:Z)-[:T*0..2]-(b:Z) RETURN count(*)",
-        "MATCH (a:N)-[:T*1..2]->(b:N) RETURN count(*)",
+    let got = |q: &str| {
+        squash(
+            &translate_bound_plan(q, &schema, &ReadOptions::default())
+                .unwrap_or_else(|e| panic!("{q}: {e}"))
+                .sql,
+        )
+    };
+    // Undirected: each definition both ways (a T between Ns read reversed
+    // leaves its self-loops out), between nodes of both labels.
+    let both = got("MATCH (x:N)-[:T*1..2]-(y:Z) RETURN count(*)");
+    for part in [
+        "vlp_v1_nodes AS ( SELECT 'N' AS \"__cg_label\", e.id AS \"__cg_id_0\", \
+         concat('N', ':', toString(e.id)) AS \"__cg_key\" FROM db.n AS e UNION ALL \
+         SELECT 'Z' AS \"__cg_label\"",
+        "concat('T:N:N:', toString(tuple(e.f, e.t))) AS \"__cg_key\" FROM db.e AS e UNION ALL",
+        "FROM db.e AS e WHERE e.f <> e.t",
+        "concat('T:Z:N:', toString(tuple(e.f, e.t))) AS \"__cg_key\" FROM db.em AS e UNION ALL",
+        "JOIN v1_rels AS rel ON rel.__cg_start_label = vp.end_label AND rel.__cg_start_0 = vp.end_id \
+         JOIN vlp_v1_nodes AS end_node ON end_node.__cg_label = rel.__cg_end_label \
+         AND end_node.__cg_id_0 = rel.__cg_end_0 \
+         WHERE vp.hop_count < 2 AND NOT has(vp.path_edges, rel.__cg_key)",
+        "WHERE hop_count >= 1",
+        "v1.end_label = 'Z'",
     ] {
-        let err = translate_bound_plan(q, &schema, &ReadOptions::default()).unwrap_err();
-        assert!(err.contains("several schemas"), "{q}: {err}");
+        assert!(both.contains(part), "missing `{part}` in\n{both}");
     }
+    // Directed from an N: a T from a Z never follows one, so it is not read.
+    let directed = got("MATCH (a:N)-[:T*1..2]->(b:N) RETURN count(*)");
+    assert!(directed.contains("FROM db.e AS e"), "{directed}");
+    assert!(!directed.contains("db.em"), "{directed}");
+    assert!(!directed.contains("'Z'"), "{directed}");
+    // The path of none from a Z is a Z.
+    let zero = got("MATCH (a:Z)-[:T*0..2]-(b:Z) RETURN count(*)");
+    assert!(zero.contains("CAST(0 AS UInt32) AS hop_count"), "{zero}");
+    assert!(!zero.contains("WHERE hop_count >="), "{zero}");
 }
 
 #[test]
@@ -2964,9 +2997,9 @@ fn a_relationship_of_several_types_is_one_relation_of_their_definitions() {
     rels_has(
         "MATCH (p:Person)-[r:KNOWS|LIKES]->(x) RETURN type(r) AS t, x.id AS i",
         &[
-            r#"SELECT 'KNOWS' AS "__cg_type", 'Person' AS "__cg_from_label", 'Person' AS "__cg_to_label", e.a AS "__cg_rid_0", e.b AS "__cg_rid_1", e.a AS "__cg_from_0", e.b AS "__cg_to_0", e.a AS "__cg_start_0", e.b AS "__cg_end_0", 'Person' AS "__cg_start_label", 'Person' AS "__cg_end_label" FROM db.knows AS e"#,
-            r#"SELECT 'LIKES' AS "__cg_type", 'Person' AS "__cg_from_label", 'Company' AS "__cg_to_label", e.pid AS "__cg_rid_0", e.cid AS "__cg_rid_1", e.pid AS "__cg_from_0", e.cid AS "__cg_to_0", e.pid AS "__cg_start_0", e.cid AS "__cg_end_0", 'Person' AS "__cg_start_label", 'Company' AS "__cg_end_label" FROM db.likes_co AS e FINAL"#,
-            r#"SELECT 'LIKES' AS "__cg_type", 'Person' AS "__cg_from_label", 'Post' AS "__cg_to_label", e.eid AS "__cg_rid_0", NULL AS "__cg_rid_1", e.pid AS "__cg_from_0", e.post AS "__cg_to_0", e.pid AS "__cg_start_0", e.post AS "__cg_end_0", 'Person' AS "__cg_start_label", 'Post' AS "__cg_end_label" FROM db.likes(tenant = 't1') AS e"#,
+            r#"SELECT 'KNOWS' AS "__cg_type", 'Person' AS "__cg_from_label", 'Person' AS "__cg_to_label", e.a AS "__cg_rid_0", e.b AS "__cg_rid_1", e.a AS "__cg_from_0", e.b AS "__cg_to_0", e.a AS "__cg_start_0", e.b AS "__cg_end_0", 'Person' AS "__cg_start_label", 'Person' AS "__cg_end_label", concat('KNOWS:Person:Person:', toString(tuple(e.a, e.b))) AS "__cg_key" FROM db.knows AS e"#,
+            r#"SELECT 'LIKES' AS "__cg_type", 'Person' AS "__cg_from_label", 'Company' AS "__cg_to_label", e.pid AS "__cg_rid_0", e.cid AS "__cg_rid_1", e.pid AS "__cg_from_0", e.cid AS "__cg_to_0", e.pid AS "__cg_start_0", e.cid AS "__cg_end_0", 'Person' AS "__cg_start_label", 'Company' AS "__cg_end_label", concat('LIKES:Person:Company:', toString(tuple(e.pid, e.cid))) AS "__cg_key" FROM db.likes_co AS e FINAL"#,
+            r#"SELECT 'LIKES' AS "__cg_type", 'Person' AS "__cg_from_label", 'Post' AS "__cg_to_label", e.eid AS "__cg_rid_0", NULL AS "__cg_rid_1", e.pid AS "__cg_from_0", e.post AS "__cg_to_0", e.pid AS "__cg_start_0", e.post AS "__cg_end_0", 'Person' AS "__cg_start_label", 'Post' AS "__cg_end_label", concat('LIKES:Person:Post:', toString(e.eid)) AS "__cg_key" FROM db.likes(tenant = 't1') AS e"#,
             r#"SELECT v1.__cg_type AS "t""#,
             // A node of several labels holds the label the row enters.
             "FROM db.people AS v0 JOIN v1_rels AS v1 ON v1.__cg_start_0 = v0.id JOIN v2_labels AS v2 ON v1.__cg_end_label = v2.__cg_label AND v1.__cg_end_0 = v2.__cg_id_0",
@@ -2981,13 +3014,13 @@ fn an_undirected_relationship_of_two_definitions_reads_each_its_way() {
     rels_has(
         "MATCH (p:Post)-[r:MENTIONS]-(q:Person) RETURN count(*)",
         &[
-            r#"e.post AS "__cg_start_0", e.person AS "__cg_end_0", 'Post' AS "__cg_start_label", 'Person' AS "__cg_end_label" FROM db.pm AS e WHERE ((e.visible = 1))"#,
-            r#"e.post AS "__cg_start_0", e.person AS "__cg_end_0", 'Post' AS "__cg_start_label", 'Person' AS "__cg_end_label" FROM db.mp AS e"#,
+            r#"e.post AS "__cg_start_0", e.person AS "__cg_end_0", 'Post' AS "__cg_start_label", 'Person' AS "__cg_end_label", concat('MENTIONS:Post:Person:', toString(tuple(e.post, e.person))) AS "__cg_key" FROM db.pm AS e WHERE ((e.visible = 1))"#,
+            r#"e.post AS "__cg_start_0", e.person AS "__cg_end_0", 'Post' AS "__cg_start_label", 'Person' AS "__cg_end_label", concat('MENTIONS:Person:Post:', toString(tuple(e.person, e.post))) AS "__cg_key" FROM db.mp AS e"#,
         ],
     );
     let sql = rels_sql("MATCH (a:Person)-[r:KNOWS|MENTIONS]-(b) RETURN count(*)");
     assert!(
-        sql.contains(r#"'Person' AS "__cg_end_label" FROM db.knows AS e WHERE e.a <> e.b"#),
+        sql.contains(r#"'Person' AS "__cg_end_label", concat('KNOWS:Person:Person:', toString(tuple(e.a, e.b))) AS "__cg_key" FROM db.knows AS e WHERE e.a <> e.b"#),
         "{sql}"
     );
     assert_eq!(sql.matches("WHERE e.a <> e.b").count(), 1, "{sql}");
@@ -3109,4 +3142,131 @@ fn a_relationship_read_both_ways_beside_a_path_joins_after_its_orientation() {
         .expect("the orientation join");
     let first_read = select.find("v3_t5.__cg_turn").expect("a tie through it");
     assert!(turns < first_read, "{select}");
+}
+
+// SCRATCH: remove before commit.
+#[test]
+#[ignore]
+fn scratch_why() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        &std::fs::read_to_string(std::env::var("WHY_SCHEMA").unwrap()).unwrap(),
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    for q in std::env::var("WHY_Q").unwrap().split(";;") {
+        match translate_bound_plan(q, &schema, &ReadOptions::default()) {
+            Ok(_) => println!("WHY OK {q}"),
+            Err(e) => println!("WHY ERR {q}\n    {e}"),
+        }
+    }
+}
+
+/// S7b3: a variable-length relationship of several types walks their union
+/// from the restricted end, its nodes keyed by label and id. The first
+/// node is restricted by its own conjuncts (a node of several labels too),
+/// the relationship's property map holds inside the walk, and its nodes and
+/// relationships are values when the path is.
+#[test]
+fn a_variable_length_relationship_of_several_types_walks_their_union() {
+    let got = rels_sql(
+        "MATCH p = (a:Person)-[:KNOWS|LIKES*1..3 {since: 2015}]->(b) WHERE a.id = 1 RETURN p",
+    );
+    for part in [
+        // The first node: its label, and its own conjuncts' rows.
+        "WHERE (start_node.__cg_label = 'Person') AND ((start_node.__cg_label, \
+         start_node.__cg_id_0) IN (SELECT DISTINCT 'Person' AS \"label\", v0.id AS \"id\" \
+         FROM db.people AS v0 WHERE v0.id = 1))",
+        // Each definition's own spelling of the property map's property.
+        "CAST(coalesce(rel.p2_v1_since__cg0, rel.p2_v1_since__cg1, rel.p2_v1_since__cg2)",
+        "e.liked_on AS \"p2_v1_since__cg1\"",
+        // Values: each node's and relationship's own.
+        "[start_node.__cg_value] AS path_node_values",
+        "arrayConcat(vp.path_rel_values, [rel.__cg_value]) AS path_rel_values",
+        "FROM db.likes_co AS e FINAL",
+        "FROM db.likes(tenant = 't1') AS e",
+        "arraySlice(v1.path_node_values, 2)",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    // A first node of several labels: by label and id.
+    let got = rels_sql(
+        "MATCH (a:Person|Post)-[:KNOWS|MENTIONS*1..2]->(b) WHERE a.title = 'x' \
+         RETURN count(*)",
+    );
+    for part in [
+        "WHERE ((start_node.__cg_label = 'Person' OR start_node.__cg_label = 'Post')) \
+         AND ((start_node.__cg_label, start_node.__cg_id_0) IN (SELECT DISTINCT \
+         v0.__cg_label AS \"label\", v0.__cg_id_0 AS \"id\" FROM v0_labels AS v0",
+        "v1.start_label = v0.__cg_label",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    // Walked from the right end, its lists are reversed.
+    let got = rels_sql("MATCH p = (a)-[:KNOWS|MENTIONS*1..2]->(b:Person) WHERE b.id = 1 RETURN p");
+    for part in [
+        // From a person, against the direction: each definition reversed.
+        "e.b AS \"__cg_start_0\", e.a AS \"__cg_end_0\"",
+        "(start_node.__cg_label, start_node.__cg_id_0) IN (SELECT DISTINCT 'Person' AS \"label\", \
+         v2.id AS \"id\" FROM db.people AS v2 WHERE v2.id = 1)",
+        "arrayReverse(v1.path_rel_values)",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+}
+
+/// S7b3: relationships of one MATCH are distinct (§4.6.3) by their
+/// identities as texts when one is a walk of several definitions; every
+/// scan spells a relationship as its definition and identity, so a path's
+/// identity is one however its variable-length parts split it.
+#[test]
+fn a_walk_of_several_types_is_unique_and_spelled_by_definition() {
+    for (q, part) in [
+        (
+            "MATCH (a:Person)-[:KNOWS|LIKES*1..2]->(b)<-[r:KNOWS]-(c) RETURN count(*)",
+            "NOT has(v1.path_edges, concat('KNOWS:Person:Person:', toString(tuple(v3.a, v3.b))))",
+        ),
+        (
+            "MATCH (a:Person)-[:KNOWS|LIKES*1..2]->(b)<-[r:KNOWS|LIKES]-(c) RETURN count(*)",
+            "NOT has(v1.path_edges, v3.__cg_key)",
+        ),
+        (
+            "MATCH (a:Person)-[:KNOWS|LIKES*1..2]->(b)<-[:KNOWS*1..2]-(c:Person) RETURN count(*)",
+            "NOT hasAny(v1.path_edges, arrayMap(__x -> concat('KNOWS:Person:Person:', \
+             toString(__x)), v3.path_edges))",
+        ),
+        (
+            "MATCH (a:Person)-[:KNOWS|LIKES*1..2]->(b)<-[*1..2]-(c) RETURN count(*)",
+            "NOT hasAny(v1.path_edges, v3.path_edges)",
+        ),
+    ] {
+        let got = rels_sql(q);
+        assert!(got.contains(part), "{q}\nmissing `{part}` in\n{got}");
+    }
+    // No definition in common: nothing to compare.
+    let got = rels_sql("MATCH (a:Person)-[:LIKES*1..2]->(b)<-[r:MENTIONS]-(c) RETURN count(*)");
+    assert!(!got.contains("NOT has(v1."), "{got}");
+    // A path's identity: a union's relationship by its own key column, a
+    // single table's and a walk's by type, end labels and identity.
+    let got = rels_sql(
+        "MATCH p = (a:Person)-[:KNOWS*0..1]->(m)-[r:KNOWS|LIKES]->(n)-[:KNOWS|MENTIONS*0..1]->(b) \
+         WITH DISTINCT p RETURN count(*)",
+    );
+    for part in [
+        "arrayMap(__x -> concat('KNOWS:Person:Person:', toString(__x)), v1.path_edges)",
+        "[v3.__cg_key]",
+        "v5.path_edges",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+}
+
+/// S7b3: a walk of several types carried through a WITH keeps the labels of
+/// its ends.
+#[test]
+fn a_carried_walk_of_several_types_keeps_its_end_labels() {
+    rels_has(
+        "MATCH p = (a:Person)-[:KNOWS|LIKES*1..2]->(b) WITH p, b RETURN p, labels(b) AS l",
+        &["AS \"v1__start_label\"", "AS \"v1__end_label\""],
+    );
 }

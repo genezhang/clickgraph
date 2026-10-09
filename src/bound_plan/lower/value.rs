@@ -28,14 +28,14 @@ use crate::graph_catalog::element_id::{
 use crate::graph_catalog::graph_schema::{NodeSchema, RelationshipSchema};
 use crate::query_planner::logical_expr::{self as lx, LogicalExpr};
 use crate::render_plan::render_expr::{
-    Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias,
+    Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
 };
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::function_mapper::{current_function_mapper, GraphValues};
 
 use super::{
     col_at, or_all, parse_var, select, unsupported, Body, Exports, LowerError, Lowerer,
-    ResultColumn, ResultKind, Scan,
+    ResultColumn, ResultKind, Scan, Walked,
 };
 use crate::bound_plan::types::{Binding, BindingKind, ProjItem, VarId};
 
@@ -140,8 +140,52 @@ fn sql(e: &RenderExpr) -> String {
     render_expr_to_sql_plain(e)
 }
 
-fn string(s: &str) -> String {
+pub(super) fn string(s: &str) -> String {
     sql(&RenderExpr::Literal(Literal::String(s.to_string())))
+}
+
+/// An identity of one or more columns (SQL) as one value: the column, or
+/// their tuple, as a path's `path_edges` spells a relationship's.
+fn spelled_identity(cols: &[String]) -> String {
+    match cols {
+        [one] => one.clone(),
+        _ => format!(
+            "{}({})",
+            current_function_mapper().tuple_constructor(),
+            cols.join(", ")
+        ),
+    }
+}
+
+/// The text a relationship's definition puts before its identity in
+/// [`rel_key`].
+pub(super) fn rel_key_prefix(rel_type: &str, from_label: &str, to_label: &str) -> String {
+    string(&format!("{rel_type}:{from_label}:{to_label}:"))
+}
+
+/// A relationship's identity as a text, as a path's identity spells it
+/// (`Lowerer::path_key`) and a walk over several definitions keeps it
+/// (`path_edges`, S7b3): its definition (type, labels of its stored ends)
+/// and its identity columns (SQL `ids`: the `edge_id`, else the stored ends,
+/// #887). Every scan of a relationship spells it alike, so a path that
+/// splits between its parts in several ways has one identity.
+pub(super) fn rel_key(
+    g: &GraphValues,
+    rel_type: &str,
+    from_label: &str,
+    to_label: &str,
+    ids: &[String],
+) -> String {
+    (g.text)(&[
+        rel_key_prefix(rel_type, from_label, to_label),
+        (g.to_text)(&spelled_identity(ids)),
+    ])
+}
+
+/// A node's identity as a text, with its label (SQL `label`) and id (SQL
+/// `id`): as a path's identity spells it (`Lowerer::node_key`).
+pub(super) fn node_key_text(g: &GraphValues, label: &str, id: &str) -> String {
+    (g.text)(&[label.to_string(), string(":"), (g.to_text)(id)])
 }
 
 /// A node: its label, the SQL of its (single-column) id, its properties
@@ -660,53 +704,39 @@ impl<'s> Lowerer<'s> {
         }
         for (i, r) in elements.rels.iter().enumerate() {
             match self.scans.get(r) {
-                Some(Scan::Rel { rel_type, .. }) => {
+                Some(Scan::Rel {
+                    schema, rel_type, ..
+                }) => {
                     if part != Part::Nodes {
-                        let id = match self.identity(*r)?.unwrap_or_default().as_slice() {
-                            [one] => sql(one),
-                            // Spelled as a path's `path_edges` spells it.
-                            cols => format!(
-                                "{}({})",
-                                current_function_mapper().tuple_constructor(),
-                                cols.iter().map(sql).collect::<Vec<_>>().join(", ")
-                            ),
-                        };
-                        items.push((s.text)(&[
-                            string(&format!("{rel_type}:")),
-                            (s.to_text)(&id),
-                        ]));
+                        let ids: Vec<String> = self
+                            .identity(*r)?
+                            .unwrap_or_default()
+                            .iter()
+                            .map(sql)
+                            .collect();
+                        items.push(rel_key(
+                            s,
+                            rel_type,
+                            &schema.from_node,
+                            &schema.to_node,
+                            &ids,
+                        ));
                     }
                     if part == Part::Nodes {
                         items.push(self.node_key(elements.nodes[i + 1], s)?);
                     }
                 }
-                // Its definition and identity (NULL past the definition's
-                // own arity: empty, as every row of it is).
+                // Each row's own, as its definition spells it.
                 Some(Scan::Rels { .. }) => {
                     if part != Part::Nodes {
-                        let ids = self.identity(*r)?.unwrap_or_default();
-                        let mut texts = Vec::new();
-                        for (i, e) in ids.iter().enumerate() {
-                            if i > 0 {
-                                texts.push(string(":"));
-                            }
-                            texts.push(sql(&RenderExpr::ScalarFnCall(ScalarFnCall {
-                                name: "coalesce".to_string(),
-                                args: vec![
-                                    RenderExpr::Raw((s.to_text)(&sql(e))),
-                                    RenderExpr::Literal(Literal::String(String::new())),
-                                ],
-                            })));
-                        }
-                        items.push((s.text)(&texts));
+                        items.push(sql(&self.physical(*r, super::KEY)?));
                     }
                     if part == Part::Nodes {
                         items.push(self.node_key(elements.nodes[i + 1], s)?);
                     }
                 }
                 Some(Scan::Path {
-                    schema,
-                    rel_type,
+                    walked,
                     edges,
                     nodes,
                     reversed,
@@ -727,17 +757,30 @@ impl<'s> Lowerer<'s> {
                         let list = sql(&self.physical(*r, column)?);
                         Ok(if *reversed { (s.reverse)(&list) } else { list })
                     };
-                    if part != Part::Nodes && *edges {
-                        lists.push((s.prefixed_texts)(
-                            &string(&format!("{rel_type}:")),
-                            &in_order("path_edges")?,
-                        ));
-                    }
-                    if part == Part::Nodes {
-                        lists.push((s.prefixed_texts)(
-                            &string(&format!("{}:", schema.to_node)),
-                            &(s.tail)(&in_order("path_nodes")?),
-                        ));
+                    match walked {
+                        Walked::One { schema, rel_type } => {
+                            if part != Part::Nodes && *edges {
+                                lists.push((s.prefixed_texts)(
+                                    &rel_key_prefix(rel_type, &schema.from_node, &schema.to_node),
+                                    &in_order("path_edges")?,
+                                ));
+                            }
+                            if part == Part::Nodes {
+                                lists.push((s.prefixed_texts)(
+                                    &string(&format!("{}:", schema.to_node)),
+                                    &(s.tail)(&in_order("path_nodes")?),
+                                ));
+                            }
+                        }
+                        // Its relationships and nodes are texts already.
+                        Walked::Union { .. } => {
+                            if part != Part::Nodes {
+                                lists.push(in_order("path_edges")?);
+                            }
+                            if part == Part::Nodes {
+                                lists.push((s.tail)(&in_order("path_nodes")?));
+                            }
+                        }
                     }
                 }
                 _ => return unsupported(format!("internal: {r} is not a relationship scan")),
@@ -751,12 +794,12 @@ impl<'s> Lowerer<'s> {
 
     /// A node's identity as a text, with its label.
     fn node_key(&self, v: VarId, s: &GraphValues) -> Result<String, LowerError> {
-        let id = (s.to_text)(&sql(&self.node_id_value(v)?));
+        let id = sql(&self.node_id_value(v)?);
         match self.scans.get(&v) {
-            Some(Scan::Node { label, .. }) => Ok((s.text)(&[string(&format!("{label}:")), id])),
+            Some(Scan::Node { label, .. }) => Ok(node_key_text(s, &string(label), &id)),
             Some(Scan::Labels { .. }) => {
                 let label = sql(&self.physical(v, super::LABEL_COLUMN)?);
-                Ok((s.text)(&[label, string(":"), id]))
+                Ok(node_key_text(s, &label, &id))
             }
             _ => unsupported(format!("internal: {v} is not a node scan")),
         }
