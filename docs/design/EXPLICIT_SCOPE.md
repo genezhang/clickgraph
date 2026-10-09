@@ -531,12 +531,10 @@ extension of #1249.
   use a relationship twice in opposite directions. The walk starts at the
   restricted end, as a directed one does; the path's order is the walk's
   from the left end, reversed from the right end.
-- **Not lowered:** a relationship bound before (an earlier clause, or used
-  twice) matched undirected (each row would match in up to two
-  orientations; S7b), two directions as two schemas (S7b), an undirected
-  variable-length relationship between two labels (as directed), and a
-  variable-length relationship, of either direction, whose type has several
-  schemas (S7b). Its nodes need not have one label: with `T` from N to N
+- **Not lowered:** an undirected variable-length relationship between two
+  labels (as directed), and a variable-length relationship, of either
+  direction, whose type has several schemas (S7b3). (A relationship bound
+  before matched undirected, and two directions as two schemas, are S7b2.) Its nodes need not have one label: with `T` from N to N
   and from Z to N, `(:N)-[:T*1..2]-(:Z)` crosses from one to the other.
   Before, a pair of labels the type does not join fell back to the type's
   first schema (`get_rel_schema_with_nodes`), and the path matched nothing
@@ -596,8 +594,8 @@ layout; `Scan::Labels`, `Lowerer::label_union`):
   (`Lowerer::end_labels`, in either orientation when undirected), and that
   end is filtered on its label (`Lowerer::holds_label`). Variable inference
   narrows a node the clause introduces already; this is for a node carried
-  from an earlier clause. Several pairs are S7b2; a variable-length
-  relationship at such a node is S7b3.
+  from an earlier clause. Several pairs are a union of arms (S7b2, below);
+  a variable-length relationship at such a node is S7b3.
 - **Labels.** `n:L` is `__cg_label = 'L'` (NULL where an OPTIONAL MATCH left
   the node NULL), `labels(n)` is `[__cg_label]`, and a written label on a
   carried node filters its label column.
@@ -606,8 +604,92 @@ layout; `Scan::Labels`, `Lowerer::label_union`):
   NULL ones dropped): Bolt, the graph output and embedded `query_graph` take
   its label from each row. The HTTP rows hold the value (a single-label node
   keeps its `n.<prop>` columns).
-- **Not lowered:** `n.*` and `id(n)` of such a node, and the S7b2 / S7b3
-  shapes above.
+- **Not lowered:** `n.*` and `id(n)` of such a node, and the S7b3 shapes
+  above.
+
+**Implemented in S7b2** (a relationship of several possible types or label
+pairs, standard layout; `Scan::Rels`, `Lowerer::rel_union`):
+- **Arms.** For each type the relationship can have, each left and right
+  label its ends can have, and each orientation its direction allows, the
+  definition the schema has (`Lowerer::rel_arms`, an exact lookup): an arm
+  is a definition read as stored or reversed. One arm is its table, as
+  before; one definition between nodes of one label in both orientations is
+  S7a's two-direction CTE; any other set is one relation, the CTE
+  `v{N}_rels`, an arm per definition and orientation (its table with its
+  `filter:`, view parameters and FINAL), `UNION ALL`. This covers `[:A|B]`,
+  an untyped relationship, a type with several definitions (two tables), an
+  undirected type whose two directions are two definitions, and a node of
+  several labels a type joins in several ways.
+- **Rows.** Each row carries its type and the labels of its stored ends
+  (`__cg_type`, `__cg_from_label`, `__cg_to_label`: its definition), its
+  identity (`__cg_rid_i`: the `edge_id`, else the stored ends, #887; NULL
+  past the definition's own arity), the ids of its stored ends
+  (`__cg_from_i`, `__cg_to_i`), and the label and id of the node it leaves
+  and enters here (`__cg_start_label` / `__cg_start_i`, `__cg_end_label` /
+  `__cg_end_i`). A relationship is its definition and its identity, so two
+  definitions' equal ids are two relationships. The definitions' ends must
+  have one id arity each (else S8). A definition between nodes of one label
+  read in both orientations reads a self-loop once (the reversed arm leaves
+  it out), as Neo4j matches it once.
+- **Ties.** Each end is tied to the ids of the node the row leaves or
+  enters, and to its label (`Lowerer::tie_end`): a node of several labels
+  equals the row's label column; a node of one label holds it (a filter,
+  when the rows can have another); an end the relationship cannot be at
+  makes the clause match nothing (this also catches a relationship carried
+  from an earlier clause re-matched at a node of another label, which tied
+  ids alone before).
+- **Properties** follow S7b1's rule (user decision 2026-10-08): the
+  definition's mapping; NULL in a definition that does not declare it when
+  another does; the undeclared-property rule when none does. A property
+  several definitions have a value for is read through `one_type_guard`
+  (a string on one type and a number on another is an error while the query
+  is analysed; numbers of two widths take their common type).
+- **Identity.** `type(r)` and `r:T` read the type column; `r = s` compares
+  definitions, then identities NULL-safely (the padding); `count(DISTINCT r)`
+  counts the tuple. Relationship uniqueness compares the definition and
+  identity of a union with another relationship (or union) of a common
+  definition, and keeps a union's rows of a variable-length relationship's
+  definition off its path (`NOT has(path_edges, …)`, spelled as the path
+  spells it). An OPTIONAL MATCH correlates on a union's identity NULL-safely.
+- **Carried.** A WITH exports the definition, identity and stored ends; a
+  later clause ties them as stored (directed) or both ways (below), its
+  labels as above. A written type (`()-[r:A|B]->()` on a carried `r`) filters
+  the type column.
+- **A relationship bound before, matched undirected** (S7a's refusal): the
+  rows so far join a two-row orientation relation (`v{N}_turns`, `ON 1 = 1`),
+  and the left end is the stored `from` when the row is read as stored and
+  the stored `to` reversed (a `CASE` in the tie); a self-loop is read once,
+  as Neo4j (`NOT reversed OR from <> to`). An end already joined is tied in
+  WHERE (the orientation join comes after it). One used twice in one MATCH
+  matches nothing (uniqueness; Neo4j: 0 rows); the binder refuses that
+  shape today.
+- **Returned whole**, it is a relationship value (§4.11's
+  `GraphType::Relationship`: element id, type and end element ids from its
+  columns, the properties of every definition, NULL ones dropped), grouped by
+  its identity and its carried properties (as a node of several labels). A
+  path value reads its relationships the same way; a path key spells a union
+  relationship as its definition and identity, NULL padding as empty text.
+- **Not lowered:** `r.*` of such a relationship, and a variable-length
+  relationship of several types or at a node of several labels (S7b3).
+- **Measured cost**, social benchmark at scale 100 (100K users, 10M
+  follows, 2M authored, 5M likes), join statistics on:
+
+  | Shape | Legacy | New |
+  |---|---|---|
+  | untyped hop from a pinned user, by type | 13 ms | 11 ms |
+  | `[:AUTHORED\|LIKED]` from a pinned user, `count(DISTINCT p)` | 9 ms | 8 ms |
+  | untyped undirected hop from a pinned user | 13 ms | 12 ms |
+  | untyped hop from a pinned user, `RETURN r LIMIT 25` | 10 ms | 12 ms |
+  | two untyped hops from a pinned user | error | 71 ms |
+  | 100 users, OPTIONAL untyped hop, `count(r)` | 13 ms | 20 ms |
+  | every untyped hop, by type (17M) | 143 ms | 698 ms |
+  | a carried relationship re-matched undirected | 5 ms (another count) | 35 ms |
+  | a carried untyped relationship re-matched | 66 ms (another count) | 17 ms |
+
+  The whole-graph count joins every relationship to the union of its end
+  labels' tables on (label, id), where legacy joins each type to its own
+  table; joining each arm to its end's own table is an optimization left
+  for later.
 
 ### 4.7 Label inference
 
@@ -2218,6 +2300,35 @@ slice that will handle it.
         `count(DISTINCT n)` 169 ms (legacy 167 ms), a carried node re-matched
         to a relationship 145 ms (legacy: no SQL), `a = b` 96 ms (legacy:
         Code 47).
+  - [x] **S7b2: a relationship of several possible types or label pairs**
+    (§4.6 "Implemented in S7b2"): one relation of its definitions' tables
+    in their orientations, identity (definition, id), ties to its ends'
+    labels, a relationship bound before matched undirected, values.
+    - Acceptance:
+      - Neo4j oracle, switch on, vs S7b1: 0 correct → wrong, 1 wrong →
+        correct (MATCH 404 → 405). The corpus lowers 759 queries (was 754).
+      - Generated shapes on a scratch graph (three labels, ids shared across
+        labels, a type of two tables, a type both ways between two labels as
+        two tables, an `edge_id` type beside `(from, to)` ones, parallel edges,
+        self-loops, a relationship `filter:`; 103 shapes: untyped and
+        alternative types in every direction, label pairs, properties,
+        identity and uniqueness, WITH and re-matching (directed and
+        undirected), OPTIONAL, path values, a variable-length relationship
+        beside a union), on three property typings (one type per property;
+        a number of two widths; a string beside a number): every lowered
+        shape equals Neo4j, except those reading the string-and-number
+        property (an error, `one_type_guard`) and an undeclared property (the
+        rule). Legacy errors on 51 and is wrong on 42–43 of 99. S7a's four
+        undirected sweeps and S7b1's two label sweeps are unchanged, plus two
+        shapes legacy answered wrong (`MATCH (n) WITH n MATCH
+        (n)-[:WORKS_AT]-(m)`: 4 rows against 8) now lowered and correct.
+      - Mutation check: 17 rules broken in turn; 17 change answers (two
+        needed new shapes: a written type on a carried relationship whose
+        ends do not narrow it, and a carried relationship re-matched between
+        two bound nodes of other labels).
+      - Live suite, switch on, vs S7b1: one known-wrong golden now correct
+        (`MATCH ()-[r:LIKED]-() RETURN r LIMIT 25`), nothing else changed.
+      - Timing: above (§4.6).
 - [ ] S8 layouts
 - [ ] S9 subquery expressions
 - [ ] S10 default on

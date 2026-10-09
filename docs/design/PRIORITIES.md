@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; next: S7b2 several types / label pairs, S7b3 variable-length over them, then S7c UNWIND, S7d UNION, S7e lists)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 (this PR); next: S7b3 variable-length over several labels / types, then S7c UNWIND, S7d UNION, S7e lists)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,10 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-08: **P-4c S7b2: a relationship of several possible types or label pairs** (`src/bound_plan/lower/mod.rs` `rel_arms` / `rel_union` / `tie_end` / `turned_ends`, behind `CLICKGRAPH_BOUND_PLAN=on`).
+  - `[:A|B]`, untyped relationships, a type of several tables, an undirected type both ways as two tables, a node of several labels joined several ways: one CTE of an arm per definition and orientation (its `filter:`, view parameters, FINAL), identity (type, stored end labels, id; NULL-padded), each end tied to the row's label and id. A relationship carried from an earlier clause matched undirected joins a two-row orientation relation (a self-loop once). `type(r)`, `r:T`, written types read the type column; `RETURN r` is a relationship value; uniqueness and equality compare definition and identity. Also: a carried relationship re-matched at a bound node of another label now matches nothing (it tied ids alone).
+  - Neo4j oracle: 0 correct → wrong, MATCH 404 → 405; the corpus lowers 759 queries (was 754). Scratch-graph sweeps (103 shapes, three property typings): every lowered shape equals Neo4j or errors by design (a string-and-number property; an undeclared property); legacy errors on 51 and is wrong on 42–43. Mutation check: 17 of 17 change answers. Timing (scale 100): pinned shapes 8–20 ms (legacy 9–13 ms); the whole-graph untyped count 698 ms (legacy 143 ms).
 
 - 2026-10-08: **P-4c S7b1: a node of several possible labels** (#1338, `src/bound_plan/lower/mod.rs` `label_union` / `end_labels` / `holds_label`, behind `CLICKGRAPH_BOUND_PLAN=on`). S7b split: S7b1 labels, S7b2 several types / label pairs (with S7a's refusals), S7b3 variable-length over them.
   - `MATCH (n)`, `(n:A|B)`, a carried node: one CTE of an arm per label (its `filter:`, view parameters, FINAL), identity (label, id); a relationship of one type at it reads the one label pair it joins and filters the node's label; `n:L`, `labels(n)`, written labels read the label column; `RETURN n` is a node value. A property another label declares is NULL in an arm without it (as Neo4j; user decision); one several arms have is cast to one type or fails (`FunctionMapper::one_type_guard`: ClickHouse's `Variant` answered differently, review finding).
