@@ -3371,4 +3371,14 @@ fn a_shortest_path_over_several_types_searches_their_union() {
     let part = "JOIN v2_labels AS v2 ON concat(v2.__cg_label, ':', toString(v2.__cg_id_0)) \
                 = v1.end_id";
     assert!(got.contains(part), "missing `{part}` in\n{got}");
+    // OPTIONAL, a condition reads the path for NULL by a column its search's
+    // relations have.
+    let got = rels_sql(
+        "MATCH (a:Person) OPTIONAL MATCH p = shortestPath((a)-[:KNOWS|LIKES*]->(b:Company)) \
+         WHERE length(p) > 1 RETURN a.id, length(p)",
+    );
+    let part = "FROM vlp_v1_near AS v1 JOIN db.companies AS v2 ON concat('Company', ':', \
+                toString(v2.id)) = v1.end_id WHERE NOT coalesce((CASE WHEN (v2.id IS NULL OR \
+                v1.start_id IS NULL)";
+    assert!(got.contains(part), "missing `{part}` in\n{got}");
 }
