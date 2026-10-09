@@ -224,8 +224,8 @@ pub(super) fn lower(
         false,
     ));
     // The final SELECT: the UNION's columns, named as the first arm's.
-    // UNION: grouped by each value's key; a node, relationship or `id()`
-    // column is of one type in every arm, and grouped by as it is.
+    // UNION: grouped by each value's key, an `id()` as it is (of one type in
+    // every arm), and each element's identity.
     let names = shape.iter().flat_map(|c| c.columns.iter().map(|(_, n)| n));
     let mut plan = RenderPlan {
         from: FromTableItem(Some(table_ref(format!("with_{u}"), &u))),
@@ -241,12 +241,17 @@ pub(super) fn lower(
         plan.select
             .items
             .push(select(RenderExpr::Raw((spelling.any)(&sql)), name));
-        plan.group_by.0.push(match kind {
-            ResultKind::Value | ResultKind::Graph(_) => {
-                RenderExpr::Raw((spelling.distinct_key)(&sql))
-            }
-            ResultKind::Node { .. } | ResultKind::Rel { .. } | ResultKind::NodeId { .. } => column,
-        });
+        match kind {
+            ResultKind::Value | ResultKind::Graph(_) => plan
+                .group_by
+                .0
+                .push(RenderExpr::Raw((spelling.distinct_key)(&sql))),
+            ResultKind::NodeId { .. } => plan.group_by.0.push(column),
+            // A node or relationship is grouped by its identity alone
+            // (exported below); its columns follow from it, and may be of a
+            // type ClickHouse cannot group by (`Dynamic`).
+            ResultKind::Node { .. } | ResultKind::Rel { .. } => {}
+        }
     }
     // Identity columns are of one type in every arm.
     let identity_columns = lowered.first().map_or(0, |a| a.identity_columns);

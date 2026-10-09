@@ -244,17 +244,26 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             // A `Dynamic` column holds each value with its own type; the
             // common type of the arms' `Dynamic` columns is `Dynamic`.
             any_type: |v| format!("CAST({v}, 'Dynamic')"),
-            // Whether the value is a string, and its text: a string apart
-            // from the number, boolean or other value of the same text
-            // (`'1'`, `'true'`), numbers by value (`1` = `1.0`, an `Int64` =
-            // a `UInt8`); a boolean's text is `true` / `false`, and inside a
-            // list a string is quoted. Not JSON: `toJSONString` quotes a
-            // 64-bit integer as a string under
-            // `output_format_json_quote_64bit_integers`. NULL is one group.
+            // The value's kind and text: values of different kinds are
+            // different (`1`, `'1'`, `true`), numbers equal by value (`1` =
+            // `1.0`, an `Int64` = a `UInt8`, `-0.0` = `0`), and inside a
+            // list a string is quoted. A value the output shows as a
+            // string (FixedString, Enum, UUID, a date) is of the string
+            // kind. Not JSON: `toJSONString` quotes a 64-bit integer as a
+            // string under `output_format_json_quote_64bit_integers`. NULL
+            // is one group.
             distinct_key: |v| {
+                let ty = format!("dynamicType(CAST({v}, 'Dynamic'))");
+                let number = format!("match({ty}, '^(U?Int|Float|BFloat|Decimal)')");
+                // `toString` drops a FixedString's trailing zero bytes,
+                // which the output prints: padded back to its width.
                 format!(
-                    "tuple(dynamicType(CAST({v}, 'Dynamic')) IN ('String', 'LowCardinality(String)'), \
-                     toString({v}))"
+                    "tuple(multiIf({ty} = 'None', '', {ty} = 'Bool', 'b', {number}, 'n', \
+                     match({ty}, '^(Array|Map|Tuple)'), 'c', 's'), \
+                     multiIf({number} AND toString({v}) = '-0', '0', \
+                     startsWith({ty}, 'FixedString'), \
+                     rightPad(toString({v}), toUInt64OrZero(extract({ty}, '[0-9]+')), '\\0'), \
+                     toString({v})))"
                 )
             },
             any: |v| format!("any({v})"),

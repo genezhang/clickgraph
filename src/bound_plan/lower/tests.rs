@@ -3629,9 +3629,9 @@ fn a_union_reads_each_arm_from_its_own_cte() {
     // UNION: one row per group of equal rows, in no order.
     let got = squash(&sql("RETURN 1 AS a UNION RETURN 1.0 AS a"));
     assert!(
-        got.ends_with(
-            r#"SELECT any(w3.__cg_c0) AS "a" FROM with_w3 AS w3 GROUP BY tuple(dynamicType(CAST(w3.__cg_c0, 'Dynamic')) IN ('String', 'LowCardinality(String)'), toString(w3.__cg_c0))"#
-        ),
+        got.contains(
+            r#"SELECT any(w3.__cg_c0) AS "a" FROM with_w3 AS w3 GROUP BY tuple(multiIf(dynamicType(CAST(w3.__cg_c0, 'Dynamic')) = 'None', '', "#
+        ) && got.ends_with(r#"toString(w3.__cg_c0)))"#),
         "{got}"
     );
     // Three arms; the arms' WITH segments continue the CTE names.
@@ -3714,6 +3714,16 @@ fn a_union_of_elements() {
     );
 }
 
+/// A map literal's entries are in key order: maps of the same entries are
+/// equal (DISTINCT, grouping, UNION), whatever order they were written in.
+#[test]
+fn a_map_literal_is_in_key_order() {
+    has(
+        "RETURN {b: 2, a: 1} AS m",
+        &["map('a', toString(1), 'b', toString(2)) AS \"m\""],
+    );
+}
+
 /// Every arm's RETURN reads the properties of the elements it returns whole
 /// (here from an OPTIONAL MATCH's CTE).
 #[test]
@@ -3753,10 +3763,11 @@ fn a_union_keeps_elements_apart_by_identity() {
     assert!(
         sql.contains(r#"v1.weight AS "__cg_w1_c2", 1 AS "__cg_w1_c3", v1.kid AS "__cg_w1_k0" FROM"#)
             && sql.contains(r#"w2.__cg_w2_k0 AS "__cg_k0" FROM with_w2 AS w2"#)
-            // An element's columns are grouped by as they are, a value by
-            // its key.
-            && sql.contains(r#"GROUP BY w3.__cg_c0, w3.__cg_c1, w3.__cg_c2, tuple(dynamicType("#)
-            && sql.ends_with(r#"toString(w3.__cg_c3)), w3.__cg_k0"#),
+            // An element is grouped by its identity alone, a value by its
+            // key.
+            && sql.contains(r#"SELECT any(w3.__cg_c0) AS "k.from_id","#)
+            && sql.contains(r#"GROUP BY tuple(multiIf(dynamicType(CAST(w3.__cg_c3, "#)
+            && sql.ends_with(r#"toString(w3.__cg_c3))), w3.__cg_k0"#),
         "{sql}"
     );
     // A relationship of several types is a graph value, whose `elementId`
@@ -3768,8 +3779,9 @@ fn a_union_keeps_elements_apart_by_identity() {
     );
     assert!(
         sql.contains(r#"v1.__cg_rid_0 AS "__cg_w3_k3""#)
-            && sql
-                .ends_with("toString(w7.__cg_c0)), w7.__cg_k0, w7.__cg_k1, w7.__cg_k2, w7.__cg_k3"),
+            && sql.ends_with(
+                "toString(w7.__cg_c0))), w7.__cg_k0, w7.__cg_k1, w7.__cg_k2, w7.__cg_k3"
+            ),
         "{sql}"
     );
     // UNION ALL needs no identity.
