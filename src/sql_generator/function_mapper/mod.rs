@@ -387,7 +387,8 @@ pub(crate) trait FunctionMapper: Send + Sync {
     fn graph_values(&self) -> Option<GraphValues>;
 
     /// `column`, a column of a union whose arms are different tables (the
-    /// nodes of several labels, `bound_plan::lower::Lowerer::label_union`),
+    /// nodes of several labels or the relationships of several types,
+    /// `bound_plan::lower::Lowerer::label_union` / `rel_union`),
     /// failing the query when the arms have no common type instead of
     /// taking a type that answers differently; `None` when the dialect
     /// cannot (the union is then not lowered).

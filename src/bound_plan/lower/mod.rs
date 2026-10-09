@@ -36,11 +36,13 @@
 //! query is translated by the legacy pipeline:
 //! * MATCH and OPTIONAL MATCH over standard-layout labels and types
 //!   (`NodeSchema::is_standard_own_table`, `RelationshipSchema::
-//!   is_standard_edge_table`), each relationship with one type after label
-//!   inference, joining one pair of labels; fixed length or variable length,
-//!   directed or undirected (S6, S7a). A node of several possible labels is
-//!   one relation of its labels' tables (`Scan::Labels`, S7b1), its rows
-//!   carrying their label;
+//!   is_standard_edge_table`); fixed length or variable length, directed or
+//!   undirected (S6, S7a). A node of several possible labels is one relation
+//!   of its labels' tables (`Scan::Labels`, S7b1), its rows carrying their
+//!   label; a fixed-length relationship of several possible types or label
+//!   pairs is one relation of its definitions' tables (`Scan::Rels`, S7b2),
+//!   its rows carrying their type and their ends' labels. A variable-length
+//!   relationship has one type and joins nodes of one label each (S7b3);
 //! * WITH and RETURN with aggregation, DISTINCT, ORDER BY, SKIP, LIMIT and
 //!   (WITH) WHERE, evaluated in that order; free-standing ORDER BY, SKIP and
 //!   LIMIT;
@@ -66,7 +68,7 @@ use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSc
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::render_expr::{
     visit_render_expr_mut, ColumnAlias, Literal, MutVisit, Operator, OperatorApplication,
-    PropertyAccess, RenderExpr, TableAlias,
+    PropertyAccess, RenderCase, RenderExpr, TableAlias,
 };
 use crate::render_plan::{
     ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem, GroupByExpressions, Join,
@@ -213,6 +215,19 @@ enum Scan<'s> {
         /// relationship whose two directions are the one table.
         both: Option<String>,
     },
+    /// A relationship of several possible types or label pairs (§4.6
+    /// `Alternatives`): read from the CTE `cte` of one arm per definition
+    /// and orientation ([`Lowerer::rel_union`]), whose rows carry their type,
+    /// the labels and ids of their stored ends, their identity and the
+    /// properties read of the relationship.
+    Rels {
+        arms: Vec<RelArm<'s>>,
+        cte: String,
+        /// The relationship the CTE was built for: its columns are named
+        /// after it.
+        of: VarId,
+        at: At,
+    },
     /// A variable-length relationship: a relation of paths (`path.rs`),
     /// read from the CTE `cte`.
     Path {
@@ -240,6 +255,28 @@ enum Scan<'s> {
     },
     /// An element whose label / type set is empty: it matches nothing.
     Impossible,
+}
+
+/// One arm of a relationship of several possible types or label pairs
+/// ([`Scan::Rels`]): a definition, read as stored or reversed (its left end
+/// is the stored `to`).
+#[derive(Debug, Clone)]
+struct RelArm<'s> {
+    rel_type: String,
+    schema: &'s RelationshipSchema,
+    reversed: bool,
+}
+
+impl RelArm<'_> {
+    /// The labels of the ends the arm's rows leave and enter.
+    fn ends(&self) -> (&str, &str) {
+        let (f, t) = (self.schema.from_node.as_str(), self.schema.to_node.as_str());
+        if self.reversed {
+            (t, f)
+        } else {
+            (f, t)
+        }
+    }
 }
 
 /// Where an element's columns are.
@@ -273,6 +310,7 @@ impl<'s> Scan<'s> {
             Scan::Node { at, .. }
             | Scan::Labels { at, .. }
             | Scan::Rel { at, .. }
+            | Scan::Rels { at, .. }
             | Scan::Path { at, .. } => Some(at),
             Scan::Impossible => None,
         }
@@ -291,6 +329,7 @@ impl<'s> Scan<'s> {
                 at,
                 both: None,
             },
+            Scan::Rels { arms, cte, of, .. } => Scan::Rels { arms, cte, of, at },
             Scan::Path {
                 schema,
                 rel_type,
@@ -431,6 +470,24 @@ const BOTH_END: &str = "__cg_end";
 const LABEL_COLUMN: &str = "__cg_label";
 const LABEL_ID: &str = "__cg_id";
 
+/// The columns of a relationship of several possible types or label pairs
+/// ([`Lowerer::rel_union`]): its type, the labels of its stored ends, its
+/// identity (`REL_ID_{i}`), the ids of its stored ends (`REL_FROM_{i}`,
+/// `REL_TO_{i}`), and the label and id of the node a row leaves and enters
+/// here (`REL_START_LABEL` / `BOTH_START_{i}`, `REL_END_LABEL` /
+/// `BOTH_END_{i}`).
+const REL_TYPE: &str = "__cg_type";
+const REL_FROM_LABEL: &str = "__cg_from_label";
+const REL_TO_LABEL: &str = "__cg_to_label";
+const REL_ID: &str = "__cg_rid";
+const REL_FROM: &str = "__cg_from";
+const REL_TO: &str = "__cg_to";
+const REL_START_LABEL: &str = "__cg_start_label";
+const REL_END_LABEL: &str = "__cg_end_label";
+/// The column of a relationship's orientation ([`Lowerer::turns`]): 1 where
+/// a row reads it reversed.
+const TURN: &str = "__cg_turn";
+
 fn indexed_column(side: &str, i: usize) -> String {
     format!("{side}_{i}")
 }
@@ -439,20 +496,88 @@ fn indexed_columns(side: &str, arity: usize) -> Vec<String> {
     (0..arity).map(|i| indexed_column(side, i)).collect()
 }
 
-/// The ends a relationship's columns tie: (end, its label there, the
-/// relationship's columns equal to its identity).
-type Ends = Vec<(VarId, String, Vec<String>)>;
+/// The label a relationship's row gives the node at one of its ends.
+#[derive(Debug, Clone)]
+enum EndLabel {
+    /// Always this one.
+    Is(String),
+    /// One of `labels`, by row: `value`.
+    By {
+        labels: Vec<String>,
+        value: RenderExpr,
+    },
+}
 
-/// The ends a relationship read as stored ties: `from` by its `from_id`
-/// columns, `to` by its `to_id` columns.
-fn stored_ends(rs: &RelationshipSchema, from: VarId, to: VarId) -> Ends {
-    let cols = |id: &crate::graph_catalog::config::Identifier| {
-        id.columns().iter().map(|c| c.to_string()).collect()
+impl EndLabel {
+    /// One of `labels` (repeats allowed), by row `value`.
+    fn of(mut labels: Vec<String>, value: RenderExpr) -> EndLabel {
+        labels.sort();
+        labels.dedup();
+        if labels.len() == 1 {
+            EndLabel::Is(labels.remove(0))
+        } else {
+            EndLabel::By { labels, value }
+        }
+    }
+
+    fn labels(&self) -> Vec<String> {
+        match self {
+            EndLabel::Is(l) => vec![l.clone()],
+            EndLabel::By { labels, .. } => labels.clone(),
+        }
+    }
+}
+
+/// The ends a relationship's columns tie: (end, the label it gives the end,
+/// the relationship's columns equal to the end's identity).
+type Ends = Vec<(VarId, EndLabel, Vec<RenderExpr>)>;
+
+/// The widths of a relationship union's columns ([`Lowerer::rel_union`]).
+struct RelUnionShape {
+    /// Its identity: the widest arm's (a narrower one's is NULL-padded).
+    identity: usize,
+    /// The ids of its stored ends.
+    from: usize,
+    to: usize,
+    /// The ids of the ends a row leaves and enters.
+    start: usize,
+    end: usize,
+}
+
+/// [`RelUnionShape`] of `arms`, whose ends' ids must have one arity each.
+fn rel_union_shape(arms: &[RelArm]) -> Result<RelUnionShape, LowerError> {
+    let shape = |a: &RelArm| {
+        let (f, t) = (
+            a.schema.from_id.columns().len(),
+            a.schema.to_id.columns().len(),
+        );
+        let identity = a
+            .schema
+            .edge_id
+            .as_ref()
+            .map_or(f + t, |id| id.columns().len());
+        let (start, end) = if a.reversed { (t, f) } else { (f, t) };
+        (identity, (f, t, start, end))
     };
-    vec![
-        (from, rs.from_node.clone(), cols(&rs.from_id)),
-        (to, rs.to_node.clone(), cols(&rs.to_id)),
-    ]
+    let Some(first) = arms.first().map(shape) else {
+        return unsupported("internal: a relationship union of no arms");
+    };
+    let mut identity = first.0;
+    for a in arms {
+        let (i, ends) = shape(a);
+        if ends != first.1 {
+            return unsupported("a relationship whose definitions' ends differ in id arity (S8)");
+        }
+        identity = identity.max(i);
+    }
+    let (from, to, start, end) = first.1;
+    Ok(RelUnionShape {
+        identity,
+        from,
+        to,
+        start,
+        end,
+    })
 }
 
 fn eq(a: RenderExpr, b: RenderExpr) -> OperatorApplication {
@@ -1134,7 +1259,12 @@ impl<'s> Lowerer<'s> {
             // relationship's other columns depend on it; a relationship
             // identified by its endpoints can have parallel edges with other
             // properties, so it also joins on those `D` holds (NULL-safely).
-            if matches!(&scan, Scan::Rel { schema, .. } if schema.edge_id.is_none()) {
+            let by_ends = match &scan {
+                Scan::Rel { schema, .. } => schema.edge_id.is_none(),
+                Scan::Rels { arms, .. } => arms.iter().any(|a| a.schema.edge_id.is_none()),
+                _ => false,
+            };
+            if by_ends {
                 let mut props: Vec<&RenderExpr> =
                     d_props.values().filter(|e| !is_constant(e)).collect();
                 props.sort_by_key(|e| column_of(e, &d).unwrap_or_default());
@@ -1148,13 +1278,20 @@ impl<'s> Lowerer<'s> {
                     });
                 }
             }
-            for c in self.identity_physical(*v).unwrap_or_default() {
+            for (i, c) in self
+                .identity_physical(*v)
+                .unwrap_or_default()
+                .into_iter()
+                .enumerate()
+            {
                 let column = physical[&c].clone();
                 correlation.push(Correlated {
                     column: column.clone(),
                     outer: col_at(&w, &column),
                     inner: col_at(&d, &column),
-                    null_safe,
+                    // A union's identity past its definition's own arity is
+                    // NULL; its first column is NULL exactly when it is.
+                    null_safe: null_safe || (i > 0 && matches!(scan, Scan::Rels { .. })),
                 });
             }
             let at = At::Exported {
@@ -1365,31 +1502,40 @@ impl<'s> Lowerer<'s> {
         Ok(name)
     }
 
-    /// Property `p` in the arm of `ns` ([`Self::label_union`], read under
-    /// `e`): the label's mapping; else NULL (`None`) when another label of
-    /// the node declares it (the node has no such property, as in Neo4j),
-    /// for discovered columns and in Neo4j-compat mode; else, declared by
-    /// no label, the undeclared-property rule ([`Self::property`]: the
-    /// same-named column, a missing one a ClickHouse error).
+    /// Property `p` in the arm of `ns` of a node of several labels
+    /// ([`Self::label_union`]), as [`Self::arm_value`].
     fn label_arm_value(
         &self,
         ns: &NodeSchema,
         p: &str,
         arms: &[(String, &NodeSchema)],
     ) -> Option<RenderExpr> {
-        match ns.property_mappings.get(p) {
+        let declared = arms
+            .iter()
+            .any(|(_, o)| o.property_mappings.contains_key(p));
+        self.arm_value(&ns.property_mappings, ns.closed_properties, declared, p)
+    }
+
+    /// Property `p` in one arm of a union (read under `e`) whose element's
+    /// label or definition maps properties by `mappings`: its mapping; else
+    /// NULL (`None`) when another arm's declares it (`declared`: the element
+    /// has no such property, as in Neo4j), for discovered columns (`closed`)
+    /// and in Neo4j-compat mode; else, declared by no arm, the
+    /// undeclared-property rule ([`Self::property`]: the same-named column, a
+    /// missing one a ClickHouse error).
+    fn arm_value(
+        &self,
+        mappings: &HashMap<String, PropertyValue>,
+        closed: bool,
+        declared: bool,
+        p: &str,
+    ) -> Option<RenderExpr> {
+        match mappings.get(p) {
             Some(pv) => Some(RenderExpr::PropertyAccessExp(PropertyAccess {
                 table_alias: TableAlias("e".to_string()),
                 column: pv.clone(),
             })),
-            None if ns.closed_properties
-                || self.options.neo4j_compat
-                || arms
-                    .iter()
-                    .any(|(_, o)| o.property_mappings.contains_key(p)) =>
-            {
-                None
-            }
+            None if closed || self.options.neo4j_compat || declared => None,
             None => Some(col_at("e", p)),
         }
     }
@@ -1408,10 +1554,16 @@ impl<'s> Lowerer<'s> {
     /// ([`Self::label_union`]): those read of it, every one when it is read
     /// whole.
     fn label_union_props(&self, v: VarId, arms: &[(String, &NodeSchema)]) -> BTreeSet<String> {
+        self.union_props(v, || Self::label_property_names(arms))
+    }
+
+    /// The properties read of `v` (the demand pass), `all` of them when it
+    /// is read whole.
+    fn union_props(&self, v: VarId, all: impl Fn() -> BTreeSet<String>) -> BTreeSet<String> {
         let mut props = BTreeSet::new();
         for p in self.demand.get(&v).into_iter().flatten() {
             if p == ALL_PROPERTIES {
-                props.extend(Self::label_property_names(arms));
+                props.extend(all());
             } else if !p.starts_with('#') {
                 props.insert(p.clone());
             }
@@ -1476,149 +1628,579 @@ impl<'s> Lowerer<'s> {
             };
             return self.path_scan(r, from, to, min, max);
         }
-        let bound = self.scans.contains_key(&r.var);
-        if r.direction == RelDirection::Either && bound {
-            // Each row would match in up to two orientations.
-            return unsupported("a relationship bound before, matched undirected (S7b)");
-        }
-        // The ends the relationship's columns tie.
-        let ends = if bound {
-            let (from, to) = match r.direction {
-                RelDirection::Left => (right, left),
-                _ => (left, right),
-            };
-            match &self.scans[&r.var] {
-                Scan::Rel { schema: rs, .. } => stored_ends(rs, from, to),
-                _ => Vec::new(),
+        let (ends, turned) = if self.scans.contains_key(&r.var) {
+            match r.direction {
+                RelDirection::Right => (self.stored_ends(r.var, left, right)?, false),
+                RelDirection::Left => (self.stored_ends(r.var, right, left)?, false),
+                RelDirection::Either => (self.turned_ends(r.var, left, right)?, true),
             }
         } else {
             let BindingKind::Rel { types, .. } = &self.binding(r.var).kind else {
                 return unsupported("a pattern relationship that is not a relationship binding");
             };
-            let (scan, ends) = match types.len() {
-                // No feasible type.
-                0 => (Scan::Impossible, Vec::new()),
-                1 => {
-                    let rel_type = types.iter().next().expect("one type").clone();
-                    let (ll, rl) = (self.labels_of(left)?, self.labels_of(right)?);
-                    match self.end_labels(&rel_type, r.direction, &ll, &rl)? {
-                        Some((ll, rl)) => {
-                            self.decide_rel(r, rel_type, (left, &ll), (right, &rl))?
-                        }
-                        // No two labels it joins (or an end that matches
-                        // nothing).
-                        None => (Scan::Impossible, Vec::new()),
-                    }
-                }
-                _ => return unsupported("a relationship with several possible types (S7b2)"),
-            };
-            self.scans.insert(r.var, scan);
-            ends
+            let (ll, rl) = (self.labels_of(left)?, self.labels_of(right)?);
+            let arms = self.rel_arms(types, r.direction, &ll, &rl)?;
+            (self.decide_rel(r.var, arms, left, right)?, false)
         };
         for (end, label, cols) in ends {
-            // An end of several possible labels has this one here.
-            self.holds_label(end, &label)?;
-            let Some(ids) = self.id_columns(end)? else {
-                continue; // an endpoint that matches nothing
-            };
-            if ids.len() != cols.len() {
-                return unsupported("endpoint id arity differs from the edge's");
-            }
-            let mut eqs = Vec::new();
-            for (c, id) in cols.iter().zip(ids) {
-                eqs.push((self.physical(r.var, c)?, id));
-            }
-            self.tie(r.var, end, eqs);
+            self.tie_end(r.var, end, label, cols, turned)?;
         }
         Ok(())
     }
 
-    /// The labels at the left and right ends of a relationship of type
-    /// `rel_type` written in `direction`, of the ends' possible labels
-    /// (`ll`, `rl`): the one pair the schema defines it between (in either
-    /// orientation, undirected). `None` when there is none.
-    fn end_labels(
+    /// The arms of a relationship of one of `types` written in `direction`
+    /// between nodes of the labels `ll` and `rl` (§4.6 `Alternatives`): each
+    /// definition the schema has between a left and a right label, as stored
+    /// (left to right) or reversed (right to left), as the direction allows.
+    /// `get_rel_schema_with_nodes` cannot say which exist: it falls back to a
+    /// type's first schema whatever its ends.
+    fn rel_arms(
         &self,
-        rel_type: &str,
+        types: &BTreeSet<String>,
         direction: RelDirection,
         ll: &[String],
         rl: &[String],
-    ) -> Result<Option<(String, String)>, LowerError> {
-        let defined = |f: &str, t: &str| self.defined(rel_type, f, t).is_some();
-        let mut pairs = Vec::new();
-        for l in ll {
-            for r in rl {
-                let feasible = match direction {
-                    RelDirection::Right => defined(l, r),
-                    RelDirection::Left => defined(r, l),
-                    RelDirection::Either => defined(l, r) || defined(r, l),
-                };
-                if feasible {
-                    pairs.push((l.clone(), r.clone()));
+    ) -> Result<Vec<RelArm<'s>>, LowerError> {
+        let mut arms: Vec<RelArm<'s>> = Vec::new();
+        for rel_type in types {
+            for l in ll {
+                for r in rl {
+                    let orientations: &[bool] = match direction {
+                        RelDirection::Right => &[false],
+                        RelDirection::Left => &[true],
+                        RelDirection::Either => &[false, true],
+                    };
+                    for &reversed in orientations {
+                        let (from, to) = if reversed { (r, l) } else { (l, r) };
+                        if self.defined(rel_type, from, to).is_none() {
+                            continue;
+                        }
+                        let schema = self.edge_schema(rel_type, from, to)?;
+                        if schema.from_node != *from || schema.to_node != *to {
+                            return unsupported(format!(
+                                "type {rel_type} is not the standard layout (S8)"
+                            ));
+                        }
+                        let arm = RelArm {
+                            rel_type: rel_type.clone(),
+                            schema,
+                            reversed,
+                        };
+                        let known = arms
+                            .iter()
+                            .any(|a| std::ptr::eq(a.schema, schema) && a.reversed == reversed);
+                        if !known {
+                            arms.push(arm);
+                        }
+                    }
                 }
             }
         }
-        match pairs.len() {
-            0 => Ok(None),
-            1 => Ok(pairs.pop()),
-            _ => unsupported(
-                "a relationship between nodes of several possible labels it joins in several \
-                 ways (S7b2)",
-            ),
-        }
+        Ok(arms)
     }
 
-    /// The scan of a relationship of one type between nodes of one label
-    /// each (the labels it has at its ends here: [`Self::end_labels`]), and
-    /// the ends its columns tie. Undirected, it is read in the
-    /// directions the schema has: one, as a directed relationship; both, when
-    /// they are the one table (the two ends have one label), from
-    /// [`Self::both_directions`], its left end tied to the node each row
-    /// leaves and its right end to the node it enters.
+    /// The scan of an unbound relationship of these arms (between nodes
+    /// `left` and `right`), and the ends its columns tie:
+    /// * none: it matches nothing;
+    /// * one: its table, in the arm's orientation;
+    /// * a definition between nodes of one label, in both orientations (an
+    ///   undirected relationship whose two directions are the one table):
+    ///   [`Self::both_directions`], its left end tied to the node each row
+    ///   leaves and its right end to the node it enters;
+    /// * any others: [`Self::rel_union`], each row tying the nodes it leaves
+    ///   and enters, with their labels.
     fn decide_rel(
         &mut self,
-        r: &PatRel,
-        rel_type: String,
-        (left, ll): (VarId, &str),
-        (right, rl): (VarId, &str),
-    ) -> Result<(Scan<'s>, Ends), LowerError> {
-        let scan = |schema, rel_type, both| Scan::Rel {
-            schema,
-            rel_type,
-            at: At::Table(r.var.name()),
-            both,
-        };
-        let (from, to) = match r.direction {
-            RelDirection::Right => (left, right),
-            RelDirection::Left => (right, left),
-            RelDirection::Either => {
-                let defined = |f: &str, t: &str| self.defined(&rel_type, f, t).is_some();
-                match (defined(ll, rl), defined(rl, ll)) {
-                    (true, true) if ll == rl => {
-                        let rs = self.edge_schema(&rel_type, ll, rl)?;
-                        let both = self.both_directions(rs, r.var)?;
-                        let arity = rs.from_id.columns().len();
-                        let ends = vec![
-                            (left, ll.to_string(), indexed_columns(BOTH_START, arity)),
-                            (right, rl.to_string(), indexed_columns(BOTH_END, arity)),
-                        ];
-                        return Ok((scan(rs, rel_type, Some(both)), ends));
-                    }
-                    (true, true) => {
-                        return unsupported(
-                            "an undirected relationship whose two directions are two \
-                             relationship schemas (S7b)",
-                        )
-                    }
-                    (true, false) => (left, right),
-                    (false, true) => (right, left),
-                    (false, false) => return Ok((Scan::Impossible, Vec::new())),
-                }
+        r: VarId,
+        arms: Vec<RelArm<'s>>,
+        left: VarId,
+        right: VarId,
+    ) -> Result<Ends, LowerError> {
+        let at = At::Table(r.name());
+        let at_table = |c: &str| col_at(&r.name(), c);
+        let scan = match arms.as_slice() {
+            [] => Scan::Impossible,
+            [arm] => {
+                let scan = Scan::Rel {
+                    schema: arm.schema,
+                    rel_type: arm.rel_type.clone(),
+                    at,
+                    both: None,
+                };
+                let (from, to) = if arm.reversed {
+                    (right, left)
+                } else {
+                    (left, right)
+                };
+                self.scans.insert(r, scan);
+                return self.stored_ends(r, from, to);
+            }
+            [a, b]
+                if std::ptr::eq(a.schema, b.schema)
+                    && a.reversed != b.reversed
+                    && a.schema.from_node == a.schema.to_node =>
+            {
+                let rs = a.schema;
+                let both = self.both_directions(rs, r)?;
+                let arity = rs.from_id.columns().len();
+                let label = EndLabel::Is(rs.from_node.clone());
+                let (starts, ends) = (
+                    indexed_columns(BOTH_START, arity),
+                    indexed_columns(BOTH_END, arity),
+                );
+                self.scans.insert(
+                    r,
+                    Scan::Rel {
+                        schema: rs,
+                        rel_type: a.rel_type.clone(),
+                        at,
+                        both: Some(both),
+                    },
+                );
+                return Ok(vec![
+                    (
+                        left,
+                        label.clone(),
+                        starts.iter().map(|c| at_table(c)).collect(),
+                    ),
+                    (right, label, ends.iter().map(|c| at_table(c)).collect()),
+                ]);
+            }
+            _ => {
+                let cte = self.rel_union(r, &arms)?;
+                let shape = rel_union_shape(&arms)?;
+                let side = |left_end: bool, label: &str, ids: &str, arity: usize| {
+                    let labels = arms
+                        .iter()
+                        .map(|a| {
+                            let (l, r) = a.ends();
+                            (if left_end { l } else { r }).to_string()
+                        })
+                        .collect();
+                    let cols = indexed_columns(ids, arity)
+                        .iter()
+                        .map(|c| at_table(c))
+                        .collect();
+                    (EndLabel::of(labels, at_table(label)), cols)
+                };
+                let (ll, lc) = side(true, REL_START_LABEL, BOTH_START, shape.start);
+                let (rl, rc) = side(false, REL_END_LABEL, BOTH_END, shape.end);
+                self.scans.insert(
+                    r,
+                    Scan::Rels {
+                        arms,
+                        cte,
+                        of: r,
+                        at,
+                    },
+                );
+                return Ok(vec![(left, ll, lc), (right, rl, rc)]);
             }
         };
-        let (fl, tl) = if from == left { (ll, rl) } else { (rl, ll) };
-        let rs = self.edge_schema(&rel_type, fl, tl)?;
-        Ok((scan(rs, rel_type, None), stored_ends(rs, from, to)))
+        self.scans.insert(r, scan);
+        Ok(Vec::new())
+    }
+
+    /// The ends a relationship read as stored ties: `from` by its stored
+    /// `from` columns and label, `to` by its `to` ones.
+    fn stored_ends(&self, r: VarId, from: VarId, to: VarId) -> Result<Ends, LowerError> {
+        let physical = |cols: Vec<String>| -> Result<Vec<RenderExpr>, LowerError> {
+            cols.iter().map(|c| self.physical(r, c)).collect()
+        };
+        Ok(match self.scans.get(&r) {
+            Some(Scan::Rel { schema, .. }) => {
+                let cols = |id: &crate::graph_catalog::config::Identifier| {
+                    id.columns().iter().map(|c| c.to_string()).collect()
+                };
+                vec![
+                    (
+                        from,
+                        EndLabel::Is(schema.from_node.clone()),
+                        physical(cols(&schema.from_id))?,
+                    ),
+                    (
+                        to,
+                        EndLabel::Is(schema.to_node.clone()),
+                        physical(cols(&schema.to_id))?,
+                    ),
+                ]
+            }
+            Some(Scan::Rels { arms, .. }) => {
+                let shape = rel_union_shape(arms)?;
+                let (fa, ta) = (shape.from, shape.to);
+                let labels = |to_end: bool| {
+                    arms.iter()
+                        .map(|a| {
+                            if to_end {
+                                a.schema.to_node.clone()
+                            } else {
+                                a.schema.from_node.clone()
+                            }
+                        })
+                        .collect()
+                };
+                vec![
+                    (
+                        from,
+                        EndLabel::of(labels(false), self.physical(r, REL_FROM_LABEL)?),
+                        physical(indexed_columns(REL_FROM, fa))?,
+                    ),
+                    (
+                        to,
+                        EndLabel::of(labels(true), self.physical(r, REL_TO_LABEL)?),
+                        physical(indexed_columns(REL_TO, ta))?,
+                    ),
+                ]
+            }
+            // It matches nothing.
+            _ => Vec::new(),
+        })
+    }
+
+    /// The ends of a relationship bound before, matched undirected: each
+    /// row of the relation so far, in both orientations ([`Self::turns`]),
+    /// the left end tied to the stored `from` as stored and to the stored
+    /// `to` reversed. A self-loop is read once, as Neo4j matches it once.
+    fn turned_ends(&mut self, r: VarId, left: VarId, right: VarId) -> Result<Ends, LowerError> {
+        if !self.is_emitted(r) {
+            // Used twice in one MATCH: a relationship is not two of the
+            // clause's (uniqueness), so nothing matches, as in Neo4j.
+            self.empty = true;
+            return Ok(Vec::new());
+        }
+        let stored = self.stored_ends(r, left, right)?;
+        let Ok([(_, fl, fc), (_, tl, tc)]) = <[_; 2]>::try_from(stored) else {
+            return Ok(Vec::new()); // it matches nothing
+        };
+        if fc.len() != tc.len() {
+            return unsupported("an undirected relationship whose ends' ids differ in arity (S8)");
+        }
+        let turned = self.turns(r)?;
+        let pick = |reversed: &RenderExpr, stored: &RenderExpr| {
+            RenderExpr::Case(RenderCase {
+                expr: None,
+                when_then: vec![(turned.clone(), reversed.clone())],
+                else_expr: Some(Box::new(stored.clone())),
+            })
+        };
+        let label_value = |l: &EndLabel| match l {
+            EndLabel::Is(one) => RenderExpr::Literal(Literal::String(one.clone())),
+            EndLabel::By { value, .. } => value.clone(),
+        };
+        let (fv, tv) = (label_value(&fl), label_value(&tl));
+        let both_labels: Vec<String> = fl.labels().into_iter().chain(tl.labels()).collect();
+        // A row is a self-loop when its two ends are one node.
+        let mut differ: Vec<RenderExpr> = fc
+            .iter()
+            .zip(&tc)
+            .map(|(f, t)| {
+                RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::NotEqual,
+                    operands: vec![f.clone(), t.clone()],
+                })
+            })
+            .collect();
+        let loops = match (&fl, &tl) {
+            (EndLabel::Is(a), EndLabel::Is(b)) => a == b,
+            _ => {
+                differ.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::NotEqual,
+                    operands: vec![fv.clone(), tv.clone()],
+                }));
+                true
+            }
+        };
+        if loops {
+            differ.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::Not,
+                operands: vec![turned.clone()],
+            }));
+            self.filters.push(or_all(differ));
+        }
+        let end = |a: &[RenderExpr], b: &[RenderExpr]| -> Vec<RenderExpr> {
+            a.iter().zip(b).map(|(x, y)| pick(y, x)).collect()
+        };
+        Ok(vec![
+            (
+                left,
+                EndLabel::of(both_labels.clone(), pick(&tv, &fv)),
+                end(&fc, &tc),
+            ),
+            (
+                right,
+                EndLabel::of(both_labels, pick(&fv, &tv)),
+                end(&tc, &fc),
+            ),
+        ])
+    }
+
+    /// Join the relation so far to its two orientations: the CTE
+    /// `{r}_turns{n}` of the rows `TURN` = 0 and 1, joined to every row.
+    /// Returns the condition of the reversed one.
+    fn turns(&mut self, r: VarId) -> Result<RenderExpr, LowerError> {
+        let n = self.ctes.len() + 1;
+        let (name, alias) = (
+            format!("{}_turns{n}", r.name()),
+            format!("{}_t{n}", r.name()),
+        );
+        let row = |turn: i64| {
+            let mut plan = empty_plan();
+            plan.select.items = vec![select(RenderExpr::Literal(Literal::Integer(turn)), TURN)];
+            plan
+        };
+        let body = RenderPlan {
+            union: UnionItems(Some(Union {
+                input: vec![row(0), row(1)],
+                union_type: UnionType::All,
+                is_cypher_union: false,
+            })),
+            ..empty_plan()
+        };
+        self.ctes.push(Cte::new(
+            name.clone(),
+            CteContent::Structured(Box::new(body)),
+            false,
+        ));
+        if self.from.is_none() {
+            return unsupported("internal: an orientation join with no relation");
+        }
+        let mut j = join(name, &alias);
+        j.joining_on = vec![eq(
+            RenderExpr::Literal(Literal::Integer(1)),
+            RenderExpr::Literal(Literal::Integer(1)),
+        )];
+        self.joins.push(j);
+        self.emitted.push(alias.clone());
+        Ok(RenderExpr::OperatorApplicationExp(eq(
+            col_at(&alias, TURN),
+            RenderExpr::Literal(Literal::Integer(1)),
+        )))
+    }
+
+    /// Tie relationship `r`'s columns `cols` to node `end`, and the label
+    /// the relationship gives it to its label: an end of several possible
+    /// labels holds that one (`Self::holds_label`), or equals the
+    /// relationship's label column; one the relationship cannot be at
+    /// makes the relation empty. A tie of a relationship read in both
+    /// orientations (`turned`) to a node already joined is a WHERE: the
+    /// orientation join comes after the node's.
+    fn tie_end(
+        &mut self,
+        r: VarId,
+        end: VarId,
+        label: EndLabel,
+        cols: Vec<RenderExpr>,
+        turned: bool,
+    ) -> Result<(), LowerError> {
+        let labels = self.labels_of(end)?;
+        if labels.is_empty() {
+            return Ok(()); // an endpoint that matches nothing
+        }
+        let mut eqs = Vec::new();
+        match label {
+            EndLabel::Is(l) if labels.contains(&l) => self.holds_label(end, &l)?,
+            EndLabel::By {
+                labels: held,
+                value,
+            } if held.iter().any(|l| labels.contains(l)) => match self.scans.get(&end) {
+                Some(Scan::Labels { .. }) => {
+                    eqs.push((value, self.physical(end, LABEL_COLUMN)?));
+                }
+                _ => self.filters.push(RenderExpr::OperatorApplicationExp(eq(
+                    value,
+                    RenderExpr::Literal(Literal::String(labels[0].clone())),
+                ))),
+            },
+            _ => {
+                self.empty = true;
+                return Ok(());
+            }
+        }
+        let Some(ids) = self.id_columns(end)? else {
+            return Ok(());
+        };
+        if ids.len() != cols.len() {
+            return unsupported("endpoint id arity differs from the edge's");
+        }
+        eqs.extend(cols.into_iter().zip(ids));
+        if turned && self.is_emitted(end) {
+            self.filters.extend(
+                eqs.into_iter()
+                    .map(|(a, b)| RenderExpr::OperatorApplicationExp(eq(a, b))),
+            );
+        } else {
+            self.tie(r, end, eqs);
+        }
+        Ok(())
+    }
+
+    /// A relationship of several possible types or label pairs, as one
+    /// relation (§4.6 `Alternatives`): the CTE `{v}_rels`, one arm per
+    /// definition and orientation ([`RelArm`]) reading its table (with its
+    /// `filter:`, view parameters and FINAL), its rows carrying
+    ///
+    /// * their type and the labels of their stored ends, then their identity
+    ///   (`REL_ID_{i}`: the `edge_id`, else the stored ends, #887; NULL past
+    ///   an arm's own arity): a relationship is its definition and its
+    ///   identity, so two definitions' equal ids are two relationships;
+    /// * the ids of their stored ends (`REL_FROM_{i}`, `REL_TO_{i}`), and the
+    ///   label and id of the node they leave and enter here;
+    /// * each property read of `v` (the demand pass), as on a node of several
+    ///   labels ([`Self::arm_value`]), read through `one_type_guard` where
+    ///   several definitions have a value ([`Self::rel_union_mixed`]).
+    ///
+    /// A definition between nodes of one label read in both orientations
+    /// (undirected) reads a self-loop once, as stored, as Neo4j matches it
+    /// once.
+    fn rel_union(&mut self, v: VarId, arms: &[RelArm<'s>]) -> Result<String, LowerError> {
+        let name = format!("{}_rels", v.name());
+        let shape = rel_union_shape(arms)?;
+        const ROW: &str = "e";
+        let props = self.rel_union_props(v, arms);
+        let string = |s: &str| RenderExpr::Literal(Literal::String(s.to_string()));
+        let mut input = Vec::new();
+        for arm in arms {
+            let rs = arm.schema;
+            let (from, to) = (rs.from_id.columns(), rs.to_id.columns());
+            let identity: Vec<&str> = match &rs.edge_id {
+                Some(id) => id.columns(),
+                None => from.iter().chain(&to).copied().collect(),
+            };
+            let (left, right) = arm.ends();
+            let mut items = vec![
+                select(string(&arm.rel_type), REL_TYPE),
+                select(string(&rs.from_node), REL_FROM_LABEL),
+                select(string(&rs.to_node), REL_TO_LABEL),
+            ];
+            for i in 0..shape.identity {
+                let e = identity
+                    .get(i)
+                    .map_or(RenderExpr::Literal(Literal::Null), |c| col_at(ROW, c));
+                items.push(select(e, &indexed_column(REL_ID, i)));
+            }
+            let (starts, ends) = if arm.reversed {
+                (&to, &from)
+            } else {
+                (&from, &to)
+            };
+            for (side, cols) in [
+                (REL_FROM, &from),
+                (REL_TO, &to),
+                (BOTH_START, starts),
+                (BOTH_END, ends),
+            ] {
+                for (i, c) in cols.iter().enumerate() {
+                    items.push(select(col_at(ROW, c), &indexed_column(side, i)));
+                }
+            }
+            items.push(select(string(left), REL_START_LABEL));
+            items.push(select(string(right), REL_END_LABEL));
+            for p in &props {
+                let value = self
+                    .rel_arm_value(rs, p, arms)
+                    .unwrap_or(RenderExpr::Literal(Literal::Null));
+                items.push(select(value, &cte_column_name(&v.name(), p)));
+            }
+            let mut filters = Vec::new();
+            if let Some(f) = &rs.filter {
+                match f.to_sql(ROW) {
+                    Ok(sql) => filters.push(RenderExpr::Raw(format!("({sql})"))),
+                    Err(e) => return unsupported(format!("schema filter: {e}")),
+                }
+            }
+            let read_both_ways = arms
+                .iter()
+                .any(|o| std::ptr::eq(o.schema, rs) && o.reversed != arm.reversed);
+            if arm.reversed && read_both_ways && rs.from_node == rs.to_node {
+                let differ = from
+                    .iter()
+                    .zip(&to)
+                    .map(|(f, t)| {
+                        RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::NotEqual,
+                            operands: vec![col_at(ROW, f), col_at(ROW, t)],
+                        })
+                    })
+                    .collect();
+                filters.push(or_all(differ));
+            }
+            let table = ViewTableRef::parameterized_name(
+                &rs.full_table_name(),
+                rs.view_parameters.as_deref(),
+                self.options.view_parameter_values.as_ref(),
+            );
+            input.push(RenderPlan {
+                select: SelectItems {
+                    items,
+                    distinct: false,
+                },
+                from: FromTableItem(Some(ViewTableRef {
+                    source: Arc::new(LogicalPlan::Empty),
+                    name: table,
+                    alias: Some(ROW.to_string()),
+                    use_final: rs.should_use_final(),
+                })),
+                filters: FilterItems(and_all(filters)),
+                ..empty_plan()
+            });
+        }
+        let body = RenderPlan {
+            union: UnionItems(Some(Union {
+                input,
+                union_type: UnionType::All,
+                is_cypher_union: false,
+            })),
+            ..empty_plan()
+        };
+        self.ctes.push(Cte::new(
+            name.clone(),
+            CteContent::Structured(Box::new(body)),
+            false,
+        ));
+        Ok(name)
+    }
+
+    /// Property `p` in the arm of definition `rs` of a relationship union
+    /// ([`Self::rel_union`]), as [`Self::arm_value`].
+    fn rel_arm_value(
+        &self,
+        rs: &RelationshipSchema,
+        p: &str,
+        arms: &[RelArm],
+    ) -> Option<RenderExpr> {
+        let declared = arms
+            .iter()
+            .any(|a| a.schema.property_mappings.contains_key(p));
+        self.arm_value(&rs.property_mappings, rs.closed_properties, declared, p)
+    }
+
+    /// Property `p` of a relationship union has a value in the arms of more
+    /// than one definition: the union's column takes their common type, if
+    /// they have one (`FunctionMapper::one_type_guard`).
+    fn rel_union_mixed(&self, p: &str, arms: &[RelArm]) -> bool {
+        let mut valued: Vec<&RelationshipSchema> = Vec::new();
+        for a in arms {
+            if self.rel_arm_value(a.schema, p, arms).is_some()
+                && !valued.iter().any(|s| std::ptr::eq(*s, a.schema))
+            {
+                valued.push(a.schema);
+            }
+        }
+        valued.len() > 1
+    }
+
+    /// The properties the CTE of a relationship union carries
+    /// ([`Self::rel_union`]): those read of it, every one when it is read
+    /// whole.
+    fn rel_union_props(&self, v: VarId, arms: &[RelArm]) -> BTreeSet<String> {
+        self.union_props(v, || Self::rel_property_names(arms))
+    }
+
+    /// Every property some definition of `arms` declares, by name.
+    fn rel_property_names(arms: &[RelArm]) -> BTreeSet<String> {
+        arms.iter()
+            .flat_map(|a| a.schema.property_mappings.keys().cloned())
+            .collect()
     }
 
     /// The table of an undirected relationship whose two directions are the
@@ -2485,6 +3067,30 @@ impl<'s> Lowerer<'s> {
                     !held.is_empty()
                 }
             }
+            // Of several possible types, the written ones.
+            Scan::Rels { arms, .. } => {
+                let types: BTreeSet<&String> = arms.iter().map(|a| &a.rel_type).collect();
+                let held: Vec<String> = types
+                    .iter()
+                    .filter(|t| written.contains(t))
+                    .map(|t| t.to_string())
+                    .collect();
+                let holds = !held.is_empty();
+                if holds && held.len() < types.len() {
+                    let column = self.physical(v, REL_TYPE)?;
+                    let is = held
+                        .into_iter()
+                        .map(|t| {
+                            RenderExpr::OperatorApplicationExp(eq(
+                                column.clone(),
+                                RenderExpr::Literal(Literal::String(t)),
+                            ))
+                        })
+                        .collect();
+                    self.filters.push(or_all(is));
+                }
+                holds
+            }
             Scan::Rel { rel_type, .. } | Scan::Path { rel_type, .. } => written.contains(rel_type),
             Scan::Impossible => false,
         };
@@ -2543,6 +3149,18 @@ impl<'s> Lowerer<'s> {
                     .map(|c| c.to_string())
                     .collect(),
             }),
+            // Its definition first (its type, NULL exactly when an OPTIONAL
+            // MATCH left it NULL), then its identity.
+            Scan::Rels { arms, .. } => {
+                let identity = rel_union_shape(arms).ok()?.identity;
+                Some(
+                    [REL_TYPE, REL_FROM_LABEL, REL_TO_LABEL]
+                        .iter()
+                        .map(|c| c.to_string())
+                        .chain(indexed_columns(REL_ID, identity))
+                        .collect(),
+                )
+            }
             // The walk's first node and relationships: the path relation's
             // rows differ in them (a path of none has no relationship).
             Scan::Path { edges, .. } => Some(
@@ -2617,6 +3235,13 @@ impl<'s> Lowerer<'s> {
     fn uniqueness(&mut self, rels: &[VarId]) -> Result<(), LowerError> {
         for (i, a) in rels.iter().enumerate() {
             for b in &rels[i + 1..] {
+                let union = |v: &VarId| matches!(self.scans.get(v), Some(Scan::Rels { .. }));
+                if union(a) || union(b) {
+                    if let Some(differs) = self.union_differs(*a, *b)? {
+                        self.filters.push(differs);
+                    }
+                    continue;
+                }
                 let table = |v: &VarId| match self.scans.get(v) {
                     Some(Scan::Rel { schema, .. }) => Some(schema.full_table_name()),
                     // A shortest path's relationships are its own (and
@@ -2675,6 +3300,103 @@ impl<'s> Lowerer<'s> {
         Ok(())
     }
 
+    /// Relationships `a` and `b` of one MATCH, one of several possible types
+    /// or label pairs (`Scan::Rels`), differ: in their definition, or in
+    /// their identity (a relationship is not on a path). `None` when they
+    /// have no definition in common.
+    fn union_differs(&self, a: VarId, b: VarId) -> Result<Option<RenderExpr>, LowerError> {
+        let definitions = |v: VarId| -> Vec<&'s RelationshipSchema> {
+            match self.scans.get(&v) {
+                Some(Scan::Rel { schema, .. }) => vec![*schema],
+                Some(Scan::Rels { arms, .. }) => arms.iter().map(|a| a.schema).collect(),
+                // A shortest path's relationships are its own.
+                Some(Scan::Path {
+                    schema,
+                    edges: true,
+                    shortest: None,
+                    ..
+                }) => vec![*schema],
+                _ => Vec::new(),
+            }
+        };
+        let (da, db) = (definitions(a), definitions(b));
+        if !da.iter().any(|x| db.iter().any(|y| std::ptr::eq(*x, *y))) {
+            return Ok(None);
+        }
+        let differ = |x: RenderExpr, y: RenderExpr| {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::NotEqual,
+                operands: vec![x, y],
+            })
+        };
+        let string = |s: &str| RenderExpr::Literal(Literal::String(s.to_string()));
+        let path = |v: VarId| match self.scans.get(&v) {
+            Some(Scan::Path {
+                schema,
+                rel_type,
+                at,
+                ..
+            }) => Some((*schema, rel_type.clone(), at.alias().to_string())),
+            _ => None,
+        };
+        if let Some((r, (ps, rel_type, p))) = path(b).map(|p| (a, p)).or(path(a).map(|p| (b, p))) {
+            // Rows of the path's definition: their identity, spelled as the
+            // path's `path_edges` spell it, is not on the path.
+            let arity = match &ps.edge_id {
+                Some(id) => id.columns().len(),
+                None if ps.from_id.columns().len() == 1 && ps.to_id.columns().len() == 1 => 2,
+                None => return unsupported("a composite relationship endpoint (S8)"),
+            };
+            let ids = indexed_columns(REL_ID, arity)
+                .iter()
+                .map(|c| self.physical(r, c).map(|e| render_expr_to_sql_plain(&e)))
+                .collect::<Result<Vec<_>, _>>()?;
+            let identity = match ids.as_slice() {
+                [one] => one.clone(),
+                _ => format!(
+                    "{}({})",
+                    current_function_mapper().tuple_constructor(),
+                    ids.join(", ")
+                ),
+            };
+            let mut differs = vec![
+                differ(self.physical(r, REL_TYPE)?, string(&rel_type)),
+                differ(self.physical(r, REL_FROM_LABEL)?, string(&ps.from_node)),
+                differ(self.physical(r, REL_TO_LABEL)?, string(&ps.to_node)),
+            ];
+            differs.push(path::path_avoids_edge(&p, &identity));
+            return Ok(Some(or_all(differs)));
+        }
+        // Definition, then identity, column by column. Past a definition's
+        // own arity a union's identity is NULL in both (each has its arms).
+        let (ia, ib) = (self.definition_identity(a)?, self.definition_identity(b)?);
+        Ok(Some(or_all(
+            ia.into_iter().zip(ib).map(|(x, y)| differ(x, y)).collect(),
+        )))
+    }
+
+    /// A relationship's definition (type, labels of its stored ends) and
+    /// identity, as a union of several ([`Self::rel_union`]) carries them.
+    fn definition_identity(&self, v: VarId) -> Result<Vec<RenderExpr>, LowerError> {
+        let ids = self.identity(v)?.unwrap_or_default();
+        match self.scans.get(&v) {
+            Some(Scan::Rel {
+                schema, rel_type, ..
+            }) => {
+                let string = |s: &str| RenderExpr::Literal(Literal::String(s.to_string()));
+                let mut all = vec![
+                    string(rel_type),
+                    string(&schema.from_node),
+                    string(&schema.to_node),
+                ];
+                all.extend(ids);
+                Ok(all)
+            }
+            Some(Scan::Rels { .. }) => Ok(ids),
+            _ => unsupported(format!("internal: {v} is not a relationship scan")),
+        }
+    }
+
     /// Add a decided scan to the join tree (once per variable). An element
     /// read from the segment's CTE is already there.
     fn emit(&mut self, v: VarId) -> Result<(), LowerError> {
@@ -2707,6 +3429,11 @@ impl<'s> Lowerer<'s> {
                 both: Some(both),
                 ..
             } => (alias.clone(), both.clone(), None, false, None),
+            Scan::Rels {
+                cte,
+                at: At::Table(alias),
+                ..
+            } => (alias.clone(), cte.clone(), None, false, None),
             Scan::Rel {
                 schema,
                 at: At::Table(alias),
@@ -2732,6 +3459,10 @@ impl<'s> Lowerer<'s> {
                 ..
             }
             | Scan::Rel {
+                at: At::Exported { .. },
+                ..
+            }
+            | Scan::Rels {
                 at: At::Exported { .. },
                 ..
             }
@@ -2952,8 +3683,10 @@ impl<'s> Lowerer<'s> {
             if cte.is_none() {
                 // `RETURN n.*`: the node's properties, named as for `RETURN n`.
                 if let Some(src) = self.all_properties_of(&it.expr) {
-                    if let Some(Scan::Labels { .. }) = self.scans.get(&src) {
-                        return unsupported("`n.*` of a node of several possible labels");
+                    if let Some(Scan::Labels { .. } | Scan::Rels { .. }) = self.scans.get(&src) {
+                        return unsupported(
+                            "`v.*` of an element of several possible labels or types",
+                        );
                     }
                     let name = it.name.strip_suffix(".*").unwrap_or(&it.name);
                     shape.push(self.return_element(src, name, aggregating, &mut body)?);
@@ -3064,18 +3797,24 @@ impl<'s> Lowerer<'s> {
         aggregating: bool,
         body: &mut Body,
     ) -> Result<ResultColumn, LowerError> {
-        if let Some(Scan::Labels { .. }) = self.scans.get(&src) {
-            // Its label differs by row: returned as a value, grouped by its
-            // identity and its properties (which an ORDER BY can read; they
-            // are the identity's).
-            let v = self.labeled_node(src)?;
+        // Its label / type differs by row: returned as a value, grouped by
+        // its identity and its properties (which an ORDER BY can read; they
+        // are the identity's).
+        let union = match self.scans.get(&src) {
+            Some(Scan::Labels { arms, of, .. }) => {
+                Some((self.labeled_node(src)?, self.label_union_props(*of, arms)))
+            }
+            Some(Scan::Rels { arms, of, .. }) => {
+                Some((self.labeled_rel(src)?, self.rel_union_props(*of, arms)))
+            }
+            _ => None,
+        };
+        if let Some((v, props)) = union {
             let column = body.column(v.value, name);
             body.determined.push(column.clone());
             let mut keys = v.keys;
-            if let Some(Scan::Labels { arms, of, .. }) = self.scans.get(&src) {
-                for prop in self.label_union_props(*of, arms) {
-                    keys.push(self.property(src, &prop)?);
-                }
+            for prop in props {
+                keys.push(self.property(src, &prop)?);
             }
             if aggregating {
                 body.group_by.extend(keys);
@@ -3171,9 +3910,9 @@ impl<'s> Lowerer<'s> {
             Some(Scan::Path { .. }) => {
                 return unsupported("a variable-length relationship's list of relationships (S6c)")
             }
-            // Its value (`Lowerer::labeled_node`).
-            Some(Scan::Labels { .. }) => {
-                return unsupported("internal: a node of several labels as columns")
+            // Its value (`Lowerer::labeled_node` / `labeled_rel`).
+            Some(Scan::Labels { .. } | Scan::Rels { .. }) => {
+                return unsupported("internal: an element of several labels or types as columns")
             }
             Some(Scan::Impossible) => return Ok(None),
             None => return unsupported(format!("internal: {v} has no scan")),
@@ -3190,6 +3929,9 @@ impl<'s> Lowerer<'s> {
         let mapped = match self.scans.get(&v) {
             Some(Scan::Labels { arms, .. }) => {
                 return Self::label_property_names(arms).into_iter().collect()
+            }
+            Some(Scan::Rels { arms, .. }) => {
+                return Self::rel_property_names(arms).into_iter().collect()
             }
             Some(Scan::Node { schema, .. }) => &schema.property_mappings,
             Some(Scan::Rel { schema, .. }) => &schema.property_mappings,
@@ -3266,6 +4008,13 @@ impl<'s> Lowerer<'s> {
                     physical_cols.push(c.to_string());
                 }
             }
+        }
+        // Its stored ends' ids (a later clause ties them, and its value
+        // reads them).
+        if let Scan::Rels { arms, .. } = &scan {
+            let shape = rel_union_shape(arms)?;
+            physical_cols.extend(indexed_columns(REL_FROM, shape.from));
+            physical_cols.extend(indexed_columns(REL_TO, shape.to));
         }
         if matches!(scan, Scan::Impossible) {
             return Ok(Scan::Impossible);

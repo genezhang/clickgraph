@@ -203,7 +203,7 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         // exist: an error while the query is analysed, rows or none.
         Some(format!(
             "CAST({column}, if(toTypeName({column}) LIKE 'Variant(%', \
-             'ClickGraph_property_has_different_types_on_different_labels', \
+             'ClickGraph_property_has_different_types_on_different_labels_or_types', \
              toTypeName({column})))"
         ))
     }

@@ -23,11 +23,12 @@
 
 use crate::graph_catalog::element_id::{
     node_element_id_affixes, node_element_id_separators, relationship_element_id_affixes,
+    relationship_element_id_separators,
 };
 use crate::graph_catalog::graph_schema::{NodeSchema, RelationshipSchema};
 use crate::query_planner::logical_expr::{self as lx, LogicalExpr};
 use crate::render_plan::render_expr::{
-    Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+    Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias,
 };
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::function_mapper::{current_function_mapper, GraphValues};
@@ -220,6 +221,46 @@ pub(super) fn rel_object(
         (string("startNodeElementId"), node_id(from_label, from)),
         (string("endNodeElementId"), node_id(to_label, to)),
         (string("type"), string(rel_type)),
+        (string("properties"), properties(g, props)),
+    ])
+}
+
+/// A relationship whose type and stored end labels are the SQL `rel_type`,
+/// `from_label`, `to_label` (columns: one of several possible definitions),
+/// else as [`rel_object`]. Its properties are those of every definition,
+/// NULL where its own has none, so the value has its own.
+fn labeled_rel_object(
+    g: &GraphValues,
+    rel_type: &str,
+    (from_label, to_label): (&str, &str),
+    (from, to): (&str, &str),
+    props: &[(String, String)],
+) -> String {
+    let (after_type, between, suffix) = relationship_element_id_separators();
+    let (after_label, node_suffix) = node_element_id_separators();
+    let node_id = |label: &str, id: &str| {
+        (g.text)(&[
+            label.to_string(),
+            string(after_label),
+            (g.to_text)(id),
+            string(node_suffix),
+        ])
+    };
+    (g.object)(&[
+        (
+            string("elementId"),
+            (g.text)(&[
+                rel_type.to_string(),
+                string(after_type),
+                (g.to_text)(from),
+                string(between),
+                (g.to_text)(to),
+                string(suffix),
+            ]),
+        ),
+        (string("startNodeElementId"), node_id(from_label, from)),
+        (string("endNodeElementId"), node_id(to_label, to)),
+        (string("type"), rel_type.to_string()),
         (string("properties"), properties(g, props)),
     ])
 }
@@ -567,7 +608,7 @@ impl<'s> Lowerer<'s> {
         for (i, r) in elements.rels.iter().enumerate() {
             let next = elements.nodes[i + 1];
             match self.scans.get(r) {
-                Some(Scan::Rel { .. }) => {
+                Some(Scan::Rel { .. } | Scan::Rels { .. }) => {
                     if part != Part::Nodes {
                         items.push(self.rel_value(*r, &s)?);
                     }
@@ -634,6 +675,30 @@ impl<'s> Lowerer<'s> {
                             string(&format!("{rel_type}:")),
                             (s.to_text)(&id),
                         ]));
+                    }
+                    if part == Part::Nodes {
+                        items.push(self.node_key(elements.nodes[i + 1], s)?);
+                    }
+                }
+                // Its definition and identity (NULL past the definition's
+                // own arity: empty, as every row of it is).
+                Some(Scan::Rels { .. }) => {
+                    if part != Part::Nodes {
+                        let ids = self.identity(*r)?.unwrap_or_default();
+                        let mut texts = Vec::new();
+                        for (i, e) in ids.iter().enumerate() {
+                            if i > 0 {
+                                texts.push(string(":"));
+                            }
+                            texts.push(sql(&RenderExpr::ScalarFnCall(ScalarFnCall {
+                                name: "coalesce".to_string(),
+                                args: vec![
+                                    RenderExpr::Raw((s.to_text)(&sql(e))),
+                                    RenderExpr::Literal(Literal::String(String::new())),
+                                ],
+                            })));
+                        }
+                        items.push((s.text)(&texts));
                     }
                     if part == Part::Nodes {
                         items.push(self.node_key(elements.nodes[i + 1], s)?);
@@ -746,8 +811,43 @@ impl<'s> Lowerer<'s> {
         self.finish(&s, value, keys, GraphType::Node, &[v])
     }
 
+    /// A relationship of several possible types or label pairs returned
+    /// whole: its value, as a relationship of a path is (Bolt and the graph
+    /// output read its type from it), grouped by its identity.
+    pub(super) fn labeled_rel(&self, v: VarId) -> Result<GraphValue, LowerError> {
+        let s = spelling()?;
+        let value = self.rel_value(v, &s)?;
+        let keys = self.identity(v)?.unwrap_or_default();
+        self.finish(&s, value, keys, GraphType::Relationship, &[v])
+    }
+
     /// A fixed relationship of the current relation.
     fn rel_value(&self, v: VarId, s: &GraphValues) -> Result<String, LowerError> {
+        if let Some(Scan::Rels { arms, .. }) = self.scans.get(&v) {
+            let shape = super::rel_union_shape(arms)?;
+            if shape.from != 1 || shape.to != 1 {
+                return unsupported("a composite relationship endpoint in a value (S8)");
+            }
+            let column = |c: &str| self.physical(v, c).map(|e| sql(&e));
+            let mut props = Vec::new();
+            for name in self.all_property_names(v) {
+                let e = self.property(v, &name)?;
+                props.push((name, sql(&e)));
+            }
+            return Ok(labeled_rel_object(
+                s,
+                &column(super::REL_TYPE)?,
+                (
+                    &column(super::REL_FROM_LABEL)?,
+                    &column(super::REL_TO_LABEL)?,
+                ),
+                (
+                    &column(&super::indexed_column(super::REL_FROM, 0))?,
+                    &column(&super::indexed_column(super::REL_TO, 0))?,
+                ),
+                &props,
+            ));
+        }
         let Some(Scan::Rel {
             schema, rel_type, ..
         }) = self.scans.get(&v)

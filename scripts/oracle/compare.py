@@ -99,6 +99,14 @@ def _element_id_endpoint(element_id):
     return text[:-1] if text.endswith("-") else text
 
 
+def _id_value(text):
+    """An id read off an element id: a number when it spells one."""
+    try:
+        return norm_value(json.loads(text))
+    except ValueError:
+        return norm_value(text)
+
+
 def canon_graph(v):
     """A value with nodes, relationships or paths in Neo4j's Query API form
     (either engine) -> comparable form; any other value -> norm_value."""
@@ -223,6 +231,14 @@ def cg_rows(results, neo_columns):
                     # A node returned as a value (one of several possible
                     # labels): flattened as Neo4j's returned node is.
                     _flatten_entity(key, "node", val["properties"], out)
+                    continue
+                if isinstance(val, dict) and set(val) == _REL_KEYS:
+                    # A relationship returned as a value (one of several
+                    # possible types): flattened as Neo4j's, its ends read
+                    # off their element ids.
+                    _flatten_entity(key, "node", val["properties"], out)
+                    for end, field in (("from_id", "startNodeElementId"), ("to_id", "endNodeElementId")):
+                        out[f"{key}.{end}"] = _id_value(_element_id_endpoint(val[field]))
                     continue
                 out[key] = canon_graph(val)
                 continue
