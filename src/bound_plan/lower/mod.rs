@@ -3462,7 +3462,7 @@ impl<'s> Lowerer<'s> {
                     at: At::Table(a),
                     ..
                 }) => (
-                    schema.full_table_name(),
+                    self.node_relation_sql(schema)?,
                     value::string(label),
                     format!("{a}.{}", schema.id_physical_columns()[0]),
                     a,
@@ -3530,6 +3530,32 @@ impl<'s> Lowerer<'s> {
         ctes.extend(trails);
         ctes.push(pick);
         Ok(Some((ctes, name, walked)))
+    }
+
+    /// The relation of the nodes of `schema`'s label, as SQL to read under
+    /// an alias: its table with its view parameters, FINAL and `filter:` (a
+    /// subquery when it has either of the last two), so each node is one
+    /// row there is.
+    fn node_relation_sql(&self, schema: &NodeSchema) -> Result<String, LowerError> {
+        let table = ViewTableRef::parameterized_name(
+            &schema.full_table_name(),
+            schema.view_parameters.as_deref(),
+            self.options.view_parameter_values.as_ref(),
+        );
+        let use_final = schema.should_use_final();
+        if schema.filter.is_none() && !use_final {
+            return Ok(table);
+        }
+        const ROW: &str = "e";
+        let filter = match &schema.filter {
+            Some(f) => match f.to_sql(ROW) {
+                Ok(sql) => format!(" WHERE ({sql})"),
+                Err(e) => return unsupported(format!("schema filter: {e}")),
+            },
+            None => String::new(),
+        };
+        let fin = if use_final { " FINAL" } else { "" };
+        Ok(format!("(SELECT * FROM {table} AS {ROW}{fin}{filter})"))
     }
 
     /// A `shortestPath` / `allShortestPaths` pattern as Neo4j takes it: one

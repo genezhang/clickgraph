@@ -3382,3 +3382,41 @@ fn a_shortest_path_over_several_types_searches_their_union() {
                 v1.start_id IS NULL)";
     assert!(got.contains(part), "missing `{part}` in\n{got}");
 }
+
+#[test]
+fn a_shortest_path_condition_reads_an_end_as_its_label_has_it() {
+    // An end a condition reads is joined as its rows are: through its
+    // `filter:` and FINAL, one row per node (review of S7b3b: the raw table
+    // joined a stale version once more).
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_filtered_end
+graph_schema:
+  nodes:
+    - { label: A, database: db, table: a, node_id: id, filter: "cur = 1", use_final: true,
+        property_mappings: { id: id, name: name } }
+    - { label: B, database: db, table: b, node_id: id, property_mappings: { id: id } }
+  edges:
+    - { type: R, database: db, table: r, from_id: s, to_id: d, from_node: A, to_node: B,
+        property_mappings: {} }
+    - { type: S, database: db, table: s, from_id: s, to_id: d, from_node: B, to_node: A,
+        property_mappings: {} }
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let got = squash(
+        &translate_bound_plan(
+            "MATCH p = shortestPath((a:A)-[:R|S*]->(b:B)) WHERE length(p) > 2 OR a.name = 'x' \
+             RETURN a.id, b.id, length(p)",
+            &schema,
+            &ReadOptions::default(),
+        )
+        .map(|t| t.sql)
+        .unwrap_or_else(|e| e),
+    );
+    let part = "JOIN (SELECT * FROM db.a AS e FINAL WHERE ((e.cur = 1))) AS v0 ON \
+                concat('A', ':', toString(v0.id)) = v1.start_id";
+    assert!(got.contains(part), "missing `{part}` in\n{got}");
+}
