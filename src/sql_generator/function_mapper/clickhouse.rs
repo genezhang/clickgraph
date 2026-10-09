@@ -239,6 +239,28 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         })
     }
 
+    fn cypher_union(&self) -> Option<super::CypherUnion> {
+        Some(super::CypherUnion {
+            // A `Dynamic` column holds each value with its own type; the
+            // common type of the arms' `Dynamic` columns is `Dynamic`.
+            any_type: |v| format!("CAST({v}, 'Dynamic')"),
+            // The value's text, with a string or a boolean apart from the
+            // number or other value of the same text: numbers by value
+            // (`1` = `1.0`, an `Int64` = a `UInt8`), and inside a list a
+            // string is quoted. Not JSON: `toJSONString` quotes a 64-bit
+            // integer as a string under `output_format_json_quote_64bit_
+            // integers`. NULL is a NULL text, one group.
+            distinct_key: |v| {
+                let ty = format!("dynamicType(CAST({v}, 'Dynamic'))");
+                format!(
+                    "tuple(multiIf({ty} IN ('String', 'LowCardinality(String)'), 's', \
+                     {ty} = 'Bool', 'b', ''), toString({v}))"
+                )
+            },
+            any: |v| format!("any({v})"),
+        })
+    }
+
     fn graph_values(&self) -> Option<super::GraphValues> {
         // An element is a `Map(String, Dynamic)`: maps of different keys
         // and value types share it, so one array holds nodes and

@@ -63,6 +63,7 @@ mod expr;
 mod path;
 #[cfg(test)]
 mod tests;
+mod union;
 mod unwind;
 mod value;
 
@@ -165,35 +166,102 @@ pub fn lower_statement(
     schema: &GraphSchema,
     options: &LowerOptions,
 ) -> Result<Lowered, LowerError> {
-    let BoundOp::Project { input, projection } = &stmt.plan else {
-        return unsupported("a statement that does not end in RETURN (UNION: S7)");
-    };
-    let mut l = Lowerer {
+    let demand = demand(stmt);
+    if let BoundOp::Union {
+        arms,
+        arm_columns,
+        all,
+    } = &stmt.plan
+    {
+        return union::lower(
+            &Query {
+                stmt,
+                schema,
+                options,
+                demand: &demand,
+            },
+            arms,
+            arm_columns,
+            *all,
+        );
+    }
+    let mut ctes = Vec::new();
+    let arm = Query {
+        stmt,
         schema,
-        bindings: &stmt.bindings,
         options,
-        demand: demand(stmt),
-        ctes: Vec::new(),
-        scans: HashMap::new(),
-        values: HashMap::new(),
-        emitted: Vec::new(),
-        from: None,
-        joins: Vec::new(),
-        pending: Vec::new(),
-        filters: Vec::new(),
-        empty: false,
-        order: RowOrder::Unordered,
-        elided: HashMap::new(),
-        paths: HashMap::new(),
-        graph_values: HashMap::new(),
-        kinds: HashMap::new(),
-        one_row: true,
-    };
-    l.relation(input)?;
-    l.finish_relation();
-    let (mut plan, shape) = l.project(projection)?;
-    plan.ctes = CteItems(std::mem::take(&mut l.ctes));
-    Ok(Lowered { plan, shape })
+        demand: &demand,
+    }
+    .lower(&stmt.plan, &mut ctes)?;
+    let mut plan = arm.plan;
+    plan.ctes = CteItems(ctes);
+    Ok(Lowered {
+        plan,
+        shape: arm.shape,
+    })
+}
+
+/// What lowering one query (the statement, or an arm of a UNION) reads.
+struct Query<'a> {
+    stmt: &'a BoundStatement,
+    schema: &'a GraphSchema,
+    options: &'a LowerOptions,
+    demand: &'a HashMap<VarId, BTreeSet<String>>,
+}
+
+/// A lowered query ending in RETURN ([`Query::lower`]).
+struct LoweredQuery {
+    /// The final SELECT, without CTEs.
+    plan: RenderPlan,
+    shape: Vec<ResultColumn>,
+    /// A returned node or relationship's identity is not all among its
+    /// returned columns: rows equal in every column can be different
+    /// elements.
+    identity_unreturned: bool,
+}
+
+impl Query<'_> {
+    /// Lower `op`, a query ending in RETURN, appending its CTEs to `ctes`
+    /// (whose names it continues, so the CTEs of several queries never
+    /// share one).
+    fn lower(&self, op: &BoundOp, ctes: &mut Vec<Cte>) -> Result<LoweredQuery, LowerError> {
+        let BoundOp::Project { input, projection } = op else {
+            return unsupported("internal: a query that does not end in RETURN");
+        };
+        let mut l = Lowerer {
+            schema: self.schema,
+            bindings: &self.stmt.bindings,
+            options: self.options,
+            demand: self.demand.clone(),
+            ctes: std::mem::take(ctes),
+            scans: HashMap::new(),
+            values: HashMap::new(),
+            emitted: Vec::new(),
+            from: None,
+            joins: Vec::new(),
+            pending: Vec::new(),
+            filters: Vec::new(),
+            empty: false,
+            order: RowOrder::Unordered,
+            elided: HashMap::new(),
+            paths: HashMap::new(),
+            graph_values: HashMap::new(),
+            kinds: HashMap::new(),
+            one_row: true,
+            identity_unreturned: false,
+        };
+        let lowered = l
+            .relation(input)
+            .map(|()| l.finish_relation())
+            .and_then(|()| l.project(projection));
+        *ctes = std::mem::take(&mut l.ctes);
+        let (plan, shape) = lowered?;
+        Ok(LoweredQuery {
+            plan,
+            shape,
+            identity_unreturned: l.identity_unreturned,
+        })
+    }
 }
 
 /// How a pattern element is read.
@@ -460,6 +528,9 @@ struct Lowerer<'s> {
     /// The rows so far are at most one (no MATCH yet, or an aggregation with
     /// no grouping item since).
     one_row: bool,
+    /// The final RETURN returns an element whose identity is not all among
+    /// its returned columns.
+    identity_unreturned: bool,
 }
 
 /// The elements of a path variable, in path order.
@@ -4654,7 +4725,7 @@ impl<'s> Lowerer<'s> {
     /// A node or relationship item of the final RETURN: its columns, named
     /// `name.<…>` as on the legacy pipeline. Returns what the item is.
     fn return_element(
-        &self,
+        &mut self,
         src: VarId,
         name: &str,
         aggregating: bool,
@@ -4707,6 +4778,7 @@ impl<'s> Lowerer<'s> {
             .filter(|i| !columns.iter().any(|(_, e)| e == *i))
             .cloned()
             .collect();
+        self.identity_unreturned |= !unreturned.is_empty();
         if body.distinct && !unreturned.is_empty() {
             // Rows equal in every returned column can be different elements
             // (a relationship whose `edge_id` is not a property): DISTINCT
