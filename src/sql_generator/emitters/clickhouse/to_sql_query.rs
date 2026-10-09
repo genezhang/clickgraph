@@ -11,8 +11,8 @@ use crate::{
         ViewTableRef,
         {
             ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem,
-            GroupByExpressions, Join, JoinItems, JoinType, OrderByItems, OrderByOrder, RenderPlan,
-            SelectItem, SelectItems, ToSql, UnionItems, UnionType,
+            GroupByExpressions, Join, JoinItems, JoinType, OrderByItem, OrderByItems, OrderByOrder,
+            RenderPlan, SelectItem, SelectItems, ToSql, UnionItems, UnionType,
         },
     },
     server::query_context::{
@@ -6427,12 +6427,12 @@ fn rewrite_empty_reduce_list(
 /// while this runs (`QueryContext::plain_render`).
 ///
 /// Supports the plan shapes the lowering produces today: SELECTs with FROM /
-/// JOINs / WHERE / GROUP BY / HAVING / ORDER BY / SKIP / LIMIT, the WITH
-/// bodies as flat CTEs before the final one, and no UNION.
+/// JOINs / ARRAY JOIN / WHERE / GROUP BY / HAVING / ORDER BY / SKIP / LIMIT,
+/// the WITH bodies as flat CTEs before the final one, and no UNION.
 pub fn render_plan_to_sql_plain(mut plan: RenderPlan) -> String {
     assert!(
-        plan.union.0.is_none() && plan.array_join.0.is_empty(),
-        "render_plan_to_sql_plain: UNION and ARRAY JOIN are not lowered yet"
+        plan.union.0.is_none(),
+        "render_plan_to_sql_plain: UNION is not lowered yet"
     );
     flatten_all_ctes(&mut plan);
     struct PlainGuard(bool);
@@ -6508,6 +6508,21 @@ pub fn render_expr_to_sql_plain(e: &RenderExpr) -> String {
     let _guard = PlainGuard(crate::server::query_context::is_plain_render());
     crate::server::query_context::set_plain_render(true);
     e.to_sql()
+}
+
+/// Sort keys of a lowered plan as SQL (`a ASC, b DESC`, with the NULL
+/// placement of [`OrderByItems`]), for a window's `ORDER BY`.
+pub fn order_keys_to_sql_plain(keys: &[OrderByItem]) -> String {
+    struct PlainGuard(bool);
+    impl Drop for PlainGuard {
+        fn drop(&mut self) {
+            crate::server::query_context::set_plain_render(self.0);
+        }
+    }
+    let _guard = PlainGuard(crate::server::query_context::is_plain_render());
+    crate::server::query_context::set_plain_render(true);
+    let sql = OrderByItems(keys.to_vec()).to_sql();
+    sql.trim_start_matches("ORDER BY ").trim_end().to_string()
 }
 
 /// The list-valued CTE columns of a lowered plan. Its column names are
@@ -6592,6 +6607,17 @@ fn plain_select_sql(mut plan: RenderPlan) -> String {
     sql.push_str(&plan.select.to_sql());
     sql.push_str(&plan.from.to_sql());
     sql.push_str(&plan.joins.to_sql());
+    // An UNWIND (`Lowerer::unwind`): ONE `ARRAY JOIN` of its lists, read in
+    // step (`FunctionMapper::unwind`), after the joins.
+    if !plan.array_join.0.is_empty() {
+        let lists: Vec<String> = plan
+            .array_join
+            .0
+            .iter()
+            .map(|a| format!("{} AS {}", a.expression.to_sql(), a.alias))
+            .collect();
+        sql.push_str(&format!("ARRAY JOIN {}\n", lists.join(", ")));
+    }
     sql.push_str(&plan.filters.to_sql());
     sql.push_str(&plan.group_by.to_sql());
     if let Some(having) = &plan.having_clause {

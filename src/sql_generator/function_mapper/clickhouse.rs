@@ -226,6 +226,17 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         ))
     }
 
+    fn unwind(&self) -> Option<super::Unwind> {
+        Some(super::Unwind {
+            one_row: "system.one",
+            positions: |list| format!("arrayEnumerate({list})"),
+            // An identity of arrays that refuses a map, which `ARRAY JOIN`
+            // reads as a list of its entries.
+            list_only: |list| format!("arrayConcat({list})"),
+            row_number: |keys| format!("row_number() OVER (ORDER BY {keys})"),
+        })
+    }
+
     fn graph_values(&self) -> Option<super::GraphValues> {
         // An element is a `Map(String, Dynamic)`: maps of different keys
         // and value types share it, so one array holds nodes and

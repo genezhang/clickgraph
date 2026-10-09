@@ -281,6 +281,12 @@ impl FunctionMapper for DatabricksFunctionMapper {
         None
     }
 
+    fn unwind(&self) -> Option<super::Unwind> {
+        // `LATERAL VIEW explode` is not verified against the lowering's
+        // shapes: UNWIND stays on the legacy path there.
+        None
+    }
+
     fn graph_values(&self) -> Option<super::GraphValues> {
         // Spark's arrays and maps hold one type: a path (nodes and
         // relationships) or a list of nodes of different labels needs a
