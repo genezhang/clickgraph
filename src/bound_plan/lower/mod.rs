@@ -36,9 +36,11 @@
 //! query is translated by the legacy pipeline:
 //! * MATCH and OPTIONAL MATCH over standard-layout labels and types
 //!   (`NodeSchema::is_standard_own_table`, `RelationshipSchema::
-//!   is_standard_edge_table`), each node with one label and each
-//!   relationship with one type after label inference, fixed length,
-//!   directed;
+//!   is_standard_edge_table`), each relationship with one type after label
+//!   inference, joining one pair of labels; fixed length or variable length,
+//!   directed or undirected (S6, S7a). A node of several possible labels is
+//!   one relation of its labels' tables (`Scan::Labels`, S7b1), its rows
+//!   carrying their label;
 //! * WITH and RETURN with aggregation, DISTINCT, ORDER BY, SKIP, LIMIT and
 //!   (WITH) WHERE, evaluated in that order; free-standing ORDER BY, SKIP and
 //!   LIMIT;
@@ -1794,7 +1796,11 @@ impl<'s> Lowerer<'s> {
             }
             // No feasible type, or an endpoint that matches nothing.
             (0, ..) | (1, ..) => Scan::Impossible,
-            _ => return unsupported("a relationship with several possible types (S7)"),
+            _ => {
+                return unsupported(
+                    "a variable-length relationship with several possible types (S7b3)",
+                )
+            }
         };
         if let (Scan::Path { .. }, Some(ids)) = (&scan, self.identity(from)?) {
             if ids.len() != 1 {
