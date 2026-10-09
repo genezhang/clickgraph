@@ -51,6 +51,8 @@
 //!   LIMIT;
 //! * UNWIND of a list of values (`unwind.rs`, S7c): like a SKIP / LIMIT it
 //!   ends a segment, whose CTE repeats each row per element;
+//! * UNION and UNION ALL (`union.rs`, S7d): each arm lowered on its own to a
+//!   CTE, read through one `UNION ALL`;
 //! * a final RETURN of values, whole nodes and relationships (`n`, `n.*`)
 //!   and `id(n)`, with the result shape that Bolt, the HTTP graph output and
 //!   embedded `query_graph` read (§4.13, [`ResultColumn`]).
