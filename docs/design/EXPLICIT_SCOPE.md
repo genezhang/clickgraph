@@ -2186,19 +2186,33 @@ slice that will handle it.
     S7b1"): one relation of its labels' tables, identity (label, id), a
     relationship of one type at it, label tests, values.
     - Acceptance:
-      - Neo4j oracle, switch on, vs S7a: 0 correct → wrong; ORACLE_TBD.
-        The corpus lowers 754 queries (was 744).
+      - Neo4j oracle, switch on, vs S7a: 0 correct → wrong; one match →
+        error, `MATCH (n) WHERE n.nonexistent_xyz_999 = 123`: a property no
+        label declares reads the same-named column, as on a node of one label
+        (the undeclared-property rule). The corpus lowers 754 queries (was
+        744).
       - Generated shapes on a scratch graph (five labels, ids shared across
-        labels, two labels of one table split by `filter:`, a property name
-        typed differently on two labels; 74 shapes: unlabeled nodes, label
-        tests and alternatives, identity comparisons, WITH and re-matching,
-        OPTIONAL, path values, aggregation): every shape lowered equals Neo4j
-        but the differently typed comparison (an error, by design); legacy is
-        wrong on 39 and errors on 16. S7a's four undirected sweeps are
-        unchanged (every lowered shape equals Neo4j).
-      - Mutation check: 10 rules broken in turn; 9 change answers, the other
-        (taking the first of several label pairs) is a refusal the unit tests
-        pin.
+        labels, two labels of one table split by `filter:`; 83 shapes:
+        unlabeled nodes, label tests and alternatives, identity comparisons,
+        WITH and re-matching, OPTIONAL, path values, aggregation, grouping and
+        ordering by a node returned whole). With one property typed
+        differently on two labels, every shape that does not read it equals
+        Neo4j and every one that does is an error; with none, every shape
+        lowered equals Neo4j but one reading an undeclared property (the
+        rule). Legacy is wrong on 35–38 and errors on 16–19. S7a's four
+        undirected sweeps are unchanged (every lowered shape equals Neo4j).
+      - Review (scratch graphs with parallel edges, composite ids, a number
+        typed differently on two labels, FINAL, an expression mapping, a
+        `filter:`, a parameterized view; about 230 queries against Neo4j):
+        three findings. A property typed differently on two labels answered
+        differently (a ClickHouse `Variant`: its NULLs counted, `8` and `8.0`
+        distinct), now an error (`one_type_guard`); `RETURN DISTINCT n ORDER
+        BY n.name` was Code 215, now grouped by the node's properties too; a
+        label's undeclared same-named column reads NULL where another label
+        declares the property (kept, user decision, above).
+      - Mutation check: 11 rules broken in turn; 10 change answers, the
+        other (taking the first of several label pairs) is a refusal the unit
+        tests pin.
       - Timing (scale 100): unlabeled `count(*)` 3 ms, a node by property
         2 ms, `RETURN n LIMIT 25` 68 ms (legacy 11 ms, with no labels),
         `count(DISTINCT n)` 169 ms (legacy 167 ms), a carried node re-matched
