@@ -37,6 +37,7 @@ use crate::render_plan::render_expr::{
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::function_mapper::current_function_mapper;
 
+use super::unwind::{comprehension, Comprehension, Kind};
 use super::{parse_var, unsupported, At, LowerError, Lowerer, Scan};
 use crate::bound_plan::types::{BindingKind, BindingSource, VarId};
 
@@ -240,7 +241,11 @@ impl Lowerer<'_> {
             LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
                 self.operator(op, items)?
             }
-            LogicalExpr::List(xs) => RenderExpr::List(self.all(xs, items)?),
+            LogicalExpr::List(xs) => RenderExpr::List(
+                xs.iter()
+                    .map(|x| self.element(x, items))
+                    .collect::<Result<_, _>>()?,
+            ),
             LogicalExpr::MapLiteral(entries) => {
                 // In key order: maps are equal by their entries (DISTINCT,
                 // grouping, UNION), and ClickHouse compares them in order.
@@ -276,9 +281,9 @@ impl Lowerer<'_> {
                     .map(|t| self.expr(t, items).map(Box::new))
                     .transpose()?,
             },
-            // The legacy converter prints a lambda body to text while
-            // converting; comprehensions are lowered with S7 (lists).
-            LogicalExpr::Lambda(_) => return unsupported("a list comprehension or lambda (S7)"),
+            // A lambda other than a comprehension's (`scalar_fn`): a
+            // ClickHouse function's argument written in the query.
+            LogicalExpr::Lambda(_) => return unsupported("a lambda other than a comprehension's"),
             LogicalExpr::Raw(_)
             | LogicalExpr::ColumnAlias(_)
             | LogicalExpr::Column(_)
@@ -291,6 +296,52 @@ impl Lowerer<'_> {
                 return unsupported("a graph pattern inside an expression (S9)")
             }
         })
+    }
+
+    /// A list's element: a boolean one is cast to a boolean, as ClickHouse
+    /// holds a comparison as `UInt8` (a list would show 1 / 0; a value in a
+    /// column is cast by the emitter).
+    fn element(&self, e: &LogicalExpr, items: &Items) -> Result<RenderExpr, LowerError> {
+        let value = self.expr(e, items)?;
+        if self.kind(e) != Kind::Boolean
+            || matches!(e, LogicalExpr::Literal(lx::Literal::Boolean(_)))
+        {
+            return Ok(value);
+        }
+        Ok(RenderExpr::Raw(
+            current_function_mapper().cast_bool(&render_expr_to_sql_plain(&value)),
+        ))
+    }
+
+    /// A list comprehension: `[x IN list WHERE p]` (`Filter`) or `[x IN list
+    /// | e]` (`Map`). NULL when the list is.
+    fn comprehension(
+        &self,
+        how: Comprehension,
+        x: VarId,
+        body: &LogicalExpr,
+        list: &LogicalExpr,
+        items: &Items,
+    ) -> Result<RenderExpr, LowerError> {
+        let Some(spelling) = current_function_mapper().lists() else {
+            return unsupported("a list comprehension in this SQL dialect");
+        };
+        // Also gives the parameter its kind (an element of the list's).
+        let kind = self.kind(list);
+        self.local_kinds.borrow_mut().insert(x, kind.element());
+        let list = self.expr(list, items)?;
+        if kind == Kind::Null || matches!(list, RenderExpr::Literal(Literal::Null)) {
+            return Ok(RenderExpr::Literal(Literal::Null));
+        }
+        let (spell, body) = match how {
+            Comprehension::Filter => (spelling.filter, self.expr(body, items)?),
+            Comprehension::Map => (spelling.map, self.element(body, items)?),
+        };
+        Ok(RenderExpr::Raw(spell(
+            &x.name(),
+            &render_expr_to_sql_plain(&body),
+            &render_expr_to_sql_plain(&list),
+        )))
     }
 
     fn all(&self, xs: &[LogicalExpr], items: &Items) -> Result<Vec<RenderExpr>, LowerError> {
@@ -319,10 +370,54 @@ impl Lowerer<'_> {
                 _ => unsupported("a node or relationship as an operand (needs its value)"),
             };
         }
+        if let (O::Addition, [a, b]) = (op.operator, op.operands.as_slice()) {
+            if let Some(e) = self.list_addition(a, b, items)? {
+                return Ok(e);
+            }
+        }
         Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
             operator: op.operator,
             operands: self.all(&op.operands, items)?,
         }))
+    }
+
+    /// `a + b` where one side is a list: the lists concatenated, a value
+    /// appended or prepended as a list of itself; NULL with NULL. `None`
+    /// when neither side is known to be a list (the emitter decides).
+    /// ClickHouse's `plus` of arrays adds them element by element.
+    fn list_addition(
+        &self,
+        a: &LogicalExpr,
+        b: &LogicalExpr,
+        items: &Items,
+    ) -> Result<Option<RenderExpr>, LowerError> {
+        let (ka, kb) = (self.kind(a), self.kind(b));
+        if !matches!(ka, Kind::List(_)) && !matches!(kb, Kind::List(_)) {
+            return Ok(None);
+        }
+        if ka == Kind::Null || kb == Kind::Null {
+            return Ok(Some(RenderExpr::Literal(Literal::Null)));
+        }
+        let mut args = Vec::new();
+        for (e, k) in [(a, ka), (b, kb)] {
+            args.push(match k {
+                // `[1] + NULL` is NULL, and a ClickHouse array cannot be:
+                // only a value that is never NULL is appended.
+                Kind::Scalar | Kind::Boolean
+                    if !matches!(e, LogicalExpr::Literal(l) if *l != lx::Literal::Null) =>
+                {
+                    return unsupported("`+` of a list and a value that may be NULL");
+                }
+                Kind::Scalar | Kind::Boolean => RenderExpr::List(vec![self.element(e, items)?]),
+                // A list, or a value that must be one (ClickHouse refuses
+                // to concatenate anything else).
+                _ => self.expr(e, items)?,
+            });
+        }
+        Ok(Some(RenderExpr::ScalarFnCall(ScalarFnCall {
+            name: current_function_mapper().array_concat().to_string(),
+            args,
+        })))
     }
 
     /// `a = b` / `a <> b` between two nodes or two relationships: equal only
@@ -513,6 +608,14 @@ impl Lowerer<'_> {
             (BindingKind::Node { .. } | BindingKind::Rel { .. }, _) => {
                 unsupported("a node or relationship as a value (in a list, collect(), CASE …)")
             }
+            // A comprehension's parameter: its name as written, which the
+            // emitter does not read as a node (a bare `TableAlias` compared
+            // with another is taken as a node identity, `x.id = y.id`).
+            (BindingKind::Value, BindingSource::Local)
+                if self.local_kinds.borrow().contains_key(&v) =>
+            {
+                Ok(RenderExpr::Raw(name.to_string()))
+            }
             (BindingKind::Value, BindingSource::Local) => {
                 Ok(RenderExpr::TableAlias(TableAlias(name.to_string())))
             }
@@ -609,6 +712,9 @@ impl Lowerer<'_> {
     }
 
     fn scalar_fn(&self, f: &LScalar, items: &Items) -> Result<RenderExpr, LowerError> {
+        if let Some((how, x, body, list)) = comprehension(f) {
+            return self.comprehension(how, x, body, list, items);
+        }
         // `size()` of a path's list: from the path's structure (`value.rs`).
         if let (true, [arg]) = (f.name.eq_ignore_ascii_case("size"), f.args.as_slice()) {
             if let Some(g) = self.graph_ref(arg) {
@@ -717,7 +823,21 @@ impl Lowerer<'_> {
                 args: vec![arg],
             }));
         }
-        let args = self.all(&f.args, items)?;
+        let args = match (name.as_str(), arg) {
+            // A list of booleans shows them as booleans.
+            ("collect", Some(arg)) => {
+                let value = self.element(arg, items)?;
+                vec![if distinct {
+                    RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: lx::Operator::Distinct,
+                        operands: vec![value],
+                    })
+                } else {
+                    value
+                }]
+            }
+            _ => self.all(&f.args, items)?,
+        };
         // An aggregate of the NULL literal (an unmapped property, an element
         // that matches nothing) aggregates no values. ClickHouse types it
         // `Nullable(Nothing)` and returns NULL where Cypher returns [] / 0.
@@ -739,6 +859,32 @@ impl Lowerer<'_> {
                 _ => return unsupported(format!("{}() of no values", f.name)),
             };
             return Ok(aggregate_constant(value));
+        }
+        // Over rows in an order: the values in the order of the rows'
+        // number (`Lowerer::collect_order`); DISTINCT keeps each value where
+        // it first occurs.
+        if let (Some(key), "collect") = (&self.collect_order, name.as_str()) {
+            let Some(spelling) = current_function_mapper().lists() else {
+                return unsupported("collect() over ordered rows in this SQL dialect");
+            };
+            let value = match args.as_slice() {
+                [RenderExpr::OperatorApplicationExp(op)]
+                    if op.operator == lx::Operator::Distinct && op.operands.len() == 1 =>
+                {
+                    &op.operands[0]
+                }
+                [one] => one,
+                _ => return unsupported("internal: collect() of other than one value"),
+            };
+            let list = (spelling.ordered_collect)(
+                &render_expr_to_sql_plain(value),
+                &render_expr_to_sql_plain(key),
+            );
+            return Ok(RenderExpr::Raw(if distinct {
+                (spelling.distinct)(&list)
+            } else {
+                list
+            }));
         }
         let call = RenderExpr::AggregateFnCall(AggregateFnCall {
             name: f.name.clone(),

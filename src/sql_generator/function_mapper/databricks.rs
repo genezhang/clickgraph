@@ -288,6 +288,13 @@ impl FunctionMapper for DatabricksFunctionMapper {
         None
     }
 
+    fn lists(&self) -> Option<super::Lists> {
+        // `filter` / `transform` and an ordered `collect_list` are not
+        // verified against the lowering's shapes: comprehensions stay on the
+        // legacy path there.
+        None
+    }
+
     fn unwind(&self) -> Option<super::Unwind> {
         // `LATERAL VIEW explode` is not verified against the lowering's
         // shapes: UNWIND stays on the legacy path there.

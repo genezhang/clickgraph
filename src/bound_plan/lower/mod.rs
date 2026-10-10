@@ -69,6 +69,7 @@ mod union;
 mod unwind;
 mod value;
 
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -249,6 +250,8 @@ impl Query<'_> {
             paths: HashMap::new(),
             graph_values: HashMap::new(),
             kinds: HashMap::new(),
+            local_kinds: RefCell::new(HashMap::new()),
+            collect_order: None,
             one_row: true,
             identities: Vec::new(),
         };
@@ -527,6 +530,13 @@ struct Lowerer<'s> {
     graph_values: HashMap<VarId, Carried>,
     /// What each projected or unwound value is (`unwind.rs`).
     kinds: HashMap<VarId, unwind::Kind>,
+    /// What each comprehension parameter is: an element of its list. Filled
+    /// in as [`Lowerer::kind`] reads the comprehension (variables are unique
+    /// per query, so one map serves every scope).
+    local_kinds: RefCell<HashMap<VarId, unwind::Kind>>,
+    /// While a projection over rows in an order is lowered: the rows'
+    /// number in that order, which `collect()` lists its values in.
+    collect_order: Option<RenderExpr>,
     /// The rows so far are at most one (no MATCH yet, or an aggregation with
     /// no grouping item since).
     one_row: bool,
@@ -4678,15 +4688,6 @@ impl<'s> Lowerer<'s> {
             return unsupported("ORDER BY an id() item (the encoded id has another order)");
         }
         body.order_by = self.sort_keys(&p.order_by, &items_env)?;
-        let ordered_input = !matches!(self.order, RowOrder::Unordered);
-        // `collect` lists its input rows in their order, whatever the
-        // projection's own ORDER BY does to its output.
-        if ordered_input
-            && aggregating
-            && p.items.iter().any(|i| calls_aggregate(&i.expr, "collect"))
-        {
-            return unsupported("collect() over ordered rows (keeping the order)");
-        }
         // Without its own ORDER BY, a projection keeps the order of its input
         // rows. The SQL keeps it only for a plain projection; after DISTINCT or
         // aggregation it is lost, so a SKIP / LIMIT relying on it is refused.
@@ -5020,9 +5021,34 @@ impl<'s> Lowerer<'s> {
         }))
     }
 
+    /// Before projection `p`: `collect` lists its input rows in their order,
+    /// whatever the projection's own ORDER BY does to its output. Over rows
+    /// in an order, the rows are numbered in it first (a CTE), and
+    /// `collect` lists its values in the order of that number
+    /// (`collect_order`).
+    fn order_collect(&mut self, p: &Projection) -> Result<(), LowerError> {
+        self.collect_order = None;
+        if !p.aggregates() || !p.items.iter().any(|i| calls_aggregate(&i.expr, "collect")) {
+            return Ok(());
+        }
+        match &self.order {
+            RowOrder::Unordered => Ok(()),
+            RowOrder::Keys(_) => {
+                self.number_rows()?;
+                let RowOrder::Keys(keys) = &self.order else {
+                    return unsupported("internal: numbered rows in no order");
+                };
+                self.collect_order = keys.first().map(|k| k.expression.clone());
+                Ok(())
+            }
+            RowOrder::Lost => unsupported("collect() over rows in an order the SQL does not keep"),
+        }
+    }
+
     /// A WITH: the rows so far become a CTE whose columns are the WITH's
     /// output scope, and a new segment reads from it.
     fn with(&mut self, p: &Projection) -> Result<(), LowerError> {
+        self.order_collect(p)?;
         let alias = self.next_cte_alias();
         let (body, exports, _) = self.projection_body(p, Some(&alias))?;
         self.close_segment(body, exports, alias)
@@ -5168,6 +5194,7 @@ impl<'s> Lowerer<'s> {
         if p.filter.is_some() {
             return unsupported("internal: a RETURN with a WHERE");
         }
+        self.order_collect(p)?;
         let (body, _, shape) = self.projection_body(p, None)?;
         Ok((self.render(body), shape))
     }

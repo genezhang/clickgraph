@@ -271,6 +271,22 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         })
     }
 
+    fn lists(&self) -> Option<super::Lists> {
+        Some(super::Lists {
+            // `arrayFilter` keeps the elements whose predicate is not 0 and
+            // not NULL.
+            filter: |x, p, l| format!("arrayFilter({x} -> {p}, {l})"),
+            map: |x, e, l| format!("arrayMap({x} -> {e}, {l})"),
+            ordered_collect: |v, k| {
+                format!(
+                    "arrayMap(t -> t.2, arraySort(t -> t.1, groupArrayIf(({k}, {v}), \
+                     isNotNull({v}))))"
+                )
+            },
+            distinct: |l| format!("arrayDistinct({l})"),
+        })
+    }
+
     fn graph_values(&self) -> Option<super::GraphValues> {
         // An element is a `Map(String, Dynamic)`: maps of different keys
         // and value types share it, so one array holds nodes and

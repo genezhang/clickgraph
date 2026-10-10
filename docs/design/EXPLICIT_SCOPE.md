@@ -396,8 +396,8 @@ The binder walks the clause list once, keeping the *current scope*:
       order first (`row_number()`, one more CTE), then ordered by number,
       then by position.
     - Several rows in no order: the order is `Lost`, so a later SKIP / LIMIT
-      or `collect()` that relies on it is not lowered. (Collecting over
-      ordered rows is not lowered either.)
+      or `collect()` that relies on it is not lowered. (S7e1 lowers
+      `collect()` over ordered rows.)
   - **Not lowered:** a list of nodes, relationships or paths (`[a]`,
     `nodes(p)`, `-[r*]->`, `collect(n)`), and a property of an element
     (`m.k` of a map), both S7e; UNWIND in the Databricks dialect.
@@ -406,7 +406,7 @@ The binder walks the clause list once, keeping the *current scope*:
       too, from S4).
     - Older value gaps an UNWIND makes easy to reach, the same on both
       paths: `split()` of NULL elsewhere is `['']`; a list of booleans is
-      `[0]`; `x / 2` of an integer element is a float division (`intDiv` only
+      `[0]` (fixed on the new path in S7e1); `x / 2` of an integer element is a float division (`intDiv` only
       for integer constants, #847); `size()` of a string counts bytes; an
       OPTIONAL MATCH's unmatched node returned whole shows its list
       properties as `[]`.
@@ -485,6 +485,70 @@ The binder walks the clause list once, keeping the *current scope*:
   set**, an explicit `Vec<VarId>`.
 - **Lambdas** (comprehensions, `reduce`, quantifiers). An expression-local
   scope; the binder resolves the shadowing.
+
+  **Implemented in S7e1** (`bound_plan/lower/expr.rs`, `unwind.rs`), for
+  lists of values:
+  - **Comprehensions.** `[x IN l WHERE p]` keeps the elements whose
+    predicate is true (not false, not NULL), and `[x IN l | e]` maps them;
+    `[x IN l WHERE p | e]` is the map of the filter (the AST converter
+    spells them as `arrayFilter` / `arrayMap` of a lambda, read back as
+    comprehensions). The spellings come from `FunctionMapper::lists`; the
+    parameter is printed by its generated name, which ClickHouse resolves
+    before a SELECT alias of the same name. A comprehension of a NULL list
+    (or of a property the schema makes NULL) is NULL. The parameter's kind
+    is an element of the list's (`Kind`), so a comprehension is a list
+    UNWIND can read, and comprehensions nest.
+  - **Lists of booleans.** ClickHouse holds a comparison as `UInt8`; a
+    column of it is cast by the emitter, but an element of a list was not,
+    so the list showed `[1, 0]`. A boolean element (`Kind::Boolean`) of a
+    list literal, a comprehension's mapped value and a collected value is
+    cast to `Nullable(Bool)`.
+  - **`collect()` over ordered rows.** Neo4j lists the input rows in their
+    order, whatever the projection's own ORDER BY does to its output. Over
+    rows in an order (§3), the rows are numbered in it first
+    (`row_number()`, a CTE, as before an UNWIND), and `collect` sorts its
+    values by that number (`groupArrayIf((n, x), x IS NOT NULL)`, sorted,
+    then the values). `collect(DISTINCT x)` keeps each value where it first
+    occurs. Over rows in an order the SQL lost (after DISTINCT or an
+    aggregation) it is still not lowered.
+  - **`DISTINCT` in an aggregate.** The parser reads `DISTINCT` as a
+    prefix operator of the argument's first operand (`collect(DISTINCT a >
+    1)` as `(DISTINCT a) > 1`). The binder moves it to the whole argument,
+    and the emitter's type classifier reads `DISTINCT x` as `x`'s type (so
+    `max(DISTINCT a > 1)` still shows a boolean).
+  - **`+` with a list** (review finding). The emitter decides whether `+`
+    concatenates from the shape of its operands, and a comprehension or an
+    ordered `collect` is not one it knows: ClickHouse `plus` added the
+    arrays element by element (`[1, 2] + [3, 4]` gave `[4, 6]`). `+` with an
+    operand whose `Kind` is a list is lowered as concatenation; a value is
+    appended or prepended as a list of itself, and only a literal: `[1] +
+    NULL` is NULL in Cypher, and a ClickHouse array cannot be NULL (25.8
+    finds no common type; 26.x makes it a `Variant`), so `+` of a list and
+    a value that may be NULL is not lowered. A list `+` NULL literal is
+    NULL.
+  - **Parameters.** A comprehension's parameter is printed as written
+    (raw), not as a table alias, which the emitter compares as a node
+    (`x = y` became `x.id = y.id`).
+  - **An aggregate in a comprehension's body** is an error, as in Neo4j
+    ("Can't use aggregating expressions inside of expressions executing
+    over lists").
+  - **Not lowered:** a comprehension over nodes, relationships or paths
+    (`[n IN nodes(p) | n.name]`, S7e2); a lambda of a ClickHouse function
+    written in the query; comprehensions in the Databricks dialect.
+  - **Known gaps:**
+    - The quantifiers `all`, `any`, `none` and `single` do not parse (on
+      either path).
+    - `reduce` whose list is a comprehension does not parse (on either
+      path: the parser takes the comprehension's `|` as the reduce's).
+    - `+` of strings is ClickHouse `plus` when neither side's type is known
+      (an undeclared property, an element of such a list): loud, as in S7c.
+    - A list of values of different types (`[1, true]`, `[1, 'a']`) still
+      takes ClickHouse's common type, or fails (S4). `[1 > 0, 2]` was
+      `[1, 2]` and is now `[true, true]` (Neo4j: `[true, 2]`).
+    - A list that may be NULL (`[x IN CASE … END | x]`, an UNWIND of
+      `[[1], null]` read as a list) fails: a ClickHouse array is not NULL. A
+      list property of a node an OPTIONAL MATCH left NULL reads as `[]`
+      (older, both paths).
 - **Errors.** An unknown variable is a bind error ("Variable `x` not
   defined", as in Neo4j). An unsupported construct is `Unsupported`, which
   falls back to legacy during migration and is a loud error after it.
@@ -2512,6 +2576,11 @@ slice that will handle it.
   relationships, S7b several labels / types (with the two-schema and
   bound-relationship cases S7a refuses), S7c UNWIND (done), S7d UNION
   (done), S7e lists.
+  S7e is three: S7e1 lists of values (comprehensions, lists of booleans,
+  `collect()` over ordered rows), S7e2 lists of nodes, relationships and
+  paths (`collect(n)`, `[n]`, `nodes(p)` / `relationships(p)` / `r*` in
+  expressions, UNWIND of them, their elements' properties), S7e3 maps (a
+  map literal's value types, `m.k`).
   S7b is itself three: S7b1 a node of several labels, S7b2 a relationship of
   several types or joining several label pairs (with S7a's refusals), S7b3
   variable-length relationships over them (S7b3a walks, S7b3b shortest
@@ -2588,6 +2657,46 @@ slice that will handle it.
         `count(DISTINCT n)` 169 ms (legacy 167 ms), a carried node re-matched
         to a relationship 145 ms (legacy: no SQL), `a = b` 96 ms (legacy:
         Code 47).
+  - [x] **S7e1: lists of values** (§4.4 "Implemented in S7e1"):
+    comprehensions over values, lists of booleans, `collect()` over ordered
+    rows, `+` with a list.
+    - Acceptance:
+      - Generated shapes on the S7d scratch graph (138: comprehensions over
+        literals, NULL and empty lists, nested, over list properties, with
+        outer columns, aggregates in the list, in WHERE / ORDER BY / UNION
+        arms / UNWIND; boolean lists; `collect()` after ORDER BY with NULLs,
+        ties, DESC, grouping, DISTINCT, SKIP / LIMIT, UNWIND, OPTIONAL,
+        WITH chains; `+` of lists). 133 equal Neo4j (legacy 103). The other
+        5: `reduce` over a comprehension does not parse (both paths), `+`
+        of strings of unknown type (loud, S7c), a list with a NULL list in
+        it (loud), `+` of a list and a value that may be NULL (not lowered;
+        legacy loud), and a LIMIT the harness cannot verify.
+      - The review's shapes (344, on a graph with Decimal, Date,
+        LowCardinality, `UInt8` declared boolean and arrays, a 5,000-row
+        table and an empty one): 316 equal Neo4j (legacy 214), none worse
+        than legacy. The rest are known gaps: map values (S4, S7e3),
+        integer `/` (#847), mixed-type lists, NULL lists, a list property
+        of an OPTIONAL MATCH's unmatched node read as `[]`, parse gaps
+        (quantifiers, `DISTINCT NOT`), lists of nodes (S7e2).
+      - Mutation check (the 138 shapes): 14 rules broken in turn, 13
+        change answers. The other, an ordered `collect` that does not sort
+        by the rows' number, gives the same answers on ClickHouse 26.7 (the
+        window's output reaches `groupArray` in order, at 300,000 rows and
+        grouped too), which ClickHouse does not promise; unit
+        tests pin the sort.
+      - Neo4j oracle, switch on, vs S7d: unchanged (MATCH 409; the corpus
+        has no comprehension over values or `collect()` over ordered rows).
+      - Live suite, switch on, vs S7d: unchanged but
+        `test_filter_early_vs_late` (timing; flaky on either build). An
+        earlier run also changed a scorecard entry of a LIMIT without ORDER
+        BY whose SQL is identical (rows differ run to run).
+      - Adversarial review: two wrong answers, both fixed. `+` with a
+        comprehension or an ordered `collect` added the arrays element by
+        element (the emitter's list test did not know them); `max(DISTINCT
+        a > 1)` showed 1 / 0 after the DISTINCT moved (the type classifier
+        read `DISTINCT x` as untyped). Loud errors fixed: comparing two
+        comprehension parameters (`x.id = y.id`), `list + 3`. An aggregate
+        in a comprehension's body is now an error, as in Neo4j.
   - [x] **S7d: Cypher UNION** (§4.4 "Implemented in S7d"): each arm a CTE
     of its columns in the UNION's order, a `UNION ALL` of them, values
     read as `Dynamic`; UNION ALL ordered by arm and row when an arm is

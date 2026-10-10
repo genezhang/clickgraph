@@ -115,7 +115,7 @@ fn rename(
         LogicalExpr::AggregateFnCall(AggregateFnCall { name, args }) => {
             LogicalExpr::AggregateFnCall(AggregateFnCall {
                 name,
-                args: rename_all(args, env, locals)?,
+                args: rename_all(args.into_iter().map(hoist_distinct).collect(), env, locals)?,
             })
         }
         LogicalExpr::ScalarFnCall(ScalarFnCall { name, args }) => {
@@ -172,9 +172,17 @@ fn rename(
             }
             let body = rename_box(body, env, locals);
             locals.truncate(depth);
+            let body = body?;
+            // As in Neo4j: an aggregate is not evaluated per list element.
+            if contains_aggregate(&body) {
+                return Err(BindError::Invalid(
+                    "Can't use aggregating expressions inside of expressions executing over lists"
+                        .to_string(),
+                ));
+            }
             LogicalExpr::Lambda(LambdaExpr {
                 params: renamed,
-                body: body?,
+                body,
             })
         }
         LogicalExpr::MapLiteral(entries) => LogicalExpr::MapLiteral(
@@ -209,6 +217,46 @@ fn rename(
             return Err(BindError::Unsupported("CteEntityRef".to_string()))
         }
     })
+}
+
+/// An aggregate's argument `DISTINCT e`: the parser reads `DISTINCT` as a
+/// prefix operator of the first operand (`DISTINCT a > 1` as `(DISTINCT a) >
+/// 1`); it applies to the whole argument.
+fn hoist_distinct(arg: LogicalExpr) -> LogicalExpr {
+    fn take(e: &mut LogicalExpr) -> bool {
+        match e {
+            LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
+                if op.operator == crate::query_planner::logical_expr::Operator::Distinct
+                    && op.operands.len() == 1
+                {
+                    *e = op.operands.remove(0);
+                    return true;
+                }
+                op.operands.first_mut().is_some_and(take)
+            }
+            _ => false,
+        }
+    }
+    let distinct = |e: LogicalExpr| {
+        LogicalExpr::OperatorApplicationExp(OperatorApplication {
+            operator: crate::query_planner::logical_expr::Operator::Distinct,
+            operands: vec![e],
+        })
+    };
+    match arg {
+        LogicalExpr::Operator(ref op) | LogicalExpr::OperatorApplicationExp(ref op)
+            if op.operator == crate::query_planner::logical_expr::Operator::Distinct =>
+        {
+            arg
+        }
+        mut other => {
+            if take(&mut other) {
+                distinct(other)
+            } else {
+                other
+            }
+        }
+    }
 }
 
 fn rename_op(
