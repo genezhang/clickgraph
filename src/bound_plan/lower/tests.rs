@@ -250,14 +250,14 @@ fn identity_comparisons_respect_labels_and_types() {
 
 #[test]
 fn a_node_used_as_a_value_is_not_lowered() {
+    // In a list (`[a]`, `collect(a)`) it is a tuple (S7e2a); elsewhere not.
     for q in [
-        "MATCH (a:User) RETURN [a] AS l",
         "MATCH (a:User) RETURN {n: a} AS m",
-        "MATCH (a:User) RETURN collect(a) AS l",
         "MATCH (a:User) RETURN collect(CASE WHEN a.age > 30 THEN a END) AS l",
         "MATCH (a:User), (p:Post) RETURN count(DISTINCT CASE WHEN a.age > 30 THEN a ELSE p END) AS c",
+        "MATCH (a:User), (b:User) RETURN coalesce(a, b) AS n",
     ] {
-        not_lowered(q, "node or relationship");
+        not_lowered(q, "node");
     }
 }
 
@@ -492,7 +492,6 @@ fn what_is_not_lowered_yet() {
         "MATCH (a:User)-[*1..2]->(b:Post) RETURN count(*)",
         "not the standard layout (S8)",
     );
-    not_lowered("MATCH (a:User) RETURN collect(a) AS l", "as a value");
     not_lowered("MATCH (a:User) WHERE id(a) = 1 RETURN a.name", "id()");
     not_lowered("MATCH (n) RETURN n.*", "`v.*` of an element of several");
     not_lowered(
@@ -721,7 +720,7 @@ fn rows_keep_their_order_until_a_match_or_an_aggregation() {
         &[
             r#"row_number() OVER (ORDER BY w1.__o0 ASC) AS "__cg_row" FROM with_w1 AS w1 )"#,
             "SELECT arrayMap(t -> t.2, arraySort(t -> t.1, groupArrayIf((w2.__cg_row, \
-             w2.p2_v1_name), isNotNull(w2.p2_v1_name)))) AS \"names\" FROM with_w2 AS w2",
+             w2.p2_v1_name), NOT isNull(w2.p2_v1_name)))) AS \"names\" FROM with_w2 AS w2",
         ],
     );
     not_lowered(
@@ -783,7 +782,7 @@ fn an_order_the_sql_cannot_keep_is_not_relied_on() {
         &[
             r#"row_number() OVER (ORDER BY w1.__o0 ASC) AS "__cg_row" FROM with_w1 AS w1 )"#,
             "with_w3 AS ( SELECT w2.p2_v1_country AS \"v2\", arrayMap(t -> t.2, arraySort(t -> \
-             t.1, groupArrayIf((w2.__cg_row, w2.p2_v1_name), isNotNull(w2.p2_v1_name)))) AS \
+             t.1, groupArrayIf((w2.__cg_row, w2.p2_v1_name), NOT isNull(w2.p2_v1_name)))) AS \
              \"v3\", w2.p2_v1_country AS \"__o0\" FROM with_w2 AS w2 GROUP BY w2.p2_v1_country )",
             "FROM with_w3 AS w3 ORDER BY w3.__o0 ASC",
         ],
@@ -3490,7 +3489,7 @@ fn an_unwind_keeps_the_order_of_ordered_rows() {
         &[
             r#"row_number() OVER (ORDER BY w1.__o0 ASC) AS "__cg_row" FROM with_w1 AS w1 )"#,
             "SELECT arrayMap(t -> t.2, arraySort(t -> t.1, groupArrayIf((w2.__cg_row, w2.v0), \
-             isNotNull(w2.v0)))) AS \"l\" FROM with_w2 AS w2",
+             NOT isNull(w2.v0)))) AS \"l\" FROM with_w2 AS w2",
         ],
     );
 }
@@ -3577,21 +3576,10 @@ graph_schema:
 /// element, are lists S7e lowers.
 #[test]
 fn an_unwind_of_graph_values_is_not_lowered_yet() {
-    not_lowered(
-        "MATCH (a:User) UNWIND [a] AS x RETURN x",
-        "a node or relationship as a value",
-    );
-    not_lowered(
-        "MATCH p = (a:User)-[:FOLLOWS]->(b:User) UNWIND nodes(p) AS n RETURN n",
-        "nodes() of a path other than",
-    );
+    // A variable-length relationship's list (S7e2b).
     not_lowered(
         "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) UNWIND r AS x RETURN x",
         "list other than",
-    );
-    not_lowered(
-        "MATCH (a:User) WITH collect(a) AS l UNWIND l AS x RETURN x",
-        "as a value",
     );
     not_lowered(
         "UNWIND [{k: 1}] AS m RETURN m.k AS k",
@@ -3881,7 +3869,7 @@ fn an_ordered_collect_distinct_keeps_the_first_of_each() {
         "MATCH (a:User) WITH a ORDER BY a.name RETURN collect(DISTINCT a.country) AS l",
         &[
             "SELECT arrayDistinct(arrayMap(t -> t.2, arraySort(t -> t.1, \
-           groupArrayIf((w2.__cg_row, w2.p2_v1_country), isNotNull(w2.p2_v1_country))))) AS \"l\"",
+           groupArrayIf((w2.__cg_row, w2.p2_v1_country), NOT isNull(w2.p2_v1_country))))) AS \"l\"",
         ],
     );
 }
@@ -3926,6 +3914,130 @@ fn an_aggregate_inside_a_comprehension_is_an_error() {
     not_lowered(
         "MATCH (a:User) RETURN [x IN collect(a.user_id) | x * count(*)] AS l",
         "Can't use aggregating expressions inside of expressions executing over lists",
+    );
+}
+
+/// S7e2a: a list of nodes is an array of tuples of each node's id and
+/// declared properties; an unwound element's property is its slot.
+#[test]
+fn a_list_of_nodes_holds_tuples_of_their_columns() {
+    has(
+        "MATCH (a:User) WITH collect(a) AS l UNWIND l AS x RETURN x.name AS n",
+        &[
+            "SELECT groupArrayIf(tuple(v0.user_id, v0.age, v0.city, v0.country, \
+             v0.email_address, v0.is_active, v0.full_name, v0.registration_date, v0.user_id), \
+             NOT isNull(v0.user_id)) AS \"v1\" FROM test_integration.users_test AS v0",
+            "ARRAY JOIN w1.v1 AS __cg_element",
+            r#"SELECT tupleElement(w2.v2, 7) AS "n""#,
+        ],
+    );
+    // A fixed path's nodes, in a comprehension.
+    has(
+        "MATCH p = (a:User)-[:FOLLOWS]->(b:User) RETURN [n IN nodes(p) WHERE n.age > 30 | n.name] AS ns",
+        &["arrayMap(v4 -> tupleElement(v4, 7), arrayFilter(v5 -> tupleElement(v5, 2) > 30, \
+           [tuple(v0.user_id, "],
+    );
+    // An element equals a node of the relation by identity.
+    has(
+        "MATCH (a:User) WITH collect(a) AS l UNWIND l AS x MATCH (b:User) WHERE b = x \
+         RETURN count(*) AS c",
+        &["WHERE v3.user_id = tupleElement(w2.v2, 1)"],
+    );
+    // Returned, the list is its nodes' values.
+    has(
+        "MATCH (a:User) RETURN collect(a) AS l",
+        &[
+            "arrayMap(__cg_e -> if(isNull(tupleElement(__cg_e, 1)), NULL, CAST(map('elementId', \
+           CAST(concat('User:', toString(tupleElement(__cg_e, 1)), '-'), 'Dynamic')",
+        ],
+    );
+}
+
+/// S7e2a refusals: an element out of a list's range would be a tuple of
+/// defaults; the tuples carry declared properties only; a list's elements
+/// are of one label.
+#[test]
+fn what_a_list_of_nodes_does_not_lower_yet() {
+    not_lowered(
+        "MATCH (a:User) WITH collect(a) AS l RETURN l[0] AS f",
+        "an element or slice of a list of nodes or relationships",
+    );
+    not_lowered(
+        "MATCH (a:User) WITH collect(a) AS l UNWIND l AS x RETURN x.nope AS n",
+        "an undeclared property of a list's node or relationship",
+    );
+    not_lowered(
+        "MATCH (a:User) WITH collect(a) AS l RETURN head(l) AS f",
+        "head() of nodes or relationships of a list",
+    );
+    not_lowered(
+        "MATCH (a:User), (b:User) RETURN coalesce(a, b) AS n",
+        "coalesce() of nodes or relationships of a list",
+    );
+}
+
+/// S7e2a review: a list's tuples are of one type: a list mixing labels,
+/// types or values is not lowered (the tuples would be returned raw), nor
+/// is `+` of such lists, nor ORDER BY an element.
+#[test]
+fn a_list_mixing_labels_or_values_is_not_lowered() {
+    for q in [
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN [a, r] AS l",
+        "MATCH (a:User), (p:Post) RETURN [a, p] AS l",
+        "MATCH (a:User) RETURN [a, 1] AS l",
+        "MATCH (a:User) RETURN [a.name, a] AS l",
+        "MATCH (a:User), (p:Post) RETURN collect([a, p]) AS l",
+        "MATCH (a:User), (p:Post) RETURN [[a], [p]] AS l",
+        "MATCH (a:User), (p:Post) RETURN size([a, p]) AS n",
+    ] {
+        not_lowered(
+            q,
+            "a list of nodes or relationships of several labels or types",
+        );
+    }
+    not_lowered(
+        "MATCH (a:User), (p:Post) RETURN size(collect(a) + collect(p)) AS n",
+        "`+` of lists of nodes or relationships of different labels or types",
+    );
+    not_lowered(
+        "MATCH (a:User) WITH collect(a) AS l UNWIND l AS x RETURN x.name AS n ORDER BY x",
+        "ORDER BY a node or relationship of a list",
+    );
+}
+
+/// S7e2a review: a property declared boolean on an integer column is cast
+/// in the tuple, as a returned column is.
+#[test]
+fn a_listed_boolean_property_is_cast() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: listed_bool
+graph_schema:
+  nodes:
+    - label: P
+      database: db
+      table: p
+      node_id: id
+      property_mappings: { id: id, ok: ok_flag }
+      property_types: { ok: boolean }
+  edges: []
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let got = squash(
+        &translate_bound_plan(
+            "MATCH (p:P) WITH collect(p) AS l UNWIND l AS x RETURN x.ok AS ok",
+            &schema,
+            &ReadOptions::default(),
+        )
+        .unwrap()
+        .sql,
+    );
+    assert!(
+        got.contains("tuple(v0.id, v0.id, CAST(v0.ok_flag AS Nullable(Bool)))"),
+        "{got}"
     );
 }
 

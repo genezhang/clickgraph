@@ -480,6 +480,56 @@ The binder walks the clause list once, keeping the *current scope*:
     - Relationships with no `edge_id` that are parallel and equal in every
       property are one in DISTINCT, UNION and paths. This is older, and the
       same on both paths.
+  **Implemented in S7e2a** (`bound_plan/lower/elements.rs`), lists of
+  nodes and relationships built from the current rows:
+  - **Representation.** A list's element is a tuple of its columns, of the
+    types its table has: a node's id and its label's declared properties
+    (in name order); a relationship's stored ends' ids, its `edge_id` (if
+    any) and its type's declared properties (`Layout`). Every element of a
+    list is of one label, or of one definition (type and label pair), so
+    the list is an array of one tuple type (`Kind::Element`); a list (or
+    `+` of lists) mixing labels, types or values is not lowered (its tuples
+    would be returned raw). A property the schema declares boolean on an
+    integer column is cast in the tuple, as a returned column is. A property of
+    an element is its slot and keeps its type: it is compared, sorted,
+    grouped and aggregated as the column is. (ClickHouse's `Dynamic`, which
+    the S6c values hold, is refused by `IN`, ORDER BY, GROUP BY and `sum` /
+    `max`.) A NULL element (an OPTIONAL MATCH's) has a NULL id.
+  - **Lists.** `collect(n)` (`groupArrayIf` of the tuples whose id is not
+    NULL; ordered as S7e1's), `[a, b]`, and `nodes(p)` / `relationships(p)`
+    of a path of fixed relationships whose nodes (relationships) are of one
+    label (definition) and that an OPTIONAL MATCH does not leave NULL. A
+    node or relationship put in a list carries every declared property (the
+    demand pass). A WITH carries the tuples (also `WITH nodes(p) AS ns`).
+  - **Elements.** A comprehension's parameter and an UNWIND's variable over
+    such a list are elements: `x.prop` (an undeclared property is NULL where
+    the label's properties are complete or in Neo4j-compat mode, otherwise
+    not lowered: the tuple has none), `x IS [NOT] NULL`, `x = y` / `x <> y`
+    with an element or a node of the relation (by identity; elements of
+    different labels are never equal), `x:Label`, `type(x)`, `count(x)`,
+    `collect(x)`.
+  - **Output.** Returned, an element or a list of them is its value (S6c's
+    `{elementId, labels, properties}` form, built from the slots; a NULL
+    element is NULL), grouped and made distinct by its tuples.
+  - **Not lowered:** an element of a list by index, a slice, `head()` /
+    `last()` (an index out of range reads a tuple of defaults, not NULL);
+    ORDER BY an element (a tuple sorts by its columns);
+    any other function, operator, CASE or map of elements (a tuple is never
+    NULL: `coalesce` would be wrong); a list of nodes of several labels
+    (`nodes(p)` of a user–post path), of several types, of paths, a NULL in
+    a list of elements; a variable-length relationship's list and
+    `nodes(p)` / `relationships(p)` of a path with one (S7e2b); `labels(x)`
+    (NULL of a NULL element is a NULL array); re-matching an element
+    (`UNWIND l AS x MATCH (x)-->()`); composite ids (S8).
+  - **Known gaps** (older, now reachable through lists):
+    - Relationships with no `edge_id` that are parallel and equal in every
+      property are one in DISTINCT (`collect(DISTINCT k)`, `count(DISTINCT
+      k)`), and `r = s` compares their ends only.
+    - A relationship's `elementId` is built from its ends, also when its
+      type has an `edge_id`: over Bolt the driver merges parallel ones
+      (HTTP output is right).
+    - Two UNWINDs in a row, `l[0].prop` and `head(l).prop` do not parse.
+
 - **Subquery expressions.** A child scope whose parent is the current scope.
   The parent's variables used inside become the subquery's **correlation
   set**, an explicit `Vec<VarId>`.
@@ -533,7 +583,8 @@ The binder walks the clause list once, keeping the *current scope*:
     ("Can't use aggregating expressions inside of expressions executing
     over lists").
   - **Not lowered:** a comprehension over nodes, relationships or paths
-    (`[n IN nodes(p) | n.name]`, S7e2); a lambda of a ClickHouse function
+    (`[n IN nodes(p) | n.name]`, S7e2; S7e2a lowers lists built from the
+    current rows); a lambda of a ClickHouse function
     written in the query; comprehensions in the Databricks dialect.
   - **Known gaps:**
     - The quantifiers `all`, `any`, `none` and `single` do not parse (on
@@ -2657,6 +2708,43 @@ slice that will handle it.
         `count(DISTINCT n)` 169 ms (legacy 167 ms), a carried node re-matched
         to a relationship 145 ms (legacy: no SQL), `a = b` 96 ms (legacy:
         Code 47).
+  - [x] **S7e2a: lists of nodes and relationships** (§4.4 "Implemented in
+    S7e2a"): `collect(n)`, `[a, b]`, fixed paths' `nodes(p)` /
+    `relationships(p)` as arrays of typed tuples; their elements' properties,
+    identity, `type()`, label tests, `count` / `collect`; returned as values.
+    - Acceptance:
+      - Generated shapes on the S7d graph (99 answered by Neo4j: collect /
+        UNWIND / comprehensions over nodes and relationships with and
+        without `edge_id`, NULL elements from OPTIONAL MATCH, list literals,
+        fixed paths' nodes and relationships, WITH chains, DISTINCT,
+        grouping, UNION arms, equality with matched nodes): every lowered
+        shape equals Neo4j but the order of a `collect` of rows in no order
+        (Cypher defines none).
+      - The review's shapes (about 400 on the S7d graph, a graph of renamed
+        properties, String ids, a boolean declared on a `UInt8` column,
+        parallel equal relationships, empty labels; the S7e1 review graph;
+        FK-edge, denormalized and polymorphic copies, all refused): with
+        the fixes, 258 lowered on the S7d graph, none worse than legacy;
+        the remaining differences are unordered `collect` orders and the
+        known gaps above.
+      - The S7e1 sweeps: unchanged (a `collect` after a MATCH, whose order
+        Cypher does not define, matched by chance before).
+      - Mutation check: 10 rules broken in turn, all change answers (one
+        first survived for want of a parseable shape; two shapes added);
+        the review fixes' gates are pinned by unit tests, each checked to
+        fail with its gate removed.
+      - Neo4j oracle, switch on, vs S7e1: unchanged (MATCH 409). Corpus
+        lowers 788 (was 784: the `collect(u) … UNWIND` tests).
+      - Live suite, switch on, vs S7e1: unchanged.
+      - Adversarial review: three wrong answers, fixed. A list mixing
+        labels, types or values (`[p, c]`, `[p, 1]`, `collect([p, c])`)
+        returned raw tuples (the guards keyed on a list's kind, which mixing
+        made unknown): now refused unless every element is of one shape. A
+        boolean declared on an integer column read 1 / 0 through an element:
+        now cast in the tuple. `size(collect(p) + collect(c))` and `size([p,
+        c])` (25.8) failed where `main` answered: refused, so legacy answers.
+        A DISTINCT of parallel equal relationships with no `edge_id` is the
+        older policy (above).
   - [x] **S7e1: lists of values** (§4.4 "Implemented in S7e1"):
     comprehensions over values, lists of booleans, `collect()` over ordered
     rows, `+` with a list.
