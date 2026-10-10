@@ -508,6 +508,9 @@ pub(crate) struct Lists {
     pub element: fn(&str, usize) -> String,
     /// Whether the value `{0}` is NULL, as a function call.
     pub is_null: fn(&str) -> String,
+    /// An empty list of the type of the tuple `{0}` over the table `{1}`
+    /// aliased `{2}` (reading no row).
+    pub empty_of: fn(&str, &str, &str) -> String,
     /// The list `{0}` without its repeated elements, each where it first
     /// occurs.
     pub distinct: fn(&str) -> String,

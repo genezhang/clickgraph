@@ -285,6 +285,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             collect_if: |v, present| format!("groupArrayIf({v}, {present})"),
             element: |t, i| format!("tupleElement({t}, {i})"),
             is_null: |v| format!("isNull({v})"),
+            // An aggregate has one row also over none.
+            empty_of: |t, table, alias| {
+                format!("(SELECT groupArray({t}) FROM {table} AS {alias} WHERE 0)")
+            },
             distinct: |l| format!("arrayDistinct({l})"),
         })
     }

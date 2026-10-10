@@ -518,7 +518,8 @@ The binder walks the clause list once, keeping the *current scope*:
     NULL: `coalesce` would be wrong); a list of nodes of several labels
     (`nodes(p)` of a user–post path), of several types, of paths, a NULL in
     a list of elements; a variable-length relationship's list and
-    `nodes(p)` / `relationships(p)` of a path with one (S7e2b); `labels(x)`
+    `nodes(p)` / `relationships(p)` of a path with one (S7e2b lowers those
+    of walks of one definition); `labels(x)`
     (NULL of a NULL element is a NULL array); re-matching an element
     (`UNWIND l AS x MATCH (x)-->()`); composite ids (S8).
   - **Known gaps** (older, now reachable through lists):
@@ -529,6 +530,37 @@ The binder walks the clause list once, keeping the *current scope*:
       type has an `edge_id`: over Bolt the driver merges parallel ones
       (HTTP output is right).
     - Two UNWINDs in a row, `l[0].prop` and `head(l).prop` do not parse.
+
+  **Implemented in S7e2b** (`bound_plan/lower/path.rs`, `elements.rs`), a
+  walk's nodes and relationships as lists of elements:
+  - A walk of one definition (`Walked::One`, the generator's or a shortest
+    path's search) carries its nodes / relationships as element tuples
+    (`path_node_tuples` / `path_rel_tuples`, beside S6c's value columns)
+    when the demand pass asks for them: a read inside an expression (a
+    comprehension's list, `size` of a filter, `+`), an UNWIND's list, a
+    WITH item. A RETURN item `nodes(p)` stays a value (no tuples). A
+    recursive CTE's first rows fix its columns' types, and `[]` is
+    `Array(Nothing)` (ClickHouse 25.8 cannot convert the later rows to it):
+    the empty list is an aggregate of the tuple over the table reading no
+    row (`(SELECT groupArray(tuple(…)) FROM t WHERE 0)`, one row also over
+    none).
+  - `nodes(p)` / `relationships(p)` of a path with walks of one label (one
+    definition), and a variable-length relationship's list `r`, are lists of
+    elements: the fixed elements' tuples and the walks' carried ones, in
+    path order (reversed when the walk starts at the pattern's right end; a
+    walk's first node is the node before it). A MATCH condition reading them
+    is lowered against the walk's scan before the walk is built, so that
+    scan carries the demand's flags too.
+  - **Not lowered:** a walk of several types or labels, or whose elements
+    have no tuple layout (a composite `edge_id`): it carries no tuples, and
+    its S6c values still work; an
+    OPTIONAL MATCH's path (its list would be NULL); a shortestPath whose
+    WHERE holds a comprehension (S6b's refusal of conditions it cannot place
+    in the search).
+  - **Known gap (older):** a walk over relationships with no `edge_id`
+    takes parallel ones for one relationship (the walk's uniqueness keys on
+    the ends), so paths using both are missing (`(a)-[*1..2]-(b)` over two
+    parallel edges: 10 rows, Neo4j 12; also on `main` and legacy).
 
 - **Subquery expressions.** A child scope whose parent is the current scope.
   The parent's variables used inside become the subquery's **correlation
@@ -2708,6 +2740,37 @@ slice that will handle it.
         `count(DISTINCT n)` 169 ms (legacy 167 ms), a carried node re-matched
         to a relationship 145 ms (legacy: no SQL), `a = b` 96 ms (legacy:
         Code 47).
+  - [x] **S7e2b: a walk's nodes and relationships as lists** (§4.4
+    "Implemented in S7e2b"): walks of one definition carry element tuples
+    when read as a list's elements; `nodes(p)` / `relationships(p)` of paths
+    with walks, and `-[r*]->` lists.
+    - Acceptance:
+      - Generated shapes on the S7d graph (36 answered by Neo4j: walks of
+        every direction and range incl. `*0..`, pinned at either end, mixed
+        with fixed hops, two walks in a path, shortest / all shortest paths,
+        comprehensions, UNWIND, WITH, MATCH conditions): every lowered shape
+        equals Neo4j but parallel relationships without `edge_id` (older,
+        above), a shortestPath that picks another of two equally short
+        paths, and an unordered `collect`.
+      - The S7e1 / S7e2a sweeps and the S7e2a review's shapes: no shape
+        worse than legacy (but S7e2a's parallel-equal DISTINCT, above).
+      - Mutation check: 7 rules broken in turn, all change answers (one
+        shape added for walks from the right end).
+      - Neo4j oracle, switch on, vs S7e2a: unchanged (MATCH 409). Corpus
+        lowers 793 (was 788).
+      - Live suite, switch on, vs S7e2a: unchanged. (A first run lowered
+        `length()` of a list — a test expecting an error for `length(r)`
+        failed, and two expected failures on `length(nodes(p))` passed —
+        but Neo4j refuses `length()` of a list: now refused.)
+      - Adversarial review (about 340 Neo4j-compared shapes on two graphs,
+        a typed schema on ClickHouse 26.7 and 25.8, 2,474 earlier queries
+        diffed against `main`): one regression, fixed. A walk over a type
+        with a composite `edge_id` failed to build tuples a WITH item asked
+        for, and the whole query fell back to legacy (type names for `WITH
+        relationships(p)`); such a walk now carries none, and its values
+        lower as before. Performance on a million paths: unchanged within
+        noise; a WITH or UNWIND of a walk's list carries both its values and
+        its tuples (redundant, cheap).
   - [x] **S7e2a: lists of nodes and relationships** (§4.4 "Implemented in
     S7e2a"): `collect(n)`, `[a, b]`, fixed paths' `nodes(p)` /
     `relationships(p)` as arrays of typed tuples; their elements' properties,

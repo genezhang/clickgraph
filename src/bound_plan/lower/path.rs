@@ -86,6 +86,11 @@ pub(super) const PATH_COLUMNS: [&str; 3] = ["start_id", "end_id", "hop_count"];
 /// values (`value.rs`), when [`PathCall::node_values`] / `rel_values`.
 pub(super) const VALUE_COLUMNS: [&str; 2] = ["path_node_values", "path_rel_values"];
 
+/// The columns of a path relation that carry its nodes and relationships as
+/// a list's elements (`elements.rs`), when [`PathCall::node_tuples`] /
+/// `rel_tuples`.
+pub(super) const TUPLE_COLUMNS: [&str; 2] = ["path_node_tuples", "path_rel_tuples"];
+
 /// What one variable-length relationship needs from the generator.
 #[derive(Clone)]
 pub(super) struct PathCall<'a> {
@@ -115,6 +120,43 @@ pub(super) struct PathCall<'a> {
     /// (`path_node_values` / `path_rel_values`, `value.rs`).
     pub node_values: bool,
     pub rel_values: bool,
+    /// Carry them as a list's elements (`path_node_tuples` /
+    /// `path_rel_tuples`, `elements.rs`).
+    pub node_tuples: bool,
+    pub rel_tuples: bool,
+}
+
+impl PathCall<'_> {
+    /// The node / relationship element tuples a walk carries, when asked.
+    fn tuples(
+        &self,
+    ) -> Result<
+        (
+            Option<super::elements::WalkTuples>,
+            Option<super::elements::WalkTuples>,
+        ),
+        LowerError,
+    > {
+        let node = match self.node_tuples {
+            true => Some(super::elements::walk_tuples(
+                &super::elements::node_layout(self.label, self.node)?,
+                &self.node.full_table_name(),
+                START,
+                Some(END),
+            )?),
+            false => None,
+        };
+        let rel = match self.rel_tuples {
+            true => Some(super::elements::walk_tuples(
+                &super::elements::rel_layout(self.rel_type, self.edge)?,
+                &self.edge.full_table_name(),
+                REL,
+                None,
+            )?),
+            false => None,
+        };
+        Ok((node, rel))
+    }
 }
 
 /// The generated relation.
@@ -203,10 +245,15 @@ pub(super) fn path_cte(schema: &GraphSchema, call: PathCall<'_>) -> Result<PathC
         .with_node_labels(Some(call.label.to_string()), Some(call.label.to_string()));
     context.needs_path_relationships = false;
     context.walk_relation = call.both.map(str::to_string);
+    let (node_tuple, rel_tuple) = call.tuples()?;
+    context.path_values.node_tuple = node_tuple.map(|t| (t.one, t.other.unwrap_or_default()));
+    context.path_values.rel_tuple = rel_tuple.map(|t| (t.one, t.empty));
     if call.node_values || call.rel_values {
         let g = super::value::spelling()?;
         let node = |alias: &str| super::value::table_node_object(&g, call.node, call.label, alias);
         context.path_values = PathValues {
+            node_tuple: context.path_values.node_tuple.take(),
+            rel_tuple: context.path_values.rel_tuple.take(),
             node: match call.node_values {
                 true => Some((node(START)?, node(END)?)),
                 false => None,
@@ -280,6 +327,9 @@ pub(super) struct Search {
     /// over [`REL`], when the paths carry them.
     node_value: Option<(String, String)>,
     rel_value: Option<String>,
+    /// A node's / relationship's element tuples, when the paths carry them.
+    node_tuple: Option<super::elements::WalkTuples>,
+    rel_tuple: Option<super::elements::WalkTuples>,
 }
 
 impl Search {
@@ -293,6 +343,12 @@ impl Search {
         }
         if self.rel_value.is_some() {
             columns.push(VALUE_COLUMNS[1]);
+        }
+        if self.node_tuple.is_some() {
+            columns.push(TUPLE_COLUMNS[0]);
+        }
+        if self.rel_tuple.is_some() {
+            columns.push(TUPLE_COLUMNS[1]);
         }
         columns
     }
@@ -355,7 +411,10 @@ impl PathCall<'_> {
             )?),
             None => None,
         };
+        let (node_tuple, rel_tuple) = self.tuples()?;
         Ok(Search {
+            node_tuple,
+            rel_tuple,
             var: self.var.to_string(),
             node_table: node_table.clone(),
             id: id.clone(),
@@ -613,6 +672,13 @@ pub(super) fn walk_ctes(
     if let Some(rel) = &call.rel_value {
         carried.push((VALUE_COLUMNS[1], (g.list)(&[]), rel.clone()));
     }
+    if let Some(t) = &call.node_tuple {
+        let end = t.other.clone().unwrap_or_default();
+        carried.push((TUPLE_COLUMNS[0], t.empty.clone(), end));
+    }
+    if let Some(t) = &call.rel_tuple {
+        carried.push((TUPLE_COLUMNS[1], t.empty.clone(), t.one.clone()));
+    }
     let empty: Vec<String> = carried
         .iter()
         .map(|(c, e, _)| format!("{e} AS {c}"))
@@ -714,12 +780,25 @@ pub(super) fn walk_ctes(
             ]),
             VALUE_COLUMNS[0]
         ));
-        from.push_str(&format!(
-            "\n    JOIN {node_table} AS {START} ON {START}.{id} = w.start_id"
-        ));
     }
     if call.rel_value.is_some() {
         first.push(format!("w.{c} AS {c}", c = VALUE_COLUMNS[1]));
+    }
+    if let Some(t) = &call.node_tuple {
+        first.push(format!(
+            "{} AS {}",
+            (g.concat)(&[format!("[{}]", t.one), format!("w.{}", TUPLE_COLUMNS[0])]),
+            TUPLE_COLUMNS[0]
+        ));
+    }
+    if call.rel_tuple.is_some() {
+        first.push(format!("w.{c} AS {c}", c = TUPLE_COLUMNS[1]));
+    }
+    // The first node's value / tuple read it.
+    if call.node_value.is_some() || call.node_tuple.is_some() {
+        from.push_str(&format!(
+            "\n    JOIN {node_table} AS {START} ON {START}.{id} = w.start_id"
+        ));
     }
     let paths_sql = format!(
         "{name} AS (\n    \
@@ -996,6 +1075,10 @@ impl UnionWalk<'_> {
     pub(super) fn search(&self) -> Search {
         let at = |alias: &str, column: &str| format!("{alias}.{column}");
         Search {
+            // A walk of several labels or types carries no element tuples
+            // (they are of one type each).
+            node_tuple: None,
+            rel_tuple: None,
             var: self.var.to_string(),
             node_table: self.nodes.to_string(),
             id: super::KEY.to_string(),

@@ -60,11 +60,58 @@ impl Lowerer<'_> {
             .or_else(|| self.local_kinds.borrow().get(&v).cloned())
     }
 
-    /// `nodes(p)` / `relationships(p)` (`f`) of a path of fixed
-    /// relationships whose nodes (relationships) are of one label (one
-    /// definition): what they are, and the elements in path order. A path an
-    /// OPTIONAL MATCH may leave NULL is not: its list would be NULL.
-    pub(super) fn path_elem(&self, f: &lx::ScalarFnCall) -> Option<(Elem, Vec<VarId>)> {
+    /// `nodes(p)` / `relationships(p)` (`f`) whose elements are all of one
+    /// label (one definition): what they are. A variable-length part must
+    /// carry them as tuples (the demand pass) and walk one definition. A
+    /// path an OPTIONAL MATCH may leave NULL is not: its list would be NULL.
+    pub(super) fn path_elem(&self, f: &lx::ScalarFnCall) -> Option<Elem> {
+        let (p, nodes) = self.path_part(f)?;
+        let elements = self.paths.get(&p)?;
+        let mut elem: Option<Elem> = None;
+        let mut agree = |e: Elem| -> Option<()> {
+            match &elem {
+                Some(x) if *x != e => None,
+                _ => {
+                    elem = Some(e);
+                    Some(())
+                }
+            }
+        };
+        if nodes {
+            for v in &elements.nodes {
+                agree(self.elem_of(*v)?)?;
+            }
+        }
+        for r in &elements.rels {
+            match self.scans.get(r)? {
+                Scan::Path {
+                    walked: super::Walked::One { schema, rel_type },
+                    node_tuples,
+                    rel_tuples,
+                    ..
+                } => {
+                    if nodes && *node_tuples && schema.from_node == schema.to_node {
+                        agree(Elem::Node(schema.from_node.clone()))?;
+                    } else if !nodes && *rel_tuples {
+                        agree(Elem::Rel {
+                            rel_type: rel_type.clone(),
+                            from: schema.from_node.clone(),
+                            to: schema.to_node.clone(),
+                        })?;
+                    } else {
+                        return None;
+                    }
+                }
+                Scan::Path { .. } => return None,
+                _ if !nodes => agree(self.elem_of(*r)?)?,
+                _ => {}
+            }
+        }
+        elem
+    }
+
+    /// The path and whether `f` is its `nodes()` (else `relationships()`).
+    pub(super) fn path_part(&self, f: &lx::ScalarFnCall) -> Option<(VarId, bool)> {
         let [LogicalExpr::TableAlias(lx::TableAlias(n))] = f.args.as_slice() else {
             return None;
         };
@@ -72,30 +119,28 @@ impl Lowerer<'_> {
         if self.binding(p).nullable {
             return None;
         }
-        let elements = self.paths.get(&p)?;
-        // Its nodes are the pattern's only when every relationship is fixed.
-        if !elements.rels.iter().all(|r| {
-            matches!(
-                self.scans.get(r),
-                Some(Scan::Rel { .. } | Scan::Rels { .. })
-            )
-        }) {
-            return None;
+        match f.name.to_ascii_lowercase().as_str() {
+            "nodes" => Some((p, true)),
+            "relationships" => Some((p, false)),
+            _ => None,
         }
-        let vars = match f.name.to_ascii_lowercase().as_str() {
-            "nodes" => elements.nodes.clone(),
-            "relationships" => elements.rels.clone(),
-            _ => return None,
-        };
-        let mut elem = None;
-        for v in &vars {
-            let e = self.elem_of(*v)?;
-            if elem.as_ref().is_some_and(|x| *x != e) {
-                return None;
-            }
-            elem = Some(e);
+    }
+
+    /// A variable-length relationship's list as a list's elements: what
+    /// they are, when its walk carries them (one definition).
+    pub(super) fn walk_rel_elem(&self, r: VarId) -> Option<Elem> {
+        match self.scans.get(&r)? {
+            Scan::Path {
+                walked: super::Walked::One { schema, rel_type },
+                rel_tuples: true,
+                ..
+            } if !self.binding(r).nullable => Some(Elem::Rel {
+                rel_type: rel_type.clone(),
+                from: schema.from_node.clone(),
+                to: schema.to_node.clone(),
+            }),
+            _ => None,
         }
-        Some((elem?, vars))
     }
 }
 
@@ -192,6 +237,11 @@ impl<'s> Lowerer<'s> {
                     BindingKind::Node { .. } | BindingKind::Rel { length: None, .. } => {
                         self.elem_of(v).map(Kind::Element)
                     }
+                    BindingKind::Rel {
+                        length: Some(_), ..
+                    } => self
+                        .walk_rel_elem(v)
+                        .map(|e| Kind::List(Box::new(Kind::Element(e)))),
                     _ => self.var_kind(v),
                 })
                 .unwrap_or(Kind::Unknown),
@@ -248,11 +298,9 @@ impl<'s> Lowerer<'s> {
             LogicalExpr::ScalarFnCall(f) => {
                 let arg = |i: usize| f.args.get(i).map_or(Kind::Unknown, |a| self.kind(a));
                 match f.name.to_ascii_lowercase().as_str() {
-                    "nodes" | "relationships" => {
-                        self.path_elem(f).map_or(Kind::Unknown, |(elem, _)| {
-                            Kind::List(Box::new(Kind::Element(elem)))
-                        })
-                    }
+                    "nodes" | "relationships" => self.path_elem(f).map_or(Kind::Unknown, |elem| {
+                        Kind::List(Box::new(Kind::Element(elem)))
+                    }),
                     "range" | "split" | "keys" => Kind::List(Box::new(Kind::Scalar)),
                     "toboolean" => Kind::Boolean,
                     "size" | "length" | "tostring" | "tointeger" | "tofloat" | "abs" | "ceil"

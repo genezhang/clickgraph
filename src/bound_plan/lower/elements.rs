@@ -74,6 +74,53 @@ impl Layout<'_> {
     }
 }
 
+/// The layout of a node of `label` (`schema`).
+pub(super) fn node_layout<'s>(
+    label: &str,
+    schema: &'s NodeSchema,
+) -> Result<Layout<'s>, LowerError> {
+    single(
+        schema
+            .id_physical_columns()
+            .iter()
+            .map(String::as_str)
+            .collect(),
+        "a node",
+    )?;
+    let mut props: Vec<String> = schema.property_mappings.keys().cloned().collect();
+    props.sort();
+    Ok(Layout {
+        elem: Elem::Node(label.to_string()),
+        node: Some(schema),
+        rel: None,
+        props,
+    })
+}
+
+/// The layout of a relationship of `rel_type` (definition `schema`).
+pub(super) fn rel_layout<'s>(
+    rel_type: &str,
+    schema: &'s RelationshipSchema,
+) -> Result<Layout<'s>, LowerError> {
+    single(schema.from_id.columns(), "a relationship's end")?;
+    single(schema.to_id.columns(), "a relationship's end")?;
+    if let Some(id) = &schema.edge_id {
+        single(id.columns(), "a relationship")?;
+    }
+    let mut props: Vec<String> = schema.property_mappings.keys().cloned().collect();
+    props.sort();
+    Ok(Layout {
+        elem: Elem::Rel {
+            rel_type: rel_type.to_string(),
+            from: schema.from_node.clone(),
+            to: schema.to_node.clone(),
+        },
+        node: None,
+        rel: Some(schema),
+        props,
+    })
+}
+
 /// Slot `i` (0-based) of the tuple `t`.
 pub(super) fn slot(t: &RenderExpr, i: usize) -> Result<RenderExpr, LowerError> {
     let Some(spelling) = current_function_mapper().lists() else {
@@ -90,6 +137,81 @@ fn single(cols: Vec<&str>, what: &str) -> Result<String, LowerError> {
         [one] => Ok(one.to_string()),
         _ => unsupported(format!("{what} of a composite id in a list (S8)")),
     }
+}
+
+/// A table's columns under `alias` as an element tuple of `layout` (inside
+/// a walk, `path.rs`): as [`Lowerer::elem_tuple`] builds it from a scan.
+fn table_tuple(layout: &Layout, alias: &str) -> Result<String, LowerError> {
+    let col = |c: &str| render_expr_to_sql_plain(&super::col_at(alias, c));
+    let mut fields = Vec::new();
+    let (mappings, types) = match (layout.node, layout.rel) {
+        (Some(n), _) => {
+            fields.push(col(&single(
+                n.id_physical_columns().iter().map(String::as_str).collect(),
+                "a node",
+            )?));
+            (&n.property_mappings, &n.property_types)
+        }
+        (_, Some(r)) => {
+            fields.push(col(&single(r.from_id.columns(), "a relationship's end")?));
+            fields.push(col(&single(r.to_id.columns(), "a relationship's end")?));
+            if let Some(id) = &r.edge_id {
+                fields.push(col(&single(id.columns(), "a relationship")?));
+            }
+            (&r.property_mappings, &r.property_types)
+        }
+        _ => return unsupported("internal: an element layout of no schema"),
+    };
+    for prop in &layout.props {
+        let Some(pv) = mappings.get(prop) else {
+            return unsupported(format!("internal: {prop} is not declared"));
+        };
+        let e = render_expr_to_sql_plain(&RenderExpr::PropertyAccessExp(
+            crate::render_plan::render_expr::PropertyAccess {
+                table_alias: crate::render_plan::render_expr::TableAlias(alias.to_string()),
+                column: pv.clone(),
+            },
+        ));
+        fields.push(if types.get(prop) == Some(&SchemaType::Boolean) {
+            current_function_mapper().cast_bool(&e)
+        } else {
+            e
+        });
+    }
+    Ok(format!(
+        "{}({})",
+        current_function_mapper().tuple_constructor(),
+        fields.join(", ")
+    ))
+}
+
+/// A walk's element tuples (`path.rs`): one over `alias`, and an empty list
+/// of them of their type (a recursive CTE's first rows fix its columns'
+/// types: `[]` would be `Array(Nothing)`).
+#[derive(Clone)]
+pub(super) struct WalkTuples {
+    pub one: String,
+    pub other: Option<String>,
+    pub empty: String,
+}
+
+/// The tuples of `elem`'s elements over `alias` (and `other_alias`), with
+/// the empty list of them, read from `table`.
+pub(super) fn walk_tuples(
+    layout: &Layout,
+    table: &str,
+    alias: &str,
+    other_alias: Option<&str>,
+) -> Result<WalkTuples, LowerError> {
+    const NONE: &str = "__cg_none";
+    let Some(spelling) = current_function_mapper().lists() else {
+        return unsupported("a list of nodes or relationships in this SQL dialect");
+    };
+    Ok(WalkTuples {
+        one: table_tuple(layout, alias)?,
+        other: other_alias.map(|a| table_tuple(layout, a)).transpose()?,
+        empty: (spelling.empty_of)(&table_tuple(layout, NONE)?, table, NONE),
+    })
 }
 
 impl<'s> Lowerer<'s> {
@@ -112,49 +234,20 @@ impl<'s> Lowerer<'s> {
     /// The tuple layout of `elem`'s elements.
     pub(super) fn layout(&self, elem: &Elem) -> Result<Layout<'s>, LowerError> {
         match elem {
-            Elem::Node(label) => {
-                let Some(schema) = self.schema.node_schema_opt(label) else {
-                    return unsupported(format!("label {label} has no node schema"));
-                };
-                single(
-                    schema
-                        .id_physical_columns()
-                        .iter()
-                        .map(String::as_str)
-                        .collect(),
-                    "a node",
-                )?;
-                let mut props: Vec<String> = schema.property_mappings.keys().cloned().collect();
-                props.sort();
-                Ok(Layout {
-                    elem: elem.clone(),
-                    node: Some(schema),
-                    rel: None,
-                    props,
-                })
-            }
+            Elem::Node(label) => match self.schema.node_schema_opt(label) {
+                Some(schema) => node_layout(label, schema),
+                None => unsupported(format!("label {label} has no node schema")),
+            },
             Elem::Rel { rel_type, from, to } => {
-                let Some(schema) = self
+                match self
                     .schema
                     .rel_schemas_for_type(rel_type)
                     .into_iter()
                     .find(|s| s.from_node == *from && s.to_node == *to)
-                else {
-                    return unsupported(format!("type {rel_type} has no schema"));
-                };
-                single(schema.from_id.columns(), "a relationship's end")?;
-                single(schema.to_id.columns(), "a relationship's end")?;
-                if let Some(id) = &schema.edge_id {
-                    single(id.columns(), "a relationship")?;
+                {
+                    Some(schema) => rel_layout(rel_type, schema),
+                    None => unsupported(format!("type {rel_type} has no schema")),
                 }
-                let mut props: Vec<String> = schema.property_mappings.keys().cloned().collect();
-                props.sort();
-                Ok(Layout {
-                    elem: elem.clone(),
-                    node: None,
-                    rel: Some(schema),
-                    props,
-                })
             }
         }
     }
@@ -319,5 +412,64 @@ impl<'s> Lowerer<'s> {
             Kind::List(k) => self.kinds_hold_elements(k),
             _ => false,
         }
+    }
+
+    /// `nodes(p)` / `relationships(p)` (`f`, [`Lowerer::path_elem`]) as a
+    /// list of tuples, in path order: the fixed elements' tuples and the
+    /// walks' carried ones.
+    pub(super) fn path_tuples(
+        &self,
+        f: &crate::query_planner::logical_expr::ScalarFnCall,
+    ) -> Result<RenderExpr, LowerError> {
+        let Some((p, nodes)) = self.path_part(f) else {
+            return unsupported("internal: not a path's nodes or relationships");
+        };
+        let Some(elements) = self.paths.get(&p).cloned() else {
+            return unsupported(format!("internal: path {p} has no elements"));
+        };
+        let g = super::value::spelling()?;
+        let mut lists: Vec<String> = Vec::new();
+        let mut items: Vec<RenderExpr> = Vec::new();
+        if nodes {
+            items.push(self.elem_tuple(elements.nodes[0])?);
+        }
+        for (i, r) in elements.rels.iter().enumerate() {
+            match self.scans.get(r) {
+                Some(Scan::Path { reversed, .. }) => {
+                    if !items.is_empty() {
+                        lists.push(render_expr_to_sql_plain(&RenderExpr::List(std::mem::take(
+                            &mut items,
+                        ))));
+                    }
+                    let mut list = self.walk_tuples_of(*r, nodes, *reversed)?;
+                    if nodes {
+                        list = (g.tail)(&list);
+                    }
+                    lists.push(list);
+                }
+                _ if nodes => items.push(self.elem_tuple(elements.nodes[i + 1])?),
+                _ => items.push(self.elem_tuple(*r)?),
+            }
+        }
+        if !items.is_empty() || lists.is_empty() {
+            lists.push(render_expr_to_sql_plain(&RenderExpr::List(items)));
+        }
+        Ok(RenderExpr::Raw((g.concat)(&lists)))
+    }
+
+    /// A walk's carried node (`nodes`) or relationship tuples, in path order.
+    pub(super) fn walk_tuples_of(
+        &self,
+        r: VarId,
+        nodes: bool,
+        reversed: bool,
+    ) -> Result<String, LowerError> {
+        let column = super::path::TUPLE_COLUMNS[if nodes { 0 } else { 1 }];
+        let list = render_expr_to_sql_plain(&self.physical(r, column)?);
+        Ok(if reversed {
+            (super::value::spelling()?.reverse)(&list)
+        } else {
+            list
+        })
     }
 }

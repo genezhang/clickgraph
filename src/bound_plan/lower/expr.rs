@@ -768,6 +768,18 @@ impl Lowerer<'_> {
         }
         let b = self.binding(v);
         match (&b.kind, &b.source) {
+            // A walk's relationships as a list's elements (`elements.rs`).
+            (
+                BindingKind::Rel {
+                    length: Some(_), ..
+                },
+                _,
+            ) if self.walk_rel_elem(v).is_some() => {
+                let Some(Scan::Path { reversed, .. }) = self.scans.get(&v) else {
+                    return unsupported(format!("internal: {v} is not a path relation"));
+                };
+                Ok(RenderExpr::Raw(self.walk_tuples_of(v, false, *reversed)?))
+            }
             (
                 BindingKind::Rel {
                     length: Some(_), ..
@@ -900,12 +912,8 @@ impl Lowerer<'_> {
                 return self.graph_size(g);
             }
         }
-        if let Some((_, vars)) = self.path_elem(f) {
-            let tuples = vars
-                .iter()
-                .map(|v| self.elem_tuple(*v))
-                .collect::<Result<Vec<_>, _>>()?;
-            return Ok(RenderExpr::List(tuples));
+        if self.path_elem(f).is_some() {
+            return self.path_tuples(f);
         }
         if let [arg] = f.args.as_slice() {
             if let (Kind::Element(elem), false) = (self.kind(arg), self.entity(arg).is_some()) {
@@ -964,9 +972,8 @@ impl Lowerer<'_> {
                 _ => unsupported(format!("{}() of a node or relationship", f.name)),
             };
         }
-        let size = ["size", "length"]
-            .iter()
-            .any(|n| f.name.eq_ignore_ascii_case(n));
+        // (`length()` takes a path only: Neo4j refuses a list.)
+        let size = f.name.eq_ignore_ascii_case("size");
         if !size && f.args.iter().any(|a| self.holds_elements(a)) {
             return unsupported(format!("{}() of nodes or relationships of a list", f.name));
         }

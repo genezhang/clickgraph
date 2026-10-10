@@ -94,7 +94,7 @@ use crate::utils::cte_column_naming::cte_column_name;
 use super::expr::{calls_aggregate, property_refs, referenced_names};
 use super::types::*;
 pub use value::GraphType;
-use value::{Carried, GraphRef, NODE_VALUES, PATH_KEY, REL_VALUES};
+use value::{Carried, GraphRef, NODE_TUPLES, NODE_VALUES, PATH_KEY, REL_TUPLES, REL_VALUES};
 
 /// Why a bound plan was not lowered.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -335,6 +335,10 @@ enum Scan<'s> {
         /// (`path_node_values` / `path_rel_values`, `value.rs`).
         node_values: bool,
         rel_values: bool,
+        /// It carries them as a list's elements (`path_node_tuples` /
+        /// `path_rel_tuples`, `elements.rs`).
+        node_tuples: bool,
+        rel_tuples: bool,
     },
     /// An element whose label / type set is empty: it matches nothing.
     Impossible,
@@ -444,6 +448,8 @@ impl<'s> Scan<'s> {
                 reversed,
                 node_values,
                 rel_values,
+                node_tuples,
+                rel_tuples,
                 ..
             } => Scan::Path {
                 walked,
@@ -456,6 +462,8 @@ impl<'s> Scan<'s> {
                 reversed,
                 node_values,
                 rel_values,
+                node_tuples,
+                rel_tuples,
             },
             Scan::Impossible => Scan::Impossible,
         }
@@ -1427,7 +1435,10 @@ impl<'s> Lowerer<'s> {
             };
             // `Q` reads no value: a list's values stay out of `D`.
             let mut physical = physical;
-            physical.retain(|c, _| !path::VALUE_COLUMNS.contains(&c.as_str()));
+            physical.retain(|c, _| {
+                !path::VALUE_COLUMNS.contains(&c.as_str())
+                    && !path::TUPLE_COLUMNS.contains(&c.as_str())
+            });
             columns.extend(physical.values().cloned());
             let mut d_props = HashMap::new();
             for (prop, e) in props {
@@ -2618,6 +2629,8 @@ impl<'s> Lowerer<'s> {
             reversed: false,
             node_values: false,
             rel_values: false,
+            node_tuples: false,
+            rel_tuples: false,
         };
         let scan = if max.is_some_and(|m| m < min) || impossible(from) || impossible(to) {
             Scan::Impossible
@@ -2707,6 +2720,10 @@ impl<'s> Lowerer<'s> {
                  parameters or FINAL (S8)",
             );
         }
+        // A condition of the MATCH reads them before the walk is built
+        // (`build_path`, which decides alike).
+        let node_tuples = self.walk_carries(r, NODE_TUPLES, &fl, ns, &rel_type, rs);
+        let rel_tuples = self.walk_carries(r, REL_TUPLES, &fl, ns, &rel_type, rs);
         Ok(Some(Scan::Path {
             walked: Walked::One {
                 schema: rs,
@@ -2721,6 +2738,8 @@ impl<'s> Lowerer<'s> {
             reversed: false,
             node_values: false,
             rel_values: false,
+            node_tuples,
+            rel_tuples,
         }))
     }
 
@@ -2792,7 +2811,6 @@ impl<'s> Lowerer<'s> {
         // search also when its identity is read (`PATH_KEY`).
         let wants = |name: &str| self.demand.get(&r.var).is_some_and(|d| d.contains(name));
         let (node_values, rel_values) = (wants(NODE_VALUES), wants(REL_VALUES));
-        let walked = node_values || rel_values || wants(PATH_KEY);
         let Some(Scan::Node {
             schema: node,
             label,
@@ -2801,6 +2819,12 @@ impl<'s> Lowerer<'s> {
         else {
             return unsupported("internal: a path endpoint is not a node");
         };
+        // Read as a list's elements (`elements.rs`): carried as tuples.
+        let (node_tuples, rel_tuples) = (
+            self.walk_carries(r.var, NODE_TUPLES, &label, node, &rel_type, edge),
+            self.walk_carries(r.var, REL_TUPLES, &label, node, &rel_type, edge),
+        );
+        let walked = node_values || rel_values || node_tuples || rel_tuples || wants(PATH_KEY);
         let Some(start) = self.restriction(first, own, path::START)? else {
             return Ok(()); // it matches nothing
         };
@@ -2853,6 +2877,8 @@ impl<'s> Lowerer<'s> {
             rel,
             node_values,
             rel_values,
+            node_tuples,
+            rel_tuples,
         };
         let (ctes, cte, edges) = match shortest {
             None => {
@@ -2902,6 +2928,8 @@ impl<'s> Lowerer<'s> {
                 },
                 node_values,
                 rel_values,
+                node_tuples,
+                rel_tuples,
             },
         );
         for (end, column) in [(first, "start_id"), (last, "end_id")] {
@@ -2988,6 +3016,9 @@ impl<'s> Lowerer<'s> {
         };
         let wants = |name: &str| self.demand.get(&r.var).is_some_and(|d| d.contains(name));
         let (node_values, rel_values) = (wants(NODE_VALUES), wants(REL_VALUES));
+        // Its nodes or relationships, of several labels or types, have no one
+        // tuple type (`elements.rs`): it carries none, and reading them as a
+        // list's elements is not lowered (`Lowerer::path_elem`).
         // A shortest path's are recovered from its search also when its
         // identity is read.
         let walked = node_values || rel_values || wants(PATH_KEY);
@@ -3070,6 +3101,8 @@ impl<'s> Lowerer<'s> {
                 reversed: first != left,
                 node_values,
                 rel_values,
+                node_tuples: false,
+                rel_tuples: false,
             },
         );
         let column = |c: &str| col_at(&alias, c);
@@ -4036,6 +4069,29 @@ impl<'s> Lowerer<'s> {
         }
     }
 
+    /// Whether walk `r` carries its nodes (`NODE_TUPLES`) or relationships
+    /// (`REL_TUPLES`) as element tuples: when they are read as a list's
+    /// elements and have a tuple layout (not a composite id). Without one
+    /// it carries none, and such a read is not lowered; its values (S6c)
+    /// still are.
+    fn walk_carries(
+        &self,
+        r: VarId,
+        what: &str,
+        label: &str,
+        node: &'s NodeSchema,
+        rel_type: &str,
+        edge: &'s RelationshipSchema,
+    ) -> bool {
+        if !self.demand.get(&r).is_some_and(|d| d.contains(what)) {
+            return false;
+        }
+        match what {
+            NODE_TUPLES => elements::node_layout(label, node).is_ok(),
+            _ => elements::rel_layout(rel_type, edge).is_ok(),
+        }
+    }
+
     /// The columns a path relation exports through a CTE: its identity,
     /// ends, length, nodes, and the values it carries.
     fn path_physical(&self, v: VarId) -> Vec<String> {
@@ -4045,6 +4101,8 @@ impl<'s> Lowerer<'s> {
             nodes,
             node_values,
             rel_values,
+            node_tuples,
+            rel_tuples,
             ..
         }) = self.scans.get(&v)
         else {
@@ -4065,6 +4123,12 @@ impl<'s> Lowerer<'s> {
         }
         if *rel_values {
             cols.push(path::VALUE_COLUMNS[1]);
+        }
+        if *node_tuples {
+            cols.push(path::TUPLE_COLUMNS[0]);
+        }
+        if *rel_tuples {
+            cols.push(path::TUPLE_COLUMNS[1]);
         }
         cols.into_iter().map(str::to_string).collect()
     }
@@ -5775,7 +5839,16 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
             continue;
         }
         let mut uses = Vec::new();
-        graph_demand(e, &stmt.bindings, &mut uses);
+        graph_demand(e, &stmt.bindings, &mut uses, false);
+        for (v, what) in uses {
+            add(v, what);
+        }
+    }
+    // Read as a list's elements (`elements.rs`): an UNWIND's list, and a
+    // WITH item (which carries tuples when its nodes are of one label).
+    for e in element_contexts(&stmt.plan) {
+        let mut uses = Vec::new();
+        graph_demand(e, &stmt.bindings, &mut uses, true);
         for (v, what) in uses {
             add(v, what);
         }
@@ -5814,8 +5887,9 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
             continue;
         };
         let (nodes, rels) = (wanted.contains(NODE_VALUES), wanted.contains(REL_VALUES));
+        let (node_tuples, rel_tuples) = (wanted.contains(NODE_TUPLES), wanted.contains(REL_TUPLES));
         let key = wanted.contains(PATH_KEY);
-        if nodes {
+        if nodes || node_tuples {
             elements.extend(part.nodes.iter().map(|n| (n.var, ALL_PROPERTIES)));
         }
         for r in &part.rels {
@@ -5824,14 +5898,18 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
                     if key {
                         elements.push((r.var, PATH_KEY));
                     }
-                    if nodes {
-                        elements.push((r.var, NODE_VALUES));
-                    }
-                    if rels {
-                        elements.push((r.var, REL_VALUES));
+                    for (wanted, what) in [
+                        (nodes, NODE_VALUES),
+                        (rels, REL_VALUES),
+                        (node_tuples, NODE_TUPLES),
+                        (rel_tuples, REL_TUPLES),
+                    ] {
+                        if wanted {
+                            elements.push((r.var, what));
+                        }
                     }
                 }
-                None if rels => elements.push((r.var, ALL_PROPERTIES)),
+                None if rels || rel_tuples => elements.push((r.var, ALL_PROPERTIES)),
                 None => {}
             }
         }
@@ -5884,7 +5962,47 @@ fn listed_elements(e: &LogicalExpr, bindings: &[Binding]) -> Vec<VarId> {
 /// The graph values (`value.rs`) an expression reads: (variable, what of
 /// it). `length(p)` and `size()` of a list are counted from the path's
 /// structure and read none.
-fn graph_demand(e: &LogicalExpr, bindings: &[Binding], out: &mut Vec<(VarId, &'static str)>) {
+/// The expressions whose paths' nodes / relationships are read as a list's
+/// elements: an UNWIND's list and a WITH's items.
+fn element_contexts(op: &BoundOp) -> Vec<&LogicalExpr> {
+    match op {
+        BoundOp::Unit => Vec::new(),
+        BoundOp::Unwind { input, expr, .. } => {
+            let mut v = element_contexts(input);
+            v.push(expr);
+            v
+        }
+        BoundOp::Project { input, projection } => {
+            let mut v = element_contexts(input);
+            // A variable passed through reads nothing of it.
+            if projection.kind == ProjectionKind::With {
+                v.extend(
+                    projection
+                        .items
+                        .iter()
+                        .map(|i| &i.expr)
+                        .filter(|e| !matches!(e, LogicalExpr::TableAlias(_))),
+                );
+            }
+            v
+        }
+        BoundOp::Match { input, .. }
+        | BoundOp::Sort { input, .. }
+        | BoundOp::Skip { input, .. }
+        | BoundOp::Limit { input, .. } => element_contexts(input),
+        BoundOp::Union { arms, .. } => arms.iter().flat_map(element_contexts).collect(),
+    }
+}
+
+/// `nested`: `e` is inside another expression (a comprehension's list, …),
+/// where a path's nodes / relationships are a list's elements; otherwise a
+/// value (a RETURN item).
+fn graph_demand(
+    e: &LogicalExpr,
+    bindings: &[Binding],
+    out: &mut Vec<(VarId, &'static str)>,
+    nested: bool,
+) {
     let structural = match e {
         LogicalExpr::ScalarFnCall(f) => match f.args.as_slice() {
             [arg] if f.name.eq_ignore_ascii_case("size") => {
@@ -5900,14 +6018,17 @@ fn graph_demand(e: &LogicalExpr, bindings: &[Binding], out: &mut Vec<(VarId, &'s
     if structural {
         return;
     }
-    match value::graph_ref(e, bindings) {
-        Some(GraphRef::Path(p)) => out.extend([(p, NODE_VALUES), (p, REL_VALUES)]),
-        Some(GraphRef::Nodes(p)) => out.push((p, NODE_VALUES)),
-        Some(GraphRef::Rels(p)) => out.push((p, REL_VALUES)),
-        Some(GraphRef::List(r)) => out.push((r, REL_VALUES)),
-        Some(GraphRef::Carried(_)) | None => {
+    match (value::graph_ref(e, bindings), nested) {
+        (Some(GraphRef::Path(p)), _) => out.extend([(p, NODE_VALUES), (p, REL_VALUES)]),
+        (Some(GraphRef::Nodes(p)), false) => out.push((p, NODE_VALUES)),
+        (Some(GraphRef::Rels(p)), false) => out.push((p, REL_VALUES)),
+        (Some(GraphRef::List(r)), false) => out.push((r, REL_VALUES)),
+        (Some(GraphRef::Nodes(p)), true) => out.push((p, NODE_TUPLES)),
+        (Some(GraphRef::Rels(p)), true) => out.push((p, REL_TUPLES)),
+        (Some(GraphRef::List(r)), true) => out.push((r, REL_TUPLES)),
+        (Some(GraphRef::Carried(_)) | None, _) => {
             for c in crate::bound_plan::expr::children(e) {
-                graph_demand(c, bindings, out);
+                graph_demand(c, bindings, out, true);
             }
         }
     }
