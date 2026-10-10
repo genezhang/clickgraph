@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; next: S7e2 lists of nodes / relationships / paths)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; next: S7e2b lists of a variable-length relationship's nodes / relationships)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,11 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-10: **P-4c S7e2a: lists of nodes and relationships** (#1345, `src/bound_plan/lower/elements.rs`, `Kind::Element`, behind `CLICKGRAPH_BOUND_PLAN=on`). S7e2 split: S7e2a lists built from the current rows, S7e2b a walk's nodes / relationships (variable-length and shortest paths).
+  - A list's element is a typed tuple (a node's id and declared properties; a relationship's ends, `edge_id`, properties): `collect(n)`, `[a, b]`, fixed paths' `nodes(p)` / `relationships(p)`, carried by WITH; elements (UNWIND variables, comprehension parameters) read slots (typed: sortable, groupable, aggregatable — `Dynamic` values are not), compare by identity, `type()`, label tests, `count`, `collect`; returned as S6c values. Mixed labels / values, indexing, `head`, ORDER BY an element and other functions over elements are refused.
+  - Sweeps: every lowered shape equals Neo4j but unordered `collect` orders; review's ~400 shapes none worse than legacy. Mutation check: 10 of 10. Oracle unchanged (MATCH 409), corpus lowers 788 (was 784); live suite unchanged. Review: 3 wrong answers fixed (mixed lists returned raw tuples; a boolean on an integer column read 1 / 0; `+` of lists of different labels).
+  - Known (older): parallel equal relationships with no `edge_id` are one in DISTINCT; relationship `elementId`s are built from their ends (Bolt merges parallel ones).
 
 - 2026-10-10: **P-4c S7e1: lists of values** (#1344, `src/bound_plan/lower/expr.rs` `comprehension` / `element` / `list_addition`, `unwind.rs` `Kind`, `mod.rs` `order_collect`, `FunctionMapper::lists`, behind `CLICKGRAPH_BOUND_PLAN=on`). S7e split: S7e1 values, S7e2 lists of nodes / relationships / paths, S7e3 maps.
   - List comprehensions over values (`arrayFilter` / `arrayMap`, NULL of a NULL list, nested, a kind UNWIND reads); boolean list elements cast (`[1, 0]` → `[true, false]`); `collect()` over ordered rows (rows numbered first, values sorted by the number; DISTINCT keeps the first); the binder moves an aggregate's `DISTINCT` to the whole argument; `+` with a list concatenates (ClickHouse `plus` adds arrays element by element); an aggregate in a comprehension body is an error, as in Neo4j.

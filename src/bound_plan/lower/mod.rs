@@ -61,6 +61,7 @@
 //! (Cypher returns no rows; it is not an error): the query lowers to a
 //! relation with no rows, and its properties read as NULL.
 
+mod elements;
 mod expr;
 mod path;
 #[cfg(test)]
@@ -4531,6 +4532,10 @@ impl<'s> Lowerer<'s> {
         keys: &[SortKey],
         items: &HashMap<VarId, RenderExpr>,
     ) -> Result<Vec<OrderByItem>, LowerError> {
+        if keys.iter().any(|k| self.holds_elements(&k.expr)) {
+            // A tuple would sort by its columns.
+            return unsupported("ORDER BY a node or relationship of a list");
+        }
         let keys = keys
             .iter()
             .map(|k| {
@@ -4563,6 +4568,12 @@ impl<'s> Lowerer<'s> {
         cte: Option<&str>,
     ) -> Result<(Body, Exports<'s>, Vec<ResultColumn>), LowerError> {
         let aggregating = p.aggregates();
+        // What each item is, for this projection's ORDER BY / WHERE (and the
+        // next segment's reads of a WITH's).
+        for it in &p.items {
+            let kind = self.kind(&it.expr);
+            self.kinds.insert(it.var, kind);
+        }
         let mut body = Body {
             distinct: p.distinct,
             grouped: aggregating && p.items.iter().any(|i| !i.aggregate),
@@ -4658,6 +4669,30 @@ impl<'s> Lowerer<'s> {
                 body.group_by.push(e.clone());
             }
             items_env.insert(it.var, e.clone());
+            // A list's node or relationship, or a list of them, returned: their
+            // values (`elements.rs`); a WITH carries the tuples.
+            if cte.is_none() {
+                if let Some((ty, value)) = self.elements_value(&it.expr, &e)? {
+                    if body.distinct && it.aggregate {
+                        return unsupported("DISTINCT of an aggregated list of nodes");
+                    }
+                    let column = body.column(RenderExpr::Raw(value), &it.name);
+                    if !it.aggregate {
+                        // Grouped (above) or made distinct by its tuples.
+                        body.determined.push(column.clone());
+                        if body.distinct && !aggregating {
+                            body.distinct_keys.push(e.clone());
+                        }
+                    }
+                    self.identities.push((it.name.clone(), vec![e]));
+                    shape.push(ResultColumn {
+                        name: it.name.clone(),
+                        kind: ResultKind::Graph(ty),
+                        columns: vec![(it.name.clone(), column)],
+                    });
+                    continue;
+                }
+            }
             match cte {
                 // A constant needs no column: the next segment uses it as is.
                 Some(_) if is_constant(&e) => {
@@ -5730,6 +5765,11 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
                 add(v, &prop);
             }
         }
+        // A node or relationship put in a list carries every property
+        // (`elements.rs`: a list's elements are tuples of them).
+        for v in listed_elements(e, &stmt.bindings) {
+            add(v, ALL_PROPERTIES);
+        }
         // A path or list read as a value needs its elements' values.
         if passed.iter().any(|x| std::ptr::eq(*x, *e)) {
             continue;
@@ -5801,6 +5841,44 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
     }
     pass_through(&mut demand);
     demand
+}
+
+/// The nodes and relationships an expression puts in a list: `collect(a)`
+/// and `[a, …]` items.
+fn listed_elements(e: &LogicalExpr, bindings: &[Binding]) -> Vec<VarId> {
+    use crate::query_planner::logical_expr::{Operator, TableAlias};
+    let element = |x: &LogicalExpr| match x {
+        LogicalExpr::TableAlias(TableAlias(n)) => parse_var(n).filter(|v| {
+            matches!(
+                bindings[v.0 as usize].kind,
+                BindingKind::Node { .. } | BindingKind::Rel { length: None, .. }
+            )
+        }),
+        _ => None,
+    };
+    let mut out = Vec::new();
+    let mut visit = vec![e];
+    while let Some(x) = visit.pop() {
+        match x {
+            LogicalExpr::AggregateFnCall(f) if f.name.eq_ignore_ascii_case("collect") => {
+                for a in &f.args {
+                    let a = match a {
+                        LogicalExpr::OperatorApplicationExp(op) | LogicalExpr::Operator(op)
+                            if op.operator == Operator::Distinct && op.operands.len() == 1 =>
+                        {
+                            &op.operands[0]
+                        }
+                        a => a,
+                    };
+                    out.extend(element(a));
+                }
+            }
+            LogicalExpr::List(items) => out.extend(items.iter().filter_map(element)),
+            _ => {}
+        }
+        visit.extend(crate::bound_plan::expr::children(x));
+    }
+    out
 }
 
 /// The graph values (`value.rs`) an expression reads: (variable, what of

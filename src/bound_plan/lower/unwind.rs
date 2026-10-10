@@ -35,8 +35,10 @@ use crate::sql_generator::emitters::clickhouse::to_sql_query::{
 };
 use crate::sql_generator::function_mapper::{current_function_mapper, Unwind};
 
+use super::elements::Elem;
 use super::{
-    col_at, parse_var, select, table_ref, unsupported, Body, Exports, LowerError, Lowerer, RowOrder,
+    col_at, parse_var, select, table_ref, unsupported, Body, Exports, LowerError, Lowerer,
+    RowOrder, Scan,
 };
 use crate::bound_plan::types::{BindingKind, VarId};
 
@@ -48,6 +50,54 @@ const POSITION: &str = "__cg_position";
 const ROW_NUMBER: &str = "__cg_row";
 /// The alias of the table of one row (`Unwind::one_row`).
 const ONE_ROW: &str = "__cg_one";
+
+impl Lowerer<'_> {
+    /// What a projected, unwound or comprehension variable is.
+    pub(super) fn var_kind(&self, v: VarId) -> Option<Kind> {
+        self.kinds
+            .get(&v)
+            .cloned()
+            .or_else(|| self.local_kinds.borrow().get(&v).cloned())
+    }
+
+    /// `nodes(p)` / `relationships(p)` (`f`) of a path of fixed
+    /// relationships whose nodes (relationships) are of one label (one
+    /// definition): what they are, and the elements in path order. A path an
+    /// OPTIONAL MATCH may leave NULL is not: its list would be NULL.
+    pub(super) fn path_elem(&self, f: &lx::ScalarFnCall) -> Option<(Elem, Vec<VarId>)> {
+        let [LogicalExpr::TableAlias(lx::TableAlias(n))] = f.args.as_slice() else {
+            return None;
+        };
+        let p = parse_var(n).filter(|p| matches!(self.binding(*p).kind, BindingKind::Path))?;
+        if self.binding(p).nullable {
+            return None;
+        }
+        let elements = self.paths.get(&p)?;
+        // Its nodes are the pattern's only when every relationship is fixed.
+        if !elements.rels.iter().all(|r| {
+            matches!(
+                self.scans.get(r),
+                Some(Scan::Rel { .. } | Scan::Rels { .. })
+            )
+        }) {
+            return None;
+        }
+        let vars = match f.name.to_ascii_lowercase().as_str() {
+            "nodes" => elements.nodes.clone(),
+            "relationships" => elements.rels.clone(),
+            _ => return None,
+        };
+        let mut elem = None;
+        for v in &vars {
+            let e = self.elem_of(*v)?;
+            if elem.as_ref().is_some_and(|x| *x != e) {
+                return None;
+            }
+            elem = Some(e);
+        }
+        Some((elem?, vars))
+    }
+}
 
 /// A list comprehension's part: `[x IN l WHERE p]` keeps elements, `[x IN l
 /// | e]` maps them (`[x IN l WHERE p | e]` is a map of a filter).
@@ -91,6 +141,9 @@ pub(super) enum Kind {
     Boolean,
     /// A list, of elements of this kind.
     List(Box<Kind>),
+    /// A node or relationship as a list's element (`elements.rs`): possibly
+    /// NULL.
+    Element(Elem),
     /// Not known here.
     Unknown,
 }
@@ -100,8 +153,8 @@ impl Kind {
     fn either(self, other: Kind) -> Kind {
         match (self, other) {
             (a, b) if a == b => a,
-            (Kind::Null, k @ (Kind::Scalar | Kind::Boolean))
-            | (k @ (Kind::Scalar | Kind::Boolean), Kind::Null) => k,
+            (Kind::Null, k @ (Kind::Scalar | Kind::Boolean | Kind::Element(_)))
+            | (k @ (Kind::Scalar | Kind::Boolean | Kind::Element(_)), Kind::Null) => k,
             (Kind::Scalar | Kind::Boolean, Kind::Scalar | Kind::Boolean) => Kind::Scalar,
             (Kind::List(a), Kind::List(b)) => Kind::List(Box::new(a.either(*b))),
             // A list that may be NULL: a ClickHouse array is never NULL.
@@ -113,7 +166,9 @@ impl Kind {
     pub(super) fn element(&self) -> Kind {
         match self {
             Kind::List(e) => (**e).clone(),
-            k @ (Kind::Scalar | Kind::Boolean | Kind::Null | Kind::Unknown) => k.clone(),
+            k @ (Kind::Scalar | Kind::Boolean | Kind::Null | Kind::Unknown | Kind::Element(_)) => {
+                k.clone()
+            }
         }
     }
 }
@@ -133,11 +188,11 @@ impl<'s> Lowerer<'s> {
                     .unwrap_or(Kind::Null),
             )),
             LogicalExpr::TableAlias(lx::TableAlias(n)) => parse_var(n)
-                .and_then(|v| {
-                    self.kinds
-                        .get(&v)
-                        .cloned()
-                        .or_else(|| self.local_kinds.borrow().get(&v).cloned())
+                .and_then(|v| match self.binding(v).kind {
+                    BindingKind::Node { .. } | BindingKind::Rel { length: None, .. } => {
+                        self.elem_of(v).map(Kind::Element)
+                    }
+                    _ => self.var_kind(v),
                 })
                 .unwrap_or(Kind::Unknown),
             LogicalExpr::PropertyAccessExp(pa) => match &pa.column {
@@ -193,6 +248,11 @@ impl<'s> Lowerer<'s> {
             LogicalExpr::ScalarFnCall(f) => {
                 let arg = |i: usize| f.args.get(i).map_or(Kind::Unknown, |a| self.kind(a));
                 match f.name.to_ascii_lowercase().as_str() {
+                    "nodes" | "relationships" => {
+                        self.path_elem(f).map_or(Kind::Unknown, |(elem, _)| {
+                            Kind::List(Box::new(Kind::Element(elem)))
+                        })
+                    }
                     "range" | "split" | "keys" => Kind::List(Box::new(Kind::Scalar)),
                     "toboolean" => Kind::Boolean,
                     "size" | "length" | "tostring" | "tointeger" | "tofloat" | "abs" | "ceil"
@@ -276,7 +336,16 @@ impl<'s> Lowerer<'s> {
                     }
                 })
                 .collect(),
-            _ => vec![None],
+            _ => match self.var_kind(v) {
+                Some(Kind::Element(elem)) => match self.layout(&elem) {
+                    Ok(l) => vec![l
+                        .node
+                        .and_then(|n| n.property_types.get(p))
+                        .or_else(|| l.rel.and_then(|r| r.property_types.get(p)))],
+                    Err(_) => vec![None],
+                },
+                _ => vec![None],
+            },
         };
         match declared.as_slice() {
             [] => Kind::Unknown,
@@ -322,6 +391,7 @@ impl<'s> Lowerer<'s> {
             Kind::Unknown | Kind::Null => {
                 RenderExpr::Raw((spelling.list_only)(&render_expr_to_sql_plain(&e)))
             }
+            Kind::Element(_) => return unsupported("UNWIND of a node or relationship"),
         };
         let alias = self.next_cte_alias();
         let mut body = Body::default();

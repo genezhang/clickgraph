@@ -444,6 +444,12 @@ impl<'s> Lowerer<'s> {
                 Ok(true)
             }
             (GraphRef::List(_), Some(_)) => Ok(false),
+            // A fixed path's nodes or relationships of one label or type: a
+            // list of tuples (`elements.rs`), whose elements a later clause
+            // reads.
+            (GraphRef::Nodes(_) | GraphRef::Rels(_), Some(_)) if matches!(&it.expr, LogicalExpr::ScalarFnCall(f) if self.path_elem(f).is_some()) => {
+                Ok(false)
+            }
             (g, None) => {
                 let v = self.graph_value(g)?;
                 let column = body.column(v.value, &it.name);

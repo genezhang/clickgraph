@@ -277,12 +277,14 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             // not NULL.
             filter: |x, p, l| format!("arrayFilter({x} -> {p}, {l})"),
             map: |x, e, l| format!("arrayMap({x} -> {e}, {l})"),
-            ordered_collect: |v, k| {
+            ordered_collect: |v, k, present| {
                 format!(
-                    "arrayMap(t -> t.2, arraySort(t -> t.1, groupArrayIf(({k}, {v}), \
-                     isNotNull({v}))))"
+                    "arrayMap(t -> t.2, arraySort(t -> t.1, groupArrayIf(({k}, {v}), {present})))"
                 )
             },
+            collect_if: |v, present| format!("groupArrayIf({v}, {present})"),
+            element: |t, i| format!("tupleElement({t}, {i})"),
+            is_null: |v| format!("isNull({v})"),
             distinct: |l| format!("arrayDistinct({l})"),
         })
     }

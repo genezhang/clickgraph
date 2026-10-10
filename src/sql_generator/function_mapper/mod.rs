@@ -499,9 +499,15 @@ pub(crate) struct Lists {
     pub filter: fn(&str, &str, &str) -> String,
     /// The value of `{1}` for each element `{0}` of the list `{2}`, in order.
     pub map: fn(&str, &str, &str) -> String,
-    /// An aggregate: the group's values of `{0}` that are not NULL, in the
-    /// order of the key `{1}` (unique per row).
-    pub ordered_collect: fn(&str, &str) -> String,
+    /// An aggregate: the group's values of `{0}` for which `{2}` holds (it
+    /// is present), in the order of the key `{1}` (unique per row).
+    pub ordered_collect: fn(&str, &str, &str) -> String,
+    /// An aggregate: the group's values of `{0}` for which `{1}` holds.
+    pub collect_if: fn(&str, &str) -> String,
+    /// Element `{1}` (1-based) of the tuple `{0}`.
+    pub element: fn(&str, usize) -> String,
+    /// Whether the value `{0}` is NULL, as a function call.
+    pub is_null: fn(&str) -> String,
     /// The list `{0}` without its repeated elements, each where it first
     /// occurs.
     pub distinct: fn(&str) -> String,

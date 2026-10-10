@@ -37,6 +37,7 @@ use crate::render_plan::render_expr::{
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::function_mapper::current_function_mapper;
 
+use super::elements::Elem;
 use super::unwind::{comprehension, Comprehension, Kind};
 use super::{parse_var, unsupported, At, LowerError, Lowerer, Scan};
 use crate::bound_plan::types::{BindingKind, BindingSource, VarId};
@@ -195,8 +196,15 @@ impl Lowerer<'_> {
                 let Some(v) = parse_var(&pa.table_alias.0) else {
                     return unsupported("an unbound property access");
                 };
-                match &self.binding(v).kind {
-                    BindingKind::Node { .. } | BindingKind::Rel { .. } => self.property(v, prop)?,
+                match (&self.binding(v).kind, self.var_kind(v)) {
+                    (BindingKind::Node { .. } | BindingKind::Rel { .. }, _) => {
+                        self.property(v, prop)?
+                    }
+                    // A list's node or relationship (`elements.rs`).
+                    (_, Some(Kind::Element(elem))) => {
+                        let t = self.variable(&pa.table_alias.0, items)?;
+                        self.elem_property(&t, &elem, prop)?
+                    }
                     _ => {
                         return unsupported("a property of a value (map, list element, WITH item)")
                     }
@@ -206,6 +214,16 @@ impl Lowerer<'_> {
                 let Some(v) = parse_var(variable) else {
                     return unsupported("an unbound label test");
                 };
+                if let (BindingKind::Value, Some(Kind::Element(elem))) =
+                    (&self.binding(v).kind, self.var_kind(v))
+                {
+                    let holds = match &elem {
+                        Elem::Node(l) => l == label,
+                        Elem::Rel { rel_type, .. } => rel_type == label,
+                    };
+                    let t = self.variable(variable, items)?;
+                    return self.elem_unless_null(&t, &elem, Literal::Boolean(holds));
+                }
                 let holds = match self.scans.get(&v) {
                     Some(Scan::Node { label: l, .. }) => l == label,
                     // NULL where an OPTIONAL MATCH left it NULL, as Cypher.
@@ -241,11 +259,33 @@ impl Lowerer<'_> {
             LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
                 self.operator(op, items)?
             }
+            // A list's elements are tuples of one type: of one label, or one
+            // definition, and nothing else (`elements.rs`).
+            LogicalExpr::List(xs)
+                if xs.iter().any(|x| self.holds_elements(x)) && !one_shape(&self.kind(e)) =>
+            {
+                return unsupported(
+                    "a list of nodes or relationships of several labels or types, or with values",
+                );
+            }
+            LogicalExpr::List(xs)
+                if matches!(self.kind(e), Kind::List(k) if matches!(*k, Kind::Element(_)))
+                    && xs
+                        .iter()
+                        .any(|x| matches!(x, LogicalExpr::Literal(lx::Literal::Null))) =>
+            {
+                return unsupported("a NULL in a list of nodes or relationships");
+            }
             LogicalExpr::List(xs) => RenderExpr::List(
                 xs.iter()
                     .map(|x| self.element(x, items))
                     .collect::<Result<_, _>>()?,
             ),
+            LogicalExpr::MapLiteral(entries)
+                if entries.iter().any(|(_, v)| self.holds_elements(v)) =>
+            {
+                return unsupported("a map of nodes or relationships of a list");
+            }
             LogicalExpr::MapLiteral(entries) => {
                 // In key order: maps are equal by their entries (DISTINCT,
                 // grouping, UNION), and ClickHouse compares them in order.
@@ -258,7 +298,16 @@ impl Lowerer<'_> {
             }
             LogicalExpr::ScalarFnCall(f) => self.scalar_fn(f, items)?,
             LogicalExpr::AggregateFnCall(f) => self.aggregate_fn(f, items)?,
-            LogicalExpr::Case(c) => RenderExpr::Case(self.case(c, items)?),
+            LogicalExpr::Case(c) => {
+                if c.when_then.iter().any(|(_, t)| self.holds_elements(t))
+                    || c.else_expr
+                        .as_deref()
+                        .is_some_and(|e| self.holds_elements(e))
+                {
+                    return unsupported("CASE of nodes or relationships of a list");
+                }
+                RenderExpr::Case(self.case(c, items)?)
+            }
             LogicalExpr::ReduceExpr(r) => RenderExpr::ReduceExpr(ReduceExpr {
                 accumulator: r.accumulator.clone(),
                 initial_value: Box::new(self.expr(&r.initial_value, items)?),
@@ -266,6 +315,12 @@ impl Lowerer<'_> {
                 list: Box::new(self.expr(&r.list, items)?),
                 expression: Box::new(self.expr(&r.expression, items)?),
             }),
+            LogicalExpr::ArraySubscript { array, .. } | LogicalExpr::ArraySlicing { array, .. }
+                if self.holds_elements(array) =>
+            {
+                // An element out of range would be a tuple of defaults.
+                return unsupported("an element or slice of a list of nodes or relationships");
+            }
             LogicalExpr::ArraySubscript { array, index } => RenderExpr::ArraySubscript {
                 array: Box::new(self.expr(array, items)?),
                 index: Box::new(self.expr(index, items)?),
@@ -350,6 +405,15 @@ impl Lowerer<'_> {
 
     fn operator(&self, op: &LOp, items: &Items) -> Result<RenderExpr, LowerError> {
         use lx::Operator as O;
+        // A list's node or relationship (`elements.rs`) by its identity.
+        let element_operands = op.operands.iter().any(|o| {
+            matches!(o, LogicalExpr::TableAlias(_))
+                && self.entity(o).is_none()
+                && matches!(self.kind(o), Kind::Element(_))
+        });
+        if element_operands {
+            return self.element_operator(op, items);
+        }
         let entities: Vec<VarId> = op.operands.iter().filter_map(|o| self.entity(o)).collect();
         if !entities.is_empty() {
             return match (op.operator, op.operands.len(), entities.as_slice()) {
@@ -375,9 +439,109 @@ impl Lowerer<'_> {
                 return Ok(e);
             }
         }
+        if op.operands.iter().any(|o| self.holds_elements(o)) {
+            return unsupported("an operator over nodes or relationships of a list");
+        }
         Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
             operator: op.operator,
             operands: self.all(&op.operands, items)?,
+        }))
+    }
+
+    /// `a IS [NOT] NULL`, `a = b`, `a <> b` where an operand is a list's node
+    /// or relationship: by its identity (elements of different labels or
+    /// types are never equal).
+    fn element_operator(&self, op: &LOp, items: &Items) -> Result<RenderExpr, LowerError> {
+        use lx::Operator as O;
+        let mut els = Vec::new();
+        for o in &op.operands {
+            let Kind::Element(elem) = self.kind(o) else {
+                return unsupported("a node or relationship of a list compared with a value");
+            };
+            // A node or relationship of the relation: its own columns.
+            let id = match self.entity(o).map(|v| self.identity(v)).transpose()? {
+                Some(Some(id)) => id,
+                Some(None) => vec![RenderExpr::Literal(Literal::Null)],
+                None => self.elem_identity(&self.expr(o, items)?, &elem)?,
+            };
+            els.push((id, elem));
+        }
+        let is_null = |id: &RenderExpr| {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: O::IsNull,
+                operands: vec![id.clone()],
+            })
+        };
+        match (op.operator, els.as_slice()) {
+            (O::IsNull | O::IsNotNull, [(id, _)]) => {
+                Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: op.operator,
+                    operands: vec![id[0].clone()],
+                }))
+            }
+            (O::Equal | O::NotEqual, [(a, ea), (b, eb)]) => {
+                let equal = op.operator == O::Equal;
+                if ea != eb {
+                    // NULL when either is NULL.
+                    return Ok(RenderExpr::Case(RenderCase {
+                        expr: None,
+                        when_then: vec![(
+                            super::or_all(vec![is_null(&a[0]), is_null(&b[0])]),
+                            RenderExpr::Literal(Literal::Null),
+                        )],
+                        else_expr: Some(Box::new(RenderExpr::Literal(Literal::Boolean(!equal)))),
+                    }));
+                }
+                let per_column: Vec<RenderExpr> = a
+                    .iter()
+                    .zip(b)
+                    .map(|(x, y)| {
+                        RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: op.operator,
+                            operands: vec![x.clone(), y.clone()],
+                        })
+                    })
+                    .collect();
+                Ok(if equal {
+                    super::and_all(per_column).expect("an identity has columns")
+                } else {
+                    super::or_all(per_column)
+                })
+            }
+            _ => unsupported("an operator over nodes or relationships of a list"),
+        }
+    }
+
+    /// Whether `e` is a list's node or relationship, or a list holding them.
+    pub(super) fn holds_elements(&self, e: &LogicalExpr) -> bool {
+        fn holds(k: &Kind) -> bool {
+            match k {
+                Kind::Element(_) => true,
+                Kind::List(k) => holds(k),
+                _ => false,
+            }
+        }
+        holds(&self.kind(e))
+    }
+
+    /// `value` for an element, NULL where the element tuple `t` is NULL.
+    fn elem_unless_null(
+        &self,
+        t: &RenderExpr,
+        elem: &Elem,
+        value: Literal,
+    ) -> Result<RenderExpr, LowerError> {
+        let id = self.elem_identity(t, elem)?;
+        Ok(RenderExpr::Case(RenderCase {
+            expr: None,
+            when_then: vec![(
+                RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: lx::Operator::IsNull,
+                    operands: vec![id[0].clone()],
+                }),
+                RenderExpr::Literal(Literal::Null),
+            )],
+            else_expr: Some(Box::new(RenderExpr::Literal(value))),
         }))
     }
 
@@ -397,6 +561,14 @@ impl Lowerer<'_> {
         }
         if ka == Kind::Null || kb == Kind::Null {
             return Ok(Some(RenderExpr::Literal(Literal::Null)));
+        }
+        // Lists of elements of one label or definition only (their tuples
+        // are of one type); a node appended is NULL when it is NULL.
+        if (self.holds_elements(a) || self.holds_elements(b)) && !(one_shape(&ka) && ka == kb) {
+            return unsupported(
+                "`+` of lists of nodes or relationships of different labels or types, \
+                 or with a value",
+            );
         }
         let mut args = Vec::new();
         for (e, k) in [(a, ka), (b, kb)] {
@@ -605,6 +777,13 @@ impl Lowerer<'_> {
                 "a variable-length relationship's list other than as a RETURN / WITH item or in \
                  size() (S7 lists)",
             ),
+            // As a list's element (`elements.rs`): where an element is
+            // read is decided by its kind (`holds_elements`).
+            (BindingKind::Node { .. } | BindingKind::Rel { .. }, _)
+                if self.elem_of(v).is_some() =>
+            {
+                self.elem_tuple(v)
+            }
             (BindingKind::Node { .. } | BindingKind::Rel { .. }, _) => {
                 unsupported("a node or relationship as a value (in a list, collect(), CASE …)")
             }
@@ -721,6 +900,26 @@ impl Lowerer<'_> {
                 return self.graph_size(g);
             }
         }
+        if let Some((_, vars)) = self.path_elem(f) {
+            let tuples = vars
+                .iter()
+                .map(|v| self.elem_tuple(*v))
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(RenderExpr::List(tuples));
+        }
+        if let [arg] = f.args.as_slice() {
+            if let (Kind::Element(elem), false) = (self.kind(arg), self.entity(arg).is_some()) {
+                let t = self.expr(arg, items)?;
+                return match (f.name.to_ascii_lowercase().as_str(), &elem) {
+                    // `labels()` of a NULL element is NULL, and a ClickHouse
+                    // array cannot be.
+                    ("type", Elem::Rel { rel_type, .. }) => {
+                        self.elem_unless_null(&t, &elem, Literal::String(rel_type.clone()))
+                    }
+                    _ => unsupported(format!("{}() of a node or relationship of a list", f.name)),
+                };
+            }
+        }
         if let Some(p) = self.path_var(&f.args) {
             return match f.name.to_ascii_lowercase().as_str() {
                 "length" => self.path_length(p),
@@ -764,6 +963,12 @@ impl Lowerer<'_> {
                 (_, Some(Scan::Impossible)) => Ok(RenderExpr::Literal(Literal::Null)),
                 _ => unsupported(format!("{}() of a node or relationship", f.name)),
             };
+        }
+        let size = ["size", "length"]
+            .iter()
+            .any(|n| f.name.eq_ignore_ascii_case(n));
+        if !size && f.args.iter().any(|a| self.holds_elements(a)) {
+            return unsupported(format!("{}() of nodes or relationships of a list", f.name));
         }
         Ok(RenderExpr::ScalarFnCall(ScalarFnCall {
             name: f.name.clone(),
@@ -823,6 +1028,17 @@ impl Lowerer<'_> {
                 args: vec![arg],
             }));
         }
+        // A list's node or relationship (`elements.rs`).
+        // (`count(a)` of a node or relationship of the relation counts its
+        // identity, below.)
+        if let Some(arg) = arg.filter(|a| name == "collect" || self.entity(a).is_none()) {
+            if let Kind::Element(elem) = self.kind(arg) {
+                return self.element_aggregate(&name, arg, &elem, distinct, items);
+            }
+            if self.holds_elements(arg) {
+                return unsupported(format!("{}() of lists of nodes or relationships", f.name));
+            }
+        }
         let args = match (name.as_str(), arg) {
             // A list of booleans shows them as booleans.
             ("collect", Some(arg)) => {
@@ -876,9 +1092,11 @@ impl Lowerer<'_> {
                 [one] => one,
                 _ => return unsupported("internal: collect() of other than one value"),
             };
+            let value = render_expr_to_sql_plain(value);
             let list = (spelling.ordered_collect)(
-                &render_expr_to_sql_plain(value),
+                &value,
                 &render_expr_to_sql_plain(key),
+                &format!("NOT {}", (spelling.is_null)(&value)),
             );
             return Ok(RenderExpr::Raw(if distinct {
                 (spelling.distinct)(&list)
@@ -908,6 +1126,76 @@ impl Lowerer<'_> {
     }
 }
 
+impl Lowerer<'_> {
+    /// `collect(x)` / `count(x)` of a list's node or relationship `x`: the
+    /// tuples (`elements.rs`) whose identity is not NULL; their number.
+    fn element_aggregate(
+        &self,
+        name: &str,
+        arg: &LogicalExpr,
+        elem: &Elem,
+        distinct: bool,
+        items: &Items,
+    ) -> Result<RenderExpr, LowerError> {
+        let Some(spelling) = current_function_mapper().lists() else {
+            return unsupported("a list of nodes or relationships in this SQL dialect");
+        };
+        let t = self.expr(arg, items)?;
+        // A node or relationship of the relation: its own identity columns.
+        let id = match self.entity(arg) {
+            Some(v) => match self.identity(v)? {
+                Some(id) => id,
+                None => return unsupported("internal: a listed element with no identity"),
+            },
+            None => self.elem_identity(&t, elem)?,
+        };
+        let present = format!(
+            "NOT {}",
+            (spelling.is_null)(&render_expr_to_sql_plain(&id[0]))
+        );
+        let t_sql = render_expr_to_sql_plain(&t);
+        match name {
+            "collect" => {
+                let list = match &self.collect_order {
+                    Some(key) => {
+                        (spelling.ordered_collect)(&t_sql, &render_expr_to_sql_plain(key), &present)
+                    }
+                    None => (spelling.collect_if)(&t_sql, &present),
+                };
+                Ok(RenderExpr::Raw(if distinct {
+                    (spelling.distinct)(&list)
+                } else {
+                    list
+                }))
+            }
+            "count" => {
+                let counted = match id.as_slice() {
+                    [one] => one.clone(),
+                    _ if !distinct => id[0].clone(),
+                    _ => {
+                        return unsupported(
+                            "count(DISTINCT x) of a list's relationship identified by its ends",
+                        )
+                    }
+                };
+                let arg = if distinct {
+                    RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: lx::Operator::Distinct,
+                        operands: vec![counted],
+                    })
+                } else {
+                    counted
+                };
+                Ok(RenderExpr::AggregateFnCall(AggregateFnCall {
+                    name: "count".to_string(),
+                    args: vec![arg],
+                }))
+            }
+            _ => unsupported(format!("{name}() of a node or relationship of a list")),
+        }
+    }
+}
+
 /// A constant that is still an aggregate: `CASE WHEN count(*) >= 0 THEN c
 /// ELSE c END`. The projection stays an aggregation (one row, or one per
 /// group, also on an empty input) even when every aggregate in it folded.
@@ -927,6 +1215,16 @@ fn aggregate_constant(value: RenderExpr) -> RenderExpr {
         )],
         else_expr: Some(Box::new(value)),
     })
+}
+
+/// Whether `k` is a node or relationship of one label or definition, or a
+/// list (of lists) of them: their tuples are of one type.
+fn one_shape(k: &Kind) -> bool {
+    match k {
+        Kind::Element(_) => true,
+        Kind::List(k) => one_shape(k),
+        _ => false,
+    }
 }
 
 fn literal(l: &lx::Literal) -> Literal {
