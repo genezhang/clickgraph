@@ -49,6 +49,36 @@ const ROW_NUMBER: &str = "__cg_row";
 /// The alias of the table of one row (`Unwind::one_row`).
 const ONE_ROW: &str = "__cg_one";
 
+/// A list comprehension's part: `[x IN l WHERE p]` keeps elements, `[x IN l
+/// | e]` maps them (`[x IN l WHERE p | e]` is a map of a filter).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Comprehension {
+    Filter,
+    Map,
+}
+
+/// The comprehension `f` is (the AST converter spells one as `arrayFilter` /
+/// `arrayMap` of a lambda of one parameter): which, its parameter, the
+/// predicate or value, and the list.
+pub(super) fn comprehension(
+    f: &lx::ScalarFnCall,
+) -> Option<(Comprehension, VarId, &LogicalExpr, &LogicalExpr)> {
+    let how = if f.name.eq_ignore_ascii_case("arrayFilter") {
+        Comprehension::Filter
+    } else if f.name.eq_ignore_ascii_case("arrayMap") {
+        Comprehension::Map
+    } else {
+        return None;
+    };
+    let [LogicalExpr::Lambda(l), list] = f.args.as_slice() else {
+        return None;
+    };
+    let [x] = l.params.as_slice() else {
+        return None;
+    };
+    Some((how, parse_var(x)?, &l.body, list))
+}
+
 /// What a value is, as far as UNWIND needs to know.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Kind {
@@ -80,7 +110,7 @@ impl Kind {
     }
 
     /// The kind of the records `UNWIND` of a value of this kind gives.
-    fn element(&self) -> Kind {
+    pub(super) fn element(&self) -> Kind {
         match self {
             Kind::List(e) => (**e).clone(),
             k @ (Kind::Scalar | Kind::Boolean | Kind::Null | Kind::Unknown) => k.clone(),
@@ -103,7 +133,12 @@ impl<'s> Lowerer<'s> {
                     .unwrap_or(Kind::Null),
             )),
             LogicalExpr::TableAlias(lx::TableAlias(n)) => parse_var(n)
-                .and_then(|v| self.kinds.get(&v).cloned())
+                .and_then(|v| {
+                    self.kinds
+                        .get(&v)
+                        .cloned()
+                        .or_else(|| self.local_kinds.borrow().get(&v).cloned())
+                })
                 .unwrap_or(Kind::Unknown),
             LogicalExpr::PropertyAccessExp(pa) => match &pa.column {
                 PropertyValue::Column(p) => {
@@ -114,9 +149,16 @@ impl<'s> Lowerer<'s> {
             LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
                 match (op.operator, op.operands.as_slice()) {
                     (O::Distinct, [x]) => self.kind(x),
-                    // `+` of lists concatenates, and appends a value to a list.
+                    // `+` of lists concatenates, and appends a value to a list
+                    // (`Lowerer::list_addition`); with NULL it is NULL.
                     (O::Addition, [a, b]) => match (self.kind(a), self.kind(b)) {
                         (Kind::Scalar | Kind::Null, Kind::Scalar | Kind::Null) => Kind::Scalar,
+                        (Kind::Null, Kind::List(_)) | (Kind::List(_), Kind::Null) => Kind::Null,
+                        (Kind::List(x), Kind::List(y)) => Kind::List(Box::new(x.either(*y))),
+                        (Kind::List(x), e @ (Kind::Scalar | Kind::Boolean))
+                        | (e @ (Kind::Scalar | Kind::Boolean), Kind::List(x)) => {
+                            Kind::List(Box::new(x.either(e)))
+                        }
                         _ => Kind::Unknown,
                     },
                     (O::Addition | O::Distinct, _) => Kind::Unknown,
@@ -129,6 +171,23 @@ impl<'s> Lowerer<'s> {
                         _,
                     ) => Kind::Scalar,
                     _ => Kind::Boolean,
+                }
+            }
+            LogicalExpr::ScalarFnCall(f) if comprehension(f).is_some() => {
+                let Some((how, x, body, list)) = comprehension(f) else {
+                    return Kind::Unknown;
+                };
+                let list = self.kind(list);
+                self.local_kinds.borrow_mut().insert(x, list.element());
+                // A list (or an error, when the list is not one).
+                match (list, how) {
+                    (Kind::Null, _) => Kind::Null,
+                    (l @ Kind::List(_), Comprehension::Filter) => l,
+                    (Kind::Unknown, Comprehension::Filter) => Kind::List(Box::new(Kind::Unknown)),
+                    (Kind::List(_) | Kind::Unknown, Comprehension::Map) => {
+                        Kind::List(Box::new(self.kind(body)))
+                    }
+                    _ => Kind::Unknown,
                 }
             }
             LogicalExpr::ScalarFnCall(f) => {
@@ -359,7 +418,7 @@ impl<'s> Lowerer<'s> {
     /// The rows so far, in their order, become a CTE exporting the scope and
     /// each row's number in that order; the rows are then in the order of
     /// that number.
-    fn number_rows(&mut self) -> Result<(), LowerError> {
+    pub(super) fn number_rows(&mut self) -> Result<(), LowerError> {
         let Some(spelling) = current_function_mapper().unwind() else {
             return unsupported("UNWIND in this SQL dialect");
         };

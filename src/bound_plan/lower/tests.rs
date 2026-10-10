@@ -477,7 +477,7 @@ fn what_is_not_lowered_yet() {
     );
     not_lowered(
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN [x IN nodes(p) | x.name] AS n",
-        "comprehension",
+        "nodes() of a path other than",
     );
     not_lowered(
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN head(nodes(p)) AS n",
@@ -500,10 +500,6 @@ fn what_is_not_lowered_yet() {
         "`v.*` of an element of several",
     );
     not_lowered("MATCH (n) RETURN id(n)", "id()");
-    not_lowered(
-        "MATCH (a:User) RETURN [x IN [1, 2] | x * 2] AS l",
-        "comprehension",
-    );
 }
 
 /// §4.1: the bound-plan path depends on neither the analyzer nor the render
@@ -719,10 +715,14 @@ fn rows_keep_their_order_until_a_match_or_an_aggregation() {
         "MATCH (a:User) WITH a ORDER BY a.name MATCH (a)-[:FOLLOWS]->(b:User) RETURN b.name",
     ));
     assert!(!joined.contains("ORDER BY"), "{joined}");
-    // An order-sensitive aggregate over ordered rows is not lowered yet.
-    not_lowered(
+    // `collect` lists ordered rows in their order (S7e1): numbered first.
+    has(
         "MATCH (a:User) WITH a ORDER BY a.name RETURN collect(a.name) AS names",
-        "collect() over ordered rows",
+        &[
+            r#"row_number() OVER (ORDER BY w1.__o0 ASC) AS "__cg_row" FROM with_w1 AS w1 )"#,
+            "SELECT arrayMap(t -> t.2, arraySort(t -> t.1, groupArrayIf((w2.__cg_row, \
+             w2.p2_v1_name), isNotNull(w2.p2_v1_name)))) AS \"names\" FROM with_w2 AS w2",
+        ],
     );
     not_lowered(
         "MATCH (a:User) WITH a ORDER BY a.name WITH DISTINCT a.country AS c LIMIT 2 RETURN c",
@@ -775,11 +775,18 @@ fn a_group_key_that_matches_nothing_still_groups() {
 #[test]
 fn an_order_the_sql_cannot_keep_is_not_relied_on() {
     // `collect` reads its input in order, whatever the projection's own
-    // ORDER BY does to the groups.
-    not_lowered(
+    // ORDER BY does to the groups: by the rows' number, numbered before the
+    // WITH's own CTE (S7e1).
+    has(
         "MATCH (a:User) WITH a ORDER BY a.name WITH a.country AS c, collect(a.name) AS names \
          ORDER BY c RETURN c, names",
-        "collect() over ordered rows",
+        &[
+            r#"row_number() OVER (ORDER BY w1.__o0 ASC) AS "__cg_row" FROM with_w1 AS w1 )"#,
+            "with_w3 AS ( SELECT w2.p2_v1_country AS \"v2\", arrayMap(t -> t.2, arraySort(t -> \
+             t.1, groupArrayIf((w2.__cg_row, w2.p2_v1_name), isNotNull(w2.p2_v1_name)))) AS \
+             \"v3\", w2.p2_v1_country AS \"__o0\" FROM with_w2 AS w2 GROUP BY w2.p2_v1_country )",
+            "FROM with_w3 AS w3 ORDER BY w3.__o0 ASC",
+        ],
     );
     // DISTINCT and aggregation keep their input's first-seen order in Neo4j;
     // the SQL does not, so a later LIMIT or collect cannot rely on it.
@@ -791,7 +798,7 @@ fn an_order_the_sql_cannot_keep_is_not_relied_on() {
     not_lowered(
         "MATCH (a:User) WITH a ORDER BY a.name DESC WITH DISTINCT a \
          WITH collect(a.name) AS l RETURN l",
-        "collect() over ordered rows",
+        "collect() over rows in an order the SQL does not keep",
     );
     not_lowered(
         "MATCH (a:User) ORDER BY a.name WITH DISTINCT a.country AS c LIMIT 2 RETURN c",
@@ -3477,10 +3484,14 @@ fn an_unwind_keeps_the_order_of_ordered_rows() {
             "ORDER BY w3.__o0 ASC, w3.__o1 ASC",
         ],
     );
-    // `collect` would rely on that order.
-    not_lowered(
+    // `collect` relies on that order: the rows are numbered in it.
+    has(
         "UNWIND [3, 1] AS x RETURN collect(x) AS l",
-        "collect() over ordered rows",
+        &[
+            r#"row_number() OVER (ORDER BY w1.__o0 ASC) AS "__cg_row" FROM with_w1 AS w1 )"#,
+            "SELECT arrayMap(t -> t.2, arraySort(t -> t.1, groupArrayIf((w2.__cg_row, w2.v0), \
+             isNotNull(w2.v0)))) AS \"l\" FROM with_w2 AS w2",
+        ],
     );
 }
 
@@ -3809,6 +3820,133 @@ fn databricks_union_is_not_lowered() {
     });
     assert!(
         matches!(&got, Err(e) if e.contains("UNION in this SQL dialect")),
+        "{got:?}"
+    );
+}
+
+/// S7e1: a list comprehension over values filters and maps by the
+/// dialect's spellings; its parameter is printed by its generated name.
+#[test]
+fn a_list_comprehension_filters_and_maps() {
+    has(
+        "RETURN [x IN [1, 2, 3] WHERE x > 1 | x * 2] AS l",
+        &[r#"SELECT arrayMap(v0 -> v0 * 2, arrayFilter(v1 -> v1 > 1, [1, 2, 3])) AS "l""#],
+    );
+    // NULL of a NULL list; a comprehension of a comprehension.
+    has(
+        "WITH [[1, 2], [3]] AS l RETURN [x IN null | x] AS n, [x IN l | [y IN x | y * 10]] AS m",
+        &[
+            r#"SELECT NULL AS "n", arrayMap(v2 -> arrayMap(v3 -> v3 * 10, v2), [[1, 2], [3]]) AS "m""#,
+        ],
+    );
+    // A property and an aggregate in the list; a column read in the body.
+    has(
+        "MATCH (a:User) RETURN a.country AS c, [n IN collect(a.name) WHERE n <> a.country] AS l",
+        &[
+            "arrayFilter(v1 -> v1 <> v0.country, coalesce(groupArray(v0.full_name), [])) AS \"l\"",
+            "GROUP BY v0.country",
+        ],
+    );
+    // In a WHERE, and unwound.
+    has(
+        "UNWIND [x IN range(1, 4) WHERE x % 2 = 0] AS y RETURN y",
+        &["ARRAY JOIN arrayFilter(v0 -> v0 % 2 = 0, range(1, (4) + 1)) AS __cg_element"],
+    );
+}
+
+/// S7e1: ClickHouse holds a comparison as `UInt8`: a list's boolean
+/// elements are cast, so the list shows booleans.
+#[test]
+fn a_list_of_booleans_shows_booleans() {
+    has(
+        "RETURN [1 > 0, false] AS l, [x IN [1, 2] | x > 1] AS m",
+        &[
+            r#"[CAST(1 > 0 AS Nullable(Bool)), false] AS "l""#,
+            r#"arrayMap(v0 -> CAST(v0 > 1 AS Nullable(Bool)), [1, 2]) AS "m""#,
+        ],
+    );
+    // `DISTINCT` applies to the whole argument (the parser reads it as a
+    // prefix of the first operand).
+    has(
+        "MATCH (a:User) RETURN collect(DISTINCT a.user_id > 3) AS l",
+        &[r#"coalesce(groupArray(DISTINCT CAST(v0.user_id > 3 AS Nullable(Bool))), []) AS "l""#],
+    );
+}
+
+/// S7e1: `collect(DISTINCT x)` over ordered rows keeps each value where it
+/// first occurs.
+#[test]
+fn an_ordered_collect_distinct_keeps_the_first_of_each() {
+    has(
+        "MATCH (a:User) WITH a ORDER BY a.name RETURN collect(DISTINCT a.country) AS l",
+        &[
+            "SELECT arrayDistinct(arrayMap(t -> t.2, arraySort(t -> t.1, \
+           groupArrayIf((w2.__cg_row, w2.p2_v1_country), isNotNull(w2.p2_v1_country))))) AS \"l\"",
+        ],
+    );
+}
+
+/// S7e1 review: `+` with a list concatenates (ClickHouse `plus` of arrays
+/// adds them element by element); a value is appended as a list of itself,
+/// and only when it is never NULL (`[1] + NULL` is NULL in Cypher).
+#[test]
+fn a_list_plus_concatenates() {
+    has(
+        "RETURN [x IN [1, 2] | x] + [x IN [3] | x] AS a, [x IN [1] | x] + 3 AS b, \
+         [x IN [1] | x] + null AS c",
+        &[
+            r#"arrayConcat(arrayMap(v0 -> v0, [1, 2]), arrayMap(v1 -> v1, [3])) AS "a""#,
+            r#"arrayConcat(arrayMap(v2 -> v2, [1]), [3]) AS "b""#,
+            r#"NULL AS "c""#,
+        ],
+    );
+    has(
+        "UNWIND [1, 2] AS x RETURN collect(x) + collect(x * 10) AS c",
+        &["arrayConcat(arrayMap(t -> t.2, arraySort(t -> t.1, groupArrayIf((w2.__cg_row, w2.v0)"],
+    );
+    not_lowered(
+        "MATCH (a:User) RETURN [x IN [1] | x] + (a.user_id - 1) AS l",
+        "`+` of a list and a value that may be NULL",
+    );
+}
+
+/// S7e1 review: comprehension parameters are printed as written, so the
+/// emitter does not take `x = y` for a comparison of nodes.
+#[test]
+fn comprehension_parameters_compare_as_values() {
+    has(
+        "RETURN [x IN [1, 2] | [y IN [1, 2] WHERE y <> x]] AS l",
+        &[r#"arrayMap(v0 -> arrayFilter(v1 -> v1 <> v0, [1, 2]), [1, 2]) AS "l""#],
+    );
+}
+
+/// As in Neo4j: an aggregate is not evaluated per list element.
+#[test]
+fn an_aggregate_inside_a_comprehension_is_an_error() {
+    not_lowered(
+        "MATCH (a:User) RETURN [x IN collect(a.user_id) | x * count(*)] AS l",
+        "Can't use aggregating expressions inside of expressions executing over lists",
+    );
+}
+
+#[test]
+fn databricks_comprehension_is_not_lowered() {
+    use crate::server::query_context::{set_current_schema, with_query_context_sync, QueryContext};
+    let ctx = QueryContext {
+        dialect: crate::sql_generator::SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let got = with_query_context_sync(ctx, || {
+        set_current_schema(std::sync::Arc::new(social()));
+        translate_bound_plan(
+            "RETURN [x IN [1, 2] | x * 2] AS l",
+            &social(),
+            &ReadOptions::default(),
+        )
+        .map(|t| t.sql)
+    });
+    assert!(
+        matches!(&got, Err(e) if e.contains("a list comprehension in this SQL dialect")),
         "{got:?}"
     );
 }

@@ -406,6 +406,11 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// (`bound_plan::lower::union`, EXPLICIT_SCOPE §4.4, S7d), or `None` when
     /// the lowering does not emit it (the query stays on the legacy path).
     fn cypher_union(&self) -> Option<CypherUnion>;
+
+    /// How the dialect spells list comprehensions and an ordered `collect()`
+    /// (`bound_plan::lower`, EXPLICIT_SCOPE §4.4, S7e1), or `None` when the
+    /// lowering does not emit them (the query stays on the legacy path).
+    fn lists(&self) -> Option<Lists>;
 }
 
 /// The dialect's parts of a graph value ([`FunctionMapper::graph_values`]).
@@ -484,6 +489,22 @@ pub(crate) struct CypherUnion {
     pub any: fn(&str) -> String,
     /// The number of a row in the order of the keys `{0}` (`ORDER BY` text).
     pub row_number: fn(&str) -> String,
+}
+
+/// The dialect's parts of lists ([`FunctionMapper::lists`]). Every argument
+/// is SQL; a parameter is a name.
+pub(crate) struct Lists {
+    /// The elements of the list `{2}` for which the predicate `{1}` of the
+    /// parameter `{0}` is true (not false, not NULL), in order.
+    pub filter: fn(&str, &str, &str) -> String,
+    /// The value of `{1}` for each element `{0}` of the list `{2}`, in order.
+    pub map: fn(&str, &str, &str) -> String,
+    /// An aggregate: the group's values of `{0}` that are not NULL, in the
+    /// order of the key `{1}` (unique per row).
+    pub ordered_collect: fn(&str, &str) -> String,
+    /// The list `{0}` without its repeated elements, each where it first
+    /// occurs.
+    pub distinct: fn(&str) -> String,
 }
 
 /// The dialect's parts of a shortest-path search

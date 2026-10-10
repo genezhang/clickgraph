@@ -300,7 +300,11 @@ fn infer_operator_type(op: Operator, operands: &[RenderExpr]) -> Option<RenderTy
             }
         }
 
-        Operator::Distinct => None,
+        // `DISTINCT x` (an aggregate's argument) is a value of `x`'s type.
+        Operator::Distinct => match operands {
+            [x] => infer_render_type(x),
+            _ => None,
+        },
     }
 }
 
