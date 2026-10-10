@@ -4600,11 +4600,16 @@ impl<'s> Lowerer<'s> {
             // A tuple would sort by its columns.
             return unsupported("ORDER BY a node or relationship of a list");
         }
+        if keys.iter().any(|k| self.holds_maps(&k.expr)) {
+            // A map's values are of any type: they have no order.
+            return unsupported("ORDER BY a map");
+        }
         let keys = keys
             .iter()
             .map(|k| {
+                let e = self.expr(&k.expr, items)?;
                 Ok(OrderByItem {
-                    expression: self.expr(&k.expr, items)?,
+                    expression: e,
                     order: if k.descending {
                         OrderByOrder::Desc
                     } else {
@@ -4729,10 +4734,39 @@ impl<'s> Lowerer<'s> {
                 }
             }
             let e = self.expr(&it.expr, &HashMap::new())?;
-            if aggregating && !it.aggregate {
-                body.group_by.push(e.clone());
+            // A map or a list of maps (of `Dynamic` values) is grouped, and
+            // made distinct, by its key (`CypherUnion::distinct_key`, as a
+            // UNION's): ClickHouse groups no `Dynamic`, and compares `1` and
+            // `1.0` as different.
+            let map_key = match self.holds_maps(&it.expr) && !it.aggregate {
+                true => match current_function_mapper().cypher_union() {
+                    Some(u) => Some(RenderExpr::Raw((u.distinct_key)(
+                        &render_expr_to_sql_plain(&e),
+                    ))),
+                    None => return unsupported("a map in this SQL dialect"),
+                },
+                false => None,
+            };
+            if body.distinct && it.aggregate && self.holds_maps(&it.expr) {
+                return unsupported("DISTINCT of an aggregated list of maps");
             }
-            items_env.insert(it.var, e.clone());
+            if aggregating && !it.aggregate {
+                body.group_by
+                    .push(map_key.clone().unwrap_or_else(|| e.clone()));
+            }
+            if let (Some(k), true) = (&map_key, body.distinct) {
+                body.distinct_keys.push(k.clone());
+            }
+            // Grouped by its key, the value is any one of its group's (as its
+            // column is): what this projection's ORDER BY reads.
+            let read = match (&map_key, aggregating || body.distinct) {
+                (Some(_), true) => match current_function_mapper().cypher_union() {
+                    Some(u) => RenderExpr::Raw((u.any)(&render_expr_to_sql_plain(&e))),
+                    None => return unsupported("a map in this SQL dialect"),
+                },
+                _ => e.clone(),
+            };
+            items_env.insert(it.var, read);
             // A list's node or relationship, or a list of them, returned: their
             // values (`elements.rs`); a WITH carries the tuples.
             if cte.is_none() {
@@ -4765,10 +4799,17 @@ impl<'s> Lowerer<'s> {
                 Some(alias) => {
                     let name = it.var.name();
                     body.select.push(select(e, &name));
+                    // Grouped by its key, not itself.
+                    if map_key.is_some() {
+                        body.determined.push(name.clone());
+                    }
                     exports.values.push((it.var, col_at(alias, &name)));
                 }
                 None => {
                     let column = body.column(e, &it.name);
+                    if map_key.is_some() {
+                        body.determined.push(column.clone());
+                    }
                     shape.push(ResultColumn {
                         name: it.name.clone(),
                         kind: ResultKind::Value,

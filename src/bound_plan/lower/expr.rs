@@ -205,6 +205,11 @@ impl Lowerer<'_> {
                         let t = self.variable(&pa.table_alias.0, items)?;
                         self.elem_property(&t, &elem, prop)?
                     }
+                    // A map's value: its type is not known here (a value of
+                    // any type would compare, sort and count unlike its own).
+                    (_, Some(Kind::Map(_))) => {
+                        return unsupported("a property of a map (its value's type is not known)")
+                    }
                     _ => {
                         return unsupported("a property of a value (map, list element, WITH item)")
                     }
@@ -286,16 +291,8 @@ impl Lowerer<'_> {
             {
                 return unsupported("a map of nodes or relationships of a list");
             }
-            LogicalExpr::MapLiteral(entries) => {
-                // In key order: maps are equal by their entries (DISTINCT,
-                // grouping, UNION), and ClickHouse compares them in order.
-                let mut entries = entries
-                    .iter()
-                    .map(|(k, v)| Ok((k.clone(), self.expr(v, items)?)))
-                    .collect::<Result<Vec<_>, LowerError>>()?;
-                entries.sort_by(|a, b| a.0.cmp(&b.0));
-                RenderExpr::MapLiteral(entries)
-            }
+            // A map whose values keep their types (S7e3); `{}` stays a map.
+            LogicalExpr::MapLiteral(entries) => self.map_literal(entries, items)?,
             LogicalExpr::ScalarFnCall(f) => self.scalar_fn(f, items)?,
             LogicalExpr::AggregateFnCall(f) => self.aggregate_fn(f, items)?,
             LogicalExpr::Case(c) => {
@@ -320,6 +317,12 @@ impl Lowerer<'_> {
             {
                 // An element out of range would be a tuple of defaults.
                 return unsupported("an element or slice of a list of nodes or relationships");
+            }
+            // `m['k']` of a map: its value's type is not known here.
+            LogicalExpr::ArraySubscript { array, .. }
+                if matches!(self.kind(array), Kind::Map(_)) =>
+            {
+                return unsupported("a key of a map (its value's type is not known)");
             }
             LogicalExpr::ArraySubscript { array, index } => RenderExpr::ArraySubscript {
                 array: Box::new(self.expr(array, items)?),
@@ -399,6 +402,49 @@ impl Lowerer<'_> {
         )))
     }
 
+    /// A map literal (non-empty) as a map whose values keep their types.
+    fn map_literal(
+        &self,
+        entries: &[(String, LogicalExpr)],
+        items: &Items,
+    ) -> Result<RenderExpr, LowerError> {
+        let Some(spelling) = current_function_mapper().lists() else {
+            return unsupported("a map literal in this SQL dialect");
+        };
+        let mut keys: Vec<&String> = entries.iter().map(|(k, _)| k).collect();
+        keys.sort();
+        keys.dedup();
+        if keys.len() != entries.len() {
+            return unsupported("a map literal with a repeated key");
+        }
+        let mut values = entries
+            .iter()
+            .map(|(k, v)| {
+                let value = self.element(v, items)?;
+                Ok((k.clone(), render_expr_to_sql_plain(&value)))
+            })
+            .collect::<Result<Vec<_>, LowerError>>()?;
+        // In key order: maps are equal by their entries (DISTINCT, grouping,
+        // UNION), and ClickHouse compares them in order.
+        values.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(RenderExpr::Raw((spelling.map_of)(&values)))
+    }
+
+    /// A map literal as the emitter reads it (a function's argument:
+    /// `duration({days: 5})`), in key order.
+    fn map_as_is(
+        &self,
+        entries: &[(String, LogicalExpr)],
+        items: &Items,
+    ) -> Result<RenderExpr, LowerError> {
+        let mut entries = entries
+            .iter()
+            .map(|(k, v)| Ok((k.clone(), self.expr(v, items)?)))
+            .collect::<Result<Vec<_>, LowerError>>()?;
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(RenderExpr::MapLiteral(entries))
+    }
+
     fn all(&self, xs: &[LogicalExpr], items: &Items) -> Result<Vec<RenderExpr>, LowerError> {
         xs.iter().map(|x| self.expr(x, items)).collect()
     }
@@ -441,6 +487,13 @@ impl Lowerer<'_> {
         }
         if op.operands.iter().any(|o| self.holds_elements(o)) {
             return unsupported("an operator over nodes or relationships of a list");
+        }
+        // A map's values are held as values of any type (`Dynamic`): their
+        // comparison tells `1` from `1.0`, and they have no order.
+        if !matches!(op.operator, O::IsNull | O::IsNotNull)
+            && op.operands.iter().any(|o| self.holds_maps(o))
+        {
+            return unsupported("a comparison or operator over maps");
         }
         Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
             operator: op.operator,
@@ -510,6 +563,18 @@ impl Lowerer<'_> {
             }
             _ => unsupported("an operator over nodes or relationships of a list"),
         }
+    }
+
+    /// Whether `e` is a map, or a list holding maps (S7e3).
+    pub(super) fn holds_maps(&self, e: &LogicalExpr) -> bool {
+        fn holds(k: &Kind) -> bool {
+            match k {
+                Kind::Map(_) => true,
+                Kind::List(k) => holds(k),
+                _ => false,
+            }
+        }
+        holds(&self.kind(e))
     }
 
     /// Whether `e` is a list's node or relationship, or a list holding them.
@@ -977,9 +1042,52 @@ impl Lowerer<'_> {
         if !size && f.args.iter().any(|a| self.holds_elements(a)) {
             return unsupported(format!("{}() of nodes or relationships of a list", f.name));
         }
+        // `size()` of a map: Neo4j refuses it (a string or a list only).
+        if let (true, [arg]) = (f.name.eq_ignore_ascii_case("size"), f.args.as_slice()) {
+            if matches!(self.kind(arg), Kind::Map(_)) {
+                return unsupported("size() of a map");
+            }
+        }
+        // A map argument of a temporal or spatial constructor as the
+        // emitter reads it (`duration({days: 5})`); any other is a map.
+        const CONSTRUCTORS: [&str; 7] = [
+            "duration",
+            "date",
+            "datetime",
+            "localdatetime",
+            "localtime",
+            "time",
+            "point",
+        ];
+        let constructor = CONSTRUCTORS.iter().any(|c| f.name.eq_ignore_ascii_case(c));
+        // `keys()` of a map: its keys, in key order (as `main`'s lowering of
+        // a map literal gave them).
+        if let (true, [arg]) = (f.name.eq_ignore_ascii_case("keys"), f.args.as_slice()) {
+            if matches!(self.kind(arg), Kind::Map(_)) {
+                let Some(spelling) = current_function_mapper().lists() else {
+                    return unsupported("keys() of a map in this SQL dialect");
+                };
+                let m = render_expr_to_sql_plain(&self.expr(arg, items)?);
+                return Ok(RenderExpr::Raw((spelling.map_keys)(&m)));
+            }
+        }
+        // A map given to another function: its values are held as values of
+        // any type.
+        let map_arg = |a: &LogicalExpr| !matches!(a, LogicalExpr::MapLiteral(_)) || !constructor;
+        if f.args.iter().any(|a| self.holds_maps(a) && map_arg(a)) {
+            return unsupported(format!("{}() of a map", f.name));
+        }
+        let args = f
+            .args
+            .iter()
+            .map(|a| match a {
+                LogicalExpr::MapLiteral(entries) if constructor => self.map_as_is(entries, items),
+                a => self.expr(a, items),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(RenderExpr::ScalarFnCall(ScalarFnCall {
             name: f.name.clone(),
-            args: self.all(&f.args, items)?,
+            args,
         }))
     }
 
@@ -1036,6 +1144,13 @@ impl Lowerer<'_> {
             }));
         }
         // A list's node or relationship (`elements.rs`).
+        // A map's values are of any type (`Dynamic`): DISTINCT would tell
+        // `1` from `1.0`, and they have no order.
+        if arg.is_some_and(|a| self.holds_maps(a))
+            && (distinct || !matches!(name.as_str(), "collect" | "count"))
+        {
+            return unsupported(format!("{}() of maps", f.name));
+        }
         // (`count(a)` of a node or relationship of the relation counts its
         // identity, below.)
         if let Some(arg) = arg.filter(|a| name == "collect" || self.entity(a).is_none()) {

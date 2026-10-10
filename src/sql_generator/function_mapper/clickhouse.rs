@@ -290,6 +290,26 @@ impl FunctionMapper for ClickhouseFunctionMapper {
                 format!("(SELECT groupArray({t}) FROM {table} AS {alias} WHERE 0)")
             },
             distinct: |l| format!("arrayDistinct({l})"),
+            map_keys: |m| format!("mapKeys({m})"),
+            // A `Map(String, Dynamic)`, as a graph value's (S6c): each value
+            // keeps its type, maps of any keys are of one type, and the
+            // output prints it as an object.
+            map_of: |entries| {
+                if entries.is_empty() {
+                    // `CAST(map(), 'Map(String, Dynamic)')` fails: an empty
+                    // map's value type has no variant to cast from.
+                    return "CAST(CAST(map(), 'Map(String, String)'), 'Map(String, Dynamic)')"
+                        .to_string();
+                }
+                let pairs: Vec<String> = entries
+                    .iter()
+                    .map(|(k, v)| {
+                        let k = k.replace('\\', "\\\\").replace('\'', "\\'");
+                        format!("'{k}', CAST({v}, 'Dynamic')")
+                    })
+                    .collect();
+                format!("map({})", pairs.join(", "))
+            },
         })
     }
 
