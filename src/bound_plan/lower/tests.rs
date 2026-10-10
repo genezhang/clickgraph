@@ -475,17 +475,18 @@ fn what_is_not_lowered_yet() {
         "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) RETURN labels(b) AS l",
         "labels() of a node an OPTIONAL MATCH may leave NULL",
     );
+    // A walk of several types carries no element tuples (S7e2b).
     not_lowered(
-        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN [x IN nodes(p) | x.name] AS n",
+        "MATCH p = (a:User)-[:FOLLOWS|LIKED*1..2]->(b) RETURN [x IN nodes(p) | x.name] AS n",
         "nodes() of a path other than",
     );
     not_lowered(
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN head(nodes(p)) AS n",
-        "nodes() of a path other than",
+        "head() of nodes or relationships of a list",
     );
     not_lowered(
         "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) RETURN r[0] AS n",
-        "list other than",
+        "an element or slice of a list of nodes or relationships",
     );
     // A path from a user to a post can use AUTHORED, an FK edge.
     not_lowered(
@@ -2068,9 +2069,9 @@ fn a_with_carries_paths_and_lists() {
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) \
          WITH nodes(p) AS ns RETURN ns, size(ns) AS n",
         &[
-            "AS \"v4\"",
-            "arraySlice(v1.path_nodes, 2))) AS \"v4__k0\"",
-            "w2.v4 AS \"ns\"",
+            // As a list's elements (S7e2b): the walk's node tuples.
+            "arrayConcat([tuple(v0.user_id, ",
+            "arraySlice(v1.path_node_tuples, 2)) AS \"v4\"",
             "length(w2.v4) AS \"n\"",
         ],
     );
@@ -2115,10 +2116,12 @@ fn what_path_values_are_not_lowered() {
     );
     not_lowered(
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) WITH nodes(p) AS ns RETURN ns[0] AS n",
-        "carried list",
+        "an element or slice of a list of nodes or relationships",
     );
     not_lowered(
-        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) WITH nodes(p) AS ns MATCH (x:User) \
+        // (A walk of one type carries its nodes as tuples, S7e2b, which the
+        // OPTIONAL MATCH reads; one of several types carries values.)
+        "MATCH p = (a:User)-[:FOLLOWS|LIKED*1..2]->(b) WITH nodes(p) AS ns MATCH (x:User) \
          OPTIONAL MATCH (x)-[:FOLLOWS]->(y:User) WHERE size(ns) > 1 RETURN y.name",
         "a path's list read by an OPTIONAL MATCH",
     );
@@ -3576,9 +3579,9 @@ graph_schema:
 /// element, are lists S7e lowers.
 #[test]
 fn an_unwind_of_graph_values_is_not_lowered_yet() {
-    // A variable-length relationship's list (S7e2b).
+    // A walk of several types carries no element tuples (S7e2b).
     not_lowered(
-        "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) UNWIND r AS x RETURN x",
+        "MATCH (a:User)-[r:FOLLOWS|LIKED*1..2]->(b) UNWIND r AS x RETURN x",
         "list other than",
     );
     not_lowered(
@@ -3974,6 +3977,11 @@ fn what_a_list_of_nodes_does_not_lower_yet() {
         "MATCH (a:User), (b:User) RETURN coalesce(a, b) AS n",
         "coalesce() of nodes or relationships of a list",
     );
+    // `length()` takes a path; Neo4j refuses a list (`size()` counts one).
+    not_lowered(
+        "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) RETURN length(r) AS l",
+        "length() of nodes or relationships of a list",
+    );
 }
 
 /// S7e2a review: a list's tuples are of one type: a list mixing labels,
@@ -4038,6 +4046,92 @@ graph_schema:
     assert!(
         got.contains("tuple(v0.id, v0.id, CAST(v0.ok_flag AS Nullable(Bool)))"),
         "{got}"
+    );
+}
+
+/// S7e2b: a walk of one definition carries its nodes / relationships as
+/// element tuples when they are read as a list's elements; the empty list
+/// a recursive CTE's first rows start from has their type.
+#[test]
+fn a_walk_carries_its_elements_as_tuples() {
+    has(
+        "MATCH p = (a:User)-[:FOLLOWS*0..2]->(b:User) RETURN [r IN relationships(p) | r.follow_date] AS d",
+        &[
+            "(SELECT groupArray(tuple(__cg_none.follower_id, __cg_none.followed_id, \
+             __cg_none.follow_id, __cg_none.follow_date)) FROM test_integration.user_follows_test \
+             AS __cg_none WHERE 0) as path_rel_tuples",
+            "arrayConcat(vp.path_rel_tuples, [tuple(rel.follower_id, rel.followed_id, \
+             rel.follow_id, rel.follow_date)]) as path_rel_tuples",
+        ],
+    );
+    has(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN [n IN nodes(p) | n.name] AS ns",
+        &[
+            "arrayConcat([tuple(v0.user_id, ",
+            "arraySlice(v1.path_node_tuples, 2))",
+        ],
+    );
+    // A shortest path's search carries them too.
+    has(
+        "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) RETURN [n IN nodes(p) | n.name] AS ns",
+        &["(SELECT groupArray(tuple(__cg_none.user_id, ", "AS path_node_tuples"],
+    );
+    // A MATCH condition reads them (before the walk is built).
+    has(
+        "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) WHERE size([x IN r WHERE x.follow_date IS NULL]) = 0 \
+         RETURN a.name",
+        &["WHERE length(arrayFilter(v3 -> tupleElement(v3, 4) IS NULL, v1.path_rel_tuples))"],
+    );
+    // Returned as a value, a walk's nodes stay values (no tuples).
+    let got = squash(&sql(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN nodes(p) AS ns",
+    ));
+    assert!(!got.contains("path_node_tuples"), "{got}");
+}
+
+/// S7e2b review: a walk whose elements have no tuple layout (a composite
+/// `edge_id`) carries none: its values (S6c) are still lowered, and reading
+/// them as a list's elements is not.
+#[test]
+fn a_walk_without_a_tuple_layout_still_carries_values() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: composite_edge
+graph_schema:
+  nodes:
+    - label: U
+      database: db
+      table: u
+      node_id: id
+      property_mappings: { id: id }
+  edges:
+    - type: F
+      database: db
+      table: f
+      from_id: a
+      to_id: b
+      edge_id: [a, b]
+      from_node: U
+      to_node: U
+      property_mappings: { since: since }
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let lower = |q: &str| translate_bound_plan(q, &schema, &ReadOptions::default());
+    let got = lower("MATCH p = (a:U)-[:F*1..2]->(b:U) WITH relationships(p) AS rs RETURN rs")
+        .map(|t| squash(&t.sql));
+    assert!(
+        matches!(&got, Ok(sql) if sql.contains("path_rel_values") && !sql.contains("path_rel_tuples")),
+        "{got:?}"
+    );
+    let got =
+        lower("MATCH p = (a:U)-[:F*1..2]->(b:U) RETURN [r IN relationships(p) | r.since] AS s");
+    assert!(
+        matches!(&got, Err(e) if e.contains("relationships() of a path other than")),
+        "{:?}",
+        got.map(|t| t.sql)
     );
 }
 

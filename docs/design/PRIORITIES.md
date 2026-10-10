@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; next: S7e2b lists of a variable-length relationship's nodes / relationships)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; next: S7e3 maps)
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,11 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-10: **P-4c S7e2b: a walk's nodes and relationships as lists** (#1346, `src/bound_plan/lower/path.rs` `PathCall::tuples` / `Search`, `elements.rs` `walk_tuples` / `path_tuples`, generator `PathValues::columns`, behind `CLICKGRAPH_BOUND_PLAN=on`).
+  - A walk of one definition (generator or shortest-path search) carries `path_node_tuples` / `path_rel_tuples` when its nodes / relationships are read as a list's elements (demand pass: reads inside expressions, UNWIND lists, WITH items); the recursive CTE's empty list is typed by `(SELECT groupArray(tuple(…)) FROM t WHERE 0)` (ClickHouse 25.8 cannot convert later rows to `Array(Nothing)`). `nodes(p)` / `relationships(p)` of paths with walks and `-[r*]->` lists are lists of elements in path order.
+  - Sweeps: every lowered shape equals Neo4j but known older gaps; no regression on the S7e1 / S7e2a sets. Mutation check: 7 of 7. Oracle unchanged (MATCH 409), corpus lowers 793 (was 788); live suite unchanged (`length()` of a list is refused, as in Neo4j). Review: one regression fixed (a composite `edge_id` walk now carries no tuples instead of failing to legacy).
+  - Not lowered: walks of several types or labels, OPTIONAL paths, a shortestPath WHERE holding a comprehension.
 
 - 2026-10-10: **P-4c S7e2a: lists of nodes and relationships** (#1345, `src/bound_plan/lower/elements.rs`, `Kind::Element`, behind `CLICKGRAPH_BOUND_PLAN=on`). S7e2 split: S7e2a lists built from the current rows, S7e2b a walk's nodes / relationships (variable-length and shortest paths).
   - A list's element is a typed tuple (a node's id and declared properties; a relationship's ends, `edge_id`, properties): `collect(n)`, `[a, b]`, fixed paths' `nodes(p)` / `relationships(p)`, carried by WITH; elements (UNWIND variables, comprehension parameters) read slots (typed: sortable, groupable, aggregatable — `Dynamic` values are not), compare by identity, `type()`, label tests, `count`, `collect`; returned as S6c values. Mixed labels / values, indexing, `head`, ORDER BY an element and other functions over elements are refused.

@@ -53,6 +53,10 @@ pub enum GraphType {
 /// start with `#`.
 pub(super) const NODE_VALUES: &str = "#nodes";
 pub(super) const REL_VALUES: &str = "#rels";
+/// Demand-pass names of a variable-length relationship whose nodes /
+/// relationships are read as a list's elements (`elements.rs`).
+pub(super) const NODE_TUPLES: &str = "#node_tuples";
+pub(super) const REL_TUPLES: &str = "#rel_tuples";
 /// The demand-pass name of a path or list whose identity is read (DISTINCT
 /// or grouping by it): a shortest path's is in its recovered paths.
 pub(super) const PATH_KEY: &str = "#key";

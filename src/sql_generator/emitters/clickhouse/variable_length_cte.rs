@@ -481,6 +481,27 @@ pub struct PathValues {
     /// A relationship as a value, SQL over the relationship's alias; and the
     /// SQL of an empty list of them (the path of no relationship).
     pub rel: Option<(String, String)>,
+    /// A node / relationship as a list's element (a tuple of its columns,
+    /// `bound_plan::lower::elements`), as `node` / `rel`: carried as
+    /// `path_node_tuples` / `path_rel_tuples`.
+    pub node_tuple: Option<(String, String)>,
+    pub rel_tuple: Option<(String, String)>,
+}
+
+impl PathValues {
+    /// The carried columns: (name, a node's (start, end) or a relationship's
+    /// (one, empty list) SQL, whether a node's).
+    fn columns(&self) -> Vec<(&'static str, &(String, String), bool)> {
+        [
+            ("path_node_values", &self.node, true),
+            ("path_rel_values", &self.rel, false),
+            ("path_node_tuples", &self.node_tuple, true),
+            ("path_rel_tuples", &self.rel_tuple, false),
+        ]
+        .into_iter()
+        .filter_map(|(c, v, node)| v.as_ref().map(|v| (c, v, node)))
+        .collect()
+    }
 }
 
 /// Drop exact-duplicate `NodeProperty` entries (same alias, column, and output
@@ -2778,11 +2799,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
         }
         // The bound plan's paths as values: at hop 0 the start node, and no
         // relationship. Same position as in the 1-hop and recursive arms.
-        if let Some((start, _)) = &self.path_values.node {
-            select_items.push(format!("{} as path_node_values", arr(start)));
-        }
-        if let Some((_, empty)) = &self.path_values.rel {
-            select_items.push(format!("{empty} as path_rel_values"));
+        for (column, (start_or_rel, empty), node) in self.path_values.columns() {
+            select_items.push(if node {
+                format!("{} as {column}", arr(start_or_rel))
+            } else {
+                format!("{empty} as {column}")
+            });
         }
 
         // #628: a CLOSED `*0..N` walk enforces EDGE-uniqueness (so real cycles
@@ -3037,14 +3059,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 ));
             }
             // The bound plan's paths as values, seeded like `path_nodes`.
-            if let Some((start, end)) = &self.path_values.node {
-                select_items.push(format!(
-                    "{} as path_node_values",
-                    arr(&format!("{start}, {end}"))
-                ));
-            }
-            if let Some((rel, _)) = &self.path_values.rel {
-                select_items.push(format!("{} as path_rel_values", arr(rel)));
+            for (column, (a, b), node) in self.path_values.columns() {
+                select_items.push(if node {
+                    format!("{} as {column}", arr(&format!("{a}, {b}")))
+                } else {
+                    format!("{} as {column}", arr(a))
+                });
             }
 
             // #598 (part 2): seed path_edges with this hop's edge identity so the
@@ -3356,17 +3376,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
             ));
         }
         // The bound plan's paths as values, extended like `path_nodes`.
-        if let Some((_, end)) = &self.path_values.node {
-            select_items.push(format!(
-                "{ac}(vp.path_node_values, {}) as path_node_values",
-                arr(end)
-            ));
-        }
-        if let Some((rel, _)) = &self.path_values.rel {
-            select_items.push(format!(
-                "{ac}(vp.path_rel_values, {}) as path_rel_values",
-                arr(rel)
-            ));
+        for (column, (a, b), node) in self.path_values.columns() {
+            let one = if node { b } else { a };
+            select_items.push(format!("{ac}(vp.{column}, {}) as {column}", arr(one)));
         }
 
         // #598 (part 2): accumulate this hop's edge identity so relationship-uniqueness
