@@ -16,7 +16,9 @@ Entities
     (Neo4j stores no NULL properties).
   * a relationship's endpoints ARE compared: the loader stores the endpoint
     node ids on each relationship, and they are matched against ClickGraph's
-    `col.from_id` / `col.to_id`.
+    `col.from_id` / `col.to_id`. A composite endpoint id, which ClickGraph
+    returns as one column per id column (`col.from_id_1`, `col.from_id_2`,
+    ...), is folded into the list of its values, as the loader stores it.
   * a NULL entity (an unmatched OPTIONAL variable) is no columns on either
     side.
   * a path, or a node or relationship inside a list or map, is in Neo4j's
@@ -246,8 +248,24 @@ def cg_rows(results, neo_columns):
             if entity is not None and val is None:
                 continue
             out[key] = norm_value(val)
-        rows.append(out)
+        rows.append(_fold_composite_endpoints(out, neo_columns))
     return rows
+
+
+_COMPOSITE_END = re.compile(r"(.+)\.(from_id|to_id)_(\d+)")
+
+
+def _fold_composite_endpoints(row, neo_columns):
+    """`c.from_id_1`, `c.from_id_2`, ... (ClickGraph's columns of a composite
+    endpoint id of relationship `c`) -> `c.from_id`: the list of the values."""
+    parts = {}
+    for key in list(row):
+        m = _COMPOSITE_END.fullmatch(key)
+        if m and m.group(1) in neo_columns and key not in neo_columns:
+            parts.setdefault(f"{m.group(1)}.{m.group(2)}", {})[int(m.group(3))] = row.pop(key)
+    for key, values in parts.items():
+        row[key] = [values[i] for i in sorted(values)]
+    return row
 
 
 def _dump(row):

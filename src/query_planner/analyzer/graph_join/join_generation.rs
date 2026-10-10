@@ -1462,30 +1462,15 @@ fn guard_composite_positional_pairing(
     right_id: &Identifier,
     context: &str,
 ) -> AnalyzerResult<()> {
+    // Only a composite pairing of the same set of names in a different order
+    // provably crosses columns (`Identifier::crosses_positionally`): different
+    // names are a normal cross-table pairing whose mis-order is undetectable
+    // from the schema, and the same order is a clean shared-column equi-join.
+    if !left_id.crosses_positionally(right_id) {
+        return Ok(());
+    }
     let left_cols = left_id.columns();
     let right_cols = right_id.columns();
-
-    // Only composite (len >= 2) pairings can be mis-ordered permutations.
-    if left_cols.len() < 2 || left_cols.len() != right_cols.len() {
-        return Ok(());
-    }
-
-    // Same set of names?
-    let left_set: HashSet<&str> = left_cols.iter().copied().collect();
-    let right_set: HashSet<&str> = right_cols.iter().copied().collect();
-    if left_set != right_set {
-        // Different names → normal cross-table pairing; a mis-order here is
-        // undetectable from the schema, so we do not (and cannot) guard it.
-        return Ok(());
-    }
-
-    // Same set, but is the positional order identical? If so the pairing is a
-    // clean shared-column equi-join (each column equals itself) — fine.
-    if left_cols == right_cols {
-        return Ok(());
-    }
-
-    // Same set, different order → the positional zip provably crosses columns.
     Err(AnalyzerError::UnsupportedPattern {
         message: format!(
             "composite join has two column sets that are the same set of names in \

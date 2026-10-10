@@ -555,13 +555,20 @@ impl RelationshipSchema {
         !self.is_fk_edge && self.from_node_properties.is_none() && self.to_node_properties.is_none()
     }
 
-    /// P-4c S4: the relationship is the standard layout — a plain,
-    /// monomorphic edge table (one type per table, one row per edge) whose
-    /// endpoints are concrete labels, with no label discriminator columns.
-    /// Its endpoints must also be standard (`NodeSchema::is_standard_own_table`)
-    /// for the edge to be scanned with node-table joins.
-    pub fn is_standard_edge_table(&self) -> bool {
-        self.is_plain_edge_table() && self.has_fixed_endpoint_labels()
+    /// P-4c S4 / S8a: every row of the relationship's table is one
+    /// relationship, from the node its `from_id` names to the node its
+    /// `to_id` names, between nodes of its declared labels: a separate edge
+    /// table, or (S8a) an FK edge, whose table is one of its ends' node
+    /// tables (each row a node holding a reference to the other end). No
+    /// embedded node properties, no type or label discriminator columns, no
+    /// `$any` side. A row whose end is NULL or names no node joins no node,
+    /// so it is no relationship. Its endpoints must also have their own
+    /// tables (`NodeSchema::is_standard_own_table`) for the edge to be
+    /// scanned with node-table joins.
+    pub fn is_edge_row_table(&self) -> bool {
+        self.from_node_properties.is_none()
+            && self.to_node_properties.is_none()
+            && self.has_fixed_endpoint_labels()
     }
 
     /// P-4c S7b3a: every row of the relationship joins a node of `from_node`
@@ -880,6 +887,77 @@ impl GraphSchema {
             // FkEdgeJoin fallback (edge treated as the from-side node table).
             Some(true)
         }
+    }
+
+    /// P-4c S8a: the schema with each FK edge written as a table of
+    /// relationships reads it (`RelationshipSchema::is_edge_row_table`: a
+    /// row's `from_id` holds its from-node's id, its `to_id` its to-node's),
+    /// or `None` when no FK edge needs rewriting. Two readings of an FK edge
+    /// are this catalog's, not the YAML's surface:
+    ///
+    /// * **Ends of a self-referencing FK edge** (#632): its rows are nodes of
+    ///   its one label, each related to the node its reference names,
+    ///   whichever of `from_id` / `to_id` the schema writes the reference in
+    ///   (`from_id: parent_id, to_id: object_id`, the documented form, and
+    ///   `from_id: comment_id, to_id: reply_of_id` are both the row's node to
+    ///   the node it references; legacy's `FkEdgeJoin` and its walk read it
+    ///   so). The reference is the side whose columns are not the node's id.
+    ///   Written as edge-table ends: `from_id` the node's id, `to_id` the
+    ///   reference.
+    /// * **Table options**: an FK edge's rows are its owning node's rows, so
+    ///   where the edge declares no view parameters its table is read with
+    ///   that node's, and with FINAL when the node's is.
+    pub fn with_fk_edges_as_edge_rows(&self) -> Option<GraphSchema> {
+        let mut out: Option<GraphSchema> = None;
+        for (key, rel) in &self.relationships {
+            let Some(from_is_owner) = self.fk_edge_anchor_is_from(rel) else {
+                continue;
+            };
+            let owner_label = if from_is_owner {
+                &rel.from_node
+            } else {
+                &rel.to_node
+            };
+            let Some(owner) = self.node_schema_opt(owner_label) else {
+                continue;
+            };
+            let mut read = rel.clone();
+            if rel.from_node == rel.to_node {
+                let own = owner.id_physical_columns();
+                let own_id = match own.as_slice() {
+                    [one] => Identifier::Single(one.clone()),
+                    _ => Identifier::Composite(own.clone()),
+                };
+                let reference = if rel.from_id.columns() == own_id.columns() {
+                    rel.to_id.clone()
+                } else {
+                    rel.from_id.clone()
+                };
+                read.from_id = own_id;
+                read.to_id = reference;
+            }
+            if read.view_parameters.is_none() {
+                read.view_parameters = owner.view_parameters.clone();
+            }
+            // `use_final` is always set once loaded (unset is the engine's
+            // answer, else false), so "the edge declares none" cannot be
+            // told apart: either definition asking for FINAL reads the rows
+            // with it.
+            if owner.should_use_final() {
+                read.use_final = Some(true);
+            }
+            if read.from_id == rel.from_id
+                && read.to_id == rel.to_id
+                && read.view_parameters == rel.view_parameters
+                && read.should_use_final() == rel.should_use_final()
+            {
+                continue;
+            }
+            out.get_or_insert_with(|| self.clone())
+                .relationships
+                .insert(key.clone(), read);
+        }
+        out
     }
 
     /// #492: Reverse-lookup the Cypher property names whose denormalized

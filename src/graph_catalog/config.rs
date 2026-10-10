@@ -117,6 +117,26 @@ impl Identifier {
         }
     }
 
+    /// #672 / #1010: `self` and `other` are composite column lists paired
+    /// position by position (an edge's `from_id` / `to_id` with its end's
+    /// `node_id`) that name the same columns in a different order. The
+    /// pairing then equates each column with another of the same set
+    /// (`region = forum_id AND forum_id = region`), which is almost surely
+    /// not what the schema's author meant: callers refuse it. Different
+    /// names (a foreign key to a primary key) cannot be checked, and are
+    /// paired as written.
+    pub fn crosses_positionally(&self, other: &Identifier) -> bool {
+        let (a, b) = (self.columns(), other.columns());
+        if a.len() < 2 || a.len() != b.len() || a == b {
+            return false;
+        }
+        let mut sorted_a = a.clone();
+        let mut sorted_b = b.clone();
+        sorted_a.sort_unstable();
+        sorted_b.sort_unstable();
+        sorted_a == sorted_b
+    }
+
     /// Generate SQL equality condition between this identifier and another.
     /// Handles mixed single/composite by pairing columns element-wise.
     /// For single: "left.col = right.col"

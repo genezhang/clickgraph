@@ -188,6 +188,20 @@ fn standard_layout(
         None,
     )
     .map_err(|e| LowerError::Unsupported(format!("variable-length relationship: {e}")))?;
+    // An FK edge's table (a node table, S8a) holds one relationship per row,
+    // as an edge table does (`RelationshipSchema::is_edge_row_table`): it is
+    // walked as one, joining each relationship's row to the nodes it names.
+    // (The generator's own FK-edge walk, `FkEdgeJoin`, reads the referenced
+    // node's row in place of the relationship's, and keeps node uniqueness
+    // at a zero lower bound, #902.)
+    if matches!(ctx.join_strategy, JoinStrategy::FkEdgeJoin { .. })
+        && matches!(ctx.edge, EdgeAccessStrategy::SeparateTable { .. })
+    {
+        ctx.join_strategy = JoinStrategy::Traditional {
+            left_join_col: call.edge.from_id.clone(),
+            right_join_col: call.edge.to_id.clone(),
+        };
+    }
     // The walk joins `rel.from_id` to the node it is at and moves to
     // `rel.to_id`.
     if let EdgeAccessStrategy::SeparateTable { from_id, to_id, .. } = &mut ctx.edge {

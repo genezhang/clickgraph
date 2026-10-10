@@ -16,6 +16,11 @@ Unsupported, decided by an ALLOWLIST of schema keys):
   * one relationship per row of an edge table, from the node whose id equals
     the row's from_id to the node whose id equals the row's to_id, typed with
     the edge type, with every mapped edge property;
+  * a SELF-REFERENCING FK edge (one label at both ends, its table that
+    label's table) relates each row's node to the node its reference names,
+    whichever of from_id / to_id holds the reference: the side whose columns
+    are not the node's id (#632; `from_id: parent_id, to_id: object_id` is
+    child -> parent, as the FK-edge wiki documents);
   * an edge row whose endpoint does not exist as a node is DANGLING: Neo4j
     cannot hold it, so it is counted and reported (never silently dropped).
   * a property declared in the schema's `property_types` is converted to that
@@ -138,8 +143,18 @@ def build_graph(gs, ch):
             nodes.append((n["label"], key, props))
         report["nodes"][n["label"]] = len(rows)
     rels = []
+    node_defs = {n["label"]: n for n in gs.get("nodes", [])}
     for e in gs.get("edges", []):
         fc, tc = _id_cols(e["from_id"]), _id_cols(e["to_id"])
+        own = node_defs.get(e["from_node"])
+        if (
+            e["from_node"] == e["to_node"]
+            and own is not None
+            and (own["database"], own["table"]) == (e["database"], e["table"])
+        ):
+            pm_own = own.get("property_mappings") or {}
+            own_id = [pm_own.get(p, p) for p in _id_cols(own["node_id"])]
+            fc, tc = own_id, (tc if fc == own_id else fc)
         pm = e.get("property_mappings") or {}
         cols = sorted(set(fc) | set(tc) | set(pm.values()))
         # A schema `filter:`: the type's relationships are the rows it holds of.
