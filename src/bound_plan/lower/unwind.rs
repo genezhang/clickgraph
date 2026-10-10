@@ -189,6 +189,8 @@ pub(super) enum Kind {
     /// A node or relationship as a list's element (`elements.rs`): possibly
     /// NULL.
     Element(Elem),
+    /// A map of these keys (in key order) and values (S7e3).
+    Map(Vec<(String, Kind)>),
     /// Not known here.
     Unknown,
 }
@@ -202,6 +204,26 @@ impl Kind {
             | (k @ (Kind::Scalar | Kind::Boolean | Kind::Element(_)), Kind::Null) => k,
             (Kind::Scalar | Kind::Boolean, Kind::Scalar | Kind::Boolean) => Kind::Scalar,
             (Kind::List(a), Kind::List(b)) => Kind::List(Box::new(a.either(*b))),
+            // Maps (of one type whatever their keys): the keys either may
+            // have, each value either (NULL for a map without the key).
+            (Kind::Map(a), Kind::Map(b)) => {
+                let mut keys: Vec<String> = a.iter().chain(&b).map(|(k, _)| k.clone()).collect();
+                keys.sort();
+                keys.dedup();
+                let value = |m: &[(String, Kind)], k: &str| {
+                    m.iter()
+                        .find(|(x, _)| x == k)
+                        .map_or(Kind::Null, |(_, v)| v.clone())
+                };
+                Kind::Map(
+                    keys.into_iter()
+                        .map(|k| {
+                            let v = value(&a, &k).either(value(&b, &k));
+                            (k, v)
+                        })
+                        .collect(),
+                )
+            }
             // A list that may be NULL: a ClickHouse array is never NULL.
             _ => Kind::Unknown,
         }
@@ -211,9 +233,12 @@ impl Kind {
     pub(super) fn element(&self) -> Kind {
         match self {
             Kind::List(e) => (**e).clone(),
-            k @ (Kind::Scalar | Kind::Boolean | Kind::Null | Kind::Unknown | Kind::Element(_)) => {
-                k.clone()
-            }
+            k @ (Kind::Scalar
+            | Kind::Boolean
+            | Kind::Null
+            | Kind::Unknown
+            | Kind::Element(_)
+            | Kind::Map(_)) => k.clone(),
         }
     }
 }
@@ -225,7 +250,15 @@ impl<'s> Lowerer<'s> {
         match e {
             LogicalExpr::Literal(lx::Literal::Null) => Kind::Null,
             LogicalExpr::Literal(lx::Literal::Boolean(_)) => Kind::Boolean,
-            LogicalExpr::Literal(_) | LogicalExpr::MapLiteral(_) => Kind::Scalar,
+            LogicalExpr::Literal(_) => Kind::Scalar,
+            LogicalExpr::MapLiteral(entries) => {
+                let mut kinds: Vec<(String, Kind)> = entries
+                    .iter()
+                    .map(|(k, v)| (k.clone(), self.kind(v)))
+                    .collect();
+                kinds.sort_by(|a, b| a.0.cmp(&b.0));
+                Kind::Map(kinds)
+            }
             LogicalExpr::List(xs) => Kind::List(Box::new(
                 xs.iter()
                     .map(|x| self.kind(x))
@@ -433,7 +466,7 @@ impl<'s> Lowerer<'s> {
         let list = match kind {
             Kind::List(_) => e,
             // The list of the value, or of none when it is NULL.
-            Kind::Scalar | Kind::Boolean => {
+            Kind::Scalar | Kind::Boolean | Kind::Map(_) => {
                 RenderExpr::Raw((spelling.value_list)(&render_expr_to_sql_plain(&e)))
             }
             Kind::Unknown | Kind::Null => {

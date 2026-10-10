@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; next: S7e3 maps)
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; S7e3 #1347; next: S8 layouts (reading a map's value needs typed per-key values: a later list slice))
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,11 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-10: **P-4c S7e3: map literals as values** (#1347, `src/bound_plan/lower/expr.rs` `map_literal`, `Kind::Map`, `FunctionMapper::lists().map_of`, behind `CLICKGRAPH_BOUND_PLAN=on`).
+  - A map literal is a `Map(String, Dynamic)` (as S6c's graph values): typed output (S4 stringified values), maps of any keys of one type; DISTINCT / grouping / UNION by S7d's DISTINCT key; `keys()` = `mapKeys`; temporal / spatial constructors keep their map form.
+  - Reading a map's value (`m.k`, `m['k']`), map comparisons, ORDER BY / DISTINCT aggregates / min / max of maps, other functions of maps are refused: two review rounds found named tuples unsound (positional comparison) and `Dynamic` reads wrong (25.8 joins across integer widths match nothing, booleans equal numbers, NULL counted). Typed per-key values are a later slice.
+  - Map shapes: 23 of 24 equal Neo4j (the other `duration`'s format, older); UNION sweep 145 (was 143); no regression elsewhere; oracle and live suite unchanged. Mutation check: 5 of 7 (2 unobservable, unit-test pinned).
 
 - 2026-10-10: **P-4c S7e2b: a walk's nodes and relationships as lists** (#1346, `src/bound_plan/lower/path.rs` `PathCall::tuples` / `Search`, `elements.rs` `walk_tuples` / `path_tuples`, generator `PathValues::columns`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - A walk of one definition (generator or shortest-path search) carries `path_node_tuples` / `path_rel_tuples` when its nodes / relationships are read as a list's elements (demand pass: reads inside expressions, UNWIND lists, WITH items); the recursive CTE's empty list is typed by `(SELECT groupArray(tuple(…)) FROM t WHERE 0)` (ClickHouse 25.8 cannot convert later rows to `Array(Nothing)`). `nodes(p)` / `relationships(p)` of paths with walks and `-[r*]->` lists are lists of elements in path order.

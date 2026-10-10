@@ -3584,10 +3584,8 @@ fn an_unwind_of_graph_values_is_not_lowered_yet() {
         "MATCH (a:User)-[r:FOLLOWS|LIKED*1..2]->(b) UNWIND r AS x RETURN x",
         "list other than",
     );
-    not_lowered(
-        "UNWIND [{k: 1}] AS m RETURN m.k AS k",
-        "a property of a value",
-    );
+    // A map of keys not known (a parameter's).
+    not_lowered("UNWIND $rows AS m RETURN m.k AS k", "a property of a value");
 }
 
 #[test]
@@ -3720,9 +3718,10 @@ fn a_union_of_elements() {
 /// equal (DISTINCT, grouping, UNION), whatever order they were written in.
 #[test]
 fn a_map_literal_is_in_key_order() {
+    // Values keep their types (S7e3).
     has(
         "RETURN {b: 2, a: 1} AS m",
-        &["map('a', toString(1), 'b', toString(2)) AS \"m\""],
+        &["map('a', CAST(1, 'Dynamic'), 'b', CAST(2, 'Dynamic')) AS \"m\""],
     );
 }
 
@@ -4133,6 +4132,75 @@ graph_schema:
         "{:?}",
         got.map(|t| t.sql)
     );
+}
+
+/// S7e3: a map literal is a `Map(String, Dynamic)` (as a graph value, S6c):
+/// its values keep their types, maps of any keys are of one type; a map
+/// that is a temporal or spatial constructor's argument stays as the
+/// constructor reads it. A map's values are held as values of any type, so
+/// reading one (`m.k`), comparing, sorting or aggregating maps is not
+/// lowered (each would compare, sort or count unlike the value's own type).
+#[test]
+fn a_map_keeps_its_values_types() {
+    has(
+        "WITH {b: 'x', a: 1} AS m RETURN m",
+        &["map('a', CAST(1, 'Dynamic'), 'b', CAST('x', 'Dynamic')) AS \"v0\""],
+    );
+    // Maps of different keys in one list keep their own keys.
+    has(
+        "UNWIND [{a: 1}, {b: 2}] AS m RETURN m",
+        &["ARRAY JOIN [map('a', CAST(1, 'Dynamic')), map('b', CAST(2, 'Dynamic'))]"],
+    );
+    has(
+        "RETURN {ok: 1 > 0} AS m, {} AS e",
+        &[
+            "map('ok', CAST(CAST(1 > 0 AS Nullable(Bool)), 'Dynamic'))",
+            "CAST(CAST(map(), 'Map(String, String)'), 'Map(String, Dynamic)') AS \"e\"",
+        ],
+    );
+    // Grouped and made distinct by S7d's DISTINCT key: `1` and `1.0` are
+    // one.
+    has(
+        "MATCH (a:User) RETURN DISTINCT {c: a.country} AS m",
+        &["toString(map('c', CAST(v0.country, 'Dynamic')))"],
+    );
+    has(
+        "MATCH (a:User) RETURN a.name AS n, collect({c: a.country}) AS l",
+        &["groupArray(map('c', CAST(v0.country, 'Dynamic')))"],
+    );
+    let got = squash(&sql("RETURN duration({days: 5}) AS d"));
+    assert!(!got.contains("'Dynamic'"), "{got}");
+    has(
+        "WITH {b: 1, a: 2} AS m RETURN keys(m) AS k",
+        &["mapKeys(w1.v0) AS \"k\""],
+    );
+    for (q, why) in [
+        ("WITH {a: 1} AS m RETURN m.a AS a", "a property of a map"),
+        ("WITH {a: 1} AS m RETURN m['a'] AS a", "a key of a map"),
+        (
+            "WITH {days: 5} AS m RETURN duration(m) AS d",
+            "duration() of a map",
+        ),
+        (
+            "RETURN {a: 1} = {a: 1.0} AS e",
+            "a comparison or operator over maps",
+        ),
+        (
+            "WITH {a: 1} AS m RETURN m IN [m] AS e",
+            "a comparison or operator over maps",
+        ),
+        (
+            "MATCH (a:User) RETURN a.name AS n ORDER BY {c: a.country}",
+            "ORDER BY a map",
+        ),
+        (
+            "MATCH (a:User) RETURN collect(DISTINCT {c: a.country}) AS l",
+            "collect() of maps",
+        ),
+        ("RETURN size({a: 1}) AS s", "size() of a map"),
+    ] {
+        not_lowered(q, why);
+    }
 }
 
 #[test]

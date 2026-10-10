@@ -511,6 +511,12 @@ pub(crate) struct Lists {
     /// An empty list of the type of the tuple `{0}` over the table `{1}`
     /// aliased `{2}` (reading no row).
     pub empty_of: fn(&str, &str, &str) -> String,
+    /// A map of `(key, value SQL)` entries (keys distinct, in key order)
+    /// whose values keep their own types, of one type whatever its keys and
+    /// values (maps of different keys are values of one column).
+    pub map_of: fn(&[(String, String)]) -> String,
+    /// The keys of the map `{0}`, in its order (key order).
+    pub map_keys: fn(&str) -> String,
     /// The list `{0}` without its repeated elements, each where it first
     /// occurs.
     pub distinct: fn(&str) -> String,

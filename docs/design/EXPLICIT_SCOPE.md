@@ -403,7 +403,7 @@ The binder walks the clause list once, keeping the *current scope*:
     (`m.k` of a map), both S7e; UNWIND in the Databricks dialect.
   - **Known gaps:**
     - A map literal's values are strings (`RETURN {a: 1}` on the new path
-      too, from S4).
+      too, from S4; fixed in S7e3).
     - Older value gaps an UNWIND makes easy to reach, the same on both
       paths: `split()` of NULL elsewhere is `['']`; a list of booleans is
       `[0]` (fixed on the new path in S7e1); `x / 2` of an integer element is a float division (`intDiv` only
@@ -474,7 +474,7 @@ The binder walks the clause list once, keeping the *current scope*:
     - identities of different columns in different arms;
     - UNION in the Databricks dialect (no column type of any value).
   - **Known gaps:**
-    - A map literal's values are strings (S4).
+    - A map literal's values are strings (S4; fixed in S7e3).
     - A map column's equality depends on its key order. This is older, and
       the same on both paths and in DISTINCT.
     - Relationships with no `edge_id` that are parallel and equal in every
@@ -561,6 +561,36 @@ The binder walks the clause list once, keeping the *current scope*:
     takes parallel ones for one relationship (the walk's uniqueness keys on
     the ends), so paths using both are missing (`(a)-[*1..2]-(b)` over two
     parallel edges: 10 rows, Neo4j 12; also on `main` and legacy).
+
+  **Implemented in S7e3** (`bound_plan/lower/expr.rs`, `unwind.rs`), map
+  literals as values:
+  - **A map literal** is a `Map(String, Dynamic)` (`FunctionMapper::lists()
+    .map_of`), as a graph value is (S6c): `map('k', CAST(v, 'Dynamic'), …)`,
+    keys in order, boolean values cast; `{}` a typed empty map. Each value
+    keeps its own type, so the output prints `{a: 1}` (S4 printed every value
+    as a string), and maps of any keys and values are of one type: a list or
+    a CASE of maps of different keys keeps each map's own keys. A map
+    literal given to a temporal or spatial constructor (`duration({days:
+    5})`) stays as the constructor's emitter reads it. Maps flow through
+    WITH, UNWIND, `collect` and comprehensions; DISTINCT, grouping and UNION
+    use S7d's DISTINCT key (`1` = `1.0` ≠ `'1'`) and `any()` of the group's.
+  - `keys(m)` is `mapKeys(m)`: its keys in key order (as `main` gave them).
+  - **Not lowered: reading a map** — `m.k`, `m['k']`, a map given to any
+    other function. A map's value is held as a value of any type
+    (`Dynamic`), and two review rounds found every way of reading it wrong
+    somewhere: as named tuples (typed per key), ClickHouse compares tuples by
+    position and converts their values' types (`{a: 1} = {b: 1}` was true),
+    merges tuples of different keys positionally and cannot spell an
+    aggregate's type; as `Dynamic`, a value compared with a column of
+    another width matches nothing (on 25.8 a `UInt8` key joins no `Int64`
+    row), a boolean equals a number, `count` / `groupArray` count a NULL
+    `Dynamic`, and lists and maps sort as text. Reading a map needs each
+    key's value carried with its own type (a later slice). Also not lowered:
+    a comparison or operator over maps, ORDER BY a map,
+    `collect(DISTINCT)` / `count(DISTINCT)` / `min` / `max` / `sum` / `avg`
+    of maps, `size()` of a map (Neo4j refuses it), a map of nodes or
+    relationships (S7e2a), a map with a repeated key. These fall back to
+    legacy, which stringifies maps (as on `main`).
 
 - **Subquery expressions.** A child scope whose parent is the current scope.
   The parent's variables used inside become the subquery's **correlation
@@ -2655,7 +2685,8 @@ slice that will handle it.
       a walk that ignores the property map differs only on parallel
       relationships with different properties, which the graph lacks (a
       unit test pins it).
-- [ ] S7 UNWIND / UNION / alternatives, in sub-slices: S7a undirected
+- [x] S7 UNWIND / UNION / alternatives, in sub-slices (all done; reading a
+  map's value is left to a later slice: S7e3): S7a undirected
   relationships, S7b several labels / types (with the two-schema and
   bound-relationship cases S7a refuses), S7c UNWIND (done), S7d UNION
   (done), S7e lists.
@@ -2740,6 +2771,35 @@ slice that will handle it.
         `count(DISTINCT n)` 169 ms (legacy 167 ms), a carried node re-matched
         to a relationship 145 ms (legacy: no SQL), `a = b` 96 ms (legacy:
         Code 47).
+  - [x] **S7e3: map literals as values** (§4.4 "Implemented in S7e3"):
+    `Map(String, Dynamic)` literals (typed output), `keys()`, grouping,
+    DISTINCT, UNION, `collect` of maps; reading a map's value is refused.
+    - Acceptance:
+      - Map shapes on the S7d graph (24: typed values of every column kind,
+        booleans, `{}`, nested maps, DISTINCT / grouping, `collect` in
+        order, maps of aggregates, CASE and lists of maps of different
+        keys, UNION / UNION ALL, `keys()`): 23 equal Neo4j; the other is
+        `duration`'s output format (#1068, older).
+      - The S7d UNION sweep: 145 of 149 equal Neo4j (was 143: its two
+        map-literal shapes). S7e1 / S7e2a / S7e2b sweeps: no shape worse than
+        legacy; the S7e1 review set 323 (was 319).
+      - Mutation check (24 map shapes): 7 rules broken in turn, 5 change
+        answers, among them values not cast to `Dynamic`, which fails only on
+        ClickHouse 25.8 (checked there by hand; the harness runs 26.7). The
+        constructors' map form and the refusal of map comparisons change no
+        answer (legacy, where a refusal goes, is wrong on those shapes too);
+        unit tests pin both.
+      - Neo4j oracle, switch on, vs S7e2b: unchanged (MATCH 409). Live suite:
+        unchanged but the timing-flaky test.
+      - Two adversarial review rounds (about 600 probes, ClickHouse 26.7
+        and 25.8, branch and `main`, against Neo4j). The first found the
+        named-tuple design unsound (positional comparison and merging,
+        converted value types, non-constant aggregate types); the second
+        found every read of a `Dynamic` value wrong somewhere (25.8 joins of
+        `UInt8` with `Int64` match nothing, booleans equal numbers, `count`
+        counts a NULL `Dynamic`, lists sort as text). Reads are refused; on
+        the final build no new-path answer differs from Neo4j where `main`'s
+        did not, and `keys()` is as `main` gave it.
   - [x] **S7e2b: a walk's nodes and relationships as lists** (§4.4
     "Implemented in S7e2b"): walks of one definition carry element tuples
     when read as a list's elements; `nodes(p)` / `relationships(p)` of paths
