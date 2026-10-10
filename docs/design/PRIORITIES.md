@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; S7e3 #1347; next: S8 layouts (reading a map's value needs typed per-key values: a later list slice))
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; S7e3 #1347; S8a #1349 FK edges; next: S8b denormalized nodes (reading a map's value needs typed per-key values: a later list slice))
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,11 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-10: **P-4c S8a: FK edges** (#1349, `graph_catalog` `RelationshipSchema::is_edge_row_table` / `GraphSchema::with_fk_edges_as_edge_rows` / `Identifier::crosses_positionally`, `src/bound_plan/lower/path.rs` `standard_layout`, behind `CLICKGRAPH_BOUND_PLAN=on`). S8 split: S8a FK edges, then denormalized nodes, polymorphic edges / node tables, composite ids.
+  - An FK edge (its table one of its ends' node tables) is read as a table of relationships: the relationship and each end their own reads, tied on ids; walks by the generator's edge-table walk. A self-referencing one relates each row's node to the node it references, whichever of `from_id` / `to_id` holds the reference (#632, legacy's and the wiki's reading); its table is read with its node's view parameters and FINAL. Crossed composite ends (same columns, other order) are refused, also for edge tables (S4 lowered them crossed).
+  - Oracle MATCH 409 → 425 (one correct → error by the undeclared-property rule); corpus lowers 925 (was 787); sweeps on five graphs: every lowered shape equals Neo4j; mutation check 6 of 6; live suite: only SQL-text / legacy-encoded tests and now-correct goldens changed. Review: 3 findings fixed (self-referencing FK edges ran backwards; FK edge on a parameterized view; FINAL). #1348 filed (legacy crossed-composite guard gaps).
+  - Known cost: the table is read twice (relationship and its own node); eliding the node's read is a later optimization.
 
 - 2026-10-10: **P-4c S7e3: map literals as values** (#1347, `src/bound_plan/lower/expr.rs` `map_literal`, `Kind::Map`, `FunctionMapper::lists().map_of`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - A map literal is a `Map(String, Dynamic)` (as S6c's graph values): typed output (S4 stringified values), maps of any keys of one type; DISTINCT / grouping / UNION by S7d's DISTINCT key; `keys()` = `mapKeys`; temporal / spatial constructors keep their map form.

@@ -34,9 +34,10 @@
 //!
 //! Scope today — everything else is [`LowerError::Unsupported`] and the
 //! query is translated by the legacy pipeline:
-//! * MATCH and OPTIONAL MATCH over standard-layout labels and types
-//!   (`NodeSchema::is_standard_own_table`, `RelationshipSchema::
-//!   is_standard_edge_table`); fixed length or variable length, directed or
+//! * MATCH and OPTIONAL MATCH over labels with their own tables and types
+//!   whose table rows are relationships (`NodeSchema::is_standard_own_table`,
+//!   `RelationshipSchema::is_edge_row_table`: an edge table or, S8a, an FK
+//!   edge's node table); fixed length or variable length, directed or
 //!   undirected (S6, S7a). A node of several possible labels is one relation
 //!   of its labels' tables (`Scan::Labels`, S7b1), its rows carrying their
 //!   label; a fixed-length relationship of several possible types or label
@@ -74,6 +75,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
+use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema};
 use crate::query_planner::logical_plan::LogicalPlan;
@@ -166,6 +168,19 @@ pub enum ResultKind {
 
 /// Lower a bound statement to a render plan.
 pub fn lower_statement(
+    stmt: &BoundStatement,
+    schema: &GraphSchema,
+    options: &LowerOptions,
+) -> Result<Lowered, LowerError> {
+    // FK edges as tables of relationships (S8a): a self-referencing one's
+    // ends as its rows relate nodes (#632), its table read as its node's.
+    match schema.with_fk_edges_as_edge_rows() {
+        Some(read) => lower_over(stmt, &read, options),
+        None => lower_over(stmt, schema, options),
+    }
+}
+
+fn lower_over(
     stmt: &BoundStatement,
     schema: &GraphSchema,
     options: &LowerOptions,
@@ -2695,7 +2710,7 @@ impl<'s> Lowerer<'s> {
             Some(_) => self.edge_schema(&rel_type, &fl, &tl)?,
             // The type does not join these labels: only the path of none can
             // match (below), generated over its table.
-            None => Self::standard_edge(&rel_type, only)?,
+            None => self.standard_edge(&rel_type, only)?,
         };
         // With another label at either end only the path of none is left: a
         // node to itself.
@@ -3189,7 +3204,7 @@ impl<'s> Lowerer<'s> {
             .cloned()
             .collect();
         for a in &arms {
-            Self::standard_edge(&a.rel_type, a.schema)?;
+            self.standard_edge(&a.rel_type, a.schema)?;
             for label in [&a.schema.from_node, &a.schema.to_node] {
                 match self.schema.node_schema_opt(label) {
                     Some(ns) if ns.is_standard_own_table() => {}
@@ -3864,19 +3879,38 @@ impl<'s> Lowerer<'s> {
                 "no schema for ({from_label})-[:{rel_type}]->({to_label})"
             ));
         };
-        Self::standard_edge(rel_type, rs)
+        self.standard_edge(rel_type, rs)
     }
 
-    /// `rs` (of `rel_type`) if it is the standard layout.
+    /// `rs` (of `rel_type`) if its table's rows are its relationships, each
+    /// end's columns paired with its node's id as the schema plainly means.
     fn standard_edge(
+        &self,
         rel_type: &str,
         rs: &'s RelationshipSchema,
     ) -> Result<&'s RelationshipSchema, LowerError> {
-        if !rs.is_standard_edge_table() {
+        if !rs.is_edge_row_table() {
             return unsupported(format!("type {rel_type} is not the standard layout (S8)"));
         }
         if rs.constraints.is_some() {
             return unsupported("an edge `constraints:` expression (S8)");
+        }
+        // An end's columns are tied to its node's id position by position:
+        // the same columns in another order would cross them (#672/#1010;
+        // legacy refuses it too).
+        for (end, label) in [(&rs.from_id, &rs.from_node), (&rs.to_id, &rs.to_node)] {
+            let Some(ns) = self.schema.node_schema_opt(label) else {
+                return unsupported(format!("label {label} has no node schema"));
+            };
+            let id = Identifier::from(ns.id_physical_columns());
+            if end.crosses_positionally(&id) {
+                return unsupported(format!(
+                    "type {rel_type} pairs {:?} with {label}'s id {:?}: the same \
+                     columns in another order (#672/#1010)",
+                    end.columns(),
+                    id.columns()
+                ));
+            }
         }
         Ok(rs)
     }

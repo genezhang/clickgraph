@@ -118,6 +118,167 @@ fn a_hop_joins_node_edge_node_in_path_order() {
     );
 }
 
+/// S8a: FK edges, whose table is one of their ends' node tables, of one
+/// relationship per row: a self-referencing one, and one whose columns name
+/// its end's id columns in another order.
+fn fk_schema() -> GraphSchema {
+    GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_fk
+graph_schema:
+  nodes:
+    - label: Obj
+      database: db
+      table: objs
+      node_id: object_id
+      property_mappings: { object_id: object_id, name: name }
+    - label: Comment
+      database: db
+      table: comments
+      node_id: comment_id
+      property_mappings: { comment_id: comment_id }
+    - label: Doc
+      database: db
+      table: docs
+      node_id: doc_id
+      view_parameters: [tenant]
+      property_mappings: { doc_id: doc_id }
+    - label: Ver
+      database: db
+      table: vers
+      node_id: ver_id
+      use_final: true
+      property_mappings: { ver_id: ver_id }
+    - label: Forum
+      database: db
+      table: forums
+      node_id: [region, forum_id]
+      property_mappings: { region: region, forum_id: forum_id }
+  edges:
+    - type: PARENT
+      database: db
+      table: objs
+      from_id: parent_id
+      to_id: object_id
+      from_node: Obj
+      to_node: Obj
+      property_mappings: {}
+    - type: REVISES
+      database: db
+      table: docs
+      from_id: doc_id
+      to_id: prev_id
+      from_node: Doc
+      to_node: Doc
+      property_mappings: {}
+    - type: ABOUT
+      database: db
+      table: vers
+      from_id: ver_id
+      to_id: comment_ref
+      from_node: Ver
+      to_node: Comment
+      property_mappings: {}
+    - type: IN_FORUM
+      database: db
+      table: comments
+      from_id: comment_id
+      to_id: [forum_id, region]
+      from_node: Comment
+      to_node: Forum
+      property_mappings: {}
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap()
+}
+
+#[test]
+fn an_fk_edge_is_read_as_a_table_of_relationships() {
+    // Its rows are relationships: the table is read for the relationship and
+    // again for the end it holds, as an edge table and its end would be (a
+    // row whose reference is NULL or names no node joins no node).
+    has(
+        "MATCH (u:User)-[:AUTHORED]->(p:Post) RETURN u.name, p.title",
+        &["FROM test_integration.users_test AS v0 \
+           JOIN test_integration.posts_test AS v1 ON v1.author_id = v0.user_id \
+           JOIN test_integration.posts_test AS v2 ON v1.post_id = v2.post_id"],
+    );
+    // A self-referencing one relates each row's node to the node its
+    // reference names (#632; `from_id: parent_id` is the child's reference):
+    // `(c)-[:PARENT]->(p)` is a child and its parent.
+    let schema = fk_schema();
+    let hop = lowered(
+        "MATCH (c:Obj)-[:PARENT]->(p:Obj) RETURN c.name, p.name",
+        &schema,
+        &LowerOptions::default(),
+    );
+    let part = "FROM db.objs AS v0 JOIN db.objs AS v1 ON v1.object_id = v0.object_id \
+                JOIN db.objs AS v2 ON v1.parent_id = v2.object_id";
+    assert!(hop.contains(part), "missing `{part}` in\n{hop}");
+    // A walk over one is the generator's walk of an edge table, joining each
+    // relationship's row and the node it enters, deduplicated on
+    // relationships from a zero lower bound (not its FK-edge walk, #902).
+    let walk = lowered(
+        "MATCH (a:Obj)-[:PARENT*0..2]->(b:Obj) RETURN a.name, b.name",
+        &schema,
+        &LowerOptions::default(),
+    );
+    for part in [
+        "FROM vlp_v1_path vp JOIN db.objs AS rel ON vp.end_id = rel.object_id \
+         JOIN db.objs AS end_node ON rel.parent_id = end_node.object_id",
+        "NOT has(vp.path_edges, tuple(rel.object_id, rel.parent_id))",
+    ] {
+        assert!(walk.contains(part), "missing `{part}` in\n{walk}");
+    }
+    // So is a walk of several types through one.
+    has(
+        "MATCH (a:User)-[*1..2]->(b:Post) RETURN count(*)",
+        &["test_integration.posts_test"],
+    );
+}
+
+#[test]
+fn an_fk_edge_is_read_as_its_node_table_is() {
+    // Its rows are its node's: an edge that declares no view parameters is
+    // read with its node's (legacy reads it so).
+    let options = LowerOptions {
+        view_parameter_values: Some(HashMap::from([("tenant".to_string(), "7".to_string())])),
+        ..LowerOptions::default()
+    };
+    let got = lowered(
+        "MATCH (a:Doc)-[:REVISES]->(b:Doc) RETURN count(*)",
+        &fk_schema(),
+        &options,
+    );
+    assert_eq!(got.matches("db.docs(tenant = '7')").count(), 3, "{got}");
+    // And with its node's FINAL, which a joined read cannot print yet: not
+    // lowered, rather than read without it (stale row versions).
+    let err = translate_bound_plan(
+        "MATCH (a:Ver)-[:ABOUT]->(b:Comment) RETURN count(*)",
+        &fk_schema(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(err.contains("FINAL on a joined table"), "{err}");
+}
+
+#[test]
+fn an_end_paired_with_its_id_columns_in_another_order_is_refused() {
+    // `to_id: [forum_id, region]` against the id `[region, forum_id]` would
+    // tie `forum_id = region` (#672/#1010; legacy refuses it too).
+    let schema = fk_schema();
+    for q in [
+        "MATCH (c:Comment)-[:IN_FORUM]->(f:Forum) RETURN count(*)",
+        "MATCH (f:Forum)<-[:IN_FORUM]-(c) RETURN count(*)",
+        "MATCH (c:Comment)-[r]->(f) RETURN count(r)",
+    ] {
+        let err = translate_bound_plan(q, &schema, &ReadOptions::default()).unwrap_err();
+        assert!(err.contains("another order (#672/#1010)"), "{q}: {err}");
+    }
+}
+
 #[test]
 fn a_closed_pattern_ties_one_scan_twice() {
     has(
@@ -487,11 +648,6 @@ fn what_is_not_lowered_yet() {
     not_lowered(
         "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) RETURN r[0] AS n",
         "an element or slice of a list of nodes or relationships",
-    );
-    // A path from a user to a post can use AUTHORED, an FK edge.
-    not_lowered(
-        "MATCH (a:User)-[*1..2]->(b:Post) RETURN count(*)",
-        "not the standard layout (S8)",
     );
     not_lowered("MATCH (a:User) WHERE id(a) = 1 RETURN a.name", "id()");
     not_lowered("MATCH (n) RETURN n.*", "`v.*` of an element of several");

@@ -40,6 +40,15 @@ def test_relationship_endpoints_are_compared():
     assert verdict(q, result, [{"r.from_id": 8, "r.to_id": 7, "r.since": 1}]) == "MISMATCH"
 
 
+def test_composite_relationship_endpoints_are_folded_and_compared():
+    q = "MATCH ()-[r]->() RETURN r"
+    rel = {"__cg_from": '["eu", 1]', "__cg_to": '["us", 2]'}
+    result = neo(["r"], [[(rel, {"type": "relationship"})]])
+    cg = {"r.from_id_1": "eu", "r.from_id_2": 1, "r.to_id_1": "us", "r.to_id_2": 2}
+    assert verdict(q, result, [cg]) == "MATCH"
+    assert verdict(q, result, [{**cg, "r.to_id_2": 3}]) == "MISMATCH"
+
+
 def test_null_optional_entity_is_no_columns_on_both_sides():
     q = "MATCH (u) OPTIONAL MATCH (u)-->(p) RETURN u.id, p"
     result = neo(["u.id", "p"], [[(1, None), (None, None)]])

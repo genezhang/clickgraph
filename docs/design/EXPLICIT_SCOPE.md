@@ -1154,6 +1154,64 @@ types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
   the node union (CTEs ClickHouse cannot size), against one table's integer
   joins.
 
+**Implemented in S8a** (FK edges; `RelationshipSchema::is_edge_row_table`,
+`path::standard_layout`, `Identifier::crosses_positionally`):
+- **What an FK edge is.** Its table is one of its ends' node tables: each
+  row is a node holding a reference (`from_id` or `to_id`) to the other end
+  (`AUTHORED` on the posts table, a self-referencing `PARENT` on a file
+  table). Like an edge table's, its rows are its relationships, one per
+  row, from the node its `from_id` names to the node its `to_id` names.
+- **Ends.** For an edge table, a row's `from_id` holds its from-node's id
+  and its `to_id` its to-node's. A self-referencing FK edge (one label at
+  both ends) relates each row's node to the node its reference names,
+  whichever of `from_id` / `to_id` the schema writes the reference in: the
+  documented `from_id: parent_id, to_id: object_id` is child to parent, as
+  is `from_id: comment_id, to_id: reply_of_id` (#632, legacy's reading;
+  the review found the first cut reading the first form backwards). The
+  catalog writes such an edge's ends as an edge table's
+  (`GraphSchema::with_fk_edges_as_edge_rows`: `from_id` the node's id,
+  `to_id` the reference), and the lowering reads that schema
+  (`lower_statement`), so every scan, walk, identity and value agrees. The
+  oracle loader reads the same rule.
+- **Table options.** An FK edge's rows are its owning node's rows. Where
+  the edge declares no view parameters, its table is read with its node's
+  (the review: a node on a parameterized view with an edge declaring none
+  read the bare view, a ClickHouse error, where legacy answers). It is read
+  with FINAL when its node's is (a loaded `use_final` is always set, so an
+  edge's unset one cannot be told apart from `false`); a joined read cannot
+  print FINAL yet, so such an edge is not lowered rather than read with
+  stale row versions (the review). A `filter:` stays the edge's own: it
+  says which rows are relationships.
+- **Read as an edge table.** The relationship is a read of the table and
+  each end a read of its own label's table, tied on the end's id, as for an
+  edge table (§4.6 1–2): the same scans, ties, uniqueness, unions, walks and
+  values. A row whose reference is NULL or names no node, or whose own node
+  is not one (its label's `filter:`), joins no node, so it is no
+  relationship. That is the oracle loader's graph: it loads one
+  relationship per row and drops those whose ends are NULL or no node.
+- **Walks.** The generator is given an edge table's walk
+  (`JoinStrategy::Traditional`, each step joining the relationship's row
+  and the node it enters) in place of the `FkEdgeJoin` that
+  `PatternSchemaContext` reports. Its FK-edge walk reads the referenced
+  node's row in place of the relationship's and keeps node uniqueness at a
+  zero lower bound (#902); with it the mutation check's sweep errors or
+  differs on 10 shapes.
+- **Crossed ends.** An end whose columns are its node's id columns in
+  another order (`to_id: [forum_id, region]` against the id `[region,
+  forum_id]`) is refused: paired position by position it would tie
+  `forum_id = region` (#672 / #1010, which legacy refuses with the same
+  test, now `Identifier::crosses_positionally`). This also holds for edge
+  tables, which S4 lowered with the columns crossed. A refusal falls back,
+  and legacy's guard misses some shapes (an unlabeled end, a walk of
+  several types), which it answers crossed, as `main` does (#1348).
+- **Known cost.** The table is read twice, for the relationship and for
+  the node whose row it is. Reading that node from the relationship's row
+  is a join elimination for later: it holds only where the node's
+  `filter:`, view parameters and FINAL hold of the relationship's read.
+- **Undeclared properties** of an FK edge read the same-named column of its
+  table (the rule, §4.4), so a node's column: `r.title` of `AUTHORED` is the
+  post's title, where Neo4j has none.
+
 ### 4.7 Label inference
 
 Labels are inferred over the explicit pattern graph of each clause, with
@@ -3150,7 +3208,54 @@ slice that will handle it.
       - Live suite, switch on, vs S7b1: one known-wrong golden now correct
         (`MATCH ()-[r:LIKED]-() RETURN r LIMIT 25`), nothing else changed.
       - Timing: above (§4.6).
-- [ ] S8 layouts
+- [ ] S8 layouts, in sub-slices: S8a FK edges (done), then denormalized
+  nodes (embedded in an edge table, mixed access, coupled edges),
+  polymorphic edges and node tables (type and label columns), composite
+  ids (values, lists, walks).
+  - [x] **S8a: FK edges** (§4.6 "Implemented in S8a"): a relationship whose
+    table is one of its ends' node tables is read as a table of
+    relationships; a self-referencing one's ends as legacy reads them
+    (#632); its table read with its node's view parameters and FINAL;
+    crossed composite ends refused.
+    - Acceptance:
+      - Neo4j oracle, switch on, vs S7e3: social_integration + standard
+        MATCH 409 → 425 (16 wrong, erroring or incomparable answers now
+        equal Neo4j); one correct → error, `WITH a, p, p.likes AS
+        like_count`: `likes` is undeclared on `Post` and `posts_test` has no
+        such column, a ClickHouse error under the undeclared-property rule
+        (legacy drops the unused item); sqlgen_fk_edge 9 of 9 unchanged. The
+        corpus lowers 925 queries (was 787).
+      - Generated shapes against Neo4j (the oracle loader reads a
+        self-referencing FK edge as legacy does): three scratch graphs (a
+        self-referencing FK edge in both spellings with NULL, dangling,
+        self-loop and cyclic references; an FK edge on the to-node table with
+        a node `filter:`; one on the from-node table with properties; a
+        separate edge table beside them; composite FK edges), the FK-edge
+        wiki's file tree, and the review's graphs (an FK edge beside an edge
+        table, one table as two labels by `filter:`, two FK edges on one
+        row): every lowered shape equals Neo4j but unordered `collect()`
+        orders; legacy is wrong or errors on about half of them.
+      - Mutation check: 6 rules broken in turn, all caught: 3 by the sweep
+        (FK edges refused; the generator's FK-edge walk, which errors or
+        differs on 10 shapes; self-referencing ends as written, 51 shapes);
+        3 by unit tests (crossed ends, view parameters, FINAL), which the
+        loader cannot show (it pairs columns as written and reads no table
+        options).
+      - Adversarial review (about 110 shapes, own graphs, ClickHouse 26.7):
+        three findings, fixed. A self-referencing FK edge ran backwards
+        (`from_id: parent_id, to_id: object_id` read as parent to child,
+        where the wiki, the examples, the goldens and legacy have child to
+        parent; the first oracle loader read it the same wrong way, so the
+        sweep agreed); a node on a parameterized view with an FK edge
+        declaring none read the bare view (correct → ClickHouse error); a
+        node's FINAL was not applied to its FK edge's read (stale versions;
+        now not lowered, as a joined read prints no FINAL). Not from this
+        slice: legacy's crossed-composite guard misses some shapes, which a
+        refusal falls back to (#1348).
+      - Live suite, switch on, vs S7e3: SQL-text tests of legacy CTE names
+        (5), a test encoding `labels(x)[1]` as 1-based (Neo4j: NULL, as the
+        new path answers), the undeclared `p.likes` above, and result goldens
+        whose recorded wrong outcome is now correct; nothing else.
 - [ ] S9 subquery expressions
 - [ ] S10 default on
 - [ ] S11 legacy deletion
