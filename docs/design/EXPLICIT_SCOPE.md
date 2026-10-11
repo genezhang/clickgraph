@@ -3980,6 +3980,20 @@ slice that will handle it.
       counted (now falls back; #1377). Filed: legacy fallbacks that answer
       wrongly for list-of-element shapes the bound plan refuses (#1378);
       the parallel-relationship identity contract gathered on #1356.
+  - [x] **S11c: lists of lists of nodes or relationships.** `collect()` of a
+    list that is never NULL (S11b's `never_null_element_list`) is an array
+    of those lists; a returned list of lists maps each level to its
+    elements' values, a lambda parameter per depth (`__cg_e` at the outer
+    level as before, `__cg_e1`… inside: single-level SQL byte-identical).
+    Bolt and graph output already recurse through nested `GraphType::List`.
+    Retires the last #1375 repro (it fell back to the legacy miscount).
+    - Acceptance: generated shapes against Neo4j (`collect(nodes(p))` /
+      `collect(relationships(p))` of fixed and variable-length paths,
+      `collect()` of collected lists incl. over OPTIONAL rows, nested
+      literals, UNWIND of lists of lists, sizes, `collect(DISTINCT
+      relationships(p))`): every lowered shape equal to Neo4j, list orders
+      compared as multisets where they follow `collect()`. Corpus and
+      scorecard unchanged; live suite unchanged.
     - Acceptance:
       - Generated shapes against Neo4j on `social_integration` (`count(p)`
         grouped, DISTINCT, OPTIONAL, union walks, zero-length paths,
