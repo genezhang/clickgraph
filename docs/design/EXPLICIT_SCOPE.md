@@ -3929,7 +3929,8 @@ slice that will handle it.
   plan lowers 1420 corpus queries; the rest fall back. Of those, the 24
   the clause-list parser rejects are invalid Cypher or end without RETURN
   (S2), and 6 are bind errors Neo4j also gives. The others, in sub-slices:
-  path list functions (S11a); `count()` of a carried list (#1375); `label()`, `id()` outside a RETURN item and
+  path list functions (S11a); `count()` of a carried list (S11b, #1375);
+  lists of lists of nodes / relationships (`collect(nodes(p))`); `label()`, `id()` outside a RETURN item and
   ORDER BY an `id()` item; ordered SKIP / LIMIT after DISTINCT, aggregation
   or UNWIND; undeclared properties of a node embedded in edge tables;
   pattern predicates inside list comprehensions (#629); and errors where
@@ -3952,6 +3953,22 @@ slice that will handle it.
     - Not lowered yet: `count()` of a carried list of nodes or
       relationships (carried as tuples). The legacy fallback miscounts
       `count(DISTINCT)` of one (#1375); next in the coverage list.
+  - [x] **S11b: `count()` of a list of nodes or relationships** (#1375):
+    a list of element tuples is never NULL (a path an OPTIONAL MATCH may
+    leave NULL carries a value, not tuples), so `count(l)` counts rows and
+    `count(DISTINCT l)` the distinct lists by their elements' identities in
+    order (`arrayMap` to the identity slots: two rows of one identity with
+    different properties are one element).
+    - Acceptance: generated shapes against Neo4j (carried `nodes(p)` /
+      `relationships(p)` of fixed, variable-length, undirected and union
+      walks, `collect()`ed lists, list literals, grouped, nested WITH,
+      ordered): every lowered shape equal to Neo4j. Corpus unchanged (1428;
+      no corpus query counts a list). Scorecard unchanged. Live suite: the
+      9 multi-tenant failures that predate S10a.
+    - Still falls back: `collect()` of lists of nodes or relationships (a
+      list of lists), which brings a query with it to the legacy pipeline,
+      where `count(DISTINCT relationships(p))` in the same query is
+      miscounted (#1375).
     - Acceptance:
       - Generated shapes against Neo4j on `social_integration` (`count(p)`
         grouped, DISTINCT, OPTIONAL, union walks, zero-length paths,
