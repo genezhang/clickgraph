@@ -18,7 +18,8 @@
 //!    only `t1`/`t2` were bound, leaving `t3` dangling. The edge columns must resolve
 //!    against the bound coupled-endpoint alias instead.
 
-use crate::clickhouse_query_generator::cypher_to_sql;
+// The legacy pipeline's tests: its route (the bound plan is the default, P-4c S10).
+use crate::clickhouse_query_generator::cypher_to_sql_legacy as cypher_to_sql;
 use crate::graph_catalog::config::GraphSchemaConfig;
 use crate::server::query_context::{set_current_schema, with_query_context, QueryContext};
 use std::sync::Arc;

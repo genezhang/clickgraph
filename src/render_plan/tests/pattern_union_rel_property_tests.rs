@@ -167,7 +167,8 @@ fn cypher_to_sql_with(schema_yaml: &str, cypher: &str) -> String {
         .expect("parse schema yaml")
         .to_graph_schema()
         .expect("build graph schema");
-    crate::sql_generator::emitters::clickhouse::cypher_to_sql(cypher, &graph_schema, 100)
+    // The legacy pipeline's route (the bound plan is the default, P-4c S10).
+    crate::sql_generator::emitters::clickhouse::cypher_to_sql_legacy(cypher, &graph_schema, 100)
         .expect("translate cypher to sql")
 }
 

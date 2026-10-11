@@ -62,10 +62,22 @@ def test_hop_off_carried_node_then_a_hop_after_the_second_with(carried):
     assert _bag(q) == expected
 
 
-def test_path_off_carried_node_in_a_with_body_is_refused_not_cross_joined():
+def test_path_off_carried_node_in_a_with_body_is_tied_not_cross_joined():
+    # one row per (carried c, trail of 1..2 flights from c); the path is a separate MATCH, so it
+    # may reuse the flight that carried c
+    edges = _edges()
+
+    def trails(node, used, depth):
+        found = 1 if depth else 0
+        if depth < 2:
+            for i, (s, d) in enumerate(edges):
+                if s == node and i not in used:
+                    found += trails(d, used | {i}, depth + 1)
+        return found
+
+    expected = sum(trails(c, frozenset(), 0) for _, c in edges)
     q = CARRY + "MATCH (c)-[:FLIGHT*1..2]->(a:Airport) WITH c, a RETURN count(*) AS k"
-    result = execute_cypher(q, schema_name=SCHEMA, raise_on_error=False)
-    assert "results" not in result or result.get("error"), result
+    assert int(_rows(q)[0]["k"]) == expected == 25
 
 
 # --- a path between two carried nodes inside a WITH body (standard layout) -------------------------

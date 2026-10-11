@@ -373,6 +373,7 @@ async fn sql_generation_handler_inner(
             crate::translate::ReadOptions {
                 view_parameter_values,
                 max_cte_depth: app_state.config.max_cte_depth,
+                cypher: Some(clean_query.to_string()),
                 ..Default::default()
             },
         ) {
@@ -381,6 +382,7 @@ async fn sql_generation_handler_inner(
                 let error_type = match e {
                     crate::translate::TranslateError::Planning(_) => "PlanningError",
                     crate::translate::TranslateError::Render(_) => "RenderError",
+                    crate::translate::TranslateError::Invalid(_) => "QueryError",
                 };
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,

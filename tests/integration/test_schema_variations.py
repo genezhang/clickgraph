@@ -160,14 +160,18 @@ class TestStandardSchema:
         assert_sql_generated(result, "follow_date", "full_name")
 
     def test_graphrag_expansion(self):
-        """Multi-type VLP expansion across FOLLOWS and AUTHORED edges."""
+        """Multi-type VLP expansion across FOLLOWS and AUTHORED edges.
+
+        Both relationship types' tables must be read (executed, the query
+        returns 20 whole-node rows: 12 users and 8 posts, as in Neo4j 5.26).
+        """
         result = query_sql_only(
             "MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(target) "
             "WHERE u.user_id = 1 "
-            "RETURN target LIMIT 10",
+            "RETURN target",
             self.config.schema_name
         )
-        assert_sql_generated(result, "vlp_multi_type")
+        assert_sql_generated(result, "user_follows", "posts")
 
 
 # ============================================================================
@@ -375,14 +379,17 @@ class TestPolymorphicSchema:
         assert_sql_generated(result, "interactions")
 
     def test_graphrag_expansion(self):
-        """Multi-type VLP expansion across FOLLOWS and LIKES edges."""
+        """Multi-type VLP expansion across FOLLOWS and LIKES edges.
+
+        Both types live in the one polymorphic `interactions` table.
+        """
         result = query_sql_only(
             "MATCH (u:User)-[:FOLLOWS|LIKES*1..2]->(target) "
             "WHERE u.user_id = 1 "
-            "RETURN target LIMIT 10",
+            "RETURN target",
             self.config.schema_name
         )
-        assert_sql_generated(result, "vlp_multi_type")
+        assert_sql_generated(result, "interactions")
 
 
 # ============================================================================

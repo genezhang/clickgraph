@@ -439,18 +439,19 @@ class TestSyntaxErrors:
 # =============================================================================
 
 class TestSchemaErrors:
-    """Tests that should fail due to schema issues."""
+    """Schema mismatches: unknown labels/types match nothing; bad schema names fail."""
     
     def test_nonexistent_label(self):
-        """Querying a non-existent label should error."""
+        """A label not in the schema matches nothing (Neo4j semantics): empty result."""
         response = execute_cypher("MATCH (x:NonExistentLabel) RETURN x.name")
-        # Should return error - label not in schema
-        assert response.status_code in [400, 500] or "not found" in response.text.lower()
+        assert response.status_code == 200, response.text
+        assert response.json()["results"] == []
     
     def test_nonexistent_relationship_type(self):
-        """Querying a non-existent relationship type should error."""
+        """A relationship type not in the schema matches nothing (Neo4j semantics): empty result."""
         response = execute_cypher("MATCH (u:User)-[:FAKE_REL]->(g:Group) RETURN u.name")
-        assert response.status_code in [400, 500] or "not found" in response.text.lower()
+        assert response.status_code == 200, response.text
+        assert response.json()["results"] == []
     
     def test_invalid_property_in_where(self):
         """Property that doesn't exist on the node type."""

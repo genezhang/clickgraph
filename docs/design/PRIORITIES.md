@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; S7e3 #1347; S8a #1349 FK edges; S8b #1350 embedded nodes; S8c #1351 polymorphic edges / label-column nodes; S8d1 #1353 composite-id walks; S9 #1357 subquery expressions; S8d2a #1359 composite shortest paths; S8d2b #1361 composite union walks; S8d2c #1363 composite values / lists (S8 done); next: S10 default on (reading a map's value needs typed per-key values: a later list slice))
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; S7e3 #1347; S8a #1349 FK edges; S8b #1350 embedded nodes; S8c #1351 polymorphic edges / label-column nodes; S8d1 #1353 composite-id walks; S9 #1357 subquery expressions; S8d2a #1359 composite shortest paths; S8d2b #1361 composite union walks; S8d2c #1363 composite values / lists (S8 done); S10a #PR default on; next: S10b parse failures to the new path, then S11 legacy deletion (reading a map's value needs typed per-key values: a later list slice))
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -740,6 +740,10 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-10-11: **P-4c S10a: the bound plan is the default** (#PR, `translate::BoundPlanMode::from_env` on unless `CLICKGRAPH_BOUND_PLAN=off`; `TranslateError::Invalid`).
+  - A bind error Neo4j also gives is the query's error (HTTP 400 / Bolt), not a legacy fallback; `/query/sql` and the export inner queries now pass the query text, so every route agrees.
+  - Scorecard regenerated on the default: 57 CG_ERROR and 22 MISMATCH → MATCH; 4 → CG_ERROR, all reads of undeclared properties (user rule; EXTENSION). Oracle off vs on (20 schemas): 197 wrong → right. Live suite: 4825 passed, remaining failures pre-existing; 67 legacy-contract tests rewritten against Neo4j / brute-force oracles; `test_denormalized_edges` no longer replaces the shared `denormalized_flights` schema.
+  - LDBC SF1: +3.5% total; slower queries are legacy-wrong (short-2, bi-6) or ≤1.6× (bi-5, bi-18); no right → wrong by hand-written ground truth. Filed #1364, #1365, #1366 (LDBC schema cannot say a Post is a Message).
 - 2026-10-11: **P-4c S8d2c: composite ids in values and lists** (#1363, `emit_id_expr` under `composite_by_columns`, `src/bound_plan/lower/value.rs` `element_id_sql`, `elements.rs` `Layout`, behind `CLICKGRAPH_BOUND_PLAN=on`). S8 complete.
   - The lowering's walks spell a composite id as its tuple's text (collision-free, as S8d2a/b's keys); values' identities use it; element ids follow the contract (`|`-joined parts); list tuples hold a slot per id column; `count(DISTINCT)` of a list element of a composite identity counts its tuple; composite shortest paths read as paths with conditions are lowered.
   - Sweeps: 53 value / list shapes, every lowered one equal to Neo4j but `collect` order, shortest-path picks among equals (checked) and a comparator note. Oracle unchanged; mutation check 5 of 5; live suite unchanged.

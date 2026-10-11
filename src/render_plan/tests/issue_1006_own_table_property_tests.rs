@@ -32,7 +32,8 @@
 //! - Properties already in the edge's embedded map (e.g. `a.pid`) stay on the
 //!   edge; no extra join is injected when nothing needs the own table.
 
-use crate::clickhouse_query_generator::cypher_to_sql;
+// The legacy pipeline's tests: its route (the bound plan is the default, P-4c S10).
+use crate::clickhouse_query_generator::cypher_to_sql_legacy as cypher_to_sql;
 use crate::graph_catalog::config::GraphSchemaConfig;
 use crate::server::query_context::{set_current_schema, with_query_context, QueryContext};
 use std::sync::Arc;

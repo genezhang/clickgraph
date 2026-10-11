@@ -118,13 +118,17 @@ def test_path_endpoint_compared_with_a_carried_node_outside_the_path(layout, whe
     assert _count(schema, q) == expected, q
 
 
-def test_optional_path_compared_with_an_outside_node_is_refused():
-    result = _result(
-        "social_integration",
+def test_optional_path_compared_with_an_outside_node():
+    # OPTIONAL MATCH is its own clause: its path may reuse the first MATCH's edge. A `z`-`c` row
+    # with no path whose end differs from `z` is kept once, with `b` NULL.
+    schema, label, rel, key = LAYOUTS["standard"]
+    edges = _edges(schema, label, rel, key)
+    expected = sum(max(1, sum(1 for b, _ in _trails(edges, c, 1, 2) if b != z)) for z, c in edges)
+    q = (
         "MATCH (z:User)-[:FOLLOWS]->(c:User) OPTIONAL MATCH (c)-[:FOLLOWS*1..2]->(b:User) "
-        "WHERE b <> z RETURN count(*) AS k",
+        "WHERE b <> z RETURN count(*) AS k"
     )
-    assert "results" not in result or result.get("error"), result
+    assert _count(schema, q) == expected == 107, q
 
 
 # --- review of #1309 -------------------------------------------------------------------------------
@@ -148,17 +152,33 @@ def test_closed_path_compared_with_an_outside_node_is_never_wrong(query, expecte
         assert result["results"][0]["k"] == expected, query
 
 
-@pytest.mark.parametrize(
-    "query",
-    [
-        # the other path's endpoint was resolved against this path's CTE (73 vs 159)
+def test_chained_paths_compared_across_their_endpoints():
+    # the other path's endpoint was once resolved against this path's CTE (73 vs 159); both paths
+    # are in one MATCH, so they share no edge
+    schema, label, rel, key = LAYOUTS["standard"]
+    edges = _edges(schema, label, rel, key)
+    expected = sum(
+        1
+        for a in {s for s, _ in edges}
+        for c, used in _trails(edges, a, 1, 2)
+        for b, _ in _trails(edges, c, 1, 2, used)
+        if b > a
+    )
+    q = (
         "MATCH (a:User)-[:FOLLOWS*1..2]->(c:User)-[:FOLLOWS*1..2]->(b:User) "
-        "WHERE b.user_id > a.user_id RETURN count(*) AS k",
-        # a WHERE equality became the WITH CTE's join key; `c` was left untied (160 vs 20)
+        "WHERE b.user_id > a.user_id RETURN count(*) AS k"
+    )
+    assert _count(schema, q) == expected == 159, q
+
+
+def test_incoming_path_compared_with_a_carried_node():
+    # a WHERE equality once became the WITH CTE's join key and left `c` untied (160 vs 20)
+    schema, label, rel, key = LAYOUTS["standard"]
+    edges = _edges(schema, label, rel, key)
+    reverse = [(d, s) for s, d in edges]
+    expected = sum(1 for z, c in edges for b, _ in _trails(reverse, c, 1, 2) if b == z)
+    q = (
         "MATCH (z:User)-[:FOLLOWS]->(c:User) WITH c, z "
-        "MATCH (c)<-[:FOLLOWS*1..2]-(b:User) WHERE b.user_id = z.user_id RETURN count(*) AS k",
-    ],
-)
-def test_unsupported_outside_comparisons_are_refused(query):
-    result = _result("social_integration", query)
-    assert "results" not in result or result.get("error"), result
+        "MATCH (c)<-[:FOLLOWS*1..2]-(b:User) WHERE b.user_id = z.user_id RETURN count(*) AS k"
+    )
+    assert _count(schema, q) == expected == 20, q

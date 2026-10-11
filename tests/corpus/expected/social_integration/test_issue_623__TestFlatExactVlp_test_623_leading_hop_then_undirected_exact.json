@@ -154,14 +154,14 @@
  "rows": [
   "{\"a.name\": \"Alice Johnson\", \"c.name\": \"Bob Smith\"}",
   "{\"a.name\": \"Alice Johnson\", \"c.name\": \"Bob Smith\"}",
-  "{\"a.name\": \"Alice Johnson\", \"c.name\": \"Bob Smith\"}",
+  "{\"a.name\": \"Alice Johnson\", \"c.name\": \"Carol White\"}",
+  "{\"a.name\": \"Alice Johnson\", \"c.name\": \"Carol White\"}",
+  "{\"a.name\": \"Alice Johnson\", \"c.name\": \"Eve Davis\"}",
+  "{\"a.name\": \"Alice Johnson\", \"c.name\": \"Eve Davis\"}",
   "{\"a.name\": \"Alice Johnson\", \"c.name\": \"Iris Martinez\"}",
   "{\"a.name\": \"Alice Johnson\", \"c.name\": \"Iris Martinez\"}",
   "{\"a.name\": \"Alice Johnson\", \"c.name\": \"Jack Taylor\"}",
-  "{\"a.name\": \"Alice Johnson\", \"c.name\": \"Jack Taylor\"}",
-  "{\"a.name\": \"Alice Johnson\", \"c.name\": \"Mia Jackson\"}",
-  "{\"a.name\": \"Alice Johnson\", \"c.name\": \"Mia Jackson\"}",
-  "{\"a.name\": \"Alice Johnson\", \"c.name\": \"Noah Harris\"}"
+  "{\"a.name\": \"Alice Johnson\", \"c.name\": \"Jack Taylor\"}"
  ],
  "schema": "social_integration"
 }

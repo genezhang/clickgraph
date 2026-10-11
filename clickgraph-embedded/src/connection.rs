@@ -1727,24 +1727,15 @@ graph_schema:
             )
             .unwrap();
         println!("Fan-in SQL:\n{}", sql);
-        // Fan-in: all three VLP CTEs should appear, joined on end_id
-        assert!(
-            sql.contains("vlp_multi_type_a_x"),
-            "SQL should include a→x CTE: {}",
+        // Fan-in: each of the three relationships (a union of the types) is
+        // joined, and each ends at the one `x` scan.
+        assert_eq!(sql.matches("_rels AS v").count(), 3, "{}", sql);
+        assert_eq!(
+            sql.matches("__cg_end_0 = v4._tck_id").count(),
+            3,
+            "every relationship should end at x: {}",
             sql
         );
-        assert!(
-            sql.contains("vlp_multi_type_b_x"),
-            "SQL should include b→x CTE: {}",
-            sql
-        );
-        assert!(
-            sql.contains("vlp_multi_type_c_x"),
-            "SQL should include c→x CTE: {}",
-            sql
-        );
-        // The outer SELECT should join the CTEs on end_id
-        assert!(sql.contains("end_id"), "SQL should join on end_id: {}", sql);
     }
 
     fn build_writable_test_schema() -> Arc<GraphSchema> {

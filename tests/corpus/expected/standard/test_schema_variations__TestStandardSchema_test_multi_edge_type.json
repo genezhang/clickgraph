@@ -1,0 +1,23 @@
+{
+ "columns": [
+  "target"
+ ],
+ "cypher": "MATCH (u:User)-[:FOLLOWS|AUTHORED]->(target) WHERE u.user_id = 1 RETURN target LIMIT 10",
+ "full_rows": [
+  "{\"target.age\": 25, \"target.city\": \"Toronto\", \"target.country\": \"Canada\", \"target.email\": \"carol@example.com\", \"target.is_active\": 1, \"target.name\": \"Carol White\", \"target.registration_date\": \"2021-03-10\", \"target.user_id\": 3}",
+  "{\"target.age\": 29, \"target.city\": \"San Francisco\", \"target.country\": \"USA\", \"target.email\": \"eve@example.com\", \"target.is_active\": 1, \"target.name\": \"Eve Davis\", \"target.registration_date\": \"2020-07-08\", \"target.user_id\": 5}",
+  "{\"target.age\": 32, \"target.city\": \"London\", \"target.country\": \"UK\", \"target.email\": \"bob@example.com\", \"target.is_active\": 1, \"target.name\": \"Bob Smith\", \"target.registration_date\": \"2019-05-20\", \"target.user_id\": 2}",
+  "{\"target.author_id\": 1, \"target.content\": \"Hello everyone!\", \"target.created_at\": \"2023-01-01\", \"target.post_id\": 1, \"target.title\": \"Introduction\"}",
+  "{\"target.author_id\": 1, \"target.content\": \"Latest blockbuster\", \"target.created_at\": \"2023-01-11\", \"target.post_id\": 11, \"target.title\": \"Movie Review\"}"
+ ],
+ "limit": 10,
+ "order_keys": null,
+ "rows": [
+  "{\"target.age\": 25, \"target.city\": \"Toronto\", \"target.country\": \"Canada\", \"target.email\": \"carol@example.com\", \"target.is_active\": 1, \"target.name\": \"Carol White\", \"target.registration_date\": \"2021-03-10\", \"target.user_id\": 3}",
+  "{\"target.age\": 29, \"target.city\": \"San Francisco\", \"target.country\": \"USA\", \"target.email\": \"eve@example.com\", \"target.is_active\": 1, \"target.name\": \"Eve Davis\", \"target.registration_date\": \"2020-07-08\", \"target.user_id\": 5}",
+  "{\"target.age\": 32, \"target.city\": \"London\", \"target.country\": \"UK\", \"target.email\": \"bob@example.com\", \"target.is_active\": 1, \"target.name\": \"Bob Smith\", \"target.registration_date\": \"2019-05-20\", \"target.user_id\": 2}",
+  "{\"target.author_id\": 1, \"target.content\": \"Hello everyone!\", \"target.created_at\": \"2023-01-01\", \"target.post_id\": 1, \"target.title\": \"Introduction\"}",
+  "{\"target.author_id\": 1, \"target.content\": \"Latest blockbuster\", \"target.created_at\": \"2023-01-11\", \"target.post_id\": 11, \"target.title\": \"Movie Review\"}"
+ ],
+ "schema": "standard"
+}

@@ -1492,6 +1492,11 @@ async fn query_handler_inner(
                     // Return 400 for planning errors (both sql_only and normal mode)
                     return Err((StatusCode::BAD_REQUEST, format!("Planning error: {}", e)));
                 }
+                Err(crate::translate::TranslateError::Invalid(e)) => {
+                    metrics.planning_time = planning_start.elapsed().as_secs_f64();
+                    // Invalid Cypher, as Neo4j rejects it: the client's.
+                    return Err((StatusCode::BAD_REQUEST, format!("Query error: {}", e)));
+                }
                 Err(crate::translate::TranslateError::Render(e)) => {
                     metrics.planning_time = planning_start.elapsed().as_secs_f64();
                     // Return 500 for render errors (internal error)
@@ -2122,6 +2127,7 @@ fn translate_cypher_to_sql(
         graph_schema,
         crate::translate::ReadOptions {
             max_cte_depth,
+            cypher: Some(cypher.to_string()),
             ..Default::default()
         },
     )
@@ -2132,6 +2138,9 @@ fn translate_cypher_to_sql(
         }
         crate::translate::TranslateError::Render(e) => {
             format!("Inner Cypher render error: {}", e)
+        }
+        crate::translate::TranslateError::Invalid(e) => {
+            format!("Inner Cypher query error: {}", e)
         }
     })
 }

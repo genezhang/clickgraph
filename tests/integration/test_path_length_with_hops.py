@@ -5,7 +5,8 @@ variable-length hops (the recursive CTE's `hop_count`). It is now `hop_count + k
 Independent oracle: a path of k fixed hops followed/preceded by a `*1..2` part is exactly a TRAIL
 (no repeated edge) of k+1 or k+2 edges, so the expected length histogram is computed by
 enumerating trails over the edge list in Python — not from the engine's own `hop_count`.
-Everything else that would read the CTE's path columns (nodes/relationships/bare p) must fail.
+`nodes(p)`, `relationships(p)` and the bare path are checked against the same trail enumeration
+(relationship uniqueness spans the whole path, fixed hops included; verified against Neo4j 5.26).
 """
 
 import collections
@@ -114,14 +115,7 @@ def _shapes(label, rel):
     }
 
 
-CASES = [
-    pytest.param(g, s, marks=pytest.mark.xfail(
-        strict=True,
-        reason="#1203: two fixed hops before a path are not pairwise edge-unique with it in the "
-               "mixed-access layout (the plain pattern over-counts too, 33 vs 27)"))
-    if (g, s) == (2, "hop+hop+vlp") else (g, s)
-    for g in range(3) for s in ("hop+vlp", "vlp+hop", "hop+hop+vlp", "hop+vlp+hop")
-]
+CASES = [(g, s) for g in range(3) for s in ("hop+vlp", "vlp+hop", "hop+hop+vlp", "hop+vlp+hop")]
 
 
 @pytest.mark.parametrize("graph_idx, shape", CASES)
@@ -156,12 +150,60 @@ def test_length_in_with_for_leading_hops():
     assert dict(collections.Counter(int(r["len"]) for r in rows)) == want
 
 
-@pytest.mark.parametrize("projection", ["nodes(p)", "relationships(p)", "p", "size(nodes(p))"])
-def test_other_uses_of_a_composite_path_fail_loudly(projection):
-    result = execute_cypher(
-        f"MATCH p=(c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN {projection}",
-        schema_name="social_integration", raise_on_error=False)
-    assert "results" not in result and "path variable `p`" in str(result), result
+def _trail_node_sequences(edges, lengths):
+    """Node-id sequences of every trail (no repeated edge) whose edge count is in `lengths`."""
+    out = collections.defaultdict(list)
+    for i, (a, b) in enumerate(edges):
+        out[a].append((i, b))
+    seqs = collections.Counter()
+
+    def go(nodes, used):
+        if len(nodes) - 1 in lengths:
+            seqs[tuple(nodes)] += 1
+        if len(nodes) - 1 == max(lengths):
+            return
+        for i, nxt in out[nodes[-1]]:
+            if i not in used:
+                go(nodes + [nxt], used | {i})
+
+    for start in list(out):
+        go([start], frozenset())
+    return seqs
+
+
+_COMPOSITE = "MATCH p=(c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN {} AS v"
+
+
+def test_values_of_a_composite_path_match_the_trail_enumeration():
+    """A fixed hop followed by a `*1..2` part is a trail of 2 or 3 edges: `nodes(p)`,
+    `relationships(p)`, the bare path and `size(nodes(p))` all describe that trail."""
+    edges = _graphs()[0][3]
+    want = _trail_node_sequences(edges, (2, 3))
+    assert sum(want.values()) == 99, f"fixture drifted: {sum(want.values())} trails"
+
+    def ids(nodes):
+        return tuple(int(n["properties"]["user_id"]) for n in nodes)
+
+    paths = [r["v"] for r in _rows("social_integration", _COMPOSITE.format("p"))]
+    assert collections.Counter(ids(path[0::2]) for path in paths) == want
+    for path in paths:
+        nodes, rels = path[0::2], path[1::2]
+        assert len({r["elementId"] for r in rels}) == len(rels), f"edge repeated: {path}"
+        for k, r in enumerate(rels):
+            assert r["startNodeElementId"] == nodes[k]["elementId"], path
+            assert r["endNodeElementId"] == nodes[k + 1]["elementId"], path
+
+    node_lists = [r["v"] for r in _rows("social_integration", _COMPOSITE.format("nodes(p)"))]
+    assert collections.Counter(ids(n) for n in node_lists) == want
+
+    rel_lists = [r["v"] for r in
+                 _rows("social_integration", _COMPOSITE.format("relationships(p)"))]
+    assert (collections.Counter(tuple(r["elementId"] for r in rels) for rels in rel_lists)
+            == collections.Counter(tuple(r["elementId"] for r in path[1::2]) for path in paths))
+
+    sizes = collections.Counter(
+        int(r["v"]) for r in _rows("social_integration", _COMPOSITE.format("size(nodes(p))")))
+    assert sizes == collections.Counter(len(seq) for seq in want.elements())
 
 
 def test_plain_variable_length_path_is_unchanged():

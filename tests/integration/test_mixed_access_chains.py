@@ -222,24 +222,66 @@ def test_mixed_to_embedded_optional_fan_closing_matches_the_oracle_1158(mixed_sc
     assert got == _expected_optional('abc', [('b', 'a'), ('b', 'c')], [('a', 'c')])
 
 
-# Shapes that would return NULL ids (or ids that do not belong to their names) must
-# fail loud instead.
-LOUD = [
+# Shapes the legacy renderer refused (#1186: it could not resolve the embedded endpoint
+# and would have returned NULL ids, or ids that do not belong to their names).  They
+# answer the brute-force oracle (verified against Neo4j 5.26).
+
+def _project(rows, keep):
+    """Project oracle rows (pid, name per variable; '' for NULL) onto the slots `keep`."""
+    out = Counter()
+    for row, n in rows.items():
+        out[tuple(row[k] or None for k in keep)] += n
+    return out
+
+
+def _optional_into_every_node():
+    """`MATCH (b) OPTIONAL MATCH (a)-[:REPORTS_TO]->(b)`: (b, a) per incoming edge of b,
+    else (b, NULL)."""
+    rows = Counter()
+    for b in PEOPLE:
+        for a in [f for f, t in REPORTS if t == b] or [None]:
+            rows[(b, a)] += 1
+    return rows
+
+
+def _middle_counts(first_directed):
+    """count(*) per middle node `c` of `(a)-[]-(c)-[]-(e)` (first hop directed `->` when
+    `first_directed`): two distinct edges; an undirected self-loop matches once."""
+    counts = Counter()
+    for i, (f1, t1) in enumerate(REPORTS):
+        for _, c in ({(f1, t1)} if first_directed else {(f1, t1), (t1, f1)}):
+            for j, (f2, t2) in enumerate(REPORTS):
+                for x, _ in {(f2, t2), (t2, f2)}:
+                    if j != i and x == c:
+                        counts[c] += 1
+    return counts
+
+
+FORMERLY_LOUD = [
     ('from', 'MATCH (a:Person)-[:REPORTS_TO]->(b:Person) OPTIONAL MATCH (b)-[:REPORTS_TO]->(c:Person)'
-             ' RETURN a.pid, b.pid, c.pid'),
-    ('to', 'MATCH (b:Person) OPTIONAL MATCH (a:Person)-[:REPORTS_TO]->(b) RETURN b.pid, a.pid'),
+             ' RETURN a.pid AS c0, b.pid AS c1, c.pid AS c2',
+     lambda: _project(_expected_optional('abc', [('a', 'b')], [('b', 'c')]), (0, 2, 4))),
+    ('to', 'MATCH (b:Person) OPTIONAL MATCH (a:Person)-[:REPORTS_TO]->(b) RETURN b.pid AS c0, a.pid AS c1',
+     _optional_into_every_node),
     ('from', 'MATCH (e:Person)-[:REPORTS_TO]->(b:Person) WITH e, b'
-             ' OPTIONAL MATCH (b)-[:REPORTS_TO]->(e) RETURN e.name, b.name'),
-    ('from', 'MATCH (a:Person)-[:REPORTS_TO]-(c:Person)-[:REPORTS_TO]-(e:Person) RETURN c.pid, count(*)'),
-    ('to', 'MATCH (a:Person)-[:REPORTS_TO]->(c:Person)-[:REPORTS_TO]-(e:Person) RETURN c.pid, count(*)'),
+             ' OPTIONAL MATCH (b)-[:REPORTS_TO]->(e) RETURN e.name AS c0, b.name AS c1',
+     lambda: _project(_expected_optional('eb', [('e', 'b')], [('b', 'e')]), (1, 3))),
+    ('from', 'MATCH (a:Person)-[:REPORTS_TO]-(c:Person)-[:REPORTS_TO]-(e:Person)'
+             ' RETURN c.pid AS c0, count(*) AS c1',
+     lambda: Counter({(c, n): 1 for c, n in _middle_counts(False).items()})),
+    ('to', 'MATCH (a:Person)-[:REPORTS_TO]->(c:Person)-[:REPORTS_TO]-(e:Person)'
+           ' RETURN c.pid AS c0, count(*) AS c1',
+     lambda: Counter({(c, n): 1 for c, n in _middle_counts(True).items()})),
 ]
 
 
-@pytest.mark.parametrize('role,query', LOUD, ids=[f'{r}-{i}' for i, (r, _) in enumerate(LOUD)])
-def test_mixed_unresolvable_shapes_fail_loud_1158(mixed_schemas, role, query):
-    response = execute_cypher(query, schema_name=mixed_schemas[role], raise_on_error=False)
-    assert response.get('status') == 'error', f"expected a loud error, got rows: {response}"
-    assert '#1186' in str(response['error'])
+@pytest.mark.parametrize('role,query,expected', FORMERLY_LOUD,
+                         ids=[f'{r}-{i}' for i, (r, _, _) in enumerate(FORMERLY_LOUD)])
+def test_mixed_formerly_unresolvable_shapes_match_the_oracle_1158(mixed_schemas, role, query,
+                                                                  expected):
+    response = execute_cypher(query, schema_name=mixed_schemas[role])
+    got = Counter(tuple(r[f'c{k}'] for k in range(len(r))) for r in response['results'])
+    assert got == expected()
 
 
 # An undirected FIRST hop, or an explicitly directed hop after it, is fine.

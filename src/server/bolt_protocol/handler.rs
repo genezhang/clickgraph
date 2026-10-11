@@ -2372,6 +2372,7 @@ impl BoltHandler {
                     &graph_schema_obj,
                     crate::translate::ReadOptions {
                         max_cte_depth: 1000,
+                        cypher: Some(inner_query.to_string()),
                         ..Default::default()
                     },
                 )
@@ -2659,6 +2660,7 @@ impl BoltHandler {
                                 &graph_schema,
                                 crate::translate::ReadOptions {
                                     max_cte_depth: 1000,
+                                    cypher: Some(stripped_inner.to_string()),
                                     ..Default::default()
                                 },
                             )
@@ -3102,6 +3104,9 @@ impl BoltHandler {
                     e
                 )));
             }
+            Err(crate::translate::TranslateError::Invalid(e)) => {
+                return Err(BoltError::query_error(format!("Invalid query: {}", e)));
+            }
         };
         // Extract return metadata for result transformation
         let return_metadata = match translation.return_metadata() {
@@ -3269,6 +3274,9 @@ fn inner_translate_error(e: crate::translate::TranslateError) -> String {
         }
         crate::translate::TranslateError::Render(e) => {
             format!("Inner Cypher render error: {}", e)
+        }
+        crate::translate::TranslateError::Invalid(e) => {
+            format!("Inner Cypher query error: {}", e)
         }
     }
 }

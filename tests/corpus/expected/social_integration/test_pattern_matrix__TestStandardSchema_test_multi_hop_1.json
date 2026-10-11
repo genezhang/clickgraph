@@ -45,10 +45,10 @@
  "order_keys": null,
  "rows": [
   "{\"a.email\": \"bob@example.com\", \"c.email\": \"bob@example.com\"}",
-  "{\"a.email\": \"bob@example.com\", \"c.email\": \"carol@example.com\"}",
   "{\"a.email\": \"carol@example.com\", \"c.email\": \"bob@example.com\"}",
   "{\"a.email\": \"carol@example.com\", \"c.email\": \"carol@example.com\"}",
-  "{\"a.email\": \"eve@example.com\", \"c.email\": \"bob@example.com\"}"
+  "{\"a.email\": \"eve@example.com\", \"c.email\": \"bob@example.com\"}",
+  "{\"a.email\": \"eve@example.com\", \"c.email\": \"carol@example.com\"}"
  ],
  "schema": "social_integration"
 }

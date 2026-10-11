@@ -39,7 +39,10 @@ RULES = [
     ("KNOWN_LOUD", "#1308", "detail", r"\(#1308\)|outside that path is not supported"),
     ("KNOWN_LOUD", "#1233", "detail", r"undirected hop \(`t\d+`\) next to a variable-length path"),
     ("KNOWN_LOUD", "#1182", "detail", r"would be joined on a predicate that does not mention it|cannot be tied to the pa|independent pattern in one MATCH"),
-    ("EXTENSION", None, "detail", r"Identifier 'x\.nonexistent_property' cannot be resolved"),
+    # An undeclared property reads the same-named column, so ClickHouse
+    # rejects it when the table has none (Neo4j answers null). The names are
+    # undeclared in social_integration.yaml, which both corpus tags use.
+    ("EXTENSION", None, "detail", r"Identifier '\w+\.(nonexistent_\w+|likes|status|id)' cannot be resolved"),
     ("BUG", "#1190", "detail", r"Cannot determine join keys|t2\.followed_id"),
     ("BUG", "#933", "name", r"shared_anchor_comma"),
     ("BUG", "#1235", "name", r"test_1192__optional_back_path|test_1195__"),

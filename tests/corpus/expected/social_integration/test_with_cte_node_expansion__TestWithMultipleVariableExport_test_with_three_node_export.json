@@ -45,7 +45,7 @@
  "limit": 1,
  "order_keys": null,
  "rows": [
-  "{\"a.age\": 32, \"a.city\": \"London\", \"a.country\": \"UK\", \"a.email\": \"bob@example.com\", \"a.is_active\": 1, \"a.name\": \"Bob Smith\", \"a.registration_date\": \"2019-05-20\", \"a.user_id\": 2, \"b.age\": 28, \"b.city\": \"New York\", \"b.country\": \"USA\", \"b.email\": \"alice@example.com\", \"b.is_active\": 1, \"b.name\": \"Alice Johnson\", \"b.registration_date\": \"2020-01-15\", \"b.user_id\": 1, \"c.age\": 32, \"c.city\": \"London\", \"c.country\": \"UK\", \"c.email\": \"bob@example.com\", \"c.is_active\": 1, \"c.name\": \"Bob Smith\", \"c.registration_date\": \"2019-05-20\", \"c.user_id\": 2}"
+  "{\"a.age\": 25, \"a.city\": \"Toronto\", \"a.country\": \"Canada\", \"a.email\": \"carol@example.com\", \"a.is_active\": 1, \"a.name\": \"Carol White\", \"a.registration_date\": \"2021-03-10\", \"a.user_id\": 3, \"b.age\": 28, \"b.city\": \"New York\", \"b.country\": \"USA\", \"b.email\": \"alice@example.com\", \"b.is_active\": 1, \"b.name\": \"Alice Johnson\", \"b.registration_date\": \"2020-01-15\", \"b.user_id\": 1, \"c.age\": 32, \"c.city\": \"London\", \"c.country\": \"UK\", \"c.email\": \"bob@example.com\", \"c.is_active\": 1, \"c.name\": \"Bob Smith\", \"c.registration_date\": \"2019-05-20\", \"c.user_id\": 2}"
  ],
  "schema": "social_integration"
 }

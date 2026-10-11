@@ -76,7 +76,13 @@ class TestPropertyFilteringNodes:
     def test_nonexistent_property_returns_empty(self):
         """
         Query: MATCH (n) WHERE n.nonexistent_property = 123
-        Expected: 0 results (no types have this property)
+        Expected: an error, not a silently empty result.
+
+        A property the schema does not declare reads the same-named column;
+        when no such column exists, ClickHouse refuses the query (Code 47,
+        unknown identifier). Neo4j would answer 0 rows (a missing property is
+        NULL); that NULL reading is reserved for auto-discovered schemas and
+        the neo4j-compat mode, not the default.
         """
         query = """
         USE social_integration
@@ -89,13 +95,10 @@ class TestPropertyFilteringNodes:
             json={"query": query}
         )
         
-        # Query should succeed but return 0 results
-        assert response.status_code == 200, f"Query failed: {response.text}"
-        result = response.json()
-        
-        assert "results" in result
-        # Should return empty (LogicalPlan::Empty optimization)
-        assert len(result["results"]) == 0
+        assert response.status_code != 200, (
+            f"undeclared property with no column must fail, got rows: {response.text}"
+        )
+        assert "nonexistent_xyz_999" in response.text, response.text
 
     def test_multiple_properties_must_intersect(self):
         """
