@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use crate::bound_plan::lower::{
-    lower_statement, GraphType, LowerOptions, ResultColumn, ResultKind,
+    lower_statement, GraphType, IdLookup, LowerOptions, ResultColumn, ResultKind,
 };
 use crate::graph_catalog::config::GraphSchemaConfig;
 use crate::graph_catalog::graph_schema::GraphSchema;
@@ -854,7 +854,7 @@ fn what_is_not_lowered_yet() {
         "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) RETURN r[0] AS n",
         "an element or slice of a list of nodes or relationships",
     );
-    not_lowered("MATCH (a:User) WHERE id(a) = 1 RETURN a.name", "id()");
+    not_lowered("MATCH (a:User) WHERE id(a) > 1 RETURN a.name", "id()");
     not_lowered("MATCH (n) RETURN n.*", "`v.*` of an element of several");
     not_lowered(
         "MATCH (:User)-[r:FOLLOWS|LIKED]->() RETURN r.*",
@@ -1362,7 +1362,8 @@ fn grouping_and_distinct_over_a_returned_element() {
 }
 
 /// `id(n)` as a RETURN item is the node's key; Bolt encodes it from the
-/// shape. Anywhere else the key is not the id.
+/// shape. It sorts by the key (S11e). Anywhere else (but compared with
+/// integers) the key is not the id.
 #[test]
 fn id_of_a_returned_node_is_its_key() {
     let (sql, shape) = shaped(
@@ -1384,9 +1385,9 @@ fn id_of_a_returned_node_is_its_key() {
             column("a.name", ResultKind::Value)
         ]
     );
-    not_lowered(
+    has(
         "MATCH (a:User) RETURN id(a) AS i ORDER BY i",
-        "ORDER BY an id()",
+        &["ORDER BY v0.user_id ASC"],
     );
     not_lowered("MATCH (a:User) RETURN id(a) + 1 AS i", "id()");
     not_lowered("MATCH (a:User) WITH id(a) AS i RETURN i", "id()");
@@ -5320,5 +5321,92 @@ fn the_label_of_a_node_and_ids_of_what_matches_nothing() {
     not_lowered(
         "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN label(r) AS l",
         "label() of a node or relationship",
+    );
+}
+
+#[test]
+fn ids_compared_with_integers() {
+    // The library's `id(n)` is the node's key.
+    has(
+        "MATCH (a:User)-[:FOLLOWS]->(o:User) WHERE id(a) = 2 RETURN o.name",
+        &["WHERE v0.user_id = '2'"],
+    );
+    has(
+        "MATCH (a:User) WHERE NOT id(a) IN [1, 2] RETURN a.name",
+        &["WHERE NOT (v0.user_id = '1' OR v0.user_id = '2')"],
+    );
+    has(
+        "MATCH (a:User) WHERE 3 <> id(a) RETURN a.name",
+        &["NOT v0.user_id = '3'"],
+    );
+    // Of a node of several labels: its key, of whichever label.
+    has(
+        "MATCH (a) WHERE id(a) IN [1] RETURN a.name",
+        &["toString(v0.__cg_id_0) = '1'"],
+    );
+    // `x IN []` is false, `x` NULL or not.
+    has(
+        "MATCH (a:User) WHERE id(a) IN [] RETURN a.name",
+        &["WHERE false"],
+    );
+    has(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) RETURN NOT id(b) IN [] AS x",
+        &["CAST(NOT false AS Nullable(Bool)) AS \"x\""],
+    );
+    // On the server an integer is one of its ids: the node of that label
+    // and key, or none.
+    let server = LowerOptions {
+        id_lookup: Some(IdLookup(std::sync::Arc::new(|id| match id {
+            101 => Some(("User".to_string(), "2".to_string())),
+            102 => Some(("Post".to_string(), "5".to_string())),
+            104 => Some(("User".to_string(), "p|q".to_string())),
+            _ => None,
+        }))),
+        ..LowerOptions::default()
+    };
+    let on_server = |q: &str, parts: &[&str]| {
+        let got = lowered(q, &social(), &server);
+        for p in parts {
+            assert!(got.contains(p), "{q}\nmissing `{p}` in\n{got}");
+        }
+    };
+    on_server(
+        "MATCH (a:User) WHERE id(a) IN [101, 102, 103] RETURN a.name",
+        &["WHERE v0.user_id = '2'"],
+    );
+    on_server(
+        "MATCH (a) WHERE id(a) = 102 RETURN a.name",
+        &["(v0.__cg_label = 'Post' AND toString(v0.__cg_id_0) = '5')"],
+    );
+    on_server(
+        "MATCH (a:User) WHERE id(a) = 102 RETURN a.name",
+        &["WHERE false"],
+    );
+    // A key of one column is the id's whole text.
+    on_server(
+        "MATCH (a:User) WHERE id(a) = 104 RETURN a.name",
+        &["WHERE v0.user_id = 'p|q'"],
+    );
+    on_server(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) RETURN id(b) = 103 AS x",
+        &["CASE WHEN o1.v2__user_id IS NULL THEN NULL ELSE false END AS \"x\""],
+    );
+    // ORDER BY an `id()` sorts by the key, as its value is.
+    has(
+        "MATCH (a:User) RETURN a.name, id(a) AS i ORDER BY i DESC",
+        &["v0.user_id AS \"i\"", "ORDER BY v0.user_id DESC"],
+    );
+    has(
+        "MATCH (a:User) RETURN a.name ORDER BY id(a)",
+        &["ORDER BY v0.user_id ASC"],
+    );
+    // Not an id compared with integers: refused.
+    not_lowered(
+        "MATCH (a:User) WHERE id(a) > 3 RETURN a.name",
+        "id() / elementId() other than",
+    );
+    not_lowered(
+        "MATCH (a:User)-[r:FOLLOWS]->(b) WHERE id(r) = 1 RETURN b.name",
+        "id() / elementId() other than",
     );
 }

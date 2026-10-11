@@ -123,6 +123,22 @@ pub struct LowerOptions {
     /// Neo4j-compat mode: an undeclared property is NULL on every element,
     /// not only on those whose columns were discovered.
     pub neo4j_compat: bool,
+    /// The server's reading of an integer compared with `id(n)`
+    /// (`ReadOptions::id_mapper`); `None` (library, `cg`): `id(n)` is the
+    /// node's key.
+    pub id_lookup: Option<IdLookup>,
+}
+
+/// The node an integer `id()` value names on the server: its label and key
+/// (a composite key's parts joined by `|`), `None` for none
+/// (`ast_transform::id_function::resolve_node_id`).
+#[derive(Clone)]
+pub struct IdLookup(pub Arc<dyn Fn(i64) -> Option<(String, String)> + Send + Sync>);
+
+impl std::fmt::Debug for IdLookup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("IdLookup")
+    }
 }
 
 /// A lowered statement: the plan, and what its result columns are.
@@ -4967,7 +4983,11 @@ impl<'s> Lowerer<'s> {
         let keys = keys
             .iter()
             .map(|k| {
-                let e = self.expr(&k.expr, items)?;
+                let e = match self.node_id_item(&k.expr) {
+                    // As an `id(n)` item: by the node's key (S11e).
+                    Some((v, _)) => self.identity_value(v)?,
+                    None => self.expr(&k.expr, items)?,
+                };
                 Ok(OrderByItem {
                     expression: e,
                     order: if k.descending {
@@ -5014,7 +5034,6 @@ impl<'s> Lowerer<'s> {
         let mut shape = Vec::new();
         let mut items_env: HashMap<VarId, RenderExpr> = HashMap::new();
         // `id(n)` items: their column is the node's key, not the id returned.
-        let mut id_items: Vec<VarId> = Vec::new();
         // Path elements a WITH already exports (`WITH p, p AS q`).
         let mut exported: Vec<VarId> = Vec::new();
         for it in &p.items {
@@ -5083,13 +5102,14 @@ impl<'s> Lowerer<'s> {
                     if aggregating {
                         body.group_by.push(e.clone());
                     }
+                    // What this projection's ORDER BY reads of it.
+                    items_env.insert(it.var, e.clone());
                     let column = body.column(e, &it.name);
                     shape.push(ResultColumn {
                         name: it.name.clone(),
                         kind: ResultKind::NodeId { label },
                         columns: vec![(it.name.clone(), column)],
                     });
-                    id_items.push(it.var);
                     continue;
                 }
             }
@@ -5177,15 +5197,6 @@ impl<'s> Lowerer<'s> {
                     });
                 }
             }
-        }
-        // Bolt returns `id(n)` encoded, and the encoding does not keep the
-        // key's order (a string key is hashed).
-        if p.order_by.iter().any(|k| {
-            referenced_names(&k.expr, false)
-                .iter()
-                .any(|n| parse_var(n).is_some_and(|v| id_items.contains(&v)))
-        }) {
-            return unsupported("ORDER BY an id() item (the encoded id has another order)");
         }
         body.order_by = self.sort_keys(&p.order_by, &items_env)?;
         // Without its own ORDER BY, a projection keeps the order of its input
@@ -5398,6 +5409,10 @@ impl<'s> Lowerer<'s> {
     }
 
     /// `id(n)` of a node read from a table or a CTE: the node and its label.
+    /// Its value, and its order in an ORDER BY, is the node's key, as the
+    /// legacy pipeline reads it: the id HTTP returns. Bolt returns it encoded
+    /// (`IdMapper`: its label's code over a non-negative integer key, which
+    /// keeps the key's order; a string key's hash, which does not).
     fn node_id_item(&self, e: &LogicalExpr) -> Option<(VarId, String)> {
         let LogicalExpr::ScalarFnCall(f) = e else {
             return None;

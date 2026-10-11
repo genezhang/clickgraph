@@ -740,7 +740,23 @@ RETURN id(u), u.name
 -- Note: id() returns internal ID, use properties for business keys
 MATCH (u:User)
 RETURN u.user_id AS business_id, u.name
+
+-- Comparing a node's id with integers (Neo4j Browser's expand / fetch queries)
+MATCH (a)-->(o) WHERE id(a) = 281474976710657 RETURN o
+MATCH (a)-[r]->(b) WHERE id(a) IN [281474976710657] AND NOT id(b) IN [] RETURN r
 ```
+
+What `id(n)` of a node is depends on the endpoint:
+
+| Endpoint | `RETURN id(n)` | `id(n) = N`, `id(n) <> N`, `id(n) [NOT] IN [N, …]` | `ORDER BY id(n)` |
+|---|---|---|---|
+| Bolt | the encoded id (label code over the key; a hash for string or composite keys) | `N` is an id the server returned: the node of that label and key; an id it cannot decode matches no node | by the key |
+| HTTP `/query` | the key | as Bolt (ids of a Bolt session of the same server decode) | by the key |
+| Embedded / `cg` / library | the key | `N` is compared with the key | by the key |
+
+A node of several labels (an unlabeled `(n)`) compares its key as text. In the library, `id(n) = 2` of an unlabeled node matches every label's node whose key is 2. Over HTTP, `id()` parameters (`$id`) are not decoded; Bolt inlines them.
+
+Ordering by the key matches the order of Bolt's encoded ids for nodes of one label with a non-negative integer key; a string key's encoded id is a hash, which has no meaningful order. Other uses of `id()` (`id(n) > 3`, `id(r)` of a relationship, `id(n) + 1`) fall back to the legacy pipeline, which reads the key.
 
 ---
 

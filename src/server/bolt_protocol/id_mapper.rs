@@ -436,11 +436,12 @@ impl IdMapper {
     pub fn decode_for_query(encoded_id: i64) -> Option<(String, String)> {
         // First try cache lookup
         if let Some(element_id) = Self::static_lookup_element_id(encoded_id) {
-            // Parse "Label:value" format
-            if let Some(colon_pos) = element_id.find(':') {
-                let label = element_id[..colon_pos].to_string();
-                let value = element_id[colon_pos + 1..].to_string();
-                return Some((label, value));
+            // "Label:value" (a composite's parts joined by `|`), without Neo4j
+            // Browser's trailing `-` sentinel ("User:2-" is key "2").
+            if let Ok((label, parts)) =
+                crate::graph_catalog::element_id::parse_node_element_id(&element_id)
+            {
+                return Some((label, parts.join("|")));
             }
         }
 
@@ -694,5 +695,23 @@ mod tests {
 
         // Each mapper should have a unique connection ID
         assert_ne!(mapper1.connection_id(), mapper2.connection_id());
+    }
+
+    /// An id another session cached (as Neo4j Browser's `User:2-`) decodes
+    /// to its key without the sentinel: `'2-'` against an integer key column
+    /// was a ClickHouse error (Code 53) on HTTP after a Bolt session.
+    #[test]
+    fn decode_for_query_strips_the_browser_sentinel() {
+        let mut mapper = IdMapper::new();
+        let id = mapper.get_or_assign("S11eSentinel:2-");
+        assert_eq!(
+            IdMapper::decode_for_query(id),
+            Some(("S11eSentinel".to_string(), "2".to_string()))
+        );
+        let composite = mapper.get_or_assign("S11eSentinel:a|b-");
+        assert_eq!(
+            IdMapper::decode_for_query(composite),
+            Some(("S11eSentinel".to_string(), "a|b".to_string()))
+        );
     }
 }
