@@ -3225,6 +3225,7 @@ fn add_cte_cross_joins_to_union_branches(
                             to_id_column: None,
                             graph_rel: None,
                             is_cartesian: false,
+                            use_final: false,
                         };
                         branch.joins.0.insert(0, cte_join);
                         log::info!(
@@ -3880,6 +3881,7 @@ fn restructure_post_with_optional_or_insert_cte_join(
             to_id_column: None,
             graph_rel: None,
             is_cartesian: false,
+            use_final: false,
         };
         render_plan.joins.0.insert(0, optional_from_join);
         log::info!(
@@ -4428,6 +4430,7 @@ fn resolve_cross_table_with_cte_joins(
                     to_id_column: None,
                     graph_rel: None,
                     is_cartesian: false,
+                    use_final: false,
                 };
 
                 // #453: post-WITH OPTIONAL restructure, else insert the CTE JOIN.
@@ -4559,6 +4562,7 @@ fn resolve_cross_table_with_cte_joins(
                                     to_id_column: None,
                                     graph_rel: None,
                                     is_cartesian: false,
+                                    use_final: false,
                                 };
                                 branch.joins.0.insert(0, branch_cte_join);
                                 log::info!(
@@ -4603,6 +4607,7 @@ fn resolve_cross_table_with_cte_joins(
                                     to_id_column: None,
                                     graph_rel: None,
                                     is_cartesian: false,
+                                    use_final: false,
                                 };
                                 branch.joins.0.insert(0, branch_cte_join);
                                 log::info!(
@@ -5300,6 +5305,7 @@ fn apply_pattern_comprehensions(
                             to_id_column: None,
                             graph_rel: None,
                             is_cartesian: false,
+                            use_final: false,
                         };
 
                         // Add LEFT JOIN to the WITH CTE body.
@@ -5572,6 +5578,7 @@ fn apply_pattern_comprehensions(
                         to_id_column: None,
                         graph_rel: None,
                         is_cartesian: false,
+                        use_final: false,
                     };
                     with_cte_render.joins.0.push(join);
 
@@ -5953,6 +5960,7 @@ fn restructure_optional_cte_bridge(
                     to_id_column: None,
                     graph_rel: None,
                     is_cartesian: false,
+                    use_final: false,
                 };
                 with_cte_render.joins.0.insert(1, old_from_join);
 
@@ -6196,6 +6204,7 @@ fn restructure_optional_cte_bridge(
                 to_id_column: None,
                 graph_rel: None,
                 is_cartesian: false,
+                use_final: false,
             };
 
             // Find the edge table's original ON condition that referenced old FROM

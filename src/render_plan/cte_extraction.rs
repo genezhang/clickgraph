@@ -9468,6 +9468,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                     to_id_column: None,
                     graph_rel: None,
                     is_cartesian: false,
+                    use_final: false,
                 });
             }
 
@@ -9521,6 +9522,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                     to_id_column: None,
                     graph_rel: None,
                     is_cartesian: false,
+                    use_final: false,
                 });
             }
 
@@ -9548,6 +9550,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                 // carry `graph_rel` — enough for `fixed_path_hop_count`.
                 graph_rel: None,
                 is_cartesian: false,
+                use_final: false,
             });
 
             log::debug!(
@@ -9603,6 +9606,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                     to_id_column: None,
                     graph_rel: None,
                     is_cartesian: false,
+                    use_final: false,
                 });
             }
 

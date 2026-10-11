@@ -259,6 +259,10 @@ pub struct Join {
     /// count). Spurious internal `ON 1=1` joins leave this false and stay prunable.
     #[serde(default)]
     pub is_cartesian: bool,
+    /// Read the table with `FINAL` (its merged rows: `JOIN t AS a FINAL`),
+    /// where the dialect has it (P-4c S11k).
+    #[serde(default)]
+    pub use_final: bool,
 }
 
 impl Join {
@@ -358,6 +362,7 @@ impl TryFrom<LogicalJoin> for Join {
             to_id_column: value.to_id_column,
             graph_rel: None,
             is_cartesian: value.is_cartesian,
+            use_final: false,
         };
         Ok(join)
     }

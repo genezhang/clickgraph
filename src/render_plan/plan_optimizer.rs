@@ -1821,6 +1821,7 @@ fn fold_optional_edge_node_join_with_predicate(plan: &mut RenderPlan) {
                 to_id_column: None,
                 graph_rel: None,
                 is_cartesian: false,
+                use_final: false,
             };
 
             // Replace the node join in place, drop the edge join.
@@ -3336,6 +3337,7 @@ mod tests {
             to_id_column: None,
             graph_rel: None,
             is_cartesian: false,
+            use_final: false,
         }
     }
 
@@ -3357,6 +3359,7 @@ mod tests {
             to_id_column: Some(to_id.to_string()),
             graph_rel: None,
             is_cartesian: false,
+            use_final: false,
         }
     }
 
@@ -4198,6 +4201,7 @@ mod tests {
             to_id_column: None,
             graph_rel: None,
             is_cartesian: false,
+            use_final: false,
         }
     }
 
@@ -4578,6 +4582,7 @@ fn reorder_from_for_selective_predicate(plan: &mut RenderPlan) {
                 to_id_column: None,
                 graph_rel: None,
                 is_cartesian: false,
+                use_final: false,
             };
             plan.joins.0.push(new_join);
         } else if let Some(join) = plan.joins.0.iter_mut().find(|j| j.table_alias == *alias) {

@@ -188,7 +188,7 @@ MATCH (u:User) RETURN count(u)
 |-----------|------|---------|-------------|
 | `property_mappings` | object | `{}` | Maps Cypher property names to ClickHouse column names |
 | `view_parameters` | list | `null` | Parameter names for parameterized views |
-| `use_final` | bool | `null` | Override FINAL keyword usage (auto-detect if null) |
+| `use_final` | bool | `null` | Override FINAL keyword usage (auto-detect if null). A table read with FINAL is read as its merged rows wherever it appears in a query, also when joined to other tables |
 | `filter` | string | `null` | SQL predicate filter applied to all queries |
 | `auto_discover_columns` | bool | `false` | Map every table column as a property, read from the database at load (see [Auto-Discovery](#auto-discovery)) |
 | `exclude_columns` | list | `[]` | Columns that auto-discovery leaves out: they are not properties, so reading one gives NULL |

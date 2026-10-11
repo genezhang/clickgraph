@@ -253,15 +253,18 @@ fn an_fk_edge_is_read_as_its_node_table_is() {
         &options,
     );
     assert_eq!(got.matches("db.docs(tenant = '7')").count(), 3, "{got}");
-    // And with its node's FINAL, which a joined read cannot print yet: not
-    // lowered, rather than read without it (stale row versions).
-    let err = translate_bound_plan(
-        "MATCH (a:Ver)-[:ABOUT]->(b:Comment) RETURN count(*)",
-        &fk_schema(),
-        &ReadOptions::default(),
-    )
-    .unwrap_err();
-    assert!(err.contains("FINAL on a joined table"), "{err}");
+    // And with its node's FINAL: a joined read is of the merged rows
+    // (S11k), never without FINAL (stale row versions).
+    let got = squash(
+        &translate_bound_plan(
+            "MATCH (a:Ver)-[:ABOUT]->(b:Comment) RETURN count(*)",
+            &fk_schema(),
+            &ReadOptions::default(),
+        )
+        .unwrap()
+        .sql,
+    );
+    assert_eq!(got.matches("FINAL").count(), 2, "{got}");
 }
 
 #[test]
@@ -787,20 +790,24 @@ fn table_options_come_from_the_schema() {
     );
     assert!(got.contains("FROM db.a(tenant = 't''1') AS v0"), "{got}");
     assert!(got.contains("WHERE ((v0.kind = 'x'))"), "{got}");
-    // FINAL on the FROM table prints; on a joined table it is not lowered yet.
+    // FINAL on the FROM table prints; a joined table is read as the
+    // relation of its merged rows (S11k).
     let got = squash(
         &translate_bound_plan("MATCH (b:B) RETURN count(*)", &options_schema(), &opts)
             .unwrap()
             .sql,
     );
     assert!(got.contains("FROM db.b AS v0 FINAL"), "{got}");
-    let err = translate_bound_plan(
-        "MATCH (a:A)-[:R]->(b:B) RETURN count(*)",
-        &options_schema(),
-        &opts,
-    )
-    .unwrap_err();
-    assert!(err.contains("FINAL"), "{err}");
+    let got = squash(
+        &translate_bound_plan(
+            "MATCH (a:A)-[:R]->(b:B) RETURN count(*)",
+            &options_schema(),
+            &opts,
+        )
+        .unwrap()
+        .sql,
+    );
+    assert!(got.contains("JOIN db.b AS v2 FINAL ON"), "{got}");
 }
 
 #[test]
@@ -3982,8 +3989,10 @@ graph_schema:
         .map(|t| t.sql)
         .unwrap_or_else(|e| e),
     );
-    let part = "JOIN (SELECT * FROM db.a AS e FINAL WHERE ((e.cur = 1))) AS v0 ON \
-                concat('A', ':', toString(v0.id)) = v1.start_id";
+    // `*` reads ALIAS / MATERIALIZED columns too (S11k review).
+    let part = "JOIN (SELECT * FROM db.a AS e FINAL WHERE ((e.cur = 1)) SETTINGS \
+                asterisk_include_alias_columns = 1, asterisk_include_materialized_columns = 1) \
+                AS v0 ON concat('A', ':', toString(v0.id)) = v1.start_id";
     assert!(got.contains(part), "missing `{part}` in\n{got}");
 }
 

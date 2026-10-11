@@ -1586,6 +1586,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 to_id_column: None,
                                 graph_rel: None,
                                 is_cartesian: false,
+                                use_final: false,
                             });
 
                             // Replace with coalesce(__pc_N.result, default)
@@ -2275,6 +2276,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         to_id_column: None,
                         graph_rel: None,
                         is_cartesian: false,
+                        use_final: false,
                     };
 
                     // 4. Extract SELECT, GROUP BY, etc. from the full plan
@@ -2378,6 +2380,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         to_id_column: None,
                         graph_rel: None,
                         is_cartesian: false,
+                        use_final: false,
                     };
 
                     let joins = JoinItems::new(vec![vlp_join]);
@@ -2668,6 +2671,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 to_id_column: None,
                                 graph_rel: None,
                                 is_cartesian: false,
+                                use_final: false,
                             });
 
                             // Replace the select item with coalesce(__pc_N.result, default)
@@ -3673,6 +3677,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         to_id_column: None,
                         graph_rel: None,
                         is_cartesian: false,
+                        use_final: false,
                     };
 
                     // Add to existing joins
@@ -4406,6 +4411,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             // keep the cross join even if its alias looks
                             // unreferenced, so row cardinality is preserved.
                             is_cartesian: true,
+                            use_final: false,
                         });
                     }
                     base.joins.0.extend(std::mem::take(&mut joined.joins.0));
@@ -5933,6 +5939,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                     to_id_column: None,
                                     graph_rel: None,
                                     is_cartesian: false,
+                                    use_final: false,
                                 });
 
                                 // Replace with coalesce(__pc_N.result, default)

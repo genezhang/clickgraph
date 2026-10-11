@@ -148,6 +148,14 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         "tuple"
     }
 
+    fn final_modifier(&self) -> &'static str {
+        " FINAL"
+    }
+
+    fn all_columns_settings(&self) -> &'static str {
+        " SETTINGS asterisk_include_alias_columns = 1, asterisk_include_materialized_columns = 1"
+    }
+
     fn quote_alias(&self, name: &str) -> String {
         // CH escapes `"` inside a double-quoted identifier by doubling it.
         // Aliases inferred from raw return text can contain quotes

@@ -1553,6 +1553,7 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                     to_id_column: None,
                     graph_rel: None,
                     is_cartesian: false,
+                    use_final: false,
                 };
                 plan.joins.0.push(join);
             }
@@ -1705,6 +1706,7 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                     to_id_column: None,
                     graph_rel: None,
                     is_cartesian: false,
+                    use_final: false,
                 };
                 chain_joins.push(join);
                 placed_aliases.push(this_alias.clone());
@@ -8526,9 +8528,13 @@ impl ToSql for Join {
         };
 
         let mut sql = format!("{} {} AS {}", join_type_str, table_expr, self.table_alias);
-
-        // Note: FINAL keyword for joins would need to be added here if Join struct
-        // is enhanced to track use_final. For now, joins don't support FINAL.
+        // A dialect without FINAL (Databricks) reads the table as it is, as
+        // for the FROM table.
+        if self.use_final
+            && crate::server::query_context::get_current_dialect().supports_final_keyword()
+        {
+            sql.push_str(" FINAL");
+        }
 
         // Only add ON clause if there are joining conditions
         if !self.joining_on.is_empty() {
@@ -11099,6 +11105,7 @@ mod tests {
             to_id_column: None,
             graph_rel: None,
             is_cartesian: false,
+            use_final: false,
         }]);
         b.filters = FilterItems(Some(filter));
         b
