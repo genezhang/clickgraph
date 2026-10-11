@@ -30,9 +30,9 @@
 //!   must have the same columns in every arm (the same labels' or types'
 //!   ids), or the UNION is not lowered. The result has no order.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
-use crate::render_plan::render_expr::{Literal, RenderExpr};
+use crate::render_plan::render_expr::{Literal, RenderCase, RenderExpr};
 use crate::render_plan::{
     Cte, CteContent, CteItems, FromTableItem, OrderByItem, OrderByOrder, RenderPlan, SelectItem,
     SelectItems, Union, UnionItems, UnionType,
@@ -43,8 +43,8 @@ use crate::sql_generator::emitters::clickhouse::to_sql_query::{
 use crate::sql_generator::function_mapper::current_function_mapper;
 
 use super::{
-    col_at, empty_plan, select, table_ref, unsupported, LowerError, Lowered, LoweredQuery, Query,
-    ResultColumn, ResultKind,
+    col_at, empty_plan, select, table_ref, unsupported, GraphType, LowerError, Lowered,
+    LoweredQuery, Query, ResultColumn, ResultKind,
 };
 use crate::bound_plan::types::{BoundOp, ProjItem, VarId};
 
@@ -63,13 +63,50 @@ struct Arm {
 }
 
 /// Lower the UNION of `arms`, arm `i` returning the bindings
-/// `arm_columns[i]` in the UNION's column order; `all` is UNION ALL.
+/// `arm_columns[i]` in the UNION's column order; `all` is UNION ALL. A
+/// column whose arms hold nodes of different labels, or relationships of
+/// different definitions, is returned as a value in every arm
+/// (`Query::as_values`): the arms are lowered again with it so.
 pub(super) fn lower(
     q: &Query<'_>,
     arms: &[BoundOp],
     arm_columns: &[Vec<VarId>],
     all: bool,
 ) -> Result<Lowered, LowerError> {
+    let mut as_values = q.as_values.clone();
+    loop {
+        let q = Query {
+            stmt: q.stmt,
+            schema: q.schema,
+            options: q.options,
+            demand: q.demand,
+            as_values: as_values.clone(),
+        };
+        match lower_arms(&q, arms, arm_columns, all)? {
+            Pass::Lowered(lowered) => return Ok(*lowered),
+            Pass::AsValues(names) => {
+                if names.is_subset(&as_values) {
+                    return unsupported("internal: a UNION column still of different kinds");
+                }
+                as_values.extend(names);
+            }
+        }
+    }
+}
+
+/// One lowering of a UNION's arms: the UNION, or the columns to return as
+/// values in every arm.
+enum Pass {
+    Lowered(Box<Lowered>),
+    AsValues(BTreeSet<String>),
+}
+
+fn lower_arms(
+    q: &Query<'_>,
+    arms: &[BoundOp],
+    arm_columns: &[Vec<VarId>],
+    all: bool,
+) -> Result<Pass, LowerError> {
     let Some(spelling) = current_function_mapper().cypher_union() else {
         return unsupported("UNION in this SQL dialect");
     };
@@ -87,6 +124,10 @@ pub(super) fn lower(
         } = q.lower(arm, &mut ctes)?;
         let shape = in_union_order(shape, &projection.items, columns)?;
         if let Some(first) = &first {
+            let mixed = mixed_elements(first, &shape);
+            if !mixed.is_empty() {
+                return Ok(Pass::AsValues(mixed));
+            }
             same_kinds(first, &shape)?;
         }
         let alias = format!("w{}", ctes.len() + 1);
@@ -119,11 +160,38 @@ pub(super) fn lower(
                     }
                     continue;
                 };
+                // A column of values of different labels or definitions:
+                // its arms' identities may have different columns, of
+                // different types; it is one, the text of their tuple (the
+                // label or definition first, NULL exactly where the element
+                // is: so is the text).
+                let identity = if q.as_values.contains(&c.name) {
+                    let m = current_function_mapper();
+                    let (Some(g), Some(first)) = (m.graph_values(), identity.first()) else {
+                        return unsupported("a UNION column of values in this SQL dialect");
+                    };
+                    let parts: Vec<String> =
+                        identity.iter().map(render_expr_to_sql_plain).collect();
+                    let text = RenderExpr::Raw((g.to_text)(&format!(
+                        "{}({})",
+                        m.tuple_constructor(),
+                        parts.join(", ")
+                    )));
+                    vec![RenderExpr::Case(RenderCase {
+                        expr: None,
+                        when_then: vec![(
+                            super::null_test(std::slice::from_ref(first), true),
+                            RenderExpr::Literal(Literal::Null),
+                        )],
+                        else_expr: Some(Box::new(text)),
+                    })]
+                } else {
+                    identity.clone()
+                };
                 for e in identity {
-                    plan.select.items.push(select(
-                        e.clone(),
-                        &format!("__cg_{alias}_k{identity_columns}"),
-                    ));
+                    plan.select
+                        .items
+                        .push(select(e, &format!("__cg_{alias}_k{identity_columns}")));
                     identity_columns += 1;
                 }
             }
@@ -268,7 +336,32 @@ pub(super) fn lower(
             .collect();
     }
     plan.ctes = CteItems(ctes);
-    Ok(Lowered { plan, shape })
+    Ok(Pass::Lowered(Box::new(Lowered { plan, shape })))
+}
+
+/// The columns where `first` and `other` hold nodes of different labels, or
+/// relationships of different definitions (returned whole, or as values).
+fn mixed_elements(first: &[ResultColumn], other: &[ResultColumn]) -> BTreeSet<String> {
+    let node = |k: &ResultKind| {
+        matches!(
+            k,
+            ResultKind::Node { .. } | ResultKind::Graph(GraphType::Node)
+        )
+    };
+    let rel = |k: &ResultKind| {
+        matches!(
+            k,
+            ResultKind::Rel { .. } | ResultKind::Graph(GraphType::Relationship)
+        )
+    };
+    first
+        .iter()
+        .zip(other)
+        .filter(|(a, b)| {
+            a.kind != b.kind && ((node(&a.kind) && node(&b.kind)) || (rel(&a.kind) && rel(&b.kind)))
+        })
+        .map(|(a, _)| a.name.clone())
+        .collect()
 }
 
 /// An arm's result shape (one column per RETURN item, in `items`' order) in

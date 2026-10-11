@@ -4077,6 +4077,26 @@ slice that will handle it.
       decoding across scopes (#1388). Older id gaps the review listed
       (HTTP `id()` parameters are not decoded; keys 0 and 1 share an
       encoded id; HTTP caches id-dependent SQL by text) predate S11e.
+  - [x] **S11f: UNION columns of nodes of different labels, or
+    relationships of different definitions.** A column whose arms hold
+    nodes of different labels (one label, or several: an unlabeled node),
+    or relationships of different types or label pairs, is a value in every
+    arm (`Query::as_values`; the arms are lowered again with it so), as a
+    node of several labels returned alone is. Under UNION it is identified
+    by one text, its arm's identity as a tuple with the label (or type and
+    stored end labels) first, NULL exactly where the element is: the arms'
+    identities have different columns and types. A column holding a node
+    in one arm and a relationship or a value in another stays refused (the
+    legacy pipeline errors too).
+    - Acceptance: 25 generated shapes against Neo4j on
+      `social_integration` (UNION / UNION ALL of User and Post, of a
+      node's neighbours in both directions, of relationships of different
+      types and of a type union, with values, ordered arms with LIMIT,
+      grouped and DISTINCT arms, NULL nodes and relationships of OPTIONAL
+      MATCHes against several-label arms): every lowered shape equal to
+      Neo4j (the legacy pipeline errors on every one). Bolt returns them as
+      nodes and relationships. Corpus 1440 lowered (was 1439: the browser
+      expand UNION). Scorecard and live suite unchanged.
   - **User decisions (2026-10-11)** on what S11 does not lower: a
     relationship without `edge_id` keeps its ends as its identity (#1356;
     define `edge_id` to tell parallel rows apart); an undeclared property

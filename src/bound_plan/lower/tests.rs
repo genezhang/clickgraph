@@ -4310,7 +4310,7 @@ fn a_union_arm_reads_what_it_returns() {
 #[test]
 fn a_union_of_columns_read_differently_is_not_lowered() {
     not_lowered(
-        "MATCH (a:User) RETURN a AS x UNION MATCH (p:Post) RETURN p AS x",
+        "MATCH (a:User) RETURN a AS x UNION MATCH ()-[r:FOLLOWS]->() RETURN r AS x",
         "UNION column `x` of a different kind or label in another arm",
     );
     not_lowered(
@@ -5408,5 +5408,57 @@ fn ids_compared_with_integers() {
     not_lowered(
         "MATCH (a:User)-[r:FOLLOWS]->(b) WHERE id(r) = 1 RETURN b.name",
         "id() / elementId() other than",
+    );
+}
+
+/// A UNION column whose arms hold nodes of different labels, or
+/// relationships of different definitions, is a value in every arm (S11f).
+#[test]
+fn union_columns_of_different_labels_or_definitions() {
+    let node = ResultKind::Graph(GraphType::Node);
+    let (sql, shape) = shaped(
+        "MATCH (u:User) RETURN u AS x, 1 AS k UNION ALL MATCH (p:Post) RETURN p AS x, 2 AS k",
+        &social(),
+    );
+    assert_eq!(
+        kinds(&shape),
+        vec![column("x", node.clone()), column("k", ResultKind::Value)]
+    );
+    assert_eq!(sql.matches("map('elementId'").count(), 2, "{sql}");
+    // A node of several labels in another arm.
+    let (_, shape) = shaped(
+        "MATCH (a:User)-->(o) RETURN o UNION ALL MATCH (a:User)<--(o) RETURN o",
+        &social(),
+    );
+    assert_eq!(kinds(&shape), vec![column("o", node)]);
+    // UNION: identified by one text, its label first, NULL where the node
+    // is (an OPTIONAL MATCH's arm and a several-label arm group alike).
+    has(
+        "MATCH (u:User) OPTIONAL MATCH (u)-[:AUTHORED]->(p:Post) RETURN p AS x \
+         UNION MATCH (n) WHERE n.post_id = 2 RETURN n AS x",
+        &[
+            "CASE WHEN CASE WHEN o1.v2__post_id IS NULL THEN NULL ELSE 'Post' END IS NULL \
+             THEN NULL ELSE toString(tuple(CASE WHEN o1.v2__post_id IS NULL THEN NULL ELSE \
+             'Post' END, o1.v2__post_id)) END",
+            "toString(tuple(v4.__cg_label, v4.__cg_id_0))",
+        ],
+    );
+    // Relationships of different types.
+    let (_, shape) = shaped(
+        "MATCH ()-[r:FOLLOWS]->() RETURN r AS x UNION MATCH ()-[r:LIKED]->() RETURN r AS x",
+        &social(),
+    );
+    assert_eq!(
+        kinds(&shape),
+        vec![column("x", ResultKind::Graph(GraphType::Relationship))]
+    );
+    // A node and a relationship, or a node and a value: not lowered.
+    not_lowered(
+        "MATCH (u:User) RETURN u AS x UNION ALL MATCH ()-[r:FOLLOWS]->() RETURN r AS x",
+        "of a different kind or label",
+    );
+    not_lowered(
+        "MATCH (u:User) RETURN u AS x UNION ALL MATCH (p:Post) RETURN p.title AS x",
+        "of a different kind or label",
     );
 }
