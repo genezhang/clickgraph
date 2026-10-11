@@ -790,8 +790,7 @@
   "verdict": "MATCH"
  },
  "social_integration/test_vlp_with_comprehensive__TestVLPWithMultipleRelTypes_test_multi_rel_relationships_in_with": {
-  "verdict": "CG_ERROR",
-  "signature": "bf5112fe0dd46af3"
+  "verdict": "MATCH"
  },
  "social_integration/test_vlp_with_comprehensive__TestVLPWithStandardSchema_test_length_path_in_with": {
   "verdict": "MATCH"

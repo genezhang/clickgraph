@@ -79,11 +79,6 @@
   "ref": "#1316",
   "verdict": "MISMATCH"
  },
- "social_integration/test_vlp_with_comprehensive__TestVLPWithMultipleRelTypes_test_multi_rel_relationships_in_with": {
-  "category": "CORPUS_TAG",
-  "ref": "#1316",
-  "verdict": "CG_ERROR"
- },
  "standard/test_616_fold_optional_bid_plain_predicate": {
   "category": "EXTENSION",
   "ref": "#1316",

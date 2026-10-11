@@ -6481,15 +6481,45 @@ fn graph_demand(
             [arg] if f.name.eq_ignore_ascii_case("size") => {
                 value::graph_ref(arg, bindings).is_some()
             }
-            [arg] if f.name.eq_ignore_ascii_case("length") => {
-                matches!(value::graph_ref(arg, bindings), Some(GraphRef::Path(_)))
-            }
+            // A path's, or its nodes' / relationships' (their size:
+            // `Lowerer::scalar_fn`).
+            [arg] if f.name.eq_ignore_ascii_case("length") => matches!(
+                value::graph_ref(arg, bindings),
+                Some(GraphRef::Path(_) | GraphRef::Nodes(_) | GraphRef::Rels(_))
+            ),
             _ => false,
         },
         _ => false,
     };
     if structural {
         return;
+    }
+    // `count(g)` reads no value; `count(DISTINCT g)` its identities
+    // (`Lowerer::count_graph_value`).
+    if let LogicalExpr::AggregateFnCall(f) = e {
+        if let (true, [arg]) = (f.name.eq_ignore_ascii_case("count"), f.args.as_slice()) {
+            let (arg, distinct) = match arg {
+                LogicalExpr::OperatorApplicationExp(op) | LogicalExpr::Operator(op)
+                    if op.operator == crate::query_planner::logical_expr::Operator::Distinct
+                        && op.operands.len() == 1 =>
+                {
+                    (&op.operands[0], true)
+                }
+                other => (other, false),
+            };
+            match value::graph_ref(arg, bindings) {
+                Some(
+                    GraphRef::Path(v) | GraphRef::Nodes(v) | GraphRef::Rels(v) | GraphRef::List(v),
+                ) => {
+                    if distinct {
+                        out.push((v, PATH_KEY));
+                    }
+                    return;
+                }
+                Some(GraphRef::Carried(_)) => return,
+                None => {}
+            }
+        }
     }
     match (value::graph_ref(e, bindings), nested) {
         (Some(GraphRef::Path(p)), _) => out.extend([(p, NODE_VALUES), (p, REL_VALUES)]),

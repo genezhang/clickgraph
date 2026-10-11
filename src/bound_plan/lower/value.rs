@@ -28,7 +28,8 @@ use crate::graph_catalog::element_id::{
 use crate::graph_catalog::graph_schema::{NodeSchema, RelationshipSchema};
 use crate::query_planner::logical_expr::{self as lx, LogicalExpr};
 use crate::render_plan::render_expr::{
-    Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+    AggregateFnCall, Literal, Operator, OperatorApplication, PropertyAccess, RenderCase,
+    RenderExpr, ScalarFnCall, TableAlias,
 };
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::function_mapper::{current_function_mapper, GraphValues};
@@ -128,6 +129,22 @@ pub(super) struct Carried {
     pub keys: Vec<RenderExpr>,
     pub ty: GraphType,
     pub nullable: bool,
+}
+
+/// A value's identities and the condition under which it is NULL
+/// ([`Lowerer::graph_keys`]).
+type KeysAndAbsence = (Vec<RenderExpr>, Option<RenderExpr>);
+
+/// `value`, or NULL where `absent` holds.
+fn null_where(absent: Option<RenderExpr>, value: RenderExpr) -> RenderExpr {
+    match absent {
+        Some(cond) => RenderExpr::Case(RenderCase {
+            expr: None,
+            when_then: vec![(cond, RenderExpr::Literal(Literal::Null))],
+            else_expr: Some(Box::new(value)),
+        }),
+        None => value,
+    }
 }
 
 /// The dialect's spelling, or `Unsupported`.
@@ -529,14 +546,139 @@ impl<'s> Lowerer<'s> {
             },
             GraphRef::Carried(v) => {
                 let carried = &self.graph_values[&v];
-                if carried.nullable || !matches!(carried.ty, GraphType::List(_)) {
-                    return unsupported("size() of a carried path or an OPTIONAL path's list");
+                if !matches!(carried.ty, GraphType::List(_)) {
+                    return unsupported("size() of a carried path");
                 }
-                let value = sql(&self.values[&v]);
-                Ok(RenderExpr::Raw((spelling()?.length)(&value)))
+                // Signed, as every size: a NULL-able unsigned one would not
+                // mix with a negative number (Code 44 in a grouping key).
+                let length = RenderExpr::ScalarFnCall(ScalarFnCall {
+                    name: current_function_mapper().cast_int64().to_string(),
+                    args: vec![RenderExpr::Raw((spelling()?.length)(
+                        &sql(&self.values[&v]),
+                    ))],
+                });
+                if !carried.nullable {
+                    return Ok(length);
+                }
+                // NULL where the list is: its first key is that condition
+                // (`null_safe`); without keys it is NULL in every row.
+                match carried.keys.first() {
+                    Some(absent) => Ok(RenderExpr::Case(RenderCase {
+                        expr: None,
+                        when_then: vec![(absent.clone(), RenderExpr::Literal(Literal::Null))],
+                        else_expr: Some(Box::new(length)),
+                    })),
+                    None => Ok(RenderExpr::Literal(Literal::Null)),
+                }
             }
             GraphRef::Path(_) => unsupported("size() of a path"),
         }
+    }
+
+    /// `count(g)` / `count(DISTINCT g)`: the rows where the value is not
+    /// NULL, or its distinct values (by its elements' identities, which are
+    /// equal exactly when the values are). Neither builds the value: a
+    /// variable-length relationship's walk carries no element values for it.
+    pub(super) fn count_graph_value(
+        &self,
+        g: GraphRef,
+        distinct: bool,
+    ) -> Result<RenderExpr, LowerError> {
+        let Some((keys, absent)) = self.graph_keys(g, distinct)? else {
+            // It matches nothing: no values to count (still an aggregate:
+            // one row of a global aggregation).
+            return Ok(super::expr::aggregate_constant(RenderExpr::Literal(
+                Literal::Integer(0),
+            )));
+        };
+        let value = if distinct {
+            if keys.is_empty() {
+                return unsupported("count(DISTINCT) of a value without identities");
+            }
+            let tuple = RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: current_function_mapper().tuple_constructor().to_string(),
+                args: keys,
+            });
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::Distinct,
+                operands: vec![null_where(absent, tuple)],
+            })
+        } else {
+            null_where(absent, RenderExpr::Literal(Literal::Integer(1)))
+        };
+        Ok(RenderExpr::AggregateFnCall(AggregateFnCall {
+            name: "count".to_string(),
+            args: vec![value],
+        }))
+    }
+
+    /// The identities of the value `g` names (with `keys`) and the
+    /// condition under which it is NULL, without building the value. `None`:
+    /// it matches nothing.
+    fn graph_keys(&self, g: GraphRef, keys: bool) -> Result<Option<KeysAndAbsence>, LowerError> {
+        let s = spelling()?;
+        let (identities, vars) = match g {
+            GraphRef::Path(p) | GraphRef::Nodes(p) | GraphRef::Rels(p) => {
+                let Some(elements) = self.paths.get(&p).cloned() else {
+                    return unsupported(format!("internal: path {p} has no elements"));
+                };
+                let all: Vec<VarId> = elements
+                    .nodes
+                    .iter()
+                    .chain(&elements.rels)
+                    .copied()
+                    .collect();
+                if all
+                    .iter()
+                    .any(|v| matches!(self.scans.get(v), Some(Scan::Impossible)))
+                {
+                    return Ok(None);
+                }
+                if self.binding(p).nullable && !all.iter().any(|v| self.binding(*v).nullable) {
+                    return unsupported("an OPTIONAL path of bound elements as a value");
+                }
+                let part = match g {
+                    GraphRef::Nodes(_) => Part::Nodes,
+                    GraphRef::Rels(_) => Part::Rels,
+                    _ => Part::Whole,
+                };
+                let identities = if keys {
+                    vec![RenderExpr::Raw(self.path_key(&elements, part, &s)?)]
+                } else {
+                    Vec::new()
+                };
+                (identities, all)
+            }
+            GraphRef::List(r) => match self.scans.get(&r) {
+                Some(Scan::Path { .. }) => {
+                    let identities = if keys { self.vlp_keys(r)? } else { Vec::new() };
+                    (identities, vec![r])
+                }
+                Some(Scan::Impossible) => return Ok(None),
+                _ => return unsupported(format!("internal: {r} is not a path relation")),
+            },
+            GraphRef::Carried(v) => {
+                if matches!(
+                    self.values.get(&v),
+                    Some(RenderExpr::Literal(Literal::Null))
+                ) {
+                    return Ok(None);
+                }
+                let c = &self.graph_values[&v];
+                // A nullable one's first key is its NULL condition
+                // (`null_safe`).
+                return Ok(Some(match (c.nullable, c.keys.split_first()) {
+                    (true, Some((cond, rest))) => (rest.to_vec(), Some(cond.clone())),
+                    (true, None) => return Ok(None),
+                    (false, _) => (c.keys.clone(), None),
+                }));
+            }
+        };
+        let (identities, cond) = self.null_safe(&s, identities, &vars)?;
+        Ok(Some(match (cond, identities.split_first()) {
+            (Some(_), Some((cond, rest))) => (rest.to_vec(), Some(cond.clone())),
+            _ => (identities, None),
+        }))
     }
 
     /// The value a [`GraphRef`] names.
