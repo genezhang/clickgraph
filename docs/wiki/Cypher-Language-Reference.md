@@ -753,11 +753,11 @@ MATCH (p:Post) WHERE p.post_id < 3 RETURN p AS x
 
 -- A node's neighbours in both directions
 MATCH (a:User {user_id: 2})-->(o) RETURN o
-UNION
+UNION ALL
 MATCH (a:User {user_id: 2})<--(o) RETURN o
 ```
 
-Such a column is returned as node (or relationship) values, as an unlabeled node is: over HTTP each row's value has its `elementId`, `labels` and `properties`; over Bolt it is a node or relationship. `UNION` removes the same node (or relationship) returned by several arms. A column holding a node in one arm and a relationship or a value in another is not supported.
+Such a column is returned as node (or relationship) values, as an unlabeled node is: over HTTP each row's value has its `elementId`, `labels` and `properties`; over Bolt it is a node or relationship. This works with `UNION ALL`; `UNION` (removing duplicates) of such a column, `RETURN n.*` of it, and a column holding a node in one arm and a relationship or a value in another are not supported.
 
 ### Common Errors
 

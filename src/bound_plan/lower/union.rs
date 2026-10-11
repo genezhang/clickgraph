@@ -32,7 +32,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use crate::render_plan::render_expr::{Literal, RenderCase, RenderExpr};
+use crate::render_plan::render_expr::{Literal, RenderExpr};
 use crate::render_plan::{
     Cte, CteContent, CteItems, FromTableItem, OrderByItem, OrderByOrder, RenderPlan, SelectItem,
     SelectItems, Union, UnionItems, UnionType,
@@ -63,10 +63,10 @@ struct Arm {
 }
 
 /// Lower the UNION of `arms`, arm `i` returning the bindings
-/// `arm_columns[i]` in the UNION's column order; `all` is UNION ALL. A
-/// column whose arms hold nodes of different labels, or relationships of
-/// different definitions, is returned as a value in every arm
-/// (`Query::as_values`): the arms are lowered again with it so.
+/// `arm_columns[i]` in the UNION's column order; `all` is UNION ALL. Under
+/// UNION ALL a column whose arms hold nodes of different labels, or
+/// relationships of different definitions, is returned as a value in every
+/// arm (`Query::as_values`): the arms are lowered again with it so.
 pub(super) fn lower(
     q: &Query<'_>,
     arms: &[BoundOp],
@@ -126,6 +126,15 @@ fn lower_arms(
         if let Some(first) = &first {
             let mixed = mixed_elements(first, &shape);
             if !mixed.is_empty() {
+                if !all {
+                    // Which rows are the same element: the arms identify it
+                    // differently (a type union pads its ids, a list's element
+                    // is its tuple, a several-label key is a `Variant`).
+                    return unsupported(
+                        "UNION (not ALL) of a column of nodes of different labels or \
+                         relationships of different definitions",
+                    );
+                }
                 return Ok(Pass::AsValues(mixed));
             }
             same_kinds(first, &shape)?;
@@ -160,38 +169,11 @@ fn lower_arms(
                     }
                     continue;
                 };
-                // A column of values of different labels or definitions:
-                // its arms' identities may have different columns, of
-                // different types; it is one, the text of their tuple (the
-                // label or definition first, NULL exactly where the element
-                // is: so is the text).
-                let identity = if q.as_values.contains(&c.name) {
-                    let m = current_function_mapper();
-                    let (Some(g), Some(first)) = (m.graph_values(), identity.first()) else {
-                        return unsupported("a UNION column of values in this SQL dialect");
-                    };
-                    let parts: Vec<String> =
-                        identity.iter().map(render_expr_to_sql_plain).collect();
-                    let text = RenderExpr::Raw((g.to_text)(&format!(
-                        "{}({})",
-                        m.tuple_constructor(),
-                        parts.join(", ")
-                    )));
-                    vec![RenderExpr::Case(RenderCase {
-                        expr: None,
-                        when_then: vec![(
-                            super::null_test(std::slice::from_ref(first), true),
-                            RenderExpr::Literal(Literal::Null),
-                        )],
-                        else_expr: Some(Box::new(text)),
-                    })]
-                } else {
-                    identity.clone()
-                };
                 for e in identity {
-                    plan.select
-                        .items
-                        .push(select(e, &format!("__cg_{alias}_k{identity_columns}")));
+                    plan.select.items.push(select(
+                        e.clone(),
+                        &format!("__cg_{alias}_k{identity_columns}"),
+                    ));
                     identity_columns += 1;
                 }
             }

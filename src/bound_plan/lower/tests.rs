@@ -5411,7 +5411,7 @@ fn ids_compared_with_integers() {
     );
 }
 
-/// A UNION column whose arms hold nodes of different labels, or
+/// A UNION ALL column whose arms hold nodes of different labels, or
 /// relationships of different definitions, is a value in every arm (S11f).
 #[test]
 fn union_columns_of_different_labels_or_definitions() {
@@ -5431,21 +5431,20 @@ fn union_columns_of_different_labels_or_definitions() {
         &social(),
     );
     assert_eq!(kinds(&shape), vec![column("o", node)]);
-    // UNION: identified by one text, its label first, NULL where the node
-    // is (an OPTIONAL MATCH's arm and a several-label arm group alike).
-    has(
+    // UNION (not ALL): the arms identify such elements differently.
+    not_lowered(
         "MATCH (u:User) OPTIONAL MATCH (u)-[:AUTHORED]->(p:Post) RETURN p AS x \
          UNION MATCH (n) WHERE n.post_id = 2 RETURN n AS x",
-        &[
-            "CASE WHEN CASE WHEN o1.v2__post_id IS NULL THEN NULL ELSE 'Post' END IS NULL \
-             THEN NULL ELSE toString(tuple(CASE WHEN o1.v2__post_id IS NULL THEN NULL ELSE \
-             'Post' END, o1.v2__post_id)) END",
-            "toString(tuple(v4.__cg_label, v4.__cg_id_0))",
-        ],
+        "UNION (not ALL) of a column of nodes of different labels",
+    );
+    // Its properties as columns: of different names in each arm.
+    not_lowered(
+        "MATCH (u:User) RETURN u.* UNION ALL MATCH (u:Post) RETURN u.*",
+        "`v.*` in a UNION column of different labels",
     );
     // Relationships of different types.
     let (_, shape) = shaped(
-        "MATCH ()-[r:FOLLOWS]->() RETURN r AS x UNION MATCH ()-[r:LIKED]->() RETURN r AS x",
+        "MATCH ()-[r:FOLLOWS]->() RETURN r AS x UNION ALL MATCH ()-[r:LIKED]->() RETURN r AS x",
         &social(),
     );
     assert_eq!(
