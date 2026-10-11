@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; S7e3 #1347; S8a #1349 FK edges; S8b #1350 embedded nodes; S8c #1351 polymorphic edges / label-column nodes; S8d1 #1353 composite-id walks; S9 #1357 subquery expressions; S8d2a #1359 composite shortest paths; S8d2b #1361 composite union walks; next: S8d2c composite values / lists, then S10 default on (reading a map's value needs typed per-key values: a later list slice))
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; S7e3 #1347; S8a #1349 FK edges; S8b #1350 embedded nodes; S8c #1351 polymorphic edges / label-column nodes; S8d1 #1353 composite-id walks; S9 #1357 subquery expressions; S8d2a #1359 composite shortest paths; S8d2b #1361 composite union walks; S8d2c #PR composite values / lists (S8 done); next: S10 default on (reading a map's value needs typed per-key values: a later list slice))
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,11 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-11: **P-4c S8d2c: composite ids in values and lists** (#PR, `emit_id_expr` under `composite_by_columns`, `src/bound_plan/lower/value.rs` `element_id_sql`, `elements.rs` `Layout`, behind `CLICKGRAPH_BOUND_PLAN=on`). S8 complete.
+  - The lowering's walks spell a composite id as its tuple's text (collision-free, as S8d2a/b's keys); values' identities use it; element ids follow the contract (`|`-joined parts); list tuples hold a slot per id column; `count(DISTINCT)` of a list element of a composite identity counts its tuple; composite shortest paths read as paths with conditions are lowered.
+  - Sweeps: 53 value / list shapes, every lowered one equal to Neo4j but `collect` order, shortest-path picks among equals (checked) and a comparator note. Oracle unchanged; mutation check 5 of 5; live suite unchanged.
+  - Review: 2 findings fixed (a node with a NULL first id part dropped from lists and counts: a composite node is NULL when every part is; a NULL part made the element id NULL, which Bolt blanked). Filed #1362 (UNION of tuple and value lists, single ids too); #1354 (S8d1) remains.
 
 - 2026-10-11: **P-4c S8d2b: walks of several definitions between composite ids** (#1361, `src/bound_plan/lower/mod.rs` `walks_by_keys` / `walk_key` / `walk_key_sql`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - A union walk that can visit a composite-id label goes by keys: every node's walk id and each relationship row's end is its identity as a text (label and the text of its id's tuple); the trails, search and ends' recovery read them as before; the first node is restricted and the ends tied by that key. Rows with a NULL part in a composite end relate nothing. A relation holding a key tie keeps its join order. Single-id walks unchanged.
