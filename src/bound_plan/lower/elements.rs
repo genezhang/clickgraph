@@ -418,26 +418,50 @@ impl<'s> Lowerer<'s> {
                 let value = self.elem_value(&g, &render_expr_to_sql_plain(e), &elem)?;
                 Ok(Some((ty(&elem), value)))
             }
-            Kind::List(k) => match *k {
-                Kind::Element(elem) => {
-                    let g = super::value::spelling()?;
-                    let Some(spelling) = current_function_mapper().lists() else {
-                        return unsupported("a list of nodes or relationships in this SQL dialect");
-                    };
-                    let x = "__cg_e";
-                    let value = (spelling.map)(
-                        x,
-                        &self.elem_value(&g, x, &elem)?,
-                        &render_expr_to_sql_plain(e),
-                    );
-                    Ok(Some((GraphType::List(Box::new(ty(&elem))), value)))
-                }
-                k if self.kinds_hold_elements(&k) => {
-                    unsupported("a list of lists of nodes or relationships")
-                }
-                _ => Ok(None),
-            },
+            Kind::List(k) if self.kinds_hold_elements(&k) => {
+                let kind = Kind::List(k);
+                let (ty, value) = self.list_value(&kind, &render_expr_to_sql_plain(e), 0)?;
+                Ok(Some((ty, value)))
+            }
             _ => Ok(None),
+        }
+    }
+
+    /// A list of `kind` (lists, at any depth, of nodes or relationships of
+    /// one label or type) as its elements' values: each level mapped with
+    /// its own parameter (P-4c S11c lists of lists).
+    fn list_value(
+        &self,
+        kind: &Kind,
+        list: &str,
+        depth: usize,
+    ) -> Result<(GraphType, String), LowerError> {
+        let g = super::value::spelling()?;
+        match kind {
+            Kind::Element(elem) => {
+                let ty = match elem {
+                    Elem::Node(_) => GraphType::Node,
+                    Elem::Rel { .. } => GraphType::Relationship,
+                };
+                Ok((ty, self.elem_value(&g, list, elem)?))
+            }
+            Kind::List(inner) => {
+                let Some(spelling) = current_function_mapper().lists() else {
+                    return unsupported("a list of nodes or relationships in this SQL dialect");
+                };
+                // `__cg_e` at the outer level, as a list of one level
+                // always was.
+                let x = match depth {
+                    0 => "__cg_e".to_string(),
+                    d => format!("__cg_e{d}"),
+                };
+                let (ty, value) = self.list_value(inner, &x, depth + 1)?;
+                Ok((
+                    GraphType::List(Box::new(ty)),
+                    (spelling.map)(&x, &value, list),
+                ))
+            }
+            _ => unsupported("internal: a list value of no nodes or relationships"),
         }
     }
 

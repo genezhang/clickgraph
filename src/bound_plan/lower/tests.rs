@@ -5261,3 +5261,30 @@ fn counts_of_lists_of_nodes_and_relationships() {
         &["count(DISTINCT w1.v4)"],
     );
 }
+
+/// Lists of lists of nodes or relationships: `collect()` of a list that is
+/// never NULL, and returned lists of lists as their elements' values, a
+/// parameter per depth (P-4c S11c).
+#[test]
+fn lists_of_lists_of_nodes_and_relationships() {
+    for q in [
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) WITH a, count(DISTINCT relationships(p)) AS c, \
+         collect(relationships(p)) AS rss RETURN a.name, c, size(rss) AS n",
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN a.name, collect(nodes(p)) AS nss",
+        "MATCH p = (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(nodes(p)) AS nss \
+         UNWIND nss AS ns RETURN a.name, size(ns) AS n",
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b) AS bs RETURN collect(bs) AS bss",
+    ] {
+        sql(q);
+    }
+    has(
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN [[a, b], [b]] AS l",
+        &["arrayMap(__cg_e -> arrayMap(__cg_e1 -> "],
+    );
+    // A list that may be NULL is not collected (`split(NULL)`, #1377).
+    not_lowered(
+        "MATCH (a:User) WITH a, [x IN split(CASE WHEN a.age > 26 THEN 'x' END, ',') | a] AS l \
+         RETURN collect(l) AS ls",
+        "collect() of lists of nodes or relationships",
+    );
+}

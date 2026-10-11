@@ -1242,7 +1242,13 @@ impl Lowerer<'_> {
                     }));
                 }
             }
-            if self.holds_elements(arg) {
+            // collect() of a list of nodes or relationships that is never
+            // NULL: a list of those lists (P-4c S11c), lowered as any
+            // collect() below.
+            let collected_list = name == "collect"
+                && matches!(self.kind(arg), Kind::List(inner) if matches!(*inner, Kind::Element(_)))
+                && self.never_null_element_list(arg);
+            if self.holds_elements(arg) && !collected_list {
                 return unsupported(format!("{}() of lists of nodes or relationships", f.name));
             }
         }
