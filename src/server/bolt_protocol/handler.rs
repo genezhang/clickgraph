@@ -3032,6 +3032,12 @@ impl BoltHandler {
         // (no-op unless CLICKGRAPH_STATS_ENABLED installed the cache).
         crate::server::query_context::attach_current_table_stats(&graph_schema).await;
 
+        // The session's ids: `id()` comparisons read them (the `id()`
+        // rewrite below, and the bound plan).
+        let id_mapper_snapshot = {
+            let context = lock_context!(self.context);
+            context.id_mapper.clone()
+        };
         let translated = if let Some(parse_error) = legacy_parse_error {
             match crate::translate::translate_text_read(
                 query,
@@ -3044,6 +3050,7 @@ impl BoltHandler {
                     max_cte_depth: 1000,
                     cypher: Some(query.to_string()),
                     bound_plan: None,
+                    id_mapper: Some(id_mapper_snapshot.clone()),
                 },
             ) {
                 Ok(Some(t)) => Ok(t),
@@ -3058,11 +3065,6 @@ impl BoltHandler {
                 Err(e) => {
                     return Err(BoltError::query_error(format!("Re-parse failed: {}", e)));
                 }
-            };
-
-            let id_mapper_snapshot = {
-                let context = lock_context!(self.context);
-                context.id_mapper.clone()
             };
 
             let (transformed_for_planning, label_constraints_from_second_pass) =
@@ -3093,6 +3095,7 @@ impl BoltHandler {
                     max_cte_depth: 1000,
                     cypher: Some(query.to_string()),
                     bound_plan: None,
+                    id_mapper: Some(id_mapper_snapshot.clone()),
                 },
             )
         };

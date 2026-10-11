@@ -4015,7 +4015,8 @@ slice that will handle it.
     pattern lowers; its `valueType()` is "NULL", as in Neo4j.
     - Not yet: `id()` comparisons in a WHERE and ORDER BY an `id()` item
       (the server's encoded id: the HTTP / Bolt rewrite turns comparisons
-      into key predicates, which the bound plan does not read yet).
+      into key predicates, which the bound plan does not read yet). Done in
+      S11e.
     - Acceptance: `label(x)` against Neo4j's `labels(x)[0]` (`neo ||| cg`)
       on VLP and union-walk ends, unlabeled nodes, DISTINCT / grouped /
       filtered, OPTIONAL, list elements: every shape equal. Corpus 1437
@@ -4028,6 +4029,46 @@ slice that will handle it.
         defect. Fixed alongside: `valueType()` of an element that matches
         nothing is "NULL" (was null). Filed: Bolt UNION `id()` returns raw
         keys, and loud gaps (#1383).
+  - [x] **S11e: `id()` compared with integers, and ORDER BY `id()`.**
+    `id(n) = N`, `id(n) <> N`, `id(n) [NOT] IN [N, …]` of a node with
+    integer literals (Neo4j Browser's expand and fetch queries; Bolt inlines
+    their parameters) are lowered as the `id()` rewrite reads them: on the
+    server (HTTP, Bolt, `/query/sql`, export inner queries) an `N` is one of
+    the server's ids (`ReadOptions::id_mapper`; the session's cache, another
+    session's of the same scope, else the bit pattern of a label code and a
+    small integer key: `id_function::resolve_node_id`, shared with the
+    rewrite), the node of that label and key or none; in the library
+    (embedded, `cg`) `N` is compared with the key, as `id(n)` is the key
+    there. `<>` reads the same ids (legacy compared `<>` with the raw key, so
+    it excluded nothing). An `id()` RETURN item, and `ORDER BY id(n)`, sort
+    by the key, as the legacy pipeline does: the order of the id HTTP
+    returns, and of Bolt's encoded ids for a node of one label with a
+    non-negative integer key (a string key's encoded id is a hash, which
+    has no meaningful order). Other uses of `id()` (`id(n) > 3`, `id(r)`,
+    `id(n) + 1`) stay refused. The Bolt guard that sent queries with `id()`
+    constraints to the legacy pipeline is gone.
+    - Fixed alongside: a Bolt-cached id decoded on HTTP kept Neo4j
+      Browser's trailing `-` (`IdMapper::decode_for_query`: `'2-'` against
+      an integer key, ClickHouse Code 53, on both pipelines).
+    - Acceptance: live HTTP and Bolt, bound plan on vs off, with ids the
+      servers returned (`social_integration`, composite ids): every shape
+      equal or the legacy pipeline wrong (a `(a:Post)` matched a User's id;
+      `<>` excluded nothing; `NOT id(b) IN [..]` of an unmatched `b` was
+      true, NULL in Neo4j; a NULL `id(b)` was encoded as a number on Bolt;
+      a composite `IN` split into two rows). Corpus 1439 lowered (was 1437:
+      the two ORDER BY `id()` queries). Scorecard unchanged; live suite
+      unchanged.
+    - Still falls back: the corpus's expand query is a UNION whose arms
+      return `o` of different label sets (S7d).
+  - **User decisions (2026-10-11)** on what S11 does not lower: a
+    relationship without `edge_id` keeps its ends as its identity (#1356;
+    define `edge_id` to tell parallel rows apart); an undeclared property
+    of a node embedded in edge tables, and the shapes Neo4j refuses (a
+    property of a variable-length relationship's list, shortestPath from a
+    node to itself, composite ids paired in another column order, a
+    pattern predicate over an integer list's element as a node, #629's 11
+    corpus queries: Neo4j's "Type mismatch"), become errors at the legacy
+    deletion; `length(nodes(p))` keeps answering.
     - Acceptance:
       - Generated shapes against Neo4j on `social_integration` (`count(p)`
         grouped, DISTINCT, OPTIONAL, union walks, zero-length paths,

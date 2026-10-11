@@ -1535,6 +1535,7 @@ async fn query_handler_inner(
                 max_cte_depth: app_state.config.max_cte_depth,
                 cypher: Some(clean_query.clone()),
                 bound_plan: None,
+                id_mapper: Some(id_mapper.clone()),
             };
             let translated = match cypher_statement {
                 Some(statement) => {

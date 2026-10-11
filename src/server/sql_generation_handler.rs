@@ -399,6 +399,7 @@ async fn sql_generation_handler_inner(
             view_parameter_values,
             max_cte_depth: app_state.config.max_cte_depth,
             cypher: Some(clean_query.to_string()),
+            id_mapper: Some(id_mapper.clone()),
             ..Default::default()
         };
         let translated = match cypher_statement {

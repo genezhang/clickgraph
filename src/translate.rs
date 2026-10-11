@@ -43,6 +43,10 @@ pub struct ReadOptions {
     pub cypher: Option<String>,
     /// Override of `CLICKGRAPH_BOUND_PLAN` (tests).
     pub bound_plan: Option<BoundPlanMode>,
+    /// The server's id mapper (HTTP, Bolt): the bound plan reads an integer
+    /// compared with `id(n)` as the `id()` rewrite does (P-4c S11e). `None`
+    /// (library, `cg`): `id(n)` is the node's key.
+    pub id_mapper: Option<crate::server::bolt_protocol::id_mapper::IdMapper>,
 }
 
 /// Which pipeline translates read queries (`CLICKGRAPH_BOUND_PLAN`).
@@ -233,14 +237,9 @@ fn translate_in_context(
     crate::query_planner::logical_plan::reset_all_counters();
 
     let mode = options.bound_plan.unwrap_or_else(BoundPlanMode::from_env);
-    // Label constraints come from `id() = N` predicates, which the bound
-    // plan does not lower (the `id()` rewrite turned them into key
-    // predicates in `statement`, not in `cypher`).
-    let id_constraints = options
-        .where_label_constraints
-        .as_ref()
-        .is_some_and(|c| !c.is_empty());
-    if mode == BoundPlanMode::On && !id_constraints {
+    // `id()` comparisons: the bound plan reads them from `cypher` with the
+    // server's id mapper (S11e), as the `id()` rewrite did in `statement`.
+    if mode == BoundPlanMode::On {
         if let Some(cypher) = options.cypher.as_deref() {
             let start = Instant::now();
             match bound_plan_or_reason(cypher, schema, &options) {
@@ -341,9 +340,12 @@ pub fn translate_inner_read(
     max_cte_depth: u32,
 ) -> Result<String, String> {
     use crate::query_planner::ast_transform;
+    // Stateless for export: no IdMapper scope.
+    let id_mapper = crate::server::bolt_protocol::id_mapper::IdMapper::new();
     let options = || ReadOptions {
         max_cte_depth,
         cypher: Some(cypher.to_string()),
+        id_mapper: Some(id_mapper.clone()),
         ..Default::default()
     };
     let message = |e: TranslateError| match e {
@@ -353,8 +355,6 @@ pub fn translate_inner_read(
     };
     match crate::open_cypher_parser::parse_cypher_statement(cypher) {
         Ok((_, statement)) => {
-            // Stateless for export: no IdMapper scope.
-            let id_mapper = crate::server::bolt_protocol::id_mapper::IdMapper::new();
             let arena = ast_transform::StringArena::new();
             let (statement, _) =
                 ast_transform::transform_id_functions(&arena, statement, &id_mapper, Some(schema));
@@ -449,6 +449,18 @@ fn bound_plan_or_reason(
                 options.view_parameter_values.as_ref(),
             ),
             neo4j_compat: crate::server::query_context::server_neo4j_compat(),
+            id_lookup: options.id_mapper.clone().map(|mapper| {
+                // The query's schema (the context's: an `Arc`, not a copy).
+                let schema = crate::server::query_context::get_current_schema()
+                    .unwrap_or_else(|| std::sync::Arc::new(schema.clone()));
+                crate::bound_plan::lower::IdLookup(std::sync::Arc::new(move |id| {
+                    crate::query_planner::ast_transform::id_function::resolve_node_id(
+                        &mapper,
+                        Some(&schema),
+                        id,
+                    )
+                }))
+            }),
         },
     )
     .map_err(|e| BoundPlanError::Fallback(e.to_string()))?;
@@ -531,11 +543,12 @@ mod tests {
             assert_eq!(lib.as_deref(), Ok(t.sql.as_str()), "{q}");
         }
         let text_only = "MATCH (a:User) ORDER BY a.name LIMIT 3 RETURN a.name";
-        // Not lowered (`id()` in a WHERE), an updating clause, or the route
-        // off: the caller reports its parse error.
+        // Not lowered (`id()` other than compared with integers), an
+        // updating clause, or the route off: the caller reports its parse
+        // error.
         for q in [
             "MATCH (a:User) WITH a MATCH (a)-[:FOLLOWS]->(b:User) MATCH (b) \
-             WHERE id(b) = 3 RETURN count(*) AS n",
+             WHERE id(b) > 3 RETURN count(*) AS n",
             "MATCH (a:User) ORDER BY a.name LIMIT 3 CREATE (b:User) RETURN a.name",
         ] {
             assert!(

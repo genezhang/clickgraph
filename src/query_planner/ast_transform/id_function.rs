@@ -39,6 +39,44 @@ use crate::{
 };
 use std::collections::{HashMap, HashSet};
 
+/// The node an integer `id()` value names, as the server reads it: its
+/// label and key (a composite key's parts joined by `|`). The id `id_mapper`
+/// gave it (this session's, or another of the same scope), else its bit
+/// pattern decoded (`IdMapper::decode_for_query`: a label code and a small
+/// numeric key), for a label whose key is an integer. `None`: it names no
+/// node. The `id()` rewrite and the bound plan (P-4c S11e) both read ids so.
+pub fn resolve_node_id(
+    id_mapper: &IdMapper,
+    schema: Option<&crate::graph_catalog::GraphSchema>,
+    id_value: i64,
+) -> Option<(String, String)> {
+    if let Some(element_id) = id_mapper.get_element_id(id_value) {
+        if let Ok((label, id_parts)) = parse_node_element_id(&element_id) {
+            return Some((label, id_parts.join("|")));
+        }
+    }
+    // LIMITATION: only simple numeric keys (< 2^31) decode from the bit
+    // pattern; not string ids, UUIDs, composite keys or hashed values.
+    let (label, id_str) = IdMapper::decode_for_query(id_value)?;
+    if let Some(schema) = schema {
+        use crate::graph_catalog::schema_types::SchemaType;
+        let Ok(node_schema) = schema.node_schema(&label) else {
+            log::warn!("id() decode: label '{}' not found in schema", label);
+            return None;
+        };
+        if !matches!(node_schema.node_id.dtype, SchemaType::Integer) {
+            log::warn!(
+                "id() decode: skipping {}:{} - ID type '{:?}' is not Integer",
+                label,
+                id_str,
+                node_schema.node_id.dtype
+            );
+            return None;
+        }
+    }
+    Some((label, id_str))
+}
+
 /// Transforms id() function calls in Cypher AST using session's IdMapper
 pub struct IdFunctionTransformer<'a> {
     arena: &'a crate::query_planner::ast_transform::StringArena,
@@ -409,92 +447,33 @@ impl<'a> IdFunctionTransformer<'a> {
     /// For cross-session id() lookups (when the integer ID isn't in the session cache),
     /// we generate a predicate that checks all possible node types with that ID.
     fn rewrite_id_equals(&mut self, var: &'a str, id_value: i64) -> Expression<'a> {
-        // Try to lookup from cache (local + global for cross-session support)
-        if let Some(element_id) = self.id_mapper.get_element_id(id_value) {
-            if let Ok((label, id_parts)) = parse_node_element_id(&element_id) {
-                let id_str = id_parts.join("|");
-                log::info!(
-                    "id() transform: id({}) = {} → {}:{} (from cache)",
-                    var,
-                    id_value,
-                    label,
-                    id_str
-                );
-                // Record label constraint for UNION pruning / label injection
-                self.label_constraints
-                    .entry(var.to_string())
-                    .or_default()
-                    .insert(label.to_string());
-                self.id_values_by_label
-                    .entry(var.to_string())
-                    .or_default()
-                    .entry(label.to_string())
-                    .or_default()
-                    .push(id_str.clone());
-                return self.build_label_and_id_check(var, &label, &id_str);
-            }
-        }
-
-        // ID not in cache - try fallback bit-pattern decoding
-        // LIMITATION: Only works for simple numeric primary keys (< 2^31)
-        // Won't work for: string IDs, UUIDs, composite keys, or hashed values
-        log::warn!(
-            "id() transform: id({}) = {} not in cache, trying bit-pattern decode",
-            var,
-            id_value
-        );
-
-        // Try direct decoding from bit pattern
-        use crate::server::bolt_protocol::id_mapper::IdMapper;
-        if let Some((label, id_str)) = IdMapper::decode_for_query(id_value) {
-            // Validate that the label's ID column is actually a numeric type
-            if let Some(schema) = self.schema {
-                if let Ok(node_schema) = schema.node_schema(&label) {
-                    // Check if ID column type is numeric (Integer type in our SchemaType enum)
-                    use crate::graph_catalog::schema_types::SchemaType;
-                    let is_numeric = matches!(node_schema.node_id.dtype, SchemaType::Integer);
-
-                    if !is_numeric {
-                        log::warn!(
-                            "id() transform: Skipping bit-pattern decode for {}:{} - ID column type '{:?}' is not Integer",
-                            label, id_str, node_schema.node_id.dtype
-                        );
-                        return Expression::Literal(Literal::Boolean(false));
-                    }
-                } else {
-                    log::warn!("id() transform: Label '{}' not found in schema", label);
-                    return Expression::Literal(Literal::Boolean(false));
-                }
-            }
-
-            log::info!(
-                "id() transform: id({}) = {} → {}:{} (from bit pattern, validated numeric type)",
+        let Some((label, id_str)) = resolve_node_id(self.id_mapper, self.schema, id_value) else {
+            log::warn!(
+                "id() transform: id({}) = {} cannot be decoded (not in cache and not a simple numeric ID)",
                 var,
-                id_value,
-                label,
-                id_str
+                id_value
             );
-            // Record label constraint for UNION pruning
-            self.label_constraints
-                .entry(var.to_string())
-                .or_default()
-                .insert(label.to_string());
-            self.id_values_by_label
-                .entry(var.to_string())
-                .or_default()
-                .entry(label.to_string())
-                .or_default()
-                .push(id_str.clone());
-            return self.build_label_and_id_check(var, &label, &id_str);
-        }
-
-        // Cannot decode - return false to indicate no match
-        log::warn!(
-            "id() transform: id({}) = {} cannot be decoded (not in cache and not a simple numeric ID)",
+            return Expression::Literal(Literal::Boolean(false));
+        };
+        log::info!(
+            "id() transform: id({}) = {} → {}:{}",
             var,
-            id_value
+            id_value,
+            label,
+            id_str
         );
-        Expression::Literal(Literal::Boolean(false))
+        // Record label constraint for UNION pruning / label injection
+        self.label_constraints
+            .entry(var.to_string())
+            .or_default()
+            .insert(label.clone());
+        self.id_values_by_label
+            .entry(var.to_string())
+            .or_default()
+            .entry(label.clone())
+            .or_default()
+            .push(id_str.clone());
+        self.build_label_and_id_check(var, &label, &id_str)
     }
 
     /// Rewrite `id(var) IN [...]` or `NOT id(var) IN [...]`
@@ -509,68 +488,21 @@ impl<'a> IdFunctionTransformer<'a> {
         let mut ids_by_label: HashMap<String, Vec<String>> = HashMap::new();
 
         for id_value in ids {
-            // Try lookup from cache (local + global)
-            if let Some(element_id) = self.id_mapper.get_element_id(id_value) {
-                if let Ok((label, id_parts)) = parse_node_element_id(&element_id) {
-                    let id_str = id_parts.join("|");
-                    labels_for_var.insert(label.to_string());
-                    ids_by_label
-                        .entry(label.to_string())
-                        .or_default()
-                        .push(id_str.clone());
-                    filters.push(self.build_label_and_id_check(var, &label, &id_str));
-                    continue;
-                }
-            }
-
-            // Fallback: Decode label from bit pattern
-            // LIMITATION: Only works for simple numeric primary keys
-            use crate::server::bolt_protocol::id_mapper::IdMapper;
-            if let Some((label, id_str)) = IdMapper::decode_for_query(id_value) {
-                // Validate that the label's ID column is actually numeric
-                let mut is_valid = true;
-                if let Some(schema) = self.schema {
-                    if let Ok(node_schema) = schema.node_schema(&label) {
-                        use crate::graph_catalog::schema_types::SchemaType;
-                        let is_numeric = matches!(node_schema.node_id.dtype, SchemaType::Integer);
-                        if !is_numeric {
-                            log::warn!(
-                                "id() transform: Skipping {}:{} - ID type '{:?}' is not Integer",
-                                label,
-                                id_str,
-                                node_schema.node_id.dtype
-                            );
-                            is_valid = false;
-                        }
-                    } else {
-                        is_valid = false;
-                    }
-                }
-
-                if is_valid {
-                    log::info!(
-                        "id() transform: id({}) = {} → {}:{} (from bit pattern, validated)",
-                        var,
-                        id_value,
-                        label,
-                        id_str
-                    );
-                    labels_for_var.insert(label.to_string());
-                    ids_by_label
-                        .entry(label.to_string())
-                        .or_default()
-                        .push(id_str.clone());
-                    filters.push(self.build_label_and_id_check(var, &label, &id_str));
-                    continue;
-                }
-            }
-
-            // Cannot decode - skip this ID with warning
-            log::warn!(
-                "id() transform: id({}) = {} cannot be decoded (invalid format, skipping)",
-                var,
-                id_value
-            );
+            let Some((label, id_str)) = resolve_node_id(self.id_mapper, self.schema, id_value)
+            else {
+                log::warn!(
+                    "id() transform: id({}) = {} cannot be decoded (invalid format, skipping)",
+                    var,
+                    id_value
+                );
+                continue;
+            };
+            labels_for_var.insert(label.clone());
+            ids_by_label
+                .entry(label.clone())
+                .or_default()
+                .push(id_str.clone());
+            filters.push(self.build_label_and_id_check(var, &label, &id_str));
         }
 
         // Store extracted labels and ID values for UNION splitting

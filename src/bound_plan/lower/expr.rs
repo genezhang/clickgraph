@@ -472,6 +472,9 @@ impl Lowerer<'_> {
 
     fn operator(&self, op: &LOp, items: &Items) -> Result<RenderExpr, LowerError> {
         use lx::Operator as O;
+        if let Some(e) = self.id_comparison(op)? {
+            return Ok(e);
+        }
         // A list's node or relationship (`elements.rs`) by its identity.
         let element_operands = op.operands.iter().any(|o| {
             matches!(o, LogicalExpr::TableAlias(_))
@@ -516,6 +519,125 @@ impl Lowerer<'_> {
         Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
             operator: op.operator,
             operands: self.all(&op.operands, items)?,
+        }))
+    }
+
+    /// `id(n) = N`, `id(n) <> N`, `id(n) [NOT] IN [N, …]` of a node `n` and
+    /// integer literals (Neo4j Browser's expand and fetch queries; Bolt
+    /// inlines their parameters). On the server an `N` is one of its ids
+    /// (`LowerOptions::id_lookup`, as the `id()` rewrite reads them): the
+    /// node of that label and key, or none. Without the server (library,
+    /// `cg`) `id(n)` is the node's key, as an `id(n)` RETURN item is there.
+    /// `None`: not such a comparison.
+    fn id_comparison(&self, op: &LOp) -> Result<Option<RenderExpr>, LowerError> {
+        use lx::Operator as O;
+        let node_id = |e: &LogicalExpr| match e {
+            LogicalExpr::ScalarFnCall(f) if f.name.eq_ignore_ascii_case("id") => self
+                .entity_arg(&f.args)
+                .filter(|v| matches!(self.binding(*v).kind, BindingKind::Node { .. })),
+            _ => None,
+        };
+        let integer = |e: &LogicalExpr| match e {
+            LogicalExpr::Literal(lx::Literal::Integer(i)) => Some(*i),
+            _ => None,
+        };
+        let (v, ids, negated) = match (op.operator, op.operands.as_slice()) {
+            (O::Equal | O::NotEqual, [a, b]) => {
+                let (v, id) = match (node_id(a), integer(b), node_id(b), integer(a)) {
+                    (Some(v), Some(id), _, _) | (_, _, Some(v), Some(id)) => (v, id),
+                    _ => return Ok(None),
+                };
+                (v, vec![id], op.operator == O::NotEqual)
+            }
+            (O::In | O::NotIn, [a, LogicalExpr::List(xs)]) => {
+                let (Some(v), Some(ids)) = (
+                    node_id(a),
+                    xs.iter().map(integer).collect::<Option<Vec<_>>>(),
+                ) else {
+                    return Ok(None);
+                };
+                (v, ids, op.operator == O::NotIn)
+            }
+            _ => return Ok(None),
+        };
+        let boolean = |b: bool| RenderExpr::Literal(Literal::Boolean(b));
+        // `x IN []` is false, NULL `x` included.
+        if ids.is_empty() {
+            return Ok(Some(boolean(negated)));
+        }
+        let cols = match self.scans.get(&v) {
+            // NULL on every row.
+            Some(Scan::Impossible) => return Ok(Some(RenderExpr::Literal(Literal::Null))),
+            Some(Scan::Node { .. } | Scan::Labels { .. }) => match self.identity(v)? {
+                Some(cols) => cols,
+                None => return Ok(Some(RenderExpr::Literal(Literal::Null))),
+            },
+            _ => return Ok(None),
+        };
+        // The node's labels, and where its key columns are in `cols`.
+        let (labels, key): (Vec<&str>, &[RenderExpr]) = match self.scans.get(&v) {
+            Some(Scan::Node { label, .. }) => (vec![label.as_str()], &cols[..]),
+            Some(Scan::Labels { arms, .. }) => {
+                (arms.iter().map(|(l, _)| l.as_str()).collect(), &cols[1..])
+            }
+            _ => return Ok(None),
+        };
+        let equal = |a: RenderExpr, b: RenderExpr| {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: O::Equal,
+                operands: vec![a, b],
+            })
+        };
+        let mut matches = Vec::new();
+        for id in ids {
+            let Some(lookup) = &self.options.id_lookup else {
+                // The library's `id(n)`: its key, of whichever label.
+                let [k] = key else {
+                    return unsupported("id() of a node with a composite id compared with an id");
+                };
+                matches.push(equal(k.clone(), RenderExpr::Literal(Literal::Integer(id))));
+                continue;
+            };
+            let Some((label, value)) = (lookup.0)(id) else {
+                continue;
+            };
+            let parts: Vec<&str> = value.split('|').collect();
+            if !labels.contains(&label.as_str()) || parts.len() != key.len() {
+                continue;
+            }
+            // As the `id()` rewrite: the key as text, which ClickHouse reads
+            // as the column's type.
+            let mut conds: Vec<RenderExpr> = key
+                .iter()
+                .zip(&parts)
+                .map(|(k, p)| {
+                    equal(
+                        k.clone(),
+                        RenderExpr::Literal(Literal::String(p.to_string())),
+                    )
+                })
+                .collect();
+            if labels.len() > 1 {
+                conds.insert(
+                    0,
+                    equal(cols[0].clone(), RenderExpr::Literal(Literal::String(label))),
+                );
+            }
+            matches.extend(super::and_all(conds));
+        }
+        let holds = if matches.is_empty() {
+            // NULL where the node is.
+            return Ok(Some(self.unless_null(&[v], boolean(negated))?));
+        } else {
+            super::or_all(matches)
+        };
+        Ok(Some(if negated {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: O::Not,
+                operands: vec![holds],
+            })
+        } else {
+            holds
         }))
     }
 
