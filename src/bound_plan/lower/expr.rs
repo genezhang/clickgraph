@@ -1318,11 +1318,23 @@ impl Lowerer<'_> {
                 let counted = match id.as_slice() {
                     [one] => one.clone(),
                     _ if !distinct => id[0].clone(),
-                    _ => {
-                        return unsupported(
-                            "count(DISTINCT x) of a list's relationship identified by its ends",
-                        )
-                    }
+                    // Its identity's columns as one value, NULL where the
+                    // first is (a NULL element): not counted (a composite
+                    // id, a relationship identified by its ends, S8d2c).
+                    _ => RenderExpr::Case(RenderCase {
+                        expr: None,
+                        when_then: vec![(
+                            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                operator: lx::Operator::IsNull,
+                                operands: vec![id[0].clone()],
+                            }),
+                            RenderExpr::Literal(Literal::Null),
+                        )],
+                        else_expr: Some(Box::new(RenderExpr::ScalarFnCall(ScalarFnCall {
+                            name: current_function_mapper().tuple_constructor().to_string(),
+                            args: id.clone(),
+                        }))),
+                    }),
                 };
                 let arg = if distinct {
                     RenderExpr::OperatorApplicationExp(OperatorApplication {
