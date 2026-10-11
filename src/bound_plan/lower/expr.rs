@@ -973,6 +973,42 @@ impl Lowerer<'_> {
         self.unless_null(&nullable, length)
     }
 
+    /// A list of nodes or relationships built so that it is never NULL: a
+    /// path's nodes / relationships (of a path no OPTIONAL MATCH leaves
+    /// NULL), a variable-length relationship's list, `collect()`, a list
+    /// literal, their concatenation, or a WITH item of one. (A
+    /// comprehension over a list that may be NULL, `split(NULL)`, is NULL in
+    /// Cypher but an array here: S11b review.)
+    fn never_null_element_list(&self, e: &LogicalExpr) -> bool {
+        match e {
+            LogicalExpr::TableAlias(lx::TableAlias(n)) => {
+                let Some(v) = parse_var(n) else {
+                    return false;
+                };
+                match &self.binding(v).kind {
+                    BindingKind::Rel {
+                        length: Some(_), ..
+                    } => !self.binding(v).nullable,
+                    _ => self
+                        .projected
+                        .get(&v)
+                        .is_some_and(|x| self.never_null_element_list(x)),
+                }
+            }
+            LogicalExpr::ScalarFnCall(f) => self.path_part(f).is_some(),
+            LogicalExpr::AggregateFnCall(f) => f.name.eq_ignore_ascii_case("collect"),
+            LogicalExpr::List(_) => true,
+            LogicalExpr::OperatorApplicationExp(op) | LogicalExpr::Operator(op)
+                if op.operator == lx::Operator::Addition =>
+            {
+                op.operands.iter().all(|o| {
+                    matches!(self.kind(o), Kind::Element(_)) || self.never_null_element_list(o)
+                })
+            }
+            _ => false,
+        }
+    }
+
     fn entity_arg(&self, args: &[LogicalExpr]) -> Option<VarId> {
         match args {
             [only] => self.entity(only),
@@ -1186,26 +1222,16 @@ impl Lowerer<'_> {
             // count() of a list of nodes or relationships (never NULL: a
             // path an OPTIONAL MATCH may leave NULL carries a value, not
             // tuples): its rows, or its distinct lists by their elements'
-            // identities in order (P-4c S11b).
+            // whole tuples in order, as DISTINCT compares them (P-4c S11b).
+            // (Identities alone would merge parallel relationships of a
+            // type without `edge_id`, which Neo4j tells apart: review.)
             if let (Kind::List(inner), "count") = (self.kind(arg), name.as_str()) {
-                if let Kind::Element(elem) = *inner {
+                if matches!(*inner, Kind::Element(_)) && self.never_null_element_list(arg) {
                     let list = self.expr(arg, items)?;
                     let value = if distinct {
-                        let Some(lists) = current_function_mapper().lists() else {
-                            return unsupported("count(DISTINCT) of a list in this SQL dialect");
-                        };
-                        let t = RenderExpr::Raw("__cg_t".to_string());
-                        let identity = RenderExpr::ScalarFnCall(ScalarFnCall {
-                            name: current_function_mapper().tuple_constructor().to_string(),
-                            args: self.elem_identity(&t, &elem)?,
-                        });
                         RenderExpr::OperatorApplicationExp(OperatorApplication {
                             operator: lx::Operator::Distinct,
-                            operands: vec![RenderExpr::Raw((lists.map)(
-                                "__cg_t",
-                                &render_expr_to_sql_plain(&identity),
-                                &render_expr_to_sql_plain(&list),
-                            ))],
+                            operands: vec![list],
                         })
                     } else {
                         list

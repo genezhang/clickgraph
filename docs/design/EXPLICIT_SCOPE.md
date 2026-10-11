@@ -3956,9 +3956,13 @@ slice that will handle it.
   - [x] **S11b: `count()` of a list of nodes or relationships** (#1375):
     a list of element tuples is never NULL (a path an OPTIONAL MATCH may
     leave NULL carries a value, not tuples), so `count(l)` counts rows and
-    `count(DISTINCT l)` the distinct lists by their elements' identities in
-    order (`arrayMap` to the identity slots: two rows of one identity with
-    different properties are one element).
+    `count(DISTINCT l)` the distinct lists by their elements' whole tuples
+    in order, as DISTINCT compares them (identities alone would merge
+    parallel relationships of a type without `edge_id`, which Neo4j tells
+    apart). Only a list built never NULL is counted (`never_null_element_
+    list`: a path's nodes / relationships, a variable-length relationship's
+    list, `collect()`, a list literal, their concatenation, or a WITH item
+    of one); others fall back.
     - Acceptance: generated shapes against Neo4j (carried `nodes(p)` /
       `relationships(p)` of fixed, variable-length, undirected and union
       walks, `collect()`ed lists, list literals, grouped, nested WITH,
@@ -3969,6 +3973,13 @@ slice that will handle it.
       list of lists), which brings a query with it to the legacy pipeline,
       where `count(DISTINCT relationships(p))` in the same query is
       miscounted (#1375).
+    - Adversarial review (about 120 shapes on five schemas incl. parallel
+      relationships without `edge_id`): two findings, fixed: identities
+      merged parallel relationships (7 vs 6; now whole tuples), and a list
+      comprehension over `split(NULL)` (an array here, NULL in Cypher) was
+      counted (now falls back; #1377). Filed: legacy fallbacks that answer
+      wrongly for list-of-element shapes the bound plan refuses (#1378);
+      the parallel-relationship identity contract gathered on #1356.
     - Acceptance:
       - Generated shapes against Neo4j on `social_integration` (`count(p)`
         grouped, DISTINCT, OPTIONAL, union walks, zero-length paths,
