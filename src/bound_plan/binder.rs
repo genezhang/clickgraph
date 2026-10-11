@@ -1137,9 +1137,9 @@ impl<'s> PatternBuilder<'s> {
         let length = match &rp.variable_length {
             Some(vl) => Some((vl.min_hops.unwrap_or(1), vl.max_hops)),
             // A shortest path over one relationship (S11i) is the path of
-            // exactly one: `*1..1`, the same paths. A named one binds a
-            // relationship, not a list, so it stays fixed (not lowered).
-            None if in_shortest && rp.name.is_none() => Some((1, Some(1))),
+            // exactly one: `*1..1`, the same paths. Neo4j binds a named one
+            // as that list too (`size(r)` is 1, `type(r)` a type mismatch).
+            None if in_shortest => Some((1, Some(1))),
             None => None,
         };
         let types: Vec<String> = rp.labels.iter().flatten().map(|t| t.to_string()).collect();

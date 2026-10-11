@@ -4082,9 +4082,9 @@ impl<'s> Lowerer<'s> {
         let [r] = part.rels.as_slice() else {
             return unsupported("shortestPath over other than one relationship");
         };
-        // An anonymous one binds as `*1..1` (S11i).
+        // One written without a length binds as `*1..1` (S11i).
         if r.length.is_none() {
-            return unsupported("shortestPath over a named fixed-length relationship");
+            return unsupported("internal: shortestPath over a fixed-length relationship");
         }
         if part.nodes[0].var == part.nodes[1].var {
             // Neo4j raises an error for it.

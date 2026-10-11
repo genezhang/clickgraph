@@ -741,7 +741,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 ## 4. Merge log (newest first — append on merge)
 
 - 2026-10-11: **P-4c S11i: shortestPath over one fixed-length relationship** (`src/bound_plan/binder.rs` `PatternBuilder::rel`).
-  - An anonymous relationship of a shortest-path pattern binds as `*1..1` (identical SQL); a named one stays refused. The 10 live tests of #1205's bare-hop form pass without the fallback.
+  - A relationship of a shortest-path pattern written without a length binds as `*1..1` (identical SQL), named or not, as Neo4j binds it. The 10 live tests of #1205's bare-hop form pass without the fallback.
 - 2026-10-11: **P-4c S11g: SKIP / LIMIT and collect() after an UNWIND of rows in no order** (#1394, `src/bound_plan/lower/mod.rs` `ordered_unwinds`, `unwind.rs` `number_rows`).
   - An UNWIND whose order a later SKIP / LIMIT or collect() relies on numbers the rows in any order first, its elements following each row in list order; other UNWINDs unchanged. Every lowered shape equal to Neo4j; corpus 1442 lowered (was 1440).
   - Review fix: a CTE depending on that numbering read twice (a drive or a path seed after `WITH … LIMIT`) gave wrong rows on large tables; such plans fall back (follow-ups #1395 re-read class, #1396 mixed-integer lists, #1397 collect cost).
