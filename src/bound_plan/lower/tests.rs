@@ -4944,7 +4944,8 @@ fn composite_ids_in_values_and_lists() {
     // A walk's nodes as values; its identity by the tuple text.
     let got = lower("MATCH p = (a:Acct)-[:SENT*0..1]->(b:Acct) WITH DISTINCT p RETURN p");
     for p in [
-        "concat(toString(start_node.bank), '|', toString(start_node.num))",
+        "concat(coalesce(toString(start_node.bank), 'null'), '|', \
+         coalesce(toString(start_node.num), 'null'))",
         "toString(tuple(start_node.bank, start_node.num)) as start_id",
     ] {
         assert!(got.contains(p), "missing `{p}` in\n{got}");
@@ -4953,6 +4954,13 @@ fn composite_ids_in_values_and_lists() {
     let got = lower("MATCH (a:Acct)-[:SENT]->(b:Acct) RETURN collect(b) AS l");
     assert!(
         got.contains("tuple(v2.bank, v2.num, v2.bank, v2.num, v2.owner)"),
+        "{got}"
+    );
+    // A node is NULL when every part of its id is: a real node's part can be
+    // NULL (review).
+    let got = lower("MATCH (a:Acct) WITH collect(a) AS l RETURN size(l) AS n");
+    assert!(
+        got.contains("(v0.bank IS NOT NULL OR v0.num IS NOT NULL)"),
         "{got}"
     );
     // A shortest path read as a path, with a condition the search cannot

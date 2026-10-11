@@ -168,10 +168,7 @@ impl Lowerer<'_> {
         let mut nulls = Vec::new();
         for v in vars.iter().filter(|v| self.binding(**v).nullable) {
             match self.identity(*v)? {
-                Some(id) => nulls.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                    operator: lx::Operator::IsNull,
-                    operands: vec![id[0].clone()],
-                })),
+                Some(id) => nulls.push(super::null_test(&self.presence(*v, &id), true)),
                 None => return Ok(RenderExpr::Literal(Literal::Null)),
             }
         }
@@ -490,16 +487,13 @@ impl Lowerer<'_> {
                 (O::Equal | O::NotEqual, 2, [a, b]) => {
                     self.identity_comparison(*a, *b, op.operator == O::Equal)
                 }
-                // NULL exactly where its first identity column is.
+                // NULL exactly where its identity is (`null_test`).
                 (O::IsNull | O::IsNotNull, 1, [a]) => {
-                    let first = match self.identity(*a)? {
-                        Some(mut cols) => cols.remove(0),
-                        None => RenderExpr::Literal(Literal::Null),
+                    let cols = match self.identity(*a)? {
+                        Some(cols) => self.presence(*a, &cols),
+                        None => vec![RenderExpr::Literal(Literal::Null)],
                     };
-                    Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                        operator: op.operator,
-                        operands: vec![first],
-                    }))
+                    Ok(super::null_test(&cols, op.operator == O::IsNull))
                 }
                 _ => unsupported("a node or relationship as an operand (needs its value)"),
             };
@@ -550,12 +544,10 @@ impl Lowerer<'_> {
             })
         };
         match (op.operator, els.as_slice()) {
-            (O::IsNull | O::IsNotNull, [(id, _)]) => {
-                Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                    operator: op.operator,
-                    operands: vec![id[0].clone()],
-                }))
-            }
+            (O::IsNull | O::IsNotNull, [(id, elem)]) => Ok(super::null_test(
+                &elem_presence(id, elem),
+                op.operator == O::IsNull,
+            )),
             (O::Equal | O::NotEqual, [(a, ea), (b, eb)]) => {
                 let equal = op.operator == O::Equal;
                 if ea != eb {
@@ -624,10 +616,7 @@ impl Lowerer<'_> {
         Ok(RenderExpr::Case(RenderCase {
             expr: None,
             when_then: vec![(
-                RenderExpr::OperatorApplicationExp(OperatorApplication {
-                    operator: lx::Operator::IsNull,
-                    operands: vec![id[0].clone()],
-                }),
+                super::null_test(&elem_presence(&id, elem), true),
                 RenderExpr::Literal(Literal::Null),
             )],
             else_expr: Some(Box::new(RenderExpr::Literal(value))),
@@ -1132,24 +1121,23 @@ impl Lowerer<'_> {
             let id = match self.identity(v)? {
                 // An element that matches nothing: no values to count.
                 None => return Ok(aggregate_constant(RenderExpr::Literal(Literal::Integer(0)))),
-                Some(mut cols) if cols.len() == 1 || !distinct => cols.remove(0),
-                // Its columns as one value, NULL where the first is (an
-                // OPTIONAL MATCH left the element NULL): not counted.
+                Some(mut cols) if cols.len() == 1 => cols.remove(0),
+                // Not DISTINCT: counted where it is not NULL.
+                Some(cols) if !distinct && self.presence(v, &cols).len() == 1 => {
+                    self.presence(v, &cols).remove(0)
+                }
+                // Its columns as one value, NULL where the element is (an
+                // OPTIONAL MATCH left it NULL: every column, `null_test`):
+                // not counted.
                 Some(cols) => {
-                    let first = cols[0].clone();
+                    let absent = super::null_test(&self.presence(v, &cols), true);
                     let tuple = RenderExpr::ScalarFnCall(ScalarFnCall {
                         name: current_function_mapper().tuple_constructor().to_string(),
                         args: cols,
                     });
                     RenderExpr::Case(RenderCase {
                         expr: None,
-                        when_then: vec![(
-                            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                                operator: lx::Operator::IsNull,
-                                operands: vec![first],
-                            }),
-                            RenderExpr::Literal(Literal::Null),
-                        )],
+                        when_then: vec![(absent, RenderExpr::Literal(Literal::Null))],
                         else_expr: Some(Box::new(tuple)),
                     })
                 }
@@ -1295,10 +1283,10 @@ impl Lowerer<'_> {
             },
             None => self.elem_identity(&t, elem)?,
         };
-        let present = format!(
-            "NOT {}",
-            (spelling.is_null)(&render_expr_to_sql_plain(&id[0]))
-        );
+        let present = match elem_presence(&id, elem).as_slice() {
+            [one] => format!("NOT {}", (spelling.is_null)(&render_expr_to_sql_plain(one))),
+            all => render_expr_to_sql_plain(&super::null_test(all, false)),
+        };
         let t_sql = render_expr_to_sql_plain(&t);
         match name {
             "collect" => {
@@ -1315,19 +1303,17 @@ impl Lowerer<'_> {
                 }))
             }
             "count" => {
-                let counted = match id.as_slice() {
-                    [one] => one.clone(),
-                    _ if !distinct => id[0].clone(),
+                let presence = elem_presence(&id, elem);
+                let counted = match (id.as_slice(), presence.as_slice()) {
+                    ([one], _) => one.clone(),
+                    (_, [first]) if !distinct => first.clone(),
                     // Its identity's columns as one value, NULL where the
-                    // first is (a NULL element): not counted (a composite
-                    // id, a relationship identified by its ends, S8d2c).
+                    // element is (`null_test`): not counted (a composite id,
+                    // a relationship identified by its ends, S8d2c).
                     _ => RenderExpr::Case(RenderCase {
                         expr: None,
                         when_then: vec![(
-                            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                                operator: lx::Operator::IsNull,
-                                operands: vec![id[0].clone()],
-                            }),
+                            super::null_test(&presence, true),
                             RenderExpr::Literal(Literal::Null),
                         )],
                         else_expr: Some(Box::new(RenderExpr::ScalarFnCall(ScalarFnCall {
@@ -1351,6 +1337,16 @@ impl Lowerer<'_> {
             }
             _ => unsupported(format!("{name}() of a node or relationship of a list")),
         }
+    }
+}
+
+/// The identity slots of a list's element `id` that are all NULL exactly
+/// when it is ([`Lowerer::presence`]): a composite node id's, every one;
+/// otherwise the first.
+fn elem_presence(id: &[RenderExpr], elem: &Elem) -> Vec<RenderExpr> {
+    match elem {
+        Elem::Node(_) if id.len() > 1 => id.to_vec(),
+        _ => id.iter().take(1).cloned().collect(),
     }
 }
 

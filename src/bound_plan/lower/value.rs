@@ -205,7 +205,9 @@ pub(super) fn element_id_sql(g: &GraphValues, ids: &[String]) -> String {
                 if i > 0 {
                     parts.push(string("|"));
                 }
-                parts.push((g.to_text)(p));
+                // A NULL part is spelled, not NULL: the element id of a node
+                // with one is not NULL (review).
+                parts.push(format!("coalesce({}, {})", (g.to_text)(p), string("null")));
             }
             (g.text)(&parts)
         }
@@ -618,10 +620,7 @@ impl<'s> Lowerer<'s> {
             let Some(id) = self.identity(*v)? else {
                 continue;
             };
-            nulls.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: Operator::IsNull,
-                operands: vec![id[0].clone()],
-            }));
+            nulls.push(super::null_test(&self.presence(*v, &id), true));
         }
         if nulls.is_empty() {
             return Ok((keys, None));

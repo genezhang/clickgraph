@@ -387,8 +387,18 @@ impl<'s> Lowerer<'s> {
                 )
             }
         };
-        let first = at(layout.identity_slots()[0]);
-        Ok((g.null_if)(&(spelling.is_null)(&first), &object))
+        // NULL where its identity is: every slot of a composite node id
+        // (a part of a real node's can be NULL), else the first.
+        let slots = layout.identity_slots();
+        let presence = match &elem {
+            Elem::Node(_) => slots.as_slice(),
+            Elem::Rel { .. } => &slots[..1],
+        };
+        let absent: Vec<String> = presence
+            .iter()
+            .map(|i| (spelling.is_null)(&at(*i)))
+            .collect();
+        Ok((g.null_if)(&absent.join(" AND "), &object))
     }
 
     /// When `item` (lowered to `e`) is a list's node or relationship, or a
