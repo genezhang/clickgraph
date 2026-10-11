@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; S7e3 #1347; S8a #1349 FK edges; S8b #PR embedded nodes; next: S8c polymorphic edges / node tables (reading a map's value needs typed per-key values: a later list slice))
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; S7e3 #1347; S8a #1349 FK edges; S8b #1350 embedded nodes; next: S8c polymorphic edges / node tables (reading a map's value needs typed per-key values: a later list slice))
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -740,7 +740,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
-- 2026-10-11: **P-4c S8b: nodes embedded in edge tables** (#PR, `graph_catalog` `GraphSchema::with_node_relations` / `NodeRelation` / `set_node_definitions`, `src/bound_plan/lower/embedded.rs`, behind `CLICKGRAPH_BOUND_PLAN=on`).
+- 2026-10-11: **P-4c S8b: nodes embedded in edge tables** (#1350, `graph_catalog` `GraphSchema::with_node_relations` / `NodeRelation` / `set_node_definitions`, `src/bound_plan/lower/embedded.rs`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - An embedded label (denormalized into its edges' tables) is the relation of its roles: a `UNION ALL` of each role's columns, grouped by id (`any`, one-type guard across sources); every scan, tie, union, walk and value reads it as a node table. A node of the clause is read from its first relationship's row when that row holds all it is read for (legacy's join shape). A foreign denormalized label is its own table; uniqueness compares one definition's relationships; coupled edges are two relationships tied through their shared node (Neo4j's answer; legacy reads one row). Composite ends listed in another order are reordered; a label both embedded and in own tables is not lowered.
   - Oracle (13 schemas, on vs off): 159 wrong/erroring → Neo4j-equal, 4 known the other way (undeclared-property rule; zeek `IP.port` differs across one IP's rows). Corpus lowers 1237 (was 925). Sweeps: every lowered shape equals Neo4j but `collect` order and inconsistent properties. Mutation check 14 of 14. Live suite: no wrong answer; legacy SQL-text / refusal / contract tests changed (the contracts' new answers equal Neo4j). Review: 4 findings fixed.
 
