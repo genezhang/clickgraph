@@ -146,6 +146,23 @@ async fn query_sql_endpoint_returns_the_sql_query_endpoint_runs() {
     }
 }
 
+/// A query Neo4j also rejects (ORDER BY a name RETURN did not project) is
+/// the client's error on both endpoints (P-4c S10a).
+#[tokio::test]
+async fn a_query_neo4j_rejects_is_a_client_error_on_both_endpoints() {
+    ensure_default_schema_registered().await;
+    let q = "MATCH (a:User) RETURN a.name ORDER BY name";
+    let (status, body) = post(
+        "/query/sql",
+        json!({ "query": q, "target_database": "clickhouse" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error_type"], "QueryError", "{body}");
+    let (status, body) = post("/query", json!({ "query": q, "sql_only": true })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
 /// Concurrent `/query/sql` requests must each produce exactly the SQL a lone
 /// request produces. With process-global counters (the endpoint had no query
 /// context), a reset from one request rewound another's mid-translation.

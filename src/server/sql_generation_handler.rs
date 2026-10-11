@@ -379,13 +379,21 @@ async fn sql_generation_handler_inner(
         ) {
             Ok(t) => t,
             Err(e) => {
-                let error_type = match e {
-                    crate::translate::TranslateError::Planning(_) => "PlanningError",
-                    crate::translate::TranslateError::Render(_) => "RenderError",
-                    crate::translate::TranslateError::Invalid(_) => "QueryError",
+                // A query Neo4j also rejects is the client's error (400), as
+                // on `/query`.
+                let (status, error_type) = match e {
+                    crate::translate::TranslateError::Planning(_) => {
+                        (StatusCode::INTERNAL_SERVER_ERROR, "PlanningError")
+                    }
+                    crate::translate::TranslateError::Render(_) => {
+                        (StatusCode::INTERNAL_SERVER_ERROR, "RenderError")
+                    }
+                    crate::translate::TranslateError::Invalid(_) => {
+                        (StatusCode::BAD_REQUEST, "QueryError")
+                    }
                 };
                 return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                    status,
                     Json(SqlGenerationError {
                         cypher_query: payload.query.clone(),
                         error: format!("{}", e),

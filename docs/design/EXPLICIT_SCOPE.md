@@ -3866,6 +3866,21 @@ slice that will handle it.
       - Translation time (release, simple hop): 0.17 ms cold vs legacy's
         0.41 ms.
       - TCK (chdb) aborts at the same scenario with the switch off and on.
+      - Adversarial review (the corpus through both routes, about 870
+        queries on 22 schemas against Neo4j; about 170 scoping / error edge
+        cases; Bolt, graph output, tenants, Databricks): no answer changed
+        for the worse but the known zeek port and `collect` order cases;
+        every `Invalid` is a query Neo4j's EXPLAIN rejects; the bound plan
+        parameterizes every table for a tenant (legacy missed some in walks,
+        unlabeled patterns and subqueries). Fixed: `/query/sql` answered an
+        `Invalid` with 500 (now 400, as `/query`), the library doubled the
+        "Query error" prefix, and the switch now also reads `false` / `0` /
+        `no` as off. Left as found: the SQL golden and corpus-sweep tests
+        translate without the text, so they lock the legacy route only
+        (retired with it in S11); Bolt failures reach Python driver 6 as
+        "unknown error" on both routes; a node table with duplicate ids
+        multiplies walk rows (zeek `dns_log`: a schema whose `node_id` is not
+        unique).
   - [ ] **S10b:** parse failures reach the new path: every entry point
     parses with the legacy parser first, so syntax only the clause-list
     parser accepts still gets the legacy parse error.

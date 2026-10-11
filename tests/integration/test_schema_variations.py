@@ -162,8 +162,9 @@ class TestStandardSchema:
     def test_graphrag_expansion(self):
         """Multi-type VLP expansion across FOLLOWS and AUTHORED edges.
 
-        Both relationship types' tables must be read (executed, the query
-        returns 20 whole-node rows: 12 users and 8 posts, as in Neo4j 5.26).
+        Both relationship types' tables must be read. (Its rows are checked
+        by test_graphrag_multi_type.py's label counts: 12 users and 8 posts,
+        as in Neo4j 5.26.)
         """
         result = query_sql_only(
             "MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(target) "

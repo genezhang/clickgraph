@@ -202,6 +202,7 @@ fn translate_for_library_with(
     .map_err(|e| match e {
         crate::translate::TranslateError::Planning(e) => format!("Plan error: {}", e),
         crate::translate::TranslateError::Render(e) => format!("Render error: {}", e),
-        crate::translate::TranslateError::Invalid(e) => format!("Query error: {}", e),
+        // The caller reports it as a query error (`EmbeddedError::Query`).
+        crate::translate::TranslateError::Invalid(e) => e,
     })
 }

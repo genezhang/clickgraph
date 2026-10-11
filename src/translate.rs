@@ -58,12 +58,19 @@ pub enum BoundPlanMode {
 }
 
 impl BoundPlanMode {
-    /// From `CLICKGRAPH_BOUND_PLAN` (`on` / `off`, default on, S10).
+    /// From `CLICKGRAPH_BOUND_PLAN` (default on, S10): `off` (or `false`,
+    /// `0`, `no`) selects the legacy pipeline.
     pub fn from_env() -> Self {
         match std::env::var("CLICKGRAPH_BOUND_PLAN") {
-            Ok(v) if v.eq_ignore_ascii_case("off") => BoundPlanMode::Off,
+            Ok(v) if Self::is_off(&v) => BoundPlanMode::Off,
             _ => BoundPlanMode::On,
         }
+    }
+
+    fn is_off(value: &str) -> bool {
+        ["off", "false", "0", "no"]
+            .iter()
+            .any(|off| value.trim().eq_ignore_ascii_case(off))
     }
 }
 
@@ -380,6 +387,18 @@ fn merged_view_parameters(
 
 #[cfg(test)]
 mod tests {
+    use super::BoundPlanMode;
+
+    #[test]
+    fn the_bound_plan_switch_reads_off_spellings() {
+        for v in ["off", "OFF", " false", "0", "no"] {
+            assert!(BoundPlanMode::is_off(v), "{v}");
+        }
+        for v in ["on", "true", "1", "shadow", ""] {
+            assert!(!BoundPlanMode::is_off(v), "{v}");
+        }
+    }
+
     use crate::query_planner::logical_plan::{generate_cte_id, generate_id, reset_all_counters};
     use crate::server::query_context::{with_query_context, QueryContext};
 
