@@ -1212,6 +1212,86 @@ types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
   table (the rule, §4.4), so a node's column: `r.title` of `AUTHORED` is the
   post's title, where Neo4j has none.
 
+**Implemented in S8b** (nodes embedded in edge tables;
+`GraphSchema::with_node_relations`, `lower/embedded.rs`):
+- **What an embedded label is.** A denormalized node (`from_node_properties`
+  / `to_node_properties`) whose definition's table is the table of an edge
+  it is an end of has no table of its own (`Airport` in a flights table,
+  `IP` in DNS and connection logs). Each role of each definition is a
+  source: the rows of its table (with the definition's `filter:`, view
+  parameters and FINAL), its columns of the label's properties. The
+  label's nodes are the distinct non-NULL ids its sources hold; a
+  property is the value its sources hold for the id. That is the schema's
+  statement (a property is the node's): where rows of one id disagree (the
+  zeek fixture's `IP.port`, a port per connection; or a NULL in one row
+  and a value in another, the review), the node has no defined value, the
+  oracle loader leaves it off and reports it, and the lowering returns one
+  of them: the row's when the node is read from a relationship's row, else
+  the relation's (`any`, which skips NULLs).
+- **Node relations.** The lowering reads the schema's view in which such
+  a label is an own-table node over a relation named `__cg_nodes_<label>`
+  whose columns are its property names (`NodeRelation`): every scan, tie,
+  union, walk, search and value reads it as a node table. The relation is
+  two CTEs, built when a node of the label is first read
+  (`Lowerer::node_table`): `…__cg_rows`, a `UNION ALL` of the sources
+  (each property of each source its own column, so each keeps its type),
+  and the relation, grouped by id (`any`, through
+  `FunctionMapper::one_type_guard` when several sources hold a property,
+  applied per row: `toTypeName` of an aggregate is no constant).
+- **All definitions.** The catalog keeps one node schema per label; a
+  label embedded in several tables keeps its definitions apart
+  (`GraphSchema::set_node_definitions`, at build) for its relation. A
+  label embedded in some tables and its own in others, or with several
+  own tables, is left out of the view (not lowered): one relation of
+  embedded and own sources is not built yet, and reading one of its
+  definitions (the first cut, by YAML order) answers for part of its
+  nodes (review).
+- **Composite ids.** A source names the id's columns in the id's order;
+  an edge end embedded in it may list them in another
+  (`to_id: [ap_st, ap_code]` over `[code, st]`). The view rewrites such an
+  end in the source's order (`NodeRelation::ordered_end`): the end is
+  then tied column by column (the first cut tied `st` to `code`, 0 rows;
+  review). Crossed ends elsewhere are refused (S8a).
+- **Read from the row** (§4.6 node-scan elision; `Lowerer::embed_end`). A
+  node of the clause at an end of a relationship whose row embeds it (a
+  source of its relation is the relationship's table at that end: the
+  same id columns, no `filter:` or view parameters, its FINAL) and read
+  only for properties that source holds is read from the row: its
+  identity the end columns, its properties the row's, its relation not
+  joined; a row whose end is NULL is filtered out. Only onto the first
+  relationship of the clause the node is an end of: a later one's tie
+  reads the node after the first's (the first cut elided onto a later
+  relationship when the first's row lacked a property, and the first's tie
+  read a relation never joined: a ClickHouse error). A node read whole, at
+  a variable-length relationship's end, from an earlier clause, or for a
+  property another source holds reads the relation. The generated SQL of a
+  path of embedded hops is then legacy's (`FROM fl JOIN fl ON g.org =
+  f.dst`).
+- **Foreign denormalized labels.** A denormalized definition whose table
+  is no edge table of its label (edges carry its id: `foreign_selfloop`)
+  is its own table's nodes; the edges' copies of its id are a way to read
+  it, which legacy uses without the node's table. The lowering joins it
+  (elision would need `endpoint_integrity`).
+- **Edges.** An edge whose ends are embedded is a table of relationships
+  like any other (`RelationshipSchema::is_edge_row_table` now asks only
+  for fixed endpoint labels). Relationship uniqueness compares
+  relationships of one definition only: two types on one table's rows are
+  never one relationship (it compared tables, so a `REQUESTED` and a
+  `RESOLVED_TO` of one DNS row excluded each other; the same held of two FK
+  edge types on one table).
+- **Coupled edges** (two types on one row sharing a node) are two
+  relationships tied through their shared node, as the logical graph has
+  them, not legacy's same-row reading. Every relationship is a row of the
+  table; what the tie adds is paths through the shared node across rows:
+  `(i:IP)-[r:REQ]->(d:Domain)-[v:VIA]->(s:Server)` pairs each request of a
+  domain with each server any row resolved it to (Neo4j's answer on the
+  same graph), where the same-row reading drops the cross-row pairs. The
+  same-row question is a query's to state (`WHERE r.uid = v.uid`, which a
+  later optimization can read from one row), or the schema's (the request
+  a node of its own).
+- **Not lowered:** an undeclared property of an embedded node (no table
+  whose same-named column the rule could read; legacy reads the row's).
+
 ### 4.7 Label inference
 
 Labels are inferred over the explicit pattern graph of each clause, with
@@ -3208,8 +3288,8 @@ slice that will handle it.
       - Live suite, switch on, vs S7b1: one known-wrong golden now correct
         (`MATCH ()-[r:LIKED]-() RETURN r LIMIT 25`), nothing else changed.
       - Timing: above (§4.6).
-- [ ] S8 layouts, in sub-slices: S8a FK edges (done), then denormalized
-  nodes (embedded in an edge table, mixed access, coupled edges),
+- [ ] S8 layouts, in sub-slices: S8a FK edges (done), S8b denormalized
+  nodes (done; a label both embedded and in its own tables later), then
   polymorphic edges and node tables (type and label columns), composite
   ids (values, lists, walks).
   - [x] **S8a: FK edges** (§4.6 "Implemented in S8a"): a relationship whose
@@ -3256,6 +3336,49 @@ slice that will handle it.
         (5), a test encoding `labels(x)[1]` as 1-based (Neo4j: NULL, as the
         new path answers), the undeclared `p.likes` above, and result goldens
         whose recorded wrong outcome is now correct; nothing else.
+  - [x] **S8b: nodes embedded in edge tables** (§4.6 "Implemented in
+    S8b"): an embedded label is the relation of its roles (two CTEs, built
+    when first read); a node of the clause is read from its first
+    relationship's row when that row holds all it is read for; a foreign
+    denormalized label is its own table; uniqueness compares one
+    definition's relationships; coupled edges are tied through their
+    shared node; mixed labels (embedded and own tables) are not lowered.
+    - Acceptance:
+      - Neo4j oracle, switch on vs off, 13 schemas (the ten denormalized
+        and coupled-edge fixtures, social_integration, standard,
+        sqlgen_fk_edge): 159 answers wrong or erroring under legacy now
+        equal Neo4j; 4 the other way, all known: two undeclared properties
+        read under the undeclared-property rule (ClickHouse error, as in
+        S8a), two zeek reads of `IP.port`, which differs across one IP's
+        rows (no single value). Switch on, vs S8a: social_integration and
+        standard unchanged. The corpus lowers 1237 queries (was 925).
+      - Generated shapes against Neo4j on scratch graphs (embedded labels
+        in one and several tables, in both roles, with a node `filter:`,
+        NULL and dangling ends, composite ids in both orders, foreign and
+        mixed-access labels, coupled DNS edges) and the review's graphs:
+        every lowered shape equals Neo4j but unordered `collect()` orders
+        and reads of a property the rows of one id disagree on.
+      - Mutation check: 14 rules broken in turn, all caught: 13 by the
+        sweep (uniqueness across definitions and foreign labels also by unit
+        tests), one by a unit test only (no elision: the same answers, pinned
+        by the SQL). A guard against eliding an emitted node was found
+        redundant (only an earlier clause's nodes are emitted then, excluded
+        since the review) and removed. The sweep's one non-match is a mixed
+        label, not lowered: legacy's answer, with the switch on or off.
+      - Adversarial review: four findings, fixed: composite ids listed in
+        another order on the edge (0 rows); a label embedded in some tables
+        and its own in others read as one of them; an OPTIONAL MATCH after
+        a filtered node elided that node (ClickHouse error); NULL in some
+        rows of an id (now inconsistent data, as above).
+      - Live suite, switch on, vs S8a: 22 tests changed, none to a wrong
+        answer. SQL-text tests of legacy's joins and branches (7); legacy
+        refusals now answered, each equal to Neo4j (#1155 chained
+        undirected paths, #1158 mixed-access shapes, a path off a carried
+        node in a WITH body: 10); tests encoding legacy's contract where
+        the new path gives Neo4j's answer (3: a fixed hop is now
+        edge-unique against the paths before it, #1203; 1: a `WHERE
+        length(p)` on shortestPath is applied during the search, all 19
+        comparisons equal Neo4j); one strict xfail of #1203 now passes.
 - [ ] S9 subquery expressions
 - [ ] S10 default on
 - [ ] S11 legacy deletion

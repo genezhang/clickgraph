@@ -75,11 +75,24 @@ impl Lowerer<'_> {
                     },
                 };
             }
-            Some(Scan::Node { schema, at, .. }) => (
-                schema.property_mappings.get(prop),
-                schema.closed_properties,
-                at,
-            ),
+            Some(Scan::Node { schema, at, .. }) => {
+                // A node embedded in edge tables (S8b) has no table whose
+                // same-named column an undeclared property could read.
+                if !schema.property_mappings.contains_key(prop)
+                    && !self.options.neo4j_compat
+                    && self
+                        .schema
+                        .node_relation(&schema.full_table_name())
+                        .is_some()
+                {
+                    return unsupported("an undeclared property of a node embedded in edge tables");
+                }
+                (
+                    schema.property_mappings.get(prop),
+                    schema.closed_properties,
+                    at,
+                )
+            }
             Some(Scan::Rel { schema, at, .. }) => (
                 schema.property_mappings.get(prop),
                 schema.closed_properties,

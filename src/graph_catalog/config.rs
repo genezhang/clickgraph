@@ -2614,6 +2614,22 @@ impl GraphSchemaConfig {
             }
         }
 
+        // P-4c S8b: every definition of each label (a label may be embedded
+        // in several tables), which the label-only key below keeps one of.
+        let mut definitions: BTreeMap<String, Vec<NodeSchema>> = BTreeMap::new();
+        for node_def in &self.graph_schema.nodes {
+            let key = format!(
+                "{}::{}::{}",
+                node_def.database, node_def.table, node_def.label
+            );
+            if let Some(ns) = nodes.get(&key) {
+                definitions
+                    .entry(node_def.label.clone())
+                    .or_default()
+                    .push(ns.clone());
+            }
+        }
+
         // Strip composite node keys (db::table::label) — only needed during build-time
         // for denormalized edge property resolution. Runtime uses simple label keys only.
         let nodes: HashMap<String, NodeSchema> = nodes
@@ -2628,14 +2644,16 @@ impl GraphSchemaConfig {
         let fulltext_indexes =
             resolve_fulltext_indexes(&self.graph_schema.fulltext_indexes, &nodes)?;
 
-        Ok(GraphSchema::build_with_indexes(
+        let mut schema = GraphSchema::build_with_indexes(
             1,
             "default".to_string(),
             nodes,
             relationships,
             vector_indexes,
             fulltext_indexes,
-        ))
+        );
+        schema.set_node_definitions(definitions);
+        Ok(schema)
     }
 }
 

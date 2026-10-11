@@ -63,6 +63,7 @@
 //! relation with no rows, and its properties read as NULL.
 
 mod elements;
+mod embedded;
 mod expr;
 mod path;
 #[cfg(test)]
@@ -174,7 +175,7 @@ pub fn lower_statement(
 ) -> Result<Lowered, LowerError> {
     // FK edges as tables of relationships (S8a): a self-referencing one's
     // ends as its rows relate nodes (#632), its table read as its node's.
-    match schema.with_fk_edges_as_edge_rows() {
+    match schema.lowering_view() {
         Some(read) => lower_over(stmt, &read, options),
         None => lower_over(stmt, schema, options),
     }
@@ -920,6 +921,33 @@ impl<'s> Lowerer<'s> {
         // on its endpoints' labels), then join them in path order: node,
         // relationship, node, … so each scan joins on the one before it.
         let mut clause_rels: Vec<VarId> = Vec::new();
+        // A node of the clause may be read from the row of the first
+        // relationship it is an end of (S8b, `Lowerer::embed_end`): not
+        // from a later one (the first's tie reads it before), and not when a
+        // variable-length relationship of the clause starts or ends at it
+        // (the walk ties to it).
+        let mut walk_ends: Vec<VarId> = Vec::new();
+        let mut embeddable: Vec<(VarId, VarId)> = Vec::new();
+        for p in &pattern.parts {
+            for (i, r) in p.rels.iter().enumerate() {
+                for end in [p.nodes[i].var, p.nodes[i + 1].var] {
+                    if r.length.is_some() {
+                        walk_ends.push(end);
+                    } else if !embeddable.iter().any(|(n, _)| *n == end) {
+                        embeddable.push((end, r.var));
+                    }
+                }
+            }
+        }
+        // Nor a node from an earlier clause: in an OPTIONAL MATCH's
+        // matches it is read again from its table, where the earlier
+        // clause's conditions on it are re-applied (review finding).
+        let earlier: Vec<VarId> = pattern
+            .parts
+            .iter()
+            .flat_map(|p| p.nodes.iter().filter(|n| n.bound_before).map(|n| n.var))
+            .collect();
+        embeddable.retain(|(n, _)| !walk_ends.contains(n) && !earlier.contains(n));
         for part in &pattern.parts {
             if part.shortest.is_some() {
                 Self::shortest_pattern(part)?;
@@ -928,7 +956,7 @@ impl<'s> Lowerer<'s> {
                 self.node_scan(n.var)?;
             }
             for (i, r) in part.rels.iter().enumerate() {
-                self.rel_scan(r, part.nodes[i].var, part.nodes[i + 1].var)?;
+                self.rel_scan(r, part.nodes[i].var, part.nodes[i + 1].var, &embeddable)?;
                 if let Some(Scan::Path { shortest, .. }) = self.scans.get_mut(&r.var) {
                     *shortest = part.shortest;
                 }
@@ -1659,6 +1687,9 @@ impl<'s> Lowerer<'s> {
             return unsupported("a node whose labels' ids have different arities (S8)");
         }
         const ROW: &str = "e";
+        for (_, ns) in arms {
+            self.node_table(ns)?;
+        }
         let props = self.label_union_props(v, arms);
         let mut input = Vec::new();
         let definitions: Vec<(&String, Vec<Option<usize>>)> = props
@@ -1846,7 +1877,13 @@ impl<'s> Lowerer<'s> {
     /// Decide how a relationship is read (once per variable) and tie it to
     /// its endpoints: in the stored orientation, or, undirected, in either
     /// (§4.6 `Alternatives`).
-    fn rel_scan(&mut self, r: &PatRel, left: VarId, right: VarId) -> Result<(), LowerError> {
+    fn rel_scan(
+        &mut self,
+        r: &PatRel,
+        left: VarId,
+        right: VarId,
+        embeddable: &[(VarId, VarId)],
+    ) -> Result<(), LowerError> {
         if let Some((min, max)) = r.length {
             let (from, to) = match r.direction {
                 RelDirection::Left => (right, left),
@@ -1866,7 +1903,18 @@ impl<'s> Lowerer<'s> {
             };
             let (ll, rl) = (self.labels_of(left)?, self.labels_of(right)?);
             let arms = self.rel_arms(types, r.direction, &ll, &rl)?;
-            (self.decide_rel(r.var, arms, left, right)?, false)
+            let ends = self.decide_rel(r.var, arms, left, right)?;
+            // Ends embedded in its rows are read there (S8b): before the
+            // ties, which read the ends' identities.
+            if let [(from, ..), (to, ..)] = ends.as_slice() {
+                let (from, to) = (*from, *to);
+                for (end, is_from) in [(from, true), (to, false)] {
+                    if embeddable.contains(&(end, r.var)) {
+                        self.embed_end(r.var, end, is_from)?;
+                    }
+                }
+            }
+            (ends, false)
         };
         for (end, label, cols) in ends {
             self.tie_end(r.var, end, label, cols, turned)?;
@@ -2877,6 +2925,7 @@ impl<'s> Lowerer<'s> {
             true => Some(self.both_directions(edge, r.var)?),
             false => None,
         };
+        self.node_table(node)?;
         let call = path::PathCall {
             var: &var,
             rel_type: &rel_type,
@@ -3285,7 +3334,7 @@ impl<'s> Lowerer<'s> {
                 None => None,
             };
             let table = ViewTableRef::parameterized_name(
-                &ns.full_table_name(),
+                &self.node_table(ns)?,
                 ns.view_parameters.as_deref(),
                 self.options.view_parameter_values.as_ref(),
             );
@@ -3537,7 +3586,7 @@ impl<'s> Lowerer<'s> {
     /// for, and a pair of `allShortestPaths` has a row per path, not copies.
     #[allow(clippy::too_many_arguments)]
     fn shortest_relation(
-        &self,
+        &mut self,
         mut walk: path::Walk<'_>,
         mode: ShortestMode,
         walked: bool,
@@ -3611,6 +3660,12 @@ impl<'s> Lowerer<'s> {
             .collect();
         let mut ends = Vec::new();
         let mut readable = vec![alias.to_string()];
+        for end in [first, last] {
+            if let Some(Scan::Node { schema, .. }) = self.scans.get(&end) {
+                let schema: &'s NodeSchema = schema;
+                self.node_table(schema)?;
+            }
+        }
         for (end, column) in [(first, "start_id"), (last, "end_id")] {
             // Its relation, label and id, joined by its identity as the
             // search spells a node: a union's search by label and id.
@@ -3696,6 +3751,7 @@ impl<'s> Lowerer<'s> {
     /// subquery when it has either of the last two), so each node is one
     /// row there is.
     fn node_relation_sql(&self, schema: &NodeSchema) -> Result<String, LowerError> {
+        // A node relation's CTE is added when the end is scanned.
         let table = ViewTableRef::parameterized_name(
             &schema.full_table_name(),
             schema.view_parameters.as_deref(),
@@ -4222,22 +4278,27 @@ impl<'s> Lowerer<'s> {
                     }
                     continue;
                 }
-                let table = |v: &VarId| match self.scans.get(v) {
-                    Some(Scan::Rel { schema, .. }) => Some(schema.full_table_name()),
+                // Relationships of different definitions (types, or label
+                // pairs) are never equal, even in one table (S8a / S8b: FK
+                // or embedding edges of several types on one table's rows).
+                let definition = |v: &VarId| match self.scans.get(v) {
+                    Some(Scan::Rel {
+                        schema, rel_type, ..
+                    }) => Some((rel_type, &schema.from_node, &schema.to_node)),
                     // A shortest path's relationships are its own (and
                     // their identities texts).
                     Some(Scan::Path {
-                        walked: Walked::One { schema, .. },
+                        walked: Walked::One { schema, rel_type },
                         edges: true,
                         shortest: None,
                         ..
-                    }) => Some(schema.full_table_name()),
+                    }) => Some((rel_type, &schema.from_node, &schema.to_node)),
                     _ => None,
                 };
-                let (Some(ta), Some(tb)) = (table(a), table(b)) else {
+                let (Some(da), Some(db)) = (definition(a), definition(b)) else {
                     continue;
                 };
-                if ta != tb {
+                if da != db {
                     continue;
                 }
                 let differs = match (&self.scans[a], &self.scans[b]) {
@@ -4450,6 +4511,10 @@ impl<'s> Lowerer<'s> {
         }
         if let Some(r) = self.elided.get(&v).copied() {
             return self.emit(r); // read from the relationship's columns
+        }
+        if let Some(Scan::Node { schema, .. }) = self.scans.get(&v) {
+            let schema: &'s NodeSchema = schema;
+            self.node_table(schema)?;
         }
         let table = match &self.scans[&v] {
             Scan::Node {

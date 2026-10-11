@@ -279,6 +279,211 @@ fn an_end_paired_with_its_id_columns_in_another_order_is_refused() {
     }
 }
 
+/// S8b: labels embedded in edge tables (one, and one over two tables), an
+/// own-table label at an embedding edge's end, and a "foreign" denormalized
+/// label (its own table; edges carry its id).
+fn embedded_schema() -> GraphSchema {
+    GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_embedded
+graph_schema:
+  nodes:
+    - label: Airport
+      database: db
+      table: fl
+      node_id: code
+      property_mappings: {}
+      from_node_properties: { code: org, city: org_city }
+      to_node_properties: { code: dst, city: dst_city }
+    - label: Airline
+      database: db
+      table: airlines
+      node_id: code
+      property_mappings: { code: code, name: name }
+    - label: IP
+      database: db
+      table: dns
+      node_id: ip
+      property_mappings: {}
+      from_node_properties: { ip: src }
+    - label: IP
+      database: db
+      table: conn
+      node_id: ip
+      property_mappings: {}
+      from_node_properties: { ip: src }
+      to_node_properties: { ip: dst }
+    - label: Domain
+      database: db
+      table: dns
+      node_id: name
+      property_mappings: {}
+      to_node_properties: { name: q }
+    - label: Person
+      database: db
+      table: people
+      node_id: pid
+      property_mappings: { pid: pid, name: name }
+      from_node_properties: { pid: mgr_id }
+  edges:
+    - type: FLIGHT
+      database: db
+      table: fl
+      from_id: org
+      to_id: dst
+      from_node: Airport
+      to_node: Airport
+      edge_id: fid
+      property_mappings: { num: num }
+    - type: DIVERTS
+      database: db
+      table: fl
+      from_id: org
+      to_id: alt
+      from_node: Airport
+      to_node: Airport
+      edge_id: fid
+      property_mappings: {}
+    - type: SERVES
+      database: db
+      table: fl
+      from_id: carrier
+      to_id: dst
+      from_node: Airline
+      to_node: Airport
+      edge_id: fid
+      property_mappings: {}
+    - type: REQ
+      database: db
+      table: dns
+      from_id: src
+      to_id: q
+      from_node: IP
+      to_node: Domain
+      edge_id: uid
+      property_mappings: {}
+    - type: CONN
+      database: db
+      table: conn
+      from_id: src
+      to_id: dst
+      from_node: IP
+      to_node: IP
+      edge_id: uid
+      property_mappings: {}
+    - type: REPORTS_TO
+      database: db
+      table: reports
+      from_id: mgr_id
+      to_id: emp_id
+      from_node: Person
+      to_node: Person
+      property_mappings: {}
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap()
+}
+
+fn embedded(q: &str) -> String {
+    lowered(q, &embedded_schema(), &LowerOptions::default())
+}
+
+#[test]
+fn an_embedded_label_is_a_relation_of_its_roles() {
+    // Its nodes: the distinct ids its roles hold, each property the value
+    // its sources hold (each source's column of it kept apart, its type
+    // checked), no node for a NULL id.
+    let got = embedded("MATCH (a:Airport) RETURN a.city");
+    for part in [
+        "WITH __cg_nodes_Airport__cg_rows AS ( SELECT e.org AS \"code\", \
+         e.org_city AS \"city__cg0\", NULL AS \"city__cg1\" FROM db.fl AS e UNION ALL \
+         SELECT e.dst AS \"code\", NULL AS \"city__cg0\", e.dst_city AS \"city__cg1\" \
+         FROM db.fl AS e )",
+        "FROM __cg_nodes_Airport__cg_rows AS e WHERE NOT isNull(e.code) GROUP BY e.code",
+        "FROM __cg_nodes_Airport AS v0",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    // A label embedded in two tables: every role of each.
+    let got = embedded("MATCH (i:IP) RETURN count(i)");
+    for part in [
+        "FROM db.dns AS e",
+        "e.src AS \"ip\" FROM db.conn AS e",
+        "e.dst AS \"ip\" FROM db.conn",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    // An undeclared property has no column to read.
+    let err = translate_bound_plan(
+        "MATCH (a:Airport) RETURN a.terminal",
+        &embedded_schema(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("undeclared property of a node embedded"),
+        "{err}"
+    );
+}
+
+#[test]
+fn an_embedded_end_is_read_from_its_relationships_row() {
+    // The end's id and properties are the row's: no relation, a NULL end no
+    // relationship.
+    let got = embedded("MATCH (a:Airport)-[f:FLIGHT]->(b:Airport) RETURN a.city, b.code, f.num");
+    assert!(!got.contains("__cg_nodes_Airport"), "{got}");
+    for part in [
+        "SELECT v1.org_city AS \"a.city\", v1.dst AS \"b.code\", v1.num AS \"f.num\" FROM db.fl AS v1",
+        "v1.org IS NOT NULL AND v1.dst IS NOT NULL",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    // A node two relationships share is read from the first, the second
+    // tied to it.
+    let got = embedded("MATCH (a:Airport)-[:FLIGHT]->(b)-[:FLIGHT]->(c) RETURN count(*)");
+    assert!(got.contains("JOIN db.fl AS v3 ON v3.org = v1.dst"), "{got}");
+    // Not when read as a whole node, when no role of the row holds it, nor
+    // at a walk's end: the relation is joined.
+    for q in [
+        "MATCH (a:Airport)-[f:FLIGHT]->(b) RETURN a",
+        "MATCH (a:Airport)-[:DIVERTS]->(b) RETURN b.city",
+        "MATCH (a:Airport)-[:FLIGHT*1..2]->(b) RETURN b.city",
+    ] {
+        assert!(embedded(q).contains("__cg_nodes_Airport AS"), "{q}");
+    }
+    // An own-table end of an embedding edge is joined as usual.
+    let got = embedded("MATCH (n:Airline)-[:SERVES]->(a) RETURN n.name, a.city");
+    assert!(
+        got.contains("JOIN db.airlines AS v0") || got.contains("FROM db.airlines AS v0"),
+        "{got}"
+    );
+}
+
+#[test]
+fn a_foreign_denormalized_label_is_its_own_table() {
+    // Edges carry its id; its nodes are its table's rows.
+    let got = embedded("MATCH (p:Person)-[:REPORTS_TO]->(m) RETURN p.name, m.name");
+    for part in [
+        "FROM db.people AS v0",
+        "JOIN db.reports AS v1 ON v1.mgr_id = v0.pid",
+        "JOIN db.people AS v2 ON v1.emp_id = v2.pid",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+}
+
+#[test]
+fn relationships_of_different_types_on_one_row_are_not_compared() {
+    // A row is a FLIGHT and a DIVERTS: the two are different relationships
+    // whatever their ids (uniqueness compares one definition's).
+    let got = embedded("MATCH (a:Airport)-[f:FLIGHT]->(b), (a)-[d:DIVERTS]->(c) RETURN count(*)");
+    assert!(!got.contains("<>"), "{got}");
+    let got = embedded("MATCH (a:Airport)-[f:FLIGHT]->(b), (a)-[g:FLIGHT]->(c) RETURN count(*)");
+    assert!(got.contains("v1.fid <> v3.fid"), "{got}");
+}
+
 #[test]
 fn a_closed_pattern_ties_one_scan_twice() {
     has(
