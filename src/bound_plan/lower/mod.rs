@@ -3054,7 +3054,8 @@ impl<'s> Lowerer<'s> {
         );
         // A composite id is tied by its columns (`start_<col>` /
         // `end_<col>`, S8d): its text in `start_id` / `end_id` two ids can
-        // share.
+        // share. A shortest path's search keys it by the text of its tuple
+        // (`path::composite_key`, S8d2).
         let id_columns = node.id_physical_columns();
         for (end, column, side) in [(first, "start_id", "start"), (last, "end_id", "end")] {
             let Some(ids) = self.identity(end)? else {
@@ -3062,6 +3063,15 @@ impl<'s> Lowerer<'s> {
             };
             let eqs = match (ids.as_slice(), id_columns.as_slice()) {
                 ([id], [_]) => vec![(col_at(&r.var.name(), column), id.clone())],
+                (ids, cols) if ids.len() == cols.len() && shortest.is_some() => {
+                    let rendered: Vec<String> = ids.iter().map(render_expr_to_sql_plain).collect();
+                    let Some(key) = path::composite_key(&rendered) else {
+                        return unsupported(
+                            "a shortestPath between composite ids in this SQL dialect",
+                        );
+                    };
+                    vec![(col_at(&r.var.name(), column), RenderExpr::Raw(key))]
+                }
                 (ids, cols) if ids.len() == cols.len() => cols
                     .iter()
                     .zip(ids)
@@ -3712,6 +3722,23 @@ impl<'s> Lowerer<'s> {
                 ],
             }));
         }
+        // Between composite ids (S8d2) the search and the trails key a node
+        // by the text of its id's tuple (`path::composite_key`); the trails
+        // keep a path's nodes only as the generator's `|`-joined texts, so a
+        // recovered path (read as a value or by its identity) is not lowered.
+        let composite = match &walk {
+            path::Walk::One(call) => {
+                let cols = call.node.id_physical_columns();
+                (cols.len() > 1).then_some(cols)
+            }
+            path::Walk::Union(_) => None,
+        };
+        if composite.is_some() && walked && !conditions.is_empty() {
+            return unsupported(
+                "a shortestPath between composite ids read as a path, with a condition the \
+                 search cannot hold",
+            );
+        }
         let mut search = walk.search(self.schema)?;
         search.min = min.min(1);
         let var = search.var.clone();
@@ -3777,9 +3804,22 @@ impl<'s> Lowerer<'s> {
                 _ => continue,
             };
             if !self.elided.contains_key(&end) && read.contains(a) {
-                let key = match &walk {
-                    path::Walk::One(_) => id,
-                    path::Walk::Union(_) => value::node_key_text(&value::spelling()?, &label, &id),
+                let key = match (&walk, &composite) {
+                    (path::Walk::One(_), Some(cols)) => {
+                        let at: Vec<String> = cols.iter().map(|c| format!("{a}.{c}")).collect();
+                        match path::composite_key(&at) {
+                            Some(key) => key,
+                            None => {
+                                return unsupported(
+                                    "a shortestPath between composite ids in this SQL dialect",
+                                )
+                            }
+                        }
+                    }
+                    (path::Walk::One(_), None) => id,
+                    (path::Walk::Union(_), _) => {
+                        value::node_key_text(&value::spelling()?, &label, &id)
+                    }
                 };
                 ends.push(path::PickEnd {
                     alias: a.clone(),
@@ -3797,16 +3837,33 @@ impl<'s> Lowerer<'s> {
         }
         // The trails start only where a pair's distance fails the conditions.
         let near = format!("vlp_{var}_near");
+        // The trails' first node, keyed as the search keys it.
+        let first_key = match &composite {
+            Some(cols) => {
+                let at: Vec<String> = cols
+                    .iter()
+                    .map(|c| format!("{}.{c}", path::START))
+                    .collect();
+                match path::composite_key(&at) {
+                    Some(key) => key,
+                    None => {
+                        return unsupported(
+                            "a shortestPath between composite ids in this SQL dialect",
+                        )
+                    }
+                }
+            }
+            None => format!("{}.{}", path::START, search.id),
+        };
         walk.start_mut().push(RenderExpr::Raw(format!(
-            "{}.{} IN (SELECT start_id FROM ({}))",
-            path::START,
-            search.id,
+            "{first_key} IN (SELECT start_id FROM ({}))",
             path::failing_pairs(&var, alias, &ends, &conditions),
         )));
         let columns = search.walked_columns();
-        let (trails, trail_edges) = walk.trails(self.schema)?;
+        let (trails, trail_edges, trails_name) = walk.trails(self.schema)?;
         let (pick, name) = path::pick_cte(
             &var,
+            &trails_name,
             alias,
             &ends,
             &conditions,

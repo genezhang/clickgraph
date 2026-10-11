@@ -4844,15 +4844,66 @@ fn a_walk_between_composite_ids_goes_by_their_columns() {
     );
 }
 
-/// S8d: not yet lowered between composite ids: a shortest path's search, a
-/// walk of several definitions, and a path read as a value.
+/// S8d2: a shortest path between composite ids searches nodes keyed by the
+/// text of their id's tuple (not the generator's `|`-joined text, which
+/// `('B|1', '2')` and `('B', '1|2')` share), over keyed relations of the
+/// nodes and relationships, and ties its ends by that key.
 #[test]
-fn composite_searches_unions_and_values_are_not_lowered() {
-    for (q, why) in [
-        (
+fn a_shortest_path_between_composite_ids_keys_nodes_by_their_tuples() {
+    let got = squash(
+        &translate_bound_plan(
             "MATCH (a:Acct {owner: 'x'}), (b:Acct {owner: 'v'}) \
              MATCH p = shortestPath((a)-[:SENT*]->(b)) RETURN length(p)",
-            "a shortestPath between composite ids (S8)",
+            &composite_walk_schema(),
+            &ReadOptions::default(),
+        )
+        .unwrap()
+        .sql,
+    );
+    for p in [
+        "FROM (SELECT *, toString(tuple(bank, num)) AS __cg_key FROM db.acct) AS start_node",
+        "JOIN (SELECT *, toString(tuple(fb, fnum)) AS __cg_start_key, \
+         toString(tuple(tb, tnum)) AS __cg_end_key FROM db.sent) AS rel ON rel.__cg_start_key = f.node",
+        "v2.start_id = toString(tuple(v0.bank, v0.num))",
+        "v2.end_id = toString(tuple(v1.bank, v1.num))",
+    ] {
+        assert!(got.contains(p), "missing `{p}` in\n{got}");
+    }
+    assert!(!got.contains("'|'"), "{got}");
+    // With a condition the search cannot hold, the pick reads the trails
+    // keyed alike (their `start_<col>` / `end_<col>`), and restricts them to
+    // the pairs failing it by that key.
+    let got = squash(
+        &translate_bound_plan(
+            "MATCH (a:Acct), (b:Acct) WHERE a <> b \
+             MATCH p = shortestPath((a)-[:SENT*]->(b)) WHERE length(p) >= 2 RETURN length(p)",
+            &composite_walk_schema(),
+            &ReadOptions::default(),
+        )
+        .unwrap()
+        .sql,
+    );
+    for p in [
+        "vlp_v2_keyed AS ( SELECT toString(tuple(start_bank, start_num)) AS start_id, \
+         toString(tuple(end_bank, end_num)) AS end_id, hop_count, path_edges FROM vlp_v2_path )",
+        "FROM vlp_v2_keyed AS v2",
+        "toString(tuple(start_node.bank, start_node.num)) IN (SELECT start_id FROM",
+    ] {
+        assert!(got.contains(p), "missing `{p}` in\n{got}");
+    }
+}
+
+/// S8d2: not yet lowered between composite ids: a shortest path whose
+/// search cannot hold a condition (the trails key a node by its text), a
+/// walk of several definitions, and a path read as a value.
+#[test]
+fn composite_conditions_unions_and_values_are_not_lowered() {
+    for (q, why) in [
+        (
+            "MATCH (a:Acct), (b:Acct) WHERE a <> b \
+             MATCH p = shortestPath((a)-[:SENT*]->(b)) WHERE length(p) >= 2 WITH DISTINCT p \
+             RETURN count(*)",
+            "a shortestPath between composite ids read as a path, with a condition",
         ),
         (
             "MATCH (a:Acct)-[:SENT|PAID*1..2]-(b) RETURN count(*)",

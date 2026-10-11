@@ -395,7 +395,7 @@ impl PathCall<'_> {
         let (
             NodeAccessStrategy::OwnTable {
                 table: node_table,
-                id_column: Identifier::Single(id),
+                id_column,
                 ..
             },
             EdgeAccessStrategy::SeparateTable {
@@ -406,7 +406,49 @@ impl PathCall<'_> {
             },
         ) = (&ctx.left_node, &ctx.edge)
         else {
-            return unsupported("a shortestPath between composite ids (S8)");
+            return unsupported("internal: a shortestPath outside the standard layout");
+        };
+        let edge_table = self.both.unwrap_or(edge_table);
+        // A node is identified by one column: a composite id (S8d2) by the
+        // text of the tuple of its columns ([`composite_key`]), which no two
+        // ids share (unlike the generator's `|`-joined text), the nodes and
+        // relationships read through subqueries that add it.
+        let (node_table, id, edge_table, from_id, to_id) = match id_column {
+            Identifier::Single(id) => (
+                node_table.clone(),
+                id.clone(),
+                edge_table.to_string(),
+                from_id.clone(),
+                to_id.clone(),
+            ),
+            Identifier::Composite(cols) => {
+                let columns =
+                    |list: &str| -> Vec<String> { list.split(", ").map(str::to_string).collect() };
+                let (from, to) = (columns(from_id), columns(to_id));
+                if from.len() != cols.len() || to.len() != cols.len() {
+                    return unsupported(
+                        "internal: a relationship's end of another arity than its id",
+                    );
+                }
+                let Some(key) = composite_key(cols) else {
+                    return unsupported("a shortestPath between composite ids in this SQL dialect");
+                };
+                let (Some(from_key), Some(to_key)) = (composite_key(&from), composite_key(&to))
+                else {
+                    return unsupported("a shortestPath between composite ids in this SQL dialect");
+                };
+                (
+                    format!("(SELECT *, {key} AS {k} FROM {node_table})", k = super::KEY),
+                    super::KEY.to_string(),
+                    format!(
+                        "(SELECT *, {from_key} AS {f}, {to_key} AS {t} FROM {edge_table})",
+                        f = super::REL_START_KEY,
+                        t = super::REL_END_KEY,
+                    ),
+                    super::REL_START_KEY.to_string(),
+                    super::REL_END_KEY.to_string(),
+                )
+            }
         };
         let g = current_function_mapper().graph_values();
         let values = |wanted: bool| -> Result<_, LowerError> {
@@ -437,11 +479,11 @@ impl PathCall<'_> {
             node_tuple,
             rel_tuple,
             var: self.var.to_string(),
-            node_table: node_table.clone(),
-            id: id.clone(),
-            edge_table: Some(self.both.unwrap_or(edge_table).to_string()),
-            from_id: from_id.clone(),
-            to_id: to_id.clone(),
+            node_table,
+            id,
+            edge_table: Some(edge_table),
+            from_id,
+            to_id,
             min: self.min,
             max: self.max,
             start: self.start.clone(),
@@ -454,6 +496,21 @@ impl PathCall<'_> {
             rel_value,
         })
     }
+}
+
+/// A composite id of the columns (SQL) `cols` as one value a shortest-path
+/// search keys a node by (S8d2): the dialect's text of their tuple, which
+/// tells two ids apart however their parts read (ClickHouse quotes a
+/// string part: `('B|1','2')` is not `('B','1|2')`). `None` where the dialect
+/// spells no text of a value.
+pub(super) fn composite_key(cols: &[String]) -> Option<String> {
+    let m = current_function_mapper();
+    let g = m.graph_values()?;
+    Some((g.to_text)(&format!(
+        "{}({})",
+        m.tuple_constructor(),
+        cols.join(", ")
+    )))
 }
 
 /// The parents a shortest-path search keeps of each node (`search_cte`),
@@ -915,8 +972,10 @@ pub(super) fn failing_pairs(
 /// their relationships), the paths are recovered: the first pairs' are
 /// `vlp_{var}_walked` (`walk_ctes`, walked from only them), and the trails
 /// carry theirs.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn pick_cte(
     var: &str,
+    trails: &str,
     alias: &str,
     ends: &[PickEnd],
     conditions: &[RenderExpr],
@@ -1004,7 +1063,7 @@ pub(super) fn pick_cte(
          FROM {trails}\n        \
          WHERE {longer}\n    \
          ) WHERE {keep}\n)",
-        trails = with_ends(&format!("vlp_{var}_path"), alias, ends),
+        trails = with_ends(trails, alias, ends),
         longer = longer.join(" AND "),
     );
     Ok((Cte::new(name.clone(), CteContent::RawSql(sql), false), name))
@@ -1310,18 +1369,62 @@ impl Walk<'_> {
     }
 
     /// The trails of the range, as the relation `vlp_{var}_path` (its CTEs),
+    /// read by a pick as the relation named last (between composite ids,
+    /// S8d2: `vlp_{var}_keyed`, its ends keyed as the search keys a node,
+    /// [`composite_key`] of the walk's `start_<col>` / `end_<col>`),
     /// and how they spell their relationships.
-    pub(super) fn trails(self, schema: &GraphSchema) -> Result<(Vec<Cte>, TrailEdges), LowerError> {
+    pub(super) fn trails(
+        self,
+        schema: &GraphSchema,
+    ) -> Result<(Vec<Cte>, TrailEdges, String), LowerError> {
         match self {
             Walk::One(c) => {
+                let var = c.var.to_string();
+                let id = c.node.id_physical_columns();
                 let built = path_cte(schema, c)?;
                 let edges = match built.edges {
                     true => TrailEdges::Typed,
                     false => TrailEdges::None,
                 };
-                Ok((vec![built.cte], edges))
+                let path = format!("vlp_{var}_path");
+                if id.len() == 1 {
+                    return Ok((vec![built.cte], edges, path));
+                }
+                let side = |s: &str| -> Vec<String> {
+                    id.iter().map(|col| format!("{s}_{col}")).collect()
+                };
+                let (Some(start), Some(end)) =
+                    (composite_key(&side("start")), composite_key(&side("end")))
+                else {
+                    return unsupported("a shortestPath between composite ids in this SQL dialect");
+                };
+                let keyed = format!("vlp_{var}_keyed");
+                let edges_column = match edges {
+                    TrailEdges::None => "",
+                    _ => ", path_edges",
+                };
+                let sql = format!(
+                    "{keyed} AS (\n    \
+                     SELECT {start} AS start_id, {end} AS end_id, hop_count{edges_column} \
+                     FROM {path}\n)"
+                );
+                Ok((
+                    vec![
+                        built.cte,
+                        Cte::new(keyed.clone(), CteContent::RawSql(sql), false),
+                    ],
+                    edges,
+                    keyed,
+                ))
             }
-            Walk::Union(w) => Ok((union_path_ctes(&w)?.0, TrailEdges::Texts)),
+            Walk::Union(w) => {
+                let var = w.var.to_string();
+                Ok((
+                    union_path_ctes(&w)?.0,
+                    TrailEdges::Texts,
+                    format!("vlp_{var}_path"),
+                ))
+            }
         }
     }
 }
