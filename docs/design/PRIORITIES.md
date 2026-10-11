@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; S7e3 #1347; S8a #1349 FK edges; S8b #1350 embedded nodes; S8c #1351 polymorphic edges / label-column nodes; S8d1 #1353 composite-id walks; S9 #1357 subquery expressions; S8d2a #1359 composite shortest paths; S8d2b #1361 composite union walks; S8d2c #1363 composite values / lists (S8 done); S10a #1367 default on; next: S10b parse failures to the new path, then S11 legacy deletion (reading a map's value needs typed per-key values: a later list slice))
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; S7e3 #1347; S8a #1349 FK edges; S8b #1350 embedded nodes; S8c #1351 polymorphic edges / label-column nodes; S8d1 #1353 composite-id walks; S9 #1357 subquery expressions; S8d2a #1359 composite shortest paths; S8d2b #1361 composite union walks; S8d2c #1363 composite values / lists (S8 done); S10a #1367 default on; S10b #1369 text-only syntax (S10 done); next: S11 legacy deletion (reading a map's value needs typed per-key values: a later list slice))
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -740,6 +740,9 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-10-11: **P-4c S10b: text only the clause-list parser reads** (#1369, `translate::translate_text_read` / `clause_list_use_name`). S10 complete.
+  - `WITH a MATCH .. MATCH ..`, several UNWINDs after a WITH, MATCH after OPTIONAL MATCH after a WITH, free-standing ORDER BY / SKIP / LIMIT now run on HTTP, `/query/sql`, Bolt and the library (embedded / FFI / `cg`); what the bound plan does not translate keeps the legacy parse error.
+  - 15 generated shapes equal to Neo4j; scorecard unchanged (no corpus query uses the syntax); live suite 4826 passed (9 multi-tenant failures pre-existing).
 - 2026-10-11: **P-4c S10a: the bound plan is the default** (#1367, `translate::BoundPlanMode::from_env` on unless `CLICKGRAPH_BOUND_PLAN=off`; `TranslateError::Invalid`).
   - A bind error Neo4j also gives is the query's error (HTTP 400 / Bolt), not a legacy fallback; `/query/sql` and the export inner queries now pass the query text, so every route agrees.
   - Scorecard regenerated on the default: 57 CG_ERROR and 22 MISMATCH → MATCH; 4 → CG_ERROR, all reads of undeclared properties (user rule; EXTENSION). Oracle off vs on (20 schemas): 197 wrong → right. Live suite: 4825 passed, remaining failures pre-existing; 67 legacy-contract tests rewritten against Neo4j / brute-force oracles; `test_denormalized_edges` no longer replaces the shared `denormalized_flights` schema.

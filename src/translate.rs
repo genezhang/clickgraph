@@ -158,6 +158,22 @@ pub struct BoundTranslation {
     pub shape: Vec<ResultColumn>,
 }
 
+impl BoundTranslation {
+    fn into_read_translation(self, start: Instant) -> ReadTranslation {
+        ReadTranslation {
+            sql: self.sql,
+            logical_plan: LogicalPlan::Empty,
+            plan_ctx: PlanCtx::new_empty(),
+            shape: Some(self.shape),
+            timings: TranslateTimings {
+                planning: start.elapsed(),
+                ..Default::default()
+            },
+            route: Route::BoundPlan,
+        }
+    }
+}
+
 /// The stage a translation failed in. Callers map planning errors to client
 /// errors and render errors to internal errors, as before.
 #[derive(Debug)]
@@ -232,19 +248,7 @@ fn translate_in_context(
                 Err(BoundPlanError::Fallback(reason)) => {
                     log::debug!("bound plan: legacy pipeline ({reason})")
                 }
-                Ok(BoundTranslation { sql, shape }) => {
-                    return Ok(ReadTranslation {
-                        sql,
-                        logical_plan: LogicalPlan::Empty,
-                        plan_ctx: PlanCtx::new_empty(),
-                        shape: Some(shape),
-                        timings: TranslateTimings {
-                            planning: start.elapsed(),
-                            ..Default::default()
-                        },
-                        route: Route::BoundPlan,
-                    })
-                }
+                Ok(bound) => return Ok(bound.into_read_translation(start)),
             }
         }
     }
@@ -287,6 +291,98 @@ fn translate_in_context(
         },
         route: Route::Legacy,
     })
+}
+
+/// Translate read-query text that only the clause-list parser reads (P-4c
+/// S10b): `WITH a MATCH .. MATCH ..`, several UNWINDs after a WITH, a MATCH
+/// after an OPTIONAL MATCH after a WITH, free-standing ORDER BY / SKIP /
+/// LIMIT. Entry points call it when the legacy parser rejects the text.
+///
+/// `Ok(None)`: the bound plan does not translate it (the clause-list parser
+/// rejects it too, it is not supported yet, or the route is off): the
+/// caller reports its own parse error. `Err(Invalid)`: a query Neo4j
+/// rejects as well.
+pub fn translate_text_read(
+    cypher: &str,
+    schema: &GraphSchema,
+    options: ReadOptions,
+) -> Result<Option<ReadTranslation>, TranslateError> {
+    use crate::server::query_context::{
+        has_query_context, set_current_schema, with_query_context_sync, QueryContext,
+    };
+    if !has_query_context() {
+        return with_query_context_sync(QueryContext::new(None), || {
+            set_current_schema(std::sync::Arc::new(schema.clone()));
+            translate_text_read(cypher, schema, options)
+        });
+    }
+    if options.bound_plan.unwrap_or_else(BoundPlanMode::from_env) == BoundPlanMode::Off {
+        return Ok(None);
+    }
+    crate::query_planner::logical_plan::reset_all_counters();
+    let start = Instant::now();
+    match bound_plan_or_reason(cypher, schema, &options) {
+        Ok(bound) => Ok(Some(bound.into_read_translation(start))),
+        Err(BoundPlanError::Invalid(e)) => Err(TranslateError::Invalid(e)),
+        Err(BoundPlanError::Fallback(reason)) => {
+            log::debug!("text-only read not translated: {reason}");
+            Ok(None)
+        }
+    }
+}
+
+/// The SQL of an inner read query (`COPY (<query>) TO`, the query argument of
+/// `apoc.export.*.query`), translated as `/query` would: the legacy parse
+/// with the `id()` rewrite, or text only the clause-list parser reads on the
+/// bound plan (S10b). Errors are messages prefixed `Inner Cypher …`.
+pub fn translate_inner_read(
+    cypher: &str,
+    schema: &GraphSchema,
+    max_cte_depth: u32,
+) -> Result<String, String> {
+    use crate::query_planner::ast_transform;
+    let options = || ReadOptions {
+        max_cte_depth,
+        cypher: Some(cypher.to_string()),
+        ..Default::default()
+    };
+    let message = |e: TranslateError| match e {
+        TranslateError::Planning(e) => format!("Inner Cypher planning error: {}", e),
+        TranslateError::Render(e) => format!("Inner Cypher render error: {}", e),
+        TranslateError::Invalid(e) => format!("Inner Cypher query error: {}", e),
+    };
+    match crate::open_cypher_parser::parse_cypher_statement(cypher) {
+        Ok((_, statement)) => {
+            // Stateless for export: no IdMapper scope.
+            let id_mapper = crate::server::bolt_protocol::id_mapper::IdMapper::new();
+            let arena = ast_transform::StringArena::new();
+            let (statement, _) =
+                ast_transform::transform_id_functions(&arena, statement, &id_mapper, Some(schema));
+            translate_read(statement, schema, options())
+                .map(|t| t.sql)
+                .map_err(message)
+        }
+        Err(e) => {
+            let parse_error = format!("Inner Cypher parse error: {}", e);
+            match translate_text_read(cypher, schema, options()) {
+                Ok(Some(t)) => Ok(t.sql),
+                Ok(None) => Err(parse_error),
+                Err(e) => Err(message(e)),
+            }
+        }
+    }
+}
+
+/// The `USE` graph name of read-query text the clause-list parser reads
+/// (`Some(None)`: no `USE`), or `None` when it does not parse. For entry
+/// points choosing the schema of text the legacy parser rejects (S10b).
+pub fn clause_list_use_name(cypher: &str) -> Option<Option<String>> {
+    match crate::open_cypher_parser::clause_list::parse_clause_statement(cypher) {
+        Ok((rest, stmt)) if rest.trim().trim_end_matches(';').trim().is_empty() => {
+            Some(stmt.first.use_clause.map(|u| u.database_name.to_string()))
+        }
+        _ => None,
+    }
 }
 
 /// The bound-plan path (P-4c): clause list → bind → lower → plain print.
@@ -387,7 +483,127 @@ fn merged_view_parameters(
 
 #[cfg(test)]
 mod tests {
-    use super::BoundPlanMode;
+    use super::{
+        clause_list_use_name, translate_text_read, BoundPlanMode, ReadOptions, Route,
+        TranslateError,
+    };
+
+    fn social() -> super::GraphSchema {
+        crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(include_str!(
+            "../schemas/test/social_integration.yaml"
+        ))
+        .unwrap()
+        .to_graph_schema()
+        .unwrap()
+    }
+
+    fn on() -> ReadOptions {
+        ReadOptions {
+            max_cte_depth: 100,
+            bound_plan: Some(BoundPlanMode::On),
+            ..Default::default()
+        }
+    }
+
+    /// Syntax only the clause-list parser reads (P-4c S10b) is translated by
+    /// the bound plan alone; what it does not translate is the caller's
+    /// parse error, and a query Neo4j rejects is invalid.
+    #[test]
+    fn text_only_syntax_is_translated_by_the_bound_plan() {
+        let schema = social();
+        for q in [
+            "MATCH (a:User) WITH a MATCH (a)-[:FOLLOWS]->(b:User) \
+             MATCH (b)-[:FOLLOWS]->(c:User) RETURN count(*) AS n",
+            "MATCH (a:User) WITH a UNWIND [1, 2] AS x UNWIND [3, 4] AS y RETURN count(*) AS n",
+            "MATCH (a:User) WITH a OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) \
+             MATCH (c:User) RETURN count(*) AS n",
+            "MATCH (a:User) ORDER BY a.name LIMIT 3 RETURN a.name",
+        ] {
+            assert!(
+                crate::open_cypher_parser::parse_cypher_statement(q).is_err(),
+                "the legacy parser reads it now: {q}"
+            );
+            let t = translate_text_read(q, &schema, on())
+                .unwrap()
+                .unwrap_or_else(|| panic!("not translated: {q}"));
+            assert_eq!(t.route, Route::BoundPlan, "{q}");
+            let lib = crate::clickhouse_query_generator::cypher_to_sql(q, &schema, 100);
+            assert_eq!(lib.as_deref(), Ok(t.sql.as_str()), "{q}");
+        }
+        let text_only = "MATCH (a:User) ORDER BY a.name LIMIT 3 RETURN a.name";
+        // Not lowered (`id()` in a WHERE), an updating clause, or the route
+        // off: the caller reports its parse error.
+        for q in [
+            "MATCH (a:User) WITH a MATCH (a)-[:FOLLOWS]->(b:User) MATCH (b) \
+             WHERE id(b) = 3 RETURN count(*) AS n",
+            "MATCH (a:User) ORDER BY a.name LIMIT 3 CREATE (b:User) RETURN a.name",
+        ] {
+            assert!(
+                translate_text_read(q, &schema, on()).unwrap().is_none(),
+                "{q}"
+            );
+        }
+        let off = ReadOptions {
+            bound_plan: Some(BoundPlanMode::Off),
+            ..on()
+        };
+        assert!(translate_text_read(text_only, &schema, off)
+            .unwrap()
+            .is_none());
+        assert!(matches!(
+            translate_text_read(
+                "MATCH (a:User) ORDER BY a.name LIMIT 3 RETURN z.name",
+                &schema,
+                on()
+            ),
+            Err(TranslateError::Invalid(_))
+        ));
+    }
+
+    /// The inner query of an export translates as `/query` would, text only
+    /// the clause-list parser reads included (S10b review).
+    #[test]
+    fn an_inner_export_query_translates_as_a_query_does() {
+        let schema = social();
+        let text_only = "MATCH (a:User) ORDER BY a.name LIMIT 1 RETURN a.name";
+        let sql = super::translate_inner_read(text_only, &schema, 100).unwrap();
+        assert_eq!(
+            Ok(sql),
+            crate::clickhouse_query_generator::cypher_to_sql(text_only, &schema, 100)
+        );
+        let read = "MATCH (a:User) RETURN a.name";
+        assert_eq!(
+            super::translate_inner_read(read, &schema, 100),
+            crate::clickhouse_query_generator::cypher_to_sql(read, &schema, 100)
+        );
+        let err = super::translate_inner_read("MATCH (a:User) RETRUN a", &schema, 100);
+        assert!(
+            matches!(&err, Err(e) if e.starts_with("Inner Cypher parse error")),
+            "{err:?}"
+        );
+        let err = super::translate_inner_read(
+            "MATCH (a:User) ORDER BY a.name LIMIT 1 RETURN z.name",
+            &schema,
+            100,
+        );
+        assert!(
+            matches!(&err, Err(e) if e.starts_with("Inner Cypher query error")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn the_use_name_of_text_only_syntax() {
+        assert_eq!(
+            clause_list_use_name("USE g MATCH (a) ORDER BY a.x LIMIT 1 RETURN a"),
+            Some(Some("g".to_string()))
+        );
+        assert_eq!(
+            clause_list_use_name("MATCH (a) LIMIT 1 RETURN a;"),
+            Some(None)
+        );
+        assert_eq!(clause_list_use_name("MATCH (a) RETRUN a"), None);
+    }
 
     #[test]
     fn the_bound_plan_switch_reads_off_spellings() {

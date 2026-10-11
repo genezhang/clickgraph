@@ -2253,7 +2253,10 @@ impl BoltHandler {
                     schema_name.as_deref().unwrap_or("default").to_string()
                 }
             },
-            Err(_) => schema_name.as_deref().unwrap_or("default").to_string(),
+            // Text only the clause-list parser reads (P-4c S10b) keeps its USE.
+            Err(_) => crate::translate::clause_list_use_name(query)
+                .flatten()
+                .unwrap_or_else(|| schema_name.as_deref().unwrap_or("default").to_string()),
         };
 
         // Load the actual GraphSchema object for id() transformation.
@@ -2352,33 +2355,9 @@ impl BoltHandler {
             crate::server::query_context::set_current_schema(Arc::new(graph_schema_obj.clone()));
 
             // Translate inner Cypher → SQL
-            let inner_sql = {
-                let (_, inner_stmt) = open_cypher_parser::parse_cypher_statement(&inner_query)
-                    .map_err(|e| {
-                        BoltError::query_error(format!("Inner Cypher parse error: {}", e))
-                    })?;
-
-                let inner_mapper = crate::server::bolt_protocol::id_mapper::IdMapper::new();
-                let inner_arena = crate::query_planner::ast_transform::StringArena::new();
-                let (inner_cypher, _) = crate::query_planner::ast_transform::transform_id_functions(
-                    &inner_arena,
-                    inner_stmt,
-                    &inner_mapper,
-                    Some(&graph_schema_obj),
-                );
-
-                crate::translate::translate_read(
-                    inner_cypher,
-                    &graph_schema_obj,
-                    crate::translate::ReadOptions {
-                        max_cte_depth: 1000,
-                        cypher: Some(inner_query.to_string()),
-                        ..Default::default()
-                    },
-                )
-                .map_err(|e| BoltError::query_error(inner_translate_error(e)))?
-                .sql
-            };
+            let inner_sql =
+                crate::translate::translate_inner_read(&inner_query, &graph_schema_obj, 1000)
+                    .map_err(BoltError::query_error)?;
 
             let export_sql = crate::procedures::apoc_export::build_export_sql(
                 &inner_sql,
@@ -2418,8 +2397,15 @@ impl BoltHandler {
         }
 
         // Parse Cypher statement for transformation
-        let parsed_stmt = match open_cypher_parser::parse_cypher_statement(query) {
-            Ok((_, stmt)) => stmt,
+        // The legacy parse error of text only the clause-list parser reads
+        // (P-4c S10b): a read query the bound plan translates from the text,
+        // or the error is reported. (Only the error is kept here: a parsed
+        // statement is not `Send` and must not live across an await.)
+        let legacy_parse_error = match open_cypher_parser::parse_cypher_statement(query) {
+            Ok(_) => None,
+            Err(parse_error) if crate::translate::clause_list_use_name(query).is_some() => {
+                Some(format!("Statement parsing failed: {}", parse_error))
+            }
             Err(parse_error) => {
                 return Err(BoltError::query_error(format!(
                     "Statement parsing failed: {}",
@@ -2437,137 +2423,162 @@ impl BoltHandler {
 
         // Parse and transform in a limited scope to extract metadata
         let ast_arena = crate::query_planner::ast_transform::StringArena::new();
-        let (is_procedure, _is_union, exec_plan, query_type, _label_constraints) = {
-            // Transform id() functions with schema available
-            let (transformed_stmt, label_constraints) =
-                crate::query_planner::ast_transform::transform_id_functions(
-                    &ast_arena,
-                    parsed_stmt,
-                    &id_mapper_snapshot,
-                    graph_schema.as_ref(),
+        let (is_procedure, _is_union, exec_plan, query_type, _label_constraints) =
+            if legacy_parse_error.is_none() {
+                let parsed_stmt = match open_cypher_parser::parse_cypher_statement(query) {
+                    Ok((_, stmt)) => stmt,
+                    Err(parse_error) => {
+                        return Err(BoltError::query_error(format!(
+                            "Statement parsing failed: {}",
+                            parse_error
+                        )));
+                    }
+                };
+                // Transform id() functions with schema available
+                let (transformed_stmt, label_constraints) =
+                    crate::query_planner::ast_transform::transform_id_functions(
+                        &ast_arena,
+                        parsed_stmt,
+                        &id_mapper_snapshot,
+                        graph_schema.as_ref(),
+                    );
+
+                let is_procedure =
+                    crate::procedures::is_procedure_only_statement(&transformed_stmt);
+                let is_union = crate::procedures::is_procedure_union_query(&transformed_stmt);
+
+                log::debug!("Query execution using schema: {}", effective_schema);
+                log::debug!(
+                    "Routing decision: is_procedure={}, is_union={}",
+                    is_procedure,
+                    is_union
                 );
 
-            let is_procedure = crate::procedures::is_procedure_only_statement(&transformed_stmt);
-            let is_union = crate::procedures::is_procedure_union_query(&transformed_stmt);
-
-            log::debug!("Query execution using schema: {}", effective_schema);
-            log::debug!(
-                "Routing decision: is_procedure={}, is_union={}",
-                is_procedure,
-                is_union
-            );
-
-            // Extract execution plan for procedures
-            let exec_plan = if is_procedure {
-                Some(match &transformed_stmt {
-                    CypherStatement::ProcedureCall(proc_call) => ExecutionPlan::SimpleProcedure {
-                        proc_name: proc_call.procedure_name.to_string(),
-                    },
-                    CypherStatement::CopyTo(_) => {
-                        // COPY TO is handled by the early intercept above;
-                        // this branch is unreachable for valid COPY TO queries.
-                        return Err(BoltError::query_error(
-                            "Unexpected COPY TO in execution plan phase".to_string(),
-                        ));
-                    }
-                    CypherStatement::Query {
-                        query: query_ast,
-                        union_clauses,
-                    } => {
-                        if !union_clauses.is_empty() {
-                            // Extract branch metadata
-                            let mut branches = Vec::new();
-
-                            // Main branch
-                            if let Some(call_clause) = &query_ast.call_clause {
-                                branches.push(ProcedureBranch {
-                                    proc_name: call_clause.procedure_name.to_string(),
-                                    has_return: query_ast.return_clause.is_some(),
-                                });
-                            }
-
-                            // Union branches
-                            for union_clause in union_clauses {
-                                if let Some(call_clause) = &union_clause.query.call_clause {
-                                    branches.push(ProcedureBranch {
-                                        proc_name: call_clause.procedure_name.to_string(),
-                                        has_return: union_clause.query.return_clause.is_some(),
-                                    });
-                                }
-                            }
-
-                            ExecutionPlan::Union { branches }
-                        } else {
-                            // Single procedure with possible RETURN
-                            if let Some(call_clause) = &query_ast.call_clause {
-                                if query_ast.return_clause.is_some() {
-                                    ExecutionPlan::ProcedureWithReturn {
-                                        proc_name: call_clause.procedure_name.to_string(),
-                                    }
-                                } else {
-                                    ExecutionPlan::SimpleProcedure {
-                                        proc_name: call_clause.procedure_name.to_string(),
-                                    }
-                                }
-                            } else {
-                                return Err(BoltError::query_error(
-                                    "No call clause found".to_string(),
-                                ));
+                // Extract execution plan for procedures
+                let exec_plan = if is_procedure {
+                    Some(match &transformed_stmt {
+                        CypherStatement::ProcedureCall(proc_call) => {
+                            ExecutionPlan::SimpleProcedure {
+                                proc_name: proc_call.procedure_name.to_string(),
                             }
                         }
-                    }
-                })
-            } else {
-                None
-            };
+                        CypherStatement::CopyTo(_) => {
+                            // COPY TO is handled by the early intercept above;
+                            // this branch is unreachable for valid COPY TO queries.
+                            return Err(BoltError::query_error(
+                                "Unexpected COPY TO in execution plan phase".to_string(),
+                            ));
+                        }
+                        CypherStatement::Query {
+                            query: query_ast,
+                            union_clauses,
+                        } => {
+                            if !union_clauses.is_empty() {
+                                // Extract branch metadata
+                                let mut branches = Vec::new();
 
-            // Extract query type for regular queries
-            let query_type = match &transformed_stmt {
-                CypherStatement::Query {
-                    query,
-                    union_clauses,
-                } => {
-                    // Check main query type
-                    let main_type = query_planner::get_query_type(query);
+                                // Main branch
+                                if let Some(call_clause) = &query_ast.call_clause {
+                                    branches.push(ProcedureBranch {
+                                        proc_name: call_clause.procedure_name.to_string(),
+                                        has_return: query_ast.return_clause.is_some(),
+                                    });
+                                }
 
-                    // For UNION queries, all branches must be Read queries
-                    if !union_clauses.is_empty() {
-                        // Check each union branch
-                        for union_clause in union_clauses {
-                            let branch_type = query_planner::get_query_type(&union_clause.query);
-                            if branch_type != query_planner::types::QueryType::Read {
-                                log::debug!("UNION branch has non-Read type: {:?}", branch_type);
-                                return Err(BoltError::query_error(
+                                // Union branches
+                                for union_clause in union_clauses {
+                                    if let Some(call_clause) = &union_clause.query.call_clause {
+                                        branches.push(ProcedureBranch {
+                                            proc_name: call_clause.procedure_name.to_string(),
+                                            has_return: union_clause.query.return_clause.is_some(),
+                                        });
+                                    }
+                                }
+
+                                ExecutionPlan::Union { branches }
+                            } else {
+                                // Single procedure with possible RETURN
+                                if let Some(call_clause) = &query_ast.call_clause {
+                                    if query_ast.return_clause.is_some() {
+                                        ExecutionPlan::ProcedureWithReturn {
+                                            proc_name: call_clause.procedure_name.to_string(),
+                                        }
+                                    } else {
+                                        ExecutionPlan::SimpleProcedure {
+                                            proc_name: call_clause.procedure_name.to_string(),
+                                        }
+                                    }
+                                } else {
+                                    return Err(BoltError::query_error(
+                                        "No call clause found".to_string(),
+                                    ));
+                                }
+                            }
+                        }
+                    })
+                } else {
+                    None
+                };
+
+                // Extract query type for regular queries
+                let query_type = match &transformed_stmt {
+                    CypherStatement::Query {
+                        query,
+                        union_clauses,
+                    } => {
+                        // Check main query type
+                        let main_type = query_planner::get_query_type(query);
+
+                        // For UNION queries, all branches must be Read queries
+                        if !union_clauses.is_empty() {
+                            // Check each union branch
+                            for union_clause in union_clauses {
+                                let branch_type =
+                                    query_planner::get_query_type(&union_clause.query);
+                                if branch_type != query_planner::types::QueryType::Read {
+                                    log::debug!(
+                                        "UNION branch has non-Read type: {:?}",
+                                        branch_type
+                                    );
+                                    return Err(BoltError::query_error(
                                     "Only read queries are currently supported via Bolt protocol"
                                         .to_string(),
                                 ));
+                                }
                             }
                         }
+
+                        main_type
                     }
+                    CypherStatement::ProcedureCall(_) => {
+                        // Procedures are handled above, this shouldn't happen
+                        query_planner::types::QueryType::Read // dummy value
+                    }
+                    CypherStatement::CopyTo(_) => {
+                        // COPY TO is handled by the early intercept above
+                        return Err(BoltError::query_error(
+                            "Unexpected COPY TO in query type phase".to_string(),
+                        ));
+                    }
+                };
 
-                    main_type
-                }
-                CypherStatement::ProcedureCall(_) => {
-                    // Procedures are handled above, this shouldn't happen
-                    query_planner::types::QueryType::Read // dummy value
-                }
-                CypherStatement::CopyTo(_) => {
-                    // COPY TO is handled by the early intercept above
-                    return Err(BoltError::query_error(
-                        "Unexpected COPY TO in query type phase".to_string(),
-                    ));
-                }
+                // transformed_stmt is dropped here at end of scope!
+                (
+                    is_procedure,
+                    is_union,
+                    exec_plan,
+                    query_type,
+                    label_constraints,
+                )
+            } else {
+                (
+                    false,
+                    false,
+                    None,
+                    query_planner::types::QueryType::Read,
+                    HashMap::new(),
+                )
             };
-
-            // transformed_stmt is dropped here at end of scope!
-            (
-                is_procedure,
-                is_union,
-                exec_plan,
-                query_type,
-                label_constraints,
-            )
-        };
 
         // ============================================================
         // PHASE 3: Route to Procedure or Regular Query Handler
@@ -2634,38 +2645,12 @@ impl BoltHandler {
                             // own strip_comments() before this independent parse.
                             let stripped_inner =
                                 open_cypher_parser::strip_comments(&export_args.cypher_query);
-                            let (_, inner_stmt) =
-                                open_cypher_parser::parse_cypher_statement(&stripped_inner)
-                                    .map_err(|e| {
-                                        BoltError::query_error(format!(
-                                            "Inner Cypher parse error: {}",
-                                            e
-                                        ))
-                                    })?;
-
-                            use crate::server::bolt_protocol::id_mapper::IdMapper;
-                            let inner_mapper = IdMapper::new();
-                            let inner_arena =
-                                crate::query_planner::ast_transform::StringArena::new();
-                            let (inner_cypher, _) =
-                                crate::query_planner::ast_transform::transform_id_functions(
-                                    &inner_arena,
-                                    inner_stmt,
-                                    &inner_mapper,
-                                    Some(&graph_schema),
-                                );
-
-                            crate::translate::translate_read(
-                                inner_cypher,
+                            crate::translate::translate_inner_read(
+                                &stripped_inner,
                                 &graph_schema,
-                                crate::translate::ReadOptions {
-                                    max_cte_depth: 1000,
-                                    cypher: Some(stripped_inner.to_string()),
-                                    ..Default::default()
-                                },
+                                1000,
                             )
-                            .map_err(|e| BoltError::query_error(inner_translate_error(e)))?
-                            .sql
+                            .map_err(BoltError::query_error)?
                         };
 
                         // Build export SQL
@@ -3047,50 +3032,71 @@ impl BoltHandler {
         // (no-op unless CLICKGRAPH_STATS_ENABLED installed the cache).
         crate::server::query_context::attach_current_table_stats(&graph_schema).await;
 
-        // Re-parse and transform for planning (after async boundary)
-        // Note: This is unavoidable due to Rc<RefCell<>> in AST not being Send
-        let parsed_stmt_for_planning = match open_cypher_parser::parse_cypher_statement(query) {
-            Ok((_, stmt)) => stmt,
-            Err(e) => {
-                return Err(BoltError::query_error(format!("Re-parse failed: {}", e)));
+        let translated = if let Some(parse_error) = legacy_parse_error {
+            match crate::translate::translate_text_read(
+                query,
+                &graph_schema,
+                crate::translate::ReadOptions {
+                    tenant_id,
+                    view_parameter_values: view_parameters,
+                    max_inferred_types: Some(20),
+                    where_label_constraints: None,
+                    max_cte_depth: 1000,
+                    cypher: Some(query.to_string()),
+                    bound_plan: None,
+                },
+            ) {
+                Ok(Some(t)) => Ok(t),
+                Ok(None) => return Err(BoltError::query_error(parse_error)),
+                Err(e) => Err(e),
             }
-        };
+        } else {
+            // Re-parse and transform for planning (after async boundary)
+            // Note: This is unavoidable due to Rc<RefCell<>> in AST not being Send
+            let parsed_stmt_for_planning = match open_cypher_parser::parse_cypher_statement(query) {
+                Ok((_, stmt)) => stmt,
+                Err(e) => {
+                    return Err(BoltError::query_error(format!("Re-parse failed: {}", e)));
+                }
+            };
 
-        let id_mapper_snapshot = {
-            let context = lock_context!(self.context);
-            context.id_mapper.clone()
-        };
+            let id_mapper_snapshot = {
+                let context = lock_context!(self.context);
+                context.id_mapper.clone()
+            };
 
-        let (transformed_for_planning, label_constraints_from_second_pass) =
-            crate::query_planner::ast_transform::transform_id_functions(
-                &ast_arena, // Reuse same arena
-                parsed_stmt_for_planning,
-                &id_mapper_snapshot,
-                Some(&graph_schema), // Pass schema for node_id property lookup
+            let (transformed_for_planning, label_constraints_from_second_pass) =
+                crate::query_planner::ast_transform::transform_id_functions(
+                    &ast_arena, // Reuse same arena
+                    parsed_stmt_for_planning,
+                    &id_mapper_snapshot,
+                    Some(&graph_schema), // Pass schema for node_id property lookup
+                );
+
+            // Use label_constraints from the second pass (not first) since it has schema context
+            log::info!(
+                "🎯 Passing {} label constraints to query planner (from second pass)",
+                label_constraints_from_second_pass.len()
             );
 
-        // Use label_constraints from the second pass (not first) since it has schema context
-        log::info!(
-            "🎯 Passing {} label constraints to query planner (from second pass)",
-            label_constraints_from_second_pass.len()
-        );
-
-        // Plan, render and generate SQL through the single translate seam.
-        // The WHERE label constraints from the second id() pass are injected
-        // into the plan context before rendering (UNION pruning).
-        let translation = match crate::translate::translate_read(
-            transformed_for_planning,
-            &graph_schema,
-            crate::translate::ReadOptions {
-                tenant_id,
-                view_parameter_values: view_parameters,
-                max_inferred_types: Some(20), // increased for UNION branches
-                where_label_constraints: Some(label_constraints_from_second_pass),
-                max_cte_depth: 1000,
-                cypher: Some(query.to_string()),
-                bound_plan: None,
-            },
-        ) {
+            // Plan, render and generate SQL through the single translate seam.
+            // The WHERE label constraints from the second id() pass are injected
+            // into the plan context before rendering (UNION pruning).
+            crate::translate::translate_read(
+                transformed_for_planning,
+                &graph_schema,
+                crate::translate::ReadOptions {
+                    tenant_id,
+                    view_parameter_values: view_parameters,
+                    max_inferred_types: Some(20), // increased for UNION branches
+                    where_label_constraints: Some(label_constraints_from_second_pass),
+                    max_cte_depth: 1000,
+                    cypher: Some(query.to_string()),
+                    bound_plan: None,
+                },
+            )
+        };
+        let translation = match translated {
             Ok(t) => t,
             Err(crate::translate::TranslateError::Planning(e)) => {
                 return Err(BoltError::query_error(format!(
@@ -3262,22 +3268,6 @@ impl BoltHandler {
         metadata.insert("qid".to_string(), Value::Number(1.into()));
 
         Ok(metadata)
-    }
-}
-
-/// Error text for an `apoc.export` / `COPY TO` inner query that failed to
-/// translate (the stage is part of the message, as before the seam).
-fn inner_translate_error(e: crate::translate::TranslateError) -> String {
-    match e {
-        crate::translate::TranslateError::Planning(e) => {
-            format!("Inner Cypher planning error: {}", e)
-        }
-        crate::translate::TranslateError::Render(e) => {
-            format!("Inner Cypher render error: {}", e)
-        }
-        crate::translate::TranslateError::Invalid(e) => {
-            format!("Inner Cypher query error: {}", e)
-        }
     }
 }
 
@@ -3657,6 +3647,18 @@ mod tests {
             );
         }
         // Ok(_) trivially means parsing (and everything else) succeeded.
+    }
+
+    /// Syntax only the clause-list parser reads (P-4c S10b) goes past the
+    /// parse stage to the bound plan.
+    #[tokio::test]
+    async fn execute_cypher_query_routes_text_only_syntax_past_the_parse() {
+        let mut handler = create_test_handler();
+        let cypher = "MATCH (a:User) ORDER BY a.name LIMIT 3 RETURN a.name";
+        let result = handler
+            .execute_cypher_query(cypher, HashMap::new(), None, None, None, None)
+            .await;
+        assert_not_a_parse_error(&result, cypher);
     }
 
     #[tokio::test]
