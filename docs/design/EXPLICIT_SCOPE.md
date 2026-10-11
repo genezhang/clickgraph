@@ -2023,6 +2023,76 @@ ClickHouse constraints, verified on 26.7, that the lowering must respect:
 The correlation set is explicit, so the alias guessing and the
 "outer alias" task-local of today are not needed.
 
+**Implemented in S9** (`bound_plan/expr.rs` `hoist_subqueries`,
+`binder.rs` `bind_subquery`, `bound_plan/lower/subquery.rs`):
+`EXISTS { [MATCH] pattern [WHERE …] }`, a pattern predicate, `NOT (pattern)`,
+`exists(pattern)`, `size(pattern)` and `size([pattern …])`, pattern
+comprehensions of values.
+- **Binding.** Before an expression is converted, each subquery in it is
+  taken out of the AST and bound as a MATCH over the expression's scope:
+  a variable of the scope is bound before it, the others are its own. The
+  expression keeps a placeholder call `__cg_subquery(<value>, <correlation>…)`
+  whose arguments are the subquery's value binding and its **correlation**
+  (the scope's variables it reads, nested subqueries' included), so every
+  existing check of what an expression reads (grouping keys, DISTINCT /
+  aggregation visibility, an OPTIONAL MATCH's WHERE-only variables) sees
+  them. The bound statement lists its `Subquery`s (`types.rs`). As in
+  Neo4j, a pattern predicate may not introduce a variable, and a
+  subquery's variables are not visible outside it. `size(pattern)` is
+  Cypher 4's (Neo4j 5 rejects it and spells it `COUNT { … }`); it is
+  lowered as that count, as legacy does.
+- **One form for every construct.** A subquery is a `Mark` in §4.5's terms:
+  a value the expression reads. Before an expression is lowered, the
+  subqueries it reads are applied to the current rows: `Q`, the subquery's
+  MATCH with its WHERE inside (as an OPTIONAL MATCH's, §4.9), grouped by the
+  correlation columns into `count(*)` or the list of its projection, LEFT
+  JOINs the rows on the correlation. One group per key, so a row joins at
+  most one: rows are neither multiplied nor dropped and keep their order.
+  The value is a column of the group, one operand as it is (a comparison
+  of it needs no parentheses): `exists` is computed in `Q` as a boolean
+  (`count(*) > 0`, `Nullable(Bool)`) and read `coalesce(…, false)`, a count
+  `coalesce(count, 0)`, a list as it is (a row that joins no group reads
+  `[]`). A list keeps NULL elements
+  (`groupArray(tuple(x))`, `Lists::collect_all`), unlike `collect()`. No
+  semi / anti join and no correlated SQL subquery.
+- **Correlation.** As an OPTIONAL MATCH's: anchored on the shared nodes
+  (read from their own tables, or the endpoint column of the pattern's
+  relationship) unless a relationship or a value is shared or a variable
+  only the WHERE reads; then a drive `D`, the distinct correlation columns
+  of the rows. Unlike an OPTIONAL MATCH's, `D` reads a **copy** of the rows
+  so far and the segment stays open, so a subquery is applied in the
+  middle of a MATCH (after its pattern, ties, conditions and uniqueness:
+  its WHERE conjuncts that read a subquery are applied last), inside an
+  OPTIONAL MATCH's `Q` and inside another subquery's `Q`. `D` holds the
+  correlated elements' identity / endpoint columns and the properties `Q`
+  reads (nested subqueries' reads included); a key that is never NULL joins
+  by equality, the rest NULL-safely (a WHERE-only variable can be NULL and
+  still decide the WHERE: `EXISTS { MATCH (c) WHERE b IS NULL }`), by the
+  dialect's one-condition form (`FunctionMapper::null_safe_equal`,
+  `isNotDistinctFrom`: ClickHouse keys no join of three or more relations
+  on `a = b OR (a IS NULL AND b IS NULL)`, Code 403). The copy leaves out
+  the subqueries applied before and the conditions reading them (more
+  rows, the same keys): each drive would otherwise copy every earlier one,
+  doubling the cost per subquery (review).
+- **NULL.** A NULL shared node or relationship is in no match (`Q`'s MATCH
+  requires it not NULL): false, 0, `[]`, as Neo4j. A shared element that
+  matches nothing, or a pattern that cannot match, is the constant.
+- **Positions.** A MATCH's or OPTIONAL MATCH's WHERE; a WITH / RETURN item
+  (also inside an aggregate's argument or a CASE), applied to the input
+  rows; the ORDER BY / WHERE of a projection that neither aggregates nor is
+  DISTINCT, when it reads only input variables; a WITH's WHERE that reads a
+  subquery and only projected names is bound as a `Filter` after the
+  projection (after its SKIP / LIMIT, #1311); UNWIND; a free-standing
+  ORDER BY; nested subqueries.
+- **Not lowered yet:** a subquery inside a list comprehension, `reduce` or
+  lambda (it could read the element); in a property map; in the ORDER BY /
+  WHERE of a DISTINCT or aggregating projection reading an input variable,
+  or in an ORDER BY reading a projected name; a shortestPath's WHERE
+  conjunct reading both a subquery and the path (the search holds it); a
+  subquery reading a path, a variable-length relationship's list or a
+  carried list of nodes; a pattern comprehension of nodes, relationships,
+  paths or maps.
+
 ### 4.13 Result shape
 
 The final `Project`'s scope lowers to the SELECT list, using today's column
@@ -3524,7 +3594,49 @@ slice that will handle it.
         id parts dropped from zero-length walks (#1354); a hop of several
         types beside a walk failing on `edge_id` types (#1352, as union
         walks).
-- [ ] S9 subquery expressions
+- [x] S9 subquery expressions (§4.12 "Implemented in S9"): `EXISTS`,
+  pattern predicates, `exists(pattern)`, `size(pattern)` /
+  `size([pattern …])`, pattern comprehensions of values; bound as MATCHes
+  over the expression's scope, lowered as a LEFT JOIN of their matches
+  grouped by the correlation.
+  - Acceptance:
+    - Neo4j oracle, all 20 loadable corpus schemas, switch on vs S8d1: 9
+      queries wrong or erroring become Neo4j-equal (pattern comprehensions,
+      EXISTS with an inner WHERE, multi-table correlation, `NOT` over a
+      variable-length pattern), none the other way; one `size(pattern)`
+      query that Neo4j 5 rejects now errors on both (an undeclared `id`
+      column, by the undeclared-property rule). The corpus lowers 1420
+      queries (was 1398); the 11 subquery refusals left read a list's
+      integer as a node (Neo4j rejects them).
+    - Generated shapes against Neo4j: 105 lowered on a scratch graph
+      (cycles, a self-loop, parallel relationships with and without
+      `edge_id`, NULL properties, an isolated node; every position, NULL
+      correlations, nesting, the review's repros) and 39 on the FK-edge,
+      embedded-node, polymorphic and composite-id graphs: every one equals
+      Neo4j except 5 undirected walks over parallel rows without `edge_id`
+      (the older gap, also on a plain MATCH); legacy is wrong or errors on
+      60 + 32 of them. The review's 400 shapes, rerun after its fixes: every
+      difference left is a filed or listed older defect (#1355, #1356,
+      `IN` of a list holding NULL, string `+`, list supertypes), list order,
+      or a probe asking Neo4j another question.
+    - Mutation check: 8 rules broken in turn (NULL-safe drive joins, NULLs
+      kept in a comprehension, a nullable WHERE-only key, the LEFT JOIN,
+      the count's default, the grouping, nested subqueries' reads, the
+      WHERE-only variables of the drive), all caught by the sweep.
+    - Adversarial review (about 300 shapes on five schemas, overlapping
+      ids across labels and types, dangling FK rows, a 300k-node table):
+      no crash; two findings of this slice, fixed: a NULL-safe join of only nullable keys
+      past two relations was a ClickHouse error (now
+      `null_safe_equal`), and an `EXISTS` compared with `=` / `<>` read
+      `… > 0 = … > 0` (now a boolean column); the drive's cost doubled per
+      subquery (fixed). Filed, not of this slice: parenthesized comparisons
+      parsed as a chained comparison (#1355); fixed-length uniqueness over
+      parallel rows without `edge_id` (#1356).
+    - Live suite, switch on, vs S8d1: 4 FK pattern-predicate oracle tests
+      now pass; 6 known-wrong goldens now Neo4j-equal (scorecard records
+      legacy); 3 tests of legacy's loud refusals (#574 / #588 two-hop,
+      bounded and OR'd pattern predicates, a polymorphic multi-type EXISTS)
+      now answered, each checked against the tables.
 - [ ] S10 default on
 - [ ] S11 legacy deletion
 

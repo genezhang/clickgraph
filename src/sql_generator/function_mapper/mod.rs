@@ -183,6 +183,11 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// already nullable. `expr` is a pre-rendered SQL fragment.
     fn cast_bool(&self, expr: &str) -> String;
 
+    /// `a` equals `b`, NULL equal to NULL, as one condition a hash join can
+    /// key on (`a = b OR (a IS NULL AND b IS NULL)` is not, in a join of
+    /// three or more relations). `a` and `b` are pre-rendered SQL.
+    fn null_safe_equal(&self, a: &str, b: &str) -> String;
+
     /// Concatenate two arrays. CH: `arrayConcat`. Spark: `concat`
     /// (overloaded for arrays).
     fn array_concat(&self) -> &'static str;
@@ -504,6 +509,9 @@ pub(crate) struct Lists {
     pub ordered_collect: fn(&str, &str, &str) -> String,
     /// An aggregate: the group's values of `{0}` for which `{1}` holds.
     pub collect_if: fn(&str, &str) -> String,
+    /// An aggregate: every one of the group's values of `{0}`, NULL
+    /// included (a pattern comprehension's list).
+    pub collect_all: fn(&str) -> String,
     /// Element `{1}` (1-based) of the tuple `{0}`.
     pub element: fn(&str, usize) -> String,
     /// Whether the value `{0}` is NULL, as a function call.

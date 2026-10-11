@@ -104,6 +104,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         )
     }
 
+    fn null_safe_equal(&self, a: &str, b: &str) -> String {
+        format!("isNotDistinctFrom({a}, {b})")
+    }
+
     fn cast_bool(&self, expr: &str) -> String {
         // Nullable(Bool) preserves NULL (bare `CAST(NULL>2 AS Bool)` throws
         // Code 70) and is physically UInt8, so this changes only the wire
@@ -283,6 +287,9 @@ impl FunctionMapper for ClickhouseFunctionMapper {
                 )
             },
             collect_if: |v, present| format!("groupArrayIf({v}, {present})"),
+            // `groupArray` skips NULLs; a one-element tuple of one is not
+            // NULL.
+            collect_all: |v| format!("arrayMap(t -> t.1, groupArray(tuple({v})))"),
             element: |t, i| format!("tupleElement({t}, {i})"),
             is_null: |v| format!("isNull({v})"),
             // An aggregate has one row also over none.

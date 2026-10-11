@@ -26,11 +26,21 @@
 //! * `*` expands to the variables in scope in name order, minus the names
 //!   projected explicitly; the explicit items follow.
 //!
+//! * A subquery expression (`EXISTS { … }`, a pattern predicate,
+//!   `exists(pattern)`, `size(pattern)`, a pattern comprehension, §4.12) is a
+//!   MATCH bound in the scope of the expression: a variable of the scope is
+//!   bound before it (the correlation), the others are local to it. A pattern
+//!   predicate may not introduce a variable (Neo4j: "PatternExpressions are
+//!   not allowed to introduce new variables"). A WITH's WHERE that reads a
+//!   subquery and only projected names is a `Filter` after the projection.
+//!
 //! Not bound yet (`BindError::Unsupported`, the caller falls back): CALL,
-//! updating clauses, graph patterns inside expressions, property-map
-//! parameters, re-matching a bound variable-length relationship list, the
-//! same relationship variable twice in one MATCH, and a value-typed variable
-//! (list element, `coalesce(a, b)`) used as a node or relationship.
+//! updating clauses, property-map parameters, re-matching a bound
+//! variable-length relationship list, the same relationship variable twice in
+//! one MATCH, a value-typed variable (list element, `coalesce(a, b)`) used as
+//! a node or relationship, and a subquery expression inside a comprehension,
+//! `reduce` or lambda, in a property map, or in the ORDER BY / WHERE of a
+//! DISTINCT or aggregating projection where it reads an input variable.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -43,7 +53,8 @@ use crate::open_cypher_parser::clause_list::{Clause, ClauseQuery, ClauseStatemen
 use crate::query_planner::logical_expr::{LogicalExpr, TableAlias};
 
 use super::expr::{
-    bind_expr, contains_aggregate, referenced_names, rename_refs, replace_subtrees, NameEnv,
+    bind_expr, contains_aggregate, has_subquery, referenced_names, rename_refs, replace_subtrees,
+    subquery_vars, NameEnv, RawKind, RawSubquery,
 };
 use super::labels::{infer, Feasibility, NodeSlot, RelSlot};
 use super::types::*;
@@ -56,6 +67,8 @@ pub fn bind_statement(
     let mut b = Binder {
         bindings: Vec::new(),
         feasibility: Feasibility::from_schema(schema),
+        subqueries: Vec::new(),
+        clause: 0,
     };
     let (first_plan, first_cols) = b.bind_query(&stmt.first)?;
     if stmt.unions.is_empty() {
@@ -63,6 +76,7 @@ pub fn bind_statement(
             plan: first_plan,
             bindings: b.bindings,
             columns: first_cols,
+            subqueries: b.subqueries,
         });
     }
     let all = matches!(stmt.unions[0].0, UnionType::All);
@@ -115,12 +129,17 @@ pub fn bind_statement(
         },
         bindings: b.bindings,
         columns,
+        subqueries: b.subqueries,
     })
 }
 
 struct Binder {
     bindings: Vec<Binding>,
     feasibility: Feasibility,
+    subqueries: Vec<Subquery>,
+    /// The index of the clause being bound (a subquery's variables are
+    /// introduced by the clause of its expression).
+    clause: usize,
 }
 
 /// Name resolution for one expression: the scope, then the binder's local
@@ -137,6 +156,16 @@ impl NameEnv for Env<'_> {
     fn new_local(&mut self, name: &str) -> VarId {
         self.binder
             .new_binding(Some(name), BindingKind::Value, false, BindingSource::Local)
+    }
+    fn subquery(&mut self, sq: RawSubquery<'_>) -> Result<VarId, BindError> {
+        self.binder.bind_subquery(sq, self.scopes)
+    }
+    fn correlation(&self, var: VarId) -> Option<Vec<VarId>> {
+        self.binder
+            .subqueries
+            .iter()
+            .find(|s| s.var == var)
+            .map(|s| s.correlation.clone())
     }
 }
 
@@ -179,6 +208,7 @@ impl Binder {
         let mut scope = Scope::default();
         let mut op = BoundOp::Unit;
         for (idx, clause) in q.clauses.iter().enumerate() {
+            self.clause = idx;
             match clause {
                 Clause::Match(m) => {
                     let parts: Vec<(Option<&str>, &PathPattern<'_>)> =
@@ -239,11 +269,17 @@ impl Binder {
                         limit: w.limit.as_ref().map(|l| l.limit_item),
                         filter: w.where_clause.as_ref().map(|wc| &wc.conditions),
                     };
-                    let (projection, out_scope) = self.bind_projection(&raw, &scope, idx)?;
+                    let (projection, out_scope, after) = self.bind_projection(&raw, &scope, idx)?;
                     op = BoundOp::Project {
                         input: Box::new(op),
                         projection,
                     };
+                    if let Some(predicate) = after {
+                        op = BoundOp::Filter {
+                            input: Box::new(op),
+                            predicate,
+                        };
+                    }
                     scope = out_scope;
                 }
                 Clause::Return(r) => {
@@ -281,7 +317,7 @@ impl Binder {
                         limit: r.limit.as_ref().map(|l| l.limit_item),
                         filter: None,
                     };
-                    let (projection, out_scope) = self.bind_projection(&raw, &scope, idx)?;
+                    let (projection, out_scope, _) = self.bind_projection(&raw, &scope, idx)?;
                     let columns = projection
                         .items
                         .iter()
@@ -482,7 +518,7 @@ impl Binder {
         raw: &RawProjection<'_, '_>,
         input: &Scope,
         clause: usize,
-    ) -> Result<(Projection, Scope), BindError> {
+    ) -> Result<(Projection, Scope, Option<LogicalExpr>), BindError> {
         let what = match raw.kind {
             ProjectionKind::With => "WITH",
             ProjectionKind::Return => "RETURN",
@@ -624,7 +660,27 @@ impl Binder {
                              is_order_by: bool|
          -> Result<LogicalExpr, BindError> {
             let mut bound = me.expr(e, &[&out, input])?;
-            if is_order_by {
+            // A subquery reads the record it is evaluated for: with DISTINCT
+            // or aggregation, that is the projected one only (an input
+            // variable rewritten to an item would leave the subquery reading
+            // the variable). The rewrite below would bind it twice.
+            let subqueries = subquery_vars(&bound);
+            if restricted
+                && subqueries.iter().any(|s| {
+                    me.subqueries
+                        .iter()
+                        .filter(|sq| sq.var == *s)
+                        .flat_map(|sq| &sq.correlation)
+                        .any(|v| !item_vars.contains(&v.name()))
+                })
+            {
+                return Err(BindError::Unsupported(
+                    "a subquery expression reading an input variable in the ORDER BY / WHERE \
+                     of a DISTINCT or aggregating WITH / RETURN"
+                        .to_string(),
+                ));
+            }
+            if is_order_by && subqueries.is_empty() {
                 // Neo4j resolves an ORDER BY expression that equals a
                 // projected expression to that item before resolving names:
                 // `RETURN a.age AS a ORDER BY a.age` sorts by the item. Taken
@@ -680,10 +736,24 @@ impl Binder {
                 })
             })
             .collect::<Result<Vec<_>, BindError>>()?;
-        let filter = raw
+        let mut filter = raw
             .filter
             .map(|f| bind_modifier(self, f, false))
             .transpose()?;
+        // A WHERE that reads a subquery and only projected names: the rows
+        // the projection (and its SKIP / LIMIT) kept, filtered after it, where
+        // the subquery reads the projected record.
+        let after = match &filter {
+            Some(f)
+                if !subquery_vars(f).is_empty()
+                    && referenced_names(f, false)
+                        .iter()
+                        .all(|n| item_vars.contains(n) || self.is_local(n)) =>
+            {
+                filter.take()
+            }
+            _ => None,
+        };
         Ok((
             Projection {
                 kind: raw.kind,
@@ -695,7 +765,115 @@ impl Binder {
                 filter,
             },
             out,
+            after,
         ))
+    }
+
+    // ------------------------------------------------------------ subqueries
+
+    /// A subquery expression (§4.12): its pattern and WHERE bound as a MATCH
+    /// over the scope `scopes` (searched in order), whose variables it reads
+    /// as bound before. Returns the binding of its value.
+    fn bind_subquery(
+        &mut self,
+        sq: RawSubquery<'_>,
+        scopes: &[&Scope],
+    ) -> Result<VarId, BindError> {
+        // One scope: a name resolves where the first scope has it.
+        let mut scope = Scope::default();
+        for s in scopes.iter().rev() {
+            for (n, v) in s.entries() {
+                scope.insert(n, *v);
+            }
+        }
+        let outer: BTreeSet<VarId> = scope.entries().iter().map(|(_, v)| *v).collect();
+        let parts = [(None, &sq.pattern)];
+        let (plan, inner) = self.bind_match(
+            BoundOp::Unit,
+            scope,
+            &parts,
+            sq.where_.as_ref(),
+            false,
+            self.clause,
+        )?;
+        let BoundOp::Match {
+            pattern,
+            predicate,
+            introduces,
+            ..
+        } = &plan
+        else {
+            return Err(BindError::Unsupported(
+                "internal: a subquery that is not a MATCH".to_string(),
+            ));
+        };
+        if sq.kind == RawKind::Predicate {
+            if let Some(name) = introduces
+                .iter()
+                .find_map(|v| self.binding(*v).name.clone())
+            {
+                return Err(BindError::Invalid(format!(
+                    "PatternExpressions are not allowed to introduce new variables: '{name}'."
+                )));
+            }
+        }
+        let projection = sq
+            .projection
+            .as_ref()
+            .map(|p| self.expr(p, &[&inner]))
+            .transpose()?;
+        if let Some(p) = &projection {
+            no_aggregate(
+                p,
+                "Can't use aggregating expressions inside of expressions executing over lists",
+            )?;
+        }
+        // The correlation: the scope's variables the subquery reads (the
+        // pattern's, and in its expressions, nested subqueries' included).
+        let mut reads: Vec<VarId> = Vec::new();
+        let mut exprs: Vec<&LogicalExpr> = predicate.iter().chain(&projection).collect();
+        for part in &pattern.parts {
+            for n in &part.nodes {
+                if n.bound_before {
+                    reads.push(n.var);
+                }
+                exprs.extend(n.props.iter().map(|(_, e)| e));
+            }
+            for r in &part.rels {
+                if r.bound_before {
+                    reads.push(r.var);
+                }
+                exprs.extend(r.props.iter().map(|(_, e)| e));
+            }
+        }
+        for e in exprs {
+            reads.extend(
+                referenced_names(e, false)
+                    .iter()
+                    .filter_map(|n| parse_var(n)),
+            );
+        }
+        reads.retain(|v| outer.contains(v));
+        reads.sort();
+        reads.dedup();
+        let kind = match (sq.kind, projection) {
+            (RawKind::Exists | RawKind::Predicate, _) => SubqueryKind::Exists,
+            (RawKind::Count, _) => SubqueryKind::Count,
+            (RawKind::Collect, Some(p)) => SubqueryKind::Collect(p),
+            (RawKind::Collect, None) => {
+                return Err(BindError::Unsupported(
+                    "internal: a pattern comprehension without its projection".to_string(),
+                ))
+            }
+        };
+        let var = self.new_binding(None, BindingKind::Value, false, BindingSource::Subquery);
+        self.subqueries.push(Subquery {
+            var,
+            kind,
+            plan,
+            correlation: reads,
+        });
+        Ok(var)
     }
 
     /// Is `generated` a comprehension / reduce / lambda variable?
@@ -810,6 +988,11 @@ fn bind_props(
     for p in props.into_iter().flatten() {
         match p {
             Property::PropertyKV(kv) => {
+                if has_subquery(&kv.value) {
+                    return Err(BindError::Unsupported(
+                        "a subquery expression in a property map".to_string(),
+                    ));
+                }
                 let value = b.expr(&kv.value, &[scope])?;
                 no_aggregate(&value, AGGREGATE_MISPLACED)?;
                 out.push((kv.key.to_string(), value))

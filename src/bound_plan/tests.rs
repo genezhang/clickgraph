@@ -60,6 +60,7 @@ fn matches(op: &BoundOp) -> Vec<&BoundOp> {
             BoundOp::Unwind { input, .. }
             | BoundOp::Project { input, .. }
             | BoundOp::Sort { input, .. }
+            | BoundOp::Filter { input, .. }
             | BoundOp::Skip { input, .. }
             | BoundOp::Limit { input, .. } => cur = input,
             BoundOp::Union { .. } => break,
@@ -265,11 +266,7 @@ fn unions() {
 
 #[test]
 fn unsupported_constructs_fall_back() {
-    for q in [
-        "MATCH (a:User) WHERE (a)-[:FOLLOWS]->() RETURN a",
-        "MATCH (a:User) RETURN [(a)-[:FOLLOWS]->(f) | f.name] AS fs",
-        "CALL db.labels()",
-    ] {
+    for q in ["CALL db.labels()"] {
         match bind(q) {
             Err(e) if e.is_unsupported() => {}
             other => panic!("{q}: expected Unsupported, got {other:?}"),
@@ -556,4 +553,103 @@ fn a_reused_relationship_brings_its_type_to_inference() {
     let s = ok("MATCH (n) OPTIONAL MATCH (n:Post)-[:FOLLOWS]->(m) RETURN n");
     assert_eq!(labels(&s, "n"), set(&["Post", "User"]));
     assert!(labels(&s, "m").is_empty(), "Posts follow no one");
+}
+
+// ------------------------------------------------------------- S9 subqueries
+
+/// The subqueries of a statement, by kind.
+fn subquery_kinds(s: &BoundStatement) -> Vec<&SubqueryKind> {
+    s.subqueries.iter().map(|q| &q.kind).collect()
+}
+
+#[test]
+fn subquery_expressions_are_matches_over_the_scope() {
+    let s = ok("MATCH (a:User) WHERE EXISTS { (a)-[:FOLLOWS]->(b) WHERE b.age > a.age } RETURN a");
+    assert_eq!(subquery_kinds(&s), vec![&SubqueryKind::Exists]);
+    let a = named(&s, "a")[0].id;
+    let sq = &s.subqueries[0];
+    // `a` is the subquery's correlation, bound before it; `b` is its own.
+    assert_eq!(sq.correlation, vec![a]);
+    let BoundOp::Match {
+        pattern,
+        introduces,
+        ..
+    } = &sq.plan
+    else {
+        panic!("{:?}", sq.plan);
+    };
+    assert!(pattern.parts[0].nodes[0].bound_before);
+    let b = named(&s, "b")[0].id;
+    assert!(introduces.contains(&b));
+    // The WHERE reads the subquery through its placeholder, whose arguments
+    // are its binding and correlation.
+    let BoundOp::Project { input, .. } = &s.plan else {
+        panic!()
+    };
+    let BoundOp::Match {
+        predicate: Some(p), ..
+    } = &**input
+    else {
+        panic!()
+    };
+    let LogicalExpr::ScalarFnCall(f) = p else {
+        panic!("{p:?}")
+    };
+    assert_eq!(f.name, super::expr::SUBQUERY_FN);
+    assert_eq!(f.args[1], LogicalExpr::TableAlias(TableAlias(a.name())));
+    // `size(pattern)`, `exists(pattern)` and pattern comprehensions.
+    let s = ok(
+        "MATCH (a:User) RETURN size((a)-[:FOLLOWS]->()) AS c, exists((a)-->()) AS e, \
+                [(a)-[:FOLLOWS]->(b) | b.name] AS l, size([(a)-->(b) | b]) AS n",
+    );
+    let kinds = subquery_kinds(&s);
+    assert_eq!(kinds[0], &SubqueryKind::Count);
+    assert_eq!(kinds[1], &SubqueryKind::Exists);
+    assert!(matches!(kinds[2], SubqueryKind::Collect(_)));
+    assert_eq!(kinds[3], &SubqueryKind::Count);
+}
+
+#[test]
+fn subquery_scoping_rules() {
+    // Neo4j: a pattern predicate may not introduce a variable; EXISTS may.
+    assert_eq!(
+        bind("MATCH (a:User) WHERE (a)-[:FOLLOWS]->(x) RETURN a"),
+        Err(BindError::Invalid(
+            "PatternExpressions are not allowed to introduce new variables: 'x'.".to_string()
+        ))
+    );
+    ok("MATCH (a:User) WHERE EXISTS { (a)-[:FOLLOWS]->(x) } RETURN a");
+    // A subquery's variables are its own.
+    assert_eq!(
+        bind("MATCH (a:User) WHERE EXISTS { (a)-[:FOLLOWS]->(x) } RETURN x"),
+        Err(BindError::UndefinedVariable("x".to_string()))
+    );
+    // A nested subquery reads the outermost scope: the outer one's
+    // correlation includes what it reads.
+    let s = ok(
+        "MATCH (a:User), (z:User) WHERE EXISTS { (a)-[:FOLLOWS]->(b) WHERE \
+                EXISTS { (b)-[:FOLLOWS]->(c) WHERE c <> z } } RETURN a",
+    );
+    let (a, z) = (named(&s, "a")[0].id, named(&s, "z")[0].id);
+    let outer = s
+        .subqueries
+        .iter()
+        .find(|q| q.correlation.contains(&a))
+        .unwrap();
+    assert_eq!(outer.correlation, vec![a, z]);
+    // A WITH's WHERE reading a subquery and only projected names: a filter
+    // after the projection.
+    let s = ok("MATCH (a:User) WITH a LIMIT 2 WHERE EXISTS { (a)-[:FOLLOWS]->() } RETURN a");
+    let BoundOp::Project { input, .. } = &s.plan else {
+        panic!()
+    };
+    assert!(matches!(&**input, BoundOp::Filter { .. }), "{input:?}");
+    // Not bound yet: in a comprehension (it could read the element), in a
+    // property map.
+    assert!(
+        bind("MATCH (a:User) RETURN [x IN [a] WHERE (x)-[:FOLLOWS]->()] AS l")
+            .is_err_and(|e| e.is_unsupported())
+    );
+    assert!(bind("MATCH (a:User {age: size((:User)-->())}) RETURN a")
+        .is_err_and(|e| e.is_unsupported()));
 }
