@@ -4184,7 +4184,30 @@ slice that will handle it.
       of that node (`end_<property>`); undirected or a shortest path: the
       union walk above.
     - An OPTIONAL MATCH reads the node it shares from its table (not the
-      edge's endpoint columns) when the edge is constrained. a
+      edge's endpoint columns) when the edge is constrained, and a drive
+      exports what a constraint reads of it (the clause's `read_props`).
+    - Acceptance: 43 generated shapes on a scratch graph (FOLLOWS / WROTE
+      constrained, KNOWS not, self-loops) equal to Neo4j, whose queries
+      state the constraint explicitly (`all(r IN relationships(p) WHERE
+      …)`); legacy wrong on 19, errors on 16. With the cutover applied, the
+      19 live tests pass (three asserted legacy's SQL text and now check
+      rows or alias-free SQL). Corpus 1442, scorecard and live suite
+      unchanged.
+    - Adversarial review (about 140 shapes on four scratch schemas incl.
+      `OR` / `NOT` / arithmetic / NULL constraints, FK, polymorphic,
+      composite and denormalized layouts): fixed an `OR` constraint the
+      generator spliced unparenthesized into each step (`(c1 AND …) OR c2`
+      escaped the hop limit and uniqueness: 26 rows vs 4, runaway
+      recursion with cycles; legacy too); the OPTIONAL MATCH guard checked
+      only the first relationship at the shared node (now: whatever any
+      constraint reads joins the clause's `read_props`); a walk restricted
+      only at its `to` end, forced forward, expanded from every node (9.3
+      s at `*1..5` on 100k nodes; now the union walk, 0.2 s); carried
+      constraint properties named `end_<prop>` met the generator's own
+      `end_id` (now `end_cg_<prop>`). The 138 shapes rerun equal to Neo4j
+      but for `/` (integer division, pre-existing). The text paths' other
+      readings of a constraint (string literals, Cypher-only syntax) are
+      #1402.
   - [x] **S11i: shortestPath over one fixed-length relationship.**
     `shortestPath((a)-[:R]->(b))` is the shortest path of exactly one
     relationship: the binder binds a relationship of a shortest-path

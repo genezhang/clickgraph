@@ -318,9 +318,10 @@ pub(super) fn path_cte(schema: &GraphSchema, call: PathCall<'_>) -> Result<PathC
 }
 
 /// The properties an edge constraint reads of its `from` node (S11h): the
-/// generator carries them of each path's last node (`end_<property>`), where
-/// the next step's constraint reads them. It rewrites `from.<property>` by
-/// text, so a property another referenced one starts with is refused.
+/// generator carries them of each path's last node (`end_<alias>`, the
+/// alias prefixed so it never meets the generator's own `end_id`), where the
+/// next step's constraint reads them. It rewrites `from.<property>` by text,
+/// so a property another referenced one starts with is refused.
 fn constraint_carried(call: &PathCall<'_>) -> Result<Vec<NodeProperty>, LowerError> {
     let Some(text) = &call.edge.constraints else {
         return Ok(Vec::new());
@@ -363,11 +364,12 @@ fn constraint_carried(call: &PathCall<'_>) -> Result<Vec<NodeProperty>, LowerErr
                      `from.{prop}`, which is not a column"
                 ));
             };
-            if !carried.iter().any(|p: &NodeProperty| p.alias == prop) {
+            let alias = format!("cg_{prop}");
+            if !carried.iter().any(|p: &NodeProperty| p.alias == alias) {
                 carried.push(NodeProperty {
                     cypher_alias: "path".to_string(),
                     column_name: column.clone(),
-                    alias: prop.to_string(),
+                    alias,
                 });
             }
         }

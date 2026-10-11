@@ -1359,6 +1359,27 @@ impl<'s> Lowerer<'s> {
                 read_props.extend(n.props.iter().map(|(p, _)| (n.var, p.clone())));
             }
         }
+        // And what its relationships' edge constraints read of their ends
+        // (S11h): such an end is read from its table or exported by the
+        // drive, never from an edge's endpoint columns.
+        let rels: Vec<(VarId, RelDirection, VarId, VarId)> = pattern
+            .parts
+            .iter()
+            .flat_map(|part| {
+                part.rels
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| r.length.is_none() && !r.bound_before)
+                    .map(|(i, r)| (r.var, r.direction, part.nodes[i].var, part.nodes[i + 1].var))
+            })
+            .collect();
+        for e in rel_constraint_exprs(self.schema, self.bindings, &rels) {
+            read_props.extend(
+                property_refs(&e)
+                    .into_iter()
+                    .filter_map(|(n, p)| Some((parse_var(&n)?, p))),
+            );
+        }
         for v in &null_inputs {
             q.scans.insert(*v, Scan::Impossible);
         }
@@ -3215,11 +3236,14 @@ impl<'s> Lowerer<'s> {
             left
         };
         // An edge constraint (S11h): the generator reads its `from` at the
-        // node a step leaves, so it walks the stored direction; read both
-        // ways, or searched for shortest paths, the walk of its definitions
-        // follows only the relationships the constraint keeps
-        // (`Self::constrained_rows`).
-        if edge.constraints.is_some() && (undirected || shortest.is_some()) {
+        // node a step leaves, so it walks the stored direction, from the
+        // stored `from` end. Read both ways, searched for shortest paths, or
+        // restricted only at its `to` end (walked forward, it would expand
+        // from every node: review), the walk of its definitions follows only
+        // the relationships the constraint keeps (`Self::constrained_rows`).
+        if edge.constraints.is_some()
+            && (undirected || shortest.is_some() || self.walk_first(left, right, own) != from_end)
+        {
             return self.build_union_path(
                 r,
                 BTreeSet::from([rel_type]),
@@ -6484,13 +6508,23 @@ fn constraint_reads(stmt: &BoundStatement, schema: &GraphSchema) -> Vec<LogicalE
     for sq in &stmt.subqueries {
         walk(&sq.plan, &mut rels);
     }
-    let binding = |v: VarId| stmt.bindings.iter().find(|b| b.id == v);
+    rel_constraint_exprs(schema, &stmt.bindings, &rels)
+}
+
+/// The edge constraints of each relationship `(r, direction, left, right)`
+/// bound over its ends ([`constraint_reads`]).
+fn rel_constraint_exprs(
+    schema: &GraphSchema,
+    bindings: &[Binding],
+    rels: &[(VarId, RelDirection, VarId, VarId)],
+) -> Vec<LogicalExpr> {
+    let binding = |v: VarId| bindings.iter().find(|b| b.id == v);
     let labels = |v: VarId| match binding(v).map(|b| &b.kind) {
         Some(BindingKind::Node { labels }) => labels.clone(),
         _ => BTreeSet::new(),
     };
     let mut out = Vec::new();
-    for (r, direction, left, right) in rels {
+    for &(r, direction, left, right) in rels {
         let Some(BindingKind::Rel { types, .. }) = binding(r).map(|b| &b.kind) else {
             continue;
         };
