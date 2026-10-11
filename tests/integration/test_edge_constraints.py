@@ -433,9 +433,9 @@ def test_vlp_with_relationship_filters_and_constraints(edge_constraints_data):
     # Verify constraint in recursive case
     # The constraint can use either:
     # - "current_node.created_timestamp" (old format with current_node JOIN)
-    # - "vp.end_timestamp" (new format using CTE columns directly, more efficient)
+    # - "vp.end_cg_timestamp" (the path's last node's carried property)
     recursive_constraint_old = "current_node.created_timestamp <= end_node.created_timestamp"
-    recursive_constraint_new = "vp.end_timestamp <= end_node.created_timestamp"
+    recursive_constraint_new = "vp.end_cg_timestamp <= end_node.created_timestamp"
     assert recursive_constraint_old in sql1 or recursive_constraint_new in sql1, \
            f"Edge constraint missing in VLP recursive case. Expected '{recursive_constraint_old}' or '{recursive_constraint_new}'. SQL:\n{sql1}"
     
