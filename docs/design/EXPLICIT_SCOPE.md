@@ -4219,6 +4219,22 @@ slice that will handle it.
     it applied; 6 generated shapes on `social_integration` equal to Neo4j
     (one more, `nodes(p)` of an impossible path, fails on both pipelines
     as with `*1..1`).
+  - [x] **S11k: FINAL on a joined table.** A table read with FINAL
+    (`use_final`, or a ReplacingMergeTree-family engine the server
+    detects) that is not the FROM table is joined as the relation of its
+    merged rows (`FunctionMapper::final_relation`, ClickHouse:
+    `(SELECT * FROM t FINAL)`; a dialect without FINAL reads the table),
+    also where `rows_holding` joins the FROM table. It was refused, and
+    the legacy pipeline read joined tables without FINAL (stale row
+    versions). Found by the cutover's review: on such engines every
+    traversal would have been an error.
+    - Acceptance: a differential of 20 shapes (hops each way and
+      undirected, two hops, walks, shortestPath, OPTIONAL MATCH, pattern
+      predicates and comprehensions, carried nodes, aggregation, UNION)
+      over ReplacingMergeTree tables holding several versions of 15
+      people and 40 relationships, with `use_final`, against the same
+      graph's latest versions in plain MergeTree tables: equal rows
+      (a comprehension's list in another element order).
   - **User decisions (2026-10-11)** on what S11 does not lower: a
     relationship without `edge_id` keeps its ends as its identity (#1356;
     define `edge_id` to tell parallel rows apart); an undeclared property

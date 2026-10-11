@@ -242,6 +242,14 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// Both spellings preserve element-wise ordering and equality.
     fn tuple_constructor(&self) -> &'static str;
 
+    /// A table read with `FINAL` (`use_final`) where it is joined, not the
+    /// FROM table (whose `FINAL` the SQL printer writes): a relation of its
+    /// merged rows. CH: `(SELECT * FROM t FINAL)`. A dialect without `FINAL`
+    /// reads the table as it is.
+    fn final_relation(&self, table: &str) -> String {
+        table.to_string()
+    }
+
     /// Quote a column alias / aliased identifier. Used for both `AS`
     /// clauses and references to those aliases elsewhere in the query
     /// (e.g., GROUP BY, aggregate args after an inner-query rewrite).

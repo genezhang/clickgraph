@@ -4361,9 +4361,15 @@ impl<'s> Lowerer<'s> {
         }
         let at = self.scans.get(&v)?.at()?;
         let from = self.from.as_ref()?;
+        // The FROM table may be joined below: its FINAL then a relation of
+        // its own (S11k).
+        let from_name = match from.use_final {
+            true => current_function_mapper().final_relation(&from.name),
+            false => from.name.clone(),
+        };
         let mut relations: Vec<(String, String, Vec<OperatorApplication>, JoinType)> = vec![(
             from.alias.clone().unwrap_or_default(),
-            from.name.clone(),
+            from_name,
             Vec::new(),
             JoinType::Join,
         )];
@@ -5130,10 +5136,12 @@ impl<'s> Lowerer<'s> {
                 use_final,
             });
         } else {
-            if use_final {
-                // `Join` prints no FINAL (S8 with the other table options).
-                return unsupported("FINAL on a joined table");
-            }
+            // `Join` prints no FINAL: a joined table's merged rows are a
+            // relation of their own (S11k).
+            let name = match use_final {
+                true => current_function_mapper().final_relation(&name),
+                false => name,
+            };
             self.joins.push(join(name, &alias));
         }
         self.emitted.push(alias);

@@ -148,6 +148,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         "tuple"
     }
 
+    fn final_relation(&self, table: &str) -> String {
+        format!("(SELECT * FROM {table} FINAL)")
+    }
+
     fn quote_alias(&self, name: &str) -> String {
         // CH escapes `"` inside a double-quoted identifier by doubling it.
         // Aliases inferred from raw return text can contain quotes
