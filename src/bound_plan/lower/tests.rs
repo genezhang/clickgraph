@@ -807,10 +807,7 @@ fn table_options_come_from_the_schema() {
         .unwrap()
         .sql,
     );
-    assert!(
-        got.contains("JOIN (SELECT * FROM db.b FINAL) AS v2 ON"),
-        "{got}"
-    );
+    assert!(got.contains("JOIN db.b AS v2 FINAL ON"), "{got}");
 }
 
 #[test]
@@ -3992,8 +3989,10 @@ graph_schema:
         .map(|t| t.sql)
         .unwrap_or_else(|e| e),
     );
-    let part = "JOIN (SELECT * FROM db.a AS e FINAL WHERE ((e.cur = 1))) AS v0 ON \
-                concat('A', ':', toString(v0.id)) = v1.start_id";
+    // `*` reads ALIAS / MATERIALIZED columns too (S11k review).
+    let part = "JOIN (SELECT * FROM db.a AS e FINAL WHERE ((e.cur = 1)) SETTINGS \
+                asterisk_include_alias_columns = 1, asterisk_include_materialized_columns = 1) \
+                AS v0 ON concat('A', ':', toString(v0.id)) = v1.start_id";
     assert!(got.contains(part), "missing `{part}` in\n{got}");
 }
 

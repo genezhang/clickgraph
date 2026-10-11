@@ -1705,6 +1705,7 @@ pub(crate) fn generate_swapped_joins_for_optional_match(
         to_id_column: Some(rel_col_to_new.clone()),
         graph_rel: None,
         is_cartesian: false,
+        use_final: false,
     });
 
     // JOIN 2: New node (left_connection) connecting to relationship
@@ -1732,6 +1733,7 @@ pub(crate) fn generate_swapped_joins_for_optional_match(
         to_id_column: None,
         graph_rel: None,
         is_cartesian: false,
+        use_final: false,
     });
 
     Ok(joins)

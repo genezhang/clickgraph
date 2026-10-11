@@ -4221,13 +4221,18 @@ slice that will handle it.
     as with `*1..1`).
   - [x] **S11k: FINAL on a joined table.** A table read with FINAL
     (`use_final`, or a ReplacingMergeTree-family engine the server
-    detects) that is not the FROM table is joined as the relation of its
-    merged rows (`FunctionMapper::final_relation`, ClickHouse:
-    `(SELECT * FROM t FINAL)`; a dialect without FINAL reads the table),
-    also where `rows_holding` joins the FROM table. It was refused, and
-    the legacy pipeline read joined tables without FINAL (stale row
-    versions). Found by the cutover's review: on such engines every
-    traversal would have been an error.
+    detects) that is not the FROM table is joined with it: `JOIN t AS a
+    FINAL` (`Join::use_final`, printed where the dialect has FINAL). Each
+    relation keeps its FINAL where `path_first` / `rows_holding` reorder
+    the joins (`path_first` no longer keeps a FINAL FROM first). It was
+    refused, and the legacy pipeline read joined tables without FINAL
+    (stale row versions). Found by the cutover's review: on such engines
+    every traversal would have been an error. Review: a first cut joined
+    `(SELECT * FROM t FINAL)`, which drops ALIAS / MATERIALIZED columns
+    (`*` leaves them out: Code 47 with auto-discovered schemas); the node
+    relations of walks and searches, still subqueries, now read them
+    (`FunctionMapper::all_columns_settings`) and take FINAL from the
+    dialect (`final_modifier`).
     - Acceptance: a differential of 20 shapes (hops each way and
       undirected, two hops, walks, shortestPath, OPTIONAL MATCH, pattern
       predicates and comprehensions, carried nodes, aggregation, UNION)

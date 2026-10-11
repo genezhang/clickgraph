@@ -4278,8 +4278,14 @@ impl<'s> Lowerer<'s> {
             },
             None => String::new(),
         };
-        let fin = if use_final { " FINAL" } else { "" };
-        Ok(format!("(SELECT * FROM {table} AS {ROW}{fin}{filter})"))
+        // Through the dialect: its FINAL, and `*` reading every column a
+        // property can map to (ALIAS / MATERIALIZED ones: S11k review).
+        let m = current_function_mapper();
+        let fin = if use_final { m.final_modifier() } else { "" };
+        let settings = m.all_columns_settings();
+        Ok(format!(
+            "(SELECT * FROM {table} AS {ROW}{fin}{filter}{settings})"
+        ))
     }
 
     /// A `shortestPath` / `allShortestPaths` pattern as Neo4j takes it: one
@@ -4361,17 +4367,15 @@ impl<'s> Lowerer<'s> {
         }
         let at = self.scans.get(&v)?.at()?;
         let from = self.from.as_ref()?;
-        // The FROM table may be joined below: its FINAL then a relation of
-        // its own (S11k).
-        let from_name = match from.use_final {
-            true => current_function_mapper().final_relation(&from.name),
-            false => from.name.clone(),
-        };
-        let mut relations: Vec<(String, String, Vec<OperatorApplication>, JoinType)> = vec![(
+        // Each relation with its FINAL (S11k), which it keeps wherever it
+        // is placed below.
+        type Relation = (String, String, Vec<OperatorApplication>, JoinType, bool);
+        let mut relations: Vec<Relation> = vec![(
             from.alias.clone().unwrap_or_default(),
-            from_name,
+            from.name.clone(),
             Vec::new(),
             JoinType::Join,
+            from.use_final,
         )];
         for j in &self.joins {
             relations.push((
@@ -4379,12 +4383,13 @@ impl<'s> Lowerer<'s> {
                 j.table_name.clone(),
                 j.joining_on.clone(),
                 j.join_type.clone(),
+                j.use_final,
             ));
         }
         // Ties: ON conjuncts, and conjuncts placed in WHERE.
         let mut links: Vec<Vec<String>> = relations
             .iter()
-            .flat_map(|(_, _, on, _)| on)
+            .flat_map(|(_, _, on, ..)| on)
             .map(|c| table_aliases(&RenderExpr::OperatorApplicationExp(c.clone())))
             .collect();
         links.extend(self.filters.iter().flat_map(conjuncts).map(table_aliases));
@@ -4407,7 +4412,7 @@ impl<'s> Lowerer<'s> {
         }
         let mut rows = empty_plan();
         let mut where_ = Vec::new();
-        for (i, (alias, table, on, kind)) in relations
+        for (i, (alias, table, on, kind, use_final)) in relations
             .into_iter()
             .filter(|(a, ..)| held.contains(a))
             .enumerate()
@@ -4416,13 +4421,17 @@ impl<'s> Lowerer<'s> {
                 rows.from = FromTableItem(Some(if from.alias.as_deref() == Some(&alias) {
                     from.clone()
                 } else {
-                    table_ref(table, &alias)
+                    ViewTableRef {
+                        use_final,
+                        ..table_ref(table, &alias)
+                    }
                 }));
                 where_.extend(on.into_iter().map(RenderExpr::OperatorApplicationExp));
             } else {
                 let mut j = join(table, &alias);
                 j.joining_on = on;
                 j.join_type = kind;
+                j.use_final = use_final;
                 rows.joins.0.push(j);
             }
         }
@@ -5136,13 +5145,10 @@ impl<'s> Lowerer<'s> {
                 use_final,
             });
         } else {
-            // `Join` prints no FINAL: a joined table's merged rows are a
-            // relation of their own (S11k).
-            let name = match use_final {
-                true => current_function_mapper().final_relation(&name),
-                false => name,
-            };
-            self.joins.push(join(name, &alias));
+            // A joined table read with FINAL (S11k): `JOIN t AS a FINAL`.
+            let mut j = join(name, &alias);
+            j.use_final = use_final;
+            self.joins.push(j);
         }
         self.emitted.push(alias);
         // Ties that this scan completes go in its ON.
@@ -6081,12 +6087,10 @@ impl<'s> Lowerer<'s> {
     /// others follow in their order, each after a relation it is tied to,
     /// and every ON conjunct moves to the ON of the later of its relations
     /// (the tie rule of [`Self::place`]). Only a join of inner joins is
-    /// reordered (an equality of inner joins holds in any order); a FROM
-    /// read with FINAL stays first (a join prints no FINAL).
+    /// reordered (an equality of inner joins holds in any order); each
+    /// relation keeps its FINAL wherever it is placed (S11k).
     fn path_first(&mut self) {
-        if self.joins.iter().any(|j| j.join_type != JoinType::Join)
-            || self.from.as_ref().is_none_or(|f| f.use_final)
-        {
+        if self.joins.iter().any(|j| j.join_type != JoinType::Join) || self.from.is_none() {
             return;
         }
         // A conjunct whose columns are not all visible (SQL text: a composite
@@ -6110,10 +6114,13 @@ impl<'s> Lowerer<'s> {
         // (alias, table) of each relation, in join order, and every ON
         // conjunct with the relation it was placed at.
         let from = self.from.take().expect("checked");
-        let mut relations = vec![(from.alias.clone().unwrap_or_default(), from.name.clone())];
+        let mut relations = vec![(
+            from.alias.clone().unwrap_or_default(),
+            (from.name.clone(), from.use_final),
+        )];
         let mut conjuncts: Vec<(String, OperatorApplication)> = Vec::new();
         for j in std::mem::take(&mut self.joins) {
-            relations.push((j.table_alias.clone(), j.table_name.clone()));
+            relations.push((j.table_alias.clone(), (j.table_name.clone(), j.use_final)));
             for c in j.joining_on {
                 conjuncts.push((j.table_alias.clone(), c));
             }
@@ -6149,7 +6156,16 @@ impl<'s> Lowerer<'s> {
                 .map(|(_, t)| t.clone())
                 .expect("a relation")
         };
-        let mut joins: Vec<Join> = order[1..].iter().map(|a| join(table(a), a)).collect();
+        let mut joins: Vec<Join> = order[1..]
+            .iter()
+            .map(|a| {
+                let (name, use_final) = table(a);
+                Join {
+                    use_final,
+                    ..join(name, a)
+                }
+            })
+            .collect();
         for (placed, c) in conjuncts {
             let at = reads(&c)
                 .iter()
@@ -6162,7 +6178,11 @@ impl<'s> Lowerer<'s> {
                 joins[at - 1].joining_on.push(c);
             }
         }
-        self.from = Some(table_ref(table(&order[0]), &order[0]));
+        let (name, use_final) = table(&order[0]);
+        self.from = Some(ViewTableRef {
+            use_final,
+            ..table_ref(name, &order[0])
+        });
         self.joins = joins;
         self.emitted = order;
     }
@@ -6283,6 +6303,7 @@ fn join(table_name: String, alias: &str) -> Join {
         to_id_column: None,
         graph_rel: None,
         is_cartesian: false,
+        use_final: false,
     }
 }
 

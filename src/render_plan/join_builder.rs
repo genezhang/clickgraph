@@ -276,6 +276,7 @@ pub(crate) fn inject_own_table_joins(
             to_id_column: None,
             graph_rel: None,
             is_cartesian: false,
+            use_final: false,
         });
         bound_aliases.insert(node_alias.clone());
         added.push((node_alias.clone(), request.node_label.clone()));
@@ -978,6 +979,7 @@ impl JoinBuilder for LogicalPlan {
                                     to_id_column: Some("to_node_id".to_string()),
                                     graph_rel: None,
                                     is_cartesian: false,
+                                    use_final: false,
                                 };
 
                                 return Ok(vec![join]);
@@ -1161,6 +1163,7 @@ impl JoinBuilder for LogicalPlan {
                             to_id_column: None,
                             graph_rel: None,
                             is_cartesian: false,
+                            use_final: false,
                         });
                     }
                 }
@@ -1274,6 +1277,7 @@ impl JoinBuilder for LogicalPlan {
                                     to_id_column: None,
                                     graph_rel: None,
                                     is_cartesian: false,
+                                    use_final: false,
                                 };
                                 joins.push(join);
 
@@ -1638,6 +1642,7 @@ impl JoinBuilder for LogicalPlan {
                             // #601: carry the cartesian marker onto the rendered
                             // `ON 1=1` cross join so remove_unreferenced_joins keeps it.
                             is_cartesian: logical_join.is_cartesian,
+                            use_final: false,
                         };
                         joins.push(cross_join);
                         continue;
@@ -2145,6 +2150,7 @@ impl JoinBuilder for LogicalPlan {
                                 to_id_column: None,
                                 graph_rel: None,
                                 is_cartesian: false,
+                                use_final: false,
                             });
                         }
                     }
@@ -2477,6 +2483,7 @@ impl JoinBuilder for LogicalPlan {
                                 to_id_column: None,
                                 graph_rel: Some(Arc::new(graph_rel.clone())),
                                 is_cartesian: false,
+                                use_final: false,
                             };
 
                             crate::debug_println!(
@@ -2602,6 +2609,7 @@ impl JoinBuilder for LogicalPlan {
                             to_id_column: Some(rel_cols.to_id.to_string()),
                             graph_rel: None,
                             is_cartesian: false,
+                            use_final: false,
                         });
                     }
                     // For single-hop denormalized, no JOINs needed - relationship table IS the data
@@ -2809,6 +2817,7 @@ impl JoinBuilder for LogicalPlan {
                                 to_id_column: Some(inner_rel_cols.to_id.to_string()),
                                 graph_rel: None,
                                 is_cartesian: false,
+                                use_final: false,
                             });
 
                             // JOIN 2: Non-shared node connecting to relationship
@@ -2873,6 +2882,7 @@ impl JoinBuilder for LogicalPlan {
                                             to_id_column: None,
                                             graph_rel: None,
                                             is_cartesian: false,
+                                            use_final: false,
                                         });
                                     }
                                 } else {
@@ -2924,6 +2934,7 @@ impl JoinBuilder for LogicalPlan {
                                             to_id_column: None,
                                             graph_rel: None,
                                             is_cartesian: false,
+                                            use_final: false,
                                         });
                                     }
                                 }
@@ -2969,6 +2980,7 @@ impl JoinBuilder for LogicalPlan {
                                     to_id_column: None,
                                     graph_rel: None,
                                     is_cartesian: false,
+                                    use_final: false,
                                 });
                             }
 
@@ -3091,6 +3103,7 @@ impl JoinBuilder for LogicalPlan {
                                 to_id_column: Some(inner_rel_cols.to_id.to_string()),
                                 graph_rel: None,
                                 is_cartesian: false,
+                                use_final: false,
                             });
 
                             // JOIN 2: Non-shared node (right) connecting to relationship
@@ -3154,6 +3167,7 @@ impl JoinBuilder for LogicalPlan {
                                             to_id_column: None,
                                             graph_rel: None,
                                             is_cartesian: false,
+                                            use_final: false,
                                         });
                                     }
                                 } else {
@@ -3203,6 +3217,7 @@ impl JoinBuilder for LogicalPlan {
                                             to_id_column: None,
                                             graph_rel: None,
                                             is_cartesian: false,
+                                            use_final: false,
                                         });
                                     }
                                 }
@@ -3249,6 +3264,7 @@ impl JoinBuilder for LogicalPlan {
                                     to_id_column: None,
                                     graph_rel: None,
                                     is_cartesian: false,
+                                    use_final: false,
                                 });
                             }
 
@@ -3404,6 +3420,7 @@ impl JoinBuilder for LogicalPlan {
                         to_id_column: Some(rel_col_end.to_string()),
                         graph_rel: None,
                         is_cartesian: false,
+                        use_final: false,
                     });
 
                     // JOIN 2: CTE (right node) -> Relationship table
@@ -3467,6 +3484,7 @@ impl JoinBuilder for LogicalPlan {
                                 to_id_column: None,
                                 graph_rel: None,
                                 is_cartesian: false,
+                                use_final: false,
                             });
                         }
                     }
@@ -4057,6 +4075,7 @@ impl JoinBuilder for LogicalPlan {
                         to_id_column: Some(rel_cols.to_id.to_string()),
                         graph_rel: None,
                         is_cartesian: false,
+                        use_final: false,
                     });
 
                     // JOIN 2: Left node (optional) → relationship table
@@ -4081,6 +4100,7 @@ impl JoinBuilder for LogicalPlan {
                         to_id_column: None,
                         graph_rel: None,
                         is_cartesian: false,
+                        use_final: false,
                     });
 
                     log::info!(
@@ -4177,6 +4197,7 @@ impl JoinBuilder for LogicalPlan {
                         to_id_column: Some(rel_cols.to_id.to_string()),
                         graph_rel: None,
                         is_cartesian: false,
+                        use_final: false,
                     });
 
                     // JOIN 2: Left node (raw table) → relationship
@@ -4199,6 +4220,7 @@ impl JoinBuilder for LogicalPlan {
                         to_id_column: None,
                         graph_rel: None,
                         is_cartesian: false,
+                        use_final: false,
                     });
 
                     log::info!(
@@ -4420,6 +4442,7 @@ impl JoinBuilder for LogicalPlan {
                         to_id_column: Some(rel_cols.to_id.to_string()),
                         graph_rel: None,
                         is_cartesian: false,
+                        use_final: false,
                     });
                 }
 
@@ -4523,6 +4546,7 @@ impl JoinBuilder for LogicalPlan {
                                     to_id_column: None,
                                     graph_rel: None,
                                     is_cartesian: false,
+                                    use_final: false,
                                 });
 
                                 log::debug!(
@@ -4705,6 +4729,7 @@ impl JoinBuilder for LogicalPlan {
                         to_id_column: None,
                         graph_rel: None,
                         is_cartesian: false,
+                        use_final: false,
                     });
                 } else {
                     // Denormalized case: end_table == rel_table (same physical table)
@@ -4734,6 +4759,7 @@ impl JoinBuilder for LogicalPlan {
                         to_id_column: None,
                         graph_rel: None,
                         is_cartesian: false,
+                        use_final: false,
                     });
                     log::debug!(
                         "✓ Denormalized relationship: added self-join for end node {} on table '{}'",
@@ -4858,6 +4884,7 @@ impl JoinBuilder for LogicalPlan {
                                         to_id_column: None,
                                         graph_rel: None,
                                         is_cartesian: false,
+                                        use_final: false,
                                     });
                                 }
                             }
@@ -4919,6 +4946,7 @@ impl JoinBuilder for LogicalPlan {
                                 to_id_column: None,
                                 graph_rel: None,
                                 is_cartesian: false,
+                                use_final: false,
                             });
                         }
                     }

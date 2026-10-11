@@ -740,8 +740,8 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
-- 2026-10-11: **P-4c S11k: FINAL on a joined table** (`src/bound_plan/lower/mod.rs` `emit`, `FunctionMapper::final_relation`).
-  - A joined FINAL table is the relation of its merged rows; it was refused (legacy read it without FINAL: stale versions). Equal rows on a 20-shape versioned-vs-deduplicated differential.
+- 2026-10-11: **P-4c S11k: FINAL on a joined table** (#1405, `src/bound_plan/lower/mod.rs` `emit`, `Join::use_final`).
+  - A joined FINAL table is `JOIN t AS a FINAL`; it was refused (legacy read it without FINAL: stale versions). Equal rows on versioned-vs-deduplicated differentials (incl. ALIAS / MATERIALIZED columns, filters, CollapsingMergeTree, server engine detection).
 - 2026-10-11: **P-4c S11h: edge `constraints:`** (#1400, `src/bound_plan/lower/mod.rs` `rel_constraint`, `constrained_rows`, `expr::bind_edge_constraint`).
   - A relationship of a constrained definition exists only where the constraint holds of its two nodes: single hops either way, unions of definitions, walks (the generator's forward, or the union walk) and shortest-path searches. Found by a trial of the ClickHouse cutover (34 live tests the corpus census misses).
 - 2026-10-11: **P-4c S11i: shortestPath over one fixed-length relationship** (#1401, `src/bound_plan/binder.rs` `PatternBuilder::rel`).

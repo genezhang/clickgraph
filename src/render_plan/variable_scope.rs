@@ -1480,6 +1480,7 @@ fn fix_orphan_table_aliases_impl(
                 to_id_column: None,
                 graph_rel: None,
                 is_cartesian: false,
+                use_final: false,
             });
             valid_aliases.insert(from_alias.clone());
             cte_name_to_from_alias.insert(cte_name.clone(), from_alias.clone());
