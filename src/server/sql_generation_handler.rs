@@ -74,24 +74,46 @@ async fn sql_generation_handler_inner(
     // for garbage input).
     let stripped_for_use_check = open_cypher_parser::strip_comments(&payload.query);
     let clean_query = stripped_for_use_check.trim();
-    let schema_name = if clean_query.to_uppercase().starts_with("USE ") {
+    let schema_name: String = if clean_query.to_uppercase().starts_with("USE ") {
         // Quick extraction of schema name from USE clause
         match open_cypher_parser::parse_cypher_statement(clean_query) {
             Ok((_, statement)) => match statement {
                 open_cypher_parser::ast::CypherStatement::Query { query, .. } => {
                     if let Some(ref use_clause) = query.use_clause {
-                        use_clause.database_name
+                        use_clause.database_name.to_string()
                     } else {
-                        payload.schema_name.as_deref().unwrap_or("default")
+                        payload
+                            .schema_name
+                            .as_deref()
+                            .unwrap_or("default")
+                            .to_string()
                     }
                 }
-                _ => payload.schema_name.as_deref().unwrap_or("default"),
+                _ => payload
+                    .schema_name
+                    .as_deref()
+                    .unwrap_or("default")
+                    .to_string(),
             },
-            Err(_) => payload.schema_name.as_deref().unwrap_or("default"),
+            // Text only the clause-list parser reads (P-4c S10b) keeps its USE.
+            Err(_) => crate::translate::clause_list_use_name(clean_query)
+                .flatten()
+                .unwrap_or_else(|| {
+                    payload
+                        .schema_name
+                        .as_deref()
+                        .unwrap_or("default")
+                        .to_string()
+                }),
         }
     } else {
-        payload.schema_name.as_deref().unwrap_or("default")
+        payload
+            .schema_name
+            .as_deref()
+            .unwrap_or("default")
+            .to_string()
     };
+    let schema_name = schema_name.as_str();
 
     // Check query cache first
     // Scoped to this endpoint, and to the view parameters the SQL is planned
@@ -195,36 +217,44 @@ async fn sql_generation_handler_inner(
 
     // Phase 1: Parse query (support UNION ALL)
     let parse_start = Instant::now();
-    let cypher_statement = match open_cypher_parser::parse_cypher_statement(clean_query) {
-        Ok((_, stmt)) => stmt,
-        Err(e) => {
-            let _parse_time = parse_start.elapsed().as_secs_f64() * 1000.0;
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(SqlGenerationError {
-                    cypher_query: payload.query.clone(),
-                    error: format!("{}", e),
-                    error_type: "ParseError".to_string(),
-                    error_details: Some(ErrorDetails {
-                        position: None,
-                        line: None,
-                        column: None,
-                        hint: Some(
-                            "Check Cypher syntax. See docs/wiki/Cypher-Language-Reference.md"
-                                .to_string(),
-                        ),
-                    }),
+    let parse_error = |e: String| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(SqlGenerationError {
+                cypher_query: payload.query.clone(),
+                error: e,
+                error_type: "ParseError".to_string(),
+                error_details: Some(ErrorDetails {
+                    position: None,
+                    line: None,
+                    column: None,
+                    hint: Some(
+                        "Check Cypher syntax. See docs/wiki/Cypher-Language-Reference.md"
+                            .to_string(),
+                    ),
                 }),
-            ));
-        }
+            }),
+        )
     };
+    // `None` with the legacy parse error: text only the clause-list parser
+    // reads (P-4c S10b), a read query the bound plan translates from the
+    // text or the error is reported.
+    let (cypher_statement, legacy_parse_error) =
+        match open_cypher_parser::parse_cypher_statement(clean_query) {
+            Ok((_, stmt)) => (Some(stmt), None),
+            Err(e) if crate::translate::clause_list_use_name(clean_query).is_some() => {
+                (None, Some(format!("{}", e)))
+            }
+            Err(e) => return Err(parse_error(format!("{}", e))),
+        };
     let parse_time = parse_start.elapsed().as_secs_f64() * 1000.0;
 
     // Extract the first query for query_type detection
     // For UNION queries, all branches should have the same type
     let first_query = match &cypher_statement {
-        open_cypher_parser::ast::CypherStatement::Query { query, .. } => query,
-        open_cypher_parser::ast::CypherStatement::ProcedureCall(_) => {
+        None => None,
+        Some(open_cypher_parser::ast::CypherStatement::Query { query, .. }) => Some(query),
+        Some(open_cypher_parser::ast::CypherStatement::ProcedureCall(_)) => {
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(SqlGenerationError {
@@ -235,7 +265,7 @@ async fn sql_generation_handler_inner(
                 }),
             ));
         }
-        open_cypher_parser::ast::CypherStatement::CopyTo(_) => {
+        Some(open_cypher_parser::ast::CypherStatement::CopyTo(_)) => {
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(SqlGenerationError {
@@ -249,7 +279,7 @@ async fn sql_generation_handler_inner(
         }
     };
 
-    let query_type = query_planner::get_query_type(first_query);
+    let query_type = first_query.map_or(QueryType::Read, |q| query_planner::get_query_type(q));
     let query_type_str = match query_type {
         QueryType::Read => "read",
         QueryType::Ddl => "ddl",
@@ -272,6 +302,11 @@ async fn sql_generation_handler_inner(
         // Handle CALL queries (like PageRank)
         // Note: CALL with UNION doesn't make sense, so we use the first query
         let planning_start = Instant::now();
+        let Some(first_query) = first_query else {
+            return Err(parse_error(
+                "CALL queries need the legacy parser".to_string(),
+            ));
+        };
         let logical_plan =
             match query_planner::evaluate_call_query((**first_query).clone(), &graph_schema) {
                 Ok(plan) => plan,
@@ -360,23 +395,33 @@ async fn sql_generation_handler_inner(
         let mut id_mapper = IdMapper::new();
         id_mapper.set_scope(Some(schema_name.to_string()), None);
         let ast_arena = ast_transform::StringArena::new();
-        let (cypher_statement, _label_constraints) = ast_transform::transform_id_functions(
-            &ast_arena,
-            cypher_statement,
-            &id_mapper,
-            Some(&graph_schema),
-        );
-
-        let translation = match crate::translate::translate_read(
-            cypher_statement,
-            &graph_schema,
-            crate::translate::ReadOptions {
-                view_parameter_values,
-                max_cte_depth: app_state.config.max_cte_depth,
-                cypher: Some(clean_query.to_string()),
-                ..Default::default()
+        let read_options = crate::translate::ReadOptions {
+            view_parameter_values,
+            max_cte_depth: app_state.config.max_cte_depth,
+            cypher: Some(clean_query.to_string()),
+            ..Default::default()
+        };
+        let translated = match cypher_statement {
+            Some(statement) => {
+                let (statement, _label_constraints) = ast_transform::transform_id_functions(
+                    &ast_arena,
+                    statement,
+                    &id_mapper,
+                    Some(&graph_schema),
+                );
+                crate::translate::translate_read(statement, &graph_schema, read_options)
+            }
+            None => match crate::translate::translate_text_read(
+                clean_query,
+                &graph_schema,
+                read_options,
+            ) {
+                Ok(Some(t)) => Ok(t),
+                Ok(None) => return Err(parse_error(legacy_parse_error.unwrap_or_default())),
+                Err(e) => Err(e),
             },
-        ) {
+        };
+        let translation = match translated {
             Ok(t) => t,
             Err(e) => {
                 // A query Neo4j also rejects is the client's error (400), as

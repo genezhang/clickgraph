@@ -128,6 +128,10 @@ const QUERIES: &[&str] = &[
      MATCH (c)-[:FOLLOWS]->(d:User) RETURN c.name, d.name, k",
     "MATCH (u:User) OPTIONAL MATCH (u)-[:FOLLOWS]->(f:User) WHERE f.user_id > 3 RETURN u.name, f.name",
     "MATCH (u:User) WHERE id(u) = 1 RETURN u.name",
+    // Only the clause-list parser reads these (P-4c S10b).
+    "MATCH (u:User) WITH u MATCH (u)-[:FOLLOWS]->(f:User) MATCH (f)-[:FOLLOWS]->(g:User) \
+     RETURN count(*) AS n",
+    "MATCH (u:User) ORDER BY u.name LIMIT 3 RETURN u.name",
 ];
 
 #[tokio::test]

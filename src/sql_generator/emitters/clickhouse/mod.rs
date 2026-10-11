@@ -74,10 +74,7 @@ pub fn cypher_to_sql(
     max_cte_depth: u32,
 ) -> Result<String, String> {
     let cleaned = crate::open_cypher_parser::strip_comments(cypher);
-    let (_remaining, statement) = crate::open_cypher_parser::parse_cypher_statement(&cleaned)
-        .map_err(|e| format!("Parse error: {:?}", e))?;
-
-    translate_for_library(statement, schema, max_cte_depth, Some(&cleaned)).map(|t| t.sql)
+    translate_text_for_library(&cleaned, schema, max_cte_depth).map(|t| t.sql)
 }
 
 /// [`cypher_to_sql`] on the legacy route (`CLICKGRAPH_BOUND_PLAN=off`): the
@@ -159,10 +156,7 @@ pub fn cypher_to_sql_with_metadata(
     String,
 > {
     let cleaned = crate::open_cypher_parser::strip_comments(cypher);
-    let (_remaining, statement) = crate::open_cypher_parser::parse_cypher_statement(&cleaned)
-        .map_err(|e| format!("Parse error: {:?}", e))?;
-
-    let t = translate_for_library(statement, schema, max_cte_depth, Some(&cleaned))?;
+    let t = translate_text_for_library(&cleaned, schema, max_cte_depth)?;
     let metadata = t
         .return_metadata()
         .map_err(|e| format!("Failed to extract return metadata: {}", e))?;
@@ -179,6 +173,47 @@ fn translate_for_library(
     cypher: Option<&str>,
 ) -> Result<crate::translate::ReadTranslation, String> {
     translate_for_library_with(statement, schema, max_cte_depth, cypher, None)
+}
+
+/// Parse `cleaned` and translate it; text only the clause-list parser reads
+/// (P-4c S10b) goes to the bound plan alone, and the legacy parse error is
+/// the answer when that does not translate it.
+fn translate_text_for_library(
+    cleaned: &str,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+    max_cte_depth: u32,
+) -> Result<crate::translate::ReadTranslation, String> {
+    match crate::open_cypher_parser::parse_cypher_statement(cleaned) {
+        Ok((_remaining, statement)) => {
+            translate_for_library(statement, schema, max_cte_depth, Some(cleaned))
+        }
+        Err(e) => {
+            let parse_error = format!("Parse error: {:?}", e);
+            match crate::translate::translate_text_read(
+                cleaned,
+                schema,
+                crate::translate::ReadOptions {
+                    max_cte_depth,
+                    cypher: Some(cleaned.to_string()),
+                    ..Default::default()
+                },
+            ) {
+                Ok(Some(t)) => Ok(t),
+                Ok(None) => Err(parse_error),
+                Err(e) => Err(library_error(e)),
+            }
+        }
+    }
+}
+
+/// The library entry points' error strings.
+fn library_error(e: crate::translate::TranslateError) -> String {
+    match e {
+        crate::translate::TranslateError::Planning(e) => format!("Plan error: {}", e),
+        crate::translate::TranslateError::Render(e) => format!("Render error: {}", e),
+        // The caller reports it as a query error (`EmbeddedError::Query`).
+        crate::translate::TranslateError::Invalid(e) => e,
+    }
 }
 
 /// [`translate_for_library`] on a given route (`None`: the configured one).
@@ -199,10 +234,5 @@ fn translate_for_library_with(
             ..Default::default()
         },
     )
-    .map_err(|e| match e {
-        crate::translate::TranslateError::Planning(e) => format!("Plan error: {}", e),
-        crate::translate::TranslateError::Render(e) => format!("Render error: {}", e),
-        // The caller reports it as a query error (`EmbeddedError::Query`).
-        crate::translate::TranslateError::Invalid(e) => e,
-    })
+    .map_err(library_error)
 }

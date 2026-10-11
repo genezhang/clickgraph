@@ -875,6 +875,21 @@ RETURN u.name ORDER BY u.user_id SKIP 0 LIMIT 10   -- Page 1
 RETURN u.name ORDER BY u.user_id SKIP 10 LIMIT 10  -- Page 2
 ```
 
+### Standalone ORDER BY, SKIP, LIMIT
+
+`ORDER BY`, `SKIP` and `LIMIT` may also stand alone between clauses (Cypher 25 / GQL style). They sort or cut the rows so far, and the clauses after them see the result:
+
+```cypher
+-- The 3 first users by name, then their follows
+MATCH (u:User) ORDER BY u.name LIMIT 3
+MATCH (u)-[:FOLLOWS]->(f:User)
+RETURN u.name, f.name
+```
+
+A `WITH` may likewise be followed by any sequence of `MATCH`, `OPTIONAL MATCH` and `UNWIND` clauses, for example `WITH a MATCH (a)-->(b) MATCH (b)-->(c)` or `WITH a UNWIND l1 AS x UNWIND l2 AS y`.
+
+These forms run on the default query path (`CLICKGRAPH_BOUND_PLAN`, on unless set to `off`). With it off, they are parse errors.
+
 ---
 
 ## UNWIND Clause

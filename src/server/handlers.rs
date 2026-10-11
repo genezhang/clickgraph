@@ -1059,16 +1059,23 @@ pub async fn query_handler(
             }
         }
         Err(e) => {
-            // ❌ PARSE ERROR: Return immediately with clear error message
-            // Don't proceed to schema lookup (which would give misleading "Schema not found")
-            log::error!("Query parse failed during schema extraction: {}", e);
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "Query syntax error: {}. Check Cypher syntax before proceeding.",
-                    e
-                ),
-            ));
+            // Text only the clause-list parser reads (P-4c S10b) is a read
+            // query for the bound plan, which reports whether it translates.
+            if let Some(use_name) = crate::translate::clause_list_use_name(&clean_query) {
+                use_name
+                    .unwrap_or_else(|| schema_name_param.unwrap_or_else(|| "default".to_string()))
+            } else {
+                // ❌ PARSE ERROR: Return immediately with clear error message
+                // Don't proceed to schema lookup (which would give misleading "Schema not found")
+                log::error!("Query parse failed during schema extraction: {}", e);
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "Query syntax error: {}. Check Cypher syntax before proceeding.",
+                        e
+                    ),
+                ));
+            }
         }
     };
 
@@ -1306,15 +1313,22 @@ async fn query_handler_inner(
         // Phase 1: Parse query with UNION support
         // IMPORTANT: Parse the CLEAN query without CYPHER prefix
         let parse_start = Instant::now();
-        let parsed_stmt = match open_cypher_parser::parse_cypher_statement(&clean_query) {
-            Ok((_remaining, stmt)) => stmt,
-            Err(e) => {
-                metrics.parse_time = parse_start.elapsed().as_secs_f64();
-                log::error!("Query parse failed: {:?}", e);
-                // Return 400 for parse errors (both sql_only and normal mode)
-                return Err((StatusCode::BAD_REQUEST, format!("Parse error: {}", e)));
-            }
-        };
+        // `None` with the legacy parse error: text only the clause-list
+        // parser reads (P-4c S10b), a read query the bound plan translates
+        // from the text or the error is reported.
+        let (parsed_stmt, legacy_parse_error) =
+            match open_cypher_parser::parse_cypher_statement(&clean_query) {
+                Ok((_remaining, stmt)) => (Some(stmt), None),
+                Err(e) if crate::translate::clause_list_use_name(&clean_query).is_some() => {
+                    (None, Some(format!("Parse error: {}", e)))
+                }
+                Err(e) => {
+                    metrics.parse_time = parse_start.elapsed().as_secs_f64();
+                    log::error!("Query parse failed: {:?}", e);
+                    // Return 400 for parse errors (both sql_only and normal mode)
+                    return Err((StatusCode::BAD_REQUEST, format!("Parse error: {}", e)));
+                }
+            };
 
         // Phase 1.5: Transform id() functions (same as Bolt protocol does)
         // This converts id(alias) = N to proper property comparisons
@@ -1325,16 +1339,21 @@ async fn query_handler_inner(
         let mut id_mapper = IdMapper::new();
         id_mapper.set_scope(Some(schema_name.clone()), None); // HTTP has no tenant_id
         let ast_arena = ast_transform::StringArena::new();
-        let (cypher_statement, _label_constraints) = ast_transform::transform_id_functions(
-            &ast_arena,
-            parsed_stmt,
-            &id_mapper,
-            Some(&graph_schema),
-        );
+        let cypher_statement = parsed_stmt.map(|parsed_stmt| {
+            ast_transform::transform_id_functions(
+                &ast_arena,
+                parsed_stmt,
+                &id_mapper,
+                Some(&graph_schema),
+            )
+            .0
+        });
 
         metrics.parse_time = parse_start.elapsed().as_secs_f64();
 
-        let query_type = query_planner::get_statement_query_type(&cypher_statement);
+        let query_type = cypher_statement
+            .as_ref()
+            .map_or(QueryType::Read, query_planner::get_statement_query_type);
         let query_type_str = match query_type {
             QueryType::Read => "read",
             QueryType::Ddl => "ddl",
@@ -1351,14 +1370,20 @@ async fn query_handler_inner(
         if is_call {
             // Handle CALL queries (like PageRank) - use first query's AST
             let query_ast = match &cypher_statement {
-                CypherStatement::Query { query, .. } => query,
-                CypherStatement::ProcedureCall(_) => {
+                Some(CypherStatement::Query { query, .. }) => query,
+                None => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        "CALL queries need the legacy parser".to_string(),
+                    ));
+                }
+                Some(CypherStatement::ProcedureCall(_)) => {
                     return Err((
                         StatusCode::BAD_REQUEST,
                         "Standalone procedure calls should not reach this path".to_string(),
                     ));
                 }
-                CypherStatement::CopyTo(_) => {
+                Some(CypherStatement::CopyTo(_)) => {
                     return Err((
                         StatusCode::BAD_REQUEST,
                         "COPY TO statements are handled separately".to_string(),
@@ -1473,19 +1498,34 @@ async fn query_handler_inner(
 
             // Phases 2-4 (plan, render, SQL) through the single translate seam.
             // Schema context is already set via with_query_context() at handler entry.
-            let translation = match crate::translate::translate_read(
-                cypher_statement,
-                &graph_schema,
-                crate::translate::ReadOptions {
-                    tenant_id: payload.tenant_id.clone(),
-                    view_parameter_values,
-                    max_inferred_types: payload.max_inferred_types,
-                    where_label_constraints: None,
-                    max_cte_depth: app_state.config.max_cte_depth,
-                    cypher: Some(clean_query.clone()),
-                    bound_plan: None,
+            let read_options = crate::translate::ReadOptions {
+                tenant_id: payload.tenant_id.clone(),
+                view_parameter_values,
+                max_inferred_types: payload.max_inferred_types,
+                where_label_constraints: None,
+                max_cte_depth: app_state.config.max_cte_depth,
+                cypher: Some(clean_query.clone()),
+                bound_plan: None,
+            };
+            let translated = match cypher_statement {
+                Some(statement) => {
+                    crate::translate::translate_read(statement, &graph_schema, read_options)
+                }
+                None => match crate::translate::translate_text_read(
+                    &clean_query,
+                    &graph_schema,
+                    read_options,
+                ) {
+                    Ok(Some(t)) => Ok(t),
+                    Ok(None) => {
+                        metrics.planning_time = planning_start.elapsed().as_secs_f64();
+                        let e = legacy_parse_error.unwrap_or_default();
+                        return Err((StatusCode::BAD_REQUEST, e));
+                    }
+                    Err(e) => Err(e),
                 },
-            ) {
+            };
+            let translation = match translated {
                 Ok(t) => t,
                 Err(crate::translate::TranslateError::Planning(e)) => {
                     metrics.planning_time = planning_start.elapsed().as_secs_f64();
