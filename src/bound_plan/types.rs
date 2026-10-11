@@ -335,6 +335,11 @@ pub enum BindError {
     /// the legacy pipeline (or fails loudly once it is gone).
     #[error("not supported by the bound plan yet: {0}")]
     Unsupported(String),
+    /// A statement that is not a read query (`CALL`, an updating clause):
+    /// the entry points handle it before translating a read (procedures,
+    /// the read-only error, the embedded write path).
+    #[error("not a read query: {0}")]
+    NotARead(&'static str),
 }
 
 impl BindError {

@@ -2376,8 +2376,10 @@ differential. The routing switch is
 - `shadow` translates with both paths and records differences in tests;
 - `on` routes supported queries to the new path.
 
-The default stayed `off` until slice 10, which made it `on` (`off` remains
-the opt-out until slice 11 deletes the legacy path).
+The default stayed `off` until slice 10, which made it `on`. Slice 11's
+cutover (S11j) removed the switch: ClickHouse reads go through the bound
+plan only, and what it does not lower is an error; other dialects keep the
+legacy fallback until their coverage (S12).
 
 | # | Slice | Acceptance | Closes |
 |---|---|---|---|
@@ -4301,6 +4303,26 @@ slice that will handle it.
       relationship or map (read as its internal tuple: now refused, a list
       comprehension returns them) and repeated parameters (accepted, the
       last shadowing: now "already declared", as ClickHouse).
+  - [x] **S11j: the ClickHouse cutover.** A ClickHouse read the bound plan
+    does not lower is an error (`TranslateError::Unsupported`: HTTP 400
+    "Not supported: …", Bolt a client error, the library "Not supported:
+    …"), never the legacy pipeline; text the clause-list parser rejects
+    is a syntax error on every dialect (a query without RETURN, which the
+    legacy pipeline answered with the matched nodes: user 2026-10-11). The
+    switch `CLICKGRAPH_BOUND_PLAN` is gone; `ReadOptions::bound_plan =
+    Off` reaches the legacy pipeline for its own tests until it is
+    deleted. What still reaches it: other dialects
+    (`SqlDialect::reads_fall_back_to_legacy`), `CALL` / updating clauses
+    (`BindError::NotARead`, handled by their entry points as before), and
+    the embedded write path's read part (no query text).
+    - Acceptance: full live suite on the cutover build: 4827 passed (the 9
+      multi-tenant failures predate S10a). Tests changed to the new
+      answers: a query without RETURN, shortestPath from a node to itself
+      (errors, user 2026-10-11). Corpus 1442 lowered; scorecard verdicts
+      unchanged (4 queries Neo4j rejects that legacy answered now error on
+      ClickGraph too: NEO_ERROR 15 → 11, BOTH_ERROR 14 → 18). Embedded /
+      tool / client crates, the embedded chdb e2e tests and the Python
+      bindings pass but for failures that main has too.
   - **User decisions (2026-10-11)** on what S11 does not lower: a
     relationship without `edge_id` keeps its ends as its identity (#1356;
     define `edge_id` to tell parallel rows apart); an undeclared property

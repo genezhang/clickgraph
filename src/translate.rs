@@ -39,9 +39,11 @@ pub struct ReadOptions {
     pub max_cte_depth: u32,
     /// The query text `statement` was parsed from (comments stripped). The
     /// bound-plan path (P-4c) parses it with the clause-list parser; a caller
-    /// that leaves it `None` always gets the legacy pipeline.
+    /// that leaves it `None` gets the legacy pipeline (the read half of an
+    /// embedded write+RETURN, whose statement no longer matches its text).
     pub cypher: Option<String>,
-    /// Override of `CLICKGRAPH_BOUND_PLAN` (tests).
+    /// `Some(Off)`: the legacy pipeline (its own tests, until it is
+    /// deleted). `None` is `On`.
     pub bound_plan: Option<BoundPlanMode>,
     /// The server's id mapper (HTTP, Bolt): the bound plan reads an integer
     /// compared with `id(n)` as the `id()` rewrite does (P-4c S11e). `None`
@@ -49,33 +51,16 @@ pub struct ReadOptions {
     pub id_mapper: Option<crate::server::bolt_protocol::id_mapper::IdMapper>,
 }
 
-/// Which pipeline translates read queries (`CLICKGRAPH_BOUND_PLAN`).
+/// Which pipeline translates a read query ([`ReadOptions::bound_plan`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoundPlanMode {
-    /// The legacy pipeline only (`CLICKGRAPH_BOUND_PLAN=off`).
+    /// The legacy pipeline only: its own tests, until it is deleted.
     Off,
-    /// The bound-plan path for every query it lowers; the legacy pipeline
-    /// for the rest, only what it does not support yet (`Unsupported`).
-    /// A query it rejects as Neo4j does is an error (P-4c S10: the
-    /// default).
+    /// The bound plan. What it does not lower is an error on ClickHouse
+    /// (P-4c S11j) and falls back to the legacy pipeline on the dialects
+    /// that keep it (`reads_fall_back_to_legacy`).
+    /// A query it rejects as Neo4j does is an error.
     On,
-}
-
-impl BoundPlanMode {
-    /// From `CLICKGRAPH_BOUND_PLAN` (default on, S10): `off` (or `false`,
-    /// `0`, `no`) selects the legacy pipeline.
-    pub fn from_env() -> Self {
-        match std::env::var("CLICKGRAPH_BOUND_PLAN") {
-            Ok(v) if Self::is_off(&v) => BoundPlanMode::Off,
-            _ => BoundPlanMode::On,
-        }
-    }
-
-    fn is_off(value: &str) -> bool {
-        ["off", "false", "0", "no"]
-            .iter()
-            .any(|off| value.trim().eq_ignore_ascii_case(off))
-    }
 }
 
 /// Which pipeline produced a translation.
@@ -189,6 +174,10 @@ pub enum TranslateError {
     /// redeclared variable, a misplaced aggregate, …): the bound plan's
     /// binder (P-4c S10; the legacy pipeline is not tried).
     Invalid(String),
+    /// The bound plan does not translate the query, and the dialect has no
+    /// legacy fallback (P-4c S11j): a form not supported, or one Neo4j also
+    /// refuses.
+    Unsupported(String),
 }
 
 impl std::fmt::Display for TranslateError {
@@ -197,6 +186,7 @@ impl std::fmt::Display for TranslateError {
             TranslateError::Planning(e) => write!(f, "{}", e),
             TranslateError::Render(e) => write!(f, "{}", e),
             TranslateError::Invalid(e) => write!(f, "{}", e),
+            TranslateError::Unsupported(e) => write!(f, "{}", e),
         }
     }
 }
@@ -237,7 +227,7 @@ fn translate_in_context(
     // Deterministic generated aliases: restart THIS query's counters.
     crate::query_planner::logical_plan::reset_all_counters();
 
-    let mode = options.bound_plan.unwrap_or_else(BoundPlanMode::from_env);
+    let mode = options.bound_plan.unwrap_or(BoundPlanMode::On);
     // `id()` comparisons: the bound plan reads them from `cypher` with the
     // server's id mapper (S11e), as the `id()` rewrite did in `statement`.
     if mode == BoundPlanMode::On {
@@ -245,7 +235,21 @@ fn translate_in_context(
             let start = Instant::now();
             match bound_plan_or_reason(cypher, schema, &options) {
                 Err(BoundPlanError::Invalid(e)) => return Err(TranslateError::Invalid(e)),
+                // Text the clause-list parser rejects is not Cypher (a query
+                // without RETURN, which the legacy pipeline answered with the
+                // matched nodes; user 2026-10-11: as Neo4j, an error).
+                Err(BoundPlanError::Unparsed(reason)) => {
+                    return Err(TranslateError::Invalid(reason));
+                }
                 Err(BoundPlanError::Fallback(reason)) => {
+                    if !crate::server::query_context::get_current_dialect()
+                        .reads_fall_back_to_legacy()
+                    {
+                        return Err(TranslateError::Unsupported(reason));
+                    }
+                    log::debug!("bound plan: legacy pipeline ({reason})")
+                }
+                Err(BoundPlanError::NotARead(reason)) => {
                     log::debug!("bound plan: legacy pipeline ({reason})")
                 }
                 Ok(bound) => return Ok(bound.into_read_translation(start)),
@@ -298,10 +302,9 @@ fn translate_in_context(
 /// after an OPTIONAL MATCH after a WITH, free-standing ORDER BY / SKIP /
 /// LIMIT. Entry points call it when the legacy parser rejects the text.
 ///
-/// `Ok(None)`: the bound plan does not translate it (the clause-list parser
-/// rejects it too, it is not supported yet, or the route is off): the
-/// caller reports its own parse error. `Err(Invalid)`: a query Neo4j
-/// rejects as well.
+/// `Ok(None)`: the clause-list parser rejects it too, or the route is off:
+/// the caller reports its own parse error. `Err(Invalid)`: a query Neo4j
+/// rejects as well. `Err(Unsupported)`: parsed, but not lowered.
 pub fn translate_text_read(
     cypher: &str,
     schema: &GraphSchema,
@@ -316,7 +319,7 @@ pub fn translate_text_read(
             translate_text_read(cypher, schema, options)
         });
     }
-    if options.bound_plan.unwrap_or_else(BoundPlanMode::from_env) == BoundPlanMode::Off {
+    if options.bound_plan == Some(BoundPlanMode::Off) {
         return Ok(None);
     }
     crate::query_planner::logical_plan::reset_all_counters();
@@ -324,10 +327,12 @@ pub fn translate_text_read(
     match bound_plan_or_reason(cypher, schema, &options) {
         Ok(bound) => Ok(Some(bound.into_read_translation(start))),
         Err(BoundPlanError::Invalid(e)) => Err(TranslateError::Invalid(e)),
-        Err(BoundPlanError::Fallback(reason)) => {
+        Err(BoundPlanError::Unparsed(reason) | BoundPlanError::NotARead(reason)) => {
             log::debug!("text-only read not translated: {reason}");
             Ok(None)
         }
+        // The legacy parser rejects the text too: no pipeline translates it.
+        Err(BoundPlanError::Fallback(reason)) => Err(TranslateError::Unsupported(reason)),
     }
 }
 
@@ -353,6 +358,7 @@ pub fn translate_inner_read(
         TranslateError::Planning(e) => format!("Inner Cypher planning error: {}", e),
         TranslateError::Render(e) => format!("Inner Cypher render error: {}", e),
         TranslateError::Invalid(e) => format!("Inner Cypher query error: {}", e),
+        TranslateError::Unsupported(e) => format!("Inner Cypher not supported: {}", e),
     };
     match crate::open_cypher_parser::parse_cypher_statement(cypher) {
         Ok((_, statement)) => {
@@ -395,16 +401,56 @@ pub fn translate_bound_plan(
     options: &ReadOptions,
 ) -> Result<BoundTranslation, String> {
     bound_plan_or_reason(cypher, schema, options).map_err(|e| match e {
-        BoundPlanError::Fallback(reason) | BoundPlanError::Invalid(reason) => reason,
+        BoundPlanError::Fallback(reason)
+        | BoundPlanError::Unparsed(reason)
+        | BoundPlanError::NotARead(reason)
+        | BoundPlanError::Invalid(reason) => reason,
     })
+}
+
+/// A clause-list parse failure as a message: what the parser expected, and
+/// where.
+fn syntax_error(
+    e: &nom::Err<crate::open_cypher_parser::errors::OpenCypherParsingError<'_>>,
+) -> String {
+    match e {
+        nom::Err::Error(p) | nom::Err::Failure(p) => match p.errors.first() {
+            Some((input, expected)) => format!("Invalid syntax: {expected} at {}", near(input)),
+            None => "Invalid syntax".to_string(),
+        },
+        nom::Err::Incomplete(_) => "Invalid syntax: the query is incomplete".to_string(),
+    }
+}
+
+/// Where in the query a parse failure is: the text from there, shortened.
+fn near(input: &str) -> String {
+    let input = input.trim();
+    if input.is_empty() {
+        return "the end of the query".to_string();
+    }
+    let short: String = input.chars().take(40).collect();
+    let more = if input.chars().count() > 40 {
+        "…"
+    } else {
+        ""
+    };
+    format!(
+        "`{}{more}`",
+        short.split_whitespace().collect::<Vec<_>>().join(" ")
+    )
 }
 
 /// Why the bound plan did not translate a query.
 #[derive(Debug)]
 enum BoundPlanError {
-    /// Not supported (yet), or not parsed by the clause-list parser: the
-    /// legacy pipeline translates it.
+    /// Not supported (yet): the legacy pipeline translates it on the
+    /// dialects that keep it; an error on the others.
     Fallback(String),
+    /// Not parsed by the clause-list parser.
+    Unparsed(String),
+    /// Not a read query (`CALL`, an updating clause): its entry point's
+    /// handling, or the legacy pipeline's error.
+    NotARead(String),
     /// Invalid Cypher, as Neo4j rejects it (the binder's errors other than
     /// `Unsupported`).
     Invalid(String),
@@ -428,18 +474,18 @@ fn bound_plan_or_reason(
     }
     use crate::bound_plan::lower::{lower_statement, LowerOptions};
     let (rest, stmt) = crate::open_cypher_parser::clause_list::parse_clause_statement(cypher)
-        .map_err(|e| BoundPlanError::Fallback(format!("clause-list parse: {e:?}")))?;
-    if !rest.trim().trim_end_matches(';').trim().is_empty() {
-        return Err(BoundPlanError::Fallback(format!(
-            "clause-list parse stopped at: {rest}"
+        .map_err(|e| BoundPlanError::Unparsed(syntax_error(&e)))?;
+    let rest = rest.trim().trim_end_matches(';').trim();
+    if !rest.is_empty() {
+        return Err(BoundPlanError::Unparsed(format!(
+            "Invalid syntax: unexpected text at {}",
+            near(rest)
         )));
     }
-    let bound = crate::bound_plan::bind_statement(&stmt, schema).map_err(|e| {
-        if e.is_unsupported() {
-            BoundPlanError::Fallback(e.to_string())
-        } else {
-            BoundPlanError::Invalid(e.to_string())
-        }
+    let bound = crate::bound_plan::bind_statement(&stmt, schema).map_err(|e| match e {
+        crate::bound_plan::BindError::Unsupported(_) => BoundPlanError::Fallback(e.to_string()),
+        crate::bound_plan::BindError::NotARead(_) => BoundPlanError::NotARead(e.to_string()),
+        _ => BoundPlanError::Invalid(e.to_string()),
     })?;
     let lowered = lower_statement(
         &bound,
@@ -544,19 +590,26 @@ mod tests {
             assert_eq!(lib.as_deref(), Ok(t.sql.as_str()), "{q}");
         }
         let text_only = "MATCH (a:User) ORDER BY a.name LIMIT 3 RETURN a.name";
-        // Not lowered (`id()` other than compared with integers), an
-        // updating clause, or the route off: the caller reports its parse
-        // error.
-        for q in [
-            "MATCH (a:User) WITH a MATCH (a)-[r:FOLLOWS]->(b:User) MATCH (b) \
-             WHERE id(r) > 3 RETURN count(*) AS n",
-            "MATCH (a:User) ORDER BY a.name LIMIT 3 CREATE (b:User) RETURN a.name",
-        ] {
-            assert!(
-                translate_text_read(q, &schema, on()).unwrap().is_none(),
-                "{q}"
-            );
-        }
+        // An updating clause, which the clause-list parser rejects, or the
+        // route off: the caller reports its parse error.
+        let create = "MATCH (a:User) ORDER BY a.name LIMIT 3 CREATE (b:User) RETURN a.name";
+        assert!(
+            translate_text_read(create, &schema, on())
+                .unwrap()
+                .is_none(),
+            "{create}"
+        );
+        // Parsed but not lowered (`id()` other than compared with integers):
+        // not supported, which no pipeline translates.
+        let id_gt = "MATCH (a:User) WITH a MATCH (a)-[r:FOLLOWS]->(b:User) MATCH (b) \
+             WHERE id(r) > 3 RETURN count(*) AS n";
+        assert!(
+            matches!(
+                translate_text_read(id_gt, &schema, on()),
+                Err(TranslateError::Unsupported(_))
+            ),
+            "{id_gt}"
+        );
         let off = ReadOptions {
             bound_plan: Some(BoundPlanMode::Off),
             ..on()
@@ -617,16 +670,6 @@ mod tests {
             Some(None)
         );
         assert_eq!(clause_list_use_name("MATCH (a) RETRUN a"), None);
-    }
-
-    #[test]
-    fn the_bound_plan_switch_reads_off_spellings() {
-        for v in ["off", "OFF", " false", "0", "no"] {
-            assert!(BoundPlanMode::is_off(v), "{v}");
-        }
-        for v in ["on", "true", "1", "shadow", ""] {
-            assert!(!BoundPlanMode::is_off(v), "{v}");
-        }
     }
 
     use crate::query_planner::logical_plan::{generate_cte_id, generate_id, reset_all_counters};

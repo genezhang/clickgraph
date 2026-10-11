@@ -367,9 +367,9 @@ impl Binder {
                         count: l.limit_item,
                     }
                 }
-                Clause::Call(_) => return Err(BindError::Unsupported("CALL".to_string())),
+                Clause::Call(_) => return Err(BindError::NotARead("CALL")),
                 Clause::Create(_) | Clause::Set(_) | Clause::Remove(_) | Clause::Delete(_) => {
-                    return Err(BindError::Unsupported("updating clause".to_string()))
+                    return Err(BindError::NotARead("updating clause"))
                 }
             }
         }

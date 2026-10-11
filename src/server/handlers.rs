@@ -1572,6 +1572,11 @@ async fn query_handler_inner(
                     // Invalid Cypher, as Neo4j rejects it: the client's.
                     return Err((StatusCode::BAD_REQUEST, format!("Query error: {}", e)));
                 }
+                Err(crate::translate::TranslateError::Unsupported(e)) => {
+                    metrics.planning_time = planning_start.elapsed().as_secs_f64();
+                    // A form the engine does not translate: the client's.
+                    return Err((StatusCode::BAD_REQUEST, format!("Not supported: {}", e)));
+                }
                 Err(crate::translate::TranslateError::Render(e)) => {
                     metrics.planning_time = planning_start.elapsed().as_secs_f64();
                     // Return 500 for render errors (internal error)

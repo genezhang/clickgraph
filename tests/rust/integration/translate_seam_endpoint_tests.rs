@@ -234,3 +234,78 @@ async fn concurrent_query_sql_requests_do_not_share_alias_counters() {
         );
     }
 }
+
+/// What the bound plan does not lower is an error on ClickHouse (P-4c
+/// S11j): on `/query` (400, "Not supported"), and in the library. A
+/// dialect that keeps the legacy fallback still translates it there.
+#[tokio::test]
+async fn unsupported_reads_fail_on_clickhouse_and_fall_back_elsewhere() {
+    use clickgraph::server::query_context::{
+        set_current_dialect, set_current_schema, with_query_context_sync, QueryContext,
+    };
+    use clickgraph::sql_generator::SqlDialect;
+    use clickgraph::translate::{translate_read, ReadOptions, Route, TranslateError};
+    let schema = GraphSchemaConfig::from_yaml_file("schemas/test/social_integration.yaml")
+        .unwrap()
+        .to_graph_schema()
+        .unwrap();
+    // Neo4j refuses it ("Type mismatch"); the legacy pipeline answered.
+    let q = "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) RETURN r.follow_date";
+    let translate = |dialect: SqlDialect| {
+        with_query_context_sync(QueryContext::new(None), || {
+            set_current_schema(Arc::new(schema.clone()));
+            set_current_dialect(dialect);
+            let (_, statement) = clickgraph::open_cypher_parser::parse_cypher_statement(q).unwrap();
+            translate_read(
+                statement,
+                &schema,
+                ReadOptions {
+                    max_cte_depth: 100,
+                    cypher: Some(q.to_string()),
+                    ..Default::default()
+                },
+            )
+        })
+    };
+    let ch = translate(SqlDialect::ClickHouse);
+    assert!(matches!(ch, Err(TranslateError::Unsupported(_))), "{ch:?}");
+    let databricks = translate(SqlDialect::Databricks).unwrap();
+    assert_eq!(databricks.route, Route::Legacy);
+    let lib = clickgraph::clickhouse_query_generator::cypher_to_sql(q, &schema, 100);
+    assert!(
+        matches!(&lib, Err(e) if e.starts_with("Not supported: ")),
+        "{lib:?}"
+    );
+
+    ensure_default_schema_registered().await;
+    let body = json!({
+        "query": "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) RETURN r.follow_date",
+        "sql_only": true
+    });
+    let (status, text) = post_text("/query", body.clone()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {text}");
+    assert!(text.starts_with("Not supported: "), "{body}: {text}");
+}
+
+/// A query without RETURN is a syntax error, as in Neo4j (user
+/// 2026-10-11; the legacy pipeline returned the matched nodes).
+#[tokio::test]
+async fn a_query_without_return_is_a_syntax_error() {
+    ensure_default_schema_registered().await;
+    let body = json!({ "query": "MATCH (u:User) WHERE u.user_id > 1", "sql_only": true });
+    let (status, text) = post_text("/query", body.clone()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {text}");
+    assert!(
+        text.contains("Invalid syntax") && text.contains("RETURN"),
+        "{body}: {text}"
+    );
+    let schema = GraphSchemaConfig::from_yaml_file("schemas/test/social_integration.yaml")
+        .unwrap()
+        .to_graph_schema()
+        .unwrap();
+    let lib = clickgraph::clickhouse_query_generator::cypher_to_sql("MATCH (u:User)", &schema, 100);
+    assert!(
+        matches!(&lib, Err(e) if e.contains("Invalid syntax") && e.contains("RETURN")),
+        "{lib:?}"
+    );
+}

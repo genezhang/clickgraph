@@ -97,7 +97,7 @@ pub fn cypher_to_sql_with_id_columns(
     Ok((t.sql, id_columns))
 }
 
-/// [`cypher_to_sql`] on the legacy route (`CLICKGRAPH_BOUND_PLAN=off`): the
+/// [`cypher_to_sql`] on the legacy route (`BoundPlanMode::Off`): the
 /// tests of the legacy pipeline, which stays the fallback for what the
 /// bound plan does not support until it is deleted (P-4c S11).
 #[cfg(test)]
@@ -233,6 +233,7 @@ fn library_error(e: crate::translate::TranslateError) -> String {
         crate::translate::TranslateError::Render(e) => format!("Render error: {}", e),
         // The caller reports it as a query error (`EmbeddedError::Query`).
         crate::translate::TranslateError::Invalid(e) => e,
+        crate::translate::TranslateError::Unsupported(e) => format!("Not supported: {}", e),
     }
 }
 

@@ -83,19 +83,20 @@ class TestShortestPath:
         assert_row_count(response, 0)
     
     def test_shortest_path_self(self, simple_graph):
-        """Test shortestPath from node to itself."""
+        """shortestPath from a node to itself is an error, as Neo4j raises
+        one ("The shortest path algorithm does not work when the start and
+        end nodes are the same")."""
         response = execute_cypher(
             """
             MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*0..]->(a))
             WHERE a.name = 'Alice'
             RETURN a.name
             """,
-            schema_name=simple_graph["schema_name"]
+            schema_name=simple_graph["schema_name"],
+            raise_on_error=False,
         )
-        
-        assert_query_success(response)
-        # Path of length 0 (self)
-        assert_row_count(response, 1)
+        assert isinstance(response, dict)
+        assert response.get("status") == "error" or "error" in response, response
 
 
 class TestAllShortestPaths:
@@ -334,19 +335,20 @@ class TestShortestPathEdgeCases:
     """Test edge cases for shortest path queries."""
     
     def test_shortest_path_same_node(self, simple_graph):
-        """Test shortest path from node to itself."""
+        """shortestPath from a node to itself is an error, as Neo4j raises
+        one ("The shortest path algorithm does not work when the start and
+        end nodes are the same")."""
         response = execute_cypher(
             """
             MATCH path = shortestPath((a:TestUser)-[:TEST_FOLLOWS*0..]->(a))
             WHERE a.name = 'Bob'
             RETURN a.name
             """,
-            schema_name=simple_graph["schema_name"]
+            schema_name=simple_graph["schema_name"],
+            raise_on_error=False,
         )
-        
-        assert_query_success(response)
-        # Path of length 0 to self
-        assert_row_count(response, 1)
+        assert isinstance(response, dict)
+        assert response.get("status") == "error" or "error" in response, response
     
     def test_shortest_path_unreachable(self, simple_graph):
         """Test shortest path when target is unreachable."""

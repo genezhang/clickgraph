@@ -108,6 +108,8 @@ ClickGraph is designed for **analytical queries** over existing ClickHouse data,
 
 ### ❌ Not Yet Implemented
 
+A read query outside what ClickGraph translates is refused with a `Not supported: …` error naming the construct (HTTP 400, a Bolt client error); it never returns a partial or approximate answer.
+
 **Advanced Patterns:**
 - ❌ Relationship property constraints in patterns: `()-[r {since: 2020}]->()`
 - ❌ Variable-length paths inside pattern comprehensions

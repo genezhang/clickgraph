@@ -202,6 +202,7 @@ async fn try_render(
                     TranslateError::Planning(e) => format!("plan error: {e}"),
                     TranslateError::Render(e) => format!("render error: {e}"),
                     TranslateError::Invalid(e) => format!("query error: {e}"),
+                    TranslateError::Unsupported(e) => format!("not supported: {e}"),
                 })
             },
         ));
