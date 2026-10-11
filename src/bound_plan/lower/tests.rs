@@ -4021,9 +4021,29 @@ fn an_unwind_repeats_each_row_per_element() {
         ],
     );
     assert!(!sql("MATCH (a:User) UNWIND [1, 2] AS x RETURN a.name, x").contains("ORDER BY"));
-    not_lowered(
+    // A LIMIT takes the elements in order: the rows are numbered in any
+    // order first, each row's elements following it in list order (S11g).
+    has(
         "MATCH (a:User) UNWIND [1, 2] AS x RETURN x LIMIT 1",
-        "SKIP / LIMIT over ordered rows after DISTINCT, aggregation or UNWIND",
+        &[
+            r#"row_number() OVER () AS "__cg_row" FROM test_integration.users_test AS v0 )"#,
+            r#"w1.__cg_row AS "__o0", __cg_position AS "__o1" FROM with_w1 AS w1 ARRAY JOIN [1, 2] AS __cg_element, arrayEnumerate([1, 2]) AS __cg_position )"#,
+            "ORDER BY w2.__o0 ASC, w2.__o1 ASC LIMIT 1",
+        ],
+    );
+    // So does a collect(); a count() does not.
+    has(
+        "MATCH (a:User) WITH a, [1, 2] AS l UNWIND l AS x WITH a, collect(x) AS c RETURN c",
+        &["row_number() OVER ()"],
+    );
+    assert!(
+        !sql("MATCH (a:User) WITH a, [1, 2] AS l UNWIND l AS x RETURN count(*) AS n")
+            .contains("row_number"),
+    );
+    // An ORDER BY in between: the order before it does not matter.
+    assert!(
+        !sql("MATCH (a:User) UNWIND [1, 2] AS x RETURN x ORDER BY x LIMIT 1")
+            .contains("row_number")
     );
     // After an aggregation with no grouping item: one row.
     has(

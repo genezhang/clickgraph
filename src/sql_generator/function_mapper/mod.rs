@@ -471,6 +471,8 @@ pub(crate) struct Unwind {
     pub list_only: fn(&str) -> String,
     /// The number of a row in the order of the keys `{0}` (`ORDER BY` text).
     pub row_number: fn(&str) -> String,
+    /// The number of a row, the rows in no particular order.
+    pub any_row_number: &'static str,
     /// Whether the value `{0}` is NULL, as a function call (no operator
     /// precedence to get wrong: `NOT a IS NULL` is `NOT (a IS NULL)`).
     pub is_null: fn(&str) -> String,

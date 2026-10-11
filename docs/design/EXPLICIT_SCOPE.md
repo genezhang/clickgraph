@@ -4105,6 +4105,24 @@ slice that will handle it.
       older: a several-label node's String key `'01'` reads as `1` when its
       labels' key types differ (#1393); DISTINCT of a node value with an
       aggregate fails (Code 184).
+  - [x] **S11g: SKIP / LIMIT and `collect()` after an UNWIND of rows in no
+    order.** Neo4j returns each row's elements together, in list order,
+    the rows in no particular order; the SQL keeps neither. An UNWIND whose
+    order a later clause relies on with no ORDER BY between (a SKIP /
+    LIMIT, a `collect()`: `ordered_unwinds`, a pass over the plan) numbers
+    the rows first in any order (`Unwind::any_row_number`, `row_number()
+    OVER ()`), and its rows are ordered by that number and the element's
+    position, as after ordered rows. Other UNWINDs are unchanged (no
+    window). Still refused: SKIP / LIMIT or `collect()` relying on the
+    first-seen order of a DISTINCT or an aggregation of ordered rows (no
+    corpus query).
+    - Acceptance: generated shapes against Neo4j whose answer is the same
+      for every order Neo4j may return (each user's list `[10k+1, 10k+2]`:
+      a LIMIT's rows are one list's prefix, `collect()` per row keeps list
+      order, SKIP + LIMIT spans lists contiguously, nested UNWINDs): every
+      lowered shape equal to Neo4j (legacy errors or answers wrongly on
+      six). Corpus 1442 lowered (was 1440: the two `collect` / UNWIND /
+      LIMIT queries). Scorecard and live suite unchanged.
   - **User decisions (2026-10-11)** on what S11 does not lower: a
     relationship without `edge_id` keeps its ends as its identity (#1356;
     define `edge_id` to tell parallel rows apart); an undeclared property

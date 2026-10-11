@@ -77,7 +77,7 @@ mod unwind;
 mod value;
 
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::graph_catalog::config::Identifier;
@@ -300,6 +300,7 @@ impl Query<'_> {
             subqueries: &self.stmt.subqueries,
             projected: projected_items(&self.stmt.plan),
             as_values: self.as_values.clone(),
+            ordered_unwinds: ordered_unwinds(&self.stmt.plan),
         };
         let lowered = l
             .relation(input)
@@ -603,6 +604,9 @@ struct Lowerer<'s> {
     projected: HashMap<VarId, &'s LogicalExpr>,
     /// RETURN items returned as values ([`Query::as_values`]).
     as_values: BTreeSet<String>,
+    /// The UNWINDs (by variable) whose elements a later clause takes in
+    /// order ([`ordered_unwinds`]).
+    ordered_unwinds: HashSet<VarId>,
 }
 
 /// The elements of a path variable, in path order.
@@ -6527,6 +6531,47 @@ fn projected_items(op: &BoundOp) -> HashMap<VarId, &LogicalExpr> {
         }
     }
     walk(op, &mut out);
+    out
+}
+
+/// The UNWINDs (by variable) whose output order a later clause relies on,
+/// with no ORDER BY between: a SKIP / LIMIT or a `collect()`. Over rows in
+/// no order such an UNWIND numbers them first (in any order), so each
+/// row's elements stay together in list order, as Neo4j returns them;
+/// other UNWINDs leave their rows in no order.
+fn ordered_unwinds(op: &BoundOp) -> HashSet<VarId> {
+    fn walk(op: &BoundOp, relied: bool, out: &mut HashSet<VarId>) {
+        match op {
+            BoundOp::Unit => {}
+            BoundOp::Unwind { input, var, .. } => {
+                if relied {
+                    out.insert(*var);
+                }
+                walk(input, relied, out);
+            }
+            BoundOp::Project { input, projection } => {
+                // A `collect()` reads its input's order; otherwise, without
+                // an ORDER BY of its own, a projection passes its input's
+                // order on (DISTINCT and aggregation as first seen), and a
+                // SKIP / LIMIT takes it.
+                let collects = projection
+                    .items
+                    .iter()
+                    .any(|i| calls_aggregate(&i.expr, "collect"));
+                let paged = projection.skip.is_some() || projection.limit.is_some();
+                let relies = collects || (projection.order_by.is_empty() && (relied || paged));
+                walk(input, relies, out);
+            }
+            BoundOp::Sort { input, .. } => walk(input, false, out),
+            BoundOp::Skip { input, .. } | BoundOp::Limit { input, .. } => walk(input, true, out),
+            BoundOp::Match { input, .. } | BoundOp::Filter { input, .. } => {
+                walk(input, relied, out)
+            }
+            BoundOp::Union { arms, .. } => arms.iter().for_each(|a| walk(a, false, out)),
+        }
+    }
+    let mut out = HashSet::new();
+    walk(op, false, &mut out);
     out
 }
 

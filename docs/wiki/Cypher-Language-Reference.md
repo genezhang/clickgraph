@@ -1017,6 +1017,19 @@ GROUP BY letter
 -- Returns: a:3, b:3
 ```
 
+### UNWIND Order
+
+As in Neo4j, each row's elements follow that row, in list order. A `SKIP` / `LIMIT` or `collect()` after an UNWIND (with no `ORDER BY` between) takes them in that order: a `LIMIT` returns a prefix of one row's list before the next row's, and `collect()` per row keeps the list's order. The rows themselves have no particular order unless an `ORDER BY` gives one.
+
+```cypher
+MATCH (u:User)
+WITH u, [u.user_id * 10 + 1, u.user_id * 10 + 2] AS l
+UNWIND l AS x
+WITH u, collect(x) AS c
+RETURN u.user_id, c
+-- c is [10k+1, 10k+2] for each user k
+```
+
 ### Common Use Cases
 
 **1. Parameter Expansion**

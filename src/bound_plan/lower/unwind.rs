@@ -462,7 +462,15 @@ impl<'s> Lowerer<'s> {
             self.values.insert(var, RenderExpr::Literal(Literal::Null));
             return Ok(());
         }
-        if matches!(self.order, RowOrder::Keys(_)) && !self.one_row {
+        // Each row's elements follow it, in list order: the rows are
+        // numbered in their order, or in any (a fixed one) when a later
+        // clause takes the elements in order (`Lowerer::ordered_unwinds`).
+        let ordered = match self.order {
+            RowOrder::Keys(_) => true,
+            RowOrder::Unordered => self.ordered_unwinds.contains(&var),
+            RowOrder::Lost => false,
+        };
+        if ordered && !self.one_row {
             self.number_rows()?;
         }
         let e = self.expr(expr, &HashMap::new())?;
@@ -571,25 +579,24 @@ impl<'s> Lowerer<'s> {
         }))
     }
 
-    /// The rows so far, in their order, become a CTE exporting the scope and
-    /// each row's number in that order; the rows are then in the order of
-    /// that number.
+    /// The rows so far, in their order (rows in no order: in any, fixed by
+    /// the numbers), become a CTE exporting the scope and each row's number
+    /// in that order; the rows are then in the order of that number.
     pub(super) fn number_rows(&mut self) -> Result<(), LowerError> {
         let Some(spelling) = current_function_mapper().unwind() else {
             return unsupported("UNWIND in this SQL dialect");
         };
-        let RowOrder::Keys(keys) = &self.order else {
-            return unsupported("internal: numbering rows in no order");
+        let number = match &self.order {
+            RowOrder::Keys(keys) => (spelling.row_number)(&order_keys_to_sql_plain(keys)),
+            RowOrder::Unordered => spelling.any_row_number.to_string(),
+            RowOrder::Lost => return unsupported("internal: numbering rows of a lost order"),
         };
-        let keys = order_keys_to_sql_plain(keys);
         let alias = self.next_cte_alias();
         let mut body = Body::default();
         let mut exports = Exports::default();
         self.export_scope(&alias, &mut body, &mut exports)?;
-        body.select.push(select(
-            RenderExpr::Raw((spelling.row_number)(&keys)),
-            ROW_NUMBER,
-        ));
+        body.select
+            .push(select(RenderExpr::Raw(number), ROW_NUMBER));
         self.close_segment(body, exports, alias.clone())?;
         self.order = RowOrder::Keys(vec![OrderByItem {
             expression: col_at(&alias, ROW_NUMBER),
