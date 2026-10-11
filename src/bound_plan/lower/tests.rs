@@ -4658,11 +4658,11 @@ fn a_walk_carries_its_elements_as_tuples() {
     assert!(!got.contains("path_node_tuples"), "{got}");
 }
 
-/// S7e2b review: a walk whose elements have no tuple layout (a composite
-/// `edge_id`) carries none: its values (S6c) are still lowered, and reading
-/// them as a list's elements is not.
+/// S7e2b review, S8d2c: a walk whose relationships have a composite
+/// `edge_id` carries them as tuples with a slot per column, read as a
+/// list's elements.
 #[test]
-fn a_walk_without_a_tuple_layout_still_carries_values() {
+fn a_walk_of_a_composite_edge_id_carries_its_tuples() {
     let schema = GraphSchemaConfig::from_yaml_str(
         r#"
 name: composite_edge
@@ -4691,16 +4691,18 @@ graph_schema:
     let lower = |q: &str| translate_bound_plan(q, &schema, &ReadOptions::default());
     let got = lower("MATCH p = (a:U)-[:F*1..2]->(b:U) WITH relationships(p) AS rs RETURN rs")
         .map(|t| squash(&t.sql));
+    // A composite `edge_id` has a tuple layout (a slot per column, S8d2c).
     assert!(
-        matches!(&got, Ok(sql) if sql.contains("path_rel_values") && !sql.contains("path_rel_tuples")),
+        matches!(&got, Ok(sql) if sql.contains("path_rel_tuples")),
         "{got:?}"
     );
+    // Its relationships' properties are their slots.
     let got =
-        lower("MATCH p = (a:U)-[:F*1..2]->(b:U) RETURN [r IN relationships(p) | r.since] AS s");
+        lower("MATCH p = (a:U)-[:F*1..2]->(b:U) RETURN [r IN relationships(p) | r.since] AS s")
+            .map(|t| squash(&t.sql));
     assert!(
-        matches!(&got, Err(e) if e.contains("relationships() of a path other than")),
-        "{:?}",
-        got.map(|t| t.sql)
+        matches!(&got, Ok(sql) if sql.contains("tupleElement(v4, 5)")),
+        "{got:?}"
     );
 }
 
@@ -4890,7 +4892,8 @@ fn a_shortest_path_between_composite_ids_keys_nodes_by_their_tuples() {
     );
     for p in [
         "vlp_v2_keyed AS ( SELECT toString(tuple(start_bank, start_num)) AS start_id, \
-         toString(tuple(end_bank, end_num)) AS end_id, hop_count, path_edges FROM vlp_v2_path )",
+         toString(tuple(end_bank, end_num)) AS end_id, hop_count, path_edges, path_nodes \
+         FROM vlp_v2_path )",
         "FROM vlp_v2_keyed AS v2",
         "toString(tuple(start_node.bank, start_node.num)) IN (SELECT start_id FROM",
     ] {
@@ -4927,26 +4930,50 @@ fn a_union_walk_between_composite_ids_goes_by_keys() {
     }
 }
 
-/// S8d2: not yet lowered between composite ids: a shortest path read as a
-/// path with a condition the search cannot hold, and a path read as a value.
+/// S8d2c: a composite id in a value or a list: its element id joins its
+/// parts' texts with `|` (the element-id contract), its identity is the text
+/// of its tuple (which no two ids share), and a list's element tuple holds a
+/// slot per id column.
 #[test]
-fn composite_paths_as_values_are_not_lowered() {
-    for (q, why) in [
-        (
-            "MATCH (a:Acct), (b:Acct) WHERE a <> b \
-             MATCH p = shortestPath((a)-[:SENT*]->(b)) WHERE length(p) >= 2 WITH DISTINCT p \
-             RETURN count(*)",
-            "a shortestPath between composite ids read as a path, with a condition",
-        ),
-        (
-            "MATCH p = (a:Acct)-[:SENT*0..1]->(b:Acct) RETURN p",
-            "a composite node id in a value (S8)",
-        ),
+fn composite_ids_in_values_and_lists() {
+    let lower = |q: &str| {
+        translate_bound_plan(q, &composite_walk_schema(), &ReadOptions::default())
+            .map(|t| squash(&t.sql))
+            .unwrap_or_else(|e| panic!("{q}: {e}"))
+    };
+    // A walk's nodes as values; its identity by the tuple text.
+    let got = lower("MATCH p = (a:Acct)-[:SENT*0..1]->(b:Acct) WITH DISTINCT p RETURN p");
+    for p in [
+        "concat(coalesce(toString(start_node.bank), 'null'), '|', \
+         coalesce(toString(start_node.num), 'null'))",
+        "toString(tuple(start_node.bank, start_node.num)) as start_id",
     ] {
-        let err =
-            translate_bound_plan(q, &composite_walk_schema(), &ReadOptions::default()).unwrap_err();
-        assert!(err.contains(why), "{q}: {err}");
+        assert!(got.contains(p), "missing `{p}` in\n{got}");
     }
+    // A list of composite nodes: a slot per column.
+    let got = lower("MATCH (a:Acct)-[:SENT]->(b:Acct) RETURN collect(b) AS l");
+    assert!(
+        got.contains("tuple(v2.bank, v2.num, v2.bank, v2.num, v2.owner)"),
+        "{got}"
+    );
+    // A node is NULL when every part of its id is: a real node's part can be
+    // NULL (review).
+    let got = lower("MATCH (a:Acct) WITH collect(a) AS l RETURN size(l) AS n");
+    assert!(
+        got.contains("(v0.bank IS NOT NULL OR v0.num IS NOT NULL)"),
+        "{got}"
+    );
+    // A shortest path read as a path, with a condition the search cannot
+    // hold: the trails carry its columns keyed alike.
+    let got = lower(
+        "MATCH (a:Acct), (b:Acct) WHERE a <> b \
+         MATCH p = shortestPath((a)-[:SENT*]->(b)) WHERE length(p) >= 2 WITH DISTINCT p \
+         RETURN count(*)",
+    );
+    assert!(
+        got.contains("hop_count, path_edges, path_nodes FROM vlp_v2_path"),
+        "{got}"
+    );
 }
 
 /// S8d review: refused, not answered wrong or with a ClickHouse error: a

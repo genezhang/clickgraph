@@ -4,7 +4,8 @@
 //! An element of such a list is a tuple of its columns, typed as its table
 //! has them: a node's id and its label's declared properties (in name
 //! order), a relationship's stored ends' ids, its `edge_id` (if any) and its
-//! type's declared properties ([`Layout`]). Every element of one list is of
+//! type's declared properties ([`Layout`]); a composite id is a slot per
+//! column (S8d2c). Every element of one list is of
 //! one label, or of one type between one label pair ([`Elem`]), so the list
 //! is an array of one tuple type. A property of an element is its slot (it
 //! keeps its type: it can be compared, sorted, aggregated); its identity is
@@ -43,27 +44,41 @@ pub(super) struct Layout<'s> {
     pub rel: Option<&'s RelationshipSchema>,
     /// Its declared properties, in name order, after its id slots.
     pub props: Vec<String>,
+    /// The id slots (a slot per column): a node's id; a relationship's from
+    /// and to ids and `edge_id` (0 without one).
+    id: usize,
+    from: usize,
+    to: usize,
+    edge_id: usize,
 }
 
 impl Layout<'_> {
     /// The slots before the properties: a node's id; a relationship's from
     /// and to ids, then its `edge_id`.
     fn leading(&self) -> usize {
-        match (&self.elem, self.rel) {
-            (Elem::Rel { .. }, Some(r)) if r.edge_id.is_some() => 3,
-            (Elem::Rel { .. }, _) => 2,
-            (Elem::Node(_), _) => 1,
+        match &self.elem {
+            Elem::Rel { .. } => self.from + self.to + self.edge_id,
+            Elem::Node(_) => self.id,
         }
     }
 
     /// The slots of its identity (0-based): a node's id; a relationship's
     /// `edge_id`, else its ends (#887).
     pub fn identity_slots(&self) -> Vec<usize> {
-        match (&self.elem, self.rel) {
-            (Elem::Rel { .. }, Some(r)) if r.edge_id.is_some() => vec![2],
-            (Elem::Rel { .. }, _) => vec![0, 1],
-            (Elem::Node(_), _) => vec![0],
+        let ends = self.from + self.to;
+        match &self.elem {
+            Elem::Rel { .. } if self.edge_id > 0 => (ends..ends + self.edge_id).collect(),
+            Elem::Rel { .. } => (0..ends).collect(),
+            Elem::Node(_) => (0..self.id).collect(),
         }
+    }
+
+    /// The slots of a relationship's from and to ids.
+    fn end_slots(&self) -> (Vec<usize>, Vec<usize>) {
+        (
+            (0..self.from).collect(),
+            (self.from..self.from + self.to).collect(),
+        )
     }
 
     pub fn prop_slot(&self, prop: &str) -> Option<usize> {
@@ -79,14 +94,6 @@ pub(super) fn node_layout<'s>(
     label: &str,
     schema: &'s NodeSchema,
 ) -> Result<Layout<'s>, LowerError> {
-    single(
-        schema
-            .id_physical_columns()
-            .iter()
-            .map(String::as_str)
-            .collect(),
-        "a node",
-    )?;
     let mut props: Vec<String> = schema.property_mappings.keys().cloned().collect();
     props.sort();
     Ok(Layout {
@@ -94,6 +101,10 @@ pub(super) fn node_layout<'s>(
         node: Some(schema),
         rel: None,
         props,
+        id: schema.id_physical_columns().len(),
+        from: 0,
+        to: 0,
+        edge_id: 0,
     })
 }
 
@@ -102,11 +113,6 @@ pub(super) fn rel_layout<'s>(
     rel_type: &str,
     schema: &'s RelationshipSchema,
 ) -> Result<Layout<'s>, LowerError> {
-    single(schema.from_id.columns(), "a relationship's end")?;
-    single(schema.to_id.columns(), "a relationship's end")?;
-    if let Some(id) = &schema.edge_id {
-        single(id.columns(), "a relationship")?;
-    }
     let mut props: Vec<String> = schema.property_mappings.keys().cloned().collect();
     props.sort();
     Ok(Layout {
@@ -118,6 +124,10 @@ pub(super) fn rel_layout<'s>(
         node: None,
         rel: Some(schema),
         props,
+        id: 0,
+        from: schema.from_id.columns().len(),
+        to: schema.to_id.columns().len(),
+        edge_id: schema.edge_id.as_ref().map_or(0, |id| id.columns().len()),
     })
 }
 
@@ -132,13 +142,6 @@ pub(super) fn slot(t: &RenderExpr, i: usize) -> Result<RenderExpr, LowerError> {
     )))
 }
 
-fn single(cols: Vec<&str>, what: &str) -> Result<String, LowerError> {
-    match cols.as_slice() {
-        [one] => Ok(one.to_string()),
-        _ => unsupported(format!("{what} of a composite id in a list (S8)")),
-    }
-}
-
 /// A table's columns under `alias` as an element tuple of `layout` (inside
 /// a walk, `path.rs`): as [`Lowerer::elem_tuple`] builds it from a scan.
 fn table_tuple(layout: &Layout, alias: &str) -> Result<String, LowerError> {
@@ -146,17 +149,14 @@ fn table_tuple(layout: &Layout, alias: &str) -> Result<String, LowerError> {
     let mut fields = Vec::new();
     let (mappings, types) = match (layout.node, layout.rel) {
         (Some(n), _) => {
-            fields.push(col(&single(
-                n.id_physical_columns().iter().map(String::as_str).collect(),
-                "a node",
-            )?));
+            fields.extend(n.id_physical_columns().iter().map(|c| col(c)));
             (&n.property_mappings, &n.property_types)
         }
         (_, Some(r)) => {
-            fields.push(col(&single(r.from_id.columns(), "a relationship's end")?));
-            fields.push(col(&single(r.to_id.columns(), "a relationship's end")?));
+            fields.extend(r.from_id.columns().into_iter().map(col));
+            fields.extend(r.to_id.columns().into_iter().map(col));
             if let Some(id) = &r.edge_id {
-                fields.push(col(&single(id.columns(), "a relationship")?));
+                fields.extend(id.columns().into_iter().map(col));
             }
             (&r.property_mappings, &r.property_types)
         }
@@ -270,10 +270,19 @@ impl<'s> Lowerer<'s> {
                 fields.extend(id);
             }
             (Elem::Rel { .. }, Some(r)) => {
-                fields.push(self.physical(v, &single(r.from_id.columns(), "")?)?);
-                fields.push(self.physical(v, &single(r.to_id.columns(), "")?)?);
-                if let Some(id) = &r.edge_id {
-                    fields.push(self.physical(v, &single(id.columns(), "")?)?);
+                let edge_id = r
+                    .edge_id
+                    .as_ref()
+                    .map(|id| id.columns())
+                    .unwrap_or_default();
+                for c in r
+                    .from_id
+                    .columns()
+                    .into_iter()
+                    .chain(r.to_id.columns())
+                    .chain(edge_id)
+                {
+                    fields.push(self.physical(v, c)?);
                 }
             }
             (Elem::Rel { .. }, None) => return unsupported("internal: a relationship layout"),
@@ -356,14 +365,40 @@ impl<'s> Lowerer<'s> {
             .iter()
             .map(|p| (p.clone(), at(layout.prop_slot(p).unwrap_or_default())))
             .collect();
+        // A composite id's element id joins its parts' texts (`value.rs`).
+        let id_of = |slots: Vec<usize>| {
+            let parts: Vec<String> = slots.into_iter().map(at).collect();
+            super::value::element_id_sql(g, &parts)
+        };
         let object = match &elem {
-            Elem::Node(label) => super::value::node_object(g, label, &at(0), &props),
+            Elem::Node(label) => {
+                super::value::node_object(g, label, &id_of(layout.identity_slots()), &props)
+            }
             Elem::Rel { rel_type, from, to } => {
-                super::value::rel_object(g, rel_type, from, to, &at(0), &at(1), &props)
+                let (from_slots, to_slots) = layout.end_slots();
+                super::value::rel_object(
+                    g,
+                    rel_type,
+                    from,
+                    to,
+                    &id_of(from_slots),
+                    &id_of(to_slots),
+                    &props,
+                )
             }
         };
-        let first = at(layout.identity_slots()[0]);
-        Ok((g.null_if)(&(spelling.is_null)(&first), &object))
+        // NULL where its identity is: every slot of a composite node id
+        // (a part of a real node's can be NULL), else the first.
+        let slots = layout.identity_slots();
+        let presence = match &elem {
+            Elem::Node(_) => slots.as_slice(),
+            Elem::Rel { .. } => &slots[..1],
+        };
+        let absent: Vec<String> = presence
+            .iter()
+            .map(|i| (spelling.is_null)(&at(*i)))
+            .collect();
+        Ok((g.null_if)(&absent.join(" AND "), &object))
     }
 
     /// When `item` (lowered to `e`) is a list's node or relationship, or a

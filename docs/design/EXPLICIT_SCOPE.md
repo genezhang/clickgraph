@@ -1360,9 +1360,7 @@ types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
 - **Known gap (#1354):** a node whose id, or a part of it, is NULL is
   dropped from a zero-length walk (its ties and first-node restriction use
   `=` / `IN`; a single nullable id since S6a).
-- **Not lowered yet (S8d2c):** a composite id in a value or a list (a
-  path's nodes, `DISTINCT p`): its key must read the id's columns, not the
-  generator's text (a carried path exports only the text today).
+- A composite id in a value or a list: S8d2c below.
 
 **Implemented in S8d2a** (shortest paths between composite ids,
 `path::composite_key`):
@@ -1390,9 +1388,7 @@ types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
   the `start_<col>` / `end_<col>` the walk carries, restricted to the pairs
   failing the conditions by that key; an end a condition reads is joined
   by it.
-- **Not lowered yet (S8d2c):** a composite shortest path read as a path
-  (its value, `nodes(p)`, `DISTINCT p`): the trails keep its nodes only as
-  the generator's text.
+- A composite shortest path read as a path: S8d2c below.
 
 **Implemented in S8d2b** (walks of several definitions between composite
 ids, `Lowerer::walks_by_keys` / `walk_key`, `walk_key_sql`):
@@ -1419,6 +1415,40 @@ ids, `Lowerer::walks_by_keys` / `walk_key`, `walk_key_sql`):
   `String`): the relationship relates nothing, where `=` would match.
 - A walk's definitions still share one end arity (`rel_union_shape`); a
   union's identity columns of different types fail as before (#1352).
+
+**Implemented in S8d2c** (composite ids in values and lists):
+- **One spelling of a composite id's identity.** Under
+  `composite_by_columns` (the lowering's walks only) the generator spells a
+  composite id as the text of its tuple (`emit_id_expr`), as the searches
+  (S8d2a) and walks by keys (S8d2b) do: a walk's `start_id`, `end_id` and
+  `path_nodes` are collision-free, so the identity of a path's nodes
+  (`DISTINCT nodes(p)` as a value) tells pipe-sharing ids apart, and a
+  shortest path's trails and recovered paths spell nodes alike (a shortest
+  path read as a path, with a condition the search cannot hold, is
+  lowered: the keyed trails carry its columns). A value's identity
+  (`node_key`) is the label and the text of the tuple.
+- **Element ids** follow ClickGraph's contract (`graph_catalog::element_id`,
+  as Bolt and the graph output make them): a composite id's parts' texts
+  joined by `|` (`value::element_id_sql`), a NULL part spelled `null` (not a
+  NULL element id: Bolt blanked the row, review), in a node's `elementId`
+  and a relationship's and its ends'. (The contract's text is not
+  collision-free; identities never use it.)
+- **A NULL element.** An element is NULL (an OPTIONAL MATCH's unmatched
+  one, a NULL list element) when every part of a composite node id is
+  (`Lowerer::presence`, `null_test`): a part of a real node's can be NULL,
+  and the first-column test dropped such nodes from lists and counts
+  (review). Other identities keep their first column (a label union's
+  label, a relationship's, a path's start).
+- **List elements.** A node's or relationship's element tuple holds a slot
+  per id column (its id; its ends' ids and `edge_id`), so lists of
+  composite nodes and relationships, of relationships with a composite
+  `edge_id`, and a walk's carried tuples are lowered; `count(DISTINCT x)` of
+  a list's element of several identity slots counts their tuple.
+- **Not lowered:** `id(n)` of a composite node (one value).
+- **Comparator note:** a relationship of several types returned whole is a
+  value whose ends the comparator reads off the element id (`B|1`), where
+  Neo4j's flattened ends are a list (`["B", "1"]`); the value is the
+  contract's.
 
 ### 4.7 Label inference
 
@@ -3486,11 +3516,11 @@ slice that will handle it.
       - Live suite, switch on, vs S7b1: one known-wrong golden now correct
         (`MATCH ()-[r:LIKED]-() RETURN r LIMIT 25`), nothing else changed.
       - Timing: above (§4.6).
-- [ ] S8 layouts, in sub-slices: S8a FK edges (done), S8b denormalized
+- [x] S8 layouts, in sub-slices: S8a FK edges (done), S8b denormalized
   nodes (done; a label both embedded and in its own tables later), S8c
   polymorphic edges and node tables (done), S8d composite ids: S8d1 walks
   of one definition (done), S8d2a shortest paths (done), S8d2b union walks
-  (done), S8d2c values and lists.
+  (done), S8d2c values and lists (done).
   - [x] **S8a: FK edges** (§4.6 "Implemented in S8a"): a relationship whose
     table is one of its ends' node tables is read as a table of
     relationships; a self-referencing one's ends as legacy reads them
@@ -3706,6 +3736,33 @@ slice that will handle it.
         node). Filed: text keys miss equal values of differently typed
         columns (#1360, known gap above). A union of definitions of other
         end arities is still refused (`rel_union_shape`).
+  - [x] **S8d2c: composite ids in values and lists** (§4.6 "Implemented in
+    S8d2c"): the generator spells composite ids as their tuple's text under
+    the lowering's flag; element ids join parts with `|`; list tuples hold
+    a slot per id column.
+    - Acceptance:
+      - Generated shapes against Neo4j on the composite graphs (pipe-sharing
+        ids, a NULL-part node, two composite labels sharing id tuples,
+        composite and non-composite `edge_id`s): 45 shapes (path values,
+        `nodes(p)` / `relationships(p)`, `DISTINCT p` incl. zero-length
+        paths, `RETURN DISTINCT nodes(p)`, lists, `collect` / `UNWIND` /
+        `count(DISTINCT)` of composite elements, union-walk and shortest-path
+        values, with conditions): every lowered shape equals Neo4j but
+        `collect` order, a shortest path's pick among equals (each checked
+        among Neo4j's `allShortestPaths`) and the comparator note above.
+      - Neo4j oracle, 20 schemas: unchanged; the corpus lowers 1420.
+      - Mutation check: 5 rules broken in turn, all caught (walks' ids by
+        the `|`-joined text, element ids of one part, identities by the
+        element id's text, a list node's identity of one slot, a composite
+        node NULL when its first part is).
+      - Live suite: unchanged.
+      - Adversarial review (about 230 shapes in 10 sweeps on 6 schemas,
+        and Bolt): two findings, fixed: a node whose first composite id
+        part is NULL was dropped from lists and counts (`size(collect(a))`
+        5 for 6), and a NULL part made the element id NULL (Bolt blanked the
+        row). Not of this slice: zero-length walks drop nodes with a NULL id
+        part (#1354, S8d1); a UNION of lists of nodes built as tuples and as
+        values fails (#1362, single ids too).
 - [x] S9 subquery expressions (§4.12 "Implemented in S9"): `EXISTS`,
   pattern predicates, `exists(pattern)`, `size(pattern)` /
   `size([pattern …])`, pattern comprehensions of values; bound as MATCHes

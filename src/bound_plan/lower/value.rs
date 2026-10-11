@@ -192,8 +192,30 @@ pub(super) fn node_key_text(g: &GraphValues, label: &str, id: &str) -> String {
     (g.text)(&[label.to_string(), string(":"), (g.to_text)(id)])
 }
 
-/// A node: its label, the SQL of its (single-column) id, its properties
-/// (name, SQL).
+/// A node's id parts (SQL) as its element id spells them
+/// (`graph_catalog::element_id`): the one id, or the parts' texts joined by
+/// `|` (the element id's contract; a value's identity is its key, which no
+/// two ids share, [`super::walk_key_sql`]).
+pub(super) fn element_id_sql(g: &GraphValues, ids: &[String]) -> String {
+    match ids {
+        [one] => one.clone(),
+        _ => {
+            let mut parts = Vec::new();
+            for (i, p) in ids.iter().enumerate() {
+                if i > 0 {
+                    parts.push(string("|"));
+                }
+                // A NULL part is spelled, not NULL: the element id of a node
+                // with one is not NULL (review).
+                parts.push(format!("coalesce({}, {})", (g.to_text)(p), string("null")));
+            }
+            (g.text)(&parts)
+        }
+    }
+}
+
+/// A node: its label, the SQL of its id (a composite one's
+/// [`element_id_sql`]), its properties (name, SQL).
 pub(super) fn node_object(
     g: &GraphValues,
     label: &str,
@@ -349,15 +371,15 @@ pub(super) fn table_node_object(
     label: &str,
     alias: &str,
 ) -> Result<String, LowerError> {
-    let [id] = schema
+    let ids: Vec<String> = schema
         .id_physical_columns()
-        .try_into()
-        .map_err(|_| LowerError::Unsupported("a composite node id in a value (S8)".to_string()))?;
-    let id = sql(&super::col_at(alias, &id));
+        .iter()
+        .map(|c| sql(&super::col_at(alias, c)))
+        .collect();
     Ok(node_object(
         g,
         label,
-        &id,
+        &element_id_sql(g, &ids),
         &table_props(&schema.property_mappings, alias),
     ))
 }
@@ -369,19 +391,17 @@ pub(super) fn table_rel_object(
     rel_type: &str,
     alias: &str,
 ) -> Result<String, LowerError> {
-    let (Ok([from]), Ok([to])) = (
-        <[&str; 1]>::try_from(schema.from_id.columns()),
-        <[&str; 1]>::try_from(schema.to_id.columns()),
-    ) else {
-        return unsupported("a composite relationship endpoint in a value (S8)");
+    let end = |cols: Vec<&str>| -> String {
+        let ids: Vec<String> = cols.iter().map(|c| sql(&super::col_at(alias, c))).collect();
+        element_id_sql(g, &ids)
     };
     Ok(rel_object(
         g,
         rel_type,
         &schema.from_node,
         &schema.to_node,
-        &sql(&super::col_at(alias, from)),
-        &sql(&super::col_at(alias, to)),
+        &end(schema.from_id.columns()),
+        &end(schema.to_id.columns()),
         &table_props(&schema.property_mappings, alias),
     ))
 }
@@ -600,10 +620,7 @@ impl<'s> Lowerer<'s> {
             let Some(id) = self.identity(*v)? else {
                 continue;
             };
-            nulls.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: Operator::IsNull,
-                operands: vec![id[0].clone()],
-            }));
+            nulls.push(super::null_test(&self.presence(*v, &id), true));
         }
         if nulls.is_empty() {
             return Ok((keys, None));
@@ -803,26 +820,27 @@ impl<'s> Lowerer<'s> {
         Ok((s.concat)(&lists))
     }
 
-    /// A node's identity as a text, with its label.
+    /// A node's identity as a text, with its label (a composite id's the
+    /// text of its tuple, `super::walk_key_sql`, as walks key it).
     fn node_key(&self, v: VarId, s: &GraphValues) -> Result<String, LowerError> {
-        let id = sql(&self.node_id_value(v)?);
+        let ids = self.node_id_parts(v)?;
         match self.scans.get(&v) {
-            Some(Scan::Node { label, .. }) => Ok(node_key_text(s, &string(label), &id)),
+            Some(Scan::Node { label, .. }) => Ok(super::walk_key_sql(s, &string(label), &ids)),
             Some(Scan::Labels { .. }) => {
                 let label = sql(&self.physical(v, super::LABEL_COLUMN)?);
-                Ok(node_key_text(s, &label, &id))
+                Ok(super::walk_key_sql(s, &label, &ids))
             }
             _ => unsupported(format!("internal: {v} is not a node scan")),
         }
     }
 
-    /// A node's id (without its label) as one expression.
-    fn node_id_value(&self, v: VarId) -> Result<RenderExpr, LowerError> {
-        match self.id_columns(v)? {
-            Some(mut ids) if ids.len() == 1 => Ok(ids.remove(0)),
-            Some(_) => unsupported("a composite node id in a value (S8)"),
-            None => Ok(RenderExpr::Literal(Literal::Null)),
-        }
+    /// A node's id columns (SQL, without its label); NULL for a node that
+    /// matches nothing.
+    fn node_id_parts(&self, v: VarId) -> Result<Vec<String>, LowerError> {
+        Ok(match self.id_columns(v)? {
+            Some(ids) => ids.iter().map(sql).collect(),
+            None => vec![sql(&RenderExpr::Literal(Literal::Null))],
+        })
     }
 
     /// A variable-length relationship's list: its relationships (two empty
@@ -839,7 +857,7 @@ impl<'s> Lowerer<'s> {
 
     /// A fixed node of the current relation.
     fn node_value(&self, v: VarId, s: &GraphValues) -> Result<String, LowerError> {
-        let id = sql(&self.node_id_value(v)?);
+        let id = element_id_sql(s, &self.node_id_parts(v)?);
         let mut props = Vec::new();
         for name in self.all_property_names(v) {
             let e = self.property(v, &name)?;
@@ -879,10 +897,13 @@ impl<'s> Lowerer<'s> {
     fn rel_value(&self, v: VarId, s: &GraphValues) -> Result<String, LowerError> {
         if let Some(Scan::Rels { arms, .. }) = self.scans.get(&v) {
             let shape = super::rel_union_shape(arms)?;
-            if shape.from != 1 || shape.to != 1 {
-                return unsupported("a composite relationship endpoint in a value (S8)");
-            }
             let column = |c: &str| self.physical(v, c).map(|e| sql(&e));
+            let end = |side: &str, arity: usize| -> Result<String, LowerError> {
+                let ids = (0..arity)
+                    .map(|i| column(&super::indexed_column(side, i)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(element_id_sql(s, &ids))
+            };
             let mut props = Vec::new();
             for name in self.all_property_names(v) {
                 let e = self.property(v, &name)?;
@@ -896,8 +917,8 @@ impl<'s> Lowerer<'s> {
                     &column(super::REL_TO_LABEL)?,
                 ),
                 (
-                    &column(&super::indexed_column(super::REL_FROM, 0))?,
-                    &column(&super::indexed_column(super::REL_TO, 0))?,
+                    &end(super::REL_FROM, shape.from)?,
+                    &end(super::REL_TO, shape.to)?,
                 ),
                 &props,
             ));
@@ -908,11 +929,12 @@ impl<'s> Lowerer<'s> {
         else {
             return unsupported(format!("internal: {v} is not a relationship scan"));
         };
-        let (Ok([from]), Ok([to])) = (
-            <[&str; 1]>::try_from(schema.from_id.columns()),
-            <[&str; 1]>::try_from(schema.to_id.columns()),
-        ) else {
-            return unsupported("a composite relationship endpoint in a value (S8)");
+        let end = |cols: Vec<&str>| -> Result<String, LowerError> {
+            let ids = cols
+                .iter()
+                .map(|c| self.physical(v, c).map(|e| sql(&e)))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(element_id_sql(s, &ids))
         };
         let mut props = Vec::new();
         for name in self.all_property_names(v) {
@@ -924,8 +946,8 @@ impl<'s> Lowerer<'s> {
             rel_type,
             &schema.from_node,
             &schema.to_node,
-            &sql(&self.physical(v, from)?),
-            &sql(&self.physical(v, to)?),
+            &end(schema.from_id.columns())?,
+            &end(schema.to_id.columns())?,
             &props,
         ))
     }

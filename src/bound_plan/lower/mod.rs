@@ -1088,11 +1088,7 @@ impl<'s> Lowerer<'s> {
             }
             checked.push(v);
             if let Some(id) = self.identity(v)? {
-                self.filters
-                    .push(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                        operator: Operator::IsNotNull,
-                        operands: vec![id[0].clone()],
-                    }));
+                self.filters.push(null_test(&self.presence(v, &id), false));
             }
         }
         self.uniqueness(&clause_rels)?;
@@ -3847,9 +3843,8 @@ impl<'s> Lowerer<'s> {
             }));
         }
         // Between composite ids (S8d2) the search and the trails key a node
-        // by the text of its id's tuple (`path::composite_key`); the trails
-        // keep a path's nodes only as the generator's `|`-joined texts, so a
-        // recovered path (read as a value or by its identity) is not lowered.
+        // by the text of its id's tuple (`path::composite_key`; the
+        // generator's, under `composite_by_columns`, S8d2c).
         let composite = match &walk {
             path::Walk::One(call) => {
                 let cols = call.node.id_physical_columns();
@@ -3857,12 +3852,6 @@ impl<'s> Lowerer<'s> {
             }
             path::Walk::Union(_) => None,
         };
-        if composite.is_some() && walked && !conditions.is_empty() {
-            return unsupported(
-                "a shortestPath between composite ids read as a path, with a condition the \
-                 search cannot hold",
-            );
-        }
         let mut search = walk.search(self.schema)?;
         search.min = min.min(1);
         let var = search.var.clone();
@@ -4482,6 +4471,17 @@ impl<'s> Lowerer<'s> {
             cols.push(path::TUPLE_COLUMNS[1]);
         }
         cols.into_iter().map(str::to_string).collect()
+    }
+
+    /// The columns of `v`'s identity `ids` that are all NULL exactly when
+    /// `v` is (`null_test`): a composite node id's, every one (a part of a
+    /// real node's can be NULL); otherwise the first (a label union's label,
+    /// a relationship's first end or `edge_id` column, a path's start).
+    pub(super) fn presence(&self, v: VarId, ids: &[RenderExpr]) -> Vec<RenderExpr> {
+        match self.scans.get(&v) {
+            Some(Scan::Node { .. }) if ids.len() > 1 => ids.to_vec(),
+            _ => ids.iter().take(1).cloned().collect(),
+        }
     }
 
     /// An element's identity, one expression per identity column; `None` for
@@ -6539,6 +6539,30 @@ fn is_constant(e: &RenderExpr) -> bool {
         RenderExpr::MapLiteral(entries) => entries.iter().all(|(_, v)| is_constant(v)),
         RenderExpr::OperatorApplicationExp(op) => op.operands.iter().all(is_constant),
         _ => false,
+    }
+}
+
+/// Whether an element is NULL (`null`) or not (an OPTIONAL MATCH's
+/// unmatched element, a NULL list element), by `ids`, its columns that are
+/// all NULL exactly then ([`Lowerer::presence`]): one column's
+/// `IS [NOT] NULL`, or all of a composite node id's (a part of a real
+/// node's composite id can be NULL, S8d2c review).
+pub(crate) fn null_test(ids: &[RenderExpr], null: bool) -> RenderExpr {
+    let test = |e: &RenderExpr| {
+        RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: if null {
+                Operator::IsNull
+            } else {
+                Operator::IsNotNull
+            },
+            operands: vec![e.clone()],
+        })
+    };
+    match ids {
+        [one] => test(one),
+        _ if null => and_all(ids.iter().map(test).collect())
+            .unwrap_or(RenderExpr::Literal(Literal::Boolean(true))),
+        _ => or_all(ids.iter().map(test).collect()),
     }
 }
 
