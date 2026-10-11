@@ -1288,6 +1288,8 @@ WHERE a.user_id = 1 AND b.user_id = 100
 RETURN p
 ```
 
+The relationship may also be written without a length (`shortestPath((a)-[:FOLLOWS]->(b))`): the path of exactly one relationship, as `[:FOLLOWS*1..1]`. Named (`[r:FOLLOWS]`), `r` is that path's list of one relationship, as in Neo4j (`size(r)` is 1).
+
 ### Path Functions
 
 ```cypher

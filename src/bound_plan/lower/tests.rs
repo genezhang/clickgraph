@@ -2151,12 +2151,31 @@ fn an_optional_shortest_path() {
     );
 }
 
+/// S11i: a shortest path over one anonymous relationship is the path of
+/// exactly one, `*1..1`.
+#[test]
+fn a_shortest_path_over_one_relationship_is_one_of_one_hop() {
+    for mode in ["shortestPath", "allShortestPaths"] {
+        let one = |spec: &str| {
+            sql(&format!(
+                "MATCH p = {mode}((a:User)-[:FOLLOWS{spec}]->(b:User)) WHERE a.user_id = 1 \
+                 RETURN b.user_id AS b, length(p) AS l"
+            ))
+        };
+        assert_eq!(one(""), one("*1..1"), "{mode}");
+        // Named, it is that list too, as Neo4j binds it (`size(r)` is 1).
+        let named = |spec: &str| {
+            sql(&format!(
+                "MATCH p = {mode}((a:User)-[r:FOLLOWS{spec}]->(b:User)) WHERE a.user_id = 1 \
+                 RETURN size(r) AS n"
+            ))
+        };
+        assert_eq!(named(""), named("*1..1"), "{mode}");
+    }
+}
+
 #[test]
 fn what_shortest_paths_are_not_lowered() {
-    not_lowered(
-        "MATCH p = shortestPath((a:User)-[:FOLLOWS]->(b:User)) RETURN count(*)",
-        "shortestPath over a fixed-length relationship",
-    );
     not_lowered(
         "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(a)) RETURN count(*)",
         "shortestPath from a node to itself",

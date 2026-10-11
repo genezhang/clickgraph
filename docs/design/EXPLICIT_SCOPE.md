@@ -4146,6 +4146,17 @@ slice that will handle it.
       per-element keys, #1397). Not fixed: a list of `UInt64` and `Int64`
       columns is a `Variant`, so `collect(DISTINCT x)` over it now counts
       equal integers twice, as `count(DISTINCT x)` already did (#1396).
+  - [x] **S11i: shortestPath over one fixed-length relationship.**
+    `shortestPath((a)-[:R]->(b))` is the shortest path of exactly one
+    relationship: the binder binds a relationship of a shortest-path
+    pattern written without a length as `*1..1` (the same paths; the SQL
+    is identical, a unit test checks it). Named (`[r:R]`), it is that
+    list, as Neo4j binds it (review: `size(r)` is 1 there, `type(r)` a
+    type mismatch). Found by a trial of the ClickHouse
+    cutover: the 10 live tests of #1205's bare-hop form, which pass with
+    it applied; 6 generated shapes on `social_integration` equal to Neo4j
+    (one more, `nodes(p)` of an impossible path, fails on both pipelines
+    as with `*1..1`).
   - **User decisions (2026-10-11)** on what S11 does not lower: a
     relationship without `edge_id` keeps its ends as its identity (#1356;
     define `edge_id` to tell parallel rows apart); an undeclared property
