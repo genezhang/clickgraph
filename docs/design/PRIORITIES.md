@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; S7e3 #1347; S8a #1349 FK edges; S8b #1350 embedded nodes; S8c #1351 polymorphic edges / label-column nodes; S8d1 #1353 composite-id walks; S9 #PR subquery expressions; next: S8d2 composite searches / union walks / values, then S10 default on (reading a map's value needs typed per-key values: a later list slice))
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; S7e3 #1347; S8a #1349 FK edges; S8b #1350 embedded nodes; S8c #1351 polymorphic edges / label-column nodes; S8d1 #1353 composite-id walks; S9 #1357 subquery expressions; next: S8d2 composite searches / union walks / values, then S10 default on (reading a map's value needs typed per-key values: a later list slice))
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -740,7 +740,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
-- 2026-10-11: **P-4c S9: subquery expressions** (#PR, `src/bound_plan/expr.rs` `hoist_subqueries`, `binder.rs` `bind_subquery`, `src/bound_plan/lower/subquery.rs`, `FunctionMapper::null_safe_equal` / `Lists::collect_all`, behind `CLICKGRAPH_BOUND_PLAN=on`).
+- 2026-10-11: **P-4c S9: subquery expressions** (#1357, `src/bound_plan/expr.rs` `hoist_subqueries`, `binder.rs` `bind_subquery`, `src/bound_plan/lower/subquery.rs`, `FunctionMapper::null_safe_equal` / `Lists::collect_all`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - `EXISTS { … }`, pattern predicates, `exists(pattern)`, `size(pattern)` (Cypher 4's; Neo4j 5's `COUNT {}`), `size([pattern …])` and pattern comprehensions of values are bound as MATCHes over the expression's scope (an explicit correlation set, carried as the placeholder's arguments) and lowered as a LEFT JOIN of their matches grouped by the correlation: a boolean, count or NULL-keeping list per row. The drive reads a copy of the rows, so subqueries apply mid-MATCH, inside OPTIONAL MATCH and nested. A WITH WHERE reading a subquery of projected names is a filter after the projection.
   - Oracle: 9 queries wrong → Neo4j-equal, none the other way; corpus lowers 1420 (was 1398). Sweeps: 144 lowered shapes on five graphs, every one equal to Neo4j but 5 of the older parallel-row walk gap; the review's 400, rerun, left only filed / older defects and list order. Mutation check 8 of 8. Live suite: only legacy-refusal tests and now-correct goldens changed.
   - Review: 2 findings fixed (NULL-safe join keys past two relations, Code 403; an `EXISTS` compared with `=`), drive cost fixed; #1355 (parenthesized comparisons chained), #1356 (fixed-length parallel rows without `edge_id`) filed.
