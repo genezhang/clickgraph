@@ -4,8 +4,11 @@ categorizer filed it as a "path function filter" the generator never reads, and 
 skips the VLP's own predicate — so every path was returned.
 
 Oracle: the length histogram of the same pattern (`RETURN length(p), count(*)`, which counts
-`hop_count` exactly) predicts the count under every comparison and bound. The fixed-hop /
-shortestPath / OPTIONAL shapes cannot be answered from `hop_count` alone and must fail loudly.
+`hop_count` exactly) predicts the count under every comparison and bound.
+
+On shortestPath / allShortestPaths a WHERE condition on the path applies DURING the search (Neo4j
+semantics): per (start, end) pair the shortest path that satisfies it is picked. Oracle: the
+per-pair length histogram of the plain variable-length pattern.
 """
 
 import itertools
@@ -67,12 +70,6 @@ def _rows(schema, query):
     return result["results"]
 
 
-def _err(schema, query):
-    result = execute_cypher(query, schema_name=schema, raise_on_error=False)
-    assert "results" not in result, f"expected a refusal, got rows: {result}"
-    return str(result)
-
-
 OPS = {">": lambda l, k: l > k, ">=": lambda l, k: l >= k, "<": lambda l, k: l < k,
        "<=": lambda l, k: l <= k, "=": lambda l, k: l == k, "<>": lambda l, k: l != k}
 
@@ -86,10 +83,6 @@ PATTERNS = [
     ("social_polymorphic", "(a:User)-[:FOLLOWS*1..3]->(b:User)"),
     ("composite_id", "(a:Account)-[:TRANSFERRED*1..3]->(b:Account)"),
     (MIXED, "(a:Person)-[:REPORTS_TO*1..3]->(b:Person)"),
-    # shortestPath: the CTE has picked first, the predicate post-filters (Neo4j semantics)
-    ("social_integration", "shortestPath((a:User)-[:FOLLOWS*1..4]->(b:User))"),
-    ("social_integration", "allShortestPaths((a:User)-[:FOLLOWS*1..4]->(b:User))"),
-    ("denormalized_flights", "shortestPath((a:Airport)-[:FLIGHT*1..4]->(b:Airport))"),
 ]
 
 
@@ -104,6 +97,42 @@ def test_where_on_length_matches_the_length_histogram(schema, pattern):
         got = int(_rows(schema, f"MATCH p={pattern} WHERE length(p) {op} {k} "
                                 "RETURN count(*) AS n")[0]["n"])
         assert got == want, f"{schema} {pattern}: length(p) {op} {k}: got {got}, want {want}"
+
+
+# (schema, shortest function, pattern, node id property)
+SHORTEST = [
+    ("social_integration", "shortestPath", "(a:User)-[:FOLLOWS*1..4]->(b:User)", "user_id"),
+    ("social_integration", "allShortestPaths", "(a:User)-[:FOLLOWS*1..4]->(b:User)", "user_id"),
+    ("denormalized_flights", "shortestPath", "(a:Airport)-[:FLIGHT*1..4]->(b:Airport)", "code"),
+]
+
+
+@pytest.mark.parametrize("schema, fn, pattern, key", SHORTEST)
+def test_where_on_length_applies_during_the_shortest_search(schema, fn, pattern, key):
+    per_pair = {}
+    for r in _rows(schema, f"MATCH p={pattern} WHERE a <> b "
+                           f"RETURN a.{key} AS a, b.{key} AS b, length(p) AS l, count(*) AS n"):
+        per_pair.setdefault((r["a"], r["b"]), {})[int(r["l"])] = int(r["n"])
+    assert per_pair, "pattern has no paths — the oracle would be vacuous"
+
+    def want(keep):
+        total = 0
+        for hist in per_pair.values():
+            ok = [l for l in hist if keep(l)]
+            if ok:
+                total += 1 if fn == "shortestPath" else hist[min(ok)]
+        return total
+
+    unfiltered = int(_rows(schema, f"MATCH p={fn}({pattern}) RETURN count(*) AS n")[0]["n"])
+    assert unfiltered == want(lambda l: True)
+    lengths = {int(r["l"]) for r in
+               _rows(schema, f"MATCH p={fn}({pattern}) RETURN length(p) AS l, count(*) AS n")}
+    assert len(lengths) > 1, f"need several lengths to tell the filter apart: {lengths}"
+    for op, k in itertools.product(OPS, [1, 2, 3]):
+        expected = want(lambda l: OPS[op](l, k))
+        got = int(_rows(schema, f"MATCH p={fn}({pattern}) WHERE length(p) {op} {k} "
+                                "RETURN count(*) AS n")[0]["n"])
+        assert got == expected, f"{schema} {fn}: length(p) {op} {k}: got {got}, want {expected}"
 
 
 def test_path_predicate_combined_with_an_endpoint_filter():
@@ -125,9 +154,25 @@ def test_path_predicate_under_an_aggregate_and_order():
     assert {int(r["l"]): int(r["n"]) for r in rows} == {l: n for l, n in full.items() if l >= 2}
 
 
-@pytest.mark.parametrize("query, why", [
-    ("MATCH p=(c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) WHERE size(nodes(p)) > 3 "
-     "RETURN count(*)", "other hops"),
-])
-def test_unanswerable_shapes_fail_loudly(query, why):
-    assert "path variable `p`" in _err("social_integration", query)
+def test_node_count_of_a_hop_plus_path_matches_the_trail_enumeration():
+    """`size(nodes(p))` over a fixed hop plus a `*1..2` part: the path is a trail (no repeated
+    edge) of 2 or 3 edges, so `size(nodes(p)) > 3` keeps exactly the 3-edge trails."""
+    edges = [(int(r["a"]), int(r["b"])) for r in _rows(
+        "social_integration",
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN a.user_id AS a, b.user_id AS b")]
+    out = {}
+    for i, (a, b) in enumerate(edges):
+        out.setdefault(a, []).append((i, b))
+
+    def trails(node, used, n):
+        if n == 3:
+            return 1
+        return sum(trails(nxt, used | {i}, n + 1)
+                   for i, nxt in out.get(node, []) if i not in used)
+
+    want = sum(trails(start, frozenset(), 0) for start in out)
+    assert want > 0, "the oracle would be vacuous: no 3-edge trails"
+    got = int(_rows("social_integration",
+                    "MATCH p=(c:User)-[:FOLLOWS]->(a:User)-[:FOLLOWS*1..2]->(b:User) "
+                    "WHERE size(nodes(p)) > 3 RETURN count(*) AS n")[0]["n"])
+    assert got == want

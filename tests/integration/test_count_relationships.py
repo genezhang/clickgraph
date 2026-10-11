@@ -107,7 +107,8 @@ class TestCountRelationships:
 
     def test_error_message_for_nonexistent_type(self):
         """
-        Verify error messages for relationship types not in the schema.
+        A relationship type not in the schema matches nothing (Neo4j semantics):
+        the query succeeds and counts zero relationships.
         """
         import os
         import requests
@@ -118,7 +119,8 @@ class TestCountRelationships:
             f"{_base}/query",
             json={"query": "USE test_fixtures\nMATCH ()-[r:NONEXISTENT]->()\nRETURN count(r)"}
         )
-        assert response.status_code == 400, f"Expected 400, got {response.status_code}: {response.text}"
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
+        assert response.json()["results"] == [{"count(r)": 0}]
 
 
 if __name__ == "__main__":

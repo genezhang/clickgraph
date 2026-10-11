@@ -2,12 +2,14 @@
 #1155: on the denormalized layout an UNDIRECTED variable-length path chained to another hop was
 rendered with no recursive CTE at all (the CTE was generated, left unreferenced and dropped as
 dead): the path ran as ONE hop whatever its bound — `*1..1`, `*1..2` and `*1..3` returned the same
-rows, ~3x off an independent oracle. It is now refused loudly; layouts whose undirected path is a
-single walk (standard, polymorphic) are unchanged and their counts must GROW with the bound.
+rows, ~3x off an independent oracle. It now honors the bound and matches a Python trail
+enumeration with GLOBAL edge uniqueness (verified against Neo4j 5.26); layouts whose undirected
+path is a single walk (standard, polymorphic) must keep GROWING with the bound.
 """
 
 import pytest
 from conftest import execute_cypher
+from test_zero_lower_bound_trails import _count, _graph
 
 
 def _run(schema, pattern):
@@ -15,14 +17,22 @@ def _run(schema, pattern):
                           raise_on_error=False)
 
 
-@pytest.mark.parametrize("schema", ["denormalized_flights", "ontime_flights"])
-@pytest.mark.parametrize("pattern", [
-    "(o:Airport)-[:FLIGHT*1..2]-(d:Airport)-[:FLIGHT]->(e:Airport)",
-    "(o:Airport)-[:FLIGHT]->(d:Airport)-[:FLIGHT*1..2]-(e:Airport)",
+@pytest.mark.parametrize("schema, expected", [
+    ("denormalized_flights", {"path+hop": 41, "hop+path": 35}),
+    ("ontime_flights", {"path+hop": 14, "hop+path": 8}),
 ])
-def test_chained_undirected_path_on_denormalized_is_refused(schema, pattern):
+@pytest.mark.parametrize("shape, pattern, segments", [
+    ("path+hop", "(o:Airport)-[:FLIGHT*1..2]-(d:Airport)-[:FLIGHT]->(e:Airport)",
+     [("both", 1, 2), ("out", 1, 1)]),
+    ("hop+path", "(o:Airport)-[:FLIGHT]->(d:Airport)-[:FLIGHT*1..2]-(e:Airport)",
+     [("out", 1, 1), ("both", 1, 2)]),
+])
+def test_chained_undirected_path_on_denormalized_matches_the_trail_enumeration(
+        schema, expected, shape, pattern, segments):
     result = _run(schema, pattern)
-    assert "results" not in result and "#1155" in str(result), result
+    assert "results" in result, result
+    want = _count(_graph(schema, "Airport", "FLIGHT", "code"), segments)
+    assert int(result["results"][0]["n"]) == want == expected[shape]
 
 
 @pytest.mark.parametrize("schema, label, rel", [

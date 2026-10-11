@@ -65,21 +65,25 @@ def test_typed_end_node():
         len({a for a, _ in edges})
 
 
-def test_a_two_hop_pattern_predicate_stays_loud():
-    # the existing EXISTS multi-hop guard (#574): only the first hop would be checked
-    result = execute_cypher(
-        "MATCH (a:User) WHERE (a)-[:FOLLOWS]->()-[:FOLLOWS]->() RETURN count(*) AS n",
-        schema_name=SCHEMA, raise_on_error=False)
-    assert "results" not in result and "#574" in str(result), result
+def test_a_two_hop_pattern_predicate():
+    # every hop is checked (#574: once only the first hop would have been), and the two hops are
+    # distinct relationships
+    edges, ages = _model()
+    two_hop = {a for a, x in edges for x2, y in edges if x2 == x and (a, x) != (x2, y)}
+    assert _count("MATCH (a:User) WHERE (a)-[:FOLLOWS]->()-[:FOLLOWS]->() "
+                  "RETURN count(*) AS n") == len(two_hop)
 
 
-def test_a_hop_bound_or_ored_types_still_fail_loudly():
+def test_a_hop_bound_or_ored_types():
+    # #588: a path of 1..2 hops exists iff a single hop does; a type the schema does not declare
+    # matches nothing, so `FOLLOWS|FRIENDS_WITH` is `FOLLOWS`
+    edges, ages = _model()
+    has_out = {a for a, _ in edges}
     for query in [
         "MATCH (a:User) WHERE (a)-[:FOLLOWS*1..2]->() RETURN count(*) AS n",
         "MATCH (a:User) WHERE (a)-[:FOLLOWS|FRIENDS_WITH]->() RETURN count(*) AS n",
     ]:
-        result = execute_cypher(query, schema_name=SCHEMA, raise_on_error=False)
-        assert "results" not in result and "#588" in str(result), result
+        assert _count(query) == len(has_out), query
 
 
 def test_pattern_predicate_in_case_and_projection():

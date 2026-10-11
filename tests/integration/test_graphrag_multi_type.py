@@ -44,12 +44,15 @@ class TestMultiTypeRecursivePatterns:
         aggregation against the raw `users_test`/`user_follows_test`/
         `posts_test` tables. Assert the exact counts here so a regression
         can't silently slip back in.
+
+        Cypher lists are 0-based: `labels(x)[0]` is the node's (single)
+        label; `labels(x)[1]` is NULL (verified against Neo4j 5.26).
         """
         response = execute_cypher(
             """
             MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)
             WHERE u.user_id = 1
-            RETURN DISTINCT labels(x)[1] as node_type, count(*) as cnt
+            RETURN DISTINCT labels(x)[0] as node_type, count(*) as cnt
             ORDER BY node_type
             """,
             schema_name="social_integration"
@@ -85,7 +88,7 @@ class TestMultiTypeRecursivePatterns:
             """
             MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)
             WHERE u.user_id = 1
-            RETURN labels(x)[1] as node_type, count(*) as cnt
+            RETURN labels(x)[0] as node_type, count(*) as cnt
             ORDER BY node_type
             """,
             schema_name="social_integration"
@@ -227,7 +230,7 @@ class TestMixedRecursiveNonRecursive:
         Verify that AUTHORED (User->Post) naturally stops recursion.
         
         Post nodes have no outgoing AUTHORED or FOLLOWS edges,
-        so 2-hop AUTHORED->* paths should not exist.
+        so 2-hop AUTHORED->* paths do not exist: the query counts 0.
         """
         # First, verify 1-hop AUTHORED works
         response_1hop = execute_cypher(
@@ -243,22 +246,21 @@ class TestMixedRecursiveNonRecursive:
         results_1hop = response_1hop["results"]
         cnt_1hop = results_1hop[0]["cnt"] if isinstance(results_1hop[0], dict) else results_1hop[0][0]
         
-        if cnt_1hop > 0:
-            # User 1 has authored posts
-            # AUTHORED*2 should be rejected as semantically invalid (non-transitive relationship)
-            response_2hop = execute_cypher(
-                """
-                MATCH (u:User)-[:AUTHORED*2]->(x)
-                WHERE u.user_id = 1
-                RETURN count(*) as cnt
-                """,
-                schema_name="social_integration",
-                raise_on_error=False  # Don't raise, we expect an error
-            )
-            
-            # Should return an error about non-transitive relationship
-            assert "non-transitive" in str(response_2hop).lower(), \
-                f"Expected non-transitive error, got: {response_2hop}"
+        assert cnt_1hop == 2, f"user 1 authored 2 posts, got {cnt_1hop}"
+
+        # AUTHORED*2 is a valid pattern that matches nothing: a Post has no
+        # outgoing AUTHORED edge, so no 2-hop AUTHORED path exists (Neo4j
+        # answers cnt 0, not an error).
+        response_2hop = execute_cypher(
+            """
+            MATCH (u:User)-[:AUTHORED*2]->(x)
+            WHERE u.user_id = 1
+            RETURN count(*) as cnt
+            """,
+            schema_name="social_integration"
+        )
+        assert_query_success(response_2hop)
+        assert response_2hop["results"] == [{"cnt": 0}], response_2hop
     
     def test_follows_continues_after_follows(self):
         """Verify FOLLOWS (User->User) can chain multiple times."""

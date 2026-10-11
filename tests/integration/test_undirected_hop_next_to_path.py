@@ -115,16 +115,32 @@ def test_hop_and_path_in_separate_clauses(hop_dir, path_dir, keyword):
     assert int(got[0]["n"]) == want
 
 
-# --- shapes the hop-vs-path edge guard does not cover stay LOUD (never a silently high count) -----
+# --- shapes the legacy hop-vs-path edge guard did not cover (once refused) --------------------------
 
-@pytest.mark.parametrize("query", [
-    # a WITH scope
-    "MATCH (c:User) WITH c MATCH (c)-[:FOLLOWS]-(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN count(*) AS n",
-    # shortestPath next to an undirected hop in one clause
-    "MATCH p = shortestPath((c:User)-[:FOLLOWS*1..3]->(a:User)), (a)-[:FOLLOWS]-(z:User) "
-    "RETURN count(*) AS n",
-])
-def test_unguarded_shapes_are_refused(query):
-    from conftest import execute_cypher
-    result = execute_cypher(query, schema_name=SCHEMA, raise_on_error=False)
-    assert "results" not in result, (query, result)
+def test_undirected_hop_next_to_a_path_in_a_with_scope():
+    graph = _graph(SCHEMA, LABEL, REL, "user_id")
+    got = _rows(SCHEMA, "MATCH (c:User) WITH c "
+                        "MATCH (c)-[:FOLLOWS]-(a:User)-[:FOLLOWS*1..2]->(b:User) RETURN count(*) AS n")
+    assert int(got[0]["n"]) == _count(graph, [("both", 1, 1), ("out", 1, 2)]) == 204
+
+
+def test_undirected_hop_next_to_a_shortest_path():
+    # One row per (c, a) pair joined by a path of 1..3 hops (c <> a), times the undirected hop's
+    # relationships at `a` (`c <> a` keeps the query valid on Neo4j, which refuses a shortest path
+    # whose ends may coincide). The hop may reuse the shortest path's relationship: Neo4j 5.26 answers
+    # 210 here (140 if they had to differ).
+    nodes, out, inn = _graph(SCHEMA, LABEL, REL, "user_id")
+
+    def reaches(c, a):
+        frontier = {c}
+        for _ in range(3):
+            frontier = {m for n in frontier for _, m in out[n]}
+            if a in frontier:
+                return True
+        return False
+
+    want = sum(len({i for i, _ in out[a] + inn[a]})
+               for c in nodes for a in nodes if c != a and reaches(c, a))
+    got = _rows(SCHEMA, "MATCH p = shortestPath((c:User)-[:FOLLOWS*1..3]->(a:User)), "
+                        "(a)-[:FOLLOWS]-(z:User) WHERE c <> a RETURN count(*) AS n")
+    assert int(got[0]["n"]) == want == 210

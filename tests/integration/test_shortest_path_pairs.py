@@ -6,9 +6,10 @@ end per start), and `allShortestPaths` took the GLOBAL minimum length — so eve
 globally closest was missing unless a start filter happened to pin the partition. With both
 ends pinned by id, a BFS shortcut returned one row even where several shortest paths exist.
 
-The oracle is brute force over the fixture's own edge list: all node-unique paths of 1..N hops,
-the minimum length per ordered pair (a != b), and one row (shortestPath) or one row per path of
-that length (allShortestPaths).
+The oracle is brute force over the fixture's own edge list: all relationship-unique walks (trails)
+of lo..N hops, the minimum length per ordered pair (a != b), and one row (shortestPath) or one row
+per trail of that length (allShortestPaths). With a lower bound above 1, the shortest trail may
+revisit a node (verified against Neo4j 5.26).
 """
 
 import collections
@@ -73,23 +74,23 @@ def _edges():
 
 def _oracle(edges, mode, hi, starts=None, ends=None, lo=1):
     out = collections.defaultdict(list)
-    for a, b in edges:
-        out[a].append(b)
+    for i, (a, b) in enumerate(edges):
+        out[a].append((i, b))
     rows = collections.Counter()
     for a in sorted({x for e in edges for x in e}):
         if starts is not None and a not in starts:
             continue
         lengths = collections.defaultdict(list)
 
-        def rec(node, seen, k):
+        def rec(node, used, k):
             if k >= lo and node != a:
                 lengths[node].append(k)
             if k < hi:
-                for m in out[node]:
-                    if m not in seen:
-                        rec(m, seen | {m}, k + 1)
+                for i, m in out[node]:
+                    if i not in used:
+                        rec(m, used | {i}, k + 1)
 
-        rec(a, {a}, 0)
+        rec(a, frozenset(), 0)
         for b, ls in lengths.items():
             if ends is not None and b not in ends:
                 continue

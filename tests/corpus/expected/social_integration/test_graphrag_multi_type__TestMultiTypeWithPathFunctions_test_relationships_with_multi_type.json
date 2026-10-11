@@ -1,0 +1,24 @@
+{
+ "columns": [
+  "rels",
+  "node_type"
+ ],
+ "cypher": "MATCH p = (u:User)-[:FOLLOWS|AUTHORED*1]->(x)\n            WHERE u.user_id = 1\n            RETURN relationships(p) as rels, labels(x)[1] as node_type\n            LIMIT 10",
+ "full_rows": [
+  "{\"rels\": [{\"__from__\": \"1\", \"__rel__\": {\"follow_date\": \"2023-01-01\"}, \"__to__\": \"2\"}]}",
+  "{\"rels\": [{\"__from__\": \"1\", \"__rel__\": {\"follow_date\": \"2023-01-02\"}, \"__to__\": \"3\"}]}",
+  "{\"rels\": [{\"__from__\": \"1\", \"__rel__\": {\"follow_date\": \"2023-01-03\"}, \"__to__\": \"5\"}]}",
+  "{\"rels\": [{\"__from__\": \"1\", \"__rel__\": {}, \"__to__\": \"1\"}]}",
+  "{\"rels\": [{\"__from__\": \"1\", \"__rel__\": {}, \"__to__\": \"11\"}]}"
+ ],
+ "limit": 10,
+ "order_keys": null,
+ "rows": [
+  "{\"rels\": [{\"__from__\": \"1\", \"__rel__\": {\"follow_date\": \"2023-01-01\"}, \"__to__\": \"2\"}]}",
+  "{\"rels\": [{\"__from__\": \"1\", \"__rel__\": {\"follow_date\": \"2023-01-02\"}, \"__to__\": \"3\"}]}",
+  "{\"rels\": [{\"__from__\": \"1\", \"__rel__\": {\"follow_date\": \"2023-01-03\"}, \"__to__\": \"5\"}]}",
+  "{\"rels\": [{\"__from__\": \"1\", \"__rel__\": {}, \"__to__\": \"1\"}]}",
+  "{\"rels\": [{\"__from__\": \"1\", \"__rel__\": {}, \"__to__\": \"11\"}]}"
+ ],
+ "schema": "social_integration"
+}

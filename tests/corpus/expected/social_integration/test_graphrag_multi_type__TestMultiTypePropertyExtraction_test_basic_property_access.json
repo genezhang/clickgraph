@@ -21,9 +21,9 @@
  "limit": 3,
  "order_keys": null,
  "rows": [
-  "{\"x.email\": \"bob@example.com\", \"x.name\": \"Bob Smith\"}",
-  "{\"x.email\": \"david@example.com\", \"x.name\": \"David Brown\"}",
-  "{\"x.email\": \"frank@example.com\", \"x.name\": \"Frank Miller\"}"
+  "{\"x.email\": \"carol@example.com\", \"x.name\": \"Carol White\"}",
+  "{\"x.email\": \"grace@example.com\", \"x.name\": \"Grace Lee\"}",
+  "{\"x.email\": \"henry@example.com\", \"x.name\": \"Henry Wilson\"}"
  ],
  "schema": "social_integration"
 }

@@ -129,15 +129,15 @@
  "order_keys": null,
  "rows": [
   "{\"a.email\": \"alice@example.com\", \"b.email\": \"alice@example.com\"}",
+  "{\"a.email\": \"alice@example.com\", \"b.email\": \"alice@example.com\"}",
   "{\"a.email\": \"alice@example.com\", \"b.email\": \"bob@example.com\"}",
   "{\"a.email\": \"alice@example.com\", \"b.email\": \"bob@example.com\"}",
-  "{\"a.email\": \"alice@example.com\", \"b.email\": \"bob@example.com\"}",
-  "{\"a.email\": \"alice@example.com\", \"b.email\": \"david@example.com\"}",
-  "{\"a.email\": \"alice@example.com\", \"b.email\": \"frank@example.com\"}",
-  "{\"a.email\": \"alice@example.com\", \"b.email\": \"iris@example.com\"}",
-  "{\"a.email\": \"alice@example.com\", \"b.email\": \"jack@example.com\"}",
-  "{\"a.email\": \"alice@example.com\", \"b.email\": \"mia@example.com\"}",
-  "{\"a.email\": \"alice@example.com\", \"b.email\": \"noah@example.com\"}"
+  "{\"a.email\": \"alice@example.com\", \"b.email\": \"carol@example.com\"}",
+  "{\"a.email\": \"alice@example.com\", \"b.email\": \"carol@example.com\"}",
+  "{\"a.email\": \"alice@example.com\", \"b.email\": \"eve@example.com\"}",
+  "{\"a.email\": \"alice@example.com\", \"b.email\": \"grace@example.com\"}",
+  "{\"a.email\": \"alice@example.com\", \"b.email\": \"henry@example.com\"}",
+  "{\"a.email\": \"alice@example.com\", \"b.email\": \"olivia@example.com\"}"
  ],
  "schema": "social_integration"
 }

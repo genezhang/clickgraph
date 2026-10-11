@@ -77,17 +77,20 @@ def denormalized_flights_graph(clickhouse_client, test_database):
     with open('schemas/test/denormalized_flights.yaml', 'r') as f:
         schema_content = f.read()
     
+    # Registered under its own name: `denormalized_flights` is the shared
+    # schema of the unified config (db_denormalized.flights_denorm), which
+    # later test files read; replacing it changed their answers.
     response = requests.post(
         f'{CLICKGRAPH_URL}/schemas/load',
         json={
-            'schema_name': 'denormalized_flights',
+            'schema_name': 'denormalized_flights_edges',
             'config_content': schema_content
         }
     )
     assert response.status_code == 200, f"Failed to load schema: {response.text}"
     
     return {
-        "schema_name": "denormalized_flights",
+        "schema_name": "denormalized_flights_edges",
         "database": test_database
     }
 
@@ -191,7 +194,7 @@ class TestDenormalizedPropertyAccess:
         schema_name = denormalized_flights_graph["schema_name"]
         
         response = requests.post(
-            "http://localhost:7475/query",
+            f"{CLICKGRAPH_URL}/query",
             json={"query": f"USE {schema_name} {query}", "sql_only": True}
         )
         response.raise_for_status()
@@ -549,7 +552,7 @@ class TestDenormalizedVariableLengthPaths:
         # Use sql_only mode to get SQL back
         import requests
         query = """
-        USE denormalized_flights
+        USE denormalized_flights_edges
         MATCH (origin:Airport)-[f:FLIGHT*1..2]->(dest:Airport)
         WHERE origin.city = 'Los Angeles'
         RETURN dest.city, COUNT(*) as path_count

@@ -1,0 +1,43 @@
+{
+ "columns": [
+  "target"
+ ],
+ "cypher": "MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(target) WHERE u.user_id = 1 RETURN target LIMIT 10",
+ "full_rows": [
+  "{\"target.age\": 25, \"target.city\": \"Toronto\", \"target.country\": \"Canada\", \"target.email\": \"carol@example.com\", \"target.is_active\": 1, \"target.name\": \"Carol White\", \"target.registration_date\": \"2021-03-10\", \"target.user_id\": 3}",
+  "{\"target.age\": 27, \"target.city\": \"Seoul\", \"target.country\": \"South Korea\", \"target.email\": \"grace@example.com\", \"target.is_active\": 1, \"target.name\": \"Grace Lee\", \"target.registration_date\": \"2020-12-01\", \"target.user_id\": 7}",
+  "{\"target.age\": 28, \"target.city\": \"Manchester\", \"target.country\": \"UK\", \"target.email\": \"kate@example.com\", \"target.is_active\": 1, \"target.name\": \"Kate Anderson\", \"target.registration_date\": \"2020-08-19\", \"target.user_id\": 11}",
+  "{\"target.age\": 28, \"target.city\": \"New York\", \"target.country\": \"USA\", \"target.email\": \"alice@example.com\", \"target.is_active\": 1, \"target.name\": \"Alice Johnson\", \"target.registration_date\": \"2020-01-15\", \"target.user_id\": 1}",
+  "{\"target.age\": 28, \"target.city\": \"New York\", \"target.country\": \"USA\", \"target.email\": \"alice@example.com\", \"target.is_active\": 1, \"target.name\": \"Alice Johnson\", \"target.registration_date\": \"2020-01-15\", \"target.user_id\": 1}",
+  "{\"target.age\": 28, \"target.city\": \"New York\", \"target.country\": \"USA\", \"target.email\": \"alice@example.com\", \"target.is_active\": 1, \"target.name\": \"Alice Johnson\", \"target.registration_date\": \"2020-01-15\", \"target.user_id\": 1}",
+  "{\"target.age\": 29, \"target.city\": \"San Francisco\", \"target.country\": \"USA\", \"target.email\": \"eve@example.com\", \"target.is_active\": 1, \"target.name\": \"Eve Davis\", \"target.registration_date\": \"2020-07-08\", \"target.user_id\": 5}",
+  "{\"target.age\": 31, \"target.city\": \"Berlin\", \"target.country\": \"Germany\", \"target.email\": \"frank@example.com\", \"target.is_active\": 1, \"target.name\": \"Frank Miller\", \"target.registration_date\": \"2019-09-14\", \"target.user_id\": 6}",
+  "{\"target.age\": 32, \"target.city\": \"London\", \"target.country\": \"UK\", \"target.email\": \"bob@example.com\", \"target.is_active\": 1, \"target.name\": \"Bob Smith\", \"target.registration_date\": \"2019-05-20\", \"target.user_id\": 2}",
+  "{\"target.age\": 33, \"target.city\": \"Chicago\", \"target.country\": \"USA\", \"target.email\": \"henry@example.com\", \"target.is_active\": 1, \"target.name\": \"Henry Wilson\", \"target.registration_date\": \"2019-02-18\", \"target.user_id\": 8}",
+  "{\"target.age\": 34, \"target.city\": \"Dublin\", \"target.country\": \"Ireland\", \"target.email\": \"liam@example.com\", \"target.is_active\": 1, \"target.name\": \"Liam Thomas\", \"target.registration_date\": \"2018-10-05\", \"target.user_id\": 12}",
+  "{\"target.age\": 35, \"target.city\": \"Sydney\", \"target.country\": \"Australia\", \"target.email\": \"david@example.com\", \"target.is_active\": 1, \"target.name\": \"David Brown\", \"target.registration_date\": \"2018-11-25\", \"target.user_id\": 4}",
+  "{\"target.author_id\": 1, \"target.content\": \"Hello everyone!\", \"target.created_at\": \"2023-01-01\", \"target.post_id\": 1, \"target.title\": \"Introduction\"}",
+  "{\"target.author_id\": 1, \"target.content\": \"Latest blockbuster\", \"target.created_at\": \"2023-01-11\", \"target.post_id\": 11, \"target.title\": \"Movie Review\"}",
+  "{\"target.author_id\": 2, \"target.content\": \"Home improvement\", \"target.created_at\": \"2023-01-12\", \"target.post_id\": 12, \"target.title\": \"DIY Projects\"}",
+  "{\"target.author_id\": 2, \"target.content\": \"My first post here\", \"target.created_at\": \"2023-01-02\", \"target.post_id\": 2, \"target.title\": \"First Post\"}",
+  "{\"target.author_id\": 3, \"target.content\": \"Latest in technology\", \"target.created_at\": \"2023-01-03\", \"target.post_id\": 3, \"target.title\": \"Tech News\"}",
+  "{\"target.author_id\": 3, \"target.content\": \"My dogs adventure\", \"target.created_at\": \"2023-01-13\", \"target.post_id\": 13, \"target.title\": \"Pet Stories\"}",
+  "{\"target.author_id\": 5, \"target.content\": \"Best pasta recipe\", \"target.created_at\": \"2023-01-05\", \"target.post_id\": 5, \"target.title\": \"Cooking Tips\"}",
+  "{\"target.author_id\": 5, \"target.content\": \"Job hunting tips\", \"target.created_at\": \"2023-01-15\", \"target.post_id\": 15, \"target.title\": \"Career Advice\"}"
+ ],
+ "limit": 10,
+ "order_keys": null,
+ "rows": [
+  "{\"target.age\": 25, \"target.city\": \"Toronto\", \"target.country\": \"Canada\", \"target.email\": \"carol@example.com\", \"target.is_active\": 1, \"target.name\": \"Carol White\", \"target.registration_date\": \"2021-03-10\", \"target.user_id\": 3}",
+  "{\"target.age\": 27, \"target.city\": \"Seoul\", \"target.country\": \"South Korea\", \"target.email\": \"grace@example.com\", \"target.is_active\": 1, \"target.name\": \"Grace Lee\", \"target.registration_date\": \"2020-12-01\", \"target.user_id\": 7}",
+  "{\"target.age\": 28, \"target.city\": \"New York\", \"target.country\": \"USA\", \"target.email\": \"alice@example.com\", \"target.is_active\": 1, \"target.name\": \"Alice Johnson\", \"target.registration_date\": \"2020-01-15\", \"target.user_id\": 1}",
+  "{\"target.age\": 28, \"target.city\": \"New York\", \"target.country\": \"USA\", \"target.email\": \"alice@example.com\", \"target.is_active\": 1, \"target.name\": \"Alice Johnson\", \"target.registration_date\": \"2020-01-15\", \"target.user_id\": 1}",
+  "{\"target.age\": 31, \"target.city\": \"Berlin\", \"target.country\": \"Germany\", \"target.email\": \"frank@example.com\", \"target.is_active\": 1, \"target.name\": \"Frank Miller\", \"target.registration_date\": \"2019-09-14\", \"target.user_id\": 6}",
+  "{\"target.age\": 32, \"target.city\": \"London\", \"target.country\": \"UK\", \"target.email\": \"bob@example.com\", \"target.is_active\": 1, \"target.name\": \"Bob Smith\", \"target.registration_date\": \"2019-05-20\", \"target.user_id\": 2}",
+  "{\"target.age\": 33, \"target.city\": \"Chicago\", \"target.country\": \"USA\", \"target.email\": \"henry@example.com\", \"target.is_active\": 1, \"target.name\": \"Henry Wilson\", \"target.registration_date\": \"2019-02-18\", \"target.user_id\": 8}",
+  "{\"target.age\": 35, \"target.city\": \"Sydney\", \"target.country\": \"Australia\", \"target.email\": \"david@example.com\", \"target.is_active\": 1, \"target.name\": \"David Brown\", \"target.registration_date\": \"2018-11-25\", \"target.user_id\": 4}",
+  "{\"target.author_id\": 3, \"target.content\": \"Latest in technology\", \"target.created_at\": \"2023-01-03\", \"target.post_id\": 3, \"target.title\": \"Tech News\"}",
+  "{\"target.author_id\": 3, \"target.content\": \"My dogs adventure\", \"target.created_at\": \"2023-01-13\", \"target.post_id\": 13, \"target.title\": \"Pet Stories\"}"
+ ],
+ "schema": "standard"
+}

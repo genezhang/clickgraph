@@ -81,8 +81,7 @@
   "verdict": "MATCH"
  },
  "social_integration/test_browser_patterns__TestBrowserDirectionValidation_test_invalid_direction_post_to_user": {
-  "verdict": "CG_ERROR",
-  "signature": "76346a7add8c58f2"
+  "verdict": "MATCH"
  },
  "social_integration/test_browser_patterns__TestBrowserDirectionValidation_test_undirected_respects_schema_direction": {
   "verdict": "MATCH"
@@ -91,16 +90,13 @@
   "verdict": "MATCH"
  },
  "social_integration/test_browser_patterns__TestBrowserErrorCases_test_impossible_pattern": {
-  "verdict": "MISMATCH",
-  "signature": "3da8f5ed559352ae"
+  "verdict": "MATCH"
  },
  "social_integration/test_browser_patterns__TestBrowserErrorCases_test_nonexistent_label": {
-  "verdict": "CG_ERROR",
-  "signature": "fefe3e7df8a37974"
+  "verdict": "MATCH"
  },
  "social_integration/test_browser_patterns__TestBrowserErrorCases_test_nonexistent_relationship_type": {
-  "verdict": "CG_ERROR",
-  "signature": "46e8f789325e299e"
+  "verdict": "MATCH"
  },
  "social_integration/test_browser_patterns__TestBrowserLabelCombinations_test_both_nodes_labeled": {
   "verdict": "MATCH"
@@ -135,19 +131,23 @@
  "social_integration/test_browser_patterns__TestBrowserNodeExpansion_test_expand_node_specific_relationship_type": {
   "verdict": "MATCH"
  },
+ "social_integration/test_browser_patterns__TestBrowserPathQueries_test_path_return": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_browser_patterns__TestBrowserPathQueries_test_path_with_unlabeled_nodes": {
+  "verdict": "MATCH"
+ },
  "social_integration/test_browser_patterns__TestBrowserPathQueries_test_variable_length_path": {
   "verdict": "MATCH"
  },
  "social_integration/test_browser_patterns__TestBrowserRelationshipTypeClick_test_click_authored_relationship": {
-  "verdict": "MISMATCH",
-  "signature": "ef5434b175fcab7c"
+  "verdict": "MATCH"
  },
  "social_integration/test_browser_patterns__TestBrowserRelationshipTypeClick_test_click_liked_relationship_directed": {
   "verdict": "MATCH"
  },
  "social_integration/test_browser_patterns__TestBrowserRelationshipTypeClick_test_click_liked_relationship_undirected": {
-  "verdict": "MISMATCH",
-  "signature": "bda91f103ce71e17"
+  "verdict": "MATCH"
  },
  "social_integration/test_browser_patterns__TestBrowserRelationshipTypeClick_test_click_relationship_type_directed_incoming": {
   "verdict": "MATCH"
@@ -198,10 +198,12 @@
   "verdict": "MATCH"
  },
  "social_integration/test_graphrag_multi_type__TestMixedRecursiveNonRecursive_test_recursive_stops_at_non_recursive_target__2": {
-  "verdict": "CG_ERROR",
-  "signature": "0fe2f7167c5a0ff0"
+  "verdict": "MATCH"
  },
  "social_integration/test_graphrag_multi_type__TestMultiTypePerformance_test_multi_type_all_users": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypePerformance_test_multi_type_with_limit": {
   "verdict": "MATCH"
  },
  "social_integration/test_graphrag_multi_type__TestMultiTypePropertyExtraction_test_basic_property_access": {
@@ -214,12 +216,11 @@
   "verdict": "MATCH"
  },
  "social_integration/test_graphrag_multi_type__TestMultiTypePropertyExtraction_test_json_extraction_sql_generation__2": {
-  "verdict": "MISMATCH",
-  "signature": "1f09bf971a1dc36c"
+  "verdict": "MATCH"
  },
  "social_integration/test_graphrag_multi_type__TestMultiTypePropertyExtraction_test_missing_property_returns_empty": {
   "verdict": "CG_ERROR",
-  "signature": "aa7da000289d14f1"
+  "signature": "68bc45e011a7f704"
  },
  "social_integration/test_graphrag_multi_type__TestMultiTypePropertyExtraction_test_multiple_properties": {
   "verdict": "MATCH"
@@ -231,18 +232,24 @@
   "verdict": "MATCH"
  },
  "social_integration/test_graphrag_multi_type__TestMultiTypeRecursivePatterns_test_follows_or_authored_one_to_two_hops": {
-  "verdict": "MISMATCH",
-  "signature": "52c92cefdb7fa4f7"
+  "verdict": "MATCH"
  },
  "social_integration/test_graphrag_multi_type__TestMultiTypeRecursivePatterns_test_multi_type_exact_paths": {
-  "verdict": "MISMATCH",
-  "signature": "d6f7c570241c2041"
+  "verdict": "MATCH"
  },
  "social_integration/test_graphrag_multi_type__TestMultiTypeRecursivePatterns_test_multi_type_two_hops_only": {
-  "verdict": "CG_ERROR",
-  "signature": "eeacc69ab35eea65"
+  "verdict": "MATCH"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypeRecursivePatterns_test_multi_type_with_sql_only": {
+  "verdict": "MATCH"
  },
  "social_integration/test_graphrag_multi_type__TestMultiTypeWithPathFunctions_test_length_with_multi_type": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_graphrag_multi_type__TestMultiTypeWithPathFunctions_test_relationships_with_multi_type": {
+  "verdict": "MATCH"
+ },
+ "social_integration/test_graphrag_schema_variations__TestGenericVLPPattern_test_generic_pattern_type_limit_error": {
   "verdict": "MATCH"
  },
  "social_integration/test_issue_623__TestFlatExactVlp_test_623_exact_then_trailing_hop": {
@@ -313,7 +320,7 @@
  },
  "social_integration/test_optional_match__TestOptionalWhereMandatoryVar_test_undirected_excluded_from_gate_597": {
   "verdict": "MISMATCH",
-  "signature": "6b710e499d92ea0b"
+  "signature": "c28f30ff3e73222a"
  },
  "social_integration/test_optional_match__TestOptionalWherePatternPredicate_test_exists_on_optional_var_folds_614": {
   "verdict": "MATCH"
@@ -322,24 +329,19 @@
   "verdict": "MATCH"
  },
  "social_integration/test_pattern_comprehensions__test_multiple_pattern_comprehensions": {
-  "verdict": "CG_ERROR",
-  "signature": "4ee6d0c3676e7c66"
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_comprehensions__test_pattern_comprehension_empty_result": {
-  "verdict": "CG_ERROR",
-  "signature": "4ee6d0c3676e7c66"
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_comprehensions__test_pattern_comprehension_with_expression": {
-  "verdict": "CG_ERROR",
-  "signature": "4ee6d0c3676e7c66"
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_comprehensions__test_pattern_comprehension_with_where": {
-  "verdict": "CG_ERROR",
-  "signature": "4ee6d0c3676e7c66"
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_comprehensions__test_simple_pattern_comprehension": {
-  "verdict": "CG_ERROR",
-  "signature": "4ee6d0c3676e7c66"
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_matrix__TestStandardSchema_test_group_by_0": {
   "verdict": "MATCH"
@@ -410,6 +412,9 @@
  "social_integration/test_pattern_matrix__TestStandardSchema_test_vlp_exact_2": {
   "verdict": "MATCH"
  },
+ "social_integration/test_pattern_matrix__TestStandardSchema_test_vlp_path_var_0": {
+  "verdict": "MATCH"
+ },
  "social_integration/test_pattern_matrix__TestStandardSchema_test_vlp_range_0": {
   "verdict": "MATCH"
  },
@@ -435,16 +440,13 @@
   "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_multi_hop_0": {
-  "verdict": "CG_ERROR",
-  "signature": "9f1106d6b898e7bc"
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_multi_hop_1": {
-  "verdict": "CG_ERROR",
-  "signature": "9f1106d6b898e7bc"
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_multi_hop_2": {
-  "verdict": "CG_ERROR",
-  "signature": "44d887d94f6ab5bc"
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_multi_type_0": {
   "verdict": "MATCH"
@@ -468,15 +470,13 @@
   "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_optional_match_0": {
-  "verdict": "CG_ERROR",
-  "signature": "7ac80f812f41da2c"
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_optional_match_1": {
   "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_optional_match_2": {
-  "verdict": "CG_ERROR",
-  "signature": "6064e448be9b9c2e"
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_order_limit_0": {
   "verdict": "MATCH"
@@ -488,24 +488,19 @@
   "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_return_rel_0": {
-  "verdict": "CG_ERROR",
-  "signature": "7ac80f812f41da2c"
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_return_rel_1": {
-  "verdict": "CG_ERROR",
-  "signature": "76346a7add8c58f2"
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_return_rel_2": {
-  "verdict": "CG_ERROR",
-  "signature": "9f1106d6b898e7bc"
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_shortest_path_0": {
-  "verdict": "CG_ERROR",
-  "signature": "9b48ebbd2f757a90"
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_shortest_path_1": {
-  "verdict": "CG_ERROR",
-  "signature": "9b48ebbd2f757a90"
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_simple_agg_0": {
   "verdict": "MATCH"
@@ -517,8 +512,7 @@
   "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_single_hop_2": {
-  "verdict": "CG_ERROR",
-  "signature": "76346a7add8c58f2"
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_vlp_exact_0": {
   "verdict": "MATCH"
@@ -527,16 +521,16 @@
   "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_vlp_exact_2": {
-  "verdict": "CG_ERROR",
-  "signature": "346e494ab4625012"
+  "verdict": "MATCH"
+ },
+ "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_vlp_path_var_0": {
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_vlp_path_var_1": {
-  "verdict": "CG_ERROR",
-  "signature": "9b48ebbd2f757a90"
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_vlp_range_0": {
-  "verdict": "CG_ERROR",
-  "signature": "346e494ab4625012"
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_vlp_range_1": {
   "verdict": "MATCH"
@@ -548,12 +542,10 @@
   "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_with_agg_1": {
-  "verdict": "CG_ERROR",
-  "signature": "76346a7add8c58f2"
+  "verdict": "MATCH"
  },
  "social_integration/test_pattern_schema_matrix__TestStandardSchema_test_with_agg_2": {
-  "verdict": "CG_ERROR",
-  "signature": "6064e448be9b9c2e"
+  "verdict": "MATCH"
  },
  "social_integration/test_property_pruning__test_property_requirements_basic_query": {
   "verdict": "MATCH"
@@ -668,12 +660,10 @@
   "verdict": "MATCH"
  },
  "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_where_type_function": {
-  "verdict": "MISMATCH",
-  "signature": "8e1e2d1c47703cff"
+  "verdict": "MATCH"
  },
  "social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_with_property_filter_before_inference": {
-  "verdict": "CG_ERROR",
-  "signature": "d2034298b9c323da"
+  "verdict": "MATCH"
  },
  "social_integration/test_schema_variations_comprehensive__TestMultiTableNodes_test_unlabeled_bidirectional_infers_from_schema": {
   "verdict": "MATCH"
@@ -691,8 +681,8 @@
   "verdict": "MATCH"
  },
  "social_integration/test_schema_variations_comprehensive__TestSchemaInteractions_test_complex_union_with_filters": {
-  "verdict": "MISMATCH",
-  "signature": "342ab18e2fa5ac15"
+  "verdict": "CG_ERROR",
+  "signature": "02d12e78672cac65"
  },
  "social_integration/test_schema_variations_comprehensive__TestSchemaInteractions_test_direction_optimization_undirected_to_directed": {
   "verdict": "MATCH"
@@ -704,11 +694,11 @@
   "verdict": "MATCH"
  },
  "social_integration/test_schema_variations_comprehensive__TestSchemaInteractions_test_shortest_path_with_type_inference": {
-  "verdict": "MISMATCH",
-  "signature": "a9e5a1d7331aa3cf"
+  "verdict": "MATCH"
  },
  "social_integration/test_schema_variations_comprehensive__TestSchemaInteractions_test_with_clause_type_preservation_across_union": {
-  "verdict": "MATCH"
+  "verdict": "CG_ERROR",
+  "signature": "77e20f861f42f910"
  },
  "social_integration/test_schema_variations_comprehensive__test_baseline_schema_loaded": {
   "verdict": "MATCH"
@@ -717,7 +707,8 @@
   "verdict": "MATCH"
  },
  "social_integration/test_track_c_property_filtering__TestPropertyFilteringNodes_test_nonexistent_property_returns_empty": {
-  "verdict": "MATCH"
+  "verdict": "CG_ERROR",
+  "signature": "dfbe92b579cadd19"
  },
  "social_integration/test_track_c_property_filtering__TestPropertyFilteringNodes_test_property_filter_post_id": {
   "verdict": "MATCH"
@@ -757,12 +748,10 @@
   "verdict": "MATCH"
  },
  "social_integration/test_vlp_aggregation__TestVLPAggregation_test_vlp_with_having_equivalent": {
-  "verdict": "CG_ERROR",
-  "signature": "db59b17116b5e6cc"
+  "verdict": "MATCH"
  },
  "social_integration/test_vlp_aggregation__TestVLPAggregation_test_vlp_with_multiple_additional_relationships": {
-  "verdict": "CG_ERROR",
-  "signature": "76346a7add8c58f2"
+  "verdict": "MATCH"
  },
  "social_integration/test_vlp_aggregation__TestVLPAggregation_test_vlp_with_multiple_aggregates": {
   "verdict": "MATCH"
@@ -774,40 +763,31 @@
   "verdict": "MATCH"
  },
  "social_integration/test_vlp_with_comprehensive__TestVLPWithComplexPatterns_test_chained_with_clauses": {
-  "verdict": "CG_ERROR",
-  "signature": "bf5112fe0dd46af3"
+  "verdict": "MATCH"
  },
  "social_integration/test_vlp_with_comprehensive__TestVLPWithComplexPatterns_test_with_collect_and_path_function": {
-  "verdict": "CG_ERROR",
-  "signature": "bf5112fe0dd46af3"
+  "verdict": "MATCH"
  },
  "social_integration/test_vlp_with_comprehensive__TestVLPWithComplexPatterns_test_with_distinct": {
-  "verdict": "CG_ERROR",
-  "signature": "bf5112fe0dd46af3"
+  "verdict": "MATCH"
  },
  "social_integration/test_vlp_with_comprehensive__TestVLPWithComplexPatterns_test_with_order_by_limit": {
-  "verdict": "CG_ERROR",
-  "signature": "bf5112fe0dd46af3"
+  "verdict": "MATCH"
  },
  "social_integration/test_vlp_with_comprehensive__TestVLPWithEdgeCases_test_path_function_in_where_and_with": {
-  "verdict": "CG_ERROR",
-  "signature": "bf5112fe0dd46af3"
+  "verdict": "MATCH"
  },
  "social_integration/test_vlp_with_comprehensive__TestVLPWithEdgeCases_test_unbounded_vlp_with_limit_in_with": {
-  "verdict": "CG_ERROR",
-  "signature": "bf5112fe0dd46af3"
+  "verdict": "MATCH"
  },
  "social_integration/test_vlp_with_comprehensive__TestVLPWithEdgeCases_test_with_arithmetic_on_path_function": {
-  "verdict": "CG_ERROR",
-  "signature": "bf5112fe0dd46af3"
+  "verdict": "MATCH"
  },
  "social_integration/test_vlp_with_comprehensive__TestVLPWithEdgeCases_test_zero_length_path_with_with": {
-  "verdict": "CG_ERROR",
-  "signature": "bf5112fe0dd46af3"
+  "verdict": "MATCH"
  },
  "social_integration/test_vlp_with_comprehensive__TestVLPWithMultipleRelTypes_test_multi_rel_length_path_in_with": {
-  "verdict": "CG_ERROR",
-  "signature": "bf5112fe0dd46af3"
+  "verdict": "MATCH"
  },
  "social_integration/test_vlp_with_comprehensive__TestVLPWithMultipleRelTypes_test_multi_rel_relationships_in_with": {
   "verdict": "CG_ERROR",
@@ -826,30 +806,25 @@
   "verdict": "MATCH"
  },
  "social_integration/test_vlp_with_comprehensive__TestVLPWithStandardSchema_test_with_aggregation_and_path_function": {
-  "verdict": "CG_ERROR",
-  "signature": "a11e2199e0c0578c"
+  "verdict": "MATCH"
  },
  "social_integration/test_vlp_with_comprehensive__TestVLPWithStandardSchema_test_with_non_path_properties": {
   "verdict": "MATCH"
  },
  "social_integration/test_with_cte_node_expansion__TestWithBasicNodeExpansion_test_with_single_node_export": {
-  "verdict": "MISMATCH",
-  "signature": "5ae8133d599a580b"
+  "verdict": "MATCH"
  },
  "social_integration/test_with_cte_node_expansion__TestWithChaining_test_with_chaining_three_levels": {
-  "verdict": "MISMATCH",
-  "signature": "28e7984839cb176a"
+  "verdict": "MATCH"
  },
  "social_integration/test_with_cte_node_expansion__TestWithChaining_test_with_chaining_two_levels": {
-  "verdict": "MISMATCH",
-  "signature": "9b0f8c032f411dba"
+  "verdict": "MATCH"
  },
  "social_integration/test_with_cte_node_expansion__TestWithCrossTable_test_with_cross_table_multi_hop": {
   "verdict": "MATCH"
  },
  "social_integration/test_with_cte_node_expansion__TestWithCrossTable_test_with_where_filter": {
-  "verdict": "MISMATCH",
-  "signature": "e38b4ae9ba5646fe"
+  "verdict": "MATCH"
  },
  "social_integration/test_with_cte_node_expansion__TestWithMultipleVariableExport_test_with_three_node_export": {
   "verdict": "MATCH"
@@ -861,16 +836,13 @@
   "verdict": "MATCH"
  },
  "social_integration/test_with_cte_node_expansion__TestWithPolymorphicLabels_test_with_multi_label_node__2": {
-  "verdict": "MISMATCH",
-  "signature": "1692c6b8eef9851f"
+  "verdict": "MATCH"
  },
  "social_integration/test_with_cte_node_expansion__TestWithPropertyRename_test_with_multi_rename": {
-  "verdict": "MISMATCH",
-  "signature": "5d33623425c1f33c"
+  "verdict": "MATCH"
  },
  "social_integration/test_with_cte_node_expansion__TestWithPropertyRename_test_with_node_rename": {
-  "verdict": "MISMATCH",
-  "signature": "8779a158ba42342c"
+  "verdict": "MATCH"
  },
  "social_integration/test_with_cte_node_expansion__TestWithRegressionCases_test_aggregation_without_with": {
   "verdict": "MATCH"
@@ -957,8 +929,7 @@
   "verdict": "MATCH"
  },
  "standard/test_1169__case_over_both_endpoints_loud_std": {
-  "verdict": "CG_ERROR",
-  "signature": "151919b9c83329d8"
+  "verdict": "MATCH"
  },
  "standard/test_1169__fn_both_endpoints_std": {
   "verdict": "MATCH"
@@ -1006,20 +977,16 @@
   "verdict": "MATCH"
  },
  "standard/test_1181__chain_then_hop_std": {
-  "verdict": "MISMATCH",
-  "signature": "d9f8637564e034b6"
+  "verdict": "MATCH"
  },
  "standard/test_1181__chain_then_incoming_hop_not_repaired_std": {
-  "verdict": "MISMATCH",
-  "signature": "df074cb7b48e0bff"
+  "verdict": "MATCH"
  },
  "standard/test_1181__chain_then_two_hops_std": {
-  "verdict": "MISMATCH",
-  "signature": "28ec7dd10d52af5c"
+  "verdict": "MATCH"
  },
  "standard/test_1181__hop_before_chain_not_repaired_std": {
-  "verdict": "MISMATCH",
-  "signature": "e03923aa6359bf46"
+  "verdict": "MATCH"
  },
  "standard/test_1182__outside_carried_node_mid_chain_not_repaired_std": {
   "verdict": "MATCH"
@@ -1028,20 +995,16 @@
   "verdict": "MATCH"
  },
  "standard/test_1182__outside_comma_pattern_not_repaired_std": {
-  "verdict": "CG_ERROR",
-  "signature": "20d58c1b6c6b0c44"
+  "verdict": "MATCH"
  },
  "standard/test_1182__outside_reversed_vlp_hop_after_not_repaired_std": {
-  "verdict": "CG_ERROR",
-  "signature": "2aa3d8ea687a0f78"
+  "verdict": "MATCH"
  },
  "standard/test_1182__outside_two_carried_used_not_repaired_std": {
-  "verdict": "CG_ERROR",
-  "signature": "48e9eabc8bc00252"
+  "verdict": "MATCH"
  },
  "standard/test_1182__outside_undirected_hop_not_repaired_std": {
-  "verdict": "CG_ERROR",
-  "signature": "016d7b4aa987886e"
+  "verdict": "MATCH"
  },
  "standard/test_1182__vlp_then_with_hop_vlp_std": {
   "verdict": "MATCH"
@@ -1053,8 +1016,7 @@
   "verdict": "MATCH"
  },
  "standard/test_1182__with_hop_optional_vlp_not_repaired_std": {
-  "verdict": "CG_ERROR",
-  "signature": "ecaec2c5a1fe3b33"
+  "verdict": "MATCH"
  },
  "standard/test_1182__with_hop_vlp_count_std": {
   "verdict": "MATCH"
@@ -1072,19 +1034,16 @@
   "verdict": "MATCH"
  },
  "standard/test_1182__with_hop_vlp_then_optional_vlp_not_repaired_1190_std": {
-  "verdict": "CG_ERROR",
-  "signature": "feffded8e6733102"
+  "verdict": "MATCH"
  },
  "standard/test_1182__with_incoming_hop_vlp_std": {
   "verdict": "MATCH"
  },
  "standard/test_1182__with_optional_hop_vlp_not_repaired_std": {
-  "verdict": "CG_ERROR",
-  "signature": "feffded8e6733102"
+  "verdict": "MATCH"
  },
  "standard/test_1182__with_two_carried_closing_hop_after_vlp_stays_loud_std": {
-  "verdict": "CG_ERROR",
-  "signature": "1d7623fed65fd1be"
+  "verdict": "MATCH"
  },
  "standard/test_1182__with_two_carried_hop_vlp_std": {
   "verdict": "MATCH"
@@ -1099,8 +1058,7 @@
   "verdict": "MATCH"
  },
  "standard/test_1182__with_vlp_then_optional_vlp_not_repaired_1190_std": {
-  "verdict": "CG_ERROR",
-  "signature": "feffded8e6733102"
+  "verdict": "MATCH"
  },
  "standard/test_1182__with_vlp_two_hops_after_std": {
   "verdict": "MATCH"
@@ -1133,19 +1091,16 @@
   "verdict": "MATCH"
  },
  "standard/test_1192__optional_back_path_incoming_hop_not_repaired_std": {
-  "verdict": "MISMATCH",
-  "signature": "78d35547d7fa3b9e"
+  "verdict": "MATCH"
  },
  "standard/test_1195__with_hop_then_incoming_hop_std": {
   "verdict": "MATCH"
  },
  "standard/test_1195__with_hop_then_optional_incoming_hop_not_repaired_std": {
-  "verdict": "MISMATCH",
-  "signature": "b2c2e33811228997"
+  "verdict": "MATCH"
  },
  "standard/test_1195__with_optional_hop_then_incoming_hop_not_repaired_std": {
-  "verdict": "MISMATCH",
-  "signature": "b2c2e33811228997"
+  "verdict": "MATCH"
  },
  "standard/test_1199__undirected_fixed_length_end_filter_std": {
   "verdict": "MATCH"
@@ -1220,8 +1175,7 @@
   "verdict": "MATCH"
  },
  "standard/test_1308__optional_path_vs_outside_node_refused": {
-  "verdict": "CG_ERROR",
-  "signature": "7f5420dfa97a494c"
+  "verdict": "MATCH"
  },
  "standard/test_1308__path_end_equals_carried_node_outside_path_std": {
   "verdict": "MATCH"
@@ -1236,8 +1190,7 @@
   "verdict": "MATCH"
  },
  "standard/test_585_shared_anchor_comma_reversed": {
-  "verdict": "CG_ERROR",
-  "signature": "a6de718d37e7c21a"
+  "verdict": "MATCH"
  },
  "standard/test_585_shared_anchor_comma_three_way": {
   "verdict": "MATCH"
@@ -1258,8 +1211,7 @@
   "verdict": "MATCH"
  },
  "standard/test_588_not_vlp_pattern_fails_loud": {
-  "verdict": "CG_ERROR",
-  "signature": "b4d689dfab1aceb4"
+  "verdict": "MATCH"
  },
  "standard/test_600_2_explicit_where_unchanged": {
   "verdict": "MATCH"
@@ -1271,12 +1223,11 @@
   "verdict": "MATCH"
  },
  "standard/test_600_2_rel_inline_map_unchanged": {
-  "verdict": "CG_ERROR",
-  "signature": "9b508d98abb16fbe"
+  "verdict": "MATCH"
  },
  "standard/test_616_fold_optional_bid_plain_predicate": {
-  "verdict": "MISMATCH",
-  "signature": "159d2d35493c2f3d"
+  "verdict": "CG_ERROR",
+  "signature": "c8232998e6c9d49b"
  },
  "standard/test_618_vlp_both_union_arms_same_aliases": {
   "verdict": "MATCH"
@@ -1329,8 +1280,7 @@
   "verdict": "MATCH"
  },
  "standard/test_636_shared_anchor_comma_interleaved_stays_loud": {
-  "verdict": "CG_ERROR",
-  "signature": "7dc5a71943f04866"
+  "verdict": "MATCH"
  },
  "standard/test_636_shared_anchor_comma_three_way_trailing_incoming": {
   "verdict": "MATCH"
@@ -1354,12 +1304,10 @@
   "verdict": "MATCH"
  },
  "standard/test_641_hole1_chained_undirected_optional_in_union_branch_stays_loud": {
-  "verdict": "CG_ERROR",
-  "signature": "9721840555e98b53"
+  "verdict": "MATCH"
  },
  "standard/test_641_hole2_undirected_inner_directed_outer_chained_optional_stays_loud": {
-  "verdict": "CG_ERROR",
-  "signature": "9721840555e98b53"
+  "verdict": "MATCH"
  },
  "standard/test_645_reversed_optional_vlp_anchor_gate": {
   "verdict": "MISMATCH",
@@ -1393,13 +1341,21 @@
   "verdict": "MATCH"
  },
  "standard/test_987_closed_unlabeled_vlp_fails_loud": {
-  "verdict": "CG_ERROR",
-  "signature": "1b8913e3a308cbc6"
+  "verdict": "MATCH"
  },
  "standard/test_987_open_unlabeled_single_hop_no_self_loop_control": {
   "verdict": "MATCH"
  },
+ "standard/test_schema_variations__TestStandardSchema_test_graphrag_expansion": {
+  "verdict": "MATCH"
+ },
+ "standard/test_schema_variations__TestStandardSchema_test_multi_edge_type": {
+  "verdict": "MATCH"
+ },
  "standard/test_schema_variations__TestStandardSchema_test_return_edge_properties": {
+  "verdict": "MATCH"
+ },
+ "standard/test_schema_variations__TestStandardSchema_test_return_type_function": {
   "verdict": "MATCH"
  },
  "standard/test_schema_variations__TestStandardSchema_test_single_edge_bidirectional": {

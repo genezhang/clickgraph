@@ -80,6 +80,28 @@ pub fn cypher_to_sql(
     translate_for_library(statement, schema, max_cte_depth, Some(&cleaned)).map(|t| t.sql)
 }
 
+/// [`cypher_to_sql`] on the legacy route (`CLICKGRAPH_BOUND_PLAN=off`): the
+/// tests of the legacy pipeline, which stays the fallback for what the
+/// bound plan does not support until it is deleted (P-4c S11).
+#[cfg(test)]
+pub(crate) fn cypher_to_sql_legacy(
+    cypher: &str,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+    max_cte_depth: u32,
+) -> Result<String, String> {
+    let cleaned = crate::open_cypher_parser::strip_comments(cypher);
+    let (_remaining, statement) = crate::open_cypher_parser::parse_cypher_statement(&cleaned)
+        .map_err(|e| format!("Parse error: {:?}", e))?;
+    translate_for_library_with(
+        statement,
+        schema,
+        max_cte_depth,
+        Some(&cleaned),
+        Some(crate::translate::BoundPlanMode::Off),
+    )
+    .map(|t| t.sql)
+}
+
 /// Convert a Cypher query to ClickHouse SQL after clearing all write
 /// clauses (CREATE / SET / DELETE / REMOVE) from the parsed AST.
 ///
@@ -156,17 +178,31 @@ fn translate_for_library(
     max_cte_depth: u32,
     cypher: Option<&str>,
 ) -> Result<crate::translate::ReadTranslation, String> {
+    translate_for_library_with(statement, schema, max_cte_depth, cypher, None)
+}
+
+/// [`translate_for_library`] on a given route (`None`: the configured one).
+fn translate_for_library_with(
+    statement: crate::open_cypher_parser::ast::CypherStatement<'_>,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+    max_cte_depth: u32,
+    cypher: Option<&str>,
+    bound_plan: Option<crate::translate::BoundPlanMode>,
+) -> Result<crate::translate::ReadTranslation, String> {
     crate::translate::translate_read(
         statement,
         schema,
         crate::translate::ReadOptions {
             max_cte_depth,
             cypher: cypher.map(str::to_string),
+            bound_plan,
             ..Default::default()
         },
     )
     .map_err(|e| match e {
         crate::translate::TranslateError::Planning(e) => format!("Plan error: {}", e),
         crate::translate::TranslateError::Render(e) => format!("Render error: {}", e),
+        // The caller reports it as a query error (`EmbeddedError::Query`).
+        crate::translate::TranslateError::Invalid(e) => e,
     })
 }

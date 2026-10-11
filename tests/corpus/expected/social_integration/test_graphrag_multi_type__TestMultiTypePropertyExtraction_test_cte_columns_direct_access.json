@@ -21,9 +21,9 @@
  "limit": 3,
  "order_keys": null,
  "rows": [
-  "{\"x.city\": \"Berlin\", \"x.name\": \"Frank Miller\"}",
-  "{\"x.city\": \"London\", \"x.name\": \"Bob Smith\"}",
-  "{\"x.city\": \"Sydney\", \"x.name\": \"David Brown\"}"
+  "{\"x.city\": \"Chicago\", \"x.name\": \"Henry Wilson\"}",
+  "{\"x.city\": \"Seoul\", \"x.name\": \"Grace Lee\"}",
+  "{\"x.city\": \"Toronto\", \"x.name\": \"Carol White\"}"
  ],
  "schema": "social_integration"
 }

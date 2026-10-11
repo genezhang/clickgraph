@@ -2136,6 +2136,7 @@ fn seam_translate(
     .map_err(|e| match e {
         TranslateError::Planning(e) => format!("plan: {e:?}"),
         TranslateError::Render(e) => format!("render: {e:?}"),
+        TranslateError::Invalid(e) => format!("query: {e}"),
     })
 }
 

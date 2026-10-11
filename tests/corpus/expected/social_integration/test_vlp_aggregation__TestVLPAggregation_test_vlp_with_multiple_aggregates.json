@@ -38,10 +38,10 @@
  ],
  "rows": [
   "{\"postCount\": 2, \"totalPosts\": 12, \"userId\": 1}",
+  "{\"postCount\": 2, \"totalPosts\": 4, \"userId\": 2}",
   "{\"postCount\": 2, \"totalPosts\": 4, \"userId\": 3}",
-  "{\"postCount\": 2, \"totalPosts\": 4, \"userId\": 5}",
-  "{\"postCount\": 2, \"totalPosts\": 4, \"userId\": 8}",
-  "{\"postCount\": 2, \"totalPosts\": 8, \"userId\": 7}"
+  "{\"postCount\": 2, \"totalPosts\": 8, \"userId\": 4}",
+  "{\"postCount\": 2, \"totalPosts\": 8, \"userId\": 6}"
  ],
  "schema": "social_integration"
 }

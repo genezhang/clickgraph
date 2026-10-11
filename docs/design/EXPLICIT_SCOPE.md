@@ -2376,7 +2376,8 @@ differential. The routing switch is
 - `shadow` translates with both paths and records differences in tests;
 - `on` routes supported queries to the new path.
 
-The default stays `off` until slice 3 is accepted, then becomes `on`.
+The default stayed `off` until slice 10, which made it `on` (`off` remains
+the opt-out until slice 11 deletes the legacy path).
 
 | # | Slice | Acceptance | Closes |
 |---|---|---|---|
@@ -3806,7 +3807,83 @@ slice that will handle it.
       legacy); 3 tests of legacy's loud refusals (#574 / #588 two-hop,
       bounded and OR'd pattern predicates, a polymorphic multi-type EXISTS)
       now answered, each checked against the tables.
-- [ ] S10 default on
+- [ ] S10 default on, in two parts:
+  - [x] **S10a: the default flips** (`translate::BoundPlanMode::from_env`:
+    on unless `CLICKGRAPH_BOUND_PLAN=off`).
+    - A bind error other than `Unsupported` is the query's error
+      (`TranslateError::Invalid`: HTTP 400 "Query error", Bolt "Invalid
+      query"), not a reason to try the legacy path. These are queries Neo4j
+      also rejects (S3: every bind error in the corpus checked on Neo4j).
+      `Unsupported`, a clause-list parse failure and a lowering error still
+      fall back.
+    - Every entry point that has the query text passes it: `/query/sql` (so
+      it returns the SQL `/query` runs) and the inner queries of
+      `apoc.export.*.query` and `COPY TO` (HTTP and Bolt) were added. The
+      library path that drops write clauses stays legacy, because its
+      statement no longer matches the text.
+    - Render-plan unit tests of legacy internals call
+      `cypher_to_sql_legacy` (test-only, the route pinned off).
+    - Budget: §8 asked for one but none was stated before; this slice set
+      it after measuring, so it is open to review: the LDBC SF1 total within
+      5% of legacy, and no query 2× or more slower where both paths give the
+      same answer.
+    - Acceptance:
+      - Neo4j scorecard regenerated on the default (`social_integration`,
+        `standard`): 57 CG_ERROR → MATCH, 22 MISMATCH → MATCH, 11 new
+        entries MATCH; 431 MATCH, 18 MISMATCH (UNTYPED_BOOLEAN /
+        EXTENSION), 8 CG_ERROR. 4 entries became CG_ERROR, each a read of a
+        property the schema does not declare (the user's rule, S4a: it reads
+        the same-named column; ClickHouse rejects the missing column). The
+        triage rule for them (EXTENSION) matches the property names, not the
+        SQL alias.
+      - Neo4j oracle, switch off vs on, 20 schemas: 197 wrong → right; 5
+        legacy-right → not equal, each accepted (`collect` order, two
+        undeclared-property errors, two zeek port cases known since S8b).
+      - Live suite on the default: 4825 passed; every remaining failure
+        predates the slice (9 multi-tenant tests whose parameterized views
+        the test database lacks, a timing test that compares a cold query
+        with a cached one and also fails with the switch off, 2 collection
+        errors). 67 tests that pinned legacy behaviour were rewritten, each
+        against Neo4j or a brute-force oracle over the fixture (former
+        refusals now compare rows; SQL-text checks now compare results;
+        trail oracles for relationship uniqueness; 0-based lists). A strict
+        xfail (#583, undirected OPTIONAL count) now passes and asserts the
+        count. `test_denormalized_edges` replaced the shared
+        `denormalized_flights` schema for every later test file; it now
+        registers its own name.
+      - LDBC SF1, 41 official queries, 5 runs, median: total 55.2 s → 57.1 s
+        (+3.5%). Slower: short-2 3.4× (legacy's answer is wrong: 4 rows of
+        10), bi-5 1.6×, bi-6 1.5× (legacy's answer is wrong: every score +1,
+        a NULL tuple counted by `count(DISTINCT)`), bi-18 1.25×. Ground truth
+        by hand-written ClickHouse SQL: no query legacy answered right is
+        answered wrong; bi-6, complex-4 and short-7 are now right. Eight
+        queries are empty or short because the LDBC schema cannot say a Post
+        is a Message or declare City→Country edges (#1366); the patterns are
+        impossible in the declared schema, so no rows is its answer (S1).
+        Filed: #1364 (`collect` keeps a NULL list from a CASE as `[]`, both
+        paths), #1365 (a mixed-type list as a grouping key, ClickHouse Code
+        44).
+      - Translation time (release, simple hop): 0.17 ms cold vs legacy's
+        0.41 ms.
+      - TCK (chdb) aborts at the same scenario with the switch off and on.
+      - Adversarial review (the corpus through both routes, about 870
+        queries on 22 schemas against Neo4j; about 170 scoping / error edge
+        cases; Bolt, graph output, tenants, Databricks): no answer changed
+        for the worse but the known zeek port and `collect` order cases;
+        every `Invalid` is a query Neo4j's EXPLAIN rejects; the bound plan
+        parameterizes every table for a tenant (legacy missed some in walks,
+        unlabeled patterns and subqueries). Fixed: `/query/sql` answered an
+        `Invalid` with 500 (now 400, as `/query`), the library doubled the
+        "Query error" prefix, and the switch now also reads `false` / `0` /
+        `no` as off. Left as found: the SQL golden and corpus-sweep tests
+        translate without the text, so they lock the legacy route only
+        (retired with it in S11); Bolt failures reach Python driver 6 as
+        "unknown error" on both routes; a node table with duplicate ids
+        multiplies walk rows (zeek `dns_log`: a schema whose `node_id` is not
+        unique).
+  - [ ] **S10b:** parse failures reach the new path: every entry point
+    parses with the legacy parser first, so syntax only the clause-list
+    parser accepts still gets the legacy parse error.
 - [ ] S11 legacy deletion
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)

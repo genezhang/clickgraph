@@ -53,7 +53,7 @@
   "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Henry Wilson\"}",
   "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Kate Anderson\"}",
   "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Liam Thomas\"}",
-  "{\"a.name\": \"Bob Smith\", \"b.name\": \"Bob Smith\"}"
+  "{\"a.name\": \"Bob Smith\", \"b.name\": \"Carol White\"}"
  ],
  "schema": "social_integration"
 }

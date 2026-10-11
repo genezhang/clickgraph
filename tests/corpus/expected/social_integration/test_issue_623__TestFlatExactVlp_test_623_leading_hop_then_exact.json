@@ -74,7 +74,6 @@
  "limit": 10,
  "order_keys": null,
  "rows": [
-  "{\"a.name\": \"Alice Johnson\", \"b.name\": \"Eve Davis\", \"c.name\": \"Bob Smith\"}",
   "{\"a.name\": \"Bob Smith\", \"b.name\": \"Alice Johnson\", \"c.name\": \"Alice Johnson\"}",
   "{\"a.name\": \"Bob Smith\", \"b.name\": \"Alice Johnson\", \"c.name\": \"Alice Johnson\"}",
   "{\"a.name\": \"Bob Smith\", \"b.name\": \"David Brown\", \"c.name\": \"Alice Johnson\"}",
@@ -83,7 +82,8 @@
   "{\"a.name\": \"Carol White\", \"b.name\": \"Alice Johnson\", \"c.name\": \"Alice Johnson\"}",
   "{\"a.name\": \"Carol White\", \"b.name\": \"Grace Lee\", \"c.name\": \"Alice Johnson\"}",
   "{\"a.name\": \"Eve Davis\", \"b.name\": \"Alice Johnson\", \"c.name\": \"Alice Johnson\"}",
-  "{\"a.name\": \"Eve Davis\", \"b.name\": \"Alice Johnson\", \"c.name\": \"Alice Johnson\"}"
+  "{\"a.name\": \"Eve Davis\", \"b.name\": \"Alice Johnson\", \"c.name\": \"Alice Johnson\"}",
+  "{\"a.name\": \"Frank Miller\", \"b.name\": \"Bob Smith\", \"c.name\": \"Bob Smith\"}"
  ],
  "schema": "social_integration"
 }

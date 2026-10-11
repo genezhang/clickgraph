@@ -86,7 +86,9 @@ fn schema() -> GraphSchema {
 /// embedded `Connection` use (`evaluate_read_statement` + full analyzer/optimizer
 /// pipeline), so the asserted SQL matches sql_only output faithfully.
 fn cypher_to_sql(cypher: &str) -> String {
-    crate::clickhouse_query_generator::cypher_to_sql(cypher, &schema(), 100).expect("cypher_to_sql")
+    // The legacy pipeline's route (the bound plan is the default, P-4c S10).
+    crate::clickhouse_query_generator::cypher_to_sql_legacy(cypher, &schema(), 100)
+        .expect("cypher_to_sql")
 }
 
 /// Count non-overlapping occurrences of `needle` in `haystack`.

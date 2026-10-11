@@ -201,6 +201,7 @@ async fn try_render(
                 .map_err(|e| match e {
                     TranslateError::Planning(e) => format!("plan error: {e}"),
                     TranslateError::Render(e) => format!("render error: {e}"),
+                    TranslateError::Invalid(e) => format!("query error: {e}"),
                 })
             },
         ));

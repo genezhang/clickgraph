@@ -128,15 +128,15 @@
  "limit": 10,
  "order_keys": null,
  "rows": [
+  "{\"a.city\": \"Berlin\", \"b.city\": \"New York\"}",
+  "{\"a.city\": \"London\", \"b.city\": \"New York\"}",
   "{\"a.city\": \"London\", \"b.city\": \"New York\"}",
   "{\"a.city\": \"London\", \"b.city\": \"New York\"}",
   "{\"a.city\": \"New York\", \"b.city\": \"New York\"}",
   "{\"a.city\": \"New York\", \"b.city\": \"New York\"}",
   "{\"a.city\": \"San Francisco\", \"b.city\": \"New York\"}",
   "{\"a.city\": \"San Francisco\", \"b.city\": \"New York\"}",
-  "{\"a.city\": \"Seoul\", \"b.city\": \"New York\"}",
-  "{\"a.city\": \"Toronto\", \"b.city\": \"New York\"}",
-  "{\"a.city\": \"Toronto\", \"b.city\": \"New York\"}",
+  "{\"a.city\": \"Sydney\", \"b.city\": \"New York\"}",
   "{\"a.city\": \"Toronto\", \"b.city\": \"New York\"}"
  ],
  "schema": "social_integration"

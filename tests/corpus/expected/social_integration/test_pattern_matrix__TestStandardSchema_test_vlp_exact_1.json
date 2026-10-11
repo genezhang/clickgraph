@@ -53,7 +53,7 @@
   "{\"a.user_id\": 1, \"b.user_id\": 6}",
   "{\"a.user_id\": 1, \"b.user_id\": 7}",
   "{\"a.user_id\": 1, \"b.user_id\": 8}",
-  "{\"a.user_id\": 2, \"b.user_id\": 2}"
+  "{\"a.user_id\": 2, \"b.user_id\": 3}"
  ],
  "schema": "social_integration"
 }

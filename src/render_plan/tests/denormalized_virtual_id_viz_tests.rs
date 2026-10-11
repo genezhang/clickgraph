@@ -20,7 +20,8 @@
 //! When `node_id` is already an exposed property (e.g. Airport `node_id: code`),
 //! nothing extra is injected.
 
-use crate::clickhouse_query_generator::cypher_to_sql;
+// The legacy pipeline's tests: its route (the bound plan is the default, P-4c S10).
+use crate::clickhouse_query_generator::cypher_to_sql_legacy as cypher_to_sql;
 use crate::graph_catalog::config::GraphSchemaConfig;
 use crate::server::query_context::{set_current_schema, with_query_context, QueryContext};
 use std::sync::Arc;

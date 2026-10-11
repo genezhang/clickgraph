@@ -48,20 +48,29 @@ pub struct ReadOptions {
 /// Which pipeline translates read queries (`CLICKGRAPH_BOUND_PLAN`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoundPlanMode {
-    /// The legacy pipeline only (default).
+    /// The legacy pipeline only (`CLICKGRAPH_BOUND_PLAN=off`).
     Off,
     /// The bound-plan path for every query it lowers; the legacy pipeline
-    /// for the rest (`Unsupported`, or anything it cannot bind).
+    /// for the rest, only what it does not support yet (`Unsupported`).
+    /// A query it rejects as Neo4j does is an error (P-4c S10: the
+    /// default).
     On,
 }
 
 impl BoundPlanMode {
-    /// From `CLICKGRAPH_BOUND_PLAN` (`on` / `off`, default off).
+    /// From `CLICKGRAPH_BOUND_PLAN` (default on, S10): `off` (or `false`,
+    /// `0`, `no`) selects the legacy pipeline.
     pub fn from_env() -> Self {
         match std::env::var("CLICKGRAPH_BOUND_PLAN") {
-            Ok(v) if v.eq_ignore_ascii_case("on") => BoundPlanMode::On,
-            _ => BoundPlanMode::Off,
+            Ok(v) if Self::is_off(&v) => BoundPlanMode::Off,
+            _ => BoundPlanMode::On,
         }
+    }
+
+    fn is_off(value: &str) -> bool {
+        ["off", "false", "0", "no"]
+            .iter()
+            .any(|off| value.trim().eq_ignore_ascii_case(off))
     }
 }
 
@@ -155,6 +164,10 @@ pub struct BoundTranslation {
 pub enum TranslateError {
     Planning(query_planner::QueryPlannerError),
     Render(crate::render_plan::errors::RenderBuildError),
+    /// The query is invalid Cypher, as Neo4j rejects it (an undefined or
+    /// redeclared variable, a misplaced aggregate, …): the bound plan's
+    /// binder (P-4c S10; the legacy pipeline is not tried).
+    Invalid(String),
 }
 
 impl std::fmt::Display for TranslateError {
@@ -162,6 +175,7 @@ impl std::fmt::Display for TranslateError {
         match self {
             TranslateError::Planning(e) => write!(f, "{}", e),
             TranslateError::Render(e) => write!(f, "{}", e),
+            TranslateError::Invalid(e) => write!(f, "{}", e),
         }
     }
 }
@@ -213,7 +227,11 @@ fn translate_in_context(
     if mode == BoundPlanMode::On && !id_constraints {
         if let Some(cypher) = options.cypher.as_deref() {
             let start = Instant::now();
-            match translate_bound_plan(cypher, schema, &options) {
+            match bound_plan_or_reason(cypher, schema, &options) {
+                Err(BoundPlanError::Invalid(e)) => return Err(TranslateError::Invalid(e)),
+                Err(BoundPlanError::Fallback(reason)) => {
+                    log::debug!("bound plan: legacy pipeline ({reason})")
+                }
                 Ok(BoundTranslation { sql, shape }) => {
                     return Ok(ReadTranslation {
                         sql,
@@ -227,7 +245,6 @@ fn translate_in_context(
                         route: Route::BoundPlan,
                     })
                 }
-                Err(reason) => log::debug!("bound plan: legacy pipeline ({reason})"),
             }
         }
     }
@@ -273,12 +290,34 @@ fn translate_in_context(
 }
 
 /// The bound-plan path (P-4c): clause list → bind → lower → plain print.
-/// `Err` carries why the legacy pipeline translates the query instead.
+/// `Err` carries why the legacy pipeline translates the query instead, or
+/// why the query is invalid ([`BoundPlanError`], as text).
 pub fn translate_bound_plan(
     cypher: &str,
     schema: &GraphSchema,
     options: &ReadOptions,
 ) -> Result<BoundTranslation, String> {
+    bound_plan_or_reason(cypher, schema, options).map_err(|e| match e {
+        BoundPlanError::Fallback(reason) | BoundPlanError::Invalid(reason) => reason,
+    })
+}
+
+/// Why the bound plan did not translate a query.
+#[derive(Debug)]
+enum BoundPlanError {
+    /// Not supported (yet), or not parsed by the clause-list parser: the
+    /// legacy pipeline translates it.
+    Fallback(String),
+    /// Invalid Cypher, as Neo4j rejects it (the binder's errors other than
+    /// `Unsupported`).
+    Invalid(String),
+}
+
+fn bound_plan_or_reason(
+    cypher: &str,
+    schema: &GraphSchema,
+    options: &ReadOptions,
+) -> Result<BoundTranslation, BoundPlanError> {
     use crate::server::query_context::{
         has_query_context, set_current_schema, with_query_context_sync, QueryContext,
     };
@@ -287,16 +326,24 @@ pub fn translate_bound_plan(
     if !has_query_context() {
         return with_query_context_sync(QueryContext::new(None), || {
             set_current_schema(std::sync::Arc::new(schema.clone()));
-            translate_bound_plan(cypher, schema, options)
+            bound_plan_or_reason(cypher, schema, options)
         });
     }
     use crate::bound_plan::lower::{lower_statement, LowerOptions};
     let (rest, stmt) = crate::open_cypher_parser::clause_list::parse_clause_statement(cypher)
-        .map_err(|e| format!("clause-list parse: {e:?}"))?;
+        .map_err(|e| BoundPlanError::Fallback(format!("clause-list parse: {e:?}")))?;
     if !rest.trim().trim_end_matches(';').trim().is_empty() {
-        return Err(format!("clause-list parse stopped at: {rest}"));
+        return Err(BoundPlanError::Fallback(format!(
+            "clause-list parse stopped at: {rest}"
+        )));
     }
-    let bound = crate::bound_plan::bind_statement(&stmt, schema).map_err(|e| e.to_string())?;
+    let bound = crate::bound_plan::bind_statement(&stmt, schema).map_err(|e| {
+        if e.is_unsupported() {
+            BoundPlanError::Fallback(e.to_string())
+        } else {
+            BoundPlanError::Invalid(e.to_string())
+        }
+    })?;
     let lowered = lower_statement(
         &bound,
         schema,
@@ -308,7 +355,7 @@ pub fn translate_bound_plan(
             neo4j_compat: crate::server::query_context::server_neo4j_compat(),
         },
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| BoundPlanError::Fallback(e.to_string()))?;
     Ok(BoundTranslation {
         sql: crate::clickhouse_query_generator::to_sql_query::render_plan_to_sql_plain(
             lowered.plan,
@@ -340,6 +387,18 @@ fn merged_view_parameters(
 
 #[cfg(test)]
 mod tests {
+    use super::BoundPlanMode;
+
+    #[test]
+    fn the_bound_plan_switch_reads_off_spellings() {
+        for v in ["off", "OFF", " false", "0", "no"] {
+            assert!(BoundPlanMode::is_off(v), "{v}");
+        }
+        for v in ["on", "true", "1", "shadow", ""] {
+            assert!(!BoundPlanMode::is_off(v), "{v}");
+        }
+    }
+
     use crate::query_planner::logical_plan::{generate_cte_id, generate_id, reset_all_counters};
     use crate::server::query_context::{with_query_context, QueryContext};
 

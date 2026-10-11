@@ -128,16 +128,16 @@
  "limit": 10,
  "order_keys": null,
  "rows": [
-  "{\"a.user_id\": 1, \"b.user_id\": 10}",
-  "{\"a.user_id\": 1, \"b.user_id\": 13}",
-  "{\"a.user_id\": 1, \"b.user_id\": 14}",
+  "{\"a.user_id\": 1, \"b.user_id\": 15}",
+  "{\"a.user_id\": 1, \"b.user_id\": 1}",
   "{\"a.user_id\": 1, \"b.user_id\": 1}",
   "{\"a.user_id\": 1, \"b.user_id\": 2}",
   "{\"a.user_id\": 1, \"b.user_id\": 2}",
-  "{\"a.user_id\": 1, \"b.user_id\": 2}",
-  "{\"a.user_id\": 1, \"b.user_id\": 4}",
-  "{\"a.user_id\": 1, \"b.user_id\": 6}",
-  "{\"a.user_id\": 1, \"b.user_id\": 9}"
+  "{\"a.user_id\": 1, \"b.user_id\": 3}",
+  "{\"a.user_id\": 1, \"b.user_id\": 3}",
+  "{\"a.user_id\": 1, \"b.user_id\": 5}",
+  "{\"a.user_id\": 1, \"b.user_id\": 7}",
+  "{\"a.user_id\": 1, \"b.user_id\": 8}"
  ],
  "schema": "social_integration"
 }

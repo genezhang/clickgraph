@@ -15,11 +15,63 @@ Patterns tested:
 - 2-hop mixed: (a)-[r1]->(b)-[r2]-(c)
 - 3-hop directed: (a)-[r1]->(b)-[r2]->(c)-[r3]->(d)
 - 3-hop with aggregation
+
+Shape tests that once inspected the generated SQL text (UNION branch counts, JOIN columns)
+now check the RESULT rows against a brute-force walk over the engine's own single-hop edge
+list, with Cypher relationship uniqueness (no edge twice in one MATCH; an undirected
+self-loop matches once). Values verified against Neo4j 5.26.
 """
+
+from collections import Counter
 
 import pytest
 import requests
 from conftest import execute_cypher, CLICKGRAPH_URL
+
+
+def _rows(query: str, schema_name: str) -> list:
+    result = execute_cypher(query, schema_name=schema_name, raise_on_error=False)
+    assert "results" in result, f"Query failed: {result}"
+    return result["results"]
+
+
+def _edges(schema_name: str, label: str, rel: str, key: str) -> list:
+    return [(r["a"], r["b"]) for r in _rows(
+        f"MATCH (a:{label})-[:{rel}]->(b:{label}) RETURN a.{key} AS a, b.{key} AS b",
+        schema_name)]
+
+
+def _walks(edges: list, dirs: list) -> Counter:
+    """Node tuples of consecutive single hops (`dirs`: "out" or "both"), every edge used
+    at most once."""
+    def moves(node, d):
+        for i, (src, dst) in enumerate(edges):
+            if src == node:
+                yield i, dst
+            elif d == "both" and dst == node:
+                yield i, src
+
+    rows = Counter()
+
+    def rec(k, node, used, acc):
+        if k == len(dirs):
+            rows[tuple(acc)] += 1
+            return
+        for i, nxt in moves(node, dirs[k]):
+            if i not in used:
+                rec(k + 1, nxt, used | {i}, acc + [nxt])
+
+    for node in {x for e in edges for x in e}:
+        rec(0, node, frozenset(), [node])
+    return rows
+
+
+def _flights() -> list:
+    return _edges("ontime_flights", "Airport", "FLIGHT", "code")
+
+
+def _got(query: str, schema_name: str, columns: list) -> Counter:
+    return Counter(tuple(r[c] for c in columns) for r in _rows(query, schema_name))
 
 
 # ============================================================================
@@ -27,7 +79,7 @@ from conftest import execute_cypher, CLICKGRAPH_URL
 # ============================================================================
 
 class TestMultiHopSqlGeneration:
-    """Test SQL generation for multi-hop patterns without database execution."""
+    """Multi-hop pattern shapes: SQL-generation smoke checks plus result-row checks."""
     
     def get_sql(self, query: str, schema_name: str = "ontime_flights") -> str:
         """Get generated SQL for a Cypher query.
@@ -67,90 +119,60 @@ class TestMultiHopSqlGeneration:
         union_count = sql.count("UNION ALL") + 1 if "UNION ALL" in sql else 1
         assert union_count == expected_unions, f"Expected {expected_unions} branches, got {union_count}.\nSQL: {sql}"
 
-    def test_2hop_directed_denormalized_sql(self):
-        """Test 2-hop directed pattern generates clean JOINs."""
-        query = "MATCH (a:Airport)-[r1:FLIGHT]->(b:Airport)-[r2:FLIGHT]->(c:Airport) RETURN a.code, b.code, c.code LIMIT 5"
-        sql = self.get_sql(query)
-        
-        # Should be a single query with 2 JOINs
-        assert "UNION" not in sql, "Directed pattern should not have UNION"
-        assert sql.count("INNER JOIN") == 1, f"Expected 1 JOIN (self-join on flights), got {sql.count('INNER JOIN')}"
-        assert "r1.Origin" in sql, "Should select Origin from r1"
-        assert "r1.Dest" in sql or "r2.Origin" in sql, "Should reference intermediate airport"
-        assert "r2.Dest" in sql, "Should select Dest from r2"
+    def test_2hop_directed_denormalized_rows(self):
+        """2-hop directed pattern: the second flight leaves where the first landed."""
+        query = "MATCH (a:Airport)-[r1:FLIGHT]->(b:Airport)-[r2:FLIGHT]->(c:Airport) RETURN a.code, b.code, c.code"
+        got = _got(query, "ontime_flights", ["a.code", "b.code", "c.code"])
+        assert got == _walks(_flights(), ["out", "out"])
+        assert sum(got.values()) == 5
 
     def test_2hop_undirected_denormalized_column_swapping(self):
-        """Test that undirected patterns correctly swap Origin/Dest columns."""
-        query = "MATCH (a:Airport)-[r1:FLIGHT]-(b:Airport)-[r2:FLIGHT]-(c:Airport) RETURN a.code, b.code, c.code LIMIT 5"
-        sql = self.get_sql(query)
-        
-        # Should have 4 UNION branches with different Origin/Dest combinations
-        assert sql.count("UNION ALL") == 3, "Should have 4 branches (3 UNION ALLs)"
-        
-        # Check that we have both Origin and Dest appearing as a.code in different branches
-        branches = sql.split("UNION ALL")
-        a_code_patterns = set()
-        for branch in branches:
-            if 'r1.Origin AS "a.code"' in branch:
-                a_code_patterns.add("Origin")
-            if 'r1.Dest AS "a.code"' in branch:
-                a_code_patterns.add("Dest")
-        
-        assert a_code_patterns == {"Origin", "Dest"}, \
-            f"Expected both Origin and Dest for a.code, got {a_code_patterns}"
+        """Undirected hops read each flight both ways (Origin and Dest swap roles)."""
+        query = "MATCH (a:Airport)-[r1:FLIGHT]-(b:Airport)-[r2:FLIGHT]-(c:Airport) RETURN a.code, b.code, c.code"
+        got = _got(query, "ontime_flights", ["a.code", "b.code", "c.code"])
+        flights = _flights()
+        assert got == _walks(flights, ["both", "both"])
+        assert sum(got.values()) == 12
+        # both orientations of the first flight occur
+        assert {(a, b) for a, b, _ in got} & set(flights)
+        assert {(b, a) for a, b, _ in got} & set(flights)
 
     def test_3hop_directed_denormalized(self):
         """Test 3-hop directed pattern with denormalized schema."""
         query = """
         MATCH (a:Airport)-[f1:FLIGHT]->(b:Airport)-[f2:FLIGHT]->(c:Airport)-[f3:FLIGHT]->(d:Airport)
-        RETURN a.code, b.code, c.code, d.code LIMIT 5
+        RETURN a.code, b.code, c.code, d.code
         """
-        sql = self.get_sql(query)
-        
-        # Should be single query with 2 JOINs (3 self-joins on flights)
-        assert "UNION" not in sql, "Directed 3-hop should not have UNION"
-        assert sql.count("INNER JOIN") == 2, f"Expected 2 JOINs, got {sql.count('INNER JOIN')}"
+        got = _got(query, "ontime_flights", ["a.code", "b.code", "c.code", "d.code"])
+        assert got == _walks(_flights(), ["out", "out", "out"])
+        assert sum(got.values()) == 3
 
     def test_mixed_directed_undirected_denormalized(self):
-        """Test mixed directed/undirected pattern generates 2 branches."""
-        query = "MATCH (a:Airport)-[r1:FLIGHT]->(b:Airport)-[r2:FLIGHT]-(c:Airport) RETURN a.code, b.code, c.code LIMIT 5"
-        sql = self.get_sql(query)
-        
-        # One directed + one undirected = 2^1 = 2 branches
-        union_count = sql.count("UNION ALL") + 1 if "UNION ALL" in sql else 1
-        assert union_count == 2, f"Expected 2 branches for mixed pattern, got {union_count}"
+        """Mixed pattern: a directed flight, then a flight either way."""
+        query = "MATCH (a:Airport)-[r1:FLIGHT]->(b:Airport)-[r2:FLIGHT]-(c:Airport) RETURN a.code, b.code, c.code"
+        got = _got(query, "ontime_flights", ["a.code", "b.code", "c.code"])
+        assert got == _walks(_flights(), ["out", "both"])
+        assert sum(got.values()) == 5
 
     # -------------------------------------------------------------------------
     # Standard Schema Tests (social_integration.yaml)
-    # These tests are skipped if the standard schema is not loaded
     # -------------------------------------------------------------------------
 
-    def test_2hop_directed_standard_sql(self):
+    def test_2hop_directed_standard_rows(self):
         """Test 2-hop directed with standard separate tables."""
-        query = "MATCH (a:User)-[r1:FOLLOWS]->(b:User)-[r2:FOLLOWS]->(c:User) RETURN a.name, b.name, c.name LIMIT 5"
-        sql = self.get_sql(query, schema_name="social_integration")
-        
-        # Skip if schema not loaded
-        if "No relationship schema found" in sql or "PLANNING_ERROR" in sql:
-            pytest.skip("Standard schema (social_integration.yaml) not loaded")
-        
-        # Standard schema has separate node and edge tables
-        # Expect: users -> follows -> users -> follows -> users
-        if "UNION" not in sql:  # Only if schema is loaded correctly
-            assert "INNER JOIN" in sql, "Should have JOINs for standard schema"
+        query = "MATCH (a:User)-[r1:FOLLOWS]->(b:User)-[r2:FOLLOWS]->(c:User) RETURN a.user_id, b.user_id, c.user_id"
+        got = _got(query, "social_integration", ["a.user_id", "b.user_id", "c.user_id"])
+        edges = _edges("social_integration", "User", "FOLLOWS", "user_id")
+        assert got == _walks(edges, ["out", "out"])
+        assert sum(got.values()) == 35
 
-    def test_2hop_undirected_standard_has_4_branches(self):
-        """Test 2-hop undirected with standard tables generates 4 branches."""
-        query = "MATCH (a:User)-[r1:FOLLOWS]-(b:User)-[r2:FOLLOWS]-(c:User) RETURN a.name, b.name, c.name LIMIT 5"
-        sql = self.get_sql(query, schema_name="social_integration")
-        
-        # Skip if schema not loaded
-        if "No relationship schema found" in sql or "PLANNING_ERROR" in sql:
-            pytest.skip("Standard schema (social_integration.yaml) not loaded")
-        
-        if "UNION ALL" in sql:
-            union_count = sql.count("UNION ALL") + 1
-            assert union_count == 4, f"Expected 4 branches, got {union_count}"
+    def test_2hop_undirected_standard_rows(self):
+        """Test 2-hop undirected with standard tables (each hop read both ways)."""
+        query = "MATCH (a:User)-[r1:FOLLOWS]-(b:User)-[r2:FOLLOWS]-(c:User) RETURN a.user_id, b.user_id, c.user_id"
+        got = _got(query, "social_integration", ["a.user_id", "b.user_id", "c.user_id"])
+        edges = _edges("social_integration", "User", "FOLLOWS", "user_id")
+        assert got == _walks(edges, ["both", "both"])
+        assert sum(got.values()) == 122
 
     def test_3hop_directed_standard(self):
         """Test 3-hop directed with standard tables."""
@@ -297,13 +319,12 @@ class TestJoinConditions:
         )
         return response.json().get("generated_sql", "")
     def test_outgoing_join_uses_dest_to_origin(self):
-        """Outgoing edge: r2.Origin = r1.Dest (next hop starts where prev ended)."""
-        query = "USE ontime_flights MATCH (a:Airport)-[r1:FLIGHT]->(b:Airport)-[r2:FLIGHT]->(c:Airport) RETURN a.code LIMIT 1"
-        sql = self.get_sql(query)
-        
-        # For denormalized: r2.Origin = r1.Dest
-        assert "r2.Origin = r1.Dest" in sql or "r2.Origin = f1.Dest" in sql.replace("f", "r"), \
-            f"Outgoing JOIN should connect r2.Origin to r1.Dest.\nSQL: {sql}"
+        """Outgoing edge: r2's Origin is r1's Dest (next hop starts where prev ended)."""
+        query = "MATCH (a:Airport)-[r1:FLIGHT]->(b:Airport)-[r2:FLIGHT]->(c:Airport) RETURN a.code"
+        got = _got(query, "ontime_flights", ["a.code"])
+        expected = Counter((a,) for a, _, _ in _walks(_flights(), ["out", "out"]).elements())
+        assert got == expected
+        assert got == Counter({("JFK",): 2, ("LAX",): 2, ("SFO",): 1})
 
     def test_undirected_has_both_join_directions(self):
         """Undirected patterns should have both Origin→Dest and Dest→Origin JOINs."""
@@ -333,26 +354,21 @@ class TestMultiHopEdgeCases:
         )
         return response.json().get("generated_sql", "")
 
-    def test_single_hop_no_union(self):
-        """Single hop should never have UNION."""
-        query = "USE ontime_flights MATCH (a:Airport)-[r:FLIGHT]-(b:Airport) RETURN a.code, b.code LIMIT 5"
-        sql = self.get_sql(query)
-        
-        # Single undirected edge = 2 branches
-        union_count = sql.count("UNION ALL") + 1 if "UNION ALL" in sql else 1
-        assert union_count == 2, f"Single undirected hop should have 2 branches, got {union_count}"
+    def test_single_hop_undirected(self):
+        """A single undirected hop reads every flight once in each direction."""
+        query = "MATCH (a:Airport)-[r:FLIGHT]-(b:Airport) RETURN a.code, b.code"
+        got = _got(query, "ontime_flights", ["a.code", "b.code"])
+        assert got == _walks(_flights(), ["both"])
+        assert sum(got.values()) == 10
 
-    def test_4hop_undirected_has_16_branches(self):
-        """4 undirected hops = 2^4 = 16 branches."""
+    def test_4hop_undirected_count(self):
+        """4 undirected hops: every orientation combination, no flight used twice."""
         query = """
-        USE ontime_flights
         MATCH (a:Airport)-[r1:FLIGHT]-(b:Airport)-[r2:FLIGHT]-(c:Airport)-[r3:FLIGHT]-(d:Airport)-[r4:FLIGHT]-(e:Airport)
-        RETURN a.code LIMIT 1
+        RETURN count(*) AS n
         """
-        sql = self.get_sql(query)
-        
-        union_count = sql.count("UNION ALL") + 1 if "UNION ALL" in sql else 1
-        assert union_count == 16, f"4 undirected hops should have 16 branches, got {union_count}"
+        got = _rows(query, "ontime_flights")[0]["n"]
+        assert got == sum(_walks(_flights(), ["both"] * 4).values()) == 8
 
     def test_all_incoming_direction(self):
         """Test all incoming arrows."""

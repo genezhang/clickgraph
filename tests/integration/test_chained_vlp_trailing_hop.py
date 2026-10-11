@@ -6,9 +6,10 @@
 The chain renders `FROM vlp_a_b AS t JOIN vlp_b_c AS t_ch_0 ON t_ch_0.start_id = t.end_id`, and the
 hop was tied to `t.end_id` (= b) instead of `t_ch_0.end_id` (= c): rows from the wrong node.
 
-The oracle is brute force over the fixture's edges and follows the engine's contract for these
-shapes: each path is edge-unique inside itself and the chained paths share no edge (#544); fixed
-hops are pairwise unique; a hop and a path are NOT constrained against each other (#1203).
+The oracle is brute force over the fixture's edges with Neo4j's relationship uniqueness, which
+spans the whole MATCH: each path is edge-unique inside itself, the chained paths share no edge
+(#544), fixed hops are pairwise unique, and a trailing hop cannot reuse an edge any path walked
+(verified against Neo4j 5.26).
 The fixture has a cycle, a branch, parallel routes and a self-loop.
 """
 
@@ -131,7 +132,7 @@ def _chain_rows(n_paths, hops, lo=1, hi=2):
             yield from after_paths(first, end, banned | used, k + 1)
 
     for a in NODES:
-        for first, tail, _ in after_paths(a, a, frozenset(), 0):
+        for first, tail, banned in after_paths(a, a, frozenset(), 0):
             def hop(node, used_hops, depth, acc):
                 if depth == hops:
                     rows[(first, tail) + tuple(acc)] += 1
@@ -140,7 +141,7 @@ def _chain_rows(n_paths, hops, lo=1, hi=2):
                     if i not in used_hops:
                         hop(t, used_hops | {i}, depth + 1, acc + [t])
 
-            hop(tail, frozenset(), 0, [])
+            hop(tail, banned, 0, [])
     return rows
 
 

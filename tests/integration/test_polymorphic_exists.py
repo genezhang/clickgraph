@@ -52,13 +52,12 @@ def test_the_type_actually_discriminates():
     assert len({frozenset(v) for v in incoming.values()}) > 1, incoming
 
 
-def test_multi_type_exists_is_still_refused_not_truncated():
-    result = execute_cypher(
-        "MATCH (u:User) WHERE EXISTS { (u)-[:FOLLOWS|LIKES]->() } RETURN u.user_id AS id",
-        schema_name=SCHEMA,
-        raise_on_error=False,
-    )
-    assert "results" not in result, result
+def test_multi_type_exists_matches_the_match_union():
+    # every listed type is checked, not just the first (no truncation to one type)
+    oracle = _ids("MATCH (u:User)-[:FOLLOWS]->() RETURN DISTINCT u.user_id AS id") | _ids(
+        "MATCH (u:User)-[:LIKES]->() RETURN DISTINCT u.user_id AS id")
+    got = _ids("MATCH (u:User) WHERE EXISTS { (u)-[:FOLLOWS|LIKES]->() } RETURN u.user_id AS id")
+    assert got == oracle == {1, 2, 3}
 
 
 def _counts(query):
