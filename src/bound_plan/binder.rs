@@ -1043,7 +1043,8 @@ impl<'s> PatternBuilder<'s> {
                         part.nodes.push(node);
                         node_asts.push(NodeAst::Shared(step.start_node.clone()));
                     }
-                    part.rels.push(self.rel(b, &step.relationship)?);
+                    part.rels
+                        .push(self.rel(b, &step.relationship, shortest.is_some())?);
                     rel_props.push(step.relationship.properties.as_ref());
                     let node =
                         self.node(b, &step.end_node.borrow(), Some(rc_key(&step.end_node)))?;
@@ -1124,12 +1125,23 @@ impl<'s> PatternBuilder<'s> {
         })
     }
 
-    fn rel(&mut self, b: &mut Binder, rp: &RelationshipPattern<'_>) -> Result<PatRel, BindError> {
+    /// `in_shortest`: the relationship of a `shortestPath` /
+    /// `allShortestPaths` pattern.
+    fn rel(
+        &mut self,
+        b: &mut Binder,
+        rp: &RelationshipPattern<'_>,
+        in_shortest: bool,
+    ) -> Result<PatRel, BindError> {
         // Any `*` form binds a LIST of relationships, `[r*1]` included.
-        let length = rp
-            .variable_length
-            .as_ref()
-            .map(|vl| (vl.min_hops.unwrap_or(1), vl.max_hops));
+        let length = match &rp.variable_length {
+            Some(vl) => Some((vl.min_hops.unwrap_or(1), vl.max_hops)),
+            // A shortest path over one relationship (S11i) is the path of
+            // exactly one: `*1..1`, the same paths. A named one binds a
+            // relationship, not a list, so it stays fixed (not lowered).
+            None if in_shortest && rp.name.is_none() => Some((1, Some(1))),
+            None => None,
+        };
         let types: Vec<String> = rp.labels.iter().flatten().map(|t| t.to_string()).collect();
         let direction = match rp.direction {
             Direction::Outgoing => RelDirection::Right,

@@ -2151,11 +2151,28 @@ fn an_optional_shortest_path() {
     );
 }
 
+/// S11i: a shortest path over one anonymous relationship is the path of
+/// exactly one, `*1..1`.
+#[test]
+fn a_shortest_path_over_one_relationship_is_one_of_one_hop() {
+    for mode in ["shortestPath", "allShortestPaths"] {
+        let one = |spec: &str| {
+            sql(&format!(
+                "MATCH p = {mode}((a:User)-[:FOLLOWS{spec}]->(b:User)) WHERE a.user_id = 1 \
+                 RETURN b.user_id AS b, length(p) AS l"
+            ))
+        };
+        assert_eq!(one(""), one("*1..1"), "{mode}");
+    }
+}
+
 #[test]
 fn what_shortest_paths_are_not_lowered() {
+    // A named relationship of one hop is a relationship, not the list a
+    // walk binds.
     not_lowered(
-        "MATCH p = shortestPath((a:User)-[:FOLLOWS]->(b:User)) RETURN count(*)",
-        "shortestPath over a fixed-length relationship",
+        "MATCH p = shortestPath((a:User)-[r:FOLLOWS]->(b:User)) RETURN type(r)",
+        "shortestPath over a named fixed-length relationship",
     );
     not_lowered(
         "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(a)) RETURN count(*)",
