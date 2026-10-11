@@ -754,6 +754,8 @@ What `id(n)` of a node is depends on the endpoint:
 | HTTP `/query` | the key | as Bolt (ids of a Bolt session of the same server decode) | by the key |
 | Embedded / `cg` / library | the key | `N` is compared with the key | by the key |
 
+A node of several labels (an unlabeled `(n)`) compares its key as text. In the library, `id(n) = 2` of an unlabeled node matches every label's node whose key is 2. Over HTTP, `id()` parameters (`$id`) are not decoded; Bolt inlines them.
+
 Ordering by the key matches the order of Bolt's encoded ids for nodes of one label with a non-negative integer key; a string key's encoded id is a hash, which has no meaningful order. Other uses of `id()` (`id(n) > 3`, `id(r)` of a relationship, `id(n) + 1`) fall back to the legacy pipeline, which reads the key.
 
 ---

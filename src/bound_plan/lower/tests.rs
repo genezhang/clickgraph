@@ -5329,20 +5329,20 @@ fn ids_compared_with_integers() {
     // The library's `id(n)` is the node's key.
     has(
         "MATCH (a:User)-[:FOLLOWS]->(o:User) WHERE id(a) = 2 RETURN o.name",
-        &["WHERE v0.user_id = 2"],
+        &["WHERE v0.user_id = '2'"],
     );
     has(
         "MATCH (a:User) WHERE NOT id(a) IN [1, 2] RETURN a.name",
-        &["WHERE NOT (v0.user_id = 1 OR v0.user_id = 2)"],
+        &["WHERE NOT (v0.user_id = '1' OR v0.user_id = '2')"],
     );
     has(
         "MATCH (a:User) WHERE 3 <> id(a) RETURN a.name",
-        &["NOT v0.user_id = 3"],
+        &["NOT v0.user_id = '3'"],
     );
     // Of a node of several labels: its key, of whichever label.
     has(
         "MATCH (a) WHERE id(a) IN [1] RETURN a.name",
-        &["v0.__cg_id_0 = 1"],
+        &["toString(v0.__cg_id_0) = '1'"],
     );
     // `x IN []` is false, `x` NULL or not.
     has(
@@ -5359,6 +5359,7 @@ fn ids_compared_with_integers() {
         id_lookup: Some(IdLookup(std::sync::Arc::new(|id| match id {
             101 => Some(("User".to_string(), "2".to_string())),
             102 => Some(("Post".to_string(), "5".to_string())),
+            104 => Some(("User".to_string(), "p|q".to_string())),
             _ => None,
         }))),
         ..LowerOptions::default()
@@ -5375,11 +5376,16 @@ fn ids_compared_with_integers() {
     );
     on_server(
         "MATCH (a) WHERE id(a) = 102 RETURN a.name",
-        &["(v0.__cg_label = 'Post' AND v0.__cg_id_0 = '5')"],
+        &["(v0.__cg_label = 'Post' AND toString(v0.__cg_id_0) = '5')"],
     );
     on_server(
         "MATCH (a:User) WHERE id(a) = 102 RETURN a.name",
         &["WHERE false"],
+    );
+    // A key of one column is the id's whole text.
+    on_server(
+        "MATCH (a:User) WHERE id(a) = 104 RETURN a.name",
+        &["WHERE v0.user_id = 'p|q'"],
     );
     on_server(
         "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) RETURN id(b) = 103 AS x",

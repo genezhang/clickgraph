@@ -4060,6 +4060,23 @@ slice that will handle it.
       unchanged.
     - Still falls back: the corpus's expand query is a UNION whose arms
       return `o` of different label sets (S7d).
+    - Adversarial review (about 210 comparisons, on vs off vs main, HTTP /
+      Bolt / library, on social, composite, FK-edge, denormalized,
+      polymorphic and a mixed-key schema: labels with UInt64, String and
+      Int64 keys): three findings, fixed. A several-labels node's key (a
+      `Variant` when its labels' key types differ) is compared as text
+      (`'x'` against the Variant was Code 53); the library compares the key
+      with the integer's text, read as the column's type (a String key
+      compared with an integer was Code 386); a one-column key is the id's
+      whole text (a key `p|q` was split as a composite's parts). The
+      library's `id(n) = N` of a several-labels node matches every label's
+      node with that key, as `RETURN id(n)` is the key there. Filed: a
+      several-labels node of mixed key types carried through WITH and
+      joined fails (#1390, older; such a query with an `id()` WHERE ran on
+      the legacy pipeline before); composite ids on Bolt (#1387); id
+      decoding across scopes (#1388). Older id gaps the review listed
+      (HTTP `id()` parameters are not decoded; keys 0 and 1 share an
+      encoded id; HTTP caches id-dependent SQL by text) predate S11e.
   - **User decisions (2026-10-11)** on what S11 does not lower: a
     relationship without `edge_id` keeps its ends as its identity (#1356;
     define `edge_id` to tell parallel rows apart); an undeclared property

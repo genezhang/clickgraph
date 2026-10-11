@@ -588,6 +588,24 @@ impl Lowerer<'_> {
                 operands: vec![a, b],
             })
         };
+        // A key compared with an id's text: a node of one label's column as
+        // the `id()` rewrite compares it, the text read as the column's type
+        // (ClickHouse; its key index still applies); a node of several
+        // labels' as text, its labels' keys being of different types (a
+        // `Variant`, which cannot read one text as all of them).
+        let key_is = |k: &RenderExpr, text: &str| {
+            let text = RenderExpr::Literal(Literal::String(text.to_string()));
+            if labels.len() > 1 {
+                let k = RenderExpr::Raw(format!(
+                    "{}({})",
+                    current_function_mapper().cast_string(),
+                    render_expr_to_sql_plain(k)
+                ));
+                equal(k, text)
+            } else {
+                equal(k.clone(), text)
+            }
+        };
         let mut matches = Vec::new();
         for id in ids {
             let Some(lookup) = &self.options.id_lookup else {
@@ -595,28 +613,24 @@ impl Lowerer<'_> {
                 let [k] = key else {
                     return unsupported("id() of a node with a composite id compared with an id");
                 };
-                matches.push(equal(k.clone(), RenderExpr::Literal(Literal::Integer(id))));
+                matches.push(key_is(k, &id.to_string()));
                 continue;
             };
             let Some((label, value)) = (lookup.0)(id) else {
                 continue;
             };
-            let parts: Vec<&str> = value.split('|').collect();
+            // A composite key's parts are joined by `|`; a key of one column
+            // is the whole text (which can hold a `|`).
+            let parts: Vec<&str> = if key.len() == 1 {
+                vec![value.as_str()]
+            } else {
+                value.split('|').collect()
+            };
             if !labels.contains(&label.as_str()) || parts.len() != key.len() {
                 continue;
             }
-            // As the `id()` rewrite: the key as text, which ClickHouse reads
-            // as the column's type.
-            let mut conds: Vec<RenderExpr> = key
-                .iter()
-                .zip(&parts)
-                .map(|(k, p)| {
-                    equal(
-                        k.clone(),
-                        RenderExpr::Literal(Literal::String(p.to_string())),
-                    )
-                })
-                .collect();
+            let mut conds: Vec<RenderExpr> =
+                key.iter().zip(&parts).map(|(k, p)| key_is(k, p)).collect();
             if labels.len() > 1 {
                 conds.insert(
                     0,
