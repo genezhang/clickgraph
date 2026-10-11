@@ -6429,7 +6429,37 @@ fn rewrite_empty_reduce_list(
 /// Supports the plan shapes the lowering produces today: SELECTs with FROM /
 /// JOINs / ARRAY JOIN / WHERE / GROUP BY / HAVING / ORDER BY / SKIP / LIMIT,
 /// the WITH bodies as flat CTEs before the final one, and no UNION.
-pub fn render_plan_to_sql_plain(mut plan: RenderPlan) -> String {
+pub fn render_plan_to_sql_plain(plan: RenderPlan) -> String {
+    let (ctes, select) = render_plan_parts_plain(plan);
+    let mut sql = String::new();
+    let recursive = ctes.iter().any(|c| c.recursive);
+    for (i, cte) in ctes.iter().enumerate() {
+        sql.push_str(match (i, recursive) {
+            (0, true) => "WITH RECURSIVE ",
+            (0, false) => "WITH ",
+            _ => ", \n",
+        });
+        sql.push_str(&cte.text);
+    }
+    if !sql.is_empty() {
+        sql.push('\n');
+    }
+    sql.push_str(&select);
+    sql
+}
+
+/// One CTE of a lowered plan as [`render_plan_to_sql_plain`] writes it.
+pub struct PlainCte {
+    pub name: String,
+    /// `name AS (…)`; a path relation's text also defines the helper CTEs
+    /// it uses.
+    pub text: String,
+    pub recursive: bool,
+}
+
+/// A lowered plan's CTEs, in dependency order, and its final SELECT, as
+/// SQL ([`render_plan_to_sql_plain`] joins them).
+pub fn render_plan_parts_plain(mut plan: RenderPlan) -> (Vec<PlainCte>, String) {
     assert!(
         plan.union.0.is_none(),
         "render_plan_to_sql_plain: UNION is not lowered yet"
@@ -6459,40 +6489,31 @@ pub fn render_plan_to_sql_plain(mut plan: RenderPlan) -> String {
     // SELECTs) and the path relations (`vlp_…`: the recursive searches and
     // the selections over them), whose text (`name AS (…)`, with the helper
     // CTEs a path uses) comes from the path generators.
-    let mut sql = String::new();
-    let ctes = std::mem::take(&mut plan.ctes.0);
-    let recursive = ctes.iter().any(|c| c.is_recursive);
-    for (i, cte) in ctes.into_iter().enumerate() {
-        sql.push_str(match (i, recursive) {
-            (0, true) => "WITH RECURSIVE ",
-            (0, false) => "WITH ",
-            _ => ", \n",
-        });
-        match cte.content {
+    let mut parts = Vec::new();
+    for cte in std::mem::take(&mut plan.ctes.0) {
+        let text = match cte.content {
             CteContent::Structured(body) => {
                 assert!(
                     !cte.is_recursive && body.ctes.0.is_empty(),
                     "render_plan_to_sql_plain: a CTE body is plain SELECTs"
                 );
-                sql.push_str(&cte.cte_name);
-                sql.push_str(" AS (\n");
-                sql.push_str(&plain_body_sql(*body));
-                sql.push(')');
+                format!("{} AS (\n{})", cte.cte_name, plain_body_sql(*body))
             }
             CteContent::RawSql(text) => {
                 assert!(
                     cte.cte_name.starts_with("vlp_") && text.starts_with(&cte.cte_name),
                     "render_plan_to_sql_plain: a raw-SQL CTE is a path relation"
                 );
-                sql.push_str(&text);
+                text
             }
-        }
+        };
+        parts.push(PlainCte {
+            name: cte.cte_name,
+            text,
+            recursive: cte.is_recursive,
+        });
     }
-    if !sql.is_empty() {
-        sql.push('\n');
-    }
-    sql.push_str(&plain_select_sql(plan));
-    sql
+    (parts, plain_select_sql(plan))
 }
 
 /// One expression of a lowered plan as SQL (its column references are final,

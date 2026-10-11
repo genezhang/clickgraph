@@ -4021,9 +4021,67 @@ fn an_unwind_repeats_each_row_per_element() {
         ],
     );
     assert!(!sql("MATCH (a:User) UNWIND [1, 2] AS x RETURN a.name, x").contains("ORDER BY"));
-    not_lowered(
+    // A LIMIT takes the elements in order: the rows are numbered in any
+    // order first, each row's elements following it in list order (S11g).
+    has(
         "MATCH (a:User) UNWIND [1, 2] AS x RETURN x LIMIT 1",
-        "SKIP / LIMIT over ordered rows after DISTINCT, aggregation or UNWIND",
+        &[
+            r#"row_number() OVER () AS "__cg_row" FROM test_integration.users_test AS v0 )"#,
+            r#"w1.__cg_row AS "__o0", __cg_position AS "__o1" FROM with_w1 AS w1 ARRAY JOIN [1, 2] AS __cg_element, arrayEnumerate([1, 2]) AS __cg_position )"#,
+            "ORDER BY w2.__o0 ASC, w2.__o1 ASC LIMIT 1",
+        ],
+    );
+    // So does a collect(); a count() does not.
+    has(
+        "MATCH (a:User) WITH a, [1, 2] AS l UNWIND l AS x WITH a, collect(x) AS c RETURN c",
+        &["row_number() OVER ()"],
+    );
+    assert!(
+        !sql("MATCH (a:User) WITH a, [1, 2] AS l UNWIND l AS x RETURN count(*) AS n")
+            .contains("row_number"),
+    );
+    // An ORDER BY in between: the order before it does not matter.
+    assert!(
+        !sql("MATCH (a:User) UNWIND [1, 2] AS x RETURN x ORDER BY x LIMIT 1")
+            .contains("row_number")
+    );
+    // Nor does a MATCH in between, which leaves its rows in no order.
+    for q in [
+        "MATCH (a:User) UNWIND [1, 2] AS x MATCH (a)-[:FOLLOWS]->(b:User) RETURN x, b.name LIMIT 1",
+        "MATCH (a:User) UNWIND [1, 2] AS x OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) \
+         RETURN collect(x) AS c",
+    ] {
+        assert!(!sql(q).contains("row_number"), "{q}");
+    }
+    // The numbered rows read twice (an OPTIONAL MATCH's or a subquery's
+    // drive, a path's seed, a collected list joined back): ClickHouse
+    // numbers them anew on each read, and the reads would disagree.
+    for q in [
+        "MATCH (a:User) UNWIND [1, 2] AS x WITH a, x LIMIT 3 \
+         OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) WHERE b.user_id > x RETURN x, b.name",
+        "MATCH (a:User) UNWIND [1, 2] AS x WITH a, x LIMIT 3 \
+         WHERE EXISTS { MATCH (a)-[:FOLLOWS]->(b:User) WHERE b.user_id > x } RETURN count(*) AS c",
+        "MATCH (a:User) UNWIND [1, 2] AS x WITH a, x LIMIT 3 \
+         MATCH (a)-[:FOLLOWS*1..2]->(b:User) RETURN count(*) AS c",
+        "MATCH (a:User) UNWIND [1, 2] AS x WITH a.country AS g, collect(x) AS c \
+         OPTIONAL MATCH (b:User) WHERE b.user_id = 5 AND size(c) > 0 RETURN count(b) AS m",
+        "MATCH (a:User) UNWIND [1, 2] AS x WITH a, x LIMIT 3 \
+         RETURN x, [(a)-[:FOLLOWS]->(b:User) WHERE b.user_id > x | b.name] AS ns",
+    ] {
+        not_lowered(q, "read more than once");
+    }
+    // Read twice before the paging, which is the final SELECT's: the rows
+    // are the same on each read, only their numbers differ.
+    has(
+        "MATCH (a:User) UNWIND [1, 2] AS x \
+         RETURN x, [(a)-[:FOLLOWS]->(b:User) WHERE b.user_id > x | b.name] AS ns LIMIT 3",
+        &["row_number() OVER ()", "LIMIT 3"],
+    );
+    // Read once, after the paging: lowered.
+    has(
+        "MATCH (a:User) UNWIND [1, 2] AS x WITH a, x LIMIT 3 \
+         MATCH (a)-[:FOLLOWS]->(b:User) RETURN x, b.name",
+        &["row_number() OVER ()"],
     );
     // After an aggregation with no grouping item: one row.
     has(
@@ -4057,14 +4115,23 @@ fn an_unwind_keeps_the_order_of_ordered_rows() {
             "ORDER BY w3.__o0 ASC, w3.__o1 ASC",
         ],
     );
-    // `collect` relies on that order: the rows are numbered in it.
+    // `collect` relies on that order: the values in the order of the
+    // element's position, a number the lowering made (no numbering of its
+    // own).
+    let l = sql("UNWIND [3, 1] AS x RETURN collect(x) AS l");
+    assert!(
+        squash(&l).contains(
+            "SELECT arrayMap(t -> t.2, arraySort(t -> t.1, groupArrayIf((w1.__o0, w1.v0), \
+             NOT isNull(w1.v0)))) AS \"l\" FROM with_w1 AS w1"
+        ),
+        "{l}"
+    );
+    assert!(!l.contains("row_number"), "{l}");
+    // Rows in no order, numbered for the UNWIND: by the row's number, then
+    // the position.
     has(
-        "UNWIND [3, 1] AS x RETURN collect(x) AS l",
-        &[
-            r#"row_number() OVER (ORDER BY w1.__o0 ASC) AS "__cg_row" FROM with_w1 AS w1 )"#,
-            "SELECT arrayMap(t -> t.2, arraySort(t -> t.1, groupArrayIf((w2.__cg_row, w2.v0), \
-             NOT isNull(w2.v0)))) AS \"l\" FROM with_w2 AS w2",
-        ],
+        "MATCH (a:User) UNWIND [1, 2] AS x RETURN collect(x) AS l",
+        &["groupArrayIf((tuple(w2.__o0, w2.__o1), w2.v1), NOT isNull(w2.v1))"],
     );
 }
 
@@ -4463,7 +4530,7 @@ fn a_list_plus_concatenates() {
     );
     has(
         "UNWIND [1, 2] AS x RETURN collect(x) + collect(x * 10) AS c",
-        &["arrayConcat(arrayMap(t -> t.2, arraySort(t -> t.1, groupArrayIf((w2.__cg_row, w2.v0)"],
+        &["arrayConcat(arrayMap(t -> t.2, arraySort(t -> t.1, groupArrayIf((w1.__o0, w1.v0)"],
     );
     not_lowered(
         "MATCH (a:User) RETURN [x IN [1] | x] + (a.user_id - 1) AS l",

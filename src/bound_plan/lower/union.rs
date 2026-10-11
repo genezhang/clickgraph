@@ -81,7 +81,10 @@ pub(super) fn lower(
             options: q.options,
             demand: q.demand,
             as_values: as_values.clone(),
+            unstable: q.unstable,
         };
+        // Only the last pass's CTEs are the plan's.
+        q.unstable.borrow_mut().clear();
         match lower_arms(&q, arms, arm_columns, all)? {
             Pass::Lowered(lowered) => return Ok(*lowered),
             Pass::AsValues(names) => {

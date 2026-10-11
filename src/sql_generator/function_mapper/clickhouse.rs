@@ -238,6 +238,7 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             // reads as a list of its entries.
             list_only: |list| format!("arrayConcat({list})"),
             row_number: |keys| format!("row_number() OVER (ORDER BY {keys})"),
+            any_row_number: "row_number() OVER ()",
             is_null: |v| format!("isNull({v})"),
             value_list: |v| format!("if(isNull({v}), [], [{v}])"),
         })

@@ -23,15 +23,16 @@
 //! A node, relationship or path in the list is `Unsupported` (S7e lists),
 //! as is a property of the element (a map).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::schema_types::SchemaType;
 use crate::query_planner::logical_expr::{self as lx, LogicalExpr};
 use crate::render_plan::render_expr::{Literal, RenderCase, RenderExpr, TableAlias};
+use crate::render_plan::RenderPlan;
 use crate::render_plan::{ArrayJoin, OrderByItem, OrderByOrder};
 use crate::sql_generator::emitters::clickhouse::to_sql_query::{
-    order_keys_to_sql_plain, render_expr_to_sql_plain,
+    order_keys_to_sql_plain, render_expr_to_sql_plain, render_plan_parts_plain,
 };
 use crate::sql_generator::function_mapper::{current_function_mapper, Unwind};
 
@@ -462,7 +463,15 @@ impl<'s> Lowerer<'s> {
             self.values.insert(var, RenderExpr::Literal(Literal::Null));
             return Ok(());
         }
-        if matches!(self.order, RowOrder::Keys(_)) && !self.one_row {
+        // Each row's elements follow it, in list order: the rows are
+        // numbered in their order, or in any (a fixed one) when a later
+        // clause takes the elements in order (`Lowerer::ordered_unwinds`).
+        let ordered = match self.order {
+            RowOrder::Keys(_) => true,
+            RowOrder::Unordered => self.ordered_unwinds.contains(&var),
+            RowOrder::Lost => false,
+        };
+        if ordered && !self.one_row {
             self.number_rows()?;
         }
         let e = self.expr(expr, &HashMap::new())?;
@@ -508,8 +517,10 @@ impl<'s> Lowerer<'s> {
         };
         match keys {
             Some(mut keys) => {
+                let position = RenderExpr::TableAlias(TableAlias(POSITION.to_string()));
+                self.numbers.insert(render_expr_to_sql_plain(&position));
                 keys.push(OrderByItem {
-                    expression: RenderExpr::TableAlias(TableAlias(POSITION.to_string())),
+                    expression: position,
                     order: OrderByOrder::Asc,
                 });
                 body.order_by = keys;
@@ -571,30 +582,124 @@ impl<'s> Lowerer<'s> {
         }))
     }
 
-    /// The rows so far, in their order, become a CTE exporting the scope and
-    /// each row's number in that order; the rows are then in the order of
-    /// that number.
+    /// The rows so far, in their order (rows in no order: in any, fixed by
+    /// the numbers), become a CTE exporting the scope and each row's number
+    /// in that order; the rows are then in the order of that number.
     pub(super) fn number_rows(&mut self) -> Result<(), LowerError> {
         let Some(spelling) = current_function_mapper().unwind() else {
             return unsupported("UNWIND in this SQL dialect");
         };
-        let RowOrder::Keys(keys) = &self.order else {
-            return unsupported("internal: numbering rows in no order");
+        let (number, unordered) = match &self.order {
+            RowOrder::Keys(keys) => (
+                (spelling.row_number)(&order_keys_to_sql_plain(keys)),
+                keys.iter().any(|k| self.is_unordered_number(k)),
+            ),
+            RowOrder::Unordered => (spelling.any_row_number.to_string(), true),
+            RowOrder::Lost => return unsupported("internal: numbering rows of a lost order"),
         };
-        let keys = order_keys_to_sql_plain(keys);
         let alias = self.next_cte_alias();
         let mut body = Body::default();
         let mut exports = Exports::default();
         self.export_scope(&alias, &mut body, &mut exports)?;
-        body.select.push(select(
-            RenderExpr::Raw((spelling.row_number)(&keys)),
-            ROW_NUMBER,
-        ));
+        body.select
+            .push(select(RenderExpr::Raw(number), ROW_NUMBER));
         self.close_segment(body, exports, alias.clone())?;
+        let column = render_expr_to_sql_plain(&col_at(&alias, ROW_NUMBER));
+        if unordered {
+            self.unordered_numbers.insert(column.clone());
+        }
+        self.numbers.insert(column);
         self.order = RowOrder::Keys(vec![OrderByItem {
             expression: col_at(&alias, ROW_NUMBER),
             order: OrderByOrder::Asc,
         }]);
         Ok(())
     }
+}
+
+/// Refuse a plan that reads more than once rows that depend on how rows in
+/// no order were numbered.
+///
+/// ClickHouse evaluates a CTE once per read, and rows in no order are
+/// numbered (`Unwind::any_row_number`) in whatever order an evaluation
+/// produces them. Rows taken by SKIP / LIMIT in that order, or a `collect()`
+/// listing values in it (`unstable`, by CTE name), can then differ between
+/// two reads, and a join of the reads (an OPTIONAL MATCH's or a subquery's
+/// drive, a path's seed) matches the wrong rows. Rows that only carry the
+/// number are the same rows on every read. They are read once when each CTE
+/// that reads them, directly or through others, is itself named once in the
+/// rest of the SQL.
+pub(super) fn reject_rereads_of_numbered_rows(
+    plan: &RenderPlan,
+    unstable: &BTreeSet<String>,
+) -> Result<(), LowerError> {
+    if unstable.is_empty() {
+        return Ok(());
+    }
+    let marked: Vec<bool> = plan
+        .ctes
+        .0
+        .iter()
+        .map(|c| unstable.contains(&c.cte_name))
+        .collect();
+    let (ctes, select) = render_plan_parts_plain(plan.clone());
+    // The names each CTE defines: its own, and a path relation's helpers.
+    let names: Vec<Vec<&str>> = ctes
+        .iter()
+        .map(|c| {
+            let mut names = vec![c.name.as_str()];
+            names.extend(defined_names(&c.text).filter(|n| *n != c.name));
+            names
+        })
+        .collect();
+    // How often the rest of the SQL names CTE `i`.
+    let reads = |i: usize| -> usize {
+        let elsewhere = ctes
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, c)| c.text.as_str())
+            .chain(std::iter::once(select.as_str()));
+        elsewhere
+            .map(|text| names[i].iter().map(|n| word_count(text, n)).sum::<usize>())
+            .sum()
+    };
+    // The numbered CTEs and those reading them; CTEs are in dependency
+    // order, so one pass finds every reader.
+    let mut tainted = marked;
+    for i in 0..ctes.len() {
+        if !tainted[i] {
+            tainted[i] = (0..i)
+                .any(|j| tainted[j] && names[j].iter().any(|n| word_count(&ctes[i].text, n) > 0));
+        }
+    }
+    if (0..ctes.len()).any(|i| tainted[i] && reads(i) > 1) {
+        return unsupported(
+            "rows numbered in no order (SKIP / LIMIT or collect() after an UNWIND) \
+             read more than once",
+        );
+    }
+    Ok(())
+}
+
+/// The CTE names `text` defines (`name AS (`).
+fn defined_names(text: &str) -> impl Iterator<Item = &str> {
+    text.match_indices(" AS (").filter_map(move |(at, _)| {
+        let before = &text[..at];
+        let start = before
+            .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .map_or(0, |p| p + 1);
+        let name = &before[start..];
+        (!name.is_empty()).then_some(name)
+    })
+}
+
+/// How often `word` occurs in `text` as a whole identifier.
+fn word_count(text: &str, word: &str) -> usize {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    text.match_indices(word)
+        .filter(|(at, _)| {
+            !text[..*at].ends_with(ident) && !text[at + word.len()..].starts_with(ident)
+        })
+        .count()
 }
