@@ -5311,6 +5311,11 @@ fn the_label_of_a_node_and_ids_of_what_matches_nothing() {
         "MATCH (a:Post)-[r:AUTHORED]->(b:User) RETURN type(r), id(a), labels(a) LIMIT 5",
         &["NULL AS \"id(a)\"", "WHERE false"],
     );
+    // The value type of what an OPTIONAL MATCH of the impossible left NULL.
+    has(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:AUTHORED]->(p:User) RETURN valueType(p) AS t",
+        &["'NULL' AS \"t\""],
+    );
     // label() of a relationship: neither pipeline reads it.
     not_lowered(
         "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN label(r) AS l",

@@ -4010,8 +4010,9 @@ slice that will handle it.
     labels), NULL where an OPTIONAL MATCH left it NULL; of a list's node
     element too. `label()` of a relationship stays refused (the legacy
     pipeline has no reading of it). A function of an element that matches
-    nothing is NULL (the query has no rows) before the `id()` refusal, so
-    `RETURN id(a)` over an impossible pattern lowers.
+    nothing is NULL (a MATCH of it has no rows; an OPTIONAL MATCH leaves it
+    NULL) before the `id()` refusal, so `RETURN id(a)` over an impossible
+    pattern lowers; its `valueType()` is "NULL", as in Neo4j.
     - Not yet: `id()` comparisons in a WHERE and ORDER BY an `id()` item
       (the server's encoded id: the HTTP / Bolt rewrite turns comparisons
       into key predicates, which the bound plan does not read yet).
@@ -4020,6 +4021,13 @@ slice that will handle it.
       filtered, OPTIONAL, list elements: every shape equal. Corpus 1437
       lowered (was 1428). Scorecard: two CG_ERROR entries now run (their
       `id()` makes them incomparable with Neo4j). Live suite unchanged.
+      - Adversarial review (about 260 comparisons on eight layouts incl. a
+        label-column node table, where `label()` reads the row's label and
+        the legacy pipeline is wrong on 13 shapes; OPTIONAL / EXISTS /
+        pattern comprehensions / UNION arms over impossible elements): no
+        defect. Fixed alongside: `valueType()` of an element that matches
+        nothing is "NULL" (was null). Filed: Bolt UNION `id()` returns raw
+        keys, and loud gaps (#1383).
     - Acceptance:
       - Generated shapes against Neo4j on `social_integration` (`count(p)`
         grouped, DISTINCT, OPTIONAL, union walks, zero-length paths,

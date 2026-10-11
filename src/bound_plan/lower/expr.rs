@@ -1066,7 +1066,12 @@ impl Lowerer<'_> {
         if let Some(v) = self.entity_arg(&f.args) {
             let lower = f.name.to_ascii_lowercase();
             return match (lower.as_str(), self.scans.get(&v)) {
-                // An element that matches nothing: the query has no rows.
+                // An element that matches nothing is NULL (a MATCH of it has
+                // no rows; an OPTIONAL MATCH leaves it NULL): so is any
+                // function of it, but its value type, which is "NULL".
+                ("valuetype", Some(Scan::Impossible)) => {
+                    Ok(RenderExpr::Literal(Literal::String("NULL".to_string())))
+                }
                 (_, Some(Scan::Impossible)) => Ok(RenderExpr::Literal(Literal::Null)),
                 // `id()` is the server's encoded id (`IdMapper`): Bolt encodes
                 // the key column of an `id(n)` RETURN item (the result shape),
