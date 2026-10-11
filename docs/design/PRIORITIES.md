@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; S7e3 #1347; S8a #1349 FK edges; S8b #1350 embedded nodes; next: S8c polymorphic edges / node tables (reading a map's value needs typed per-key values: a later list slice))
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; S7e3 #1347; S8a #1349 FK edges; S8b #1350 embedded nodes; S8c #PR polymorphic edges / label-column nodes; next: S8d composite ids (reading a map's value needs typed per-key values: a later list slice))
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,11 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-11: **P-4c S8c: polymorphic edges and label-column node tables** (#PR, `graph_catalog` `GraphSchema::with_discriminators_as_filters`, `bound_plan/labels.rs` `Feasibility`, behind `CLICKGRAPH_BOUND_PLAN=on`).
+  - A polymorphic edge is, in the lowering's view, a definition per type and pair of end labels whose rows are those its type / label columns name (a `filter:`); labels sharing a table through `label_column` are its rows of their value. `$any` ends are every label or the closed `*_label_values` (label inference alike). A polymorphic edge on a node table is read as written (not #632). A walk of one definition over a filtered / parameterized / FINAL table is the walk of definitions (S7b3a) instead of refused.
+  - Not lowered: discriminators the filter grammar cannot hold; a label pair a standard definition of the type also joins (config-unsupported mix).
+  - Oracle: polymorphic schemas MATCH 144 → 170, the 13 earlier unchanged; corpus lowers 1380 (was 1237). Sweeps on four scratch graphs: 95 lowered shapes all equal Neo4j (legacy wrong / erroring on 59). Mutation check 12 of 12. Live suite: 10 polymorphic walk tests now pass; legacy refusals / SQL-text tests changed, answers equal Neo4j.
 
 - 2026-10-11: **P-4c S8b: nodes embedded in edge tables** (#1350, `graph_catalog` `GraphSchema::with_node_relations` / `NodeRelation` / `set_node_definitions`, `src/bound_plan/lower/embedded.rs`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - An embedded label (denormalized into its edges' tables) is the relation of its roles: a `UNION ALL` of each role's columns, grouped by id (`any`, one-type guard across sources); every scan, tie, union, walk and value reads it as a node table. A node of the clause is read from its first relationship's row when that row holds all it is read for (legacy's join shape). A foreign denormalized label is its own table; uniqueness compares one definition's relationships; coupled edges are two relationships tied through their shared node (Neo4j's answer; legacy reads one row). Composite ends listed in another order are reordered; a label both embedded and in own tables is not lowered.
