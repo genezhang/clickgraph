@@ -894,6 +894,37 @@ impl GraphSchema {
         }
     }
 
+    /// Whether an FK edge's owner (the node whose rows are its rows) is its
+    /// from-node ([`Self::fk_edge_anchor_is_from`]), or `None` when `rel` is
+    /// no FK edge. When both ends are labels of the edge's table (labels
+    /// sharing a table), the owner is the end whose columns hold its node's
+    /// id (`from_id: id, to_id: parent` is the from-node's row).
+    fn fk_edge_owner_is_from(&self, rel: &RelationshipSchema) -> Option<bool> {
+        let anchor = self.fk_edge_anchor_is_from(rel)?;
+        if rel.from_node == rel.to_node {
+            return Some(anchor);
+        }
+        let on_table = |label: &str| {
+            self.node_schema_opt(label)
+                .filter(|n| n.full_table_name() == rel.full_table_name())
+        };
+        let holds_id = |n: &NodeSchema, end: &Identifier| {
+            let mut own = n.id_physical_columns();
+            let mut cols: Vec<String> = end.columns().iter().map(|c| c.to_string()).collect();
+            own.sort();
+            cols.sort();
+            own == cols
+        };
+        match (on_table(&rel.from_node), on_table(&rel.to_node)) {
+            (Some(f), Some(t)) => match (holds_id(f, &rel.from_id), holds_id(t, &rel.to_id)) {
+                (true, false) => Some(true),
+                (false, true) => Some(false),
+                _ => Some(anchor),
+            },
+            _ => Some(anchor),
+        }
+    }
+
     /// P-4c S8a – S8c: the schema the bound-plan lowering reads, or `None`
     /// when it is this one: discriminator columns as row filters
     /// ([`Self::with_discriminators_as_filters`]), FK edges as tables of
@@ -1294,7 +1325,7 @@ impl GraphSchema {
     pub fn with_fk_edges_as_edge_rows(&self) -> Option<GraphSchema> {
         let mut out: Option<GraphSchema> = None;
         for (key, rel) in &self.relationships {
-            let Some(from_is_owner) = self.fk_edge_anchor_is_from(rel) else {
+            let Some(from_is_owner) = self.fk_edge_owner_is_from(rel) else {
                 continue;
             };
             let owner_label = if from_is_owner {
@@ -1330,10 +1361,22 @@ impl GraphSchema {
             if owner.should_use_final() {
                 read.use_final = Some(true);
             }
+            // Its rows are its owner's: the owner's `filter:` (and, for
+            // labels sharing a table, its label condition, S8c) holds of
+            // them; another label's row of the same id is no reference
+            // (review).
+            if owner.filter.is_some() {
+                let Some(filter) = both_filters(rel.filter.as_ref(), owner.filter.as_ref()) else {
+                    // Unreachable: two filters that parse, ANDed, parse.
+                    continue;
+                };
+                read.filter = Some(filter);
+            }
             if read.from_id == rel.from_id
                 && read.to_id == rel.to_id
                 && read.view_parameters == rel.view_parameters
                 && read.should_use_final() == rel.should_use_final()
+                && read.filter == rel.filter
             {
                 continue;
             }
@@ -1379,6 +1422,18 @@ pub struct NodeRelation {
     /// Every property its sources hold (the id's among them), sorted.
     pub properties: Vec<String>,
     pub sources: Vec<NodeSource>,
+}
+
+/// `a` and `b` (either may be absent) as one schema filter.
+fn both_filters(a: Option<&SchemaFilter>, b: Option<&SchemaFilter>) -> Option<SchemaFilter> {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            let filter = SchemaFilter::new(&format!("({}) AND ({})", a.raw, b.raw)).ok()?;
+            filter.to_sql("e").ok()?;
+            Some(filter)
+        }
+        (a, b) => a.or(b).cloned(),
+    }
 }
 
 /// `filter` (when given) and each `column = 'value'` of `conditions`, as one

@@ -3793,6 +3793,41 @@ graph_schema:
     assert!(got.contains("\"to_type\" = 'Post'"), "{got}");
 }
 
+/// S8c review: an FK edge's rows are its owner's rows. On a table labels
+/// share, they are the owner's label's rows (another label's row of the same
+/// id is no reference); of two labels on the table, the owner is the end
+/// whose columns hold its id.
+#[test]
+fn an_fk_edge_on_a_shared_table_reads_its_owners_rows() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: shared_fk
+graph_schema:
+  nodes:
+    - { label: A, database: db, table: ent, node_id: id, label_column: kind, label_value: A, property_mappings: { id: id } }
+    - { label: B, database: db, table: ent, node_id: id, label_column: kind, label_value: B, property_mappings: { id: id } }
+  edges:
+    - { type: IN_A, database: db, table: ent, from_node: B, to_node: A, from_id: id, to_id: parent, property_mappings: {} }
+    - { type: HOLDS, database: db, table: ent, from_node: A, to_node: B, from_id: parent, to_id: id, property_mappings: {} }
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    for (q, edge) in [
+        ("MATCH (b:B)-[:IN_A]->(a:A) RETURN count(*)", "v1"),
+        ("MATCH (a:A)-[:HOLDS]->(b:B) RETURN count(*)", "v1"),
+    ] {
+        let got = translate_bound_plan(q, &schema, &ReadOptions::default())
+            .unwrap()
+            .sql;
+        let owner = format!("{edge}.\"kind\" = 'B'");
+        let other = format!("{edge}.\"kind\" = 'A'");
+        assert!(got.contains(&owner), "{q}: {got}");
+        assert!(!got.contains(&other), "{q}: {got}");
+    }
+}
+
 /// S8c: labels sharing a table are its rows of their label value; a
 /// discriminator the filter grammar cannot hold leaves its table to legacy.
 #[test]

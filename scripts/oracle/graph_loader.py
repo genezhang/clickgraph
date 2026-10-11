@@ -178,11 +178,7 @@ def build_graph(gs, ch):
         pm = n.get("property_mappings") or {}
         idc = [pm.get(p, p) for p in _id_cols(n["node_id"])]
         cols = sorted(set(idc) | set(pm.values()))
-        # A schema `filter:` is SQL over the table's columns: the label's nodes
-        # are the rows it holds of.
-        conds = [f"({n['filter']})"] if n.get("filter") else []
-        if n.get("label_column"):
-            conds.append(f"`{n['label_column']}` = '{n['label_value']}'")
+        conds = _node_conds(n)
         where = f" WHERE {' AND '.join(conds)}" if conds else ""
         rows = ch(f"SELECT {', '.join(f'`{c}`' for c in cols)} FROM `{n['database']}`.`{n['table']}`{where}")
         for r in rows:
@@ -217,7 +213,12 @@ def build_graph(gs, ch):
         pm = e.get("property_mappings") or {}
         cols = sorted(set(fc) | set(tc) | set(pm.values()))
         # A schema `filter:`: the type's relationships are the rows it holds of.
-        where = f" WHERE {e['filter']}" if e.get("filter") else ""
+        conds = [f"({e['filter']})"] if e.get("filter") else []
+        # An FK edge's rows are its owner's rows (of its label, its filter).
+        owner = _fk_owner(e, node_defs)
+        if owner is not None:
+            conds += _node_conds(owner)
+        where = f" WHERE {' AND '.join(conds)}" if conds else ""
         rows = ch(f"SELECT {', '.join(f'`{c}`' for c in cols)} FROM `{e['database']}`.`{e['table']}`{where}")
         dangling = 0
         for r in rows:
@@ -236,6 +237,40 @@ def build_graph(gs, ch):
         if dangling:
             report["dangling"][e["type"]] = dangling
     return nodes, rels, report
+
+
+def _node_conds(n):
+    """The conditions a label's rows meet: its `filter:` (SQL over the
+    table's columns) and, for labels sharing a table, its label column's
+    value."""
+    conds = [f"({n['filter']})"] if n.get("filter") else []
+    if n.get("label_column"):
+        conds.append(f"`{n['label_column']}` = '{n['label_value']}'")
+    return conds
+
+
+def _fk_owner(e, node_defs):
+    """An FK edge's owner, the node whose rows are its rows: an end whose
+    label's own table is the edge's; of two labels sharing it, the end whose
+    columns hold its node's id. None for an edge table."""
+    def on_table(label):
+        n = node_defs.get(label)
+        if n is None or (n["database"], n["table"]) != (e["database"], e["table"]):
+            return None
+        if n.get("from_node_properties") or n.get("to_node_properties"):
+            return None
+        return n
+
+    def holds_id(n, end):
+        pm = n.get("property_mappings") or {}
+        return sorted(pm.get(p, p) for p in _id_cols(n["node_id"])) == sorted(_id_cols(end))
+
+    f, t = on_table(e["from_node"]), on_table(e["to_node"])
+    if f is not None and t is not None and e["from_node"] != e["to_node"]:
+        if holds_id(t, e["to_id"]) and not holds_id(f, e["from_id"]):
+            return t
+        return f
+    return f if f is not None else t
 
 
 def _polymorphic_rels(e, ch, index, rels, report):
