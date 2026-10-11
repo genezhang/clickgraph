@@ -19996,3 +19996,35 @@ async fn path_node_property_readout_unsupported_forms_guarded() {
         );
     }
 }
+
+/// #1311 (legacy pipeline): a WITH whose WHERE follows ORDER BY / LIMIT
+/// filters AFTER paging. The legacy parser desugars to inner (paging) +
+/// chained `WITH * WHERE`, so the SQL must apply LIMIT in an inner SELECT
+/// and the age filter in an outer one -- never one SELECT with both.
+/// (Bound pipeline proves the same semantics via __keep; see bound_plan tests.)
+#[tokio::test]
+async fn with_trailing_where_filters_after_limit_1311() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher =
+        "MATCH (u:User) WITH u ORDER BY u.user_id LIMIT 2 WHERE u.user_id > 1 RETURN count(*) AS c";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(&schema, cypher, dialect).await;
+        let limit_pos = sql.find("LIMIT 2").expect("#1311: inner LIMIT renders");
+        let filter_pos = sql
+            .find("user_id > 1")
+            .expect("#1311: post-limit filter renders");
+        // The filter textually follows the LIMIT: separate outer scope.
+        assert!(
+            filter_pos > limit_pos,
+            "#1311 ({dialect:?}): filter must apply after LIMIT (nested scopes):\n{sql}"
+        );
+        // No single WHERE-before-LIMIT fold: the age predicate must not sit
+        // in a SELECT that also carries the LIMIT.
+        let where_pos = sql.find("WHERE");
+        assert!(
+            where_pos.is_some_and(|w| w > limit_pos),
+            "#1311 ({dialect:?}): WHERE belongs to the outer scope:\n{sql}"
+        );
+    }
+}

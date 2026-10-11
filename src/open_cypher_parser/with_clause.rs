@@ -133,19 +133,52 @@ pub fn parse_with_clause(
     // Using Box to handle recursion
     let (input, subsequent_with) = opt(parse_with_clause).parse(input)?;
 
-    let with_clause = WithClause {
+    // #1311: a WHERE written after ORDER BY / SKIP / LIMIT filters the
+    // rows left after paging (Sort -> Limit -> Filter). Desugar to a
+    // chained `WITH * WHERE` carrying the original continuation: the
+    // outer star-WITH has no paging modifiers, so its WHERE folds into
+    // its own CTE body -- exactly the post-limit position -- reusing all
+    // downstream machinery. A WHERE with no paging modifiers stays inline.
+    let post_limit =
+        where_clause.is_some() && (order_by.is_some() || skip.is_some() || limit.is_some());
+    let (inner_where, outer_where) = if post_limit {
+        (None, where_clause)
+    } else {
+        (where_clause, None)
+    };
+
+    let mut with_clause = WithClause {
         with_items,
         is_star,
         distinct,
         order_by,
         skip,
         limit,
-        where_clause,
+        where_clause: inner_where,
         subsequent_unwind,
         subsequent_match: subsequent_match.map(Box::new),
         subsequent_optional_matches,
         subsequent_with: subsequent_with.map(Box::new),
     };
+
+    if let Some(w) = outer_where {
+        let outer = WithClause {
+            with_items: vec![],
+            is_star: true,
+            distinct: false,
+            order_by: None,
+            skip: None,
+            limit: None,
+            where_clause: Some(w),
+            subsequent_unwind: with_clause.subsequent_unwind.take(),
+            subsequent_match: with_clause.subsequent_match.take(),
+            subsequent_optional_matches: std::mem::take(
+                &mut with_clause.subsequent_optional_matches,
+            ),
+            subsequent_with: with_clause.subsequent_with.take(),
+        };
+        with_clause.subsequent_with = Some(Box::new(outer));
+    }
 
     Ok((input, with_clause))
 }
@@ -425,5 +458,49 @@ mod tests {
             }
             Err(e) => panic!("Expected successful parse, got error: {:?}", e),
         }
+    }
+
+    #[test]
+    fn test_1311_trailing_where_desugars_to_star_with() {
+        // #1311: trailing WHERE after ORDER BY / LIMIT chains a star-WITH.
+        let input = "WITH u ORDER BY u.age LIMIT 5 WHERE u.age > 30 RETURN count(*)";
+        let (remaining, with_clause) = parse_with_clause(input).unwrap();
+        assert!(with_clause.where_clause.is_none(), "inner keeps no WHERE");
+        assert!(with_clause.order_by.is_some());
+        assert!(with_clause.limit.is_some());
+        let outer = with_clause
+            .subsequent_with
+            .as_ref()
+            .expect("trailing WHERE chains a star-WITH");
+        assert!(outer.is_star, "outer is WITH *");
+        assert!(outer.where_clause.is_some(), "outer carries the WHERE");
+        assert!(outer.order_by.is_none() && outer.limit.is_none());
+        assert!(remaining.trim().starts_with("RETURN"));
+    }
+
+    #[test]
+    fn test_1311_leading_where_stays_inline() {
+        // WHERE with no paging modifiers stays on the same node.
+        let input = "WITH u WHERE u.age > 30 RETURN u";
+        let (_, with_clause) = parse_with_clause(input).unwrap();
+        assert!(with_clause.where_clause.is_some());
+        assert!(
+            with_clause.subsequent_with.is_none(),
+            "no chaining without paging modifiers"
+        );
+    }
+
+    #[test]
+    fn test_1311_desugar_carries_continuation() {
+        // The original continuation (MATCH here) moves to the outer star-WITH.
+        let input = "WITH u ORDER BY u.age LIMIT 5 WHERE u.age > 30 MATCH (u)-->(f) RETURN f";
+        let (_, with_clause) = parse_with_clause(input).unwrap();
+        assert!(with_clause.where_clause.is_none());
+        assert!(
+            with_clause.subsequent_match.is_none(),
+            "MATCH moved outward"
+        );
+        let outer = with_clause.subsequent_with.as_ref().expect("chained");
+        assert!(outer.subsequent_match.is_some(), "outer owns the MATCH");
     }
 }
