@@ -1313,6 +1313,13 @@ types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
   `parent_id` to `fs_id` on the objects table) is not an FK edge
   (`is_fk_edge` is false): its `from_id` is its from-node's, as legacy and
   the YAML read it, not #632's self-reference rule.
+- **An FK edge's rows are its owner's.** An FK edge (S8a) is read with its
+  owner's `filter:`, which on a table labels share holds its label
+  condition: another label's row of the same id is no reference (the
+  review: `(x:A)-[:CHILD_OF]->(y:A)` read a `B` row's parent). Of two labels
+  on the edge's table, the owner is the end whose columns hold its node's
+  id (`from_id: parent, to_id: id` is the to-node's row). The oracle loader
+  reads FK edges alike.
 - **Walks over a filtered table.** The generator's walk of one definition
   reads no table options; a walk of one definition over a table with a
   `filter:`, view parameters or FINAL is the walk of definitions
@@ -3433,10 +3440,21 @@ slice that will handle it.
         `filter:` walked alone): every lowered shape equals Neo4j (95 of 97; a
         walk's relationship list over a composite `edge_id` and a pattern
         predicate are not lowered); legacy is wrong or errors on 59.
-      - Mutation check: 12 rules broken in turn, all caught: 10 by the
-        sweep, 2 by a unit test (a pair another definition joins). The view
+      - Mutation check: 14 rules broken in turn, all caught: 12 by the
+        sweep (with the review's FK graph), 2 by a unit test (a pair another
+        definition joins). The view
         and label inference each close an end to its label values: either
         alone keeps every answer, both broken are caught.
+      - Adversarial review (own graphs: ids repeated across labels of one
+        table, lowercase / spaced / NULL discriminators, a type named like a
+        label, ORed filters, keyword column names, composite ids, a
+        standard and a polymorphic definition of one type, standard edges
+        with filters, view parameters and FINAL walked as unions, S8b
+        embedded nodes beside a polymorphic edge, the repo's schemas): one
+        finding, fixed: FK edges on a table labels share read every label's
+        rows (above; legacy is worse). Not from this slice: a union walk over
+        `edge_id`s of different types fails (#1352); rows repeated without an
+        `edge_id` are one relationship in walks (as legacy).
       - Live suite, switch on, vs S8b: 10 polymorphic walk and shortestPath
         tests now pass; legacy #1244 refusals now answered (3, each equal
         to Neo4j's count); one SQL-text test of legacy's CTE name (its query
