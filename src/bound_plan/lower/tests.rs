@@ -4846,8 +4846,9 @@ fn a_walk_between_composite_ids_goes_by_their_columns() {
 
 /// S8d2: a shortest path between composite ids searches nodes keyed by the
 /// text of their id's tuple (not the generator's `|`-joined text, which
-/// `('B|1', '2')` and `('B', '1|2')` share), over keyed relations of the
-/// nodes and relationships, and ties its ends by that key.
+/// `('B|1', '2')` and `('B', '1|2')` share), computed where the search reads
+/// a node or a relationship's end over the tables as they are, and ties its
+/// ends by that key.
 #[test]
 fn a_shortest_path_between_composite_ids_keys_nodes_by_their_tuples() {
     let got = squash(
@@ -4861,9 +4862,13 @@ fn a_shortest_path_between_composite_ids_keys_nodes_by_their_tuples() {
         .sql,
     );
     for p in [
-        "FROM (SELECT *, toString(tuple(bank, num)) AS __cg_key FROM db.acct) AS start_node",
-        "JOIN (SELECT *, toString(tuple(fb, fnum)) AS __cg_start_key, \
-         toString(tuple(tb, tnum)) AS __cg_end_key FROM db.sent) AS rel ON rel.__cg_start_key = f.node",
+        "toString(tuple(start_node.bank, start_node.num)) AS start_id",
+        "JOIN db.sent AS rel ON toString(tuple(rel.fb, rel.fnum)) = f.node \
+         JOIN db.acct AS end_node ON toString(tuple(end_node.bank, end_node.num)) = \
+         toString(tuple(rel.tb, rel.tnum))",
+        // A row with a NULL end part relates no node (a key's text of NULL
+        // would equal itself; review).
+        "(rel.fb IS NOT NULL) AND (rel.fnum IS NOT NULL)",
         "v2.start_id = toString(tuple(v0.bank, v0.num))",
         "v2.end_id = toString(tuple(v1.bank, v1.num))",
     ] {

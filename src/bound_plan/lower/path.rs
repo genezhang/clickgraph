@@ -325,14 +325,15 @@ pub(super) fn path_cte(schema: &GraphSchema, call: PathCall<'_>) -> Result<PathC
 #[derive(Clone)]
 pub(super) struct Search {
     pub var: String,
-    /// The nodes, and the column identifying one.
+    /// The nodes, and the columns identifying one (several: a composite id,
+    /// keyed by [`composite_key`], S8d2).
     node_table: String,
-    pub id: String,
+    id: Vec<String>,
     /// The relationships, from the node in `from_id` to the node in `to_id`
     /// (none: only the path of none can match).
     edge_table: Option<String>,
-    from_id: String,
-    to_id: String,
+    from_id: Vec<String>,
+    to_id: Vec<String>,
     pub min: u32,
     pub max: Option<u32>,
     /// Conjuncts over the first node, aliased [`START`].
@@ -354,6 +355,36 @@ pub(super) struct Search {
 }
 
 impl Search {
+    /// The key of columns `cols` over `alias` (none: unqualified): the column,
+    /// or the [`composite_key`] of several.
+    fn key(cols: &[String], alias: &str) -> String {
+        let at: Vec<String> = cols
+            .iter()
+            .map(|c| match alias {
+                "" => c.clone(),
+                a => format!("{a}.{c}"),
+            })
+            .collect();
+        match at.as_slice() {
+            [one] => one.clone(),
+            _ => composite_key(&at).unwrap_or_else(|| format!("({})", at.join(", "))),
+        }
+    }
+
+    /// A node's key over `alias`, as the search identifies a node.
+    pub(super) fn node_key(&self, alias: &str) -> String {
+        Self::key(&self.id, alias)
+    }
+
+    /// The keys of a relationship's `from` / `to` node over `alias`.
+    fn from_key(&self, alias: &str) -> String {
+        Self::key(&self.from_id, alias)
+    }
+
+    fn to_key(&self, alias: &str) -> String {
+        Self::key(&self.to_id, alias)
+    }
+
     /// The columns of a walked relation (`walk_ctes`) after `start_id`,
     /// `end_id` and `hop_count`: its nodes' identities, its relationships'
     /// (as texts), and the values it carries.
@@ -379,11 +410,22 @@ impl Search {
     fn targets(&self) -> Option<String> {
         conjunction(&self.end).map(|c| {
             format!(
-                "SELECT {END}.{id} FROM {table} AS {END} WHERE {c}",
-                id = self.id,
+                "SELECT {key} FROM {table} AS {END} WHERE {c}",
+                key = match self.id.as_slice() {
+                    [_] => self.node_key(END),
+                    _ => format!("{} AS {TARGET}", self.node_key(END)),
+                },
                 table = self.node_table
             )
         })
+    }
+
+    /// The column of [`Self::targets`], over `alias`.
+    fn target_column(&self, alias: &str) -> String {
+        match self.id.as_slice() {
+            [one] => format!("{alias}.{one}"),
+            _ => format!("{alias}.{TARGET}"),
+        }
     }
 }
 
@@ -409,47 +451,38 @@ impl PathCall<'_> {
             return unsupported("internal: a shortestPath outside the standard layout");
         };
         let edge_table = self.both.unwrap_or(edge_table);
-        // A node is identified by one column: a composite id (S8d2) by the
+        // A node is identified by one value: a composite id (S8d2) by the
         // text of the tuple of its columns ([`composite_key`]), which no two
-        // ids share (unlike the generator's `|`-joined text), the nodes and
-        // relationships read through subqueries that add it.
-        let (node_table, id, edge_table, from_id, to_id) = match id_column {
-            Identifier::Single(id) => (
-                node_table.clone(),
-                id.clone(),
-                edge_table.to_string(),
-                from_id.clone(),
-                to_id.clone(),
-            ),
+        // ids share (unlike the generator's `|`-joined text), computed where
+        // the search reads it (the tables are read as they are, every column
+        // there: a subquery's `*` has no MATERIALIZED / ALIAS column).
+        let columns =
+            |list: &str| -> Vec<String> { list.split(", ").map(str::to_string).collect() };
+        let (id, from, to) = match id_column {
+            Identifier::Single(id) => {
+                (vec![id.clone()], vec![from_id.clone()], vec![to_id.clone()])
+            }
             Identifier::Composite(cols) => {
-                let columns =
-                    |list: &str| -> Vec<String> { list.split(", ").map(str::to_string).collect() };
                 let (from, to) = (columns(from_id), columns(to_id));
                 if from.len() != cols.len() || to.len() != cols.len() {
                     return unsupported(
                         "internal: a relationship's end of another arity than its id",
                     );
                 }
-                let Some(key) = composite_key(cols) else {
+                if composite_key(cols).is_none() {
                     return unsupported("a shortestPath between composite ids in this SQL dialect");
-                };
-                let (Some(from_key), Some(to_key)) = (composite_key(&from), composite_key(&to))
-                else {
-                    return unsupported("a shortestPath between composite ids in this SQL dialect");
-                };
-                (
-                    format!("(SELECT *, {key} AS {k} FROM {node_table})", k = super::KEY),
-                    super::KEY.to_string(),
-                    format!(
-                        "(SELECT *, {from_key} AS {f}, {to_key} AS {t} FROM {edge_table})",
-                        f = super::REL_START_KEY,
-                        t = super::REL_END_KEY,
-                    ),
-                    super::REL_START_KEY.to_string(),
-                    super::REL_END_KEY.to_string(),
-                )
+                }
+                (cols.clone(), from, to)
             }
         };
+        // A row whose end has a NULL part relates no node (the tables'
+        // columns join by `=`; a key's text of NULL would equal itself).
+        let mut rel = self.rel.clone();
+        if id.len() > 1 {
+            for c in from.iter().chain(&to) {
+                rel.push(RenderExpr::Raw(format!("{REL}.{c} IS NOT NULL")));
+            }
+        }
         let g = current_function_mapper().graph_values();
         let values = |wanted: bool| -> Result<_, LowerError> {
             match (wanted, &g) {
@@ -479,16 +512,16 @@ impl PathCall<'_> {
             node_tuple,
             rel_tuple,
             var: self.var.to_string(),
-            node_table,
+            node_table: node_table.clone(),
             id,
-            edge_table: Some(edge_table),
-            from_id,
-            to_id,
+            edge_table: Some(edge_table.to_string()),
+            from_id: from,
+            to_id: to,
             min: self.min,
             max: self.max,
             start: self.start.clone(),
             end: self.end.clone(),
-            rel: self.rel.clone(),
+            rel,
             edge_text: g
                 .as_ref()
                 .map(|g| (g.to_text)(&edge_identity_sql(self.edge, REL))),
@@ -512,6 +545,9 @@ pub(super) fn composite_key(cols: &[String]) -> Option<String> {
         cols.join(", ")
     )))
 }
+
+/// The column of a search's targets (`Search::targets`).
+const TARGET: &str = "__cg_target";
 
 /// The parents a shortest-path search keeps of each node (`search_cte`),
 /// for a walk back over its levels (`walk_ctes`).
@@ -551,13 +587,9 @@ pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<C
         return unsupported("shortestPath in this SQL dialect");
     };
     let (depth, flag, count) = (spelling.depth, spelling.flag, spelling.count);
-    let Search {
-        node_table,
-        id,
-        from_id,
-        to_id,
-        ..
-    } = call;
+    let node_table = &call.node_table;
+    let (start_key, end_key) = (call.node_key("start_node"), call.node_key("end_node"));
+    let (rel_from, rel_to) = (call.from_key("rel"), call.to_key("rel"));
     let bfs = format!("vlp_{}_bfs", call.var);
     let seed_where = conjunction(&call.start)
         .map(|c| format!("\n    WHERE {c}"))
@@ -565,15 +597,15 @@ pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<C
     let seed_paths = if all {
         format!(", CAST(1 AS {count}) AS paths")
     } else if parents == Parents::Least {
-        format!(", start_node.{id} AS parent")
+        format!(", {start_key} AS parent")
     } else if parents == Parents::All {
-        format!(", [start_node.{id}] AS parents")
+        format!(", [{start_key}] AS parents")
     } else {
         String::new()
     };
     let mut search = format!(
         "{bfs} AS (\n    \
-         SELECT DISTINCT start_node.{id} AS start_id, start_node.{id} AS node, \
+         SELECT DISTINCT {start_key} AS start_id, {start_key} AS node, \
          CAST(0 AS {depth}) AS depth{seed_paths}, CAST(1 AS {flag}) AS new\n    \
          FROM {node_table} AS start_node{seed_where}"
     );
@@ -585,14 +617,15 @@ pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<C
         }
         step.extend(conjunction(&call.rel));
         step.push(format!(
-            "(f.start_id, end_node.{id}) NOT IN (SELECT start_id, node FROM {bfs})"
+            "(f.start_id, {end_key}) NOT IN (SELECT start_id, node FROM {bfs})"
         ));
         if let Some(targets) = call.targets() {
             step.push(format!(
                 "f.start_id NOT IN (SELECT start_id FROM {bfs} GROUP BY start_id \
                  HAVING {count_if}(node IN ({targets})) >= \
-                 (SELECT count(DISTINCT {END}.{id}) FROM ({targets}) AS {END}))",
+                 (SELECT count(DISTINCT {target}) FROM ({targets}) AS {END}))",
                 count_if = current_function_mapper().count_if(),
+                target = call.target_column(END),
             ));
         }
         // `shortestPath` needs a node once; `allShortestPaths` the number of
@@ -601,7 +634,7 @@ pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<C
             (
                 "",
                 format!(", CAST(sum(f.paths) AS {count}) AS paths"),
-                format!("\n    GROUP BY f.start_id, end_node.{id}, f.depth"),
+                format!("\n    GROUP BY f.start_id, {end_key}, f.depth"),
                 ", paths",
             )
         } else if parents != Parents::None {
@@ -612,7 +645,7 @@ pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<C
             (
                 "",
                 format!(", {kept} AS {column}"),
-                format!("\n    GROUP BY f.start_id, end_node.{id}, f.depth"),
+                format!("\n    GROUP BY f.start_id, {end_key}, f.depth"),
                 if column == "parent" {
                     ", parent"
                 } else {
@@ -624,11 +657,11 @@ pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<C
         };
         search.push_str(&format!(
             "\n    UNION ALL\n    \
-             SELECT {distinct}f.start_id AS start_id, end_node.{id} AS node, \
+             SELECT {distinct}f.start_id AS start_id, {end_key} AS node, \
              CAST(f.depth + 1 AS {depth}) AS depth{step_paths}, CAST(1 AS {flag}) AS new\n    \
              FROM {bfs} AS f\n    \
-             JOIN {edge_table} AS rel ON rel.{from_id} = f.node\n    \
-             JOIN {node_table} AS end_node ON end_node.{id} = rel.{to_id}\n    \
+             JOIN {edge_table} AS rel ON {rel_from} = f.node\n    \
+             JOIN {node_table} AS end_node ON {end_key} = {rel_to}\n    \
              WHERE {step}{reach}\n    \
              UNION ALL\n    \
              SELECT start_id, node, depth{carried}, CAST(0 AS {flag}) AS new\n    \
@@ -724,13 +757,9 @@ pub(super) fn walk_ctes(
         return unsupported("a variable-length relationship between composite ids (S8)");
     };
     let (depth, flag) = (spelling.depth, spelling.flag);
-    let Search {
-        node_table,
-        id,
-        from_id,
-        to_id,
-        ..
-    } = call;
+    let node_table = &call.node_table;
+    let end_key = call.node_key("end_node");
+    let (rel_from, rel_to, to_bare) = (call.from_key("rel"), call.to_key("rel"), call.to_key(""));
     let bfs = format!("vlp_{}_bfs", call.var);
     let walk = format!("vlp_{}_walk", call.var);
     let columns = call.walked_columns();
@@ -739,7 +768,7 @@ pub(super) fn walk_ctes(
         (
             "path_nodes",
             m.array_slice(&m.array_literal("node"), "1", Some("0")),
-            format!("end_node.{id}"),
+            end_key.clone(),
         ),
         ("path_edges", (g.texts)(&[]), edge_text.clone()),
     ];
@@ -817,10 +846,10 @@ pub(super) fn walk_ctes(
          FROM {walk} AS w\n        \
          JOIN ({levels}) AS lv\n          \
          ON lv.start_id = w.start_id AND lv.node = w.node\n        \
-         JOIN (SELECT * FROM {edge_table} WHERE {to_id} IN \
+         JOIN (SELECT * FROM {edge_table} WHERE {to_bare} IN \
          (SELECT node FROM {walk} WHERE frontier = 1 AND depth > 0)) AS rel\n          \
-         ON rel.{from_id} = lv.parent AND rel.{to_id} = w.node\n        \
-         JOIN {node_table} AS end_node ON end_node.{id} = w.node\n        \
+         ON {rel_from} = lv.parent AND {rel_to} = w.node\n        \
+         JOIN {node_table} AS end_node ON {end_key} = w.node\n        \
          WHERE {step}\n    \
          ){picked}\n    \
          UNION ALL\n    \
@@ -874,7 +903,8 @@ pub(super) fn walk_ctes(
     // The first node's value / tuple read it.
     if call.node_value.is_some() || call.node_tuple.is_some() {
         from.push_str(&format!(
-            "\n    JOIN {node_table} AS {START} ON {START}.{id} = w.start_id"
+            "\n    JOIN {node_table} AS {START} ON {} = w.start_id",
+            call.node_key(START)
         ));
     }
     let paths_sql = format!(
@@ -1160,10 +1190,10 @@ impl UnionWalk<'_> {
             rel_tuple: None,
             var: self.var.to_string(),
             node_table: self.nodes.to_string(),
-            id: super::KEY.to_string(),
+            id: vec![super::KEY.to_string()],
             edge_table: self.rels.map(str::to_string),
-            from_id: super::REL_START_KEY.to_string(),
-            to_id: super::REL_END_KEY.to_string(),
+            from_id: vec![super::REL_START_KEY.to_string()],
+            to_id: vec![super::REL_END_KEY.to_string()],
             min: self.min,
             max: self.max,
             start: self.start.clone(),

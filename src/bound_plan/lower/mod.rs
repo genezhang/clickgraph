@@ -3838,23 +3838,7 @@ impl<'s> Lowerer<'s> {
         // The trails start only where a pair's distance fails the conditions.
         let near = format!("vlp_{var}_near");
         // The trails' first node, keyed as the search keys it.
-        let first_key = match &composite {
-            Some(cols) => {
-                let at: Vec<String> = cols
-                    .iter()
-                    .map(|c| format!("{}.{c}", path::START))
-                    .collect();
-                match path::composite_key(&at) {
-                    Some(key) => key,
-                    None => {
-                        return unsupported(
-                            "a shortestPath between composite ids in this SQL dialect",
-                        )
-                    }
-                }
-            }
-            None => format!("{}.{}", path::START, search.id),
-        };
+        let first_key = search.node_key(path::START);
         walk.start_mut().push(RenderExpr::Raw(format!(
             "{first_key} IN (SELECT start_id FROM ({}))",
             path::failing_pairs(&var, alias, &ends, &conditions),
