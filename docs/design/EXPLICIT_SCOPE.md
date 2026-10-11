@@ -3807,7 +3807,7 @@ slice that will handle it.
       legacy); 3 tests of legacy's loud refusals (#574 / #588 two-hop,
       bounded and OR'd pattern predicates, a polymorphic multi-type EXISTS)
       now answered, each checked against the tables.
-- [ ] S10 default on, in two parts:
+- [x] S10 default on, in two parts:
   - [x] **S10a: the default flips** (`translate::BoundPlanMode::from_env`:
     on unless `CLICKGRAPH_BOUND_PLAN=off`).
     - A bind error other than `Unsupported` is the query's error
@@ -3881,9 +3881,36 @@ slice that will handle it.
         "unknown error" on both routes; a node table with duplicate ids
         multiplies walk rows (zeek `dns_log`: a schema whose `node_id` is not
         unique).
-  - [ ] **S10b:** parse failures reach the new path: every entry point
-    parses with the legacy parser first, so syntax only the clause-list
-    parser accepts still gets the legacy parse error.
+  - [x] **S10b: text only the clause-list parser reads** reaches the bound
+    plan (`translate::translate_text_read`, `clause_list_use_name`). Every
+    entry point parses with the legacy parser first; when that fails and the
+    clause-list parser reads the text, the query is a read query translated
+    by the bound plan alone (HTTP `/query`, `/query/sql`, Bolt, and the
+    library's `cypher_to_sql` / `cypher_to_sql_with_metadata`, so embedded,
+    FFI and `cg`). Its `USE` names the schema. When the bound plan does not
+    translate it (`Unsupported`, an updating clause, `id()` outside a RETURN
+    item, the route off), the answer is the legacy parse error, as before; a
+    query Neo4j rejects is `Invalid`.
+    - Shapes: `WITH a MATCH .. MATCH ..`, several UNWINDs after a WITH, a
+      MATCH after an OPTIONAL MATCH after a WITH, free-standing ORDER BY /
+      SKIP / LIMIT (all compiled by Neo4j 5.26). The corpus has none (S2:
+      the clause-list parser rejects every corpus query the legacy parser
+      rejects), so the scorecard is unchanged.
+    - Bolt keeps only the parse error across its awaits (a parsed statement
+      is not `Send`) and parses again where it consumes the statement.
+    - Acceptance:
+      - 15 generated shapes on `social_integration` (the families above,
+        with WHERE, aggregates, OPTIONAL, ordered pages, `USE`): every one
+        equal to Neo4j; legacy: a parse error for each.
+      - Routes: HTTP `/query`, `/query/sql`, Bolt and `cg` give the same
+        answers; `id()` / updating / misspelled text keeps its parse error.
+      - Tests: unit tests of `translate_text_read` (translated, not
+        translated, route off, `Invalid`) and the library; the endpoint
+        test compares `/query/sql` with `/query` on two text-only shapes; a
+        Bolt test that such text gets past the parse. The endpoint and Bolt
+        tests fail with the routing disabled (checked).
+      - Live suite: 4826 passed; the remaining failures are the 9
+        multi-tenant tests that predate S10a.
 - [ ] S11 legacy deletion
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
