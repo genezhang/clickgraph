@@ -2563,8 +2563,10 @@ impl<'s> Lowerer<'s> {
             }
             // A row whose end has a NULL part relates no node (its key's text
             // would equal a node's of the same parts: `=` decides, S8d2b).
-            if by_keys && from.len() > 1 {
-                for c in from.iter().chain(&to) {
+            // Each composite end's parts (review finding: a composite `to`
+            // after a single-id `from` was not filtered).
+            if by_keys {
+                for c in [&from, &to].into_iter().filter(|e| e.len() > 1).flatten() {
                     filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
                         operator: Operator::IsNotNull,
                         operands: vec![col_at(ROW, c)],
@@ -5748,6 +5750,16 @@ impl<'s> Lowerer<'s> {
         if self.joins.iter().any(|j| j.join_type != JoinType::Join)
             || self.from.as_ref().is_none_or(|f| f.use_final)
         {
+            return;
+        }
+        // A conjunct whose columns are not all visible (SQL text: a composite
+        // id's key, S8d2) cannot be moved to the relations it reads: the joins
+        // stay as placed (review finding: a key tie moved before its node).
+        if self.joins.iter().any(|j| {
+            j.joining_on
+                .iter()
+                .any(|c| read_aliases(&RenderExpr::OperatorApplicationExp(c.clone())).is_none())
+        }) {
             return;
         }
         let Some(root) = self.emitted.iter().skip(1).find(|a| {
