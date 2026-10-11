@@ -1415,6 +1415,20 @@ impl Walk<'_> {
             Walk::One(c) => {
                 let var = c.var.to_string();
                 let id = c.node.id_physical_columns();
+                // The columns a recovered path reads (its nodes as the search
+                // keys them: the generator's composite text is the same,
+                // `composite_by_columns`, S8d2c).
+                let mut carried = vec!["path_nodes"];
+                for (wanted, column) in [
+                    (c.node_values, VALUE_COLUMNS[0]),
+                    (c.rel_values, VALUE_COLUMNS[1]),
+                    (c.node_tuples, TUPLE_COLUMNS[0]),
+                    (c.rel_tuples, TUPLE_COLUMNS[1]),
+                ] {
+                    if wanted {
+                        carried.push(column);
+                    }
+                }
                 let built = path_cte(schema, c)?;
                 let edges = match built.edges {
                     true => TrailEdges::Typed,
@@ -1433,14 +1447,14 @@ impl Walk<'_> {
                     return unsupported("a shortestPath between composite ids in this SQL dialect");
                 };
                 let keyed = format!("vlp_{var}_keyed");
-                let edges_column = match edges {
-                    TrailEdges::None => "",
-                    _ => ", path_edges",
-                };
+                if edges != TrailEdges::None {
+                    carried.insert(0, "path_edges");
+                }
                 let sql = format!(
                     "{keyed} AS (\n    \
-                     SELECT {start} AS start_id, {end} AS end_id, hop_count{edges_column} \
-                     FROM {path}\n)"
+                     SELECT {start} AS start_id, {end} AS end_id, hop_count, {} \
+                     FROM {path}\n)",
+                    carried.join(", ")
                 );
                 Ok((
                     vec![

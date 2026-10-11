@@ -3847,9 +3847,8 @@ impl<'s> Lowerer<'s> {
             }));
         }
         // Between composite ids (S8d2) the search and the trails key a node
-        // by the text of its id's tuple (`path::composite_key`); the trails
-        // keep a path's nodes only as the generator's `|`-joined texts, so a
-        // recovered path (read as a value or by its identity) is not lowered.
+        // by the text of its id's tuple (`path::composite_key`; the
+        // generator's, under `composite_by_columns`, S8d2c).
         let composite = match &walk {
             path::Walk::One(call) => {
                 let cols = call.node.id_physical_columns();
@@ -3857,12 +3856,6 @@ impl<'s> Lowerer<'s> {
             }
             path::Walk::Union(_) => None,
         };
-        if composite.is_some() && walked && !conditions.is_empty() {
-            return unsupported(
-                "a shortestPath between composite ids read as a path, with a condition the \
-                 search cannot hold",
-            );
-        }
         let mut search = walk.search(self.schema)?;
         search.min = min.min(1);
         let var = search.var.clone();

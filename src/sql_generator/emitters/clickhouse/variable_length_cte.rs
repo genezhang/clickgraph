@@ -31,14 +31,36 @@ fn get_default_max_hops() -> u32 {
 /// Returns the bare expression (no `AS` clause). Single-column IDs render as
 /// `alias.col` (quoted); composite IDs collapse into a pipe-joined string via
 /// `concat(toString(alias.c1), '|', toString(alias.c2), ...)` so they can be
-/// stored in `path_nodes` and used for `has()` cycle checks.
-fn emit_id_expr(table_alias: &str, id: &Identifier) -> String {
+/// stored in `path_nodes` and used for `has()` cycle checks. With `by_tuple`
+/// (`CteGenerationContext::composite_by_columns`, set by the bound-plan
+/// lowering only, S8d2c) a composite ID is the dialect's text of the tuple of
+/// its columns instead (`toString(tuple(alias.c1, alias.c2))`), which no two
+/// IDs share (`('B|1','2')` and `('B','1|2')` share the pipe-joined text).
+fn emit_id_expr(by_tuple: bool, table_alias: &str, id: &Identifier) -> String {
     match id {
         Identifier::Single(col) => format!(
             "{}.{}",
             table_alias,
             crate::clickhouse_query_generator::quote_identifier(col)
         ),
+        Identifier::Composite(cols) if by_tuple => {
+            let m = current_function_mapper();
+            let columns: Vec<String> = cols
+                .iter()
+                .map(|c| {
+                    format!(
+                        "{}.{}",
+                        table_alias,
+                        crate::clickhouse_query_generator::quote_identifier(c)
+                    )
+                })
+                .collect();
+            let tuple = format!("{}({})", m.tuple_constructor(), columns.join(", "));
+            match m.graph_values() {
+                Some(g) => (g.to_text)(&tuple),
+                None => format!("{}({tuple})", m.cast_string()),
+            }
+        }
         Identifier::Composite(cols) => {
             let cast_str = current_function_mapper().cast_string();
             let parts: Vec<String> = cols
@@ -1303,7 +1325,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// Used for node-uniqueness cycle detection in path_nodes arrays.
     fn build_end_node_id_expr(&self) -> String {
         let end_id_identifier = Identifier::from_comma_separated(&self.end_node_id_column);
-        emit_id_expr(&self.end_node_alias, &end_id_identifier)
+        emit_id_expr(
+            self.composite_by_columns,
+            &self.end_node_alias,
+            &end_id_identifier,
+        )
     }
 
     /// Whether the standard directed recursive VLP should enforce EDGE-uniqueness
@@ -2780,7 +2806,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // composite `*0..N`. Single-column ids emit byte-identically to the
         // old string form.
         let start_id_identifier = Identifier::from_comma_separated(&self.start_node_id_column);
-        let start_id_expr = emit_id_expr(&self.start_node_alias, &start_id_identifier);
+        let start_id_expr = emit_id_expr(
+            self.composite_by_columns,
+            &self.start_node_alias,
+            &start_id_identifier,
+        );
         let mut select_items = vec![
             format!("{start_id_expr} as start_id"),
             // Same node for self-loop
@@ -3010,11 +3040,19 @@ impl<'a> VariableLengthCteGenerator<'a> {
             // Generate start_id / end_id selections (composite-aware)
             let start_id_selection = format!(
                 "{} as start_id",
-                emit_id_expr(&self.start_node_alias, &start_id_identifier)
+                emit_id_expr(
+                    self.composite_by_columns,
+                    &self.start_node_alias,
+                    &start_id_identifier
+                )
             );
             let end_id_selection = format!(
                 "{} as end_id",
-                emit_id_expr(&self.end_node_alias, &end_id_identifier)
+                emit_id_expr(
+                    self.composite_by_columns,
+                    &self.end_node_alias,
+                    &end_id_identifier
+                )
             );
 
             // path_nodes: only emit a proper 2-element array when start and end
@@ -3027,8 +3065,16 @@ impl<'a> VariableLengthCteGenerator<'a> {
                         "{} as path_nodes",
                         arr(&format!(
                             "{}, {}",
-                            emit_id_expr(&self.start_node_alias, &start_id_identifier),
-                            emit_id_expr(&self.end_node_alias, &end_id_identifier),
+                            emit_id_expr(
+                                self.composite_by_columns,
+                                &self.start_node_alias,
+                                &start_id_identifier
+                            ),
+                            emit_id_expr(
+                                self.composite_by_columns,
+                                &self.end_node_alias,
+                                &end_id_identifier
+                            ),
                         ))
                     )
                 }
@@ -3342,7 +3388,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // pass-through block below — #1130 review).
         let start_id_identifier = parse_id_cols(&self.start_node_id_column);
         let end_id_identifier = parse_id_cols(&self.end_node_id_column);
-        let end_id_expr_str = emit_id_expr(&self.end_node_alias, &end_id_identifier);
+        let end_id_expr_str = emit_id_expr(
+            self.composite_by_columns,
+            &self.end_node_alias,
+            &end_id_identifier,
+        );
 
         // end_id selection (composite-aware) and path_nodes extension
         let end_id_selection = format!("{end_id_expr_str} as end_id");
@@ -3671,11 +3721,19 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let mut select_items = vec![
             format!(
                 "{} as start_id",
-                emit_id_expr(&self.start_node_alias, &start_id_identifier)
+                emit_id_expr(
+                    self.composite_by_columns,
+                    &self.start_node_alias,
+                    &start_id_identifier
+                )
             ),
             format!(
                 "{} as end_id",
-                emit_id_expr(&self.end_node_alias, &end_id_identifier)
+                emit_id_expr(
+                    self.composite_by_columns,
+                    &self.end_node_alias,
+                    &end_id_identifier
+                )
             ),
             "1 as hop_count".to_string(),
         ];
@@ -3688,8 +3746,16 @@ impl<'a> VariableLengthCteGenerator<'a> {
             "{} as path_nodes",
             arr(&format!(
                 "{}, {}",
-                emit_id_expr(&self.start_node_alias, &start_id_identifier),
-                emit_id_expr(&self.end_node_alias, &end_id_identifier),
+                emit_id_expr(
+                    self.composite_by_columns,
+                    &self.start_node_alias,
+                    &start_id_identifier
+                ),
+                emit_id_expr(
+                    self.composite_by_columns,
+                    &self.end_node_alias,
+                    &end_id_identifier
+                ),
             ))
         ));
 
@@ -3833,7 +3899,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // start_id stays the same (notes.txt), end_id becomes new_end
         let mut select_items = vec![
             "vp.start_id".to_string(), // start stays the same
-            format!("{} as end_id", emit_id_expr("new_end", &end_id_identifier)), // new parent
+            format!(
+                "{} as end_id",
+                emit_id_expr(self.composite_by_columns, "new_end", &end_id_identifier)
+            ), // new parent
             "vp.hop_count + 1 as hop_count".to_string(),
         ];
         if self.needs_path_data() {
@@ -3847,7 +3916,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // APPEND the new node to path_nodes
         select_items.push(format!(
             "{ac}(vp.path_nodes, {}) as path_nodes",
-            arr(&emit_id_expr("new_end", &end_id_identifier))
+            arr(&emit_id_expr(
+                self.composite_by_columns,
+                "new_end",
+                &end_id_identifier
+            ))
         ));
         // #606: APPEND this hop's edge tuple. The hop is current_node -> new_end
         // (previous end following its FK to its parent), so the edge identity is
@@ -3895,7 +3968,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     &self.end_node_id_column,
                 ))
             } else {
-                emit_cycle_check(&emit_id_expr("new_end", &end_id_identifier))
+                emit_cycle_check(&emit_id_expr(
+                    self.composite_by_columns,
+                    "new_end",
+                    &end_id_identifier,
+                ))
             },
         ];
 
@@ -3933,7 +4010,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
         //    zip. Single-column ids degrade byte-identically to the old form.
         let anchor_on = format!(
             "vp.end_id = {}",
-            emit_id_expr("current_node", &end_id_identifier)
+            emit_id_expr(
+                self.composite_by_columns,
+                "current_node",
+                &end_id_identifier
+            )
         );
         let parent_on =
             Identifier::from_comma_separated(&self.fk_hop_fk_column(&self.end_node_id_column))
@@ -3967,7 +4048,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let mut select_items = vec![
             format!(
                 "{} as start_id",
-                emit_id_expr("new_start", &start_id_identifier)
+                emit_id_expr(self.composite_by_columns, "new_start", &start_id_identifier)
             ),
             "vp.end_id".to_string(), // end_id stays the same (root)
             "vp.hop_count + 1 as hop_count".to_string(),
@@ -3983,7 +4064,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // PREPEND the new node to path_nodes
         select_items.push(format!(
             "{ac}({}, vp.path_nodes) as path_nodes",
-            arr(&emit_id_expr("new_start", &start_id_identifier))
+            arr(&emit_id_expr(
+                self.composite_by_columns,
+                "new_start",
+                &start_id_identifier
+            ))
         ));
         // #606: PREPEND this hop's edge tuple (path grows at the front here). The
         // hop is new_start -> current_node (a child pointing via its FK to the
@@ -4028,7 +4113,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     &self.start_node_id_column,
                 ))
             } else {
-                emit_cycle_check(&emit_id_expr("new_start", &start_id_identifier))
+                emit_cycle_check(&emit_id_expr(
+                    self.composite_by_columns,
+                    "new_start",
+                    &start_id_identifier,
+                ))
             },
         ];
 
@@ -4065,7 +4154,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
         //    ids degrade byte-identically to the old form.
         let anchor_on = format!(
             "vp.start_id = {}",
-            emit_id_expr("current_node", &start_id_identifier)
+            emit_id_expr(
+                self.composite_by_columns,
+                "current_node",
+                &start_id_identifier
+            )
         );
         let child_on =
             Identifier::from_comma_separated(&self.fk_hop_fk_column(&self.start_node_id_column))
