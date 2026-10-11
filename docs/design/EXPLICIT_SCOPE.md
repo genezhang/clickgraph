@@ -4003,6 +4003,23 @@ slice that will handle it.
         fallbacks (#1378); `reduce()` with an `[]` accumulator and parser
         gaps (#1381). Returning millions of node values is slow
         (serialization; the flat `RETURN nodes(p)` costs the same).
+  - [x] **S11d: `label()`, and `id()` of what matches nothing.** `label(n)`
+    (a ClickGraph function: Neo4j has `labels()` only) is a node's one
+    label as a string, as the legacy pipeline reads it: the label of a
+    node of one label, the label column of a node of several (a union of
+    labels), NULL where an OPTIONAL MATCH left it NULL; of a list's node
+    element too. `label()` of a relationship stays refused (the legacy
+    pipeline has no reading of it). A function of an element that matches
+    nothing is NULL (the query has no rows) before the `id()` refusal, so
+    `RETURN id(a)` over an impossible pattern lowers.
+    - Not yet: `id()` comparisons in a WHERE and ORDER BY an `id()` item
+      (the server's encoded id: the HTTP / Bolt rewrite turns comparisons
+      into key predicates, which the bound plan does not read yet).
+    - Acceptance: `label(x)` against Neo4j's `labels(x)[0]` (`neo ||| cg`)
+      on VLP and union-walk ends, unlabeled nodes, DISTINCT / grouped /
+      filtered, OPTIONAL, list elements: every shape equal. Corpus 1437
+      lowered (was 1428). Scorecard: two CG_ERROR entries now run (their
+      `id()` makes them incomparable with Neo4j). Live suite unchanged.
     - Acceptance:
       - Generated shapes against Neo4j on `social_integration` (`count(p)`
         grouped, DISTINCT, OPTIONAL, union walks, zero-length paths,
