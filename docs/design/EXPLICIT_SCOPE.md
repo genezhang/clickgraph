@@ -3925,7 +3925,38 @@ slice that will handle it.
         Bolt session without a database gets an arbitrary schema (#1372);
         library translation overflows the stack on thousands of clauses
         (#1373).
-- [ ] S11 legacy deletion
+- [ ] S11 legacy deletion. First the corpus is covered: after S10 the bound
+  plan lowers 1420 corpus queries; the rest fall back. Of those, the 24
+  the clause-list parser rejects are invalid Cypher or end without RETURN
+  (S2), and 6 are bind errors Neo4j also gives. The others, in sub-slices:
+  path list functions (S11a); `label()`, `id()` outside a RETURN item and
+  ORDER BY an `id()` item; ordered SKIP / LIMIT after DISTINCT, aggregation
+  or UNWIND; undeclared properties of a node embedded in edge tables;
+  pattern predicates inside list comprehensions (#629); and errors where
+  Neo4j refuses (a property of a variable-length relationship's list, a
+  shortestPath from a node to itself, composite ids paired in another
+  column order). Then the deletion PRs (§7 row 11).
+  - [x] **S11a: path list functions.** `count(p)` / `count(DISTINCT p)` of a
+    path or a path's list count the rows where it is not NULL, or its
+    distinct values by its elements' identities (`count_graph_value`; a
+    path that matches nothing counts 0 in one row, an aggregate);
+    `length()` of a path's nodes / relationships is their size (Neo4j 4's
+    reading, which the legacy pipeline answers; Neo4j 5 refuses it).
+    `length()` of a variable-length relationship's list stays refused: the
+    legacy pipeline fails on it and Neo4j refuses it. `size()` of a carried
+    list an OPTIONAL MATCH may leave NULL is NULL there (its null-condition
+    key). The demand pass reads a `count()` argument as a value.
+    - Not lowered yet: `count()` of a carried list of nodes (carried as
+      tuples).
+    - Acceptance:
+      - Generated shapes against Neo4j on `social_integration` (`count(p)`
+        grouped, DISTINCT, OPTIONAL, union walks, zero-length paths,
+        undirected, carried; `length()` of `nodes(p)` / `relationships(p)`
+        against Neo4j's `size()`; carried lists an OPTIONAL MATCH left
+        NULL): every lowered shape equal to Neo4j.
+      - Corpus: 1428 lowered (was 1420). Scorecard: one CG_ERROR → MATCH
+        (a carried relationship list over an impossible pattern).
+      - Live suite: only the 9 multi-tenant failures that predate S10a.
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 
