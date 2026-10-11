@@ -1047,6 +1047,9 @@ impl Lowerer<'_> {
                     ("type", Elem::Rel { rel_type, .. }) => {
                         self.elem_unless_null(&t, &elem, Literal::String(rel_type.clone()))
                     }
+                    ("label", Elem::Node(label)) => {
+                        self.elem_unless_null(&t, &elem, Literal::String(label.clone()))
+                    }
                     _ => unsupported(format!("{}() of a node or relationship of a list", f.name)),
                 };
             }
@@ -1063,6 +1066,8 @@ impl Lowerer<'_> {
         if let Some(v) = self.entity_arg(&f.args) {
             let lower = f.name.to_ascii_lowercase();
             return match (lower.as_str(), self.scans.get(&v)) {
+                // An element that matches nothing: the query has no rows.
+                (_, Some(Scan::Impossible)) => Ok(RenderExpr::Literal(Literal::Null)),
                 // `id()` is the server's encoded id (`IdMapper`): Bolt encodes
                 // the key column of an `id(n)` RETURN item (the result shape),
                 // and the HTTP / Bolt `id()` rewrite turns comparisons with
@@ -1091,7 +1096,13 @@ impl Lowerer<'_> {
                         Literal::String(label.clone()),
                     )]))
                 }
-                (_, Some(Scan::Impossible)) => Ok(RenderExpr::Literal(Literal::Null)),
+                // `label(n)` (a ClickGraph function, as the legacy pipeline
+                // reads it): a node's one label as a string, NULL where an
+                // OPTIONAL MATCH left it NULL (P-4c S11d).
+                ("label", Some(Scan::Labels { .. })) => self.physical(v, super::LABEL_COLUMN),
+                ("label", Some(Scan::Node { label, .. })) => {
+                    self.unless_null(&[v], RenderExpr::Literal(Literal::String(label.clone())))
+                }
                 _ => unsupported(format!("{}() of a node or relationship", f.name)),
             };
         }
