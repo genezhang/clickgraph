@@ -1,6 +1,6 @@
 name: Auto Approve Documentation Changes
 
-# âš ï¸ Note: Auto-merge is DISABLED to enforce manual code review
+# ⚠️ Note: Auto-merge is DISABLED to enforce manual code review
 # As per the branch workflow requirements (Jan 2026), all PRs require human review
 # before merging to main branch.
 
@@ -46,12 +46,12 @@ jobs:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         number: ${{ github.event.pull_request.number }}
         body: |
-          ðŸ¤– This PR only contains:
+          🤖 This PR only contains:
 
-          - ðŸ“ Documentation changes (`.md` files)
-          - âš™ï¸ Configuration changes (`.yml`/`.yaml` files)
+          - 📝 Documentation changes (`.md` files)
+          - ⚙️ Configuration changes (`.yml`/`.yaml` files)
 
-          âœ… Auto-approved by bot, but **manual human review is required** before merge.
+          ✅ Auto-approved by bot, but **manual human review is required** before merge.
 
           Please review the changes and merge manually when ready.
 
