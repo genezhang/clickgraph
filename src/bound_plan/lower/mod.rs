@@ -706,6 +706,25 @@ struct RelUnionShape {
 }
 
 /// [`RelUnionShape`] of `arms`, whose ends' ids must have one arity each.
+/// A node's identity as a text, as a walk by keys, a union's search and a
+/// path's identity spell it: its label (SQL) and its id's columns (SQL, the
+/// column or their tuple, whose text no two ids share, S8d2b).
+fn walk_key_sql(
+    g: &crate::sql_generator::function_mapper::GraphValues,
+    label: &str,
+    ids: &[String],
+) -> String {
+    let id = match ids {
+        [one] => one.clone(),
+        _ => format!(
+            "{}({})",
+            current_function_mapper().tuple_constructor(),
+            ids.join(", ")
+        ),
+    };
+    value::node_key_text(g, label, &id)
+}
+
 fn rel_union_shape(arms: &[RelArm]) -> Result<RelUnionShape, LowerError> {
     let shape = |a: &RelArm| {
         let (f, t) = (
@@ -2358,6 +2377,35 @@ impl<'s> Lowerer<'s> {
         Ok(())
     }
 
+    /// [`Self::tie_end`] for a walk by keys (S8d2b): `key`, its column of an
+    /// end's identity as a text, equals the end's ([`Self::walk_key`]).
+    fn tie_end_by_key(
+        &mut self,
+        r: VarId,
+        end: VarId,
+        label: EndLabel,
+        key: RenderExpr,
+    ) -> Result<(), LowerError> {
+        let labels = self.labels_of(end)?;
+        if labels.is_empty() {
+            return Ok(()); // an endpoint that matches nothing
+        }
+        // The label: as `tie_end` ties it (the key holds it too).
+        match &label {
+            EndLabel::Is(l) if labels.contains(l) => self.holds_label(end, l)?,
+            EndLabel::By { labels: held, .. } if held.iter().any(|l| labels.contains(l)) => {}
+            _ => {
+                self.empty = true;
+                return Ok(());
+            }
+        }
+        let Some(own) = self.walk_key(end)? else {
+            return Ok(());
+        };
+        self.tie(r, end, vec![(key, own)]);
+        Ok(())
+    }
+
     /// A relationship of several possible types or label pairs, as one
     /// relation (§4.6 `Alternatives`): the CTE `{v}_rels`, one arm per
     /// definition and orientation ([`RelArm`]) reading its table (with its
@@ -2379,7 +2427,7 @@ impl<'s> Lowerer<'s> {
     /// once.
     fn rel_union(&mut self, v: VarId, arms: &[RelArm<'s>]) -> Result<String, LowerError> {
         let props = self.rel_union_props(v, arms);
-        self.rel_union_of(v, arms, &props, false, false)
+        self.rel_union_of(v, arms, &props, false, false, false)
     }
 
     /// [`Self::rel_union`] carrying the properties `props`, and with `values`
@@ -2395,6 +2443,7 @@ impl<'s> Lowerer<'s> {
         props: &BTreeSet<String>,
         values: bool,
         node_keys: bool,
+        by_keys: bool,
     ) -> Result<String, LowerError> {
         let name = format!("{}_rels", v.name());
         let shape = rel_union_shape(arms)?;
@@ -2430,14 +2479,40 @@ impl<'s> Lowerer<'s> {
             } else {
                 (&from, &to)
             };
-            for (side, cols) in [
-                (REL_FROM, &from),
-                (REL_TO, &to),
-                (BOTH_START, starts),
-                (BOTH_END, ends),
-            ] {
+            // A walk by keys (S8d2b) joins its rows by their ends' keys.
+            let both: [(&str, &Vec<&str>); 2] = [(BOTH_START, starts), (BOTH_END, ends)];
+            let walked_by = match by_keys {
+                true => &both[..0],
+                false => &both[..],
+            };
+            for (side, cols) in [(REL_FROM, &from), (REL_TO, &to)]
+                .into_iter()
+                .chain(walked_by.iter().copied())
+            {
                 for (i, c) in cols.iter().enumerate() {
                     items.push(select(col_at(ROW, c), &indexed_column(side, i)));
+                }
+            }
+            let end_key = |g: &crate::sql_generator::function_mapper::GraphValues,
+                           label: &str,
+                           cols: &[&str]| {
+                let ids: Vec<String> = cols
+                    .iter()
+                    .map(|c| render_expr_to_sql_plain(&col_at(ROW, c)))
+                    .collect();
+                walk_key_sql(g, &value::string(label), &ids)
+            };
+            if by_keys {
+                let Some(g) = &g else {
+                    return unsupported(
+                        "a variable-length relationship between composite ids in this SQL dialect",
+                    );
+                };
+                for (label, cols, side) in [(left, starts, BOTH_START), (right, ends, BOTH_END)] {
+                    items.push(select(
+                        RenderExpr::Raw(end_key(g, label, cols)),
+                        &indexed_column(side, 0),
+                    ));
                 }
             }
             items.push(select(string(left), REL_START_LABEL));
@@ -2467,19 +2542,7 @@ impl<'s> Lowerer<'s> {
                     for (label, cols, column) in
                         [(left, starts, REL_START_KEY), (right, ends, REL_END_KEY)]
                     {
-                        let [id] = cols.as_slice() else {
-                            return unsupported(
-                                "a variable-length relationship between composite ids (S8)",
-                            );
-                        };
-                        items.push(select(
-                            RenderExpr::Raw(value::node_key_text(
-                                g,
-                                &value::string(label),
-                                &render_expr_to_sql_plain(&col_at(ROW, id)),
-                            )),
-                            column,
-                        ));
+                        items.push(select(RenderExpr::Raw(end_key(g, label, cols)), column));
                     }
                 }
             } else if node_keys {
@@ -2496,6 +2559,16 @@ impl<'s> Lowerer<'s> {
                 match f.to_sql(ROW) {
                     Ok(sql) => filters.push(RenderExpr::Raw(format!("({sql})"))),
                     Err(e) => return unsupported(format!("schema filter: {e}")),
+                }
+            }
+            // A row whose end has a NULL part relates no node (its key's text
+            // would equal a node's of the same parts: `=` decides, S8d2b).
+            if by_keys && from.len() > 1 {
+                for c in from.iter().chain(&to) {
+                    filters.push(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::IsNotNull,
+                        operands: vec![col_at(ROW, c)],
+                    }));
                 }
             }
             let read_both_ways = arms
@@ -2762,18 +2835,14 @@ impl<'s> Lowerer<'s> {
             )
         };
         // A walk of one definition between composite ids walks them by their
-        // columns (S8d); a union's walks keys nodes by one id column.
+        // columns (S8d); a union's walks them by their keys (S8d2b).
         if let Scan::Path {
             walked: Walked::Union { .. },
             ..
         } = &scan
         {
             for end in [from, to] {
-                if self.id_columns(end)?.is_some_and(|ids| ids.len() != 1) {
-                    return unsupported(
-                        "a variable-length relationship between composite ids (S8)",
-                    );
-                }
+                let _ = self.id_columns(end)?;
             }
         }
         self.scans.insert(r.var, scan);
@@ -3161,13 +3230,19 @@ impl<'s> Lowerer<'s> {
         // A shortest path's are recovered from its search also when its
         // identity is read.
         let walked = node_values || rel_values || wants(PATH_KEY);
+        let by_keys = self.walks_by_keys(&labels);
         let nodes = self.walk_nodes(r.var, &labels, node_values)?;
         let props: BTreeSet<String> = r.props.iter().map(|(p, _)| p.clone()).collect();
         let rels = match arms.is_empty() {
             true => None,
-            false => {
-                Some(self.rel_union_of(r.var, &arms, &props, rel_values, shortest.is_some())?)
-            }
+            false => Some(self.rel_union_of(
+                r.var,
+                &arms,
+                &props,
+                rel_values,
+                shortest.is_some(),
+                by_keys,
+            )?),
         };
         let mut rel = Vec::new();
         for (prop, value) in &r.props {
@@ -3251,7 +3326,11 @@ impl<'s> Lowerer<'s> {
         ];
         for (end, held, label, id) in ends {
             let label = EndLabel::of(held, column(label));
-            self.tie_end(r.var, end, label, vec![column(id)], false)?;
+            match by_keys {
+                // Its id is its key (S8d2b).
+                true => self.tie_end_by_key(r.var, end, label, column(id))?,
+                false => self.tie_end(r.var, end, label, vec![column(id)], false)?,
+            }
         }
         Ok(())
     }
@@ -3342,10 +3421,9 @@ impl<'s> Lowerer<'s> {
             }
         }
         if !arms.is_empty() {
-            let shape = rel_union_shape(&arms)?;
-            if shape.start != 1 || shape.end != 1 {
-                return unsupported("a variable-length relationship between composite ids (S8)");
-            }
+            // Its definitions' ends of one arity (a walk by keys, S8d2b, when
+            // composite).
+            rel_union_shape(&arms)?;
         }
         Ok(arms)
     }
@@ -3357,12 +3435,44 @@ impl<'s> Lowerer<'s> {
     /// a text (`KEY`: as a path's identity spells a node) and, with `values`,
     /// their value (`ELEMENT_VALUE`). A walk joins a node of each
     /// relationship it follows here, so it visits only nodes there are.
+    /// Whether a walk over nodes of `labels` goes by their keys (S8d2b): one
+    /// of them has a composite id. Its nodes' ids (`LABEL_ID_0`) and its
+    /// relationships' ends (`BOTH_START_0` / `BOTH_END_0`) are then each
+    /// node's identity as a text ([`walk_key_sql`]), one column whatever the
+    /// id's arity, which every label's and definition's rows spell alike.
+    fn walks_by_keys(&self, labels: &[String]) -> bool {
+        labels.iter().any(|l| {
+            self.schema
+                .node_schema_opt(l)
+                .is_some_and(|ns| ns.id_physical_columns().len() > 1)
+        })
+    }
+
+    /// Node `v`'s identity as a text, as a walk by keys and a union's search
+    /// key a node (`KEY`): its label and id ([`walk_key_sql`]).
+    fn walk_key(&self, v: VarId) -> Result<Option<RenderExpr>, LowerError> {
+        let g = value::spelling()?;
+        let Some(ids) = self.identity(v)? else {
+            return Ok(None);
+        };
+        let (label, ids) = match (self.scans.get(&v), ids.split_first()) {
+            (Some(Scan::Labels { .. }), Some((label, ids))) => {
+                (render_expr_to_sql_plain(label), ids.to_vec())
+            }
+            (Some(Scan::Node { label, .. }), _) => (value::string(label), ids),
+            _ => return unsupported(format!("internal: {v} is not a node")),
+        };
+        let ids: Vec<String> = ids.iter().map(render_expr_to_sql_plain).collect();
+        Ok(Some(RenderExpr::Raw(walk_key_sql(&g, &label, &ids))))
+    }
+
     fn walk_nodes(
         &mut self,
         v: VarId,
         labels: &[String],
         values: bool,
     ) -> Result<String, LowerError> {
+        let by_keys = self.walks_by_keys(labels);
         let g = value::spelling()?;
         let name = format!("vlp_{}_nodes", v.name());
         const ROW: &str = "e";
@@ -3374,26 +3484,25 @@ impl<'s> Lowerer<'s> {
             if !ns.is_standard_own_table() {
                 return unsupported(format!("label {label} is not the standard layout (S8)"));
             }
-            let [id] = ns.id_physical_columns().try_into().map_err(|_| {
-                LowerError::Unsupported(
-                    "a variable-length relationship between composite ids (S8)".to_string(),
-                )
-            })?;
-            let id = col_at(ROW, &id);
+            let ids: Vec<String> = ns
+                .id_physical_columns()
+                .iter()
+                .map(|c| render_expr_to_sql_plain(&col_at(ROW, c)))
+                .collect();
+            let key = RenderExpr::Raw(walk_key_sql(&g, &value::string(label), &ids));
+            // By keys, its id is its key (S8d2b); otherwise its one column.
+            let id = match (by_keys, ns.id_physical_columns().as_slice()) {
+                (true, _) => key.clone(),
+                (false, [id]) => col_at(ROW, id),
+                (false, _) => return unsupported("internal: a composite id not walked by keys"),
+            };
             let mut items = vec![
                 select(
                     RenderExpr::Literal(Literal::String(label.clone())),
                     LABEL_COLUMN,
                 ),
-                select(id.clone(), &indexed_column(LABEL_ID, 0)),
-                select(
-                    RenderExpr::Raw(value::node_key_text(
-                        &g,
-                        &value::string(label),
-                        &render_expr_to_sql_plain(&id),
-                    )),
-                    KEY,
-                ),
+                select(id, &indexed_column(LABEL_ID, 0)),
+                select(key, KEY),
             ];
             if values {
                 items.push(select(
@@ -3527,6 +3636,19 @@ impl<'s> Lowerer<'s> {
                 return Ok(None);
             };
             let (label, id) = match (self.scans.get(&v), ids.as_slice()) {
+                // A walk by keys holds a node's key as its id (S8d2b).
+                (_, _) if self.walks_by_keys(among) => {
+                    let label = match self.scans.get(&v) {
+                        Some(Scan::Node { label, .. }) => {
+                            RenderExpr::Literal(Literal::String(label.clone()))
+                        }
+                        _ => ids[0].clone(),
+                    };
+                    let Some(key) = self.walk_key(v)? else {
+                        return Ok(None);
+                    };
+                    (label, key)
+                }
                 (Some(Scan::Labels { .. }), [label, id]) => (label.clone(), id.clone()),
                 (Some(Scan::Node { label, .. }), [id]) => (
                     RenderExpr::Literal(Literal::String(label.clone())),
@@ -3817,9 +3939,12 @@ impl<'s> Lowerer<'s> {
                         }
                     }
                     (path::Walk::One(_), None) => id,
-                    (path::Walk::Union(_), _) => {
-                        value::node_key_text(&value::spelling()?, &label, &id)
-                    }
+                    // As the union's walk keys it (its label and id, or
+                    // the tuple of a composite id's columns, S8d2b).
+                    (path::Walk::Union(_), _) => match self.walk_key(end)? {
+                        Some(key) => render_expr_to_sql_plain(&key),
+                        None => value::node_key_text(&value::spelling()?, &label, &id),
+                    },
                 };
                 ends.push(path::PickEnd {
                     alias: a.clone(),

@@ -4898,21 +4898,45 @@ fn a_shortest_path_between_composite_ids_keys_nodes_by_their_tuples() {
     }
 }
 
-/// S8d2: not yet lowered between composite ids: a shortest path whose
-/// search cannot hold a condition (the trails key a node by its text), a
-/// walk of several definitions, and a path read as a value.
+/// S8d2b: a walk of several definitions between composite ids goes by keys:
+/// each node's id is its identity as a text (its label and the tuple of its
+/// id's columns), as are the relationships' ends, which no two ids share; a
+/// row whose end has a NULL part relates no node; the walk's first node is
+/// restricted, and its ends tied, by that key.
 #[test]
-fn composite_conditions_unions_and_values_are_not_lowered() {
+fn a_union_walk_between_composite_ids_goes_by_keys() {
+    let got = squash(
+        &translate_bound_plan(
+            "MATCH (a:Acct {owner: 'x'})-[:SENT|PAID*1..2]->(b:Acct) RETURN b.owner",
+            &composite_walk_schema(),
+            &ReadOptions::default(),
+        )
+        .unwrap()
+        .sql,
+    );
+    for p in [
+        "concat('Acct', ':', toString(tuple(e.bank, e.num))) AS \"__cg_id_0\"",
+        "concat('Acct', ':', toString(tuple(e.fb, e.fnum))) AS \"__cg_start_0\"",
+        "concat('Acct', ':', toString(tuple(e.tb, e.tnum))) AS \"__cg_end_0\"",
+        "e.fb IS NOT NULL AND e.fnum IS NOT NULL",
+        "concat('Acct', ':', toString(tuple(v0.bank, v0.num))) AS \"id\"",
+        "v1.start_id = concat('Acct', ':', toString(tuple(v0.bank, v0.num)))",
+        "v1.end_id = concat('Acct', ':', toString(tuple(v2.bank, v2.num)))",
+    ] {
+        assert!(got.contains(p), "missing `{p}` in\n{got}");
+    }
+}
+
+/// S8d2: not yet lowered between composite ids: a shortest path read as a
+/// path with a condition the search cannot hold, and a path read as a value.
+#[test]
+fn composite_paths_as_values_are_not_lowered() {
     for (q, why) in [
         (
             "MATCH (a:Acct), (b:Acct) WHERE a <> b \
              MATCH p = shortestPath((a)-[:SENT*]->(b)) WHERE length(p) >= 2 WITH DISTINCT p \
              RETURN count(*)",
             "a shortestPath between composite ids read as a path, with a condition",
-        ),
-        (
-            "MATCH (a:Acct)-[:SENT|PAID*1..2]-(b) RETURN count(*)",
-            "a variable-length relationship between composite ids (S8)",
         ),
         (
             "MATCH p = (a:Acct)-[:SENT*0..1]->(b:Acct) RETURN p",
