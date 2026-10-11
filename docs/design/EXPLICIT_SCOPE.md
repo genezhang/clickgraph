@@ -3994,6 +3994,15 @@ slice that will handle it.
       relationships(p))`): every lowered shape equal to Neo4j, list orders
       compared as multisets where they follow `collect()`. Corpus and
       scorecard unchanged; live suite unchanged.
+      - Adversarial review (about 300 shapes on six schemas incl. parallel
+        relationships, composite ids, FK edges, polymorphic and denormalized
+        tables; HTTP, Bolt and graph output; depth-3 lists, inner NULLs,
+        shadowed comprehensions, ordered collects): no defect; the
+        never-NULL gate held. Filed, older than S11c: lists mixing labels
+        fall back to legacy bare ids (#1380); more list-of-list legacy
+        fallbacks (#1378); `reduce()` with an `[]` accumulator and parser
+        gaps (#1381). Returning millions of node values is slow
+        (serialization; the flat `RETURN nodes(p)` costs the same).
     - Acceptance:
       - Generated shapes against Neo4j on `social_integration` (`count(p)`
         grouped, DISTINCT, OPTIONAL, union walks, zero-length paths,
