@@ -1360,12 +1360,41 @@ types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
 - **Known gap (#1354):** a node whose id, or a part of it, is NULL is
   dropped from a zero-length walk (its ties and first-node restriction use
   `=` / `IN`; a single nullable id since S6a).
-- **Not lowered yet (S8d2):** a shortest path between composite ids (the
-  search identifies a node by one column), a walk of several definitions
-  between them (a union walk keys nodes by one id column), and a composite
-  id in a value or a list (a path's nodes, `DISTINCT p`): their keys must
-  read the ids' columns, not the generator's text (a carried path exports
-  only the text today).
+- **Not lowered yet (S8d2b, S8d2c):** a walk of several definitions
+  between composite ids (a union walk keys nodes by one id column), and a
+  composite id in a value or a list (a path's nodes, `DISTINCT p`): their
+  keys must read the ids' columns, not the generator's text (a carried path
+  exports only the text today).
+
+**Implemented in S8d2a** (shortest paths between composite ids,
+`path::composite_key`):
+- **Nodes keyed by the text of their id's tuple.** The search identifies a
+  node by one value; between composite ids it is the dialect's text of the
+  tuple of the id's columns (`toString(tuple(bank, num))`), which no two ids
+  share: ClickHouse quotes a string part, so `('B|1','2')` and `('B','1|2')`
+  differ, unlike the generator's `|`-joined text. The key is computed where
+  the search reads a node or a relationship's end (`Search::node_key` /
+  `rel_start_key` / `rel_end_key`), over the tables as they are (a subquery's `*`
+  would drop MATERIALIZED and ALIAS columns a condition reads: review),
+  and the relation's `start_id` / `end_id` are tied to the ends by the same
+  key over their id columns.
+- **NULL parts.** A relationship row whose end has a NULL part relates no
+  node, as the columns' `=` decides (the text of `(NULL, 1)` would equal
+  itself and invent relationships: review); a node with a NULL part is
+  still its own zero-length path's end.
+- **Known gap:** a part whose node and edge columns spell one value
+  differently (`FixedString` against `String`, `Bool` against `UInt8`,
+  `DateTime`s in other time zones, `-0.`) does not match, where `=` would
+  (and the reverse for `Float32` against `Float64`).
+- **Conditions the search cannot hold** (§4.8: a length it does not bound,
+  a lower bound above 1, a condition on an end): the pick reads the
+  generator's trails through `vlp_{var}_keyed`, their ends keyed alike from
+  the `start_<col>` / `end_<col>` the walk carries, restricted to the pairs
+  failing the conditions by that key; an end a condition reads is joined
+  by it.
+- **Not lowered yet (S8d2c):** a composite shortest path read as a path
+  (its value, `nodes(p)`, `DISTINCT p`): the trails keep its nodes only as
+  the generator's text.
 
 ### 4.7 Label inference
 
@@ -3436,7 +3465,8 @@ slice that will handle it.
 - [ ] S8 layouts, in sub-slices: S8a FK edges (done), S8b denormalized
   nodes (done; a label both embedded and in its own tables later), S8c
   polymorphic edges and node tables (done), S8d composite ids: S8d1 walks
-  of one definition (done), S8d2 searches, union walks, values and lists.
+  of one definition (done), S8d2a shortest paths (done), S8d2b union walks,
+  S8d2c values and lists.
   - [x] **S8a: FK edges** (§4.6 "Implemented in S8a"): a relationship whose
     table is one of its ends' node tables is read as a table of
     relationships; a self-referencing one's ends as legacy reads them
@@ -3594,6 +3624,37 @@ slice that will handle it.
         id parts dropped from zero-length walks (#1354); a hop of several
         types beside a walk failing on `edge_id` types (#1352, as union
         walks).
+  - [x] **S8d2a: shortest paths between composite ids** (§4.6
+    "Implemented in S8d2a"): the search keys a node by the text of its id's
+    tuple; conditions it cannot hold pick among the trails keyed alike.
+    - Acceptance:
+      - Generated shapes against Neo4j on the composite scratch graph
+        (accounts whose ids share a pipe text, cycles, a self-loop, an
+        `edge_id` type and one without): every lowered shape equals Neo4j
+        (20: directed, reversed, undirected, `allShortestPaths`, bounded,
+        from a pipe-sharing id, OPTIONAL, conditions on the length and on an
+        end), and the review's 49 rerun after its fixes (all equal but the
+        older gaps below); legacy errors or answers wrong on all 20 (its pipe-text keys
+        conflate the accounts). Not lowered: a path read as a value (S8d2c).
+      - Neo4j oracle, 20 schemas: unchanged (no corpus query has a
+        composite shortest path); the corpus lowers 1420.
+      - Mutation check (with the review's NULL-part graph): 6 rules broken
+        in turn, 5 caught by the sweep (keys by the `|`-joined text, ends
+        tied by one column, the trails' ends keyed alike, a condition's end
+        keyed by one column, NULL parts relating nodes); restricting the
+        trails to the failing pairs is a pushdown that keeps every answer,
+        pinned by a unit test.
+      - Adversarial review (three-part ids of String / LowCardinality /
+        UInt32 / Nullable parts, strings with quotes, backslashes, commas,
+        parentheses and `|`, edge columns typed unlike the node's, FK and
+        mapped ids, every range, OPTIONAL, after WITH, conditions on lengths
+        and ends, 5k nodes): two findings, fixed: a NULL id part related
+        nodes through the key's text (wrong lengths; legacy was right), and
+        a property in a MATERIALIZED / ALIAS column was a ClickHouse error
+        (the keyed subqueries' `*`). Not of this slice: the representation
+        gap above; undirected walks over columns of other signedness fail
+        (#1358); the trails take parallel rows without `edge_id` for one
+        (#1331); the trails ran out of memory at 5k nodes (as single ids).
 - [x] S9 subquery expressions (§4.12 "Implemented in S9"): `EXISTS`,
   pattern predicates, `exists(pattern)`, `size(pattern)` /
   `size([pattern …])`, pattern comprehensions of values; bound as MATCHes
