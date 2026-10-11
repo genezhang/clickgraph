@@ -3929,7 +3929,7 @@ slice that will handle it.
   plan lowers 1420 corpus queries; the rest fall back. Of those, the 24
   the clause-list parser rejects are invalid Cypher or end without RETURN
   (S2), and 6 are bind errors Neo4j also gives. The others, in sub-slices:
-  path list functions (S11a); `label()`, `id()` outside a RETURN item and
+  path list functions (S11a); `count()` of a carried list (#1375); `label()`, `id()` outside a RETURN item and
   ORDER BY an `id()` item; ordered SKIP / LIMIT after DISTINCT, aggregation
   or UNWIND; undeclared properties of a node embedded in edge tables;
   pattern predicates inside list comprehensions (#629); and errors where
@@ -3945,9 +3945,13 @@ slice that will handle it.
     `length()` of a variable-length relationship's list stays refused: the
     legacy pipeline fails on it and Neo4j refuses it. `size()` of a carried
     list an OPTIONAL MATCH may leave NULL is NULL there (its null-condition
-    key). The demand pass reads a `count()` argument as a value.
-    - Not lowered yet: `count()` of a carried list of nodes (carried as
-      tuples).
+    key), and signed (Int64) like every size. `count()` builds no value: a
+    plain count reads only the NULL condition, `count(DISTINCT)` the
+    identities (the demand pass asks a walk for its key only then,
+    `PATH_KEY`).
+    - Not lowered yet: `count()` of a carried list of nodes or
+      relationships (carried as tuples). The legacy fallback miscounts
+      `count(DISTINCT)` of one (#1375); next in the coverage list.
     - Acceptance:
       - Generated shapes against Neo4j on `social_integration` (`count(p)`
         grouped, DISTINCT, OPTIONAL, union walks, zero-length paths,
@@ -3957,6 +3961,16 @@ slice that will handle it.
       - Corpus: 1428 lowered (was 1420). Scorecard: one CG_ERROR → MATCH
         (a carried relationship list over an impossible pattern).
       - Live suite: only the 9 multi-tenant failures that predate S10a.
+      - Adversarial review (about 330 shapes on seven schemas incl.
+        parallel relationships with `edge_id`, self-loops and composite ids
+        with a NULL part; rerun after the fixes on six): every lowered shape
+        equal to Neo4j. Fixed: `count(p)` of a walk built every element's
+        value inside the search (7.6 s vs legacy's 0.38 s on the social
+        benchmark, now 0.36 s; `count(DISTINCT p)` 0.72 s; a unit test
+        checks no value is built), and a NULL-able unsigned size mixed with
+        a negative number failed in a grouping key (Code 44; now signed).
+        Filed: the legacy fallback's `count(DISTINCT)` of a list of
+        relationships (#1375).
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

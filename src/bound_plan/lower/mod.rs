@@ -6494,21 +6494,30 @@ fn graph_demand(
     if structural {
         return;
     }
-    // `count(g)` / `count(DISTINCT g)` reads the value's identities
+    // `count(g)` reads no value; `count(DISTINCT g)` its identities
     // (`Lowerer::count_graph_value`).
     if let LogicalExpr::AggregateFnCall(f) = e {
         if let (true, [arg]) = (f.name.eq_ignore_ascii_case("count"), f.args.as_slice()) {
-            let arg = match arg {
+            let (arg, distinct) = match arg {
                 LogicalExpr::OperatorApplicationExp(op) | LogicalExpr::Operator(op)
                     if op.operator == crate::query_planner::logical_expr::Operator::Distinct
                         && op.operands.len() == 1 =>
                 {
-                    &op.operands[0]
+                    (&op.operands[0], true)
                 }
-                other => other,
+                other => (other, false),
             };
-            if value::graph_ref(arg, bindings).is_some() {
-                return graph_demand(arg, bindings, out, false);
+            match value::graph_ref(arg, bindings) {
+                Some(
+                    GraphRef::Path(v) | GraphRef::Nodes(v) | GraphRef::Rels(v) | GraphRef::List(v),
+                ) => {
+                    if distinct {
+                        out.push((v, PATH_KEY));
+                    }
+                    return;
+                }
+                Some(GraphRef::Carried(_)) => return,
+                None => {}
             }
         }
     }

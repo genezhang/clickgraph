@@ -5214,9 +5214,16 @@ fn counts_and_lengths_of_paths_and_their_lists() {
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN length(nodes(p)) AS n",
         "MATCH (a:User) OPTIONAL MATCH p = (a)-[:AUTHORED]->(x:Post) \
          WITH a, relationships(p) AS rs RETURN a.name, size(rs) AS n",
+        // A signed size mixes with a negative number in a grouping key.
+        "MATCH (a:User) OPTIONAL MATCH p = (a)-[:FOLLOWS*1..2]->(b:User) \
+         WITH a, relationships(p) AS rs RETURN coalesce(size(rs), -1) AS s, count(*) AS c",
     ] {
         sql(q);
     }
+    // count(p) reads no element value of the walk (review: building them
+    // made it 20x slower).
+    let counted = sql("MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN count(p) AS c");
+    assert!(!counted.contains("map("), "{counted}");
     // A path that matches nothing counts 0, in one row.
     has(
         "MATCH p = (a:User)-[:NOPE]->(b:User) RETURN count(p) AS c",
