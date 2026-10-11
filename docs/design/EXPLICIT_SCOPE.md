@@ -3911,6 +3911,20 @@ slice that will handle it.
         tests fail with the routing disabled (checked).
       - Live suite: 4826 passed; the remaining failures are the 9
         multi-tenant tests that predate S10a.
+      - Adversarial review (about 110 text-only queries against Neo4j on
+        HTTP, Bolt and `cg`, a main-branch server beside it; writes, CALL,
+        COPY TO, USE / cache, Databricks): no wrong answer; no write or
+        procedure reaches the new route. Fixed: a text-only query over a
+        schema that does not exist answered "Schema not found" before the
+        syntax error (now the syntax error, as before); the message text
+        of an untranslated one is the old "Query syntax error"; the inner
+        queries of COPY TO and `apoc.export.*.query` (HTTP and Bolt) now
+        translate as `/query` does (`translate::translate_inner_read`).
+        Filed, older than S10: a USE in a later UNION arm is ignored
+        (#1370); `CYPHER replan=force` drops a following USE (#1371); a
+        Bolt session without a database gets an arbitrary schema (#1372);
+        library translation overflows the stack on thousands of clauses
+        (#1373).
 - [ ] S11 legacy deletion
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)

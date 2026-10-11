@@ -95,6 +95,44 @@ async fn post(uri: &str, body: Value) -> (StatusCode, Value) {
     (status, body)
 }
 
+/// POST `body` to `uri`: the status and the body as text.
+async fn post_text(uri: &str, body: Value) -> (StatusCode, String) {
+    let app = build_router(test_state(), &ServerConfig::default());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Text only the clause-list parser reads that the bound plan does not
+/// translate keeps the syntax error, also over a schema that does not exist
+/// (not "Schema not found"; P-4c S10b review).
+#[tokio::test]
+async fn text_only_syntax_over_an_unknown_schema_is_a_syntax_error() {
+    ensure_default_schema_registered().await;
+    for body in [
+        json!({ "query": "MATCH (a:User) LIMIT 1 SET a.x = 1 RETURN a", "schema_name": "nosuch" }),
+        json!({ "query": "USE nosuch MATCH (a:User) LIMIT 1 SET a.x = 1 RETURN a" }),
+        json!({ "query": "MATCH (a:User) LIMIT 1 SET a.x = 1 RETURN a" }),
+    ] {
+        let (status, text) = post_text("/query", body.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {text}");
+        assert!(text.starts_with("Query syntax error"), "{body}: {text}");
+    }
+}
+
 /// `/query/sql` → its SQL statement, or the error body.
 async fn query_sql_endpoint(query: &str) -> Result<String, Value> {
     let (status, body) = post(

@@ -331,6 +331,48 @@ pub fn translate_text_read(
     }
 }
 
+/// The SQL of an inner read query (`COPY (<query>) TO`, the query argument of
+/// `apoc.export.*.query`), translated as `/query` would: the legacy parse
+/// with the `id()` rewrite, or text only the clause-list parser reads on the
+/// bound plan (S10b). Errors are messages prefixed `Inner Cypher …`.
+pub fn translate_inner_read(
+    cypher: &str,
+    schema: &GraphSchema,
+    max_cte_depth: u32,
+) -> Result<String, String> {
+    use crate::query_planner::ast_transform;
+    let options = || ReadOptions {
+        max_cte_depth,
+        cypher: Some(cypher.to_string()),
+        ..Default::default()
+    };
+    let message = |e: TranslateError| match e {
+        TranslateError::Planning(e) => format!("Inner Cypher planning error: {}", e),
+        TranslateError::Render(e) => format!("Inner Cypher render error: {}", e),
+        TranslateError::Invalid(e) => format!("Inner Cypher query error: {}", e),
+    };
+    match crate::open_cypher_parser::parse_cypher_statement(cypher) {
+        Ok((_, statement)) => {
+            // Stateless for export: no IdMapper scope.
+            let id_mapper = crate::server::bolt_protocol::id_mapper::IdMapper::new();
+            let arena = ast_transform::StringArena::new();
+            let (statement, _) =
+                ast_transform::transform_id_functions(&arena, statement, &id_mapper, Some(schema));
+            translate_read(statement, schema, options())
+                .map(|t| t.sql)
+                .map_err(message)
+        }
+        Err(e) => {
+            let parse_error = format!("Inner Cypher parse error: {}", e);
+            match translate_text_read(cypher, schema, options()) {
+                Ok(Some(t)) => Ok(t.sql),
+                Ok(None) => Err(parse_error),
+                Err(e) => Err(message(e)),
+            }
+        }
+    }
+}
+
 /// The `USE` graph name of read-query text the clause-list parser reads
 /// (`Some(None)`: no `USE`), or `None` when it does not parse. For entry
 /// points choosing the schema of text the legacy parser rejects (S10b).
@@ -516,6 +558,38 @@ mod tests {
             ),
             Err(TranslateError::Invalid(_))
         ));
+    }
+
+    /// The inner query of an export translates as `/query` would, text only
+    /// the clause-list parser reads included (S10b review).
+    #[test]
+    fn an_inner_export_query_translates_as_a_query_does() {
+        let schema = social();
+        let text_only = "MATCH (a:User) ORDER BY a.name LIMIT 1 RETURN a.name";
+        let sql = super::translate_inner_read(text_only, &schema, 100).unwrap();
+        assert_eq!(
+            Ok(sql),
+            crate::clickhouse_query_generator::cypher_to_sql(text_only, &schema, 100)
+        );
+        let read = "MATCH (a:User) RETURN a.name";
+        assert_eq!(
+            super::translate_inner_read(read, &schema, 100),
+            crate::clickhouse_query_generator::cypher_to_sql(read, &schema, 100)
+        );
+        let err = super::translate_inner_read("MATCH (a:User) RETRUN a", &schema, 100);
+        assert!(
+            matches!(&err, Err(e) if e.starts_with("Inner Cypher parse error")),
+            "{err:?}"
+        );
+        let err = super::translate_inner_read(
+            "MATCH (a:User) ORDER BY a.name LIMIT 1 RETURN z.name",
+            &schema,
+            100,
+        );
+        assert!(
+            matches!(&err, Err(e) if e.starts_with("Inner Cypher query error")),
+            "{err:?}"
+        );
     }
 
     #[test]

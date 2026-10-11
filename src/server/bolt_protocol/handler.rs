@@ -2355,33 +2355,9 @@ impl BoltHandler {
             crate::server::query_context::set_current_schema(Arc::new(graph_schema_obj.clone()));
 
             // Translate inner Cypher → SQL
-            let inner_sql = {
-                let (_, inner_stmt) = open_cypher_parser::parse_cypher_statement(&inner_query)
-                    .map_err(|e| {
-                        BoltError::query_error(format!("Inner Cypher parse error: {}", e))
-                    })?;
-
-                let inner_mapper = crate::server::bolt_protocol::id_mapper::IdMapper::new();
-                let inner_arena = crate::query_planner::ast_transform::StringArena::new();
-                let (inner_cypher, _) = crate::query_planner::ast_transform::transform_id_functions(
-                    &inner_arena,
-                    inner_stmt,
-                    &inner_mapper,
-                    Some(&graph_schema_obj),
-                );
-
-                crate::translate::translate_read(
-                    inner_cypher,
-                    &graph_schema_obj,
-                    crate::translate::ReadOptions {
-                        max_cte_depth: 1000,
-                        cypher: Some(inner_query.to_string()),
-                        ..Default::default()
-                    },
-                )
-                .map_err(|e| BoltError::query_error(inner_translate_error(e)))?
-                .sql
-            };
+            let inner_sql =
+                crate::translate::translate_inner_read(&inner_query, &graph_schema_obj, 1000)
+                    .map_err(BoltError::query_error)?;
 
             let export_sql = crate::procedures::apoc_export::build_export_sql(
                 &inner_sql,
@@ -2669,38 +2645,12 @@ impl BoltHandler {
                             // own strip_comments() before this independent parse.
                             let stripped_inner =
                                 open_cypher_parser::strip_comments(&export_args.cypher_query);
-                            let (_, inner_stmt) =
-                                open_cypher_parser::parse_cypher_statement(&stripped_inner)
-                                    .map_err(|e| {
-                                        BoltError::query_error(format!(
-                                            "Inner Cypher parse error: {}",
-                                            e
-                                        ))
-                                    })?;
-
-                            use crate::server::bolt_protocol::id_mapper::IdMapper;
-                            let inner_mapper = IdMapper::new();
-                            let inner_arena =
-                                crate::query_planner::ast_transform::StringArena::new();
-                            let (inner_cypher, _) =
-                                crate::query_planner::ast_transform::transform_id_functions(
-                                    &inner_arena,
-                                    inner_stmt,
-                                    &inner_mapper,
-                                    Some(&graph_schema),
-                                );
-
-                            crate::translate::translate_read(
-                                inner_cypher,
+                            crate::translate::translate_inner_read(
+                                &stripped_inner,
                                 &graph_schema,
-                                crate::translate::ReadOptions {
-                                    max_cte_depth: 1000,
-                                    cypher: Some(stripped_inner.to_string()),
-                                    ..Default::default()
-                                },
+                                1000,
                             )
-                            .map_err(|e| BoltError::query_error(inner_translate_error(e)))?
-                            .sql
+                            .map_err(BoltError::query_error)?
                         };
 
                         // Build export SQL
@@ -3318,22 +3268,6 @@ impl BoltHandler {
         metadata.insert("qid".to_string(), Value::Number(1.into()));
 
         Ok(metadata)
-    }
-}
-
-/// Error text for an `apoc.export` / `COPY TO` inner query that failed to
-/// translate (the stage is part of the message, as before the seam).
-fn inner_translate_error(e: crate::translate::TranslateError) -> String {
-    match e {
-        crate::translate::TranslateError::Planning(e) => {
-            format!("Inner Cypher planning error: {}", e)
-        }
-        crate::translate::TranslateError::Render(e) => {
-            format!("Inner Cypher render error: {}", e)
-        }
-        crate::translate::TranslateError::Invalid(e) => {
-            format!("Inner Cypher query error: {}", e)
-        }
     }
 }
 

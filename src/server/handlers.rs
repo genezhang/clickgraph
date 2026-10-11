@@ -1036,45 +1036,70 @@ pub async fn query_handler(
     // This prevents misleading "Schema not found" errors when query has syntax errors
     // Quick syntax validation (doesn't need full planning)
     // Note: Use parse_cypher_statement to support UNION ALL queries
-    let schema_name = match open_cypher_parser::parse_cypher_statement(&clean_query) {
-        Ok((_, statement)) => {
-            // Parse succeeded - extract schema name from USE clause
-            match statement {
-                open_cypher_parser::ast::CypherStatement::Query { query, .. } => {
-                    if let Some(ref use_clause) = query.use_clause {
-                        use_clause.database_name.to_string()
-                    } else {
-                        // No USE clause - use request parameter or "default"
-                        schema_name_param.unwrap_or_else(|| "default".to_string())
+    // `Err`: the syntax error (owned: the parse result must not live across
+    // the await below).
+    let parsed_schema_name: Result<String, String> =
+        match open_cypher_parser::parse_cypher_statement(&clean_query) {
+            Ok((_, statement)) => {
+                // Parse succeeded - extract schema name from USE clause
+                Ok(match statement {
+                    open_cypher_parser::ast::CypherStatement::Query { query, .. } => {
+                        if let Some(ref use_clause) = query.use_clause {
+                            use_clause.database_name.to_string()
+                        } else {
+                            // No USE clause - use request parameter or "default"
+                            schema_name_param
+                                .clone()
+                                .unwrap_or_else(|| "default".to_string())
+                        }
                     }
-                }
-                open_cypher_parser::ast::CypherStatement::ProcedureCall(_) => {
-                    // Procedure calls don't have USE clauses
-                    schema_name_param.unwrap_or_else(|| "default".to_string())
-                }
-                open_cypher_parser::ast::CypherStatement::CopyTo(_) => {
-                    // COPY TO uses request parameter or "default"
-                    schema_name_param.unwrap_or_else(|| "default".to_string())
-                }
+                    open_cypher_parser::ast::CypherStatement::ProcedureCall(_) => {
+                        // Procedure calls don't have USE clauses
+                        schema_name_param
+                            .clone()
+                            .unwrap_or_else(|| "default".to_string())
+                    }
+                    open_cypher_parser::ast::CypherStatement::CopyTo(_) => {
+                        // COPY TO uses request parameter or "default"
+                        schema_name_param
+                            .clone()
+                            .unwrap_or_else(|| "default".to_string())
+                    }
+                })
             }
-        }
-        Err(e) => {
+            Err(e) => {
+                log::error!("Query parse failed during schema extraction: {}", e);
+                Err(format!(
+                    "Query syntax error: {}. Check Cypher syntax before proceeding.",
+                    e
+                ))
+            }
+        };
+    let schema_name = match parsed_schema_name {
+        Ok(name) => name,
+        Err(syntax_error) => {
             // Text only the clause-list parser reads (P-4c S10b) is a read
             // query for the bound plan, which reports whether it translates.
-            if let Some(use_name) = crate::translate::clause_list_use_name(&clean_query) {
-                use_name
-                    .unwrap_or_else(|| schema_name_param.unwrap_or_else(|| "default".to_string()))
-            } else {
+            // Over a schema that does not exist, the syntax error is still
+            // the answer (not a misleading "Schema not found").
+            let text_only_schema = match crate::translate::clause_list_use_name(&clean_query) {
+                Some(use_name) => {
+                    let name = use_name.unwrap_or_else(|| {
+                        schema_name_param
+                            .clone()
+                            .unwrap_or_else(|| "default".to_string())
+                    });
+                    graph_catalog::get_graph_schema_by_name(&name)
+                        .await
+                        .is_ok()
+                        .then_some(name)
+                }
+                None => None,
+            };
+            match text_only_schema {
+                Some(name) => name,
                 // ❌ PARSE ERROR: Return immediately with clear error message
-                // Don't proceed to schema lookup (which would give misleading "Schema not found")
-                log::error!("Query parse failed during schema extraction: {}", e);
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    format!(
-                        "Query syntax error: {}. Check Cypher syntax before proceeding.",
-                        e
-                    ),
-                ));
+                None => return Err((StatusCode::BAD_REQUEST, syntax_error)),
             }
         }
     };
@@ -1319,9 +1344,13 @@ async fn query_handler_inner(
         let (parsed_stmt, legacy_parse_error) =
             match open_cypher_parser::parse_cypher_statement(&clean_query) {
                 Ok((_remaining, stmt)) => (Some(stmt), None),
-                Err(e) if crate::translate::clause_list_use_name(&clean_query).is_some() => {
-                    (None, Some(format!("Parse error: {}", e)))
-                }
+                Err(e) if crate::translate::clause_list_use_name(&clean_query).is_some() => (
+                    None,
+                    Some(format!(
+                        "Query syntax error: {}. Check Cypher syntax before proceeding.",
+                        e
+                    )),
+                ),
                 Err(e) => {
                     metrics.parse_time = parse_start.elapsed().as_secs_f64();
                     log::error!("Query parse failed: {:?}", e);
@@ -2146,43 +2175,7 @@ fn translate_cypher_to_sql(
         "Translating inner Cypher query for schema '{}'",
         schema_name
     );
-    // Parse
-    let (_, parsed_stmt) = open_cypher_parser::parse_cypher_statement(cypher)
-        .map_err(|e| format!("Inner Cypher parse error: {}", e))?;
-
-    // id() transform (stateless for export — no IdMapper scope needed)
-    use crate::query_planner::ast_transform;
-    use crate::server::bolt_protocol::id_mapper::IdMapper;
-    let id_mapper = IdMapper::new();
-    let ast_arena = ast_transform::StringArena::new();
-    let (cypher_statement, _) = ast_transform::transform_id_functions(
-        &ast_arena,
-        parsed_stmt,
-        &id_mapper,
-        Some(graph_schema),
-    );
-
-    crate::translate::translate_read(
-        cypher_statement,
-        graph_schema,
-        crate::translate::ReadOptions {
-            max_cte_depth,
-            cypher: Some(cypher.to_string()),
-            ..Default::default()
-        },
-    )
-    .map(|t| t.sql)
-    .map_err(|e| match e {
-        crate::translate::TranslateError::Planning(e) => {
-            format!("Inner Cypher planning error: {}", e)
-        }
-        crate::translate::TranslateError::Render(e) => {
-            format!("Inner Cypher render error: {}", e)
-        }
-        crate::translate::TranslateError::Invalid(e) => {
-            format!("Inner Cypher query error: {}", e)
-        }
-    })
+    crate::translate::translate_inner_read(cypher, graph_schema, max_cte_depth)
 }
 
 /// Extract a schema name from a leading `USE <schema>` clause in a Cypher query.
