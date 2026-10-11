@@ -377,11 +377,11 @@ impl Search {
     }
 
     /// The keys of a relationship's `from` / `to` node over `alias`.
-    fn from_key(&self, alias: &str) -> String {
+    fn rel_start_key(&self, alias: &str) -> String {
         Self::key(&self.from_id, alias)
     }
 
-    fn to_key(&self, alias: &str) -> String {
+    fn rel_end_key(&self, alias: &str) -> String {
         Self::key(&self.to_id, alias)
     }
 
@@ -589,7 +589,7 @@ pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<C
     let (depth, flag, count) = (spelling.depth, spelling.flag, spelling.count);
     let node_table = &call.node_table;
     let (start_key, end_key) = (call.node_key("start_node"), call.node_key("end_node"));
-    let (rel_from, rel_to) = (call.from_key("rel"), call.to_key("rel"));
+    let (rel_from, rel_to) = (call.rel_start_key("rel"), call.rel_end_key("rel"));
     let bfs = format!("vlp_{}_bfs", call.var);
     let seed_where = conjunction(&call.start)
         .map(|c| format!("\n    WHERE {c}"))
@@ -759,7 +759,11 @@ pub(super) fn walk_ctes(
     let (depth, flag) = (spelling.depth, spelling.flag);
     let node_table = &call.node_table;
     let end_key = call.node_key("end_node");
-    let (rel_from, rel_to, to_bare) = (call.from_key("rel"), call.to_key("rel"), call.to_key(""));
+    let (rel_from, rel_to, to_bare) = (
+        call.rel_start_key("rel"),
+        call.rel_end_key("rel"),
+        call.rel_end_key(""),
+    );
     let bfs = format!("vlp_{}_bfs", call.var);
     let walk = format!("vlp_{}_walk", call.var);
     let columns = call.walked_columns();
