@@ -1,6 +1,6 @@
 name: Auto Approve Documentation Changes
 
-# ⚠️ Note: Auto-merge is DISABLED to enforce manual code review
+# âš ï¸ Note: Auto-merge is DISABLED to enforce manual code review
 # As per the branch workflow requirements (Jan 2026), all PRs require human review
 # before merging to main branch.
 
@@ -18,23 +18,26 @@ jobs:
       statuses: read
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-        ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-    - name: Get changed files
+    # No checkout here on purpose. This job runs on pull_request_target with a
+    # write-scoped token, so checking out the fork's head would execute
+    # attacker-controlled content in a privileged context.
+    # File list comes from the API instead, which works for fork and non-fork PRs.
+    - name: Check that only docs/config files changed
       id: changed-files
-      uses: tj-actions/changed-files@v41
-      with:
-        files: |
-          **/*.md
-          **/*.yml
-          **/*.yaml
-          docs/**
-          .github/**
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        PR: ${{ github.event.pull_request.number }}
+      run: |
+        files=$(gh api --paginate "repos/${{ github.repository }}/pulls/$PR/files" --jq '.[].filename')
+        echo "Changed files:"
+        echo "$files"
+        if echo "$files" | grep -qE '^\.github/'; then
+          echo "only_changed=false" >> "$GITHUB_OUTPUT"
+        elif echo "$files" | grep -qvE '\.(md|ya?ml)$|^docs/'; then
+          echo "only_changed=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "only_changed=true" >> "$GITHUB_OUTPUT"
+        fi
 
     - name: Label documentation/config changes (NO auto-merge)
       if: steps.changed-files.outputs.only_changed == 'true'
@@ -43,14 +46,13 @@ jobs:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         number: ${{ github.event.pull_request.number }}
         body: |
-          🤖 This PR only contains:
-          
-          - 📝 Documentation changes (`.md` files)
-          - ⚙️ Configuration changes (`.yml`/`.yaml` files)
-          - 🔧 CI/CD changes (`.github/` directory)
-          
-          ✅ Auto-approved by bot, but **manual human review is required** before merge.
-          
+          ðŸ¤– This PR only contains:
+
+          - ðŸ“ Documentation changes (`.md` files)
+          - âš™ï¸ Configuration changes (`.yml`/`.yaml` files)
+
+          âœ… Auto-approved by bot, but **manual human review is required** before merge.
+
           Please review the changes and merge manually when ready.
 
   # AUTO-MERGE IS DISABLED
