@@ -6,7 +6,7 @@ acceptance test for P-4c slices; rows are.
 
 | File | Role |
 |---|---|
-| `graph_loader.py` | builds a schema's logical graph from its YAML + ClickHouse tables and loads it into Neo4j (the standard layout and FK edges today; other layouts raise `Unsupported`) |
+| `graph_loader.py` | builds a schema's logical graph from its YAML + ClickHouse tables and loads it into Neo4j (the standard layout, FK edges and denormalized nodes today; other layouts raise `Unsupported`) |
 | `compare.py` | every normalization rule between Neo4j's and ClickGraph's results |
 | `run_corpus.py` | runs corpus queries on both, classifies them, writes the result goldens |
 | `triage_rules.py` | categories for the known-wrong entries |

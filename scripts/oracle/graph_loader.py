@@ -21,6 +21,22 @@ Unsupported, decided by an ALLOWLIST of schema keys):
     whichever of from_id / to_id holds the reference: the side whose columns
     are not the node's id (#632; `from_id: parent_id, to_id: object_id` is
     child -> parent, as the FK-edge wiki documents);
+  * a DENORMALIZED (embedded) label, whose definitions' tables are tables of
+    edges it is an end of, has no rows of its own: each role of each
+    definition (from_node_properties / to_node_properties, plus the
+    definition's non-id property_mappings, the role's winning) is a source,
+    and its nodes are the distinct non-NULL ids the sources' rows hold.
+    `node_id` names the id's properties (or a role's columns of them). A
+    property is the value its sources hold for the id; an id whose rows hold
+    different values of one property (NULL in a column a role declares is a
+    value: NULL against a value is a difference) is INCONSISTENT: the
+    property is left off that node and reported (the schema says the
+    property is the node's);
+  * an edge end embedded in a source of its label names the id's columns:
+    they are read in the source's id order (a composite end may list them in
+    another);
+  * a denormalized definition whose table is no edge table of its label (a
+    "foreign" one: edges carry its id) is a node table as above;
   * an edge row whose endpoint does not exist as a node is DANGLING: Neo4j
     cannot hold it, so it is counted and reported (never silently dropped).
   * a property declared in the schema's `property_types` is converted to that
@@ -88,12 +104,22 @@ def _typed(value, declared):
     return value
 
 
+def _key(values):
+    """A node key: the id's values, an array value as a tuple (hashable)."""
+    return tuple(tuple(v) if isinstance(v, list) else v for v in values)
+
+
 def _id_cols(spec):
     v = spec if isinstance(spec, list) else [spec]
     return [c if isinstance(c, str) else c["column"] for c in v]
 
 
-NODE_KEYS = {"label", "database", "table", "node_id", "property_mappings", "property_types", "filter"}
+NODE_KEYS = {
+    "label", "database", "table", "node_id", "property_mappings", "property_types", "filter",
+    # Denormalized nodes: their properties in an edge table's columns, per
+    # role (`is_denormalized` is not a schema field; it documents them).
+    "from_node_properties", "to_node_properties", "is_denormalized",
+}
 EDGE_KEYS = {
     "type", "database", "table", "from_id", "to_id", "edge_id", "from_node", "to_node",
     "property_mappings", "property_types", "filter",
@@ -127,7 +153,17 @@ def build_graph(gs, ch):
     _check_standard(gs)
     nodes, index = [], {}
     report = {"nodes": {}, "rels": {}, "dangling": {}}
+    embedded = {}
     for n in gs.get("nodes", []):
+        roles = [n.get("from_node_properties"), n.get("to_node_properties")]
+        hosts = any(
+            (e["database"], e["table"]) == (n["database"], n["table"])
+            and n["label"] in (e.get("from_node"), e.get("to_node"))
+            for e in gs.get("edges", [])
+        )
+        if any(roles) and hosts:
+            embedded.setdefault(n["label"], []).append(n)
+            continue
         pm = n.get("property_mappings") or {}
         idc = [pm.get(p, p) for p in _id_cols(n["node_id"])]
         cols = sorted(set(idc) | set(pm.values()))
@@ -136,12 +172,15 @@ def build_graph(gs, ch):
         where = f" WHERE {n['filter']}" if n.get("filter") else ""
         rows = ch(f"SELECT {', '.join(f'`{c}`' for c in cols)} FROM `{n['database']}`.`{n['table']}`{where}")
         for r in rows:
-            key = tuple(r[c] for c in idc)
+            key = _key(r[c] for c in idc)
             pt = n.get("property_types") or {}
             props = {p: _typed(r[c], pt.get(p)) for p, c in pm.items()}
             index[(n["label"], key)] = True
             nodes.append((n["label"], key, props))
         report["nodes"][n["label"]] = len(rows)
+    sources = {}
+    for label, defs in embedded.items():
+        sources[label] = _embedded_nodes(label, defs, ch, nodes, index, report)
     rels = []
     node_defs = {n["label"]: n for n in gs.get("nodes", [])}
     for e in gs.get("edges", []):
@@ -151,10 +190,13 @@ def build_graph(gs, ch):
             e["from_node"] == e["to_node"]
             and own is not None
             and (own["database"], own["table"]) == (e["database"], e["table"])
+            and not (own.get("from_node_properties") or own.get("to_node_properties"))
         ):
             pm_own = own.get("property_mappings") or {}
             own_id = [pm_own.get(p, p) for p in _id_cols(own["node_id"])]
             fc, tc = own_id, (tc if fc == own_id else fc)
+        fc = _ordered_end(sources.get(e["from_node"]), e, fc)
+        tc = _ordered_end(sources.get(e["to_node"]), e, tc)
         pm = e.get("property_mappings") or {}
         cols = sorted(set(fc) | set(tc) | set(pm.values()))
         # A schema `filter:`: the type's relationships are the rows it holds of.
@@ -162,7 +204,7 @@ def build_graph(gs, ch):
         rows = ch(f"SELECT {', '.join(f'`{c}`' for c in cols)} FROM `{e['database']}`.`{e['table']}`{where}")
         dangling = 0
         for r in rows:
-            fk, tk = tuple(r[c] for c in fc), tuple(r[c] for c in tc)
+            fk, tk = _key(r[c] for c in fc), _key(r[c] for c in tc)
             if any(v is None for v in fk + tk):
                 continue  # no edge: a NULL endpoint column is not a relationship
             if (e["from_node"], fk) not in index or (e["to_node"], tk) not in index:
@@ -177,6 +219,74 @@ def build_graph(gs, ch):
         if dangling:
             report["dangling"][e["type"]] = dangling
     return nodes, rels, report
+
+
+def _ordered_end(label_sources, e, cols):
+    """An edge end embedded in a source of its label, in the id's order."""
+    if not label_sources:
+        return cols
+    id_props, srcs = label_sources
+    for table, columns in srcs:
+        if table == (e["database"], e["table"]) and sorted(columns[p] for p in id_props) == sorted(cols):
+            return [columns[p] for p in id_props]
+    return cols
+
+
+def _embedded_nodes(label, defs, ch, nodes, index, report):
+    """The nodes of a denormalized label (see the module doc); returns its id
+    properties and its sources ((database, table), columns)."""
+    srcs = []
+    values, conflicts = {}, set()
+    id_props = None
+    for n in defs:
+        pm = n.get("property_mappings") or {}
+        roles = [r for r in (n.get("from_node_properties"), n.get("to_node_properties")) if r]
+        props = []
+        for name in _id_cols(n["node_id"]):
+            if any(name in r for r in roles):
+                props.append(name)
+                continue
+            found = [p for r in roles for p, c in r.items() if c == name]
+            if not found:
+                raise Unsupported(f"node {label}: id {name} is no role's property")
+            props.append(found[0])
+        if id_props not in (None, props):
+            raise Unsupported(f"node {label}: definitions with different ids")
+        id_props = props
+        pt = n.get("property_types") or {}
+        for role in roles:
+            columns = {**{p: c for p, c in pm.items() if p not in props}, **role}
+            if any(p not in columns for p in props):
+                raise Unsupported(f"node {label}: a role without the id")
+            srcs.append(((n["database"], n["table"]), columns))
+            cols = sorted(set(columns.values()))
+            where = f" WHERE {n['filter']}" if n.get("filter") else ""
+            rows = ch(f"SELECT {', '.join(f'`{c}`' for c in cols)} FROM `{n['database']}`.`{n['table']}`{where}")
+            for r in rows:
+                key = _key(r[columns[p]] for p in props)
+                if any(v is None for v in key):
+                    continue
+                held = values.setdefault(key, {})
+                for p, c in columns.items():
+                    # A NULL in a column a role declares is that row's
+                    # value: against another row's value it is a conflict
+                    # (the schema says the property is the node's).
+                    v = _typed(r[c], pt.get(p))
+                    if p in held and held[p] != v:
+                        conflicts.add((key, p))
+                    held.setdefault(p, v)
+    inconsistent = set()
+    for key, props in values.items():
+        for (k, p) in conflicts:
+            if k == key:
+                props.pop(p, None)
+                inconsistent.add(p)
+        index[(label, key)] = True
+        nodes.append((label, key, {p: v for p, v in props.items() if v is not None}))
+    report["nodes"][label] = len(values)
+    if inconsistent:
+        report.setdefault("inconsistent", {})[label] = sorted(inconsistent)
+    return id_props, srcs
 
 
 def neo_run(neo_url, statements):

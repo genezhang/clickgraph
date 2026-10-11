@@ -8,7 +8,7 @@
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use super::config::Identifier;
@@ -559,16 +559,16 @@ impl RelationshipSchema {
     /// relationship, from the node its `from_id` names to the node its
     /// `to_id` names, between nodes of its declared labels: a separate edge
     /// table, or (S8a) an FK edge, whose table is one of its ends' node
-    /// tables (each row a node holding a reference to the other end). No
-    /// embedded node properties, no type or label discriminator columns, no
-    /// `$any` side. A row whose end is NULL or names no node joins no node,
-    /// so it is no relationship. Its endpoints must also have their own
-    /// tables (`NodeSchema::is_standard_own_table`) for the edge to be
-    /// scanned with node-table joins.
+    /// tables (each row a node holding a reference to the other end), or
+    /// (S8b) an edge table embedding its ends' properties (each row a
+    /// relationship naming its ends, whose nodes are the relation
+    /// `GraphSchema::lowering_view` gives their label). No type or label
+    /// discriminator columns, no `$any` side. A row whose end is NULL or
+    /// names no node joins no node, so it is no relationship. Its endpoints
+    /// must also be nodes of their own rows (`NodeSchema::
+    /// is_standard_own_table`) for the edge to be scanned with node joins.
     pub fn is_edge_row_table(&self) -> bool {
-        self.from_node_properties.is_none()
-            && self.to_node_properties.is_none()
-            && self.has_fixed_endpoint_labels()
+        self.has_fixed_endpoint_labels()
     }
 
     /// P-4c S7b3a: every row of the relationship joins a node of `from_node`
@@ -807,6 +807,11 @@ impl RelationshipSchema {
 impl NodeSchema {
     /// Get the fully qualified table name (database.table)
     pub fn full_table_name(&self) -> String {
+        // A node relation (`GraphSchema::lowering_view`, P-4c S8b) is a CTE
+        // of the query, read by its name.
+        if self.database.is_empty() {
+            return self.table_name.clone();
+        }
         format!("{}.{}", self.database, self.table_name)
     }
 
@@ -887,6 +892,246 @@ impl GraphSchema {
             // FkEdgeJoin fallback (edge treated as the from-side node table).
             Some(true)
         }
+    }
+
+    /// P-4c S8a / S8b: the schema the bound-plan lowering reads, or `None`
+    /// when it is this one: FK edges as tables of relationships
+    /// ([`Self::with_fk_edges_as_edge_rows`]) and labels embedded in edge
+    /// tables as node relations ([`Self::with_node_relations`]).
+    pub fn lowering_view(&self) -> Option<GraphSchema> {
+        match self.with_fk_edges_as_edge_rows() {
+            Some(fk) => Some(fk.with_node_relations().unwrap_or(fk)),
+            None => self.with_node_relations(),
+        }
+    }
+
+    /// P-4c S8b: record every definition of each label (the build keeps one
+    /// per label in `nodes`).
+    pub fn set_node_definitions(&mut self, definitions: BTreeMap<String, Vec<NodeSchema>>) {
+        self.node_definitions = definitions;
+    }
+
+    /// The node relation read under the name `table`
+    /// ([`Self::with_node_relations`]).
+    pub fn node_relation(&self, table: &str) -> Option<&NodeRelation> {
+        self.node_relations.get(table)
+    }
+
+    /// P-4c S8b: the schema with each label whose nodes are embedded in
+    /// edge tables (a denormalized node: `from_node_properties` /
+    /// `to_node_properties` over the table of an edge it is an end of) read
+    /// as a node relation, and each label of its own table that edges only
+    /// carry the id of (a "foreign" denormalized node) as that table; `None`
+    /// when no label is either.
+    ///
+    /// An embedded label's nodes are the distinct ids its roles hold: each
+    /// role of each definition (`from_node_properties`, `to_node_properties`)
+    /// is a source, the rows of its table (with the definition's `filter:`,
+    /// view parameters and FINAL), its columns for the label's properties.
+    /// A node is one id (a row whose id is NULL is no node); its property
+    /// is the value its sources hold (the schema says a property is the
+    /// node's, so all rows of one id hold one value). The node becomes an
+    /// own-table node over the relation named `__cg_nodes_<label>`, a CTE
+    /// the lowering builds from [`NodeRelation`]: its columns are the
+    /// label's property names. A label whose id a role does not hold, or
+    /// whose definitions mix embedded and own tables, is left as it is (not
+    /// lowered).
+    pub fn with_node_relations(&self) -> Option<GraphSchema> {
+        // Labels with a denormalized definition, or several definitions
+        // (the catalog's `nodes` keeps one of them).
+        let mut labels: BTreeSet<&String> = self
+            .nodes
+            .iter()
+            .filter(|(key, ns)| ns.is_denormalized && !key.contains("::"))
+            .map(|(key, _)| key)
+            .collect();
+        for (label, defs) in &self.node_definitions {
+            if defs.len() > 1 || defs.iter().any(|d| d.is_denormalized) {
+                labels.insert(label);
+            }
+        }
+        if labels.is_empty() {
+            return None;
+        }
+        let mut out = self.clone();
+        let mut changed = false;
+        for label in labels {
+            let mut defs: Vec<&NodeSchema> = self
+                .node_definitions
+                .get(label.as_str())
+                .map(|d| d.iter().collect())
+                .unwrap_or_default();
+            if defs.is_empty() {
+                defs = self.nodes.get(label).into_iter().collect();
+            }
+            let hosts_edge = |ns: &NodeSchema| {
+                ns.is_denormalized
+                    && self.relationships.values().any(|r| {
+                        r.full_table_name() == ns.full_table_name()
+                            && (r.from_node == *label || r.to_node == *label)
+                    })
+            };
+            let embedded = defs.iter().filter(|d| hosts_edge(d)).count();
+            match (embedded, defs.as_slice()) {
+                // Its own table's rows are its nodes; the edges' copies of
+                // its id are a way to read them.
+                (0, [own]) => {
+                    if own.is_denormalized {
+                        let mut node = (*own).clone();
+                        node.is_denormalized = false;
+                        node.from_properties = None;
+                        node.to_properties = None;
+                        node.denormalized_source_table = None;
+                        out.nodes.insert(label.clone(), node);
+                        changed = true;
+                    }
+                }
+                (n, _) if n == defs.len() => {
+                    let Some((relation, node)) = Self::embedded_relation(label, &defs) else {
+                        out.nodes.remove(label);
+                        changed = true;
+                        continue;
+                    };
+                    // An edge's end embedded in one of the relation's
+                    // sources names the id's columns in the source's id
+                    // order (a composite end may list them in another).
+                    for (key, rel) in &self.relationships {
+                        let mut read = rel.clone();
+                        for from_end in [true, false] {
+                            let (end_label, end) = match from_end {
+                                true => (&rel.from_node, &mut read.from_id),
+                                false => (&rel.to_node, &mut read.to_id),
+                            };
+                            if end_label != label {
+                                continue;
+                            }
+                            if let Some(ordered) = relation.ordered_end(&rel.full_table_name(), end)
+                            {
+                                *end = ordered;
+                            }
+                        }
+                        if read.from_id != rel.from_id || read.to_id != rel.to_id {
+                            out.relationships.insert(key.clone(), read);
+                        }
+                    }
+                    out.node_relations.insert(node.table_name.clone(), relation);
+                    out.nodes.insert(label.clone(), node);
+                    changed = true;
+                }
+                // Embedded in some tables and its own in others, or several
+                // own tables: one relation of them is not built yet; the
+                // label is left out of the view (not lowered) rather than
+                // read as one of its definitions.
+                _ => {
+                    out.nodes.remove(label);
+                    changed = true;
+                }
+            }
+        }
+        changed.then_some(out)
+    }
+
+    /// The relation of `label`'s embedded definitions `defs`, and the node
+    /// schema reading it ([`Self::with_node_relations`]).
+    fn embedded_relation(label: &str, defs: &[&NodeSchema]) -> Option<(NodeRelation, NodeSchema)> {
+        let mut id: Option<Vec<String>> = None;
+        let mut sources: Vec<NodeSource> = Vec::new();
+        for def in defs {
+            let roles: Vec<&HashMap<String, String>> = [&def.from_properties, &def.to_properties]
+                .into_iter()
+                .flatten()
+                .filter(|m| !m.is_empty())
+                .collect();
+            // `node_id` names the id's properties, or (as some schemas
+            // write it) a role's columns of them.
+            let mut props = Vec::new();
+            for n in def.node_id.id.columns() {
+                let p = if roles.iter().any(|m| m.contains_key(n)) {
+                    n.to_string()
+                } else {
+                    roles
+                        .iter()
+                        .find_map(|m| m.iter().find(|(_, c)| c.as_str() == n))
+                        .map(|(p, _)| p.clone())?
+                };
+                props.push(p);
+            }
+            match &id {
+                Some(known) if *known != props => return None,
+                _ => id = Some(props.clone()),
+            }
+            for m in roles {
+                if props.iter().any(|p| !m.contains_key(p)) {
+                    return None;
+                }
+                let mut columns: Vec<(String, String)> =
+                    m.iter().map(|(p, c)| (p.clone(), c.clone())).collect();
+                columns.sort();
+                let source = NodeSource {
+                    table: def.full_table_name(),
+                    view_parameters: def.view_parameters.clone(),
+                    use_final: def.should_use_final(),
+                    filter: def.filter.clone(),
+                    columns,
+                };
+                if !sources.contains(&source) {
+                    sources.push(source);
+                }
+            }
+        }
+        let id = id?;
+        if sources.is_empty() {
+            return None;
+        }
+        let properties: Vec<String> = sources
+            .iter()
+            .flat_map(|s| s.columns.iter().map(|(p, _)| p.clone()))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let name = format!("__cg_nodes_{label}");
+        let first = defs[0];
+        let node = NodeSchema {
+            database: String::new(),
+            table_name: name,
+            column_names: properties.clone(),
+            primary_keys: id.join(", "),
+            node_id: NodeIdSchema {
+                id: match id.as_slice() {
+                    [one] => Identifier::Single(one.clone()),
+                    _ => Identifier::Composite(id.clone()),
+                },
+                dtype: first.node_id.dtype.clone(),
+            },
+            property_mappings: properties
+                .iter()
+                .map(|p| (p.clone(), PropertyValue::Column(p.clone())))
+                .collect(),
+            closed_properties: false,
+            view_parameters: None,
+            engine: None,
+            use_final: Some(false),
+            filter: None,
+            is_denormalized: false,
+            from_properties: None,
+            to_properties: None,
+            denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
+            node_id_types: first.node_id_types.clone(),
+            source: None,
+            property_types: first.property_types.clone(),
+            id_generation: None,
+        };
+        Some((
+            NodeRelation {
+                label: label.to_string(),
+                id,
+                properties,
+                sources,
+            },
+            node,
+        ))
     }
 
     /// P-4c S8a: the schema with each FK edge written as a table of
@@ -982,6 +1227,63 @@ impl GraphSchema {
         names.dedup();
         names
     }
+}
+
+/// P-4c S8b: the nodes of a label embedded in edge tables, as a relation
+/// (`GraphSchema::with_node_relations`): one row per id held by any of its
+/// sources, a column per property.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeRelation {
+    pub label: String,
+    /// The id's properties (columns of the relation).
+    pub id: Vec<String>,
+    /// Every property its sources hold (the id's among them), sorted.
+    pub properties: Vec<String>,
+    pub sources: Vec<NodeSource>,
+}
+
+impl NodeRelation {
+    /// The columns of `end` (an edge end on `table`) in the order of the
+    /// relation's id, when a source on `table` holds the id in exactly those
+    /// columns; `None` otherwise (the end is read as written).
+    pub fn ordered_end(&self, table: &str, end: &Identifier) -> Option<Identifier> {
+        let mut written: Vec<&str> = end.columns();
+        written.sort_unstable();
+        self.sources
+            .iter()
+            .filter(|s| s.table == table)
+            .find_map(|s| {
+                let columns: Option<Vec<String>> = self
+                    .id
+                    .iter()
+                    .map(|p| {
+                        s.columns
+                            .iter()
+                            .find(|(q, _)| q == p)
+                            .map(|(_, c)| c.clone())
+                    })
+                    .collect();
+                let columns = columns?;
+                let mut sorted: Vec<&str> = columns.iter().map(String::as_str).collect();
+                sorted.sort_unstable();
+                (sorted == written).then(|| match columns.as_slice() {
+                    [one] => Identifier::Single(one.clone()),
+                    _ => Identifier::Composite(columns.clone()),
+                })
+            })
+    }
+}
+
+/// One role of one definition of an embedded label: the rows of `table`
+/// (with its options), each holding a node's id and properties in
+/// `columns` (property, column), sorted by property.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeSource {
+    pub table: String,
+    pub view_parameters: Option<Vec<String>>,
+    pub use_final: bool,
+    pub filter: Option<SchemaFilter>,
+    pub columns: Vec<(String, String)>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1207,6 +1509,17 @@ pub struct GraphSchema {
     /// Maps index name -> config (label, properties, analyzer)
     #[serde(skip)]
     fulltext_indexes: BTreeMap<String, FulltextIndexConfig>,
+
+    /// P-4c S8b: node relations of the lowering's view of the schema
+    /// ([`GraphSchema::with_node_relations`]), by the name they are read
+    /// under. Empty in a loaded schema.
+    #[serde(skip)]
+    node_relations: BTreeMap<String, NodeRelation>,
+
+    /// Every definition of each label, from the YAML (`nodes` keeps one
+    /// per label). Empty in a schema not built from YAML.
+    #[serde(skip)]
+    node_definitions: BTreeMap<String, Vec<NodeSchema>>,
 }
 
 /// Deserialization shadow for [`GraphSchema`]: only the persisted (non-`skip`)
@@ -1241,6 +1554,8 @@ impl From<GraphSchemaDe> for GraphSchema {
             // come back empty here (unchanged from the previous derive behavior).
             vector_indexes: BTreeMap::new(),
             fulltext_indexes: BTreeMap::new(),
+            node_relations: BTreeMap::new(),
+            node_definitions: BTreeMap::new(),
         };
         schema.rebuild_derived_indexes();
         schema
@@ -1316,6 +1631,8 @@ impl GraphSchema {
             rel_type_index,
             vector_indexes: BTreeMap::new(),
             fulltext_indexes: BTreeMap::new(),
+            node_relations: BTreeMap::new(),
+            node_definitions: BTreeMap::new(),
         }
     }
 
