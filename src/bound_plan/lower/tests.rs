@@ -5230,3 +5230,34 @@ fn counts_and_lengths_of_paths_and_their_lists() {
         &["CASE WHEN count(*) >= 0 THEN 0 ELSE 0 END AS \"c\""],
     );
 }
+
+/// `count()` / `count(DISTINCT)` of a list of nodes or relationships: its
+/// rows, or its distinct lists by their elements' tuples in order, as
+/// DISTINCT compares them (P-4c S11b, #1375; the legacy fallback miscounted
+/// it).
+#[test]
+fn counts_of_lists_of_nodes_and_relationships() {
+    for q in [
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) WITH relationships(p) AS rs \
+         RETURN count(DISTINCT rs) AS c, count(rs) AS d",
+        "MATCH p = (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User) WITH nodes(p) AS ns \
+         RETURN count(DISTINCT ns) AS c",
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b) AS bs \
+         RETURN count(DISTINCT bs) AS c, count(bs) AS d",
+    ] {
+        sql(q);
+    }
+    // A list built over a list that may be NULL (`split(NULL)` is an array
+    // here, NULL in Cypher) is not counted: it falls back (review, #1377).
+    not_lowered(
+        "MATCH (a:User) WITH [x IN split(CASE WHEN a.age > 26 THEN 'x' END, ',') | a] AS l \
+         RETURN count(l) AS d",
+        "count() of lists of nodes or relationships",
+    );
+    // Distinct by whole tuples: parallel relationships of a type without
+    // `edge_id` (same ends) are told apart by their properties (review).
+    has(
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b) AS bs RETURN count(DISTINCT bs) AS c",
+        &["count(DISTINCT w1.v4)"],
+    );
+}

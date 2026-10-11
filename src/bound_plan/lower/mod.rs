@@ -276,6 +276,7 @@ impl Query<'_> {
             one_row: true,
             identities: Vec::new(),
             subqueries: &self.stmt.subqueries,
+            projected: projected_items(&self.stmt.plan),
         };
         let lowered = l
             .relation(input)
@@ -575,6 +576,8 @@ struct Lowerer<'s> {
     identities: Vec<(String, Vec<RenderExpr>)>,
     /// The statement's subquery expressions (`subquery.rs`).
     subqueries: &'s [Subquery],
+    /// The expression each WITH / RETURN item was projected from.
+    projected: HashMap<VarId, &'s LogicalExpr>,
 }
 
 /// The elements of a path variable, in path order.
@@ -6460,6 +6463,31 @@ fn element_contexts(op: &BoundOp) -> Vec<&LogicalExpr> {
         | BoundOp::Limit { input, .. } => element_contexts(input),
         BoundOp::Union { arms, .. } => arms.iter().flat_map(element_contexts).collect(),
     }
+}
+
+/// The expression each projection item of `op` was projected from.
+fn projected_items(op: &BoundOp) -> HashMap<VarId, &LogicalExpr> {
+    let mut out = HashMap::new();
+    fn walk<'a>(op: &'a BoundOp, out: &mut HashMap<VarId, &'a LogicalExpr>) {
+        match op {
+            BoundOp::Unit => {}
+            BoundOp::Project { input, projection } => {
+                walk(input, out);
+                for it in &projection.items {
+                    out.insert(it.var, &it.expr);
+                }
+            }
+            BoundOp::Match { input, .. }
+            | BoundOp::Unwind { input, .. }
+            | BoundOp::Sort { input, .. }
+            | BoundOp::Filter { input, .. }
+            | BoundOp::Skip { input, .. }
+            | BoundOp::Limit { input, .. } => walk(input, out),
+            BoundOp::Union { arms, .. } => arms.iter().for_each(|a| walk(a, out)),
+        }
+    }
+    walk(op, &mut out);
+    out
 }
 
 /// `nested`: `e` is inside another expression (a comprehension's list, …),
