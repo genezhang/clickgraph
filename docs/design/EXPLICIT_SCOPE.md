@@ -1360,11 +1360,9 @@ types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
 - **Known gap (#1354):** a node whose id, or a part of it, is NULL is
   dropped from a zero-length walk (its ties and first-node restriction use
   `=` / `IN`; a single nullable id since S6a).
-- **Not lowered yet (S8d2b, S8d2c):** a walk of several definitions
-  between composite ids (a union walk keys nodes by one id column), and a
-  composite id in a value or a list (a path's nodes, `DISTINCT p`): their
-  keys must read the ids' columns, not the generator's text (a carried path
-  exports only the text today).
+- **Not lowered yet (S8d2c):** a composite id in a value or a list (a
+  path's nodes, `DISTINCT p`): its key must read the id's columns, not the
+  generator's text (a carried path exports only the text today).
 
 **Implemented in S8d2a** (shortest paths between composite ids,
 `path::composite_key`):
@@ -1395,6 +1393,32 @@ types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
 - **Not lowered yet (S8d2c):** a composite shortest path read as a path
   (its value, `nodes(p)`, `DISTINCT p`): the trails keep its nodes only as
   the generator's text.
+
+**Implemented in S8d2b** (walks of several definitions between composite
+ids, `Lowerer::walks_by_keys` / `walk_key`, `walk_key_sql`):
+- **A walk by keys.** A union walk (S7b3a/b) joins its nodes by label and
+  one id column. When a label it can visit has a composite id, every node's
+  id in the walk (`__cg_id_0` of `vlp_{v}_nodes`) is its identity as a text
+  (`KEY`: its label and the text of its id's tuple, or of its single id),
+  and so is each relationship row's end (`__cg_start_0` / `__cg_end_0` of
+  `{v}_rels`): one column of one type whatever the arity, which every label
+  and definition spells alike and no two ids share. The trails, the search
+  and the ends' recovery read them as before; the first node is restricted
+  by `(label, key) IN (…)`, and the walk's ends tied by the key of their
+  label and id. A walk over single-id labels only is unchanged.
+- **NULL parts.** A relationship row whose composite end (either end) has
+  a NULL part relates no node (`=` decides; the text would equal a node's
+  of the same parts), as in S8d2a.
+- **Join order.** A key tie is SQL text whose columns the lowering does not
+  see, so the joins of a relation holding one stay in the order they were
+  placed (`Lowerer::path_first` does not move a path first): moved, a tie
+  read a node not joined yet (review).
+- **Known gap (#1360, also S7b3b's and S8d2a's searches):** a text key
+  misses equal values of differently typed node and edge columns (`Date`
+  against `DateTime`, `Bool` against `UInt8`, `FixedString` against
+  `String`): the relationship relates nothing, where `=` would match.
+- A walk's definitions still share one end arity (`rel_union_shape`); a
+  union's identity columns of different types fail as before (#1352).
 
 ### 4.7 Label inference
 
@@ -3465,8 +3489,8 @@ slice that will handle it.
 - [ ] S8 layouts, in sub-slices: S8a FK edges (done), S8b denormalized
   nodes (done; a label both embedded and in its own tables later), S8c
   polymorphic edges and node tables (done), S8d composite ids: S8d1 walks
-  of one definition (done), S8d2a shortest paths (done), S8d2b union walks,
-  S8d2c values and lists.
+  of one definition (done), S8d2a shortest paths (done), S8d2b union walks
+  (done), S8d2c values and lists.
   - [x] **S8a: FK edges** (§4.6 "Implemented in S8a"): a relationship whose
     table is one of its ends' node tables is read as a table of
     relationships; a self-referencing one's ends as legacy reads them
@@ -3655,6 +3679,33 @@ slice that will handle it.
         gap above; undirected walks over columns of other signedness fail
         (#1358); the trails take parallel rows without `edge_id` for one
         (#1331); the trails ran out of memory at 5k nodes (as single ids).
+  - [x] **S8d2b: walks of several definitions between composite ids** (§4.6
+    "Implemented in S8d2b"): the walk goes by keys (each node's and
+    relationship end's identity as a text).
+    - Acceptance:
+      - Generated shapes against Neo4j on a scratch graph (two composite
+        labels sharing id tuples, a node with a NULL id part and rows to and
+        from it, pipe-sharing ids, an `edge_id` type and three without, a
+        self-loop): every lowered shape equals Neo4j (25: typed, untyped and
+        label-crossing walks, every direction, `*0..`, closed walks, walks
+        beside hops, OPTIONAL, after WITH, `size(r)`, `length(p)`, shortest
+        and all shortest paths with conditions); legacy errors or answers
+        wrong on 20. Not lowered: a path read as a value (S8d2c).
+      - Neo4j oracle, 20 schemas: unchanged; the corpus lowers 1420.
+      - Mutation check: 6 rules broken in turn, all caught (keys of the
+        `|`-joined parts, NULL parts relating nodes, ends not tied by key,
+        the first node restricted by label only, a row's ends keyed the
+        other way, a key tie's join moved by `path_first`).
+      - Adversarial review (80+ shapes: labels sharing id tuples, three-part
+        ids, quotes / commas / parentheses / `|` / `:` / unicode in ids,
+        every direction and range, closed walks, beside hops, OPTIONAL,
+        after WITH, UNION, EXISTS, shortest paths, 5k nodes): two findings,
+        fixed: a composite `to` end after a single-id `from` was not
+        NULL-filtered (rows through a NULL part), and two walks in one
+        relation, one by keys, failed (Code 47: a key tie moved before its
+        node). Filed: text keys miss equal values of differently typed
+        columns (#1360, known gap above). A union of definitions of other
+        end arities is still refused (`rel_union_shape`).
 - [x] S9 subquery expressions (§4.12 "Implemented in S9"): `EXISTS`,
   pattern predicates, `exists(pattern)`, `size(pattern)` /
   `size([pattern …])`, pattern comprehensions of values; bound as MATCHes
