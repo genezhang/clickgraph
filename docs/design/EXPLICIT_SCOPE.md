@@ -4113,9 +4113,18 @@ slice that will handle it.
     the rows first in any order (`Unwind::any_row_number`, `row_number()
     OVER ()`), and its rows are ordered by that number and the element's
     position, as after ordered rows. Other UNWINDs are unchanged (no
-    window). Still refused: SKIP / LIMIT or `collect()` relying on the
-    first-seen order of a DISTINCT or an aggregation of ordered rows (no
-    corpus query).
+    window), as are UNWINDs followed by a MATCH (which leaves its rows in
+    no order). `collect()` sorts by the lowering's own numbers directly
+    (`Lowerer::numbers`), with no second numbering. Still refused:
+    SKIP / LIMIT or `collect()` relying on the first-seen order of a
+    DISTINCT or an aggregation of ordered rows (no corpus query); and a
+    plan that reads more than once a CTE whose rows depend on that
+    numbering (`unwind::reject_rereads_of_numbered_rows`: ClickHouse numbers
+    the rows anew on each read, so an OPTIONAL MATCH's or a subquery's
+    drive or a path's seed over rows a LIMIT took, or a `collect()` listed,
+    would disagree with the other read). Those fall back to legacy, as
+    before S11g; the general class (an unordered LIMIT, tied ORDER BY or
+    `collect()` order read twice) is #1395.
     - Acceptance: generated shapes against Neo4j whose answer is the same
       for every order Neo4j may return (each user's list `[10k+1, 10k+2]`:
       a LIMIT's rows are one list's prefix, `collect()` per row keeps list
@@ -4123,6 +4132,20 @@ slice that will handle it.
       lowered shape equal to Neo4j (legacy errors or answers wrongly on
       six). Corpus 1442 lowered (was 1440: the two `collect` / UNWIND /
       LIMIT queries). Scorecard and live suite unchanged.
+    - Adversarial review (validity checker of 26 shapes on 60 / 40k / 3M
+      rows under several thread and block settings; 78 shapes against
+      Neo4j): found that `row_number() OVER ()` re-read through a drive or
+      seed after `WITH … LIMIT` gave silently wrong rows from 40k rows up
+      (OPTIONAL MATCH all NULL in 19 of 20 runs; variable-length and
+      shortestPath counts 0, which legacy answered). Fixed by the refusal
+      above (a unit test fails without it); the checker is valid on all 26
+      shapes on 60 and 3M rows after the fix. Also fixed: MATCH between
+      the UNWIND and the paging no longer numbers the rows, and grouped
+      `collect()` after an UNWIND no longer sorts every row by a second
+      window (60M elements: 2.6 s → 0.5 s; memory 6 → 4.5 GB, the
+      per-element keys, #1397). Not fixed: a list of `UInt64` and `Int64`
+      columns is a `Variant`, so `collect(DISTINCT x)` over it now counts
+      equal integers twice, as `count(DISTINCT x)` already did (#1396).
   - **User decisions (2026-10-11)** on what S11 does not lower: a
     relationship without `edge_id` keeps its ends as its identity (#1356;
     define `edge_id` to tell parallel rows apart); an undeclared property

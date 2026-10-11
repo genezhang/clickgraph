@@ -1030,6 +1030,8 @@ RETURN u.user_id, c
 -- c is [10k+1, 10k+2] for each user k
 ```
 
+Rows in no order are numbered for this in whatever order ClickHouse reads them, which can differ each time it reads them. A query that would read such rows twice after a `SKIP` / `LIMIT` or `collect()` over them (for example `WITH u, x LIMIT 9 OPTIONAL MATCH (u)-->(v)`) is not translated this way; adding an `ORDER BY` before the `SKIP` / `LIMIT` gives it a fixed order.
+
 ### Common Use Cases
 
 **1. Parameter Expansion**

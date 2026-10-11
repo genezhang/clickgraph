@@ -207,24 +207,28 @@ fn lower_over(
     options: &LowerOptions,
 ) -> Result<Lowered, LowerError> {
     let demand = demand(stmt);
+    let unstable = RefCell::new(BTreeSet::new());
     if let BoundOp::Union {
         arms,
         arm_columns,
         all,
     } = &stmt.plan
     {
-        return union::lower(
+        let lowered = union::lower(
             &Query {
                 stmt,
                 schema,
                 options,
                 demand: &demand,
                 as_values: BTreeSet::new(),
+                unstable: &unstable,
             },
             arms,
             arm_columns,
             *all,
-        );
+        )?;
+        unwind::reject_rereads_of_numbered_rows(&lowered.plan, &unstable.borrow())?;
+        return Ok(lowered);
     }
     let mut ctes = Vec::new();
     let arm = Query {
@@ -233,10 +237,12 @@ fn lower_over(
         options,
         demand: &demand,
         as_values: BTreeSet::new(),
+        unstable: &unstable,
     }
     .lower(&stmt.plan, &mut ctes)?;
     let mut plan = arm.plan;
     plan.ctes = CteItems(ctes);
+    unwind::reject_rereads_of_numbered_rows(&plan, &unstable.borrow())?;
     Ok(Lowered {
         plan,
         shape: arm.shape,
@@ -253,6 +259,9 @@ struct Query<'a> {
     /// label or a relationship of one definition (UNION columns whose arms
     /// hold different ones, `union.rs`).
     as_values: BTreeSet<String>,
+    /// The CTEs, by name, whose rows depend on how rows in no order were
+    /// numbered ([`Lowerer::unstable`]), of every query lowered.
+    unstable: &'a RefCell<BTreeSet<String>>,
 }
 
 /// A lowered query ending in RETURN ([`Query::lower`]).
@@ -301,12 +310,19 @@ impl Query<'_> {
             projected: projected_items(&self.stmt.plan),
             as_values: self.as_values.clone(),
             ordered_unwinds: ordered_unwinds(&self.stmt.plan),
+            numbers: HashSet::new(),
+            unordered_numbers: HashSet::new(),
+            unstable: BTreeSet::new(),
+            collect_by_any: false,
         };
         let lowered = l
             .relation(input)
             .map(|()| l.finish_relation())
             .and_then(|()| l.project(projection));
         *ctes = std::mem::take(&mut l.ctes);
+        self.unstable
+            .borrow_mut()
+            .extend(std::mem::take(&mut l.unstable));
         let (plan, shape) = lowered?;
         Ok(LoweredQuery {
             plan,
@@ -607,6 +623,21 @@ struct Lowerer<'s> {
     /// The UNWINDs (by variable) whose elements a later clause takes in
     /// order ([`ordered_unwinds`]).
     ordered_unwinds: HashSet<VarId>,
+    /// Sort-key columns (as SQL) that are numbers the lowering made: a
+    /// row's number, an element's position. Never NULL; sorted ascending,
+    /// they need no numbering of their own for `collect()`
+    /// ([`Lowerer::order_collect`]).
+    numbers: HashSet<String>,
+    /// Those of [`Lowerer::numbers`] that number rows in no order
+    /// (`Unwind::any_row_number`), or derive from such a number: ClickHouse
+    /// numbers the rows anew each time it evaluates the CTE.
+    unordered_numbers: HashSet<String>,
+    /// The CTEs, by name, whose rows depend on such a number: a SKIP /
+    /// LIMIT by it, a `collect()` in its order. Read more than once, their
+    /// reads can disagree (`unwind::reject_rereads_of_numbered_rows`).
+    unstable: BTreeSet<String>,
+    /// The projection being lowered collects in the order of such a number.
+    collect_by_any: bool,
 }
 
 /// The elements of a path variable, in path order.
@@ -5585,11 +5616,29 @@ impl<'s> Lowerer<'s> {
     /// (`collect_order`).
     fn order_collect(&mut self, p: &Projection) -> Result<(), LowerError> {
         self.collect_order = None;
+        self.collect_by_any = false;
         if !p.aggregates() || !p.items.iter().any(|i| calls_aggregate(&i.expr, "collect")) {
             return Ok(());
         }
+        if let RowOrder::Keys(keys) = &self.order {
+            self.collect_by_any = keys.iter().any(|k| self.is_unordered_number(k));
+        }
         match &self.order {
             RowOrder::Unordered => Ok(()),
+            // Keys that are the lowering's own numbers, ascending: the
+            // values in the order of the keys themselves.
+            RowOrder::Keys(keys) if keys.iter().all(|k| self.is_number(k)) => {
+                self.collect_order = match keys.as_slice() {
+                    [one] => Some(one.expression.clone()),
+                    _ => Some(RenderExpr::ScalarFnCall(
+                        crate::render_plan::render_expr::ScalarFnCall {
+                            name: current_function_mapper().tuple_constructor().to_string(),
+                            args: keys.iter().map(|k| k.expression.clone()).collect(),
+                        },
+                    )),
+                };
+                Ok(())
+            }
             RowOrder::Keys(_) => {
                 self.number_rows()?;
                 let RowOrder::Keys(keys) = &self.order else {
@@ -5602,14 +5651,32 @@ impl<'s> Lowerer<'s> {
         }
     }
 
+    /// `k` sorts ascending by a number the lowering made ([`Lowerer::numbers`]).
+    pub(super) fn is_number(&self, k: &OrderByItem) -> bool {
+        matches!(k.order, OrderByOrder::Asc)
+            && self
+                .numbers
+                .contains(&render_expr_to_sql_plain(&k.expression))
+    }
+
+    /// `k` sorts by a number of rows in no order ([`Lowerer::unordered_numbers`]).
+    pub(super) fn is_unordered_number(&self, k: &OrderByItem) -> bool {
+        self.unordered_numbers
+            .contains(&render_expr_to_sql_plain(&k.expression))
+    }
+
     /// A WITH: the rows so far become a CTE whose columns are the WITH's
     /// output scope, and a new segment reads from it.
     fn with(&mut self, p: &Projection) -> Result<(), LowerError> {
         self.order_collect(p)?;
+        let collects_by_any = self.collect_by_any;
         // After the rows are numbered for `collect` (a CTE).
         self.projection_subqueries(p)?;
         let alias = self.next_cte_alias();
         let (body, exports, _) = self.projection_body(p, Some(&alias))?;
+        if collects_by_any {
+            self.unstable.insert(format!("with_{alias}"));
+        }
         self.close_segment(body, exports, alias)
     }
 
@@ -5702,10 +5769,21 @@ impl<'s> Lowerer<'s> {
     ) -> Result<(), LowerError> {
         // The rows' order travels as exported sort-key columns; the CTE body
         // itself needs an ORDER BY only for its SKIP / LIMIT.
+        let paged = body.skip.is_some() || body.limit.is_some();
+        if paged && body.order_by.iter().any(|k| self.is_unordered_number(k)) {
+            self.unstable.insert(format!("with_{alias}"));
+        }
         let mut keys = Vec::new();
         for (i, k) in body.order_by.iter().enumerate() {
             let name = format!("__o{i}");
             body.select.push(select(k.expression.clone(), &name));
+            let column = render_expr_to_sql_plain(&col_at(&alias, &name));
+            if self.is_unordered_number(k) {
+                self.unordered_numbers.insert(column.clone());
+            }
+            if self.is_number(k) {
+                self.numbers.insert(column);
+            }
             keys.push(OrderByItem {
                 expression: col_at(&alias, &name),
                 order: k.order.clone(),
@@ -6564,9 +6642,9 @@ fn ordered_unwinds(op: &BoundOp) -> HashSet<VarId> {
             }
             BoundOp::Sort { input, .. } => walk(input, false, out),
             BoundOp::Skip { input, .. } | BoundOp::Limit { input, .. } => walk(input, true, out),
-            BoundOp::Match { input, .. } | BoundOp::Filter { input, .. } => {
-                walk(input, relied, out)
-            }
+            // A MATCH leaves its rows in no order (`Lowerer::relation`).
+            BoundOp::Match { input, .. } => walk(input, false, out),
+            BoundOp::Filter { input, .. } => walk(input, relied, out),
             BoundOp::Union { arms, .. } => arms.iter().for_each(|a| walk(a, false, out)),
         }
     }
