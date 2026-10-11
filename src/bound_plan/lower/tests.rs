@@ -4794,3 +4794,125 @@ fn databricks_comprehension_is_not_lowered() {
         "{got:?}"
     );
 }
+
+/// S8d: the schema of the composite-id walks: accounts by `(bank, num)`.
+fn composite_walk_schema() -> GraphSchema {
+    GraphSchemaConfig::from_yaml_str(
+        r#"
+name: composite_walk
+graph_schema:
+  nodes:
+    - { label: Acct, database: db, table: acct, node_id: [bank, num], property_mappings: { bank: bank, num: num, owner: owner } }
+  edges:
+    - { type: SENT, database: db, table: sent, from_node: Acct, to_node: Acct, from_id: [fb, fnum], to_id: [tb, tnum], property_mappings: {} }
+    - { type: PAID, database: db, table: paid, from_node: Acct, to_node: Acct, from_id: [fb, fnum], to_id: [tb, tnum], edge_id: tid, property_mappings: {} }
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap()
+}
+
+/// S8d: a walk between composite ids joins each step and ties its ends by
+/// the ids' columns (their texts in `start_id` / `end_id` two ids share:
+/// `('B|1', '2')`, `('B', '1|2')`), restricts its first node by the tuple of
+/// them, and a hop beside it is unique against it by its stored ends.
+#[test]
+fn a_walk_between_composite_ids_goes_by_their_columns() {
+    let got = translate_bound_plan(
+        "MATCH (a:Acct)-[:SENT]->(b:Acct)-[:SENT*1..2]->(c:Acct) \
+         WHERE b.owner = 'x' RETURN a.owner, c.owner",
+        &composite_walk_schema(),
+        &ReadOptions::default(),
+    )
+    .unwrap()
+    .sql;
+    for part in [
+        "JOIN db.sent AS rel ON vp.end_bank = rel.fb AND vp.end_num = rel.fnum",
+        "(start_node.bank, start_node.num) IN (SELECT DISTINCT",
+        "v3.start_bank = v2.bank AND v3.start_num = v2.num",
+        "v3.end_bank = v4.bank AND v3.end_num = v4.num",
+        "NOT has(v3.path_edges, tuple(v1.fb, v1.fnum, v1.tb, v1.tnum))",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    // (`start_id` / `end_id` / `path_nodes` keep the texts; nothing joins
+    // or ties by them.)
+    assert!(
+        !got.contains("vp.end_id = concat("),
+        "a step by the text:\n{got}"
+    );
+}
+
+/// S8d: not yet lowered between composite ids: a shortest path's search, a
+/// walk of several definitions, and a path read as a value.
+#[test]
+fn composite_searches_unions_and_values_are_not_lowered() {
+    for (q, why) in [
+        (
+            "MATCH (a:Acct {owner: 'x'}), (b:Acct {owner: 'v'}) \
+             MATCH p = shortestPath((a)-[:SENT*]->(b)) RETURN length(p)",
+            "a shortestPath between composite ids (S8)",
+        ),
+        (
+            "MATCH (a:Acct)-[:SENT|PAID*1..2]-(b) RETURN count(*)",
+            "a variable-length relationship between composite ids (S8)",
+        ),
+        (
+            "MATCH p = (a:Acct)-[:SENT*0..1]->(b:Acct) RETURN p",
+            "a composite node id in a value (S8)",
+        ),
+    ] {
+        let err =
+            translate_bound_plan(q, &composite_walk_schema(), &ReadOptions::default()).unwrap_err();
+        assert!(err.contains(why), "{q}: {err}");
+    }
+}
+
+/// S8d review: refused, not answered wrong or with a ClickHouse error: a
+/// walk between composite ids one of whose columns is named `id` (the walk's
+/// `start_id`), and a relationship whose end has fewer columns than its
+/// node's id (a hop or walk tied part of the id).
+#[test]
+fn composite_ids_the_walk_cannot_carry_are_refused() {
+    let named_id = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: named_id
+graph_schema:
+  nodes:
+    - { label: N, database: db, table: n, node_id: [id, region], property_mappings: { id: id, region: region } }
+  edges:
+    - { type: R, database: db, table: r, from_node: N, to_node: N, from_id: [fid, freg], to_id: [tid, treg], property_mappings: {} }
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let err = translate_bound_plan(
+        "MATCH (a:N)-[:R*1..2]->(b:N) RETURN count(*)",
+        &named_id,
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(err.contains("with a column `id`"), "{err}");
+    let fewer = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: fewer
+graph_schema:
+  nodes:
+    - { label: Acct, database: db, table: acct, node_id: [bank, num], property_mappings: { bank: bank, num: num } }
+  edges:
+    - { type: SENT, database: db, table: sent, from_node: Acct, to_node: Acct, from_id: fb, to_id: [tb, tnum], property_mappings: {} }
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    for q in [
+        "MATCH (a:Acct)-[:SENT]->(b:Acct) RETURN count(*)",
+        "MATCH (a:Acct)-[:SENT*1..2]->(b:Acct) RETURN count(*)",
+    ] {
+        let err = translate_bound_plan(q, &fewer, &ReadOptions::default()).unwrap_err();
+        assert!(err.contains("another number of columns"), "{q}: {err}");
+    }
+}

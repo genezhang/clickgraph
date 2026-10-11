@@ -1989,6 +1989,7 @@ impl VariableLengthCteStrategy {
         // call (`bound_plan::lower::path`), emitted by the standard arms.
         generator.path_values = context.path_values.clone();
         generator.walk_relation = context.walk_relation.clone();
+        generator.composite_by_columns = context.composite_by_columns;
 
         // #1103: every flag that selects a generator shape is now set, so ask
         // whether this shape routes AROUND the wrapper that applies a

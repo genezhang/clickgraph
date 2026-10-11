@@ -76,6 +76,12 @@ pub struct CteGenerationContext {
     /// the walked columns named in the pattern context). `None` for the
     /// legacy pipeline.
     pub walk_relation: Option<String>,
+    /// The bound plan's walks between composite ids: each step joins the
+    /// relationship to the path's last node column by column (the path's
+    /// `end_<col>` components), not by the ids' pipe-joined texts, which two
+    /// ids can share (`('B|1', '2')`, `('B', '1|2')`). `false` for the legacy
+    /// pipeline.
+    pub composite_by_columns: bool,
     /// Root plan reference for checking path variable usage across the entire query.
     /// Set at the top-level to_render_plan call so VLP extraction can check if path
     /// variables are used bare (preventing BFS optimization).

@@ -20,8 +20,10 @@
 //! The generator's side channels are not used: the FROM alias it reports (the
 //! query-wide `vlp_from_alias()`) is replaced by the caller's alias for the
 //! relation; `outer_where_filters` (set by the denormalized strategy only) is
-//! refused; composite endpoint components (registered by the legacy caller)
-//! do not arise, as a composite identity is refused.
+//! refused. A composite identity (S8d) is in `start_id` / `end_id` as a text,
+//! which two ids can share; the walk carries its columns too
+//! (`start_<col>` / `end_<col>`), which each step joins by
+//! (`CteGenerationContext::composite_by_columns`) and the caller ties to.
 //!
 //! The walk is a trail: no relationship twice (the generator's
 //! `NOT has(path_edges, …)`), as Cypher's relationship uniqueness requires.
@@ -169,8 +171,8 @@ pub(super) struct PathCte {
 /// The schema context of `call`'s edge and nodes, walked from `from_id` to
 /// `to_id` (exchanged when [`PathCall::backward`]; over [`PathCall::both`],
 /// from the node a row leaves to the node it enters): the standard layout
-/// (the nodes and the edge each in their own table, single-column
-/// identities), or `Unsupported`.
+/// (the nodes and the edge each in their own table; a composite identity
+/// walked by its columns, S8d), or `Unsupported`.
 fn standard_layout(
     schema: &GraphSchema,
     call: &PathCall<'_>,
@@ -206,21 +208,15 @@ fn standard_layout(
     // `rel.to_id`.
     if let EdgeAccessStrategy::SeparateTable { from_id, to_id, .. } = &mut ctx.edge {
         if call.both.is_some() {
-            *from_id = super::indexed_column(super::BOTH_START, 0);
-            *to_id = super::indexed_column(super::BOTH_END, 0);
+            // One column per identity column (a composite id's, S8d).
+            let arity = call.edge.from_id.columns().len();
+            *from_id = super::indexed_columns(super::BOTH_START, arity).join(", ");
+            *to_id = super::indexed_columns(super::BOTH_END, arity).join(", ");
         } else if call.backward {
             std::mem::swap(from_id, to_id);
         }
     }
-    let own_table = |n: &NodeAccessStrategy| {
-        matches!(
-            n,
-            NodeAccessStrategy::OwnTable {
-                id_column: Identifier::Single(_),
-                ..
-            }
-        )
-    };
+    let own_table = |n: &NodeAccessStrategy| matches!(n, NodeAccessStrategy::OwnTable { .. });
     if !own_table(&ctx.left_node)
         || !own_table(&ctx.right_node)
         || !matches!(ctx.edge, EdgeAccessStrategy::SeparateTable { .. })
@@ -244,6 +240,14 @@ fn conjunction(cs: &[RenderExpr]) -> Option<String> {
 /// Build the relation of paths of `call` (the standard layout: the nodes and
 /// the edge each in their own table, single-column identities).
 pub(super) fn path_cte(schema: &GraphSchema, call: PathCall<'_>) -> Result<PathCte, LowerError> {
+    // A composite id's columns are carried as `start_<col>` / `end_<col>`:
+    // one named `id` is the generator's `start_id` (S8d review).
+    let id = call.node.id_physical_columns();
+    if id.len() > 1 && id.iter().any(|c| c == "id") {
+        return unsupported(
+            "a variable-length relationship between composite ids with a column `id`",
+        );
+    }
     let start_alias = call.var.to_string();
     let end_alias = "path".to_string();
     let ctx = standard_layout(schema, &call)?;
@@ -259,6 +263,9 @@ pub(super) fn path_cte(schema: &GraphSchema, call: PathCall<'_>) -> Result<PathC
         .with_node_labels(Some(call.label.to_string()), Some(call.label.to_string()));
     context.needs_path_relationships = false;
     context.walk_relation = call.both.map(str::to_string);
+    // A composite identity: each step joins the path's last node by its
+    // columns, not by the ids' texts (S8d).
+    context.composite_by_columns = true;
     let (node_tuple, rel_tuple) = call.tuples()?;
     context.path_values.node_tuple = node_tuple.map(|t| (t.one, t.other.unwrap_or_default()));
     context.path_values.rel_tuple = rel_tuple.map(|t| (t.one, t.empty));
@@ -399,7 +406,7 @@ impl PathCall<'_> {
             },
         ) = (&ctx.left_node, &ctx.edge)
         else {
-            return unsupported("internal: the standard layout without its tables");
+            return unsupported("a shortestPath between composite ids (S8)");
         };
         let g = current_function_mapper().graph_values();
         let values = |wanted: bool| -> Result<_, LowerError> {
@@ -440,10 +447,9 @@ impl PathCall<'_> {
             start: self.start.clone(),
             end: self.end.clone(),
             rel: self.rel.clone(),
-            edge_text: match (&g, edge_identity_sql(self.edge, REL)) {
-                (Some(g), Some(identity)) => Some((g.to_text)(&identity)),
-                _ => None,
-            },
+            edge_text: g
+                .as_ref()
+                .map(|g| (g.to_text)(&edge_identity_sql(self.edge, REL))),
             node_value,
             rel_value,
         })
@@ -1006,19 +1012,19 @@ pub(super) fn pick_cte(
 
 /// One relationship's identity as the generator spells a `path_edges`
 /// element: the schema's `edge_id` (a column, or a tuple of columns), else
-/// the tuple of its stored endpoints (#887).
-pub(super) fn edge_identity_sql(edge: &RelationshipSchema, alias: &str) -> Option<String> {
-    let (Identifier::Single(from), Identifier::Single(to)) = (&edge.from_id, &edge.to_id) else {
-        return None;
-    };
-    Some(spell_edge_identity(
+/// the tuple of its stored endpoints' columns (#887; a composite end's each,
+/// S8d).
+pub(super) fn edge_identity_sql(edge: &RelationshipSchema, alias: &str) -> String {
+    // The identity is always given (`edge_identity`): the endpoints, which
+    // spell it only without one, are not read.
+    spell_edge_identity(
         current_function_mapper().tuple_constructor(),
         &Some(edge_identity(edge)),
         alias,
-        from,
-        to,
+        "",
+        "",
         |c| c,
-    ))
+    )
 }
 
 /// The columns identifying one relationship: its `edge_id`, else its stored
