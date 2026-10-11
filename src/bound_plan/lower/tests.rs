@@ -5288,3 +5288,37 @@ fn lists_of_lists_of_nodes_and_relationships() {
         "collect() of lists of nodes or relationships",
     );
 }
+
+/// `label(n)`: a node's one label as a string (a ClickGraph function, as the
+/// legacy pipeline reads it); `id()` of an element that matches nothing is
+/// NULL in a query with no rows (P-4c S11d).
+#[test]
+fn the_label_of_a_node_and_ids_of_what_matches_nothing() {
+    has(
+        "MATCH (u:User)-[:FOLLOWS]->(x:User) RETURN label(x) AS l",
+        &["'User' AS \"l\""],
+    );
+    has(
+        "MATCH (n) RETURN DISTINCT label(n) AS l",
+        &["__cg_label AS \"l\""],
+    );
+    has(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) RETURN label(b) AS l",
+        &["CASE WHEN o1.v2__user_id IS NULL THEN NULL ELSE 'User' END AS \"l\""],
+    );
+    sql("MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b) AS bs RETURN [x IN bs | label(x)] AS l");
+    has(
+        "MATCH (a:Post)-[r:AUTHORED]->(b:User) RETURN type(r), id(a), labels(a) LIMIT 5",
+        &["NULL AS \"id(a)\"", "WHERE false"],
+    );
+    // The value type of what an OPTIONAL MATCH of the impossible left NULL.
+    has(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:AUTHORED]->(p:User) RETURN valueType(p) AS t",
+        &["'NULL' AS \"t\""],
+    );
+    // label() of a relationship: neither pipeline reads it.
+    not_lowered(
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN label(r) AS l",
+        "label() of a node or relationship",
+    );
+}
