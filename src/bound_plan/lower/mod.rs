@@ -219,6 +219,7 @@ fn lower_over(
                 schema,
                 options,
                 demand: &demand,
+                as_values: BTreeSet::new(),
             },
             arms,
             arm_columns,
@@ -231,6 +232,7 @@ fn lower_over(
         schema,
         options,
         demand: &demand,
+        as_values: BTreeSet::new(),
     }
     .lower(&stmt.plan, &mut ctes)?;
     let mut plan = arm.plan;
@@ -247,6 +249,10 @@ struct Query<'a> {
     schema: &'a GraphSchema,
     options: &'a LowerOptions,
     demand: &'a HashMap<VarId, BTreeSet<String>>,
+    /// The RETURN items returned as values even when they are a node of one
+    /// label or a relationship of one definition (UNION columns whose arms
+    /// hold different ones, `union.rs`).
+    as_values: BTreeSet<String>,
 }
 
 /// A lowered query ending in RETURN ([`Query::lower`]).
@@ -293,6 +299,7 @@ impl Query<'_> {
             identities: Vec::new(),
             subqueries: &self.stmt.subqueries,
             projected: projected_items(&self.stmt.plan),
+            as_values: self.as_values.clone(),
         };
         let lowered = l
             .relation(input)
@@ -594,6 +601,8 @@ struct Lowerer<'s> {
     subqueries: &'s [Subquery],
     /// The expression each WITH / RETURN item was projected from.
     projected: HashMap<VarId, &'s LogicalExpr>,
+    /// RETURN items returned as values ([`Query::as_values`]).
+    as_values: BTreeSet<String>,
 }
 
 /// The elements of a path variable, in path order.
@@ -5094,6 +5103,11 @@ impl<'s> Lowerer<'s> {
                         );
                     }
                     let name = it.name.strip_suffix(".*").unwrap_or(&it.name);
+                    if self.as_values.contains(name) {
+                        return unsupported(
+                            "`v.*` in a UNION column of different labels or definitions",
+                        );
+                    }
                     shape.push(self.return_element(src, name, aggregating, &mut body)?);
                     continue;
                 }
@@ -5248,6 +5262,9 @@ impl<'s> Lowerer<'s> {
         // Its label / type differs by row: returned as a value, grouped by
         // its identity and its properties (which an ORDER BY can read; they
         // are the identity's).
+        // A UNION ALL column holding another label or definition in another
+        // arm (`Query::as_values`): a value too.
+        let as_value = self.as_values.contains(name);
         let union = match self.scans.get(&src) {
             Some(Scan::Labels { arms, of, .. }) => {
                 Some((self.labeled_node(src)?, self.label_union_props(*of, arms)))
@@ -5255,6 +5272,14 @@ impl<'s> Lowerer<'s> {
             Some(Scan::Rels { arms, of, .. }) => {
                 Some((self.labeled_rel(src)?, self.rel_union_props(*of, arms)))
             }
+            Some(Scan::Node { .. }) if as_value => Some((
+                self.labeled_node(src)?,
+                self.all_property_names(src).into_iter().collect(),
+            )),
+            Some(Scan::Rel { .. }) if as_value => Some((
+                self.labeled_rel(src)?,
+                self.all_property_names(src).into_iter().collect(),
+            )),
             _ => None,
         };
         if let Some((v, props)) = union {
