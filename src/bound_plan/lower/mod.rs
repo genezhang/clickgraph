@@ -2711,7 +2711,13 @@ impl<'s> Lowerer<'s> {
                 (min, max),
             )
         };
-        if let Scan::Path { .. } = &scan {
+        // A walk of one definition between composite ids walks them by their
+        // columns (S8d); a union's walks keys nodes by one id column.
+        if let Scan::Path {
+            walked: Walked::Union { .. },
+            ..
+        } = &scan
+        {
             for end in [from, to] {
                 if self.id_columns(end)?.is_some_and(|ids| ids.len() != 1) {
                     return unsupported(
@@ -2996,15 +3002,24 @@ impl<'s> Lowerer<'s> {
                 rel_tuples,
             },
         );
-        for (end, column) in [(first, "start_id"), (last, "end_id")] {
+        // A composite id is tied by its columns (`start_<col>` /
+        // `end_<col>`, S8d): its text in `start_id` / `end_id` two ids can
+        // share.
+        let id_columns = node.id_physical_columns();
+        for (end, column, side) in [(first, "start_id", "start"), (last, "end_id", "end")] {
             let Some(ids) = self.identity(end)? else {
                 continue; // an endpoint that matches nothing
             };
-            self.tie(
-                r.var,
-                end,
-                vec![(col_at(&r.var.name(), column), ids[0].clone())],
-            );
+            let eqs = match (ids.as_slice(), id_columns.as_slice()) {
+                ([id], [_]) => vec![(col_at(&r.var.name(), column), id.clone())],
+                (ids, cols) if ids.len() == cols.len() => cols
+                    .iter()
+                    .zip(ids)
+                    .map(|(c, id)| (col_at(&r.var.name(), &format!("{side}_{c}")), id.clone()))
+                    .collect(),
+                _ => return unsupported("internal: a path's end of another arity than its id"),
+            };
+            self.tie(r.var, end, eqs);
         }
         Ok(())
     }
@@ -3537,14 +3552,32 @@ impl<'s> Lowerer<'s> {
             let Some(id) = self.identity(v)? else {
                 return Ok(None);
             };
+            let id_column = schema.id_physical_columns();
+            if id.len() != id_column.len() {
+                return unsupported("internal: a node's identity of another arity than its id");
+            }
             rows.select = SelectItems {
-                items: vec![select(id[0].clone(), "id")],
+                items: id
+                    .iter()
+                    .enumerate()
+                    .map(|(k, c)| match id.len() {
+                        1 => select(c.clone(), "id"),
+                        _ => select(c.clone(), &format!("id_{k}")),
+                    })
+                    .collect(),
                 distinct: true,
             };
-            let id_column = schema.id_physical_columns();
+            // A composite id (S8d): its columns as a tuple.
+            let columns: Vec<String> = id_column
+                .iter()
+                .map(|c| render_expr_to_sql_plain(&col_at(alias, c)))
+                .collect();
+            let held = match columns.as_slice() {
+                [one] => one.clone(),
+                _ => format!("({})", columns.join(", ")),
+            };
             conds.push(RenderExpr::Raw(format!(
-                "{} IN ({})",
-                render_expr_to_sql_plain(&col_at(alias, &id_column[0])),
+                "{held} IN ({})",
                 crate::sql_generator::emitters::clickhouse::to_sql_query::render_plan_to_sql_plain(
                     rows
                 )
@@ -4325,9 +4358,7 @@ impl<'s> Lowerer<'s> {
                                  relationship of the same table in one MATCH",
                             );
                         };
-                        let Some(identity) = path::edge_identity_sql(schema, edge) else {
-                            return unsupported("a composite relationship endpoint (S8)");
-                        };
+                        let identity = path::edge_identity_sql(schema, edge);
                         path::path_avoids_edge(p.alias(), &identity)
                     }
                     (Scan::Path { at: x, .. }, Scan::Path { at: y, .. }) => {
@@ -4369,8 +4400,7 @@ impl<'s> Lowerer<'s> {
             // path's `path_edges` spell it, is not on the path.
             let arity = match &ps.edge_id {
                 Some(id) => id.columns().len(),
-                None if ps.from_id.columns().len() == 1 && ps.to_id.columns().len() == 1 => 2,
-                None => return unsupported("a composite relationship endpoint (S8)"),
+                None => ps.from_id.columns().len() + ps.to_id.columns().len(),
             };
             let ids = indexed_columns(REL_ID, arity)
                 .iter()

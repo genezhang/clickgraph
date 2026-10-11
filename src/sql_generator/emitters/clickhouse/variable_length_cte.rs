@@ -609,6 +609,9 @@ pub struct VariableLengthCteGenerator<'a> {
     /// The relation the standard arms walk in place of the edge table
     /// (`CteGenerationContext::walk_relation`); set post-construction.
     pub walk_relation: Option<String>,
+    /// Join a step to the path's last node by its id's columns
+    /// (`CteGenerationContext::composite_by_columns`); set post-construction.
+    pub composite_by_columns: bool,
 }
 
 /// Configuration for weighted shortest path using a pre-computed edge weight CTE
@@ -838,6 +841,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             path_node_properties: Vec::new(),
             path_values: PathValues::default(),
             walk_relation: None,
+            composite_by_columns: false,
         }
     }
 
@@ -921,6 +925,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             path_node_properties: Vec::new(),
             path_values: PathValues::default(),
             walk_relation: None,
+            composite_by_columns: false,
         }
     }
 
@@ -3532,8 +3537,34 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Generate JOIN ON clauses with composite ID support
         // For VLP recursion, the CTE's end_id is a pipe-joined string.
         // For composite relationship from_id, we need to convert to pipe-joined format for comparison.
-        let join_on_rel = match &rel_from_identifier {
-            Identifier::Single(col) => {
+        // The bound plan's walks: the path's last node by its id's columns
+        // (`end_<col>`), paired with the relationship's in order.
+        let by_columns = match (&rel_from_identifier, &end_id_identifier) {
+            (Identifier::Composite(cols), Identifier::Composite(ends))
+                if self.composite_by_columns && ends.len() == cols.len() =>
+            {
+                Some(
+                    ends.iter()
+                        .zip(cols)
+                        .map(|(e, c)| {
+                            format!(
+                                "vp.{} = {}.{}",
+                                crate::clickhouse_query_generator::quote_identifier(&format!(
+                                    "end_{e}"
+                                )),
+                                &self.relationship_alias,
+                                crate::clickhouse_query_generator::quote_identifier(c)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" AND "),
+                )
+            }
+            _ => None,
+        };
+        let join_on_rel = match (by_columns, &rel_from_identifier) {
+            (Some(join), _) => join,
+            (None, Identifier::Single(col)) => {
                 // Single column: direct comparison
                 format!(
                     "vp.end_id = {}.{}",
@@ -3541,7 +3572,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     crate::clickhouse_query_generator::quote_identifier(col)
                 )
             }
-            Identifier::Composite(cols) => {
+            (None, Identifier::Composite(cols)) => {
                 // Composite: convert relationship columns to pipe-joined string
                 let concat_parts: Vec<String> = cols
                     .iter()

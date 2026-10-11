@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; S7e3 #1347; S8a #1349 FK edges; S8b #1350 embedded nodes; S8c #1351 polymorphic edges / label-column nodes; next: S8d composite ids (reading a map's value needs typed per-key values: a later list slice))
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; S7e3 #1347; S8a #1349 FK edges; S8b #1350 embedded nodes; S8c #1351 polymorphic edges / label-column nodes; S8d1 #PR composite-id walks; next: S8d2 composite searches / union walks / values (reading a map's value needs typed per-key values: a later list slice))
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -739,6 +739,11 @@ standing nightly-triage duty), 1× P-1 standing, 1–2× P-2/P-3 (then P-4
 after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
+
+- 2026-10-11: **P-4c S8d1: walks between composite ids** (#PR, `src/bound_plan/lower/path.rs` `standard_layout` / `edge_identity_sql`, `CteGenerationContext::composite_by_columns`, behind `CLICKGRAPH_BOUND_PLAN=on`).
+  - A walk of one definition between composite ids joins each step, ties its ends and restricts its first node by the ids' columns, never by the generator's pipe-joined text (two ids can share it: `('B|1','2')`, `('B','1|2')`; legacy's walks conflate them). Composite relationships are identified by `edge_id` or their stored ends' columns (hop-vs-walk uniqueness; shortest paths over a composite `edge_id`).
+  - Oracle: composite_id 12 → 15, the rest unchanged; corpus lowers 1398 (was 1380); sweeps on two scratch graphs: 30 lowered shapes equal Neo4j (legacy wrong / erroring on 22); mutation check 4 of 5 by the sweep (the fifth a pushdown, pinned by a unit test); live suite unchanged.
+  - Next (S8d2): shortest paths and union walks between composite ids, composite ids in values and lists.
 
 - 2026-10-11: **P-4c S8c: polymorphic edges and label-column node tables** (#1351, `graph_catalog` `GraphSchema::with_discriminators_as_filters`, `bound_plan/labels.rs` `Feasibility`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - A polymorphic edge is, in the lowering's view, a definition per type and pair of end labels whose rows are those its type / label columns name (a `filter:`); labels sharing a table through `label_column` are its rows of their value. `$any` ends are every label or the closed `*_label_values` (label inference alike). A polymorphic edge on a node table is read as written (not #632). A walk of one definition over a filtered / parameterized / FINAL table is the walk of definitions (S7b3a) instead of refused.

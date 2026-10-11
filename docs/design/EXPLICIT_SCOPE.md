@@ -1333,6 +1333,32 @@ types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
   that mixing them is unsupported). Label inference reads every definition
   by its key, so the polymorphic table's other pairs are lowered.
 
+**Implemented in S8d1** (walks between composite ids):
+- **By the ids' columns.** The generator spells a composite id as the text
+  of its columns joined by `|` (`start_id`, `end_id`, `path_nodes`), which
+  two ids can share (`('B|1', '2')` and `('B', '1|2')` are both `B|1|2`).
+  The lowering's walks never join or tie by it: each step joins the
+  relationship to the path's last node by the id's columns (the walk
+  carries `end_<col>`; `CteGenerationContext::composite_by_columns`, set
+  by the lowering only, so legacy's SQL is unchanged), the walk's ends are
+  tied by `start_<col>` / `end_<col>`, and its first node is restricted by
+  the tuple of its columns (`(bank, num) IN (SELECT …)`).
+- **Relationships by their identity.** A relationship whose ends are
+  composite is identified, as the generator spells a `path_edges` element,
+  by its `edge_id` or the tuple of its stored ends' columns: a hop beside a
+  walk is unique against it (`path::edge_identity_sql`, total now), and a
+  union arm against a walk compares that many `REL_ID` columns. A
+  shortest-path search over single ids with a composite `edge_id` spells
+  its relationships alike (now lowered).
+- An undirected walk reads its table in both directions with a column per
+  identity column (`BOTH_START_k` / `BOTH_END_k`).
+- **Not lowered yet (S8d2):** a shortest path between composite ids (the
+  search identifies a node by one column), a walk of several definitions
+  between them (a union walk keys nodes by one id column), and a composite
+  id in a value or a list (a path's nodes, `DISTINCT p`): their keys must
+  read the ids' columns, not the generator's text (a carried path exports
+  only the text today).
+
 ### 4.7 Label inference
 
 Labels are inferred over the explicit pattern graph of each clause, with
@@ -3331,8 +3357,8 @@ slice that will handle it.
       - Timing: above (§4.6).
 - [ ] S8 layouts, in sub-slices: S8a FK edges (done), S8b denormalized
   nodes (done; a label both embedded and in its own tables later), S8c
-  polymorphic edges and node tables (done), then composite ids (values,
-  lists, walks).
+  polymorphic edges and node tables (done), S8d composite ids: S8d1 walks
+  of one definition (done), S8d2 searches, union walks, values and lists.
   - [x] **S8a: FK edges** (§4.6 "Implemented in S8a"): a relationship whose
     table is one of its ends' node tables is read as a table of
     relationships; a self-referencing one's ends as legacy reads them
@@ -3459,6 +3485,28 @@ slice that will handle it.
         tests now pass; legacy #1244 refusals now answered (3, each equal
         to Neo4j's count); one SQL-text test of legacy's CTE name (its query
         equals Neo4j); a timing test (passes alone).
+  - [x] **S8d1: walks between composite ids** (§4.6 "Implemented in
+    S8d1"): a walk of one definition between composite ids, joined, tied and
+    restricted by the ids' columns; composite relationships' identities.
+    - Acceptance:
+      - Neo4j oracle: composite_id 12 → 15 (three legacy refusals of a hop
+        beside a composite walk now equal Neo4j); 19 other schemas
+        unchanged (1081 verdicts). The corpus lowers 1398 queries (was
+        1380).
+      - Generated shapes against Neo4j on two scratch graphs (composite
+        accounts whose ids share a pipe text, cycles, a self-loop, an
+        `edge_id` type with parallel rows; single ids with a composite
+        `edge_id`): every lowered shape equals Neo4j (30); legacy is wrong
+        or errors on 22 of them (its pipe-text joins conflate the two
+        accounts).
+      - Mutation check: 5 rules broken in turn: 4 caught by the sweep (steps
+        by the texts, ends tied by one column, the hop not unique against
+        the walk, composite walks refused); restricting the first node by
+        one column keeps every answer (a pushdown: the tie still holds), a
+        unit test pins it. A composite path identity by its columns was
+        unreachable (no lowered shape groups by such a path) and is left to
+        S8d2.
+      - Live suite, switch on, vs S8c: unchanged.
 - [ ] S9 subquery expressions
 - [ ] S10 default on
 - [ ] S11 legacy deletion
