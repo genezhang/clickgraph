@@ -5230,3 +5230,25 @@ fn counts_and_lengths_of_paths_and_their_lists() {
         &["CASE WHEN count(*) >= 0 THEN 0 ELSE 0 END AS \"c\""],
     );
 }
+
+/// `count()` / `count(DISTINCT)` of a list of nodes or relationships: its
+/// rows, or its distinct lists by their elements' identities in order
+/// (P-4c S11b, #1375; the legacy fallback miscounted it).
+#[test]
+fn counts_of_lists_of_nodes_and_relationships() {
+    for q in [
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) WITH relationships(p) AS rs \
+         RETURN count(DISTINCT rs) AS c, count(rs) AS d",
+        "MATCH p = (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User) WITH nodes(p) AS ns \
+         RETURN count(DISTINCT ns) AS c",
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b) AS bs \
+         RETURN count(DISTINCT bs) AS c, count(bs) AS d",
+    ] {
+        sql(q);
+    }
+    // Distinct by identity slots, not the whole tuple (properties).
+    has(
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WITH a, collect(b) AS bs RETURN count(DISTINCT bs) AS c",
+        &["count(DISTINCT arrayMap(__cg_t -> tuple(tupleElement(__cg_t, 1)), w1.v4))"],
+    );
+}

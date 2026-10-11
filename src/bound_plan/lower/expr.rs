@@ -1183,6 +1183,39 @@ impl Lowerer<'_> {
             if let Kind::Element(elem) = self.kind(arg) {
                 return self.element_aggregate(&name, arg, &elem, distinct, items);
             }
+            // count() of a list of nodes or relationships (never NULL: a
+            // path an OPTIONAL MATCH may leave NULL carries a value, not
+            // tuples): its rows, or its distinct lists by their elements'
+            // identities in order (P-4c S11b).
+            if let (Kind::List(inner), "count") = (self.kind(arg), name.as_str()) {
+                if let Kind::Element(elem) = *inner {
+                    let list = self.expr(arg, items)?;
+                    let value = if distinct {
+                        let Some(lists) = current_function_mapper().lists() else {
+                            return unsupported("count(DISTINCT) of a list in this SQL dialect");
+                        };
+                        let t = RenderExpr::Raw("__cg_t".to_string());
+                        let identity = RenderExpr::ScalarFnCall(ScalarFnCall {
+                            name: current_function_mapper().tuple_constructor().to_string(),
+                            args: self.elem_identity(&t, &elem)?,
+                        });
+                        RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: lx::Operator::Distinct,
+                            operands: vec![RenderExpr::Raw((lists.map)(
+                                "__cg_t",
+                                &render_expr_to_sql_plain(&identity),
+                                &render_expr_to_sql_plain(&list),
+                            ))],
+                        })
+                    } else {
+                        list
+                    };
+                    return Ok(RenderExpr::AggregateFnCall(AggregateFnCall {
+                        name: f.name.clone(),
+                        args: vec![value],
+                    }));
+                }
+            }
             if self.holds_elements(arg) {
                 return unsupported(format!("{}() of lists of nodes or relationships", f.name));
             }
