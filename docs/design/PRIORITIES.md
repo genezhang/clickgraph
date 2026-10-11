@@ -472,7 +472,7 @@ S2 contract + transition-assert → S3–S5 move readers onto it (#1189, composi
 patching of guessed CTE columns is discouraged while this is open; route new
 fixes through the contract once S2 lands.
 
-### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; S7e3 #1347; S8a #1349 FK edges; S8b #1350 embedded nodes; S8c #1351 polymorphic edges / label-column nodes; S8d1 #1353 composite-id walks; S9 #1357 subquery expressions; S8d2a #1359 composite shortest paths; S8d2b #1361 composite union walks; S8d2c #1363 composite values / lists (S8 done); S10a #1367 default on; S10b #1369 text-only syntax (S10 done); S11a #1374 path list functions; S11b #1376 count() of lists; next: S11 coverage (lists of lists, label() / id(), ordered paging, embedded undeclared props, list-comprehension patterns, Neo4j-refused errors), then legacy deletion (reading a map's value needs typed per-key values: a later list slice))
+### P-4c — Explicit scope: bind names once, lower clause by clause  ◐ (S0 #1313; S0.5 #1315; S1 #1317; S2 #1318; S3 #1319; S4a #1321; S4b #1326; S4c #1327; S5 #1328; S6a #1330; S6b #1332; S6c #1333; S6d #1336; S7a #1337; S7b1 #1338; S7b2 #1339; S7b3a #1340; S7b3b #1341; S7c #1342; S7d #1343; S7e1 #1344; S7e2a #1345; S7e2b #1346; S7e3 #1347; S8a #1349 FK edges; S8b #1350 embedded nodes; S8c #1351 polymorphic edges / label-column nodes; S8d1 #1353 composite-id walks; S9 #1357 subquery expressions; S8d2a #1359 composite shortest paths; S8d2b #1361 composite union walks; S8d2c #1363 composite values / lists (S8 done); S10a #1367 default on; S10b #1369 text-only syntax (S10 done); S11a #1374 path list functions; S11b #1376 count() of lists; S11c #1379 lists of lists; next: S11 coverage (label() / id(), ordered paging, embedded undeclared props, list-comprehension patterns, Neo4j-refused errors), then legacy deletion (reading a map's value needs typed per-key values: a later list slice))
 **Plan: `docs/design/EXPLICIT_SCOPE.md`.** It supersedes the per-shape work
 under P-4b roots B and C and the open P-4 slices.
 
@@ -740,6 +740,8 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
+- 2026-10-11: **P-4c S11c: lists of lists of nodes or relationships** (#1379, `src/bound_plan/lower/elements.rs` `list_value`, `expr.rs` collect of element lists).
+  - `collect()` of never-NULL element lists; nested list values per depth. Retires the last #1375 repro. Every lowered shape equal to Neo4j; corpus / scorecard / live suite unchanged.
 - 2026-10-11: **P-4c S11b: count() of lists of nodes or relationships** (#1376, `src/bound_plan/lower/expr.rs` `aggregate_fn`).
   - `count(l)` counts rows; `count(DISTINCT l)` distinct lists by element identities in order. Retires the legacy fallback's miscount (#1375) except where `collect()` of a list of lists still falls back.
 - 2026-10-11: **P-4c S11a: path list functions** (#1374, `src/bound_plan/lower/value.rs` `count_graph_value`, `graph_size`).
