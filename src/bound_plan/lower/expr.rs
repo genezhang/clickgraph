@@ -985,9 +985,18 @@ impl Lowerer<'_> {
             return self.comprehension(how, x, body, list, items);
         }
         // `size()` of a path's list: from the path's structure (`value.rs`).
-        if let (true, [arg]) = (f.name.eq_ignore_ascii_case("size"), f.args.as_slice()) {
-            if let Some(g) = self.graph_ref(arg) {
-                return self.graph_size(g);
+        // `length()` of a path's nodes / relationships is their size: Neo4j
+        // 4 read it so and the legacy pipeline answers it (Neo4j 5 refuses
+        // it). Of a variable-length relationship's list both refuse it.
+        if let [arg] = f.args.as_slice() {
+            let size = f.name.eq_ignore_ascii_case("size");
+            if size || f.name.eq_ignore_ascii_case("length") {
+                if let Some(g) = self.graph_ref(arg) {
+                    use super::value::GraphRef;
+                    if size || matches!(g, GraphRef::Nodes(_) | GraphRef::Rels(_)) {
+                        return self.graph_size(g);
+                    }
+                }
             }
         }
         if self.path_elem(f).is_some() {
@@ -1116,6 +1125,11 @@ impl Lowerer<'_> {
             [one] => (Some(one), false),
             _ => (None, false),
         };
+        // count(p) / count(DISTINCT p) of a path or a path's list
+        // (`value.rs`).
+        if let (Some(g), "count") = (arg.and_then(|a| self.graph_ref(a)), name.as_str()) {
+            return self.count_graph_value(g, distinct);
+        }
         // count(a) / count(DISTINCT a) count identities.
         if let (Some(v), "count") = (arg.and_then(|a| self.entity(a)), name.as_str()) {
             let id = match self.identity(v)? {
@@ -1353,7 +1367,7 @@ fn elem_presence(id: &[RenderExpr], elem: &Elem) -> Vec<RenderExpr> {
 /// A constant that is still an aggregate: `CASE WHEN count(*) >= 0 THEN c
 /// ELSE c END`. The projection stays an aggregation (one row, or one per
 /// group, also on an empty input) even when every aggregate in it folded.
-fn aggregate_constant(value: RenderExpr) -> RenderExpr {
+pub(super) fn aggregate_constant(value: RenderExpr) -> RenderExpr {
     let count_all = RenderExpr::AggregateFnCall(AggregateFnCall {
         name: "count".to_string(),
         args: vec![RenderExpr::Star],

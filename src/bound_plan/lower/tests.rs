@@ -4546,9 +4546,15 @@ fn what_a_list_of_nodes_does_not_lower_yet() {
         "MATCH (a:User), (b:User) RETURN coalesce(a, b) AS n",
         "coalesce() of nodes or relationships of a list",
     );
-    // `length()` takes a path; Neo4j refuses a list (`size()` counts one).
+    // `length()` of a list other than a path's nodes / relationships (S11a
+    // reads those as their size): Neo4j 5 refuses it, and the legacy
+    // pipeline fails on a variable-length relationship's.
     not_lowered(
         "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) RETURN length(r) AS l",
+        "length() of nodes or relationships of a list",
+    );
+    not_lowered(
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN length(collect(b)) AS l",
         "length() of nodes or relationships of a list",
     );
 }
@@ -5191,5 +5197,29 @@ fn subquery_shapes_not_lowered() {
         "MATCH (a:User), (b:User) MATCH p = shortestPath((a)-[:FOLLOWS*]->(b)) \
          WHERE length(p) > size((a)-[:FOLLOWS]->()) RETURN length(p)",
         "a shortestPath's WHERE conjunct",
+    );
+}
+
+/// `count()` of a path or a path's list, `length()` of a path's nodes /
+/// relationships (their size, as Neo4j 4 read it; the legacy pipeline answers
+/// it) and `size()` of a carried
+/// list an OPTIONAL MATCH may leave NULL (P-4c S11a).
+#[test]
+fn counts_and_lengths_of_paths_and_their_lists() {
+    for q in [
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN a.name, count(p) AS c",
+        "MATCH p = (a:User)-[:FOLLOWS]->(b:User) RETURN count(DISTINCT p) AS c",
+        "MATCH (a:User) OPTIONAL MATCH p = (a)-[:AUTHORED]->(x:Post) RETURN count(p) AS c",
+        "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) RETURN count(r) AS c, count(DISTINCT r) AS d",
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN length(nodes(p)) AS n",
+        "MATCH (a:User) OPTIONAL MATCH p = (a)-[:AUTHORED]->(x:Post) \
+         WITH a, relationships(p) AS rs RETURN a.name, size(rs) AS n",
+    ] {
+        sql(q);
+    }
+    // A path that matches nothing counts 0, in one row.
+    has(
+        "MATCH p = (a:User)-[:NOPE]->(b:User) RETURN count(p) AS c",
+        &["CASE WHEN count(*) >= 0 THEN 0 ELSE 0 END AS \"c\""],
     );
 }

@@ -28,7 +28,8 @@ use crate::graph_catalog::element_id::{
 use crate::graph_catalog::graph_schema::{NodeSchema, RelationshipSchema};
 use crate::query_planner::logical_expr::{self as lx, LogicalExpr};
 use crate::render_plan::render_expr::{
-    Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+    AggregateFnCall, Literal, Operator, OperatorApplication, PropertyAccess, RenderCase,
+    RenderExpr, ScalarFnCall, TableAlias,
 };
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::function_mapper::{current_function_mapper, GraphValues};
@@ -529,14 +530,81 @@ impl<'s> Lowerer<'s> {
             },
             GraphRef::Carried(v) => {
                 let carried = &self.graph_values[&v];
-                if carried.nullable || !matches!(carried.ty, GraphType::List(_)) {
-                    return unsupported("size() of a carried path or an OPTIONAL path's list");
+                if !matches!(carried.ty, GraphType::List(_)) {
+                    return unsupported("size() of a carried path");
                 }
-                let value = sql(&self.values[&v]);
-                Ok(RenderExpr::Raw((spelling()?.length)(&value)))
+                let length = RenderExpr::Raw((spelling()?.length)(&sql(&self.values[&v])));
+                if !carried.nullable {
+                    return Ok(length);
+                }
+                // NULL where the list is: its first key is that condition
+                // (`null_safe`); without keys it is NULL in every row.
+                match carried.keys.first() {
+                    Some(absent) => Ok(RenderExpr::Case(RenderCase {
+                        expr: None,
+                        when_then: vec![(absent.clone(), RenderExpr::Literal(Literal::Null))],
+                        else_expr: Some(Box::new(length)),
+                    })),
+                    None => Ok(RenderExpr::Literal(Literal::Null)),
+                }
             }
             GraphRef::Path(_) => unsupported("size() of a path"),
         }
+    }
+
+    /// `count(g)` / `count(DISTINCT g)`: the rows where the value is not
+    /// NULL, or its distinct values (by its elements' identities, which are
+    /// equal exactly when the values are).
+    pub(super) fn count_graph_value(
+        &self,
+        g: GraphRef,
+        distinct: bool,
+    ) -> Result<RenderExpr, LowerError> {
+        let v = self.graph_value(g)?;
+        if matches!(v.value, RenderExpr::Literal(Literal::Null)) {
+            // It matches nothing: no values to count (still an aggregate:
+            // one row of a global aggregation).
+            return Ok(super::expr::aggregate_constant(RenderExpr::Literal(
+                Literal::Integer(0),
+            )));
+        }
+        // When it can be NULL, the first key is the condition (`null_safe`).
+        let (absent, keys) = match (v.nullable, v.keys.split_first()) {
+            (false, _) => (None, v.keys.clone()),
+            (true, Some((cond, rest))) => (Some(cond.clone()), rest.to_vec()),
+            (true, None) => return unsupported("count() of a value NULL in every row"),
+        };
+        let value = if distinct {
+            if keys.is_empty() {
+                return unsupported("count(DISTINCT) of a value without identities");
+            }
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: current_function_mapper().tuple_constructor().to_string(),
+                args: keys,
+            })
+        } else {
+            RenderExpr::Literal(Literal::Integer(1))
+        };
+        let value = match absent {
+            Some(cond) => RenderExpr::Case(RenderCase {
+                expr: None,
+                when_then: vec![(cond, RenderExpr::Literal(Literal::Null))],
+                else_expr: Some(Box::new(value)),
+            }),
+            None => value,
+        };
+        let arg = if distinct {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::Distinct,
+                operands: vec![value],
+            })
+        } else {
+            value
+        };
+        Ok(RenderExpr::AggregateFnCall(AggregateFnCall {
+            name: "count".to_string(),
+            args: vec![arg],
+        }))
     }
 
     /// The value a [`GraphRef`] names.
