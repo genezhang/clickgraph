@@ -33,14 +33,19 @@ impl Feasibility {
         let all_labels: BTreeSet<String> = schema.all_node_schemas().keys().cloned().collect();
         let all_types: BTreeSet<String> = schema.get_rel_type_index().keys().cloned().collect();
         let mut triples = Vec::new();
-        for t in &all_types {
-            for rel in schema.rel_schemas_for_type(t) {
-                let froms = expand_any(&rel.from_node, &all_labels);
-                let tos = expand_any(&rel.to_node, &all_labels);
-                for f in &froms {
-                    for to in &tos {
-                        triples.push((t.clone(), f.clone(), to.clone()));
-                    }
+        // Every definition by its key (`TYPE::FROM::TO`, or `TYPE` for a
+        // polymorphic one): the type index hides a polymorphic definition of
+        // a type that also has others, which the lowering reads (S8c).
+        for (key, rel) in schema.get_relationships_schemas() {
+            let t = key.split("::").next().unwrap_or(key);
+            if !all_types.contains(t) {
+                continue;
+            }
+            let froms = expand_any(&rel.from_node, rel.from_label_values.as_ref(), &all_labels);
+            let tos = expand_any(&rel.to_node, rel.to_label_values.as_ref(), &all_labels);
+            for f in &froms {
+                for to in &tos {
+                    triples.push((t.to_string(), f.clone(), to.clone()));
                 }
             }
         }
@@ -54,9 +59,16 @@ impl Feasibility {
     }
 }
 
-fn expand_any(label: &str, all: &BTreeSet<String>) -> Vec<String> {
+/// The labels an end written `label` can be: every label for `$any`, or the
+/// ones the schema closes it to (`from_label_values` / `to_label_values`,
+/// as the lowering's definitions read them:
+/// `GraphSchema::with_discriminators_as_filters`).
+fn expand_any(label: &str, values: Option<&Vec<String>>, all: &BTreeSet<String>) -> Vec<String> {
     if label == "$any" || label.is_empty() {
-        all.iter().cloned().collect()
+        all.iter()
+            .filter(|l| values.is_none_or(|vs| vs.contains(l)))
+            .cloned()
+            .collect()
     } else {
         vec![label.to_string()]
     }

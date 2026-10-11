@@ -894,15 +894,49 @@ impl GraphSchema {
         }
     }
 
-    /// P-4c S8a / S8b: the schema the bound-plan lowering reads, or `None`
-    /// when it is this one: FK edges as tables of relationships
-    /// ([`Self::with_fk_edges_as_edge_rows`]) and labels embedded in edge
-    /// tables as node relations ([`Self::with_node_relations`]).
-    pub fn lowering_view(&self) -> Option<GraphSchema> {
-        match self.with_fk_edges_as_edge_rows() {
-            Some(fk) => Some(fk.with_node_relations().unwrap_or(fk)),
-            None => self.with_node_relations(),
+    /// Whether an FK edge's owner (the node whose rows are its rows) is its
+    /// from-node ([`Self::fk_edge_anchor_is_from`]), or `None` when `rel` is
+    /// no FK edge. When both ends are labels of the edge's table (labels
+    /// sharing a table), the owner is the end whose columns hold its node's
+    /// id (`from_id: id, to_id: parent` is the from-node's row).
+    fn fk_edge_owner_is_from(&self, rel: &RelationshipSchema) -> Option<bool> {
+        let anchor = self.fk_edge_anchor_is_from(rel)?;
+        if rel.from_node == rel.to_node {
+            return Some(anchor);
         }
+        let on_table = |label: &str| {
+            self.node_schema_opt(label)
+                .filter(|n| n.full_table_name() == rel.full_table_name())
+        };
+        let holds_id = |n: &NodeSchema, end: &Identifier| {
+            let mut own = n.id_physical_columns();
+            let mut cols: Vec<String> = end.columns().iter().map(|c| c.to_string()).collect();
+            own.sort();
+            cols.sort();
+            own == cols
+        };
+        match (on_table(&rel.from_node), on_table(&rel.to_node)) {
+            (Some(f), Some(t)) => match (holds_id(f, &rel.from_id), holds_id(t, &rel.to_id)) {
+                (true, false) => Some(true),
+                (false, true) => Some(false),
+                _ => Some(anchor),
+            },
+            _ => Some(anchor),
+        }
+    }
+
+    /// P-4c S8a – S8c: the schema the bound-plan lowering reads, or `None`
+    /// when it is this one: discriminator columns as row filters
+    /// ([`Self::with_discriminators_as_filters`]), FK edges as tables of
+    /// relationships ([`Self::with_fk_edges_as_edge_rows`]) and labels
+    /// embedded in edge tables as node relations
+    /// ([`Self::with_node_relations`]), each over the one before.
+    pub fn lowering_view(&self) -> Option<GraphSchema> {
+        let filtered = self.with_discriminators_as_filters();
+        let base = filtered.as_ref().unwrap_or(self);
+        let fk = base.with_fk_edges_as_edge_rows();
+        let base = fk.as_ref().unwrap_or(base);
+        base.with_node_relations().or(fk).or(filtered)
     }
 
     /// P-4c S8b: record every definition of each label (the build keeps one
@@ -1134,6 +1168,142 @@ impl GraphSchema {
         ))
     }
 
+    /// P-4c S8c: the schema with each table's discriminators written as row
+    /// filters, or `None` when no table has any:
+    ///
+    /// * **Polymorphic relationships** (rows of several types or end labels
+    ///   in one table, told apart by a type column and label columns) are a
+    ///   definition per type and pair of end labels, `T::From::To`, its rows
+    ///   those the discriminators name (`type_column = 'T'`,
+    ///   `from_label_column = 'From'`, …) and its own `filter:`. An end
+    ///   written `$any` is each label of the schema, or of its
+    ///   `from_label_values` / `to_label_values` when given: a row whose label
+    ///   column names another label holds no relationship.
+    /// * **Node labels sharing a table** through a label column are their
+    ///   table's rows of `label_column = label_value` (and their `filter:`).
+    ///
+    /// A table whose discriminators cannot be written as a filter (a quote or
+    /// backslash in a value, a backtick in a column) and an `$any` end
+    /// without a label column (its row does not say which node it holds) are
+    /// left as they are, and a pair of labels another definition of the type
+    /// already joins stays polymorphic: not lowered.
+    pub fn with_discriminators_as_filters(&self) -> Option<GraphSchema> {
+        let mut out: Option<GraphSchema> = None;
+        for (label, ns) in &self.nodes {
+            let (Some(column), Some(value)) = (&ns.label_column, &ns.label_value) else {
+                continue;
+            };
+            let Some(filter) = discriminated(ns.filter.as_ref(), &[(column, value)]) else {
+                continue;
+            };
+            let mut node = ns.clone();
+            node.filter = Some(filter);
+            node.label_column = None;
+            node.label_value = None;
+            out.get_or_insert_with(|| self.clone())
+                .nodes
+                .insert(label.clone(), node);
+        }
+        let labels: Vec<&String> = self.nodes.keys().filter(|k| !k.contains("::")).collect();
+        let mut expanded: Vec<(&String, Vec<(String, RelationshipSchema)>)> = Vec::new();
+        for (key, rel) in &self.relationships {
+            if rel.has_fixed_endpoint_labels() {
+                continue;
+            }
+            let rel_type = key.split("::").next().unwrap_or(key);
+            if let Some(definitions) = self.discriminated_definitions(rel_type, rel, &labels) {
+                expanded.push((key, definitions));
+            }
+        }
+        if expanded.is_empty() {
+            return out;
+        }
+        let o = out.get_or_insert_with(|| self.clone());
+        for (key, definitions) in expanded {
+            o.relationships.remove(key);
+            o.relationships.extend(definitions);
+        }
+        o.rebuild_derived_indexes();
+        out
+    }
+
+    /// The definitions `rel` (polymorphic, of `rel_type`) is read as
+    /// ([`Self::with_discriminators_as_filters`]), or `None` when it cannot
+    /// be.
+    fn discriminated_definitions(
+        &self,
+        rel_type: &str,
+        rel: &RelationshipSchema,
+        labels: &[&String],
+    ) -> Option<Vec<(String, RelationshipSchema)>> {
+        // Each label an end can be, with the column its rows name it in.
+        let ends = |node: &String, column: &Option<String>, values: &Option<Vec<String>>| {
+            if node != "$any" {
+                return Some(vec![(node.clone(), column.clone())]);
+            }
+            let column = column.as_ref()?;
+            Some(
+                labels
+                    .iter()
+                    .filter(|l| values.as_ref().is_none_or(|vs| vs.contains(l)))
+                    .map(|l| ((*l).clone(), Some(column.clone())))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let froms = ends(
+            &rel.from_node,
+            &rel.from_label_column,
+            &rel.from_label_values,
+        )?;
+        let tos = ends(&rel.to_node, &rel.to_label_column, &rel.to_label_values)?;
+        let mut out = Vec::new();
+        for (fl, fcol) in &froms {
+            for (tl, tcol) in &tos {
+                let key = format!("{rel_type}::{fl}::{tl}");
+                if self.relationships.contains_key(&key) {
+                    // Another definition of the type between these labels:
+                    // the catalog holds one per key (and its type index
+                    // hides `rel`'s), so the pair is left polymorphic, which
+                    // the lowering refuses, rather than read as either.
+                    let mut both = rel.clone();
+                    both.from_node = fl.clone();
+                    both.to_node = tl.clone();
+                    out.push((key, both));
+                    continue;
+                }
+                let mut conditions: Vec<(&str, &str)> = Vec::new();
+                if let Some(c) = &rel.type_column {
+                    conditions.push((c, rel_type));
+                }
+                if let Some(c) = fcol {
+                    conditions.push((c, fl));
+                }
+                if let Some(c) = tcol {
+                    conditions.push((c, tl));
+                }
+                let filter = discriminated(rel.filter.as_ref(), &conditions)?;
+                let table = |label: &String| {
+                    self.nodes
+                        .get(label)
+                        .map_or_else(|| label.clone(), |n| n.table_name.clone())
+                };
+                let mut d = rel.clone();
+                d.from_node_table = table(fl);
+                d.to_node_table = table(tl);
+                d.from_node = fl.clone();
+                d.to_node = tl.clone();
+                d.type_column = None;
+                d.from_label_column = None;
+                d.to_label_column = None;
+                d.from_label_values = None;
+                d.to_label_values = None;
+                d.filter = Some(filter);
+                out.push((key, d));
+            }
+        }
+        Some(out)
+    }
+
     /// P-4c S8a: the schema with each FK edge written as a table of
     /// relationships reads it (`RelationshipSchema::is_edge_row_table`: a
     /// row's `from_id` holds its from-node's id, its `to_id` its to-node's),
@@ -1155,7 +1325,7 @@ impl GraphSchema {
     pub fn with_fk_edges_as_edge_rows(&self) -> Option<GraphSchema> {
         let mut out: Option<GraphSchema> = None;
         for (key, rel) in &self.relationships {
-            let Some(from_is_owner) = self.fk_edge_anchor_is_from(rel) else {
+            let Some(from_is_owner) = self.fk_edge_owner_is_from(rel) else {
                 continue;
             };
             let owner_label = if from_is_owner {
@@ -1191,10 +1361,22 @@ impl GraphSchema {
             if owner.should_use_final() {
                 read.use_final = Some(true);
             }
+            // Its rows are its owner's: the owner's `filter:` (and, for
+            // labels sharing a table, its label condition, S8c) holds of
+            // them; another label's row of the same id is no reference
+            // (review).
+            if owner.filter.is_some() {
+                let Some(filter) = both_filters(rel.filter.as_ref(), owner.filter.as_ref()) else {
+                    // Unreachable: two filters that parse, ANDed, parse.
+                    continue;
+                };
+                read.filter = Some(filter);
+            }
             if read.from_id == rel.from_id
                 && read.to_id == rel.to_id
                 && read.view_parameters == rel.view_parameters
                 && read.should_use_final() == rel.should_use_final()
+                && read.filter == rel.filter
             {
                 continue;
             }
@@ -1240,6 +1422,39 @@ pub struct NodeRelation {
     /// Every property its sources hold (the id's among them), sorted.
     pub properties: Vec<String>,
     pub sources: Vec<NodeSource>,
+}
+
+/// `a` and `b` (either may be absent) as one schema filter.
+fn both_filters(a: Option<&SchemaFilter>, b: Option<&SchemaFilter>) -> Option<SchemaFilter> {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            let filter = SchemaFilter::new(&format!("({}) AND ({})", a.raw, b.raw)).ok()?;
+            filter.to_sql("e").ok()?;
+            Some(filter)
+        }
+        (a, b) => a.or(b).cloned(),
+    }
+}
+
+/// `filter` (when given) and each `column = 'value'` of `conditions`, as one
+/// schema filter; `None` when a condition cannot be written in the filter
+/// grammar (a backtick in the column; a quote in the value, or a backslash,
+/// which ClickHouse reads as an escape).
+fn discriminated(
+    filter: Option<&SchemaFilter>,
+    conditions: &[(&str, &str)],
+) -> Option<SchemaFilter> {
+    let mut parts: Vec<String> = filter.map(|f| format!("({})", f.raw)).into_iter().collect();
+    for (column, value) in conditions {
+        if column.contains('`') || value.contains('\'') || value.contains('\\') {
+            return None;
+        }
+        parts.push(format!("`{column}` = '{value}'"));
+    }
+    let filter = SchemaFilter::new(&parts.join(" AND ")).ok()?;
+    // The whole text is the predicate (`new` checks a prefix).
+    filter.to_sql("e").ok()?;
+    Some(filter)
 }
 
 impl NodeRelation {

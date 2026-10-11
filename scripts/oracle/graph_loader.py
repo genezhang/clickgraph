@@ -119,6 +119,9 @@ NODE_KEYS = {
     # Denormalized nodes: their properties in an edge table's columns, per
     # role (`is_denormalized` is not a schema field; it documents them).
     "from_node_properties", "to_node_properties", "is_denormalized",
+    # Labels sharing a table: a label's nodes are the rows whose label
+    # column holds its value.
+    "label_column", "label_value",
 }
 EDGE_KEYS = {
     "type", "database", "table", "from_id", "to_id", "edge_id", "from_node", "to_node",
@@ -126,6 +129,11 @@ EDGE_KEYS = {
     # Not a schema field (serde ignores it): documents that the edge lives in
     # a node table (an FK edge). Loading it row by row is the same rule.
     "is_denormalized",
+    # Polymorphic edges: a row's type and end labels are its type / label
+    # columns' values (an end with a fixed `from_node` / `to_node` is that
+    # label), closed to `type_values` and the `*_label_values` when given.
+    "polymorphic", "type_column", "type_values", "from_label_column", "to_label_column",
+    "from_label_values", "to_label_values",
 }
 SCHEMA_KEYS = {"nodes", "edges"}
 
@@ -143,8 +151,11 @@ def _check_standard(gs):
         extra = set(e) - EDGE_KEYS
         if extra:
             raise Unsupported(f"edge {e.get('type')}: {sorted(extra)}")
-        if e.get("from_node") in (None, "$any") or e.get("to_node") in (None, "$any"):
-            raise Unsupported(f"edge {e['type']}: polymorphic endpoints")
+        for side in ("from", "to"):
+            if e.get(f"{side}_node") in (None, "$any") and not e.get(f"{side}_label_column"):
+                raise Unsupported(f"edge {e.get('type') or e.get('type_values')}: {side} end without a label")
+        if e.get("polymorphic") and len(e.get("type_values") or []) > 1 and not e.get("type_column"):
+            raise Unsupported(f"edge {e.get('type_values')}: several types without a type column")
 
 
 def build_graph(gs, ch):
@@ -167,9 +178,8 @@ def build_graph(gs, ch):
         pm = n.get("property_mappings") or {}
         idc = [pm.get(p, p) for p in _id_cols(n["node_id"])]
         cols = sorted(set(idc) | set(pm.values()))
-        # A schema `filter:` is SQL over the table's columns: the label's nodes
-        # are the rows it holds of.
-        where = f" WHERE {n['filter']}" if n.get("filter") else ""
+        conds = _node_conds(n)
+        where = f" WHERE {' AND '.join(conds)}" if conds else ""
         rows = ch(f"SELECT {', '.join(f'`{c}`' for c in cols)} FROM `{n['database']}`.`{n['table']}`{where}")
         for r in rows:
             key = _key(r[c] for c in idc)
@@ -184,6 +194,9 @@ def build_graph(gs, ch):
     rels = []
     node_defs = {n["label"]: n for n in gs.get("nodes", [])}
     for e in gs.get("edges", []):
+        if e.get("polymorphic"):
+            _polymorphic_rels(e, ch, index, rels, report)
+            continue
         fc, tc = _id_cols(e["from_id"]), _id_cols(e["to_id"])
         own = node_defs.get(e["from_node"])
         if (
@@ -200,7 +213,12 @@ def build_graph(gs, ch):
         pm = e.get("property_mappings") or {}
         cols = sorted(set(fc) | set(tc) | set(pm.values()))
         # A schema `filter:`: the type's relationships are the rows it holds of.
-        where = f" WHERE {e['filter']}" if e.get("filter") else ""
+        conds = [f"({e['filter']})"] if e.get("filter") else []
+        # An FK edge's rows are its owner's rows (of its label, its filter).
+        owner = _fk_owner(e, node_defs)
+        if owner is not None:
+            conds += _node_conds(owner)
+        where = f" WHERE {' AND '.join(conds)}" if conds else ""
         rows = ch(f"SELECT {', '.join(f'`{c}`' for c in cols)} FROM `{e['database']}`.`{e['table']}`{where}")
         dangling = 0
         for r in rows:
@@ -219,6 +237,86 @@ def build_graph(gs, ch):
         if dangling:
             report["dangling"][e["type"]] = dangling
     return nodes, rels, report
+
+
+def _node_conds(n):
+    """The conditions a label's rows meet: its `filter:` (SQL over the
+    table's columns) and, for labels sharing a table, its label column's
+    value."""
+    conds = [f"({n['filter']})"] if n.get("filter") else []
+    if n.get("label_column"):
+        conds.append(f"`{n['label_column']}` = '{n['label_value']}'")
+    return conds
+
+
+def _fk_owner(e, node_defs):
+    """An FK edge's owner, the node whose rows are its rows: an end whose
+    label's own table is the edge's; of two labels sharing it, the end whose
+    columns hold its node's id. None for an edge table."""
+    def on_table(label):
+        n = node_defs.get(label)
+        if n is None or (n["database"], n["table"]) != (e["database"], e["table"]):
+            return None
+        if n.get("from_node_properties") or n.get("to_node_properties"):
+            return None
+        return n
+
+    def holds_id(n, end):
+        pm = n.get("property_mappings") or {}
+        return sorted(pm.get(p, p) for p in _id_cols(n["node_id"])) == sorted(_id_cols(end))
+
+    f, t = on_table(e["from_node"]), on_table(e["to_node"])
+    if f is not None and t is not None and e["from_node"] != e["to_node"]:
+        if holds_id(t, e["to_id"]) and not holds_id(f, e["from_id"]):
+            return t
+        return f
+    return f if f is not None else t
+
+
+def _polymorphic_rels(e, ch, index, rels, report):
+    """A polymorphic edge's relationships: each row of one of `type_values`
+    (its type column's value; the one type without a column) between the
+    nodes its ends name: a fixed end's label, else its label column's value
+    (one of the `*_label_values` when given). Read as written (no
+    self-referencing FK rule: legacy reads them so)."""
+    fc, tc = _id_cols(e["from_id"]), _id_cols(e["to_id"])
+    pm = e.get("property_mappings") or {}
+    disc = [c for c in (e.get("type_column"), e.get("from_label_column"), e.get("to_label_column")) if c]
+    cols = sorted(set(fc) | set(tc) | set(pm.values()) | set(disc))
+    where = f" WHERE {e['filter']}" if e.get("filter") else ""
+    rows = ch(f"SELECT {', '.join(f'`{c}`' for c in cols)} FROM `{e['database']}`.`{e['table']}`{where}")
+    types = e["type_values"]
+    kept, dangling = {}, {}
+
+    def label(r, side):
+        fixed = e.get(f"{side}_node")
+        if fixed not in (None, "$any"):
+            return fixed
+        value = r[e[f"{side}_label_column"]]
+        allowed = e.get(f"{side}_label_values")
+        return value if allowed is None or value in allowed else None
+
+    for r in rows:
+        t = r[e["type_column"]] if e.get("type_column") else types[0]
+        fl, tl = label(r, "from"), label(r, "to")
+        if t not in types or fl is None or tl is None:
+            continue
+        fk, tk = _key(r[c] for c in fc), _key(r[c] for c in tc)
+        if any(v is None for v in fk + tk):
+            continue
+        if (fl, fk) not in index or (tl, tk) not in index:
+            dangling[t] = dangling.get(t, 0) + 1
+            continue
+        pt = e.get("property_types") or {}
+        props = {p: _typed(r[c], pt.get(p)) for p, c in pm.items()}
+        props["__cg_from"] = json.dumps(list(fk))
+        props["__cg_to"] = json.dumps(list(tk))
+        rels.append((t, fl, fk, tl, tk, props))
+        kept[t] = kept.get(t, 0) + 1
+    for t in types:
+        report["rels"][t] = report["rels"].get(t, 0) + kept.get(t, 0)
+        if dangling.get(t):
+            report["dangling"][t] = report["dangling"].get(t, 0) + dangling[t]
 
 
 def _ordered_end(label_sources, e, cols):

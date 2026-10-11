@@ -2778,10 +2778,10 @@ impl<'s> Lowerer<'s> {
             ns.view_parameters.is_some(),
             ns.should_use_final(),
         ) {
-            return unsupported(
-                "a variable-length relationship over a table with a filter, view \
-                 parameters or FINAL (S8)",
-            );
+            // The generator reads no table options: the walk of its
+            // definitions reads them (S8c: a polymorphic table's rows of one
+            // type are a filter).
+            return Ok(None);
         }
         // A condition of the MATCH reads them before the walk is built
         // (`build_path`, which decides alike).

@@ -1292,6 +1292,47 @@ types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
 - **Not lowered:** an undeclared property of an embedded node (no table
   whose same-named column the rule could read; legacy reads the row's).
 
+**Implemented in S8c** (polymorphic edges and label-column node tables;
+`GraphSchema::with_discriminators_as_filters`):
+- **Discriminators are row filters.** A polymorphic edge (rows of several
+  types or end labels in one table: `type_column`, `from_label_column` /
+  `to_label_column`, `$any` ends) is, in the lowering's view, a definition
+  per type and pair of end labels (`T::From::To`), its rows those its
+  discriminators name, as a `filter:` (`kind = 'T' AND from_type = 'From'
+  AND to_type = 'To'`, with its own `filter:`). Labels sharing a table
+  through `label_column` / `label_value` are that table's rows of their
+  value. Every scan, tie, union, walk, search and value then reads them as
+  fixed-label definitions and plain node tables: nothing downstream knows
+  the layout. Label columns hold label names (legacy compares them so).
+- **Which labels.** An `$any` end is each label of the schema, or of its
+  `from_label_values` / `to_label_values` (closed world): a row whose label
+  column names another label, or none, holds no relationship. Label
+  inference (`labels.rs`, `Feasibility`) closes the end alike, so an
+  unlabeled end is a union of only the labels the schema allows there.
+- **Read as written.** A polymorphic edge on a node table (`CONTAINS` from
+  `parent_id` to `fs_id` on the objects table) is not an FK edge
+  (`is_fk_edge` is false): its `from_id` is its from-node's, as legacy and
+  the YAML read it, not #632's self-reference rule.
+- **An FK edge's rows are its owner's.** An FK edge (S8a) is read with its
+  owner's `filter:`, which on a table labels share holds its label
+  condition: another label's row of the same id is no reference (the
+  review: `(x:A)-[:CHILD_OF]->(y:A)` read a `B` row's parent). Of two labels
+  on the edge's table, the owner is the end whose columns hold its node's
+  id (`from_id: parent, to_id: id` is the to-node's row). The oracle loader
+  reads FK edges alike.
+- **Walks over a filtered table.** The generator's walk of one definition
+  reads no table options; a walk of one definition over a table with a
+  `filter:`, view parameters or FINAL is the walk of definitions
+  (`Walked::Union`, S7b3a), which reads them, rather than refused (also for
+  standard edges with a `filter:`).
+- **Not lowered:** a discriminator the filter grammar cannot hold (a quote
+  or backslash in a value, a backtick in a column); an `$any` end without a
+  label column (validation requires one); and a pair of labels a standard
+  definition of the same type also joins (the catalog holds one definition
+  per key, and its type index hides the polymorphic one; the config warns
+  that mixing them is unsupported). Label inference reads every definition
+  by its key, so the polymorphic table's other pairs are lowered.
+
 ### 4.7 Label inference
 
 Labels are inferred over the explicit pattern graph of each clause, with
@@ -3289,9 +3330,9 @@ slice that will handle it.
         (`MATCH ()-[r:LIKED]-() RETURN r LIMIT 25`), nothing else changed.
       - Timing: above (§4.6).
 - [ ] S8 layouts, in sub-slices: S8a FK edges (done), S8b denormalized
-  nodes (done; a label both embedded and in its own tables later), then
-  polymorphic edges and node tables (type and label columns), composite
-  ids (values, lists, walks).
+  nodes (done; a label both embedded and in its own tables later), S8c
+  polymorphic edges and node tables (done), then composite ids (values,
+  lists, walks).
   - [x] **S8a: FK edges** (§4.6 "Implemented in S8a"): a relationship whose
     table is one of its ends' node tables is read as a table of
     relationships; a self-referencing one's ends as legacy reads them
@@ -3379,6 +3420,45 @@ slice that will handle it.
         edge-unique against the paths before it, #1203; 1: a `WHERE
         length(p)` on shortestPath is applied during the search, all 19
         comparisons equal Neo4j); one strict xfail of #1203 now passes.
+  - [x] **S8c: polymorphic edges and label-column node tables** (§4.6
+    "Implemented in S8c"): type and label discriminators as row filters of
+    fixed-label definitions; closed `*_label_values`; walks over filtered
+    tables by the walk of definitions.
+    - Acceptance:
+      - Neo4j oracle, switch on vs off, the four polymorphic schemas
+        (polymorphic, social_polymorphic, sqlgen_polymorphic, data_security):
+        MATCH 144 → 170 (legacy 144); the non-matches left are legacy's
+        (pattern comprehensions, S9; `collect` order; undeclared properties;
+        a parse error). The 13 earlier schemas unchanged. The corpus lowers
+        1380 queries (was 1237).
+      - Generated shapes against Neo4j on four scratch graphs (both ends
+        open with two labels of overlapping ids, an unknown label, a NULL
+        label, a type outside `type_values`, dangling ids, self-loops and
+        parallel edges with a composite `edge_id`; a closed end with a fixed
+        `to_node` and a `filter:`; labels sharing a table with a polymorphic
+        edge on that table; fixed-end types and a standard edge with a
+        `filter:` walked alone): every lowered shape equals Neo4j (95 of 97; a
+        walk's relationship list over a composite `edge_id` and a pattern
+        predicate are not lowered); legacy is wrong or errors on 59.
+      - Mutation check: 14 rules broken in turn, all caught: 12 by the
+        sweep (with the review's FK graph), 2 by a unit test (a pair another
+        definition joins). The view
+        and label inference each close an end to its label values: either
+        alone keeps every answer, both broken are caught.
+      - Adversarial review (own graphs: ids repeated across labels of one
+        table, lowercase / spaced / NULL discriminators, a type named like a
+        label, ORed filters, keyword column names, composite ids, a
+        standard and a polymorphic definition of one type, standard edges
+        with filters, view parameters and FINAL walked as unions, S8b
+        embedded nodes beside a polymorphic edge, the repo's schemas): one
+        finding, fixed: FK edges on a table labels share read every label's
+        rows (above; legacy is worse). Not from this slice: a union walk over
+        `edge_id`s of different types fails (#1352); rows repeated without an
+        `edge_id` are one relationship in walks (as legacy).
+      - Live suite, switch on, vs S8b: 10 polymorphic walk and shortestPath
+        tests now pass; legacy #1244 refusals now answered (3, each equal
+        to Neo4j's count); one SQL-text test of legacy's CTE name (its query
+        equals Neo4j); a timing test (passes alone).
 - [ ] S9 subquery expressions
 - [ ] S10 default on
 - [ ] S11 legacy deletion

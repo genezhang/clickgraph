@@ -3619,17 +3619,45 @@ fn a_carried_walk_of_several_types_keeps_its_end_labels() {
 }
 
 /// S7b3a review: a walk prunes definitions by the labels the schema gives
-/// their ends; a polymorphic edge's rows carry their own (`$any`), so a walk
-/// over one is not lowered (it matched nothing: the legacy path answers it).
+/// their ends; a polymorphic edge's rows carry their own (`$any`). S8c: the
+/// lowering reads it as a definition per end label, its rows those its label
+/// column names, closed to `from_label_values`; a walk of them is the walk of
+/// those definitions.
 #[test]
-fn a_walk_over_a_polymorphic_edge_is_not_lowered() {
-    let schema = GraphSchemaConfig::from_yaml_str(
+fn a_walk_over_a_polymorphic_edge_walks_its_definitions() {
+    let schema = poly_schema();
+    let got = translate_bound_plan(
+        "MATCH (u:User)-[:MEMBER_OF*1..5]->(g:Group) RETURN g.name",
+        &schema,
+        &ReadOptions::default(),
+    )
+    .unwrap()
+    .sql;
+    for part in [
+        "'User' AS \"__cg_start_label\"",
+        "'Group' AS \"__cg_start_label\"",
+        "FROM db.memberships AS e\nWHERE ((e.\"member_type\" = 'User'))",
+        "FROM db.memberships AS e\nWHERE ((e.\"member_type\" = 'Group'))",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    // Closed to its label values: no other label's rows.
+    assert!(!got.contains("'Doc' AS \"__cg_start_label\""), "{got}");
+}
+
+/// S8c: the schema the polymorphic tests read: a closed polymorphic end
+/// (`MEMBER_OF`), a polymorphic table of several types and both ends
+/// open (`interactions`), and two labels sharing a table by a label column.
+fn poly_schema() -> GraphSchema {
+    GraphSchemaConfig::from_yaml_str(
         r#"
-name: poly_walk
+name: poly
 graph_schema:
   nodes:
     - { label: User, database: db, table: users, node_id: id, property_mappings: { id: id, name: name } }
     - { label: Group, database: db, table: groups, node_id: id, property_mappings: { id: id, name: name } }
+    - { label: Doc, database: db, table: objects, node_id: id, label_column: kind, label_value: doc, property_mappings: { id: id, title: title } }
+    - { label: Dir, database: db, table: objects, node_id: id, label_column: kind, label_value: dir, property_mappings: { id: id, title: title } }
   edges:
     - polymorphic: true
       database: db
@@ -3641,18 +3669,199 @@ graph_schema:
       to_node: Group
       type_values: [MEMBER_OF]
       property_mappings: {}
+    - polymorphic: true
+      database: db
+      table: interactions
+      from_id: from_id
+      to_id: to_id
+      type_column: kind
+      from_label_column: from_type
+      to_label_column: to_type
+      type_values: [OWNS, VIEWED]
+      property_mappings: { at: ts }
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap()
+}
+
+/// S8c: a relationship of a polymorphic table is the rows its type and end
+/// label columns name.
+#[test]
+fn a_polymorphic_relationship_is_its_discriminated_rows() {
+    let schema = poly_schema();
+    let got = translate_bound_plan(
+        "MATCH (u:User)-[r:VIEWED]->(d:Doc) RETURN u.name, d.title, r.at",
+        &schema,
+        &ReadOptions::default(),
+    )
+    .unwrap()
+    .sql;
+    for part in [
+        "FROM db.users AS v0",
+        "JOIN db.interactions AS v1",
+        "(((v1.\"kind\" = 'VIEWED') AND (v1.\"from_type\" = 'User')) AND (v1.\"to_type\" = 'Doc'))",
+        "JOIN db.objects AS v2",
+        "v2.\"kind\" = 'doc'",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+}
+
+/// S8c: an end of a polymorphic relationship whose label is not written is
+/// each label the schema allows there: every label for an open end, the
+/// label values for a closed one.
+#[test]
+fn a_polymorphic_end_is_each_label_it_allows() {
+    let schema = poly_schema();
+    let got = translate_bound_plan(
+        "MATCH (m)-[:MEMBER_OF]->(g:Group) RETURN count(*)",
+        &schema,
+        &ReadOptions::default(),
+    )
+    .unwrap()
+    .sql;
+    for label in ["User", "Group"] {
+        assert!(
+            got.contains(&format!("\"member_type\" = '{label}'")),
+            "{label}: {got}"
+        );
+    }
+    for label in ["Doc", "Dir"] {
+        assert!(!got.contains(&format!("'{label}'")), "{label}: {got}");
+    }
+    let got = translate_bound_plan(
+        "MATCH (u:User)-[:OWNS]->(x) RETURN count(*)",
+        &schema,
+        &ReadOptions::default(),
+    )
+    .unwrap()
+    .sql;
+    for label in ["User", "Group", "Doc", "Dir"] {
+        assert!(
+            got.contains(&format!("\"to_type\" = '{label}'")),
+            "{label}: {got}"
+        );
+    }
+}
+
+/// S8c: a type both a table of its own and a polymorphic table's between
+/// the same labels is two definitions the catalog holds one of: that pair is
+/// not lowered (it read the table's rows only); the polymorphic table's other
+/// pairs are.
+#[test]
+fn a_polymorphic_pair_another_definition_joins_is_not_lowered() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: both
+graph_schema:
+  nodes:
+    - { label: User, database: db, table: users, node_id: id, property_mappings: { id: id } }
+    - { label: Post, database: db, table: posts, node_id: id, property_mappings: { id: id } }
+  edges:
+    - { type: LIKES, database: db, table: likes, from_node: User, to_node: User, from_id: a, to_id: b, property_mappings: {} }
+    - polymorphic: true
+      database: db
+      table: interactions
+      from_id: from_id
+      to_id: to_id
+      type_column: kind
+      from_label_column: from_type
+      to_label_column: to_type
+      type_values: [LIKES]
+      property_mappings: {}
 "#,
     )
     .unwrap()
     .to_graph_schema()
     .unwrap();
-    for q in [
-        "MATCH (u:User)-[:MEMBER_OF*1..5]->(g:Group) RETURN g.name",
-        "MATCH (u:User)-[*1..2]-(g) RETURN count(*)",
+    let err = translate_bound_plan(
+        "MATCH (a:User)-[:LIKES]->(b:User) RETURN count(*)",
+        &schema,
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(err.contains("not the standard layout (S8)"), "{err}");
+    let got = translate_bound_plan(
+        "MATCH (a:User)-[:LIKES]->(b:Post) RETURN count(*)",
+        &schema,
+        &ReadOptions::default(),
+    )
+    .unwrap()
+    .sql;
+    assert!(got.contains("\"to_type\" = 'Post'"), "{got}");
+}
+
+/// S8c review: an FK edge's rows are its owner's rows. On a table labels
+/// share, they are the owner's label's rows (another label's row of the same
+/// id is no reference); of two labels on the table, the owner is the end
+/// whose columns hold its id.
+#[test]
+fn an_fk_edge_on_a_shared_table_reads_its_owners_rows() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: shared_fk
+graph_schema:
+  nodes:
+    - { label: A, database: db, table: ent, node_id: id, label_column: kind, label_value: A, property_mappings: { id: id } }
+    - { label: B, database: db, table: ent, node_id: id, label_column: kind, label_value: B, property_mappings: { id: id } }
+  edges:
+    - { type: IN_A, database: db, table: ent, from_node: B, to_node: A, from_id: id, to_id: parent, property_mappings: {} }
+    - { type: HOLDS, database: db, table: ent, from_node: A, to_node: B, from_id: parent, to_id: id, property_mappings: {} }
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    for (q, edge) in [
+        ("MATCH (b:B)-[:IN_A]->(a:A) RETURN count(*)", "v1"),
+        ("MATCH (a:A)-[:HOLDS]->(b:B) RETURN count(*)", "v1"),
     ] {
-        let err = translate_bound_plan(q, &schema, &ReadOptions::default()).unwrap_err();
-        assert!(err.contains("not the standard layout (S8)"), "{q}: {err}");
+        let got = translate_bound_plan(q, &schema, &ReadOptions::default())
+            .unwrap()
+            .sql;
+        let owner = format!("{edge}.\"kind\" = 'B'");
+        let other = format!("{edge}.\"kind\" = 'A'");
+        assert!(got.contains(&owner), "{q}: {got}");
+        assert!(!got.contains(&other), "{q}: {got}");
     }
+}
+
+/// S8c: labels sharing a table are its rows of their label value; a
+/// discriminator the filter grammar cannot hold leaves its table to legacy.
+#[test]
+fn labels_sharing_a_table_are_its_rows_of_their_value() {
+    let schema = poly_schema();
+    let got = translate_bound_plan(
+        "MATCH (n) WHERE n.title = 'a' RETURN labels(n), n.id",
+        &schema,
+        &ReadOptions::default(),
+    )
+    .unwrap()
+    .sql;
+    for part in ["(e.\"kind\" = 'doc')", "(e.\"kind\" = 'dir')"] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    let quoted = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: quoted
+graph_schema:
+  nodes:
+    - { label: Doc, database: db, table: objects, node_id: id, label_column: kind, label_value: "it's", property_mappings: { id: id } }
+  edges: []
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let err = translate_bound_plan(
+        "MATCH (d:Doc) RETURN d.id",
+        &quoted,
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(err.contains("not the standard layout (S8)"), "{err}");
 }
 
 #[test]
