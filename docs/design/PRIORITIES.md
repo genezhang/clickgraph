@@ -743,6 +743,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 - 2026-10-11: **P-4c S8d1: walks between composite ids** (#1353, `src/bound_plan/lower/path.rs` `standard_layout` / `edge_identity_sql`, `CteGenerationContext::composite_by_columns`, behind `CLICKGRAPH_BOUND_PLAN=on`).
   - A walk of one definition between composite ids joins each step, ties its ends and restricts its first node by the ids' columns, never by the generator's pipe-joined text (two ids can share it: `('B|1','2')`, `('B','1|2')`; legacy's walks conflate them). Composite relationships are identified by `edge_id` or their stored ends' columns (hop-vs-walk uniqueness; shortest paths over a composite `edge_id`).
   - Oracle: composite_id 12 → 15, the rest unchanged; corpus lowers 1398 (was 1380); sweeps on two scratch graphs: 30 lowered shapes equal Neo4j (legacy wrong / erroring on 22); mutation check 4 of 5 by the sweep (the fifth a pushdown, pinned by a unit test); live suite unchanged.
+  - Review: no wrong answer of this slice's; an end of fewer columns than its node's id and a composite id column named `id` now refused; #1354 filed (NULL id parts dropped from zero-length walks), #1352 extended.
   - Next (S8d2): shortest paths and union walks between composite ids, composite ids in values and lists.
 
 - 2026-10-11: **P-4c S8c: polymorphic edges and label-column node tables** (#1351, `graph_catalog` `GraphSchema::with_discriminators_as_filters`, `bound_plan/labels.rs` `Feasibility`, behind `CLICKGRAPH_BOUND_PLAN=on`).

@@ -240,6 +240,14 @@ fn conjunction(cs: &[RenderExpr]) -> Option<String> {
 /// Build the relation of paths of `call` (the standard layout: the nodes and
 /// the edge each in their own table, single-column identities).
 pub(super) fn path_cte(schema: &GraphSchema, call: PathCall<'_>) -> Result<PathCte, LowerError> {
+    // A composite id's columns are carried as `start_<col>` / `end_<col>`:
+    // one named `id` is the generator's `start_id` (S8d review).
+    let id = call.node.id_physical_columns();
+    if id.len() > 1 && id.iter().any(|c| c == "id") {
+        return unsupported(
+            "a variable-length relationship between composite ids with a column `id`",
+        );
+    }
     let start_alias = call.var.to_string();
     let end_alias = "path".to_string();
     let ctx = standard_layout(schema, &call)?;

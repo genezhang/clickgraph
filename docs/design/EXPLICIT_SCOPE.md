@@ -1352,6 +1352,14 @@ types, definitions or labels; `Lowerer::build_union_path`, `path::Search`,
   its relationships alike (now lowered).
 - An undirected walk reads its table in both directions with a column per
   identity column (`BOTH_START_k` / `BOTH_END_k`).
+- **Refused (review):** a relationship whose end has another number of
+  columns than its node's id (it tied part of the id; checked for every
+  relationship, `standard_edge`), and a walk between composite ids one of
+  whose columns is named `id` (the generator's `start_<col>` is then its
+  `start_id`).
+- **Known gap (#1354):** a node whose id, or a part of it, is NULL is
+  dropped from a zero-length walk (its ties and first-node restriction use
+  `=` / `IN`; a single nullable id since S6a).
 - **Not lowered yet (S8d2):** a shortest path between composite ids (the
   search identifies a node by one column), a walk of several definitions
   between them (a union walk keys nodes by one id column), and a composite
@@ -3507,6 +3515,15 @@ slice that will handle it.
         unreachable (no lowered shape groups by such a path) and is left to
         S8d2.
       - Live suite, switch on, vs S8c: unchanged.
+      - Adversarial review (three-part ids of String, UInt32 and Nullable
+        columns, pipe-sharing ids, composite FK and embedded nodes, every
+        walk form, walks with hops, OPTIONAL / WITH / UNION, shortest paths
+        over a composite `edge_id`): no wrong answer of this slice's. Two
+        shapes it newly took now refused: an end with fewer columns than its
+        node's id, an id column named `id` (a ClickHouse error). Filed: NULL
+        id parts dropped from zero-length walks (#1354); a hop of several
+        types beside a walk failing on `edge_id` types (#1352, as union
+        walks).
 - [ ] S9 subquery expressions
 - [ ] S10 default on
 - [ ] S11 legacy deletion

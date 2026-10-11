@@ -3992,6 +3992,16 @@ impl<'s> Lowerer<'s> {
                 return unsupported(format!("label {label} has no node schema"));
             };
             let id = Identifier::from(ns.id_physical_columns());
+            // Its columns pair with the id's one for one (S8d review: an end
+            // of fewer columns tied part of the id).
+            if end.columns().len() != id.columns().len() {
+                return unsupported(format!(
+                    "type {rel_type} pairs {:?} with {label}'s id {:?}: another number of \
+                     columns",
+                    end.columns(),
+                    id.columns()
+                ));
+            }
             if end.crosses_positionally(&id) {
                 return unsupported(format!(
                     "type {rel_type} pairs {:?} with {label}'s id {:?}: the same \

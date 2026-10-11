@@ -4868,3 +4868,51 @@ fn composite_searches_unions_and_values_are_not_lowered() {
         assert!(err.contains(why), "{q}: {err}");
     }
 }
+
+/// S8d review: refused, not answered wrong or with a ClickHouse error: a
+/// walk between composite ids one of whose columns is named `id` (the walk's
+/// `start_id`), and a relationship whose end has fewer columns than its
+/// node's id (a hop or walk tied part of the id).
+#[test]
+fn composite_ids_the_walk_cannot_carry_are_refused() {
+    let named_id = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: named_id
+graph_schema:
+  nodes:
+    - { label: N, database: db, table: n, node_id: [id, region], property_mappings: { id: id, region: region } }
+  edges:
+    - { type: R, database: db, table: r, from_node: N, to_node: N, from_id: [fid, freg], to_id: [tid, treg], property_mappings: {} }
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let err = translate_bound_plan(
+        "MATCH (a:N)-[:R*1..2]->(b:N) RETURN count(*)",
+        &named_id,
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(err.contains("with a column `id`"), "{err}");
+    let fewer = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: fewer
+graph_schema:
+  nodes:
+    - { label: Acct, database: db, table: acct, node_id: [bank, num], property_mappings: { bank: bank, num: num } }
+  edges:
+    - { type: SENT, database: db, table: sent, from_node: Acct, to_node: Acct, from_id: fb, to_id: [tb, tnum], property_mappings: {} }
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    for q in [
+        "MATCH (a:Acct)-[:SENT]->(b:Acct) RETURN count(*)",
+        "MATCH (a:Acct)-[:SENT*1..2]->(b:Acct) RETURN count(*)",
+    ] {
+        let err = translate_bound_plan(q, &fewer, &ReadOptions::default()).unwrap_err();
+        assert!(err.contains("another number of columns"), "{q}: {err}");
+    }
+}
