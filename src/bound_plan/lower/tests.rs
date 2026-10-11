@@ -4926,20 +4926,24 @@ fn an_exists_subquery_joins_its_matches_grouped_by_the_correlation() {
     has(
         "MATCH (a:User) WHERE EXISTS { (a)-[:FOLLOWS]->(:User) } RETURN a.name",
         &[
-            "subquery_s1 AS ( SELECT v1.follower_id AS \"v0__user_id\", count(*) AS \"__value\"",
+            "subquery_s1 AS ( SELECT v1.follower_id AS \"v0__user_id\", \
+             CAST(count(*) > 0 AS Nullable(Bool)) AS \"__value\"",
             "GROUP BY v1.follower_id",
             "LEFT JOIN subquery_s1 AS s1 ON v0.user_id = s1.v0__user_id",
-            "WHERE coalesce(s1.__value, 0) > 0",
+            "WHERE coalesce(s1.__value, false)",
         ],
     );
     // A pattern predicate, `NOT`, and `exists()` are the same subquery.
     has(
         "MATCH (a:User) WHERE NOT (a)-[:FOLLOWS]->() RETURN a.name",
-        &["WHERE NOT coalesce(s1.__value, 0) > 0"],
+        &["WHERE NOT coalesce(s1.__value, false)"],
     );
     has(
         "MATCH (a:User) RETURN a.name, exists((a)-[:FOLLOWS]->()) AS e",
-        &["CAST(coalesce(s1.__value, 0) > 0 AS Nullable(Bool)) AS \"e\""],
+        &[
+            "coalesce(s1.__value, false) AS \"e\"",
+            "CAST(count(*) > 0 AS Nullable(Bool)) AS \"__value\"",
+        ],
     );
 }
 
@@ -4988,8 +4992,18 @@ fn a_subquery_reading_a_relationship_or_a_value_is_driven_by_a_copy_of_the_rows(
     has(
         "MATCH (a:User) WITH a.age AS g MATCH (b:User) WHERE EXISTS { MATCH (c:User) WHERE c.age = g } \
          RETURN b.name",
-        &["IS NULL AND s"],
+        &["isNotDistinctFrom("],
     );
+    // A drive copies the rows without the subqueries applied to them before
+    // (each would otherwise copy every earlier one).
+    let got = squash(&sql(
+        "MATCH (a:User) WITH a.age AS g RETURN g, EXISTS { MATCH (b:User) WHERE b.age = g } AS e, \
+         EXISTS { MATCH (b:User) WHERE b.age > g } AS f",
+    ));
+    let second_drive = got.find("subquery_d4 AS (").expect(&got);
+    let its_end = got.find("subquery_s5 AS (").expect(&got);
+    let its_body = &got[second_drive..its_end];
+    assert!(!its_body.contains("subquery_s3"), "{its_body}");
 }
 
 #[test]
@@ -5004,7 +5018,7 @@ fn nested_subqueries_are_applied_to_their_matches() {
         "subquery_s2 AS (",
         "subquery_s3 AS (",
         "LEFT JOIN subquery_s2 AS s2 ON",
-        "WHERE NOT coalesce(s2.__value, 0) > 0",
+        "WHERE NOT coalesce(s2.__value, false)",
         "LEFT JOIN subquery_s3 AS s3 ON",
     ] {
         assert!(got.contains(p), "missing `{p}` in\n{got}");

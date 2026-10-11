@@ -183,6 +183,11 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// already nullable. `expr` is a pre-rendered SQL fragment.
     fn cast_bool(&self, expr: &str) -> String;
 
+    /// `a` equals `b`, NULL equal to NULL, as one condition a hash join can
+    /// key on (`a = b OR (a IS NULL AND b IS NULL)` is not, in a join of
+    /// three or more relations). `a` and `b` are pre-rendered SQL.
+    fn null_safe_equal(&self, a: &str, b: &str) -> String;
+
     /// Concatenate two arrays. CH: `arrayConcat`. Spark: `concat`
     /// (overloaded for arrays).
     fn array_concat(&self) -> &'static str;

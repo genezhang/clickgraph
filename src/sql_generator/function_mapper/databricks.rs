@@ -164,6 +164,10 @@ impl FunctionMapper for DatabricksFunctionMapper {
         format!("string(double({}))", expr)
     }
 
+    fn null_safe_equal(&self, a: &str, b: &str) -> String {
+        format!("({a} <=> {b})")
+    }
+
     fn cast_bool(&self, expr: &str) -> String {
         // Spark BOOLEAN is already nullable and prints true/false, so a plain
         // ANSI cast suffices — no OrNull dance needed. #1057.

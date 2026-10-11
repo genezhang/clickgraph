@@ -104,6 +104,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         )
     }
 
+    fn null_safe_equal(&self, a: &str, b: &str) -> String {
+        format!("isNotDistinctFrom({a}, {b})")
+    }
+
     fn cast_bool(&self, expr: &str) -> String {
         // Nullable(Bool) preserves NULL (bare `CAST(NULL>2 AS Bool)` throws
         // Code 70) and is physically UInt8, so this changes only the wire

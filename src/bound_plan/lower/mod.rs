@@ -54,6 +54,9 @@
 //!   ends a segment, whose CTE repeats each row per element;
 //! * UNION and UNION ALL (`union.rs`, S7d): each arm lowered on its own to a
 //!   CTE, read through one `UNION ALL`;
+//! * subquery expressions (`subquery.rs`, S9): `EXISTS`, pattern
+//!   predicates, `size(pattern)`, pattern comprehensions, each a LEFT JOIN
+//!   of its matches grouped by the variables it reads;
 //! * a final RETURN of values, whole nodes and relationships (`n`, `n.*`)
 //!   and `id(n)`, with the result shape that Bolt, the HTTP graph output and
 //!   embedded `query_graph` read (§4.13, [`ResultColumn`]).
@@ -876,7 +879,6 @@ impl<'s> Lowerer<'s> {
                 }
                 self.relation(input)?;
                 self.finish_relation();
-                self.projection_subqueries(projection)?;
                 for item in &projection.items {
                     let kind = self.kind(&item.expr);
                     self.kinds.insert(item.var, kind);
@@ -5389,6 +5391,8 @@ impl<'s> Lowerer<'s> {
     /// output scope, and a new segment reads from it.
     fn with(&mut self, p: &Projection) -> Result<(), LowerError> {
         self.order_collect(p)?;
+        // After the rows are numbered for `collect` (a CTE).
+        self.projection_subqueries(p)?;
         let alias = self.next_cte_alias();
         let (body, exports, _) = self.projection_body(p, Some(&alias))?;
         self.close_segment(body, exports, alias)
@@ -5559,8 +5563,8 @@ impl<'s> Lowerer<'s> {
         if p.filter.is_some() {
             return unsupported("internal: a RETURN with a WHERE");
         }
-        self.projection_subqueries(p)?;
         self.order_collect(p)?;
+        self.projection_subqueries(p)?;
         let (body, _, shape) = self.projection_body(p, None)?;
         Ok((self.render(body), shape))
     }

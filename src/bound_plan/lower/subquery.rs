@@ -48,15 +48,33 @@ use crate::sql_generator::function_mapper::current_function_mapper;
 
 use super::unwind::Kind;
 use super::{
-    col_at, conjuncts, empty_plan, eq, is_constant, join, not_distinct, parse_var, property_refs,
-    reads_only, referenced_names, select, table_aliases, table_ref, unsupported, At, Body,
-    Correlated, LowerError, Lowerer, Scan, Segment,
+    col_at, conjuncts, empty_plan, eq, is_constant, join, parse_var, property_refs, reads_only,
+    referenced_names, select, table_aliases, table_ref, unsupported, At, Body, Correlated,
+    LowerError, Lowerer, Scan, Segment,
 };
 use crate::bound_plan::expr::{subquery_var, subquery_vars};
 use crate::bound_plan::types::{BoundOp, BoundPattern, Subquery, SubqueryKind, VarId};
 
 /// The column of a subquery's grouped matches holding its count or list.
 const VALUE: &str = "__value";
+
+/// The name of a subquery's grouped matches' CTE, before its number.
+const SUBQUERY_CTE: &str = "subquery_s";
+
+/// `a` NULL-safely equal to `b`, as one join condition (the dialect's),
+/// conjoined with `true` (a conjunct of the ON is an operator application).
+fn null_safe_equal(a: &RenderExpr, b: &RenderExpr) -> OperatorApplication {
+    OperatorApplication {
+        operator: Operator::And,
+        operands: vec![
+            RenderExpr::Raw(
+                current_function_mapper()
+                    .null_safe_equal(&render_expr_to_sql_plain(a), &render_expr_to_sql_plain(b)),
+            ),
+            RenderExpr::Literal(Literal::Boolean(true)),
+        ],
+    }
+}
 
 /// The expression reads no subquery.
 pub(super) fn subquery_free(e: &LogicalExpr) -> bool {
@@ -332,7 +350,7 @@ impl<'s> Lowerer<'s> {
         };
         // Named after `Q`'s own CTEs (a nested subquery's among them).
         let n = self.ctes.len() + 1;
-        let (alias, name) = (format!("s{n}"), format!("subquery_s{n}"));
+        let (alias, name) = (format!("s{n}"), format!("{SUBQUERY_CTE}{n}"));
         self.ctes.push(Cte::new(
             name.clone(),
             CteContent::Structured(Box::new(plan)),
@@ -356,7 +374,9 @@ impl<'s> Lowerer<'s> {
             .map(|c| {
                 let inner = col_at(&alias, &c.column);
                 if c.null_safe {
-                    not_distinct(c.outer, inner)
+                    // One condition ClickHouse keys the join on (the `OR`
+                    // form is not a join key past two relations: Code 403).
+                    null_safe_equal(&c.outer, &inner)
                 } else {
                     eq(c.outer, inner)
                 }
@@ -375,18 +395,17 @@ impl<'s> Lowerer<'s> {
         self.joins.push(j);
         self.emitted.push(alias.clone());
         let column = col_at(&alias, VALUE);
-        let count = || {
+        let or_else = |default: Literal| {
             RenderExpr::ScalarFnCall(ScalarFnCall {
                 name: "coalesce".to_string(),
-                args: vec![column.clone(), RenderExpr::Literal(Literal::Integer(0))],
+                args: vec![column.clone(), RenderExpr::Literal(default)],
             })
         };
         let value = match &sq.kind {
-            SubqueryKind::Exists => RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: Operator::GreaterThan,
-                operands: vec![count(), RenderExpr::Literal(Literal::Integer(0))],
-            }),
-            SubqueryKind::Count => count(),
+            // A boolean column of the groups: one operand as it is, so a
+            // comparison of it needs no parentheses (`EXISTS {…} = …`).
+            SubqueryKind::Exists => or_else(Literal::Boolean(false)),
+            SubqueryKind::Count => or_else(Literal::Integer(0)),
             // A row that joins no group reads the empty list: ClickHouse
             // fills an unmatched `Array` column with its default.
             SubqueryKind::Collect(_) => column.clone(),
@@ -493,6 +512,11 @@ impl<'s> Lowerer<'s> {
     }
 
     /// The current rows under `body`'s SELECT, leaving the segment as it is.
+    /// Without the subqueries applied to them so far: their joins neither
+    /// multiply nor drop rows, and dropping the conditions reading them
+    /// leaves more rows, of which `D` needs only the correlation columns (a
+    /// drive is a superset of the rows' keys); each later drive would
+    /// otherwise copy every earlier subquery.
     fn snapshot(&mut self, body: Body) -> RenderPlan {
         let saved = (
             self.from.clone(),
@@ -500,6 +524,16 @@ impl<'s> Lowerer<'s> {
             self.filters.clone(),
             self.emitted.clone(),
         );
+        let applied: Vec<String> = self
+            .joins
+            .iter()
+            .filter(|j| j.table_name.starts_with(SUBQUERY_CTE))
+            .map(|j| j.table_alias.clone())
+            .collect();
+        self.joins.retain(|j| !applied.contains(&j.table_alias));
+        self.emitted.retain(|a| !applied.contains(a));
+        self.filters
+            .retain(|f| !table_aliases(f).iter().any(|a| applied.contains(a)));
         let plan = self.render(body);
         (self.from, self.joins, self.filters, self.emitted) = saved;
         plan
@@ -529,8 +563,21 @@ impl<'s> Lowerer<'s> {
             body.select.push(select(c.inner.clone(), &c.column));
             body.group_by.push(c.inner.clone());
         }
+        let count = RenderExpr::AggregateFnCall(AggregateFnCall {
+            name: "count".to_string(),
+            args: vec![RenderExpr::Star],
+        });
         let (value, kind) = match &sq.kind {
-            SubqueryKind::Exists | SubqueryKind::Count => (
+            // A boolean column (`Nullable(Bool)`): it reads, compares and
+            // shows as a boolean.
+            SubqueryKind::Exists => (
+                RenderExpr::Raw(
+                    current_function_mapper()
+                        .cast_bool(&format!("{} > 0", render_expr_to_sql_plain(&count))),
+                ),
+                None,
+            ),
+            SubqueryKind::Count => (
                 RenderExpr::AggregateFnCall(AggregateFnCall {
                     name: "count".to_string(),
                     args: vec![RenderExpr::Star],
