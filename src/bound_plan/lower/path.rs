@@ -55,7 +55,7 @@ use crate::render_plan::render_expr::RenderExpr;
 use crate::render_plan::{CategorizedFilters, Cte, CteContent};
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::emitters::clickhouse::variable_length_cte::{
-    spell_edge_identity, PathValues,
+    spell_edge_identity, NodeProperty, PathValues,
 };
 use crate::sql_generator::function_mapper::current_function_mapper;
 
@@ -299,8 +299,9 @@ pub(super) fn path_cte(schema: &GraphSchema, call: PathCall<'_>) -> Result<PathC
         relationship_sql: conjunction(&call.rel),
         both_endpoint_sql: None,
     };
+    let carried = constraint_carried(&call)?;
     let result = CteManager::with_context(Arc::new(schema.clone()), context)
-        .generate_vlp_cte(&ctx, &[], &filters)
+        .generate_vlp_cte(&ctx, &carried, &filters)
         .map_err(|e| LowerError::Unsupported(format!("variable-length relationship: {e}")))?;
     let name = format!("vlp_{start_alias}_{end_alias}");
     if result.outer_where_filters.is_some()
@@ -314,6 +315,66 @@ pub(super) fn path_cte(schema: &GraphSchema, call: PathCall<'_>) -> Result<PathC
         // `*0..0` has no recursion and no relationship.
         edges: call.max != Some(0),
     })
+}
+
+/// The properties an edge constraint reads of its `from` node (S11h): the
+/// generator carries them of each path's last node (`end_<alias>`, the
+/// alias prefixed so it never meets the generator's own `end_id`), where the
+/// next step's constraint reads them. It rewrites `from.<property>` by text,
+/// so a property another referenced one starts with is refused.
+fn constraint_carried(call: &PathCall<'_>) -> Result<Vec<NodeProperty>, LowerError> {
+    let Some(text) = &call.edge.constraints else {
+        return Ok(Vec::new());
+    };
+    let names: Vec<&String> = call.node.property_mappings.keys().collect();
+    let read = |prefix: &str| -> Vec<&str> {
+        text.match_indices(prefix)
+            .filter(|(at, _)| {
+                !text[..*at].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+            })
+            .map(|(at, _)| {
+                let rest = &text[at + prefix.len()..];
+                let end = rest
+                    .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                    .unwrap_or(rest.len());
+                &rest[..end]
+            })
+            .collect()
+    };
+    let mut carried = Vec::new();
+    for prefix in ["from.", "to."] {
+        for prop in read(prefix) {
+            if names
+                .iter()
+                .any(|n| n.as_str() != prop && prop.starts_with(n.as_str()))
+            {
+                return unsupported(format!(
+                    "a variable-length relationship whose edge constraint `{text}` reads \
+                     `{prefix}{prop}`, which another property's name starts"
+                ));
+            }
+            if prefix == "to." {
+                continue;
+            }
+            let Some(crate::graph_catalog::expression_parser::PropertyValue::Column(column)) =
+                call.node.property_mappings.get(prop)
+            else {
+                return unsupported(format!(
+                    "a variable-length relationship whose edge constraint `{text}` reads \
+                     `from.{prop}`, which is not a column"
+                ));
+            };
+            let alias = format!("cg_{prop}");
+            if !carried.iter().any(|p: &NodeProperty| p.alias == alias) {
+                carried.push(NodeProperty {
+                    cypher_alias: "path".to_string(),
+                    column_name: column.clone(),
+                    alias,
+                });
+            }
+        }
+    }
+    Ok(carried)
 }
 
 /// What a shortest-path search reads (§4.11): the relations of its nodes

@@ -265,16 +265,18 @@ edges:
 
 **Supported Operators**: `<`, `<=`, `>`, `>=`, `=`, `!=`, `AND`, `OR`
 
+**Meaning**: a relationship of the definition exists only where its constraint holds of its two nodes. `from` is the node the relationship leaves as stored (`from_id`), `to` the node it enters, whichever way a query reads it. The constraint applies wherever the relationship is matched: single hops in either direction or undirected, several types at once (`[:A|B]`, or no type), variable-length paths, `shortestPath` / `allShortestPaths`, `OPTIONAL MATCH`, `EXISTS { }` and pattern comprehensions.
+
 **Compilation**: 
-- Property names (`from.timestamp`, `to.timestamp`) are resolved using node property_mappings
-- Result: `f.created_timestamp <= t.created_timestamp` (in SQL)
-- For single-hop: Added to target node JOIN ON clause
-- For variable-length paths: Added to CTE WHERE clauses (base and recursive)
+- Property names (`from.timestamp`, `to.timestamp`) are resolved using the node's property_mappings; each must be a declared property mapped to a column (a query over a constraint that reads anything else is refused)
+- Result: `f.created_timestamp <= t.created_timestamp` (in SQL, over the two nodes' tables)
+- A single hop: a condition on the hop's two nodes
+- A variable-length path: a condition on each step
+- Several definitions read together: each definition's rows are those its constraint keeps
 
 **Current Limitations**:
-- Directional only (applies to specific from_node → to_node direction)
-- Single relationship type per constraint
-- No support for complex expressions (subqueries, aggregations)
+- Each definition has its own constraint (a type with several definitions can have one per definition)
+- No support for complex expressions (subqueries, aggregations, comprehensions)
 
 ---
 

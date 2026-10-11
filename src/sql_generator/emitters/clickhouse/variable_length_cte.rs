@@ -1112,7 +1112,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
                                         "✅ Compiled VLP edge constraint for {} (from={}, to={}): {} → {}",
                                         rel_type, actual_from_alias, actual_to_alias, constraint_expr, compiled_sql
                                     );
-                                    return Some(compiled_sql);
+                                    // Parenthesized: it is AND-ed with the
+                                    // step's other conditions (an `OR`
+                                    // would escape them, S11h review).
+                                    return Some(format!("({compiled_sql})"));
                                 }
                                 Err(e) => {
                                     log::warn!(
@@ -1214,7 +1217,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
             compiled
         );
 
-        Some(compiled)
+        // Parenthesized: it is AND-ed with the step's hop limit and edge
+        // uniqueness (an `OR` would escape them, S11h review).
+        Some(format!("({compiled})"))
     }
 
     /// Generate relationship type expression for a given hop
