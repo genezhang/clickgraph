@@ -61,6 +61,9 @@ pub enum BindingSource {
     Unwind { clause: usize },
     /// A comprehension, reduce or lambda variable (local to an expression).
     Local,
+    /// The value of a subquery expression ([`Subquery`]): never referenced
+    /// by name, only by the expression's placeholder.
+    Subquery,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -235,6 +238,13 @@ pub enum BoundOp {
     Skip { input: Box<BoundOp>, count: i64 },
     /// A free-standing LIMIT.
     Limit { input: Box<BoundOp>, count: i64 },
+    /// The rows whose `predicate` is true: a WITH's WHERE that reads a
+    /// subquery of the projected names only, evaluated after the projection
+    /// (and its SKIP / LIMIT), as Neo4j does.
+    Filter {
+        input: Box<BoundOp>,
+        predicate: LogicalExpr,
+    },
     /// Cypher UNION: arms are complete queries. Columns are matched by NAME
     /// (Neo4j: `RETURN 1 AS a, 2 AS b UNION RETURN 2 AS b, 1 AS a` is valid);
     /// `arm_columns[i]` lists arm i's result bindings in the output order.
@@ -245,6 +255,39 @@ pub enum BoundOp {
     },
 }
 
+/// What a subquery expression computes of its matches (§4.12).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SubqueryKind {
+    /// `EXISTS { … }`, a pattern predicate, `exists(pattern)`: whether there
+    /// is one.
+    Exists,
+    /// `size(pattern)` (`COUNT { … }` in Neo4j 5), `size([pattern | …])`:
+    /// how many.
+    Count,
+    /// A pattern comprehension: this expression of each match, in a list
+    /// (NULLs kept). Bound in the subquery's scope.
+    Collect(LogicalExpr),
+}
+
+/// A subquery expression (§4.12): a MATCH correlated with the record it is
+/// evaluated for. An expression reads its value through a placeholder call
+/// `__cg_subquery(<var>, <correlation>...)` (`expr::SUBQUERY_FN`), whose
+/// arguments after the first are the correlation, so every check of what an
+/// expression reads sees the variables the subquery reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Subquery {
+    /// The binding of its value (`BindingSource::Subquery`).
+    pub var: VarId,
+    pub kind: SubqueryKind,
+    /// A `Match` over `Unit`: the pattern, its WHERE, the variables it
+    /// introduces (local to the subquery). A variable of the enclosing scope
+    /// is bound before it.
+    pub plan: BoundOp,
+    /// The variables of the enclosing scopes it reads (the correlation set),
+    /// nested subqueries' included.
+    pub correlation: Vec<VarId>,
+}
+
 /// The result of binding a statement.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoundStatement {
@@ -253,11 +296,18 @@ pub struct BoundStatement {
     pub bindings: Vec<Binding>,
     /// The result columns: (name, binding), in order.
     pub columns: Vec<(String, VarId)>,
+    /// Every subquery expression of the statement.
+    pub subqueries: Vec<Subquery>,
 }
 
 impl BoundStatement {
     pub fn binding(&self, var: VarId) -> &Binding {
         &self.bindings[var.0 as usize]
+    }
+
+    /// The subquery whose value is `var`.
+    pub fn subquery(&self, var: VarId) -> Option<&Subquery> {
+        self.subqueries.iter().find(|s| s.var == var)
     }
 }
 

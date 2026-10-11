@@ -504,6 +504,9 @@ pub(crate) struct Lists {
     pub ordered_collect: fn(&str, &str, &str) -> String,
     /// An aggregate: the group's values of `{0}` for which `{1}` holds.
     pub collect_if: fn(&str, &str) -> String,
+    /// An aggregate: every one of the group's values of `{0}`, NULL
+    /// included (a pattern comprehension's list).
+    pub collect_all: fn(&str) -> String,
     /// Element `{1}` (1-based) of the tuple `{0}`.
     pub element: fn(&str, usize) -> String,
     /// Whether the value `{0}` is NULL, as a function call.

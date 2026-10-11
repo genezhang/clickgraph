@@ -66,6 +66,7 @@ mod elements;
 mod embedded;
 mod expr;
 mod path;
+mod subquery;
 #[cfg(test)]
 mod tests;
 mod union;
@@ -271,6 +272,7 @@ impl Query<'_> {
             collect_order: None,
             one_row: true,
             identities: Vec::new(),
+            subqueries: &self.stmt.subqueries,
         };
         let lowered = l
             .relation(input)
@@ -568,6 +570,8 @@ struct Lowerer<'s> {
     /// The identity of each node, relationship or graph value the final
     /// RETURN returns, by item name ([`LoweredQuery::identities`]).
     identities: Vec<(String, Vec<RenderExpr>)>,
+    /// The statement's subquery expressions (`subquery.rs`).
+    subqueries: &'s [Subquery],
 }
 
 /// The elements of a path variable, in path order.
@@ -872,6 +876,7 @@ impl<'s> Lowerer<'s> {
                 }
                 self.relation(input)?;
                 self.finish_relation();
+                self.projection_subqueries(projection)?;
                 for item in &projection.items {
                     let kind = self.kind(&item.expr);
                     self.kinds.insert(item.var, kind);
@@ -884,6 +889,8 @@ impl<'s> Lowerer<'s> {
             }
             BoundOp::Sort { input, keys } => {
                 self.relation(input)?;
+                let exprs: Vec<&LogicalExpr> = keys.iter().map(|k| &k.expr).collect();
+                self.apply_subqueries(&exprs)?;
                 let keys = self.sort_keys(keys, &HashMap::new())?;
                 // Sorting by constants keeps the order the rows had.
                 if !keys.is_empty() {
@@ -904,7 +911,15 @@ impl<'s> Lowerer<'s> {
             BoundOp::Unwind { input, expr, var } => {
                 self.relation(input)?;
                 self.finish_relation();
+                self.apply_subqueries(&[expr])?;
                 self.unwind(expr, *var)
+            }
+            BoundOp::Filter { input, predicate } => {
+                self.relation(input)?;
+                self.apply_subqueries(&[predicate])?;
+                let e = self.expr(predicate, &HashMap::new())?;
+                self.filters.push(e);
+                Ok(())
             }
             BoundOp::Union { .. } => unsupported("UNION (S7)"),
         }
@@ -917,6 +932,10 @@ impl<'s> Lowerer<'s> {
         pattern: &BoundPattern,
         predicate: Option<&LogicalExpr>,
     ) -> Result<(), LowerError> {
+        // The WHERE conjuncts that read a subquery are applied to the
+        // clause's rows once they are built (`subquery.rs`).
+        let (plain, deferred) = Self::split_subquery_conjuncts(predicate);
+        let predicate = plain.as_ref();
         // Decide every element's scan first (a relationship's table depends
         // on its endpoints' labels), then join them in path order: node,
         // relationship, node, … so each scan joins on the one before it.
@@ -1057,6 +1076,32 @@ impl<'s> Lowerer<'s> {
         }
         self.uniqueness(&clause_rels)?;
         self.filters.extend(filter);
+        if !deferred.is_empty() {
+            // A shortest path's WHERE conjunct reading the path holds in its
+            // search (§4.8), where a subquery is not applied.
+            let path_vars: Vec<String> = pattern
+                .parts
+                .iter()
+                .filter(|p| p.shortest.is_some())
+                .flat_map(|p| p.path_var.into_iter().chain(p.rels.iter().map(|r| r.var)))
+                .map(|v| v.name())
+                .collect();
+            if deferred.iter().any(|c| {
+                referenced_names(c, false)
+                    .iter()
+                    .any(|n| path_vars.contains(n))
+            }) {
+                return unsupported(
+                    "a shortestPath's WHERE conjunct reading a subquery and the path",
+                );
+            }
+            let deferred: Vec<&LogicalExpr> = deferred.iter().collect();
+            self.apply_subqueries(&deferred)?;
+            for c in deferred {
+                let e = self.expr(c, &HashMap::new())?;
+                self.filters.push(e);
+            }
+        }
         Ok(())
     }
 
@@ -1114,6 +1159,9 @@ impl<'s> Lowerer<'s> {
                     .flat_map(|r| r.props.iter().map(|(_, e)| e)),
             );
         }
+        // And what its WHERE's subqueries read (`subquery.rs`).
+        let nested = self.nested_subquery_exprs(&read);
+        read.extend(nested);
         let mut where_only: Vec<VarId> = Vec::new();
         // Read by the clause, NULL on every input row (an element that
         // matches nothing): a constant NULL in `Q` too, no column.
@@ -5208,6 +5256,24 @@ impl<'s> Lowerer<'s> {
         body: &mut Body,
         keys: &mut Vec<RenderExpr>,
     ) -> Result<Scan<'s>, LowerError> {
+        let demanded = self.demand.get(&out);
+        let mut names: BTreeSet<String> = demanded.into_iter().flatten().cloned().collect();
+        if names.remove(ALL_PROPERTIES) {
+            names.extend(self.all_property_names(src));
+        }
+        self.export_element_with(src, out, alias, body, keys, &names)
+    }
+
+    /// [`Self::export_element`] with the properties `names`.
+    fn export_element_with(
+        &self,
+        src: VarId,
+        out: VarId,
+        alias: &str,
+        body: &mut Body,
+        keys: &mut Vec<RenderExpr>,
+        names: &BTreeSet<String>,
+    ) -> Result<Scan<'s>, LowerError> {
         let Some(scan) = self.scans.get(&src).cloned() else {
             return unsupported(format!("internal: {src} has no scan"));
         };
@@ -5277,12 +5343,7 @@ impl<'s> Lowerer<'s> {
             }));
         }
         let mut props = HashMap::new();
-        let demanded = self.demand.get(&out);
-        let mut names: BTreeSet<String> = demanded.into_iter().flatten().cloned().collect();
-        if names.remove(ALL_PROPERTIES) {
-            names.extend(self.all_property_names(src));
-        }
-        for prop in &names {
+        for prop in names {
             let e = self.property(src, prop)?;
             if is_constant(&e) {
                 props.insert(prop.clone(), e);
@@ -5468,11 +5529,37 @@ impl<'s> Lowerer<'s> {
         Ok(())
     }
 
+    /// Apply the subqueries a projection reads to its input rows: its items',
+    /// and (when it neither aggregates nor is DISTINCT, so they are evaluated
+    /// per input row) its ORDER BY's and WHERE's, if they read only the input.
+    fn projection_subqueries(&mut self, p: &Projection) -> Result<(), LowerError> {
+        let items: Vec<&LogicalExpr> = p.items.iter().map(|i| &i.expr).collect();
+        self.apply_subqueries(&items)?;
+        let modifiers: Vec<&LogicalExpr> = p
+            .order_by
+            .iter()
+            .map(|k| &k.expr)
+            .chain(&p.filter)
+            .filter(|e| !subquery::subquery_free(e))
+            .collect();
+        if modifiers.is_empty() {
+            return Ok(());
+        }
+        if p.aggregates() || p.distinct || !modifiers.iter().all(|e| self.subqueries_readable(e)) {
+            return unsupported(
+                "a subquery expression in the ORDER BY / WHERE of a projection reading a \
+                 projected name, or of a DISTINCT or aggregating projection",
+            );
+        }
+        self.apply_subqueries(&modifiers)
+    }
+
     /// The final RETURN.
     fn project(&mut self, p: &Projection) -> Result<(RenderPlan, Vec<ResultColumn>), LowerError> {
         if p.filter.is_some() {
             return unsupported("internal: a RETURN with a WHERE");
         }
+        self.projection_subqueries(p)?;
         self.order_collect(p)?;
         let (body, _, shape) = self.projection_body(p, None)?;
         Ok((self.render(body), shape))
@@ -5912,12 +5999,24 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
                 exprs(input, out);
                 out.extend(keys.iter().map(|k| &k.expr));
             }
+            BoundOp::Filter { input, predicate } => {
+                exprs(input, out);
+                out.push(predicate);
+            }
             BoundOp::Skip { input, .. } | BoundOp::Limit { input, .. } => exprs(input, out),
             BoundOp::Union { arms, .. } => arms.iter().for_each(|a| exprs(a, out)),
         }
     }
     let mut all = Vec::new();
     exprs(&stmt.plan, &mut all);
+    // What a subquery reads of the variables it is correlated with is read
+    // where it is applied.
+    for sq in &stmt.subqueries {
+        exprs(&sq.plan, &mut all);
+        if let SubqueryKind::Collect(p) = &sq.kind {
+            all.push(p);
+        }
+    }
     // A WITH item that passes a variable through reads nothing of it: what
     // later clauses read of it is demanded of its source (below).
     fn pass_through<'a>(op: &'a BoundOp, out: &mut Vec<&'a LogicalExpr>) {
@@ -5937,6 +6036,7 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
             BoundOp::Match { input, .. }
             | BoundOp::Unwind { input, .. }
             | BoundOp::Sort { input, .. }
+            | BoundOp::Filter { input, .. }
             | BoundOp::Skip { input, .. }
             | BoundOp::Limit { input, .. } => pass_through(input, out),
             BoundOp::Union { arms, .. } => arms.iter().for_each(|a| pass_through(a, out)),
@@ -5966,6 +6066,7 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
             BoundOp::Match { input, .. }
             | BoundOp::Unwind { input, .. }
             | BoundOp::Sort { input, .. }
+            | BoundOp::Filter { input, .. }
             | BoundOp::Skip { input, .. }
             | BoundOp::Limit { input, .. } => keyed(input, out),
             BoundOp::Union { arms, .. } => arms.iter().for_each(|a| keyed(a, out)),
@@ -6038,7 +6139,11 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
             add(v, PATH_KEY);
         }
     }
-    for part in pattern_parts(&stmt.plan) {
+    let subquery_parts = stmt
+        .subqueries
+        .iter()
+        .flat_map(|sq| pattern_parts(&sq.plan));
+    for part in pattern_parts(&stmt.plan).into_iter().chain(subquery_parts) {
         for n in &part.nodes {
             n.props.iter().for_each(|(p, _)| add(n.var, p));
         }
@@ -6168,6 +6273,7 @@ fn element_contexts(op: &BoundOp) -> Vec<&LogicalExpr> {
         }
         BoundOp::Match { input, .. }
         | BoundOp::Sort { input, .. }
+        | BoundOp::Filter { input, .. }
         | BoundOp::Skip { input, .. }
         | BoundOp::Limit { input, .. } => element_contexts(input),
         BoundOp::Union { arms, .. } => arms.iter().flat_map(element_contexts).collect(),
@@ -6183,6 +6289,11 @@ fn graph_demand(
     out: &mut Vec<(VarId, &'static str)>,
     nested: bool,
 ) {
+    // A subquery's placeholder: its arguments name what it reads, which its
+    // own expressions demand (`demand`).
+    if crate::bound_plan::expr::subquery_var(e).is_some() {
+        return;
+    }
     let structural = match e {
         LogicalExpr::ScalarFnCall(f) => match f.args.as_slice() {
             [arg] if f.name.eq_ignore_ascii_case("size") => {
@@ -6225,6 +6336,7 @@ fn pattern_parts(op: &BoundOp) -> Vec<&PatternPart> {
         BoundOp::Unwind { input, .. }
         | BoundOp::Project { input, .. }
         | BoundOp::Sort { input, .. }
+        | BoundOp::Filter { input, .. }
         | BoundOp::Skip { input, .. }
         | BoundOp::Limit { input, .. } => pattern_parts(input),
         BoundOp::Union { arms, .. } => arms.iter().flat_map(pattern_parts).collect(),

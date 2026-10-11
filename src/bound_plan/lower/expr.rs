@@ -40,6 +40,7 @@ use crate::sql_generator::function_mapper::current_function_mapper;
 use super::elements::Elem;
 use super::unwind::{comprehension, Comprehension, Kind};
 use super::{parse_var, unsupported, At, LowerError, Lowerer, Scan};
+use crate::bound_plan::expr::subquery_var;
 use crate::bound_plan::types::{BindingKind, BindingSource, VarId};
 
 type Items = HashMap<VarId, RenderExpr>;
@@ -306,6 +307,14 @@ impl Lowerer<'_> {
             }
             // A map whose values keep their types (S7e3); `{}` stays a map.
             LogicalExpr::MapLiteral(entries) => self.map_literal(entries, items)?,
+            // A subquery's value, applied to the rows before
+            // (`subquery.rs`).
+            LogicalExpr::ScalarFnCall(_) if subquery_var(e).is_some() => {
+                match subquery_var(e).and_then(|v| self.values.get(&v)) {
+                    Some(value) => value.clone(),
+                    None => return unsupported("internal: a subquery expression not applied"),
+                }
+            }
             LogicalExpr::ScalarFnCall(f) => self.scalar_fn(f, items)?,
             LogicalExpr::AggregateFnCall(f) => self.aggregate_fn(f, items)?,
             LogicalExpr::Case(c) => {
@@ -359,12 +368,14 @@ impl Lowerer<'_> {
             | LogicalExpr::ColumnAlias(_)
             | LogicalExpr::Column(_)
             | LogicalExpr::CteEntityRef(_) => return unsupported("a planner-internal expression"),
+            // Subquery expressions are bound as `Subquery`s (S9); these
+            // are the legacy planner's forms.
             LogicalExpr::PathPattern(_)
             | LogicalExpr::InSubquery(_)
             | LogicalExpr::ExistsSubquery(_)
             | LogicalExpr::PatternCount(_)
             | LogicalExpr::PatternComprehension(_) => {
-                return unsupported("a graph pattern inside an expression (S9)")
+                return unsupported("a graph pattern inside an expression")
             }
         })
     }
@@ -372,7 +383,7 @@ impl Lowerer<'_> {
     /// A list's element: a boolean one is cast to a boolean, as ClickHouse
     /// holds a comparison as `UInt8` (a list would show 1 / 0; a value in a
     /// column is cast by the emitter).
-    fn element(&self, e: &LogicalExpr, items: &Items) -> Result<RenderExpr, LowerError> {
+    pub(super) fn element(&self, e: &LogicalExpr, items: &Items) -> Result<RenderExpr, LowerError> {
         let value = self.expr(e, items)?;
         if self.kind(e) != Kind::Boolean
             || matches!(e, LogicalExpr::Literal(lx::Literal::Boolean(_)))

@@ -283,6 +283,9 @@ impl FunctionMapper for ClickhouseFunctionMapper {
                 )
             },
             collect_if: |v, present| format!("groupArrayIf({v}, {present})"),
+            // `groupArray` skips NULLs; a one-element tuple of one is not
+            // NULL.
+            collect_all: |v| format!("arrayMap(t -> t.1, groupArray(tuple({v})))"),
             element: |t, i| format!("tupleElement({t}, {i})"),
             is_null: |v| format!("isNull({v})"),
             // An aggregate has one row also over none.

@@ -9,17 +9,50 @@
 //! A name that resolves nowhere is "Variable `x` not defined".
 //!
 //! Expressions that contain graph patterns (EXISTS, pattern predicates,
-//! `size(pattern)`, pattern comprehensions) are correlated subqueries: they
-//! are bound in S9 and are `Unsupported` here.
+//! `exists(pattern)`, `size(pattern)`, pattern comprehensions) are correlated
+//! subqueries (S9, §4.12). Before conversion each is taken out of the AST and
+//! bound by the binder as a MATCH over the expression's scope
+//! ([`NameEnv::subquery`]); the expression keeps a placeholder call
+//! `__cg_subquery(<var>)` ([`SUBQUERY_FN`]), whose arguments become the
+//! subquery's value binding and its correlation when renamed. A subquery
+//! inside a list comprehension, `reduce` or lambda (which could read the
+//! local variable) is `Unsupported`.
 
 use crate::graph_catalog::expression_parser::PropertyValue;
-use crate::open_cypher_parser::ast::Expression;
+use crate::open_cypher_parser::ast::{self, Expression, PathPattern};
 use crate::query_planner::logical_expr::{
-    AggregateFnCall, LambdaExpr, LogicalCase, LogicalExpr, OperatorApplication, PropertyAccess,
-    ReduceExpr, ScalarFnCall, TableAlias,
+    AggregateFnCall, LambdaExpr, Literal, LogicalCase, LogicalExpr, OperatorApplication,
+    PropertyAccess, ReduceExpr, ScalarFnCall, TableAlias,
 };
 
 use super::types::{BindError, VarId};
+
+/// The placeholder function a subquery expression's value is read through:
+/// `__cg_subquery(<var>, <correlation>...)` (`types::Subquery`).
+pub(crate) const SUBQUERY_FN: &str = "__cg_subquery";
+
+/// What a subquery expression, as written, computes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RawKind {
+    /// `EXISTS { … }`, `exists(pattern)`.
+    Exists,
+    /// A pattern used as a predicate: it may not introduce variables.
+    Predicate,
+    /// `size(pattern)`, `size([pattern …])`.
+    Count,
+    /// A pattern comprehension.
+    Collect,
+}
+
+/// A subquery expression taken out of its expression.
+pub(crate) struct RawSubquery<'a> {
+    pub kind: RawKind,
+    pub pattern: PathPattern<'a>,
+    pub where_: Option<Expression<'a>>,
+    /// A pattern comprehension's projection (also of one under `size()`,
+    /// bound for its errors only).
+    pub projection: Option<Expression<'a>>,
+}
 
 /// Resolves the names an expression may reference, and allocates bindings for
 /// the expression's own local variables.
@@ -28,6 +61,11 @@ pub(crate) trait NameEnv {
     fn lookup(&self, name: &str) -> Option<VarId>;
     /// A new local binding (lambda parameter, reduce variable).
     fn new_local(&mut self, name: &str) -> VarId;
+    /// Bind a subquery expression in the clause's scope: the binding of its
+    /// value.
+    fn subquery(&mut self, sq: RawSubquery<'_>) -> Result<VarId, BindError>;
+    /// The correlation of the subquery whose value is `var`.
+    fn correlation(&self, var: VarId) -> Option<Vec<VarId>>;
 }
 
 /// Bind one AST expression.
@@ -35,10 +73,243 @@ pub(crate) fn bind_expr(
     ast: &Expression<'_>,
     env: &mut dyn NameEnv,
 ) -> Result<LogicalExpr, BindError> {
-    let converted = LogicalExpr::try_from(ast.clone())
+    let mut ast = ast.clone();
+    hoist_subqueries(&mut ast, env, false)?;
+    let converted = LogicalExpr::try_from(ast)
         .map_err(|e| BindError::Unsupported(format!("expression: {e}")))?;
     let mut locals: Vec<(String, VarId)> = Vec::new();
     rename(converted, env, &mut locals)
+}
+
+/// Does the AST expression contain a subquery expression?
+pub(crate) fn has_subquery(e: &Expression<'_>) -> bool {
+    match e {
+        Expression::ExistsExpression(_) | Expression::PatternComprehension(_) => true,
+        Expression::PathPattern(PathPattern::ConnectedPattern(_)) => true,
+        _ => ast_children(e).into_iter().any(has_subquery),
+    }
+}
+
+/// The subexpressions of an AST expression.
+fn ast_children<'e, 'a>(e: &'e Expression<'a>) -> Vec<&'e Expression<'a>> {
+    match e {
+        Expression::Literal(_)
+        | Expression::Variable(_)
+        | Expression::Parameter(_)
+        | Expression::PropertyAccessExp(_)
+        | Expression::LabelExpression { .. }
+        | Expression::PathPattern(_)
+        | Expression::ExistsExpression(_)
+        | Expression::PatternComprehension(_) => Vec::new(),
+        Expression::List(xs) => xs.iter().collect(),
+        Expression::FunctionCallExp(f) => f.args.iter().collect(),
+        Expression::OperatorApplicationExp(op) => op.operands.iter().collect(),
+        Expression::Case(c) => {
+            let mut v: Vec<&Expression<'a>> = c.expr.iter().map(|b| &**b).collect();
+            for (w, t) in &c.when_then {
+                v.push(w);
+                v.push(t);
+            }
+            v.extend(c.else_expr.iter().map(|b| &**b));
+            v
+        }
+        Expression::ReduceExp(r) => vec![&*r.initial_value, &*r.list, &*r.expression],
+        Expression::MapLiteral(entries) => entries.iter().map(|(_, v)| v).collect(),
+        Expression::Lambda(l) => vec![&*l.body],
+        Expression::ListComprehension(lc) => {
+            let mut v = vec![&*lc.list_expr];
+            v.extend(lc.where_clause.iter().map(|b| &**b));
+            v.extend(lc.projection.iter().map(|b| &**b));
+            v
+        }
+        Expression::ArraySubscript { array, index } => vec![&**array, &**index],
+        Expression::ArraySlicing { array, from, to } => {
+            let mut v = vec![&**array];
+            v.extend(from.iter().map(|b| &**b));
+            v.extend(to.iter().map(|b| &**b));
+            v
+        }
+    }
+}
+
+/// Replace every subquery expression of `e` by its placeholder, binding it
+/// through `env`. `in_lambda`: `e` is inside a list comprehension, `reduce`
+/// or lambda.
+fn hoist_subqueries(
+    e: &mut Expression<'_>,
+    env: &mut dyn NameEnv,
+    in_lambda: bool,
+) -> Result<(), BindError> {
+    let raw = match e {
+        Expression::ExistsExpression(_) | Expression::PatternComprehension(_) => true,
+        Expression::PathPattern(PathPattern::ConnectedPattern(_)) => true,
+        Expression::FunctionCallExp(f) => {
+            if f.name.eq_ignore_ascii_case(SUBQUERY_FN) {
+                return Err(BindError::Unsupported(format!(
+                    "a function named {SUBQUERY_FN}"
+                )));
+            }
+            let name = f.name.to_ascii_lowercase();
+            match f.args.as_slice() {
+                [Expression::PathPattern(PathPattern::ConnectedPattern(_))] => {
+                    name == "size" || name == "exists"
+                }
+                [Expression::PatternComprehension(_)] => name == "size",
+                _ => false,
+            }
+        }
+        _ => false,
+    };
+    if raw {
+        if in_lambda {
+            return Err(BindError::Unsupported(
+                "a subquery expression inside a list comprehension, reduce or lambda".to_string(),
+            ));
+        }
+        let taken = std::mem::replace(e, Expression::Literal(ast::Literal::Null));
+        let sq = match taken {
+            Expression::ExistsExpression(x) => RawSubquery {
+                kind: RawKind::Exists,
+                pattern: x.pattern,
+                where_: x.where_clause.map(|w| w.conditions),
+                projection: None,
+            },
+            Expression::PathPattern(pattern) => RawSubquery {
+                kind: RawKind::Predicate,
+                pattern,
+                where_: None,
+                projection: None,
+            },
+            Expression::PatternComprehension(pc) => RawSubquery {
+                kind: RawKind::Collect,
+                pattern: *pc.pattern,
+                where_: pc.where_clause.map(|w| *w),
+                projection: Some(*pc.projection),
+            },
+            Expression::FunctionCallExp(mut f) => {
+                let exists = f.name.eq_ignore_ascii_case("exists");
+                match f.args.pop() {
+                    Some(Expression::PathPattern(pattern)) => RawSubquery {
+                        kind: if exists {
+                            RawKind::Exists
+                        } else {
+                            RawKind::Count
+                        },
+                        pattern,
+                        where_: None,
+                        projection: None,
+                    },
+                    Some(Expression::PatternComprehension(pc)) => RawSubquery {
+                        kind: RawKind::Count,
+                        pattern: *pc.pattern,
+                        where_: pc.where_clause.map(|w| *w),
+                        projection: Some(*pc.projection),
+                    },
+                    _ => {
+                        return Err(BindError::Unsupported(
+                            "internal: a subquery call without its pattern".to_string(),
+                        ))
+                    }
+                }
+            }
+            _ => {
+                return Err(BindError::Unsupported(
+                    "internal: not a subquery expression".to_string(),
+                ))
+            }
+        };
+        let var = env.subquery(sq)?;
+        *e = Expression::FunctionCallExp(ast::FunctionCall {
+            name: SUBQUERY_FN.to_string(),
+            args: vec![Expression::Literal(ast::Literal::Integer(i64::from(var.0)))],
+        });
+        return Ok(());
+    }
+    match e {
+        Expression::ReduceExp(r) => {
+            hoist_subqueries(&mut r.initial_value, env, in_lambda)?;
+            hoist_subqueries(&mut r.list, env, in_lambda)?;
+            hoist_subqueries(&mut r.expression, env, true)
+        }
+        Expression::Lambda(l) => hoist_subqueries(&mut l.body, env, true),
+        Expression::ListComprehension(lc) => {
+            hoist_subqueries(&mut lc.list_expr, env, in_lambda)?;
+            if let Some(w) = lc.where_clause.as_mut() {
+                hoist_subqueries(w, env, true)?;
+            }
+            if let Some(p) = lc.projection.as_mut() {
+                hoist_subqueries(p, env, true)?;
+            }
+            Ok(())
+        }
+        Expression::List(xs) => xs
+            .iter_mut()
+            .try_for_each(|x| hoist_subqueries(x, env, in_lambda)),
+        Expression::FunctionCallExp(f) => f
+            .args
+            .iter_mut()
+            .try_for_each(|x| hoist_subqueries(x, env, in_lambda)),
+        Expression::OperatorApplicationExp(op) => op
+            .operands
+            .iter_mut()
+            .try_for_each(|x| hoist_subqueries(x, env, in_lambda)),
+        Expression::Case(c) => {
+            if let Some(x) = c.expr.as_mut() {
+                hoist_subqueries(x, env, in_lambda)?;
+            }
+            for (w, t) in c.when_then.iter_mut() {
+                hoist_subqueries(w, env, in_lambda)?;
+                hoist_subqueries(t, env, in_lambda)?;
+            }
+            if let Some(x) = c.else_expr.as_mut() {
+                hoist_subqueries(x, env, in_lambda)?;
+            }
+            Ok(())
+        }
+        Expression::MapLiteral(entries) => entries
+            .iter_mut()
+            .try_for_each(|(_, v)| hoist_subqueries(v, env, in_lambda)),
+        Expression::ArraySubscript { array, index } => {
+            hoist_subqueries(array, env, in_lambda)?;
+            hoist_subqueries(index, env, in_lambda)
+        }
+        Expression::ArraySlicing { array, from, to } => {
+            hoist_subqueries(array, env, in_lambda)?;
+            if let Some(x) = from.as_mut() {
+                hoist_subqueries(x, env, in_lambda)?;
+            }
+            if let Some(x) = to.as_mut() {
+                hoist_subqueries(x, env, in_lambda)?;
+            }
+            Ok(())
+        }
+        Expression::Literal(_)
+        | Expression::Variable(_)
+        | Expression::Parameter(_)
+        | Expression::PropertyAccessExp(_)
+        | Expression::LabelExpression { .. }
+        | Expression::PathPattern(_)
+        | Expression::ExistsExpression(_)
+        | Expression::PatternComprehension(_) => Ok(()),
+    }
+}
+
+/// The subquery whose value a bound expression's placeholder call reads.
+pub(crate) fn subquery_var(e: &LogicalExpr) -> Option<VarId> {
+    match e {
+        LogicalExpr::ScalarFnCall(f) if f.name == SUBQUERY_FN => match f.args.first() {
+            Some(LogicalExpr::Literal(Literal::Integer(i))) => u32::try_from(*i).ok().map(VarId),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The subqueries a bound expression reads (not those nested in them).
+pub(crate) fn subquery_vars(e: &LogicalExpr) -> Vec<VarId> {
+    let mut out = Vec::new();
+    visit(e, &mut |x| out.extend(subquery_var(x)));
+    out
 }
 
 fn resolve(name: &str, env: &dyn NameEnv, locals: &[(String, VarId)]) -> Result<VarId, BindError> {
@@ -117,6 +388,26 @@ fn rename(
                 name,
                 args: rename_all(args.into_iter().map(hoist_distinct).collect(), env, locals)?,
             })
+        }
+        // A subquery's placeholder: its value binding, then its correlation
+        // (what every check of the variables an expression reads sees).
+        LogicalExpr::ScalarFnCall(ScalarFnCall { name, args }) if name == SUBQUERY_FN => {
+            let var = match args.as_slice() {
+                [LogicalExpr::Literal(Literal::Integer(i))] => u32::try_from(*i).ok().map(VarId),
+                _ => None,
+            };
+            let Some((var, correlation)) = var.and_then(|v| Some((v, env.correlation(v)?))) else {
+                return Err(BindError::Unsupported(format!(
+                    "a function named {SUBQUERY_FN}"
+                )));
+            };
+            let mut args = vec![LogicalExpr::Literal(Literal::Integer(i64::from(var.0)))];
+            args.extend(
+                correlation
+                    .into_iter()
+                    .map(|v| LogicalExpr::TableAlias(TableAlias(v.name()))),
+            );
+            LogicalExpr::ScalarFnCall(ScalarFnCall { name, args })
         }
         LogicalExpr::ScalarFnCall(ScalarFnCall { name, args }) => {
             LogicalExpr::ScalarFnCall(ScalarFnCall {
@@ -200,7 +491,8 @@ fn rename(
             from: from.map(|e| rename_box(e, env, locals)).transpose()?,
             to: to.map(|e| rename_box(e, env, locals)).transpose()?,
         },
-        // Graph patterns in expressions are correlated subqueries (S9).
+        // Graph patterns in expressions are hoisted before conversion
+        // (`hoist_subqueries`); what is left is not a subquery expression.
         LogicalExpr::PathPattern(_)
         | LogicalExpr::ExistsSubquery(_)
         | LogicalExpr::PatternCount(_)

@@ -4916,3 +4916,159 @@ graph_schema:
         assert!(err.contains("another number of columns"), "{q}: {err}");
     }
 }
+
+// ------------------------------------------------------------- S9 subqueries
+
+#[test]
+fn an_exists_subquery_joins_its_matches_grouped_by_the_correlation() {
+    // Anchored on the shared node, read from the edge's endpoint column;
+    // one group per node, so the rows are neither multiplied nor dropped.
+    has(
+        "MATCH (a:User) WHERE EXISTS { (a)-[:FOLLOWS]->(:User) } RETURN a.name",
+        &[
+            "subquery_s1 AS ( SELECT v1.follower_id AS \"v0__user_id\", count(*) AS \"__value\"",
+            "GROUP BY v1.follower_id",
+            "LEFT JOIN subquery_s1 AS s1 ON v0.user_id = s1.v0__user_id",
+            "WHERE coalesce(s1.__value, 0) > 0",
+        ],
+    );
+    // A pattern predicate, `NOT`, and `exists()` are the same subquery.
+    has(
+        "MATCH (a:User) WHERE NOT (a)-[:FOLLOWS]->() RETURN a.name",
+        &["WHERE NOT coalesce(s1.__value, 0) > 0"],
+    );
+    has(
+        "MATCH (a:User) RETURN a.name, exists((a)-[:FOLLOWS]->()) AS e",
+        &["CAST(coalesce(s1.__value, 0) > 0 AS Nullable(Bool)) AS \"e\""],
+    );
+}
+
+#[test]
+fn a_count_and_a_pattern_comprehension_are_the_groups_count_and_list() {
+    has(
+        "MATCH (a:User) RETURN a.name, size((a)-[:FOLLOWS]->()) AS c",
+        &["coalesce(s1.__value, 0) AS \"c\""],
+    );
+    // `size()` of a pattern comprehension counts its matches.
+    has(
+        "MATCH (a:User) RETURN size([(a)-[:FOLLOWS]->(b) WHERE b.age > 3 | b]) AS c",
+        &[
+            "count(*) AS \"__value\"",
+            "coalesce(s1.__value, 0) AS \"c\"",
+        ],
+    );
+    // Every match's value, NULLs kept (`groupArray` skips them).
+    has(
+        "MATCH (a:User) RETURN [(a)-[:FOLLOWS]->(b) | b.name] AS l",
+        &[
+            "arrayMap(t -> t.1, groupArray(tuple(v2.full_name))) AS \"__value\"",
+            "s1.__value AS \"l\"",
+        ],
+    );
+}
+
+#[test]
+fn a_subquery_reading_a_relationship_or_a_value_is_driven_by_a_copy_of_the_rows() {
+    // The rows so far, distinct by what the subquery reads, are its input;
+    // the segment stays open (no `with_` CTE).
+    let got = squash(&sql(
+        "MATCH (a:User)-[r:FOLLOWS]->(b) WHERE EXISTS { ()-[r]->(c) WHERE c.age > 3 } \
+         RETURN a.name",
+    ));
+    for p in [
+        "subquery_d1 AS ( SELECT DISTINCT",
+        "FROM subquery_d1 AS d1",
+        "LEFT JOIN subquery_s2 AS s2 ON",
+    ] {
+        assert!(got.contains(p), "missing `{p}` in\n{got}");
+    }
+    assert!(!got.contains("with_w"), "{got}");
+    // A value read only by the WHERE can be NULL and decide it: joined
+    // NULL-safely.
+    has(
+        "MATCH (a:User) WITH a.age AS g MATCH (b:User) WHERE EXISTS { MATCH (c:User) WHERE c.age = g } \
+         RETURN b.name",
+        &["IS NULL AND s"],
+    );
+}
+
+#[test]
+fn nested_subqueries_are_applied_to_their_matches() {
+    // The inner one, reading the outermost node's property, is applied in
+    // the outer one's matches, whose CTE is named after it.
+    let got = squash(&sql(
+        "MATCH (a:User) WHERE EXISTS { (a)-[:FOLLOWS]->(b) WHERE NOT EXISTS { \
+         (b)-[:FOLLOWS]->(c) WHERE c.age < a.age } } RETURN a.name",
+    ));
+    for p in [
+        "subquery_s2 AS (",
+        "subquery_s3 AS (",
+        "LEFT JOIN subquery_s2 AS s2 ON",
+        "WHERE NOT coalesce(s2.__value, 0) > 0",
+        "LEFT JOIN subquery_s3 AS s3 ON",
+    ] {
+        assert!(got.contains(p), "missing `{p}` in\n{got}");
+    }
+}
+
+#[test]
+fn a_subquery_in_an_optional_match_decides_its_matches() {
+    let got = squash(&sql(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b) WHERE EXISTS { (b)-[:LIKED]->() } \
+         RETURN a.name, b.name",
+    ));
+    let optional = got.find("optional_o").expect(&got);
+    let applied = got.find("LEFT JOIN subquery_s1").expect(&got);
+    assert!(applied > optional, "applied inside the matches:\n{got}");
+}
+
+#[test]
+fn a_with_where_reading_a_subquery_filters_the_projected_rows() {
+    // After the LIMIT (#1311): the WHERE reads the projected node.
+    has(
+        "MATCH (a:User) WITH a ORDER BY a.name LIMIT 3 WHERE EXISTS { (a)-[:FOLLOWS]->() } \
+         RETURN a.name",
+        &["LIMIT 3", "FROM with_w1 AS w1 LEFT JOIN subquery_s2"],
+    );
+}
+
+#[test]
+fn a_subquery_whose_pattern_matches_nothing_is_a_constant() {
+    has(
+        "MATCH (a:User) RETURN a.name, EXISTS { (a)-[:FOLLOWS]->(:Post) } AS e, \
+         size((a)-[:FOLLOWS]->(:Post)) AS c, [(a)-[:FOLLOWS]->(p:Post) | p.title] AS l",
+        &[
+            "CAST(false AS Nullable(Bool)) AS \"e\"",
+            "0 AS \"c\"",
+            "[] AS \"l\"",
+        ],
+    );
+}
+
+#[test]
+fn subquery_shapes_not_lowered() {
+    not_lowered(
+        "MATCH (a:User) RETURN [x IN [1, 2] WHERE EXISTS { (a)-[:FOLLOWS]->() }] AS l",
+        "inside a list comprehension",
+    );
+    not_lowered(
+        "MATCH (a:User) RETURN [(a)-[:FOLLOWS]->(b) | b] AS l",
+        "a pattern comprehension of nodes",
+    );
+    // An ORDER BY reading a projected name.
+    not_lowered(
+        "MATCH (a:User) RETURN a ORDER BY size((a)-[:FOLLOWS]->())",
+        "reading a projected name",
+    );
+    not_lowered(
+        "MATCH (a:User), (b:User) WITH a, count(b) AS n ORDER BY EXISTS { (a)-[:FOLLOWS]->() } \
+         RETURN a.name",
+        "reading a projected name, or of a DISTINCT or aggregating projection",
+    );
+    // A shortest path's WHERE conjunct reading the path and a subquery.
+    not_lowered(
+        "MATCH (a:User), (b:User) MATCH p = shortestPath((a)-[:FOLLOWS*]->(b)) \
+         WHERE length(p) > size((a)-[:FOLLOWS]->()) RETURN length(p)",
+        "a shortestPath's WHERE conjunct",
+    );
+}

@@ -311,6 +311,11 @@ impl<'s> Lowerer<'s> {
                     _ => Kind::Boolean,
                 }
             }
+            LogicalExpr::ScalarFnCall(_)
+                if super::subquery::placeholder_kind(self, e).is_some() =>
+            {
+                super::subquery::placeholder_kind(self, e).unwrap_or(Kind::Unknown)
+            }
             LogicalExpr::ScalarFnCall(f) if comprehension(f).is_some() => {
                 let Some((how, x, body, list)) = comprehension(f) else {
                     return Kind::Unknown;
