@@ -596,36 +596,31 @@ class TestVLPEdgeCases:
     
     def test_vlp_exact_hops_on_polymorphic(self, schema_variation_data):
         """
-        Test exact hop count (*2) on polymorphic edges.
-        
-        Note: Chained JOIN optimization for exact hops currently uses the 
-        polymorphic table without type filtering. This is a known limitation -
-        for type-specific multi-hop, use range patterns like [:MENTORS*2..2].
+        Test exact hop count (*2) on polymorphic edges: the same rows as two
+        MENTORS hops written out (each hop of its type, under the type's
+        edge constraint).
         """
-        query = """
+        def rows(q):
+            response = requests.post(f"{CLICKGRAPH_URL}/query", json={"query": q})
+            assert response.status_code == 200, f"Query failed: {response.text}"
+            return sorted(
+                (r["m1.username"], r["m3.username"]) for r in response.json()["results"]
+            )
+
+        exact = rows("""
             USE community_polymorphic
             MATCH (m1:Member)-[:MENTORS*2]->(m3:Member)
             RETURN m1.username, m3.username
-        """
-        
-        response = requests.post(
-            f"{CLICKGRAPH_URL}/query",
-            json={"query": query, "sql_only": True}
-        )
-        
-        assert response.status_code == 200, f"Query failed: {response.text}"
-        sql = response.json()["generated_sql"]
-        
-        print(f"\n=== Polymorphic Exact Hops (*2) ===")
-        print(f"SQL:\n{sql[:600]}")
-        
-        # Exact hops should use chained JOINs (optimization)
-        # Uses the interactions table (polymorphic edge table)
-        assert "interactions" in sql, "Should reference polymorphic table"
-        # Should have two JOINs for 2 hops
-        assert sql.count("INNER JOIN community.interactions") == 2, "Should have 2 edge JOINs for *2"
-        
-        print("✅ Polymorphic exact-hop VLP generates correct SQL")
+        """)
+        written = rows("""
+            USE community_polymorphic
+            MATCH (m1:Member)-[r1:MENTORS]->(:Member)-[r2:MENTORS]->(m3:Member)
+            RETURN m1.username, m3.username
+        """)
+        print(f"\n=== Polymorphic Exact Hops (*2) ===\n{exact}")
+        assert exact == written
+
+        print("✅ Polymorphic exact-hop VLP matches the written-out hops")
     
     @pytest.mark.xfail(reason="VLP edge cases: execution errors with no-match/zero-length paths")
     def test_zero_length_path_unbounded(self, schema_variation_data):

@@ -206,7 +206,8 @@ fn lower_over(
     schema: &GraphSchema,
     options: &LowerOptions,
 ) -> Result<Lowered, LowerError> {
-    let demand = demand(stmt);
+    let constraints = constraint_reads(stmt, schema);
+    let demand = demand(stmt, &constraints);
     let unstable = RefCell::new(BTreeSet::new());
     if let BoundOp::Union {
         arms,
@@ -689,6 +690,9 @@ const LABEL_ID: &str = "__cg_id";
 /// here (`REL_START_LABEL` / `BOTH_START_{i}`, `REL_END_LABEL` /
 /// `BOTH_END_{i}`).
 const REL_TYPE: &str = "__cg_type";
+/// 1 on a row of a relationship read in its stored direction, 0 reversed:
+/// where an edge constraint reads which end is `from` (S11h).
+const FORWARD: &str = "__cg_forward";
 const REL_FROM_LABEL: &str = "__cg_from_label";
 const REL_TO_LABEL: &str = "__cg_to_label";
 const REL_ID: &str = "__cg_rid";
@@ -1539,6 +1543,11 @@ impl<'s> Lowerer<'s> {
                 let Ok(rs) = self.edge_schema(rel_type, &fl, &tl) else {
                     return None;
                 };
+                // Its edge constraint reads the node's properties: the
+                // node is read from its table (S11h).
+                if rs.constraints.is_some() {
+                    return None;
+                }
                 let id = if v == from { &rs.from_id } else { &rs.to_id };
                 let cols = id.columns().iter().map(|c| c.to_string()).collect();
                 return Some((r.var, cols));
@@ -2042,12 +2051,97 @@ impl<'s> Lowerer<'s> {
                     }
                 }
             }
+            if let Some(c) = self.rel_constraint(r.var, left, right, &ends)? {
+                self.filters.push(c);
+            }
             (ends, false)
         };
         for (end, label, cols) in ends {
             self.tie_end(r.var, end, label, cols, turned)?;
         }
         Ok(())
+    }
+
+    /// The condition the edge `constraints:` of the definitions relationship
+    /// `r` is read from put on its rows (S11h), or `None`: a relationship
+    /// exists only where its definition's constraint holds of its two
+    /// nodes. `ends` are its ties ([`Self::decide_rel`]): of one definition
+    /// in one orientation, its stored `from` then `to`; of one definition in
+    /// both, its `left` and `right`, each row saying its orientation
+    /// ([`FORWARD`]).
+    fn rel_constraint(
+        &mut self,
+        r: VarId,
+        left: VarId,
+        right: VarId,
+        ends: &Ends,
+    ) -> Result<Option<RenderExpr>, LowerError> {
+        let forward = |l: &Self| -> Result<RenderExpr, LowerError> {
+            Ok(RenderExpr::OperatorApplicationExp(eq(
+                l.physical(r, FORWARD)?,
+                RenderExpr::Literal(Literal::Integer(1)),
+            )))
+        };
+        let case = |when_then: Vec<(RenderExpr, RenderExpr)>, otherwise: RenderExpr| {
+            RenderExpr::Case(RenderCase {
+                expr: None,
+                when_then,
+                else_expr: Some(Box::new(otherwise)),
+            })
+        };
+        match self.scans.get(&r).cloned() {
+            Some(Scan::Rel {
+                schema, both: None, ..
+            }) => {
+                let [(from, ..), (to, ..)] = ends.as_slice() else {
+                    return Ok(None); // it matches nothing
+                };
+                self.edge_constraint(schema, *from, *to)
+            }
+            Some(Scan::Rel {
+                schema,
+                both: Some(_),
+                ..
+            }) => {
+                let (Some(stored), Some(reversed)) = (
+                    self.edge_constraint(schema, left, right)?,
+                    self.edge_constraint(schema, right, left)?,
+                ) else {
+                    return Ok(None);
+                };
+                Ok(Some(case(vec![(forward(self)?, stored)], reversed)))
+            }
+            // A union's arms keep only the rows their constraints hold of
+            // (`Self::constrained_rows`).
+            _ => Ok(None),
+        }
+    }
+
+    /// The edge `constraints:` of `rs`, read of a relationship from `from` to
+    /// `to` (its stored ends), or `None` when it has none.
+    fn edge_constraint(
+        &self,
+        rs: &RelationshipSchema,
+        from: VarId,
+        to: VarId,
+    ) -> Result<Option<RenderExpr>, LowerError> {
+        let Some(text) = &rs.constraints else {
+            return Ok(None);
+        };
+        // Read as everywhere else a constraint is (the generator, a
+        // union's arms): of the nodes' declared column properties.
+        let node = |label: &str| self.schema.node_schema_opt(label);
+        let (Some(from_ns), Some(to_ns)) = (node(&rs.from_node), node(&rs.to_node)) else {
+            return unsupported("an edge constraint between labels without node schemas");
+        };
+        if let Err(e) = crate::graph_catalog::constraint_compiler::compile_constraint(
+            text, from_ns, to_ns, "from", "to",
+        ) {
+            return unsupported(format!("edge constraint `{text}`: {e}"));
+        }
+        let bound = crate::bound_plan::expr::bind_edge_constraint(text, from, to)
+            .map_err(|e| LowerError::Unsupported(e.to_string()))?;
+        Ok(Some(self.expr(&bound, &HashMap::new())?))
     }
 
     /// The arms of a relationship of one of `types` written in `direction`
@@ -2653,6 +2747,7 @@ impl<'s> Lowerer<'s> {
                 rs.view_parameters.as_deref(),
                 self.options.view_parameter_values.as_ref(),
             );
+            let joins = self.constrained_rows(rs, ROW, &mut filters)?;
             input.push(RenderPlan {
                 select: SelectItems {
                     items,
@@ -2664,6 +2759,7 @@ impl<'s> Lowerer<'s> {
                     alias: Some(ROW.to_string()),
                     use_final: rs.should_use_final(),
                 })),
+                joins: JoinItems(joins),
                 filters: FilterItems(and_all(filters)),
                 ..empty_plan()
             });
@@ -2682,6 +2778,55 @@ impl<'s> Lowerer<'s> {
             false,
         ));
         Ok(name)
+    }
+
+    /// The rows of definition `rs` (its table read as `row`) its edge
+    /// `constraints:` keeps (S11h): joined to its two nodes' tables, the
+    /// constraint among `filters`. No joins when it has none.
+    fn constrained_rows(
+        &self,
+        rs: &RelationshipSchema,
+        row: &str,
+        filters: &mut Vec<RenderExpr>,
+    ) -> Result<Vec<Join>, LowerError> {
+        let Some(text) = &rs.constraints else {
+            return Ok(Vec::new());
+        };
+        let (from_ns, to_ns) = (
+            self.schema.node_schema_opt(&rs.from_node),
+            self.schema.node_schema_opt(&rs.to_node),
+        );
+        let (Some(from_ns), Some(to_ns)) = (from_ns, to_ns) else {
+            return unsupported("an edge constraint between labels without node schemas");
+        };
+        if !from_ns.is_standard_own_table() || !to_ns.is_standard_own_table() {
+            return unsupported(
+                "an edge constraint of a definition read with others whose nodes are not \
+                 each in their own table",
+            );
+        }
+        const FROM: &str = "__cg_cfrom";
+        const TO: &str = "__cg_cto";
+        let mut joins = Vec::new();
+        for (ns, id, alias) in [(from_ns, &rs.from_id, FROM), (to_ns, &rs.to_id, TO)] {
+            let mut j = join(self.node_relation_sql(ns)?, alias);
+            let node_id = ns.id_physical_columns();
+            if node_id.len() != id.columns().len() {
+                return unsupported("an edge constraint between ids of another number of columns");
+            }
+            j.joining_on = node_id
+                .iter()
+                .zip(id.columns())
+                .map(|(n, e)| eq(col_at(alias, n), col_at(row, e)))
+                .collect();
+            joins.push(j);
+        }
+        let sql = crate::graph_catalog::constraint_compiler::compile_constraint(
+            text, from_ns, to_ns, FROM, TO,
+        )
+        .map_err(|e| LowerError::Unsupported(format!("edge constraint `{text}`: {e}")))?;
+        filters.push(RenderExpr::Raw(format!("({sql})")));
+        Ok(joins)
     }
 
     /// Property `p` in the arm of definition `rs` of a relationship union
@@ -2791,6 +2936,11 @@ impl<'s> Lowerer<'s> {
             let mut items: Vec<SelectItem> =
                 carried.iter().map(|c| select(col_at(ROW, c), c)).collect();
             let (starts, ends) = if forward { (&from, &to) } else { (&to, &from) };
+            if rs.constraints.is_some() {
+                // Which end the edge constraint reads as `from` (S11h).
+                let flag = RenderExpr::Literal(Literal::Integer(i64::from(forward)));
+                items.push(select(flag, FORWARD));
+            }
             for (i, c) in starts.iter().enumerate() {
                 items.push(select(col_at(ROW, c), &indexed_column(BOTH_START, i)));
             }
@@ -2954,6 +3104,18 @@ impl<'s> Lowerer<'s> {
         }
         let range = if walks { (min, max) } else { (0, Some(0)) };
         let ns = self.schema.node_schema_opt(&fl).expect("a scanned label");
+        // The generator applies the edge constraint (S11h), compiling it as
+        // here; what it cannot compile it would drop.
+        if let Some(text) = &rs.constraints {
+            if let Err(e) = crate::graph_catalog::constraint_compiler::compile_constraint(
+                text, ns, ns, "from", "to",
+            ) {
+                return unsupported(format!(
+                    "a variable-length relationship whose edge constraint `{text}` \
+                     does not compile: {e}"
+                ));
+            }
+        }
         let plain = |filter: bool, params: bool, fin: bool| !filter && !params && !fin;
         if !plain(
             rs.filter.is_some(),
@@ -3052,7 +3214,27 @@ impl<'s> Lowerer<'s> {
         } else {
             left
         };
-        let first = self.walk_first(left, right, own);
+        // An edge constraint (S11h): the generator reads its `from` at the
+        // node a step leaves, so it walks the stored direction; read both
+        // ways, or searched for shortest paths, the walk of its definitions
+        // follows only the relationships the constraint keeps
+        // (`Self::constrained_rows`).
+        if edge.constraints.is_some() && (undirected || shortest.is_some()) {
+            return self.build_union_path(
+                r,
+                BTreeSet::from([rel_type]),
+                at,
+                (min, max),
+                shortest,
+                (left, right),
+                own,
+                in_search,
+            );
+        }
+        let first = match edge.constraints {
+            Some(_) => from_end,
+            None => self.walk_first(left, right, own),
+        };
         let last = if first == left { right } else { left };
         let backward = !undirected && first != from_end;
         // Its nodes / relationships read as values (the demand pass): the
@@ -4251,9 +4433,6 @@ impl<'s> Lowerer<'s> {
     ) -> Result<&'s RelationshipSchema, LowerError> {
         if !rs.is_edge_row_table() {
             return unsupported(format!("type {rel_type} is not the standard layout (S8)"));
-        }
-        if rs.constraints.is_some() {
-            return unsupported("an edge `constraints:` expression (S8)");
         }
         // An end's columns are tied to its node's id position by position:
         // the same columns in another order would cross them (#672/#1010;
@@ -6272,7 +6451,76 @@ fn not_distinct(a: RenderExpr, b: RenderExpr) -> OperatorApplication {
 /// The properties read of each binding anywhere in the statement, carried
 /// back through pass-through projection items (`WITH a AS b … b.name` reads
 /// `a.name`), so a CTE exports what later clauses use (§4.10).
-fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
+/// The edge `constraints:` each single relationship of the statement's
+/// patterns can be matched under, bound over its ends (S11h): what they read
+/// of the ends is demanded of them. Each definition of its types between
+/// labels its ends can have, in each orientation its direction allows.
+fn constraint_reads(stmt: &BoundStatement, schema: &GraphSchema) -> Vec<LogicalExpr> {
+    fn walk(op: &BoundOp, out: &mut Vec<(VarId, RelDirection, VarId, VarId)>) {
+        match op {
+            BoundOp::Match { input, pattern, .. } => {
+                walk(input, out);
+                for part in &pattern.parts {
+                    for (i, r) in part.rels.iter().enumerate() {
+                        if r.length.is_none() && !r.bound_before {
+                            let (left, right) = (part.nodes[i].var, part.nodes[i + 1].var);
+                            out.push((r.var, r.direction, left, right));
+                        }
+                    }
+                }
+            }
+            BoundOp::Unwind { input, .. }
+            | BoundOp::Project { input, .. }
+            | BoundOp::Sort { input, .. }
+            | BoundOp::Filter { input, .. }
+            | BoundOp::Skip { input, .. }
+            | BoundOp::Limit { input, .. } => walk(input, out),
+            BoundOp::Union { arms, .. } => arms.iter().for_each(|a| walk(a, out)),
+            BoundOp::Unit => {}
+        }
+    }
+    let mut rels = Vec::new();
+    walk(&stmt.plan, &mut rels);
+    for sq in &stmt.subqueries {
+        walk(&sq.plan, &mut rels);
+    }
+    let binding = |v: VarId| stmt.bindings.iter().find(|b| b.id == v);
+    let labels = |v: VarId| match binding(v).map(|b| &b.kind) {
+        Some(BindingKind::Node { labels }) => labels.clone(),
+        _ => BTreeSet::new(),
+    };
+    let mut out = Vec::new();
+    for (r, direction, left, right) in rels {
+        let Some(BindingKind::Rel { types, .. }) = binding(r).map(|b| &b.kind) else {
+            continue;
+        };
+        let orientations = match direction {
+            RelDirection::Right => vec![(left, right)],
+            RelDirection::Left => vec![(right, left)],
+            RelDirection::Either => vec![(left, right), (right, left)],
+        };
+        for t in types {
+            for rs in schema.rel_schemas_for_type(t) {
+                let Some(text) = &rs.constraints else {
+                    continue;
+                };
+                for &(from, to) in &orientations {
+                    if labels(from).contains(&rs.from_node) && labels(to).contains(&rs.to_node) {
+                        // A constraint that does not bind fails where the
+                        // relationship is lowered.
+                        if let Ok(e) = crate::bound_plan::expr::bind_edge_constraint(text, from, to)
+                        {
+                            out.push(e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn demand(stmt: &BoundStatement, extra: &[LogicalExpr]) -> HashMap<VarId, BTreeSet<String>> {
     fn exprs<'a>(op: &'a BoundOp, out: &mut Vec<&'a LogicalExpr>) {
         match op {
             BoundOp::Unit => {}
@@ -6317,6 +6565,8 @@ fn demand(stmt: &BoundStatement) -> HashMap<VarId, BTreeSet<String>> {
     }
     let mut all = Vec::new();
     exprs(&stmt.plan, &mut all);
+    // The edge constraints a relationship of a pattern is matched under.
+    all.extend(extra);
     // What a subquery reads of the variables it is correlated with is read
     // where it is applied.
     for sq in &stmt.subqueries {

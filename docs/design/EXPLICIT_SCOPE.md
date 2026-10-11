@@ -4146,6 +4146,45 @@ slice that will handle it.
       per-element keys, #1397). Not fixed: a list of `UInt64` and `Int64`
       columns is a `Variant`, so `collect(DISTINCT x)` over it now counts
       equal integers twice, as `count(DISTINCT x)` already did (#1396).
+  - **Before the deletion (2026-10-11, user: cutover first).** A trial of
+    the ClickHouse cutover (what the bound plan does not lower becomes an
+    error, parked on `feature/p4c-cutover-clickhouse`) failed 34 live
+    tests the corpus census does not see (their schemas are not in the
+    census's map): edge `constraints:` (19, S11h), shortestPath over one
+    fixed-length relationship (10, S11i), shortestPath to self (2, agreed
+    errors), a query without RETURN (2: a ClickGraph extension that
+    returns the matched nodes; Neo4j refuses it). On Databricks the bound
+    plan lowers 1135 corpus queries (1442 on ClickHouse): 320 more still
+    reach the legacy pipeline there (nodes embedded in edge tables 161,
+    path values / element lists 106, shortestPath 29, UNION 10, UNWIND 8),
+    and the embedded write path plans its read part with the legacy
+    analyzer. Order: S11h, S11i, the ClickHouse cutover (Databricks and
+    writes keep the fallback), Databricks coverage (S12), writes, then the
+    deletion PRs.
+  - [x] **S11h: edge `constraints:`.** A relationship of a definition with
+    a `constraints:` expression exists only where it holds of its two
+    nodes (`from`: the node it leaves as stored). The expression is bound
+    as Cypher over the hop's two nodes (`expr::bind_edge_constraint`) and
+    read of their declared column properties (as the generator compiles
+    it: anything else is `Unsupported`, never dropped); the demand pass
+    reads them of the ends (`constraint_reads`), so a carried node exports
+    them.
+    - One definition, one direction: a condition on the hop's nodes; both
+      directions (`both_directions`): each row says which way it was
+      stored (`__cg_forward`), the condition picks `from` by it.
+    - Several definitions read together (`rel_union_of`): each
+      constrained definition's arm joins its two node tables and keeps
+      the rows the constraint holds of (`constrained_rows`), so single
+      hops, union walks and their shortest-path searches all read only
+      the relationships there are.
+    - A directed walk of one definition: the generator's constraint (base
+      and recursive steps), the walk forced to start at the stored `from`
+      end (the generator reads `from` at the node a step leaves; a
+      backward walk would invert it) and carrying what the next step reads
+      of that node (`end_<property>`); undirected or a shortest path: the
+      union walk above.
+    - An OPTIONAL MATCH reads the node it shares from its table (not the
+      edge's endpoint columns) when the edge is constrained. a
   - [x] **S11i: shortestPath over one fixed-length relationship.**
     `shortestPath((a)-[:R]->(b))` is the shortest path of exactly one
     relationship: the binder binds a relationship of a shortest-path

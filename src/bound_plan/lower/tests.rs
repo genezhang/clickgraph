@@ -653,38 +653,6 @@ fn the_tenant_selects_the_parameterized_view() {
 }
 
 #[test]
-fn edge_constraints_are_not_lowered_yet() {
-    let schema = GraphSchemaConfig::from_yaml_str(
-        r#"
-name: lower_constraints
-graph_schema:
-  nodes:
-    - { label: F, database: db, table: f, node_id: id, property_mappings: { id: id, ts: ts } }
-  edges:
-    - type: R
-      database: db
-      table: r
-      from_id: a
-      to_id: b
-      from_node: F
-      to_node: F
-      constraints: "from.ts <= to.ts"
-      property_mappings: {}
-"#,
-    )
-    .unwrap()
-    .to_graph_schema()
-    .unwrap();
-    let err = translate_bound_plan(
-        "MATCH (x:F)-[:R]->(y:F) RETURN count(*)",
-        &schema,
-        &ReadOptions::default(),
-    )
-    .unwrap_err();
-    assert!(err.contains("constraints"), "{err}");
-}
-
-#[test]
 fn inline_properties_and_unmapped_properties() {
     has(
         "MATCH (a:User {name: 'Alice Johnson'})-[:FOLLOWS {follow_date: '2024-01-01'}]->(b) RETURN b.city",
@@ -5546,4 +5514,152 @@ fn union_columns_of_different_labels_or_definitions() {
         "MATCH (u:User) RETURN u AS x UNION ALL MATCH (p:Post) RETURN p.title AS x",
         "of a different kind or label",
     );
+}
+
+/// S11h: an edge `constraints:` expression holds of every relationship of
+/// its definition, read either way, in a union of definitions, along a
+/// walk and in a shortest-path search.
+#[test]
+fn edge_constraints_keep_the_relationships_they_hold_of() {
+    let schema = GraphSchemaConfig::from_yaml_str(
+        r#"
+name: lower_constraints
+graph_schema:
+  nodes:
+    - label: User
+      database: db
+      table: users
+      node_id: user_id
+      property_mappings: { user_id: user_id, age: age, born: born_year }
+    - label: Post
+      database: db
+      table: posts
+      node_id: post_id
+      property_mappings: { post_id: post_id, ts: ts, label: computed }
+  edges:
+    - type: FOLLOWS
+      database: db
+      table: follows
+      from_id: src
+      to_id: dst
+      from_node: User
+      to_node: User
+      property_mappings: {}
+      constraints: "from.age > to.age"
+    - type: KNOWS
+      database: db
+      table: knows
+      from_id: src
+      to_id: dst
+      from_node: User
+      to_node: User
+      property_mappings: {}
+    - type: WROTE
+      database: db
+      table: wrote
+      from_id: uid
+      to_id: pid
+      from_node: User
+      to_node: Post
+      property_mappings: {}
+      constraints: "from.born <= to.ts"
+    - type: TAGGED
+      database: db
+      table: tagged
+      from_id: uid
+      to_id: pid
+      from_node: User
+      to_node: Post
+      property_mappings: {}
+      constraints: "from.age < to.nonesuch"
+"#,
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let sql = |q: &str| {
+        translate_bound_plan(q, &schema, &ReadOptions::default())
+            .unwrap_or_else(|e| panic!("{q}: {e}"))
+            .sql
+    };
+    let has = |q: &str, parts: &[&str]| {
+        let got = squash(&sql(q));
+        for p in parts {
+            assert!(got.contains(p), "{q}\nmissing `{p}` in\n{got}");
+        }
+    };
+    // One definition, each way: its stored `from` is the node it leaves.
+    has(
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN a.user_id, b.user_id",
+        &["WHERE v0.age > v2.age"],
+    );
+    has(
+        "MATCH (a:User)<-[:FOLLOWS]-(b:User) RETURN a.user_id, b.user_id",
+        &["WHERE v2.age > v0.age"],
+    );
+    has(
+        "MATCH (u:User)-[:WROTE]->(p:Post) RETURN p.post_id",
+        &["WHERE v0.born_year <= v2.ts"],
+    );
+    // Read both ways: each row says which way it was stored.
+    has(
+        "MATCH (a:User)-[:FOLLOWS]-(b:User) RETURN count(*) AS n",
+        &[
+            r#"1 AS "__cg_forward""#,
+            r#"0 AS "__cg_forward""#,
+            "WHERE CASE WHEN v1.__cg_forward = 1 THEN v0.age > v2.age ELSE v2.age > v0.age END",
+        ],
+    );
+    // A union's constrained definition keeps its rows the constraint holds
+    // of; the other's arm is unchanged.
+    let union = squash(&sql(
+        "MATCH (a:User)-[:FOLLOWS|KNOWS]->(b:User) RETURN count(*) AS n",
+    ));
+    assert!(
+        union.contains(
+            "FROM db.follows AS e JOIN db.users AS __cg_cfrom ON __cg_cfrom.user_id = e.src \
+             JOIN db.users AS __cg_cto ON __cg_cto.user_id = e.dst \
+             WHERE (__cg_cfrom.age > __cg_cto.age)"
+        ),
+        "{union}"
+    );
+    assert_eq!(union.matches("__cg_cfrom ON").count(), 1, "{union}");
+    // A directed walk of one definition: the generator's, forward, carrying
+    // what the next step reads of the node it leaves.
+    let walk = squash(&sql(
+        "MATCH (a:User)-[:FOLLOWS*1..3]->(b:User) WHERE b.user_id = 7 RETURN a.user_id",
+    ));
+    for part in [
+        "WHERE start_node.age > end_node.age",
+        "end_node.age as end_age",
+        "AND vp.end_age > end_node.age",
+        "JOIN db.follows AS rel ON start_node.user_id = rel.src",
+    ] {
+        assert!(walk.contains(part), "missing `{part}` in\n{walk}");
+    }
+    // Undirected, or a shortest path: the walk of its definitions, over the
+    // relationships the constraint keeps.
+    for q in [
+        "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User) RETURN count(*) AS n",
+        "MATCH p = shortestPath((a:User)-[:FOLLOWS*1..3]->(b:User)) \
+         WHERE a.user_id = 1 AND b.user_id = 2 RETURN length(p)",
+    ] {
+        has(q, &["WHERE (__cg_cfrom.age > __cg_cto.age)"]);
+    }
+    // An OPTIONAL MATCH reads the node it shares from its table: the
+    // constraint reads its properties.
+    has(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) RETURN a.user_id, b.user_id",
+        &["JOIN db.users AS v2 ON v1.dst = v2.user_id WHERE v0.age > v2.age"],
+    );
+    // A constraint of a property the node does not declare as a column is
+    // not lowered (the generator could not apply it either).
+    match translate_bound_plan(
+        "MATCH (u:User)-[:TAGGED]->(p:Post) RETURN p.post_id",
+        &schema,
+        &ReadOptions::default(),
+    ) {
+        Err(e) if e.contains("edge constraint `from.age < to.nonesuch`") => {}
+        other => panic!("expected the constraint refused, got {other:?}"),
+    }
 }

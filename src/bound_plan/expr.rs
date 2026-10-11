@@ -749,3 +749,59 @@ fn map_children(e: LogicalExpr, f: &mut dyn FnMut(LogicalExpr) -> LogicalExpr) -
         other => other,
     }
 }
+
+/// Bind an edge `constraints:` expression of the schema (a condition every
+/// relationship of the definition satisfies, over its two nodes): `from` is
+/// the node the relationship leaves as stored, `to` the node it enters. Any
+/// other variable is undefined; a subquery or a local variable (a
+/// comprehension, `reduce`) is `Unsupported`.
+pub(crate) fn bind_edge_constraint(
+    text: &str,
+    from: VarId,
+    to: VarId,
+) -> Result<LogicalExpr, BindError> {
+    struct Ends {
+        from: VarId,
+        to: VarId,
+        local: bool,
+    }
+    impl NameEnv for Ends {
+        fn lookup(&self, name: &str) -> Option<VarId> {
+            match name {
+                "from" => Some(self.from),
+                "to" => Some(self.to),
+                _ => None,
+            }
+        }
+        fn new_local(&mut self, _: &str) -> VarId {
+            // Refused below: nothing reads the variable.
+            self.local = true;
+            self.from
+        }
+        fn subquery(&mut self, _: RawSubquery<'_>) -> Result<VarId, BindError> {
+            Err(BindError::Unsupported(
+                "an edge `constraints:` expression with a pattern".to_string(),
+            ))
+        }
+        fn correlation(&self, _: VarId) -> Option<Vec<VarId>> {
+            None
+        }
+    }
+    let unsupported =
+        |why: String| BindError::Unsupported(format!("edge constraint `{text}`: {why}"));
+    let (rest, ast) = crate::open_cypher_parser::expression::parse_expression(text)
+        .map_err(|e| unsupported(format!("{e:?}")))?;
+    if !rest.trim().is_empty() {
+        return Err(unsupported(format!("unparsed `{}`", rest.trim())));
+    }
+    let mut env = Ends {
+        from,
+        to,
+        local: false,
+    };
+    let bound = bind_expr(&ast, &mut env)?;
+    if env.local {
+        return Err(unsupported("a local variable".to_string()));
+    }
+    Ok(bound)
+}

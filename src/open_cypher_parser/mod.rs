@@ -21,7 +21,7 @@ pub(crate) mod copy_to;
 mod create_clause;
 mod delete_clause;
 pub(crate) mod errors;
-mod expression;
+pub(crate) mod expression;
 mod limit_clause;
 mod match_clause;
 mod optional_match_clause;

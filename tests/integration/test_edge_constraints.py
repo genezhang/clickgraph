@@ -32,6 +32,8 @@ Usage:
     pytest -m edge_constraints -v
 """
 
+import re
+
 import pytest
 import requests
 import json
@@ -167,8 +169,8 @@ def test_edge_constraint_sql_generation(edge_constraints_schemas, edge_constrain
     print(sql)
     print()
     
-    # Verify constraint is in the SQL
-    assert "f.created_timestamp <= t.created_timestamp" in sql, \
+    # Verify constraint is in the SQL (over the two files' table aliases)
+    assert re.search(r"\b\w+\.created_timestamp <= \w+\.created_timestamp\b", sql), \
         "Edge constraint not found in generated SQL"
     
     print("✅ Test passed: Edge constraint in SQL")
@@ -298,8 +300,9 @@ def test_social_network_constraints(edge_constraints_schemas, edge_constraints_d
     print("Generated SQL (social):")
     print(sql)
     
-    # Verify constraint in SQL
-    assert "a.age > b.age" in sql, "Social network age constraint not found in SQL"
+    # Verify constraint in SQL (over the two users' table aliases)
+    assert re.search(r"\b\w+\.age > \w+\.age\b", sql), \
+        "Social network age constraint not found in SQL"
     print("✅ Social network constraint found in SQL")
 
 
