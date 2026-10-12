@@ -4236,14 +4236,21 @@ impl<'s> Lowerer<'s> {
                 "a shortestPath condition that reads a variable other than the path and its ends",
             );
         }
-        // The trails start only where a pair's distance fails the conditions.
+        // The trails start only where a pair's distance fails the conditions
+        // (where the dialect lets them read the search; the pick keeps those
+        // pairs either way).
         let near = format!("vlp_{var}_near");
-        // The trails' first node, keyed as the search keys it.
-        let first_key = search.node_key(path::START);
-        walk.start_mut().push(RenderExpr::Raw(format!(
-            "{first_key} IN (SELECT start_id FROM ({}))",
-            path::failing_pairs(&var, alias, &ends, &conditions),
-        )));
+        let nested = current_function_mapper()
+            .shortest_path_search()
+            .is_some_and(|s| s.nested_recursion);
+        if nested {
+            // The trails' first node, keyed as the search keys it.
+            let first_key = search.node_key(path::START);
+            walk.start_mut().push(RenderExpr::Raw(format!(
+                "{first_key} IN (SELECT start_id FROM ({}))",
+                path::failing_pairs(&var, alias, &ends, &conditions),
+            )));
+        }
         let columns = search.walked_columns();
         let (trails, trail_edges, trails_name) = walk.trails(self.schema)?;
         let (pick, name) = path::pick_cte(

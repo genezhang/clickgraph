@@ -634,6 +634,21 @@ pub(crate) struct ShortestPathSearch {
     pub copies: fn(&str) -> String,
     /// An aggregate: the group's distinct values of `{0}`, as an array.
     pub distinct_list: fn(&str) -> String,
+    /// A recursive CTE's steps (SELECTs reading it): each reads the rows of
+    /// the step before.
+    pub recursive_steps: fn(&[String]) -> String,
+    /// A step may read the CTE in an aggregate: a first node whose search
+    /// has reached every end goes no further (else the search ends when a
+    /// depth adds no node, the same paths later).
+    pub stops_early: bool,
+    /// A step may aggregate the rows it reads (a node's number of shortest
+    /// paths, its parents); else `allShortestPaths` and a shortest path's
+    /// relationships and nodes are not lowered.
+    pub grouped_steps: bool,
+    /// A recursive CTE may read another in a subquery (the trails of a
+    /// shortestPath condition start only at the pairs that need them); else
+    /// they start at every first node, and the pick keeps the same pairs.
+    pub nested_recursion: bool,
 }
 
 /// Returns the function mapper for the active SQL dialect, read from the

@@ -648,6 +648,11 @@ pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<C
         return unsupported("shortestPath in this SQL dialect");
     };
     let (depth, flag, count) = (spelling.depth, spelling.flag, spelling.count);
+    if (all || parents != Parents::None) && !spelling.grouped_steps {
+        return unsupported(
+            "allShortestPaths, or a shortest path's relationships or nodes, in this SQL dialect",
+        );
+    }
     let node_table = &call.node_table;
     let (start_key, end_key) = (call.node_key("start_node"), call.node_key("end_node"));
     let (rel_from, rel_to) = (call.rel_start_key("rel"), call.rel_end_key("rel"));
@@ -680,7 +685,7 @@ pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<C
         step.push(format!(
             "(f.start_id, {end_key}) NOT IN (SELECT start_id, node FROM {bfs})"
         ));
-        if let Some(targets) = call.targets() {
+        if let (Some(targets), true) = (call.targets(), spelling.stops_early) {
             step.push(format!(
                 "f.start_id NOT IN (SELECT start_id FROM {bfs} GROUP BY start_id \
                  HAVING {count_if}(node IN ({targets})) >= \
@@ -716,19 +721,23 @@ pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<C
         } else {
             ("DISTINCT ", String::new(), String::new(), "")
         };
-        search.push_str(&format!(
-            "\n    UNION ALL\n    \
-             SELECT {distinct}f.start_id AS start_id, {end_key} AS node, \
+        let reached = format!(
+            "SELECT {distinct}f.start_id AS start_id, {end_key} AS node, \
              CAST(f.depth + 1 AS {depth}) AS depth{step_paths}, CAST(1 AS {flag}) AS new\n    \
              FROM {bfs} AS f\n    \
              JOIN {edge_table} AS rel ON {rel_from} = f.node\n    \
              JOIN {node_table} AS end_node ON {end_key} = {rel_to}\n    \
-             WHERE {step}{reach}\n    \
-             UNION ALL\n    \
-             SELECT start_id, node, depth{carried}, CAST(0 AS {flag}) AS new\n    \
+             WHERE {}{reach}",
+            step.join("\n      AND "),
+        );
+        let kept = format!(
+            "SELECT start_id, node, depth{carried}, CAST(0 AS {flag}) AS new\n    \
              FROM {bfs}\n    \
-             WHERE start_id IN (SELECT start_id FROM {bfs} WHERE new = 1)",
-            step = step.join("\n      AND "),
+             WHERE start_id IN (SELECT start_id FROM {bfs} WHERE new = 1)"
+        );
+        search.push_str(&format!(
+            "\n    UNION ALL\n    {}",
+            (spelling.recursive_steps)(&[reached, kept])
         ));
     }
     search.push_str("\n)");

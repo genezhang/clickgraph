@@ -213,6 +213,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             count: "UInt256",
             copies: |count| format!("range(accurateCast({count}, 'UInt64'))"),
             distinct_list: |x| format!("groupUniqArray({x})"),
+            recursive_steps: |steps| steps.join("\n    UNION ALL\n    "),
+            stops_early: true,
+            grouped_steps: true,
+            nested_recursion: true,
         })
     }
 
