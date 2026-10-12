@@ -6448,6 +6448,13 @@ fn a_collect_of_lists_or_null_and_a_list_grouping_key() {
            o1.p2_v2_age] ELSE [o1.p2_v2_name, o1.p2_v2_age] END, CASE WHEN o1.v2__user_id IS \
            NULL THEN false ELSE true END), [])"],
     );
+    // Over ordered rows (S11o6 review): the ordered collect has the flag.
+    let got = squash(&sql(
+        "MATCH (u:User) OPTIONAL MATCH (u)-[:FOLLOWS]->(f:User) WITH u, f ORDER BY f.user_id \
+         RETURN u.user_id AS id, collect(CASE WHEN f IS NULL THEN null ELSE [f.name, f.age] END) AS l",
+    ));
+    assert!(!got.contains("THEN [] ELSE"), "{got}");
+    assert!(got.contains("THEN false ELSE true END"), "{got}");
     let got = squash(&sql(
         "MATCH (u:User) WITH [u.name, u.age] AS l, count(*) AS c RETURN l, c",
     ));

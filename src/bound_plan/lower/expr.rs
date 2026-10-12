@@ -1735,6 +1735,10 @@ impl Lowerer<'_> {
             };
             return Ok(aggregate_constant(value));
         }
+        if let (Some(c), "collect") = (arg.and_then(|a| list_or_null_case(self, a)), name.as_str())
+        {
+            return self.collect_list_case(c, distinct, items);
+        }
         // Over rows in an order: the values in the order of the rows'
         // number (`Lowerer::collect_order`); DISTINCT keeps each value where
         // it first occurs.
@@ -1762,10 +1766,6 @@ impl Lowerer<'_> {
             } else {
                 list
             }));
-        }
-        if let (Some(c), "collect") = (arg.and_then(|a| list_or_null_case(self, a)), name.as_str())
-        {
-            return self.collect_list_case(c, distinct, items);
         }
         let call = RenderExpr::AggregateFnCall(AggregateFnCall {
             name: f.name.clone(),
@@ -1868,10 +1868,15 @@ impl Lowerer<'_> {
             value.when_then.push((w.clone(), result(Some(t))?));
             present.when_then.push((w, flag(Some(t))));
         }
-        let list = (spelling.collect_if)(
-            &render_expr_to_sql_plain(&RenderExpr::Case(value)),
-            &render_expr_to_sql_plain(&RenderExpr::Case(present)),
-        );
+        let value = render_expr_to_sql_plain(&RenderExpr::Case(value));
+        let present = render_expr_to_sql_plain(&RenderExpr::Case(present));
+        // Over rows in an order (`Lowerer::collect_order`): in it.
+        let list = match &self.collect_order {
+            Some(key) => {
+                (spelling.ordered_collect)(&value, &render_expr_to_sql_plain(key), &present)
+            }
+            None => (spelling.collect_if)(&value, &present),
+        };
         let list = match distinct {
             true => (spelling.distinct)(&list),
             false => list,

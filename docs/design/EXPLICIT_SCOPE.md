@@ -4540,6 +4540,16 @@ slice that will handle it.
       node of several labels sorts by its identity (label, then key: two
       labels' keys may be equal, so no one number), as Bolt passes it on;
       11 rows, the node's neighbours.
+      - Adversarial review (Neo4j oracle, ClickHouse): grouping and
+        DISTINCT of lists of strings, ints, mixed, nested, with NULL items,
+        `[1]` / `[1.0]` one group and `[1]` / `['1']` two; the collect's
+        simple CASE, no ELSE, several NULL branches, DISTINCT; `ORDER BY
+        id(o)` DESC, NULLs, after WITH, union labels: as Neo4j. Fixed: a
+        collect over ordered rows (after `WITH … ORDER BY`) skipped the
+        CASE handling (`[[]]`, and IC 1's Code 70). A list grouped by its
+        key costs ~1.8× a single-type array's grouping (20M rows: 1.28 s
+        vs 0.70 s), the price of not knowing its items' types. A NULL list
+        carried through a WITH already reads `[]` (#1454).
     - [ ] **S11o7…: the 4 not lowered**: `head()` of a map of a node (IC 7),
       a subquery in a list comprehension (IC 10), a path in other positions
       (IC 13), a property of a value (BI 14); BI 17's time.
