@@ -859,15 +859,19 @@ impl Lowerer<'_> {
             true => format!("NOT ({found})"),
             false => found,
         };
-        let absent: Vec<String> = elem_presence(&x_id, &x_elem)
+        // Of an empty list, false (`null IN []` too); else NULL where `x` is.
+        let x_absent: Vec<String> = elem_presence(&x_id, &x_elem)
             .iter()
             .map(|c| format!("{} IS NULL", render_expr_to_sql_plain(c)))
-            .chain([format!("{list_sql} IS NULL")])
             .collect();
-        Ok(RenderExpr::Raw(format!(
-            "CASE WHEN {} THEN NULL ELSE {found} END",
-            absent.join(" OR ")
-        )))
+        let m = current_function_mapper();
+        Ok(RenderExpr::Raw(m.cast_bool(&format!(
+            "CASE WHEN {list_sql} IS NULL THEN NULL WHEN {} = 0 THEN {} WHEN {} THEN NULL \
+             ELSE {found} END",
+            m.list_size(&list_sql),
+            if negated { "true" } else { "false" },
+            x_absent.join(" OR ")
+        ))))
     }
 
     /// `a IS [NOT] NULL`, `a = b`, `a <> b` where an operand is a list's node

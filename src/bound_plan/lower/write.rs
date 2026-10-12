@@ -68,7 +68,7 @@ fn identities_over(
     let mut ctes = Vec::new();
     let mut l = query.lowerer(&mut ctes);
     l.relation(&stmt.plan)?;
-    l.finish_relation();
+    l.finish_relation()?;
     let Some(ids) = l.identity(var)? else {
         return Ok(None);
     };
@@ -134,7 +134,7 @@ fn records_over(
     let mut ctes = Vec::new();
     let mut l = query.lowerer(&mut ctes);
     l.relation(&stmt.plan).map_err(Err)?;
-    l.finish_relation();
+    l.finish_relation().map_err(Err)?;
     for e in exprs {
         if let Some(reason) = unstorable(&l, stmt, e) {
             return Err(Ok(format!("a property value that is {reason}")));

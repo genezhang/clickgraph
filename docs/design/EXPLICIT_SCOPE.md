@@ -4511,6 +4511,16 @@ slice that will handle it.
         BI 13 lists every zombie (score 0 where none liked), where the
         legacy pipeline dropped the OPTIONAL rows (3); BI 11 22382, as a
         hand-written count of the triangles (0 before S11o4's Place).
+      - Adversarial review (ClickHouse against the parent commit and the
+        Neo4j oracle). Fixed: a part joined from its bound end whose middle
+        node is read from its relationships' columns (denormalized,
+        coupled edges) lost the tie between them (a product: 10 rows for
+        2, 40 for 2): a scan's emission now places every pending tie whose
+        scans are emitted (a node read from the relationship is emitted
+        with it), and a tie left unplaced in a non-empty relation is an
+        error, not dropped (`finish_relation`); `null IN` an empty
+        collected list is false (it was NULL); `x IN l` returned 1/0 on
+        ClickHouse (now a boolean).
     - [ ] **S11o6…: the 4 not lowered** (a node as an operand or a value,
       `head()` of a map, a subquery in a list comprehension, a path in other
       positions, a property of a value, the Browser's `id()`), IC 1's

@@ -297,7 +297,7 @@ impl Query<'_> {
         let mut l = self.lowerer(ctes);
         let lowered = l
             .relation(input)
-            .map(|()| l.finish_relation())
+            .and_then(|()| l.finish_relation())
             .and_then(|()| l.project(projection));
         *ctes = std::mem::take(&mut l.ctes);
         self.unstable
@@ -997,7 +997,7 @@ impl<'s> Lowerer<'s> {
                     return unsupported("a RETURN that is not the last clause");
                 }
                 self.relation(input)?;
-                self.finish_relation();
+                self.finish_relation()?;
                 for item in &projection.items {
                     let kind = self.kind(&item.expr);
                     self.kinds.insert(item.var, kind);
@@ -1021,17 +1021,17 @@ impl<'s> Lowerer<'s> {
             }
             BoundOp::Skip { input, count } => {
                 self.relation(input)?;
-                self.finish_relation();
+                self.finish_relation()?;
                 self.page(Some(*count), None)
             }
             BoundOp::Limit { input, count } => {
                 self.relation(input)?;
-                self.finish_relation();
+                self.finish_relation()?;
                 self.page(None, Some(*count))
             }
             BoundOp::Unwind { input, expr, var } => {
                 self.relation(input)?;
-                self.finish_relation();
+                self.finish_relation()?;
                 self.apply_subqueries(&[expr])?;
                 self.unwind(expr, *var)
             }
@@ -1634,7 +1634,7 @@ impl<'s> Lowerer<'s> {
         read_props: &[(VarId, String)],
         q: &mut Segment<'s>,
     ) -> Result<Vec<Correlated>, LowerError> {
-        self.finish_relation();
+        self.finish_relation()?;
         // A segment that is only its CTE (right after a WITH) is that CTE.
         let only_a_cte = self.joins.is_empty()
             && self.filters.is_empty()
@@ -1801,7 +1801,7 @@ impl<'s> Lowerer<'s> {
         q_alias: &str,
     ) -> Result<Option<(RenderPlan, Vec<(VarId, Scan<'s>)>)>, LowerError> {
         self.lower_match(pattern, predicate)?;
-        self.finish_relation();
+        self.finish_relation()?;
         if self.empty {
             return Ok(None);
         }
@@ -5240,10 +5240,11 @@ impl<'s> Lowerer<'s> {
             self.joins.push(j);
         }
         self.emitted.push(alias);
-        // Ties that this scan completes go in its ON.
+        // Ties that this scan completes go in its ON (a node read from this
+        // relationship's columns is emitted with it: its ties too).
         let mut still = Vec::new();
         for t in std::mem::take(&mut self.pending) {
-            if (t.a == v || t.b == v) && self.is_emitted(t.a) && self.is_emitted(t.b) {
+            if self.is_emitted(t.a) && self.is_emitted(t.b) {
                 self.place(t);
             } else {
                 still.push(t);
@@ -5310,9 +5311,15 @@ impl<'s> Lowerer<'s> {
         join.joining_on.extend(eqs);
     }
 
-    fn finish_relation(&mut self) {
+    fn finish_relation(&mut self) -> Result<(), LowerError> {
         // A tie to an impossible scan never completes; the relation is empty.
+        // Otherwise every tie is placed: one left would join its scans as a
+        // product (wrong rows, silently).
+        if !self.empty && !self.pending.is_empty() {
+            return unsupported("internal: a tie between scans of the relation was not placed");
+        }
         self.pending.clear();
+        Ok(())
     }
 
     // ------------------------------------------------------------- segments

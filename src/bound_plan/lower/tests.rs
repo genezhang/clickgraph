@@ -6351,8 +6351,11 @@ fn a_node_in_a_list() {
     has(
         "MATCH (a:User) WHERE a.user_id < 3 WITH collect(a) AS l \
          MATCH (c:User) WHERE NOT c IN l RETURN count(*) AS n",
-        &["NOT CASE WHEN v2.user_id IS NULL OR w1.v1 IS NULL THEN NULL ELSE \
-           length(arrayFilter(__cg_in -> tupleElement(__cg_in, 1) = v2.user_id, w1.v1)) > 0 END"],
+        &[
+            "NOT CAST(CASE WHEN w1.v1 IS NULL THEN NULL WHEN length(w1.v1) = 0 THEN false \
+           WHEN v2.user_id IS NULL THEN NULL ELSE length(arrayFilter(__cg_in -> \
+           tupleElement(__cg_in, 1) = v2.user_id, w1.v1)) > 0 END AS Nullable(Bool))",
+        ],
     );
     has(
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User), (c:User) WHERE c IN nodes(p) RETURN c",
@@ -6363,6 +6366,37 @@ fn a_node_in_a_list() {
         "MATCH (a:User) WHERE a IN [] RETURN count(*) AS n",
         &["WHERE false"],
     );
+    // `null IN` an empty collected list: false (Neo4j), as `[]` is empty.
+    has(
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User {user_id: 99}) \
+         WITH a, collect(b) AS l OPTIONAL MATCH (a)-[:AUTHORED]->(p:Post {post_id: 99}) \
+         RETURN p IN l AS x",
+        &["WHEN length(", ") = 0 THEN false"],
+    );
+}
+
+/// S11o5 review: a part joined from its bound end whose middle node is read
+/// from its relationships' columns (denormalized edges) keeps the tie
+/// between them (it was left out: a product, 10 rows for 2).
+#[test]
+fn a_part_from_its_bound_end_over_denormalized_edges() {
+    let schema = GraphSchemaConfig::from_yaml_str(include_str!(
+        "../../../schemas/test/denormalized_flights.yaml"
+    ))
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let got = squash(
+        &translate_bound_plan(
+            "MATCH (a:Airport {code: 'LAX'}) WITH a \
+             MATCH (x:Airport)-[:FLIGHT]->(m:Airport)-[:FLIGHT]->(a) RETURN x.code AS x",
+            &schema,
+            &ReadOptions::default(),
+        )
+        .unwrap()
+        .sql,
+    );
+    assert!(!got.contains("CROSS JOIN"), "{got}");
 }
 
 /// S11o5: a pattern part whose first node is new and whose last the
@@ -6370,10 +6404,8 @@ fn a_node_in_a_list() {
 /// a product with the relation (LDBC IC 5 ran past 300 s).
 #[test]
 fn a_part_joined_from_its_bound_end() {
-    let got = squash(&sql(
-        "MATCH (a:User) WHERE a.user_id = 1 WITH a \
-         MATCH (x:User)-[:FOLLOWS]->(a) RETURN count(*) AS n",
-    ));
+    let got = squash(&sql("MATCH (a:User) WHERE a.user_id = 1 WITH a \
+         MATCH (x:User)-[:FOLLOWS]->(a) RETURN count(*) AS n"));
     assert!(!got.contains("CROSS JOIN"), "{got}");
     assert!(
         got.contains(
@@ -6401,4 +6433,3 @@ fn an_optional_match_after_a_grouping_with_joins_on_the_keys() {
         "joined on the collected list: {got}"
     );
 }
-
