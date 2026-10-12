@@ -1900,7 +1900,8 @@ fn a_shortest_path_is_a_breadth_first_search() {
         &[
             "WITH RECURSIVE vlp_v1_bfs AS ( SELECT DISTINCT start_node.user_id AS start_id, \
              start_node.user_id AS node, CAST(0 AS UInt32) AS depth, CAST(1 AS UInt8) AS new \
-             FROM test_integration.users_test AS start_node WHERE (start_node.user_id = 1) \
+             FROM test_integration.users_test AS start_node \
+             WHERE start_node.user_id IS NOT NULL AND (start_node.user_id = 1) \
              UNION ALL",
             "FROM vlp_v1_bfs AS f \
              JOIN test_integration.user_follows_test AS rel ON rel.follower_id = f.node \
@@ -1926,7 +1927,7 @@ fn a_shortest_path_is_a_breadth_first_search() {
     has(
         "MATCH p = shortestPath((a:User {user_id: 1})<-[:FOLLOWS*]-(b:User)) RETURN b.name AS n",
         &[
-            "WHERE (start_node.user_id = 1)",
+            "WHERE start_node.user_id IS NOT NULL AND (start_node.user_id = 1)",
             "ON rel.followed_id = f.node",
             "ON end_node.user_id = rel.follower_id",
             "JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id",
@@ -2089,7 +2090,7 @@ fn a_shortest_path_starts_at_an_end_pinned_by_its_identity() {
         "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User {user_id: 5})) \
          WHERE a.city = 'Paris' RETURN count(*) AS c",
         &[
-            "WHERE (start_node.user_id = 5)",
+            "WHERE start_node.user_id IS NOT NULL AND (start_node.user_id = 5)",
             "ON rel.followed_id = f.node",
             "JOIN test_integration.users_test AS v2 ON v1.start_id = v2.user_id",
         ],
@@ -2184,30 +2185,6 @@ fn what_shortest_paths_are_not_lowered() {
          RETURN count(*)",
         "reads a variable other than the path and its ends",
     );
-}
-
-#[test]
-fn databricks_shortest_path_is_not_lowered() {
-    use crate::server::query_context::{set_current_schema, with_query_context_sync, QueryContext};
-    let ctx = QueryContext {
-        dialect: crate::sql_generator::SqlDialect::Databricks,
-        ..QueryContext::default()
-    };
-    // Searched, and picked among trails.
-    for q in [
-        "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) RETURN count(*)",
-        "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) WHERE length(p) > 1 \
-         RETURN count(*)",
-    ] {
-        let got = with_query_context_sync(ctx.clone(), || {
-            set_current_schema(std::sync::Arc::new(social()));
-            translate_bound_plan(q, &social(), &ReadOptions::default())
-        });
-        assert!(
-            matches!(&got, Err(e) if e.contains("shortestPath in this SQL dialect")),
-            "{q}: {got:?}"
-        );
-    }
 }
 
 #[test]
@@ -4435,6 +4412,54 @@ fn databricks_lists() {
             "{q}: {got}"
         );
     }
+}
+
+/// S12e: on Spark a shortestPath search's steps are one parenthesized
+/// recursive term (Spark takes one), with no early stop (no recursive
+/// reference in an aggregate); `allShortestPaths` and a shortest path's
+/// nodes (grouped steps) are not lowered; a walk over several types is.
+#[test]
+fn databricks_shortest_path_search() {
+    let got = squash(
+        &databricks_sql(
+            "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) \
+             WHERE a.user_id = 1 AND b.user_id = 9 RETURN length(p) AS l",
+            &social(),
+        )
+        .unwrap(),
+    );
+    assert!(
+        got.contains("UNION ALL (SELECT DISTINCT f.start_id AS start_id"),
+        "{got}"
+    );
+    assert!(
+        got.contains("WHERE start_id IN (SELECT start_id FROM vlp_v1_bfs WHERE new = 1)) )"),
+        "{got}"
+    );
+    assert!(!got.contains("HAVING"), "{got}");
+    // A NULL id starts no search: Spark's `(a, b) NOT IN` of a row holding
+    // NULL rejects every pair (review: 0 rows for 98).
+    assert!(
+        got.contains("WHERE start_node.user_id IS NOT NULL AND"),
+        "{got}"
+    );
+    for q in [
+        "MATCH p = allShortestPaths((a:User)-[:FOLLOWS*]->(b:User)) \
+         WHERE a.user_id = 1 AND b.user_id = 9 RETURN count(p) AS n",
+        "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) \
+         WHERE a.user_id = 1 AND b.user_id = 9 RETURN nodes(p) AS ns",
+    ] {
+        let err = databricks_sql(q, &social()).unwrap_err();
+        assert!(
+            err.contains("allShortestPaths, or a shortest path's"),
+            "{q}: {err}"
+        );
+    }
+    databricks_sql(
+        "MATCH (a:User)-[:FOLLOWS|AUTHORED*1..2]->(x) WHERE a.user_id = 1 RETURN count(*) AS n",
+        &social(),
+    )
+    .unwrap();
 }
 
 /// UNION (S7d): each arm is a CTE of its RETURN's columns in the UNION's

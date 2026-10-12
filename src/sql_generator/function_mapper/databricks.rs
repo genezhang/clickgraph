@@ -328,9 +328,24 @@ impl FunctionMapper for DatabricksFunctionMapper {
     }
 
     fn shortest_path_search(&self) -> Option<super::ShortestPathSearch> {
-        // Not verified on Spark's recursive CTEs: shortestPath stays on the
-        // legacy path there.
-        None
+        // Spark gives each step of a recursive CTE the rows of the step
+        // before, as ClickHouse does, but takes one recursive term (its
+        // steps are one parenthesized UNION ALL), no recursive reference in
+        // an aggregate (no early stop, no grouped step), and no recursive
+        // CTE read by another's subquery.
+        Some(super::ShortestPathSearch {
+            depth: "INT",
+            flag: "INT",
+            // Overflow fails under ANSI mode rather than wrapping.
+            count: "DECIMAL(38, 0)",
+            copies: |count| format!("array_repeat(0, CAST({count} AS INT))"),
+            distinct_list: |x| format!("collect_set({x})"),
+            recursive_steps: |steps| format!("({})", steps.join("\n    UNION ALL\n    ")),
+            stops_early: false,
+            grouped_steps: false,
+            // A recursive CTE reading the search (`IN`) is refused there.
+            nested_recursion: false,
+        })
     }
 
     fn one_type_guard(&self, columns: &[String]) -> Option<String> {

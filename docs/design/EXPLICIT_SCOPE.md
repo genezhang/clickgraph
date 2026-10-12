@@ -4550,6 +4550,41 @@ slice that will handle it.
       with its text (#1432). Noted: a list of NULLs only (`[null]`,
       `ARRAY<VOID>`) in a UNION fails on Spark, loudly; a list of mixed
       element types fails on Spark (S12a).
+  - [x] **S12e: shortestPath and walks over several labels or types.**
+    `FunctionMapper::shortest_path_search` on Spark. Spark gives each step
+    of a recursive CTE the rows of the step before, as ClickHouse does, but
+    takes one recursive term, no recursive reference in an aggregate,
+    window or sort, and no recursive CTE read by another's subquery; the
+    spelling says so: `recursive_steps` (the search's expand-and-carry
+    steps one parenthesized `UNION ALL`), `stops_early` (no "every end
+    reached" cut: the search ends when a depth adds no node, the same
+    paths), `grouped_steps` (no step aggregates: `allShortestPaths` and a
+    shortest path's relationships or nodes are not lowered on Spark: 6
+    corpus queries), `nested_recursion` (the trails of a shortestPath
+    condition start at every first node, not only at the pairs that need
+    them: the pick keeps the same pairs). Types: `INT` depth, a
+    `DECIMAL(38, 0)` path count (overflow fails). A walk over several
+    labels or types (`union_path_ctes`, one linear recursion) needed only
+    the depth type.
+    - Acceptance: Databricks lowers 1436 of ClickHouse's 1442 (was 1334;
+      the rest: the 6 above). Corpus differential 1261 equal (was 1166;
+      the 102 newly lowered: 95 equal, 2 under ties, 5 without data). Ad
+      hoc (14: unbounded, `*2..`, undirected, several starts and ends, all
+      pairs, a length condition, carried ends, several types to a label,
+      unlabeled walks): every lowered one equal; `allShortestPaths` and
+      `nodes(p)` of a shortest path refused on Spark. Found:
+      `RETURN p ORDER BY length(p)` is an internal error on both dialects
+      (#1427, broadened).
+    - Adversarial review: fixed a node row with a NULL id emptying every
+      Spark search (it seeded `(NULL, NULL)`, and Spark's `(a, b) NOT IN` of
+      a row holding NULL rejects every pair: 0 rows for 98); a search now
+      starts only at non-NULL ids, on every dialect. Checked on a synthetic
+      graph of cycles, a diamond, self-loops and parallel edges (13 shapes)
+      and the polymorphic schema (12): every one equal. Limits: without the
+      early stop a Spark search explores all a first node reaches, and
+      Spark caps a recursive CTE at 100 levels and 1,000,000 rows
+      (`spark.sql.cteRecursionLevelLimit` / `cteRecursionRowLimit`): a
+      deep or wide graph fails there, loudly, where ClickHouse answers.
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 
