@@ -1007,7 +1007,8 @@ pub(super) fn passing_ends(
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum TrailEdges {
     None,
-    Typed,
+    /// The relationships' identities, of this many columns.
+    Typed(usize),
     Texts,
 }
 
@@ -1095,8 +1096,8 @@ pub(super) fn pick_cte(
         for c in columns {
             carried.push_str(&format!(", {c}"));
             let value = match (*c, trail_edges) {
-                ("path_edges", TrailEdges::Typed) => {
-                    (g.prefixed_texts)("''", &format!("{alias}.{c}"))
+                ("path_edges", TrailEdges::Typed(arity)) => {
+                    (g.prefixed_texts)("''", &format!("{alias}.{c}"), arity)
                 }
                 // `*0..0`: no relationship.
                 ("path_edges", TrailEdges::None) => (g.texts)(&[]),
@@ -1184,6 +1185,11 @@ pub(super) fn edge_identity_sql(edge: &RelationshipSchema, alias: &str) -> Strin
 /// The columns identifying one relationship: its `edge_id`, else its stored
 /// `(from, to)` endpoints, in that order whichever way a walk follows it, so
 /// every path and hop of a table spells a relationship alike (#887).
+/// The number of columns of a relationship's identity ([`edge_identity`]).
+pub(super) fn edge_arity(edge: &RelationshipSchema) -> usize {
+    edge_identity(edge).columns().len()
+}
+
 fn edge_identity(edge: &RelationshipSchema) -> Identifier {
     edge.edge_id.clone().unwrap_or_else(|| {
         Identifier::Composite(
@@ -1490,9 +1496,10 @@ impl Walk<'_> {
                         carried.push(column);
                     }
                 }
+                let arity = edge_arity(c.edge);
                 let built = path_cte(schema, c)?;
                 let edges = match built.edges {
-                    true => TrailEdges::Typed,
+                    true => TrailEdges::Typed(arity),
                     false => TrailEdges::None,
                 };
                 let path = format!("vlp_{var}_path");

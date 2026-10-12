@@ -439,6 +439,13 @@ impl FunctionMapper for DatabricksFunctionMapper {
     }
 
     fn graph_values(&self) -> Option<super::GraphValues> {
+        fn struct_text(tuple: &str, arity: usize) -> String {
+            let fields: Vec<String> = (1..=arity).map(|i| format!("_{i}: STRING")).collect();
+            format!(
+                "to_json(CAST({tuple} AS STRUCT<{}>), map('ignoreNullFields', 'false'))",
+                fields.join(", ")
+            )
+        }
         // An element is a VARIANT object: objects of different keys and
         // value types share the type, so one `ARRAY<VARIANT>` holds nodes
         // and relationships of any label, as a path does. A value that is
@@ -487,14 +494,22 @@ impl FunctionMapper for DatabricksFunctionMapper {
             text: |parts| format!("concat({})", parts.join(", ")),
             to_text: |x| format!("CAST({x} AS STRING)"),
             // `CAST(struct AS STRING)` quotes no part: each part's text in a
-            // JSON array.
+            // JSON object of positional fields, its NULLs kept, as
+            // `tuple_value_text` spells a struct of the parts.
             tuple_text: |parts| {
-                let parts: Vec<String> = parts
+                let fields: Vec<String> = parts
                     .iter()
-                    .map(|p| format!("CAST({p} AS STRING)"))
+                    .enumerate()
+                    .map(|(i, p)| format!("'_{}', CAST({p} AS STRING)", i + 1))
                     .collect();
-                format!("to_json(array({}))", parts.join(", "))
+                format!(
+                    "to_json(named_struct({}), map('ignoreNullFields', 'false'))",
+                    fields.join(", ")
+                )
             },
+            // A struct cast to one of strings is cast field by field, by
+            // position.
+            tuple_value_text: struct_text,
             null_if: |cond, value| {
                 format!("CASE WHEN {cond} THEN NULL ELSE CAST({value} AS VARIANT) END")
             },
@@ -507,8 +522,12 @@ impl FunctionMapper for DatabricksFunctionMapper {
                     format!("array({})", items.join(", "))
                 }
             },
-            prefixed_texts: |prefix, list| {
-                format!("transform({list}, __x -> concat({prefix}, CAST(__x AS STRING)))")
+            prefixed_texts: |prefix, list, arity| {
+                let text = match arity {
+                    1 => "CAST(__x AS STRING)".to_string(),
+                    n => struct_text("__x", n),
+                };
+                format!("transform({list}, __x -> concat({prefix}, {text}))")
             },
             empty_if: |cond, list| format!("CASE WHEN {cond} THEN array() ELSE {list} END"),
         })

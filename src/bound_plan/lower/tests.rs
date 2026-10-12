@@ -5967,7 +5967,7 @@ fn lambdas_of_higher_order_functions() {
 
 /// S12c: on Spark a node, relationship or path value is a VARIANT object
 /// (`to_variant_object` of a `MAP<STRING, VARIANT>`), a path an
-/// `ARRAY<VARIANT>` of them; a composite identity's key is a JSON array of
+/// `ARRAY<VARIANT>` of them; a composite identity's key is a JSON object of
 /// its parts' texts (`CAST(struct AS STRING)` quotes none).
 #[test]
 fn databricks_graph_values() {
@@ -5997,9 +5997,42 @@ fn databricks_graph_values() {
     );
     assert!(
         got.contains(
-            "concat('SENT:Acct:Acct:', to_json(array(CAST(e.fb AS STRING), \
-             CAST(e.fnum AS STRING), CAST(e.tb AS STRING), CAST(e.tnum AS STRING))))"
+            "concat('SENT:Acct:Acct:', to_json(named_struct('_1', CAST(e.fb AS STRING), \
+             '_2', CAST(e.fnum AS STRING), '_3', CAST(e.tb AS STRING), \
+             '_4', CAST(e.tnum AS STRING)), map('ignoreNullFields', 'false')))"
         ),
         "{got}"
     );
+}
+
+/// S12c review: a path's key spells a relationship (or a composite node)
+/// alike whether a fixed hop or a walk holds it: the walk's typed tuples are
+/// cast to strings field by field (`tuple_value_text`), as `tuple_text`
+/// spells loose columns. Else one path cut two ways is two keys (DISTINCT
+/// paths overcounted on Spark: 22 for 16).
+#[test]
+fn databricks_composite_keys_agree() {
+    let got = squash(
+        &databricks_sql(
+            "MATCH p = (a:Acct)-[:SENT*0..1]->(b:Acct)-[:SENT]->(c:Acct)-[:SENT*0..1]->(d:Acct) \
+             RETURN count(DISTINCT p) AS n",
+            &composite_walk_schema(),
+        )
+        .unwrap(),
+    );
+    for part in [
+        // A walk's relationships, typed tuples of four columns.
+        "transform(v1.path_edges, __x -> concat('SENT:Acct:Acct:', \
+         to_json(CAST(__x AS STRUCT<_1: STRING, _2: STRING, _3: STRING, _4: STRING>), \
+         map('ignoreNullFields', 'false'))))",
+        // A walk's composite nodes.
+        "to_json(CAST(struct(end_node.bank, end_node.num) AS STRUCT<_1: STRING, _2: STRING>), \
+         map('ignoreNullFields', 'false'))",
+        // A node's key from its columns.
+        "to_json(named_struct('_1', CAST(v0.bank AS STRING), '_2', CAST(v0.num AS STRING)), \
+         map('ignoreNullFields', 'false'))",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    assert!(!got.contains("CAST(__x AS STRING)"), "{got}");
 }

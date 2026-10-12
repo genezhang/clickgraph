@@ -933,12 +933,15 @@ impl<'s> Lowerer<'s> {
                                 lists.push((s.prefixed_texts)(
                                     &rel_key_prefix(rel_type, &schema.from_node, &schema.to_node),
                                     &in_order("path_edges")?,
+                                    super::path::edge_arity(schema),
                                 ));
                             }
                             if part == Part::Nodes {
+                                // A composite id is its text already.
                                 lists.push((s.prefixed_texts)(
                                     &string(&format!("{}:", schema.to_node)),
                                     &(s.tail)(&in_order("path_nodes")?),
+                                    1,
                                 ));
                             }
                         }

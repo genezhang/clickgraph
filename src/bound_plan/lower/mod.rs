@@ -5022,6 +5022,7 @@ impl<'s> Lowerer<'s> {
                 }) => Err((g.prefixed_texts)(
                     &value::rel_key_prefix(rel_type, &schema.from_node, &schema.to_node),
                     &sql(self.physical(v, "path_edges")?),
+                    path::edge_arity(schema),
                 )),
                 Some(Scan::Path { .. }) => Err(sql(self.physical(v, "path_edges")?)),
                 _ => return unsupported(format!("internal: {v} is not a relationship scan")),

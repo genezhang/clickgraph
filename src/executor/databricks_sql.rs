@@ -902,7 +902,7 @@ fn rows_from_data(
                 // scalars are themselves strings; un-string them recursively so
                 // the HTTP/Bolt result matches ClickHouse's native array shape.
                 Some("ARRAY") => coerce_array(val.clone(), *type_text),
-                Some("VARIANT" | "MAP" | "STRUCT") => parse_container(val.clone()),
+                _ if is_container_type(*type_name, *type_text) => parse_container(val.clone()),
                 Some(t) => coerce_scalar(val.clone(), t),
                 None => val.clone(),
             };
@@ -956,6 +956,19 @@ fn coerce_scalar(value: Value, type_name: &str) -> Value {
     coerced.unwrap_or(value)
 }
 
+/// Whether a column is a `VARIANT`, `MAP` or `STRUCT`, by its type name or,
+/// whatever name the manifest gives it, its type text.
+fn is_container_type(type_name: Option<&str>, type_text: Option<&str>) -> bool {
+    const CONTAINERS: [&str; 3] = ["VARIANT", "MAP", "STRUCT"];
+    let starts = |t: &str| {
+        let t = t.trim().to_ascii_uppercase();
+        CONTAINERS
+            .iter()
+            .any(|c| t == *c || t.starts_with(&format!("{c}<")))
+    };
+    type_name.is_some_and(|n| CONTAINERS.contains(&n)) || type_text.is_some_and(starts)
+}
+
 /// Restore a native JSON object or array from a `VARIANT`, `MAP` or `STRUCT`
 /// column, which the Statement Execution API delivers as JSON text: a graph
 /// value (a node, relationship or path is a VARIANT object, a list of them
@@ -1001,6 +1014,11 @@ fn coerce_by_type(value: Value, sql_type: &str) -> Value {
                     .map(|it| coerce_by_type(it, inner))
                     .collect(),
             )
+        }
+        // An element that is a VARIANT, MAP or STRUCT delivered as its JSON
+        // text (a path's elements).
+        Value::String(s) if is_container_type(None, Some(sql_type)) => {
+            parse_container(Value::String(s))
         }
         Value::String(s) => {
             // Map SQL type names (type_text) onto the enum names coerce_scalar
@@ -1894,6 +1912,17 @@ mod wiremock_tests {
         assert_eq!(parse_container(json!("123")), json!("123"));
         assert_eq!(parse_container(json!("not json")), json!("not json"));
         assert_eq!(parse_container(Value::Null), Value::Null);
+        // By type text whatever the type name; an array's elements too.
+        assert!(is_container_type(
+            Some("USER_DEFINED_TYPE"),
+            Some("variant")
+        ));
+        assert!(is_container_type(None, Some("MAP<STRING, VARIANT>")));
+        assert!(!is_container_type(Some("STRING"), Some("STRING")));
+        assert_eq!(
+            coerce_by_type(json!([r#"{"a":1}"#, "x"]), "ARRAY<VARIANT>"),
+            json!([{"a": 1}, "x"])
+        );
     }
 
     #[test]

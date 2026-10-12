@@ -57,7 +57,7 @@ fn emit_id_expr(by_tuple: bool, table_alias: &str, id: &Identifier) -> String {
                 .collect();
             let tuple = format!("{}({})", m.tuple_constructor(), columns.join(", "));
             match m.graph_values() {
-                Some(g) => (g.to_text)(&tuple),
+                Some(g) => (g.tuple_value_text)(&tuple, cols.len()),
                 None => format!("{}({tuple})", m.cast_string()),
             }
         }
