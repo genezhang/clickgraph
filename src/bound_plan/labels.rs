@@ -26,6 +26,8 @@ pub(crate) struct Feasibility {
     pub all_labels: BTreeSet<String>,
     pub all_types: BTreeSet<String>,
     triples: Vec<(String, String, String)>,
+    /// Union labels (`GraphSchema::union_labels`): each, its node labels.
+    unions: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl Feasibility {
@@ -55,6 +57,17 @@ impl Feasibility {
             all_labels,
             all_types,
             triples,
+            unions: schema.union_labels().clone(),
+        }
+    }
+
+    /// The node labels a written label stands for: a union label's nodes
+    /// are its labels' (`(m:Message)` is a Post or a Comment); a node label
+    /// is itself.
+    pub fn node_labels_of(&self, written: &str) -> BTreeSet<String> {
+        match self.unions.get(written) {
+            Some(members) => members.clone(),
+            None => BTreeSet::from([written.to_string()]),
         }
     }
 }

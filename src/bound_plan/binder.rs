@@ -1299,7 +1299,16 @@ impl<'s> PatternBuilder<'s> {
         np: &NodePattern<'_>,
         shared: Option<NodeKey>,
     ) -> Result<PatNode, BindError> {
-        let labels: Vec<String> = np.labels.iter().flatten().map(|l| l.to_string()).collect();
+        // A union label stands for its node labels (`(m:Message)`: a Post
+        // or a Comment).
+        let mut labels: Vec<String> = Vec::new();
+        for l in np.labels.iter().flatten() {
+            for label in b.feasibility.node_labels_of(l) {
+                if !labels.contains(&label) {
+                    labels.push(label);
+                }
+            }
+        }
         let (var, bound_before) = match np.name {
             Some(name) => self.named(b, name, "node", || BindingKind::Node {
                 labels: BTreeSet::new(),

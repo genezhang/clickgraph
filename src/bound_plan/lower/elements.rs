@@ -371,9 +371,13 @@ impl<'s> Lowerer<'s> {
             super::value::element_id_sql(g, &parts)
         };
         let object = match &elem {
-            Elem::Node(label) => {
-                super::value::node_object(g, label, &id_of(layout.identity_slots()), &props)
-            }
+            Elem::Node(label) => super::value::node_object(
+                g,
+                self.schema,
+                label,
+                &id_of(layout.identity_slots()),
+                &props,
+            ),
             Elem::Rel { rel_type, from, to } => {
                 let (from_slots, to_slots) = layout.end_slots();
                 super::value::rel_object(

@@ -19,7 +19,9 @@ use clickgraph::{
 
 fn load_ldbc_schema() -> GraphSchema {
     let config =
-        GraphSchemaConfig::from_yaml_file("benchmarks/ldbc_snb/schemas/ldbc_snb_complete.yaml")
+        // The legacy pipeline's tests: the LDBC schema before its `Message`
+        // union label, which the legacy pipeline does not know (P-4c S11o2).
+        GraphSchemaConfig::from_yaml_file("schemas/test/ldbc_snb_complete_legacy_pipeline.yaml")
             .expect("Failed to load LDBC schema YAML");
     config
         .to_graph_schema()

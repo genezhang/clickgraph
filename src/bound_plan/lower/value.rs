@@ -25,7 +25,7 @@ use crate::graph_catalog::element_id::{
     node_element_id_affixes, node_element_id_separators, relationship_element_id_affixes,
     relationship_element_id_separators,
 };
-use crate::graph_catalog::graph_schema::{NodeSchema, RelationshipSchema};
+use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema};
 use crate::query_planner::logical_expr::{self as lx, LogicalExpr};
 use crate::render_plan::render_expr::{
     AggregateFnCall, Literal, Operator, OperatorApplication, PropertyAccess, RenderCase,
@@ -232,12 +232,13 @@ pub(super) fn element_id_sql(g: &GraphValues, ids: &[String]) -> String {
 /// [`element_id_sql`]), its properties (name, SQL).
 pub(super) fn node_object(
     g: &GraphValues,
+    schema: &GraphSchema,
     label: &str,
     id: &str,
     props: &[(String, String)],
 ) -> String {
     let (prefix, suffix) = node_element_id_affixes(label);
-    let labels = current_function_mapper().array_literal(&string(label));
+    let labels = node_labels_sql(schema, label);
     (g.object)(&[
         (
             string("elementId"),
@@ -248,17 +249,44 @@ pub(super) fn node_object(
     ])
 }
 
+/// The labels of a node of `label` (SQL): it, then the union labels it
+/// carries (`GraphSchema::union_labels_of`).
+fn node_labels_sql(schema: &GraphSchema, label: &str) -> String {
+    let labels: Vec<String> = std::iter::once(label)
+        .chain(schema.union_labels_of(label))
+        .map(string)
+        .collect();
+    current_function_mapper().array_literal(&labels.join(", "))
+}
+
+/// The labels of a node whose label is the SQL `label` (a column), as
+/// [`node_labels_sql`]: by the label, where a union label has it.
+fn labeled_node_labels_sql(schema: &GraphSchema, label: &str) -> String {
+    let own = current_function_mapper().array_literal(label);
+    let carried: std::collections::BTreeSet<&String> =
+        schema.union_labels().values().flatten().collect();
+    if carried.is_empty() {
+        return own;
+    }
+    let whens: String = carried
+        .iter()
+        .map(|l| format!(" WHEN {} THEN {}", string(l), node_labels_sql(schema, l)))
+        .collect();
+    format!("CASE {label}{whens} ELSE {own} END")
+}
+
 /// A node whose label is the SQL `label` (a column: one of several
 /// possible labels), else as [`node_object`]. Its properties are those of
 /// every label, NULL where its own has none, so the value has its own.
 fn labeled_node_object(
     g: &GraphValues,
+    schema: &GraphSchema,
     label: &str,
     id: &str,
     props: &[(String, String)],
 ) -> String {
     let (after_label, suffix) = node_element_id_separators();
-    let labels = current_function_mapper().array_literal(label);
+    let labels = labeled_node_labels_sql(schema, label);
     (g.object)(&[
         (
             string("elementId"),
@@ -384,6 +412,7 @@ fn table_props(
 /// A node of `schema`'s table read under `alias` (inside a path's search).
 pub(super) fn table_node_object(
     g: &GraphValues,
+    graph: &GraphSchema,
     schema: &NodeSchema,
     label: &str,
     alias: &str,
@@ -395,6 +424,7 @@ pub(super) fn table_node_object(
         .collect();
     Ok(node_object(
         g,
+        graph,
         label,
         &element_id_sql(g, &ids),
         &table_props(&schema.property_mappings, alias),
@@ -1021,10 +1051,10 @@ impl<'s> Lowerer<'s> {
             props.push((name, sql(&e)));
         }
         match self.scans.get(&v) {
-            Some(Scan::Node { label, .. }) => Ok(node_object(s, label, &id, &props)),
+            Some(Scan::Node { label, .. }) => Ok(node_object(s, self.schema, label, &id, &props)),
             Some(Scan::Labels { .. }) => {
                 let label = sql(&self.physical(v, super::LABEL_COLUMN)?);
-                Ok(labeled_node_object(s, &label, &id, &props))
+                Ok(labeled_node_object(s, self.schema, &label, &id, &props))
             }
             _ => unsupported(format!("internal: {v} is not a node scan")),
         }

@@ -1074,6 +1074,13 @@ impl<'a> Planner<'a> {
     /// The schema of `label`, refused when it is not writable.
     fn writable(&self, label: &str) -> Result<&'a NodeSchema, WritePlanError> {
         let Some(node) = self.schema.node_schema_opt(label) else {
+            if let Some(members) = self.schema.union_label_members(label) {
+                let members: Vec<&str> = members.iter().map(String::as_str).collect();
+                return Err(WritePlanError::Rejected(format!(
+                    "`{label}` is a union label (of {}): create a node of one of them",
+                    members.join(", ")
+                )));
+            }
             return Err(WritePlanError::Rejected(format!(
                 "unknown node label `{label}`"
             )));
@@ -1280,6 +1287,28 @@ mod tests {
         .unwrap()
         .to_graph_schema()
         .unwrap()
+    }
+
+    /// The social schema with a union label `Entity` of `User` and `Post`.
+    fn social_with_union() -> GraphSchema {
+        crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(&format!(
+            "{}\n  union_labels:\n    - label: Entity\n      labels: [User, Post]\n",
+            include_str!("../../schemas/test/social_integration.yaml").trim_end()
+        ))
+        .unwrap()
+        .to_graph_schema()
+        .unwrap()
+    }
+
+    /// A union label has no table: a CREATE of it is refused, naming its
+    /// labels (S11o2).
+    #[test]
+    fn create_of_a_union_label() {
+        let err = plan_write("CREATE (n:Entity {user_id: 1})", &social_with_union()).unwrap_err();
+        assert!(
+            matches!(&err, WritePlanError::Rejected(m) if m.contains("`Entity` is a union label (of Post, User)")),
+            "{err:?}"
+        );
     }
 
     fn planned(q: &str, schema: &GraphSchema) -> Result<WriteRenderPlan, WritePlanError> {

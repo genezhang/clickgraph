@@ -370,6 +370,7 @@ pub async fn initialize_global_schema(
                         edges: Vec::new(),
                         vector_indexes: Vec::new(),
                         fulltext_indexes: Vec::new(),
+                        union_labels: Vec::new(),
                     },
                 };
                 view_configs.insert("default".to_string(), empty_config);
@@ -414,6 +415,7 @@ pub async fn initialize_global_schema(
                                 edges: Vec::new(),
                                 vector_indexes: Vec::new(),
                                 fulltext_indexes: Vec::new(),
+                                union_labels: Vec::new(),
                             },
                         };
                         view_configs.insert("default".to_string(), empty_config);
@@ -466,6 +468,7 @@ pub async fn initialize_global_schema(
                 edges: Vec::new(),
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
+                union_labels: Vec::new(),
             },
         };
         view_configs.insert("default".to_string(), empty_config);

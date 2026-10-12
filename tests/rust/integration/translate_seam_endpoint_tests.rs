@@ -344,3 +344,40 @@ async fn statements_other_than_reads_are_not_supported_on_clickhouse() {
         );
     }
 }
+
+/// The legacy pipeline knows no union label: with one in the schema, a
+/// read the bound plan does not translate is an error on a dialect that
+/// keeps the fallback too (it read `m:Message` of a Post as false).
+#[test]
+fn a_union_label_schema_does_not_fall_back() {
+    use clickgraph::server::query_context::{
+        set_current_dialect, set_current_schema, with_query_context_sync, QueryContext,
+    };
+    use clickgraph::translate::{translate_read, ReadOptions, TranslateError};
+    let schema = GraphSchemaConfig::from_yaml_str(&format!(
+        "{}\n  union_labels:\n    - label: Entity\n      labels: [User, Post]\n",
+        include_str!("../../../schemas/test/social_integration.yaml").trim_end()
+    ))
+    .unwrap()
+    .to_graph_schema()
+    .unwrap();
+    let q = "MATCH (u:User) RETURN elementId(u) AS e, u:Entity AS x";
+    let got = with_query_context_sync(QueryContext::new(None), || {
+        set_current_schema(Arc::new(schema.clone()));
+        set_current_dialect(clickgraph::sql_generator::SqlDialect::Databricks);
+        let (_, statement) = clickgraph::open_cypher_parser::parse_cypher_statement(q).unwrap();
+        translate_read(
+            statement,
+            &schema,
+            ReadOptions {
+                max_cte_depth: 100,
+                cypher: Some(q.to_string()),
+                ..Default::default()
+            },
+        )
+    });
+    assert!(
+        matches!(got, Err(TranslateError::Unsupported(_))),
+        "{got:?}"
+    );
+}

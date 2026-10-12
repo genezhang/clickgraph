@@ -567,6 +567,38 @@ nodes:
 
 Query: `MATCH (u:User {tenant_id: 'acme'}) RETURN u`
 
+### Union Labels
+
+A union label is a label that the nodes of several other labels also carry. In
+Neo4j's LDBC graph, for example, every `:Post` and every `:Comment` is also a
+`:Message`. It has no table of its own; declare it under `union_labels`, next to
+`nodes` and `edges`:
+
+```yaml
+graph_schema:
+  nodes:
+    - label: Post
+      table: post
+      # ...
+    - label: Comment
+      table: comment
+      # ...
+  edges:
+    # Relationships are defined for Post and Comment, not for Message.
+  union_labels:
+    - label: Message
+      labels: [Post, Comment]
+```
+
+How it reads:
+- `(m:Message)` matches the Posts and the Comments.
+- `m:Comment` holds of the comments and `m:Message` holds of both.
+- `labels(m)` lists the node's own label, then the union label: `['Post', 'Message']`.
+- A relationship of a member is a Message's relationship. `(m:Message)-[:REPLY_OF]->(p:Post)` uses `REPLY_OF`'s definitions for Post and Comment, here only Comment.
+- `db.labels()` lists union labels too.
+
+Each of `labels` must be a node label of the schema, and a union label can't also be a node label. A relationship end can't name a union label; define the relationship for each member instead.
+
 ### Schema Filters
 
 Apply permanent SQL filters:
@@ -658,6 +690,7 @@ Legend: ✅ Required/Applicable, ⚠️ Conditional, ❌ Not Applicable
 4. **from_label_values** should be set when `from_label_column` is used (closed-world validation)
 5. **to_label_values** should be set when `to_label_column` is used (closed-world validation)
 6. **type_values** is required for polymorphic edges (list of edge types)
+7. **union_labels**: each member is a node label, a union label is not also a node label, and no relationship end names a union label
 
 ---
 

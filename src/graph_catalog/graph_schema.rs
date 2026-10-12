@@ -949,6 +949,31 @@ impl GraphSchema {
 
     /// P-4c S8b: record every definition of each label (the build keeps one
     /// per label in `nodes`).
+    /// Set the union labels (`config::UnionLabelDefinition`), validated.
+    pub fn set_union_labels(&mut self, union_labels: BTreeMap<String, BTreeSet<String>>) {
+        self.union_labels = union_labels;
+    }
+
+    /// The node labels whose nodes carry the union label `label`, if it is
+    /// one.
+    pub fn union_label_members(&self, label: &str) -> Option<&BTreeSet<String>> {
+        self.union_labels.get(label)
+    }
+
+    /// The union labels a node of `label` also carries, in name order.
+    pub fn union_labels_of(&self, label: &str) -> Vec<&str> {
+        self.union_labels
+            .iter()
+            .filter(|(_, members)| members.contains(label))
+            .map(|(u, _)| u.as_str())
+            .collect()
+    }
+
+    /// Every union label, with its node labels.
+    pub fn union_labels(&self) -> &BTreeMap<String, BTreeSet<String>> {
+        &self.union_labels
+    }
+
     pub fn set_node_definitions(&mut self, definitions: BTreeMap<String, Vec<NodeSchema>>) {
         self.node_definitions = definitions;
     }
@@ -1743,6 +1768,11 @@ pub struct GraphSchema {
     /// per label). Empty in a schema not built from YAML.
     #[serde(skip)]
     node_definitions: BTreeMap<String, Vec<NodeSchema>>,
+
+    /// Union labels (`config::UnionLabelDefinition`): each, the node labels
+    /// whose nodes also carry it.
+    #[serde(default)]
+    union_labels: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// Deserialization shadow for [`GraphSchema`]: only the persisted (non-`skip`)
@@ -1761,6 +1791,8 @@ struct GraphSchemaDe {
     nodes: BTreeMap<String, NodeSchema>,
     #[serde(default)]
     relationships: BTreeMap<String, RelationshipSchema>,
+    #[serde(default)]
+    union_labels: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl From<GraphSchemaDe> for GraphSchema {
@@ -1779,6 +1811,7 @@ impl From<GraphSchemaDe> for GraphSchema {
             fulltext_indexes: BTreeMap::new(),
             node_relations: BTreeMap::new(),
             node_definitions: BTreeMap::new(),
+            union_labels: de.union_labels,
         };
         schema.rebuild_derived_indexes();
         schema
@@ -1856,6 +1889,7 @@ impl GraphSchema {
             fulltext_indexes: BTreeMap::new(),
             node_relations: BTreeMap::new(),
             node_definitions: BTreeMap::new(),
+            union_labels: BTreeMap::new(),
         }
     }
 

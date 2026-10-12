@@ -23,6 +23,7 @@ fn node_labels(schema: &GraphSchema) -> Vec<String> {
         .all_node_schemas()
         .keys()
         .map(|k| k.rsplit("::").next().unwrap_or(k).to_string())
+        .chain(schema.union_labels().keys().cloned())
         .collect();
     labels.sort();
     labels.dedup();

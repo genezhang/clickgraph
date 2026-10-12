@@ -250,7 +250,7 @@ fn translate_in_context(
                 // dropped, `WHERE false` rows): an error where reads do not
                 // fall back (S11j review).
                 Err(BoundPlanError::Unparsed(reason)) if !is_read(&statement) => {
-                    if !legacy_reads() {
+                    if !legacy_reads(schema) {
                         return Err(not_a_read(&statement));
                     }
                     log::debug!("bound plan: legacy pipeline (not a read: {reason})")
@@ -259,13 +259,13 @@ fn translate_in_context(
                     return Err(TranslateError::Invalid(reason));
                 }
                 Err(BoundPlanError::Fallback(reason)) => {
-                    if !legacy_reads() {
+                    if !legacy_reads(schema) {
                         return Err(not_translated(&reason));
                     }
                     log::debug!("bound plan: legacy pipeline ({reason})")
                 }
                 Err(BoundPlanError::NotARead(reason)) => {
-                    if !legacy_reads() {
+                    if !legacy_reads(schema) {
                         return Err(not_a_read(&statement));
                     }
                     log::debug!("bound plan: legacy pipeline ({reason})")
@@ -315,10 +315,13 @@ fn translate_in_context(
     })
 }
 
-/// Whether reads the bound plan does not translate reach the legacy pipeline
-/// on the current dialect (until S12, other dialects than ClickHouse).
-fn legacy_reads() -> bool {
+/// Whether a read the bound plan does not translate falls back to the
+/// legacy pipeline: on the dialects that keep it, for a schema without
+/// union labels (the legacy pipeline knows none: it would read `m:Message`
+/// of a Post as false).
+fn legacy_reads(schema: &GraphSchema) -> bool {
     crate::server::query_context::get_current_dialect().reads_fall_back_to_legacy()
+        && schema.union_labels().is_empty()
 }
 
 /// The error for a statement that is not a read reaching the read path.

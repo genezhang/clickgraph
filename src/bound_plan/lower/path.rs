@@ -271,7 +271,8 @@ pub(super) fn path_cte(schema: &GraphSchema, call: PathCall<'_>) -> Result<PathC
     context.path_values.rel_tuple = rel_tuple.map(|t| (t.one, t.empty));
     if call.node_values || call.rel_values {
         let g = super::value::spelling()?;
-        let node = |alias: &str| super::value::table_node_object(&g, call.node, call.label, alias);
+        let node =
+            |alias: &str| super::value::table_node_object(&g, schema, call.node, call.label, alias);
         context.path_values = PathValues {
             node_tuple: context.path_values.node_tuple.take(),
             rel_tuple: context.path_values.rel_tuple.take(),
@@ -554,8 +555,8 @@ impl PathCall<'_> {
         };
         let node_value = match values(self.node_values)? {
             Some(g) => Some((
-                super::value::table_node_object(g, self.node, self.label, START)?,
-                super::value::table_node_object(g, self.node, self.label, END)?,
+                super::value::table_node_object(g, schema, self.node, self.label, START)?,
+                super::value::table_node_object(g, schema, self.node, self.label, END)?,
             )),
             None => None,
         };

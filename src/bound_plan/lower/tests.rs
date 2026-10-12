@@ -6163,3 +6163,133 @@ fn databricks_composite_keys_agree() {
     }
     assert!(!got.contains("CAST(__x AS STRING)"), "{got}");
 }
+
+/// S11o2: a union label (`union_labels:`): `Message` of `Post` and `Comment`.
+fn union_schema(extra: &str) -> Result<GraphSchema, String> {
+    GraphSchemaConfig::from_yaml_str(&format!(
+        r#"
+name: union_labels
+graph_schema:
+  nodes:
+    - label: Person
+      database: db
+      table: person
+      node_id: id
+      property_mappings: {{ id: id, name: name }}
+    - label: Post
+      database: db
+      table: post
+      node_id: id
+      property_mappings: {{ id: id, content: content, imageFile: image_file }}
+    - label: Comment
+      database: db
+      table: comment
+      node_id: id
+      property_mappings: {{ id: id, content: content }}
+  edges:
+    - type: HAS_CREATOR
+      database: db
+      table: post_creator
+      from_id: post_id
+      to_id: person_id
+      from_node: Post
+      to_node: Person
+      property_mappings: {{}}
+    - type: HAS_CREATOR
+      database: db
+      table: comment_creator
+      from_id: comment_id
+      to_id: person_id
+      from_node: Comment
+      to_node: Person
+      property_mappings: {{}}
+    - type: REPLY_OF
+      database: db
+      table: reply_post
+      from_id: comment_id
+      to_id: post_id
+      from_node: Comment
+      to_node: Post
+      property_mappings: {{}}
+{extra}
+  union_labels:
+    - label: Message
+      labels: [Post, Comment]
+"#
+    ))
+    .map_err(|e| e.to_string())?
+    .to_graph_schema()
+    .map_err(|e| e.to_string())
+}
+
+#[test]
+fn union_labels() {
+    let schema = union_schema("").unwrap();
+    let sql = |q: &str| {
+        squash(
+            &translate_bound_plan(q, &schema, &ReadOptions::default())
+                .unwrap_or_else(|e| panic!("{q}: {e}"))
+                .sql,
+        )
+    };
+    // A Message is a Post or a Comment: both tables, by label.
+    let got = sql("MATCH (m:Message) RETURN m.content AS c");
+    for part in [
+        "FROM db.comment",
+        "FROM db.post",
+        "'Comment' AS \"__cg_label\"",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in {got}");
+    }
+    // Its label test reads the row's label; `labels()` lists the union
+    // label after the node's own.
+    let got = sql("MATCH (m:Message) RETURN m:Comment AS c, m:Message AS d, labels(m) AS ls");
+    for part in [
+        "CAST(v0.__cg_label = 'Comment' AS Nullable(Bool)) AS \"c\"",
+        "CAST((v0.__cg_label = 'Comment' OR v0.__cg_label = 'Post') AS Nullable(Bool)) AS \"d\"",
+        "caseWithExpression(v0.__cg_label, 'Comment', ['Comment', 'Message'], 'Post', \
+         ['Post', 'Message'], [v0.__cg_label]) AS \"ls\"",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in {got}");
+    }
+    let got = sql("MATCH (p:Post) RETURN p:Message AS m, labels(p) AS ls");
+    assert!(got.contains("['Post', 'Message'] AS \"ls\""), "{got}");
+    assert!(!got.contains("__cg_label"), "{got}");
+    // A relationship of a member: a Message that replies to a Post is a
+    // Comment.
+    let got = sql("MATCH (m:Message)-[:REPLY_OF]->(p:Post) RETURN count(*) AS n");
+    assert!(got.contains("FROM db.comment"), "{got}");
+    assert!(!got.contains("__cg_label"), "{got}");
+    // `(m:Message|Person)` is a Post, a Comment or a Person.
+    let got = sql("MATCH (m:Message|Person) RETURN count(*) AS n");
+    assert!(got.contains("FROM db.person"), "{got}");
+    // Refused: a union label as a relationship end, as a node label, of a
+    // label the schema lacks.
+    let end = "    - type: LIKES\n      database: db\n      table: likes\n      from_id: a\n      \
+               to_id: b\n      from_node: Person\n      to_node: Message\n      property_mappings: {}";
+    let err = union_schema(end).unwrap_err();
+    assert!(
+        err.contains("relationship end is the union label `Message`"),
+        "{err}"
+    );
+    let err = GraphSchemaConfig::from_yaml_str(
+        "graph_schema:\n  nodes:\n    - label: Post\n      database: db\n      table: post\n      \
+         node_id: id\n      property_mappings: { id: id }\n  union_labels:\n    - label: Post\n      \
+         labels: [Post]\n",
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("is also a node label"), "{err}");
+    let err = GraphSchemaConfig::from_yaml_str(
+        "graph_schema:\n  nodes:\n    - label: Post\n      database: db\n      table: post\n      \
+         node_id: id\n      property_mappings: { id: id }\n  union_labels:\n    - label: Message\n      \
+         labels: [Post, Nope]\n",
+    )
+    .unwrap()
+    .to_graph_schema()
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("`Nope` is not a node label"), "{err}");
+}
