@@ -5352,24 +5352,42 @@ impl<'s> Lowerer<'s> {
                 return unsupported("ORDER BY a relationship's id()");
             }
         }
-        let keys = keys
-            .iter()
-            .map(|k| {
-                let e = match self.node_id_item(&k.expr) {
-                    // As an `id(n)` item: by the node's key (S11e).
-                    Some((v, _)) => self.identity_value(v)?,
-                    None => self.expr(&k.expr, items)?,
-                };
-                Ok(OrderByItem {
-                    expression: e,
-                    order: if k.descending {
-                        OrderByOrder::Desc
-                    } else {
-                        OrderByOrder::Asc
-                    },
-                })
-            })
-            .collect::<Result<Vec<_>, LowerError>>()?;
+        let mut sorted = Vec::new();
+        for k in keys {
+            let order = if k.descending {
+                OrderByOrder::Desc
+            } else {
+                OrderByOrder::Asc
+            };
+            // `id(n)` of a node of several labels (the Neo4j Browser's node
+            // expand: `ORDER BY id(o)`): by its label, then its key, as its
+            // identity is (no one number: keys of two labels may be equal).
+            let labeled = match &k.expr {
+                LogicalExpr::ScalarFnCall(f) if f.name.eq_ignore_ascii_case("id") => self
+                    .entity_arg(&f.args)
+                    .filter(|v| matches!(self.scans.get(v), Some(Scan::Labels { .. }))),
+                _ => None,
+            };
+            if let Some(v) = labeled {
+                for e in self.identity(v)?.unwrap_or_default() {
+                    sorted.push(OrderByItem {
+                        expression: e,
+                        order: order.clone(),
+                    });
+                }
+                continue;
+            }
+            let e = match self.node_id_item(&k.expr) {
+                // As an `id(n)` item: by the node's key (S11e).
+                Some((v, _)) => self.identity_value(v)?,
+                None => self.expr(&k.expr, items)?,
+            };
+            sorted.push(OrderByItem {
+                expression: e,
+                order,
+            });
+        }
+        let keys = sorted;
         // A constant key orders nothing, and ClickHouse would read an
         // integer one as a column position (`ORDER BY 1`).
         Ok(keys
@@ -5533,7 +5551,15 @@ impl<'s> Lowerer<'s> {
             // UNION's): ClickHouse groups no `Dynamic`, and compares `1` and
             // `1.0` as different. A dialect without the key reads a map that
             // is neither grouped nor made distinct as it is.
-            let map_key = match self.holds_maps(&it.expr) && !it.aggregate {
+            // So is a list of values, whose items may be of several types (a
+            // `Variant`, which ClickHouse groups no more than `Dynamic`;
+            // LDBC IC 1's `[uni.name, studyAt.classYear, …]`), by the same
+            // key (`[1]` and `[1.0]` are one group, as in Cypher).
+            let value_list = matches!(
+                self.kind(&it.expr),
+                unwind::Kind::List(inner) if !matches!(*inner, unwind::Kind::Element(_))
+            );
+            let map_key = match (self.holds_maps(&it.expr) || value_list) && !it.aggregate {
                 true => match current_function_mapper().cypher_union() {
                     Some(u) => Some(RenderExpr::Raw((u.distinct_key)(
                         &render_expr_to_sql_plain(&e),

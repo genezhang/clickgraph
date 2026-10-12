@@ -4521,10 +4521,38 @@ slice that will handle it.
         error, not dropped (`finish_relation`); `null IN` an empty
         collected list is false (it was NULL); `x IN l` returned 1/0 on
         ClickHouse (now a boolean).
-    - [ ] **S11o6…: the 4 not lowered** (a node as an operand or a value,
-      `head()` of a map, a subquery in a list comprehension, a path in other
-      positions, a property of a value, the Browser's `id()`), IC 1's
-      grouping key, BI 17's time.
+    - [x] **S11o6: IC 1 — a list of values as a grouping key; a collect of
+      lists or NULL.** A list of values (`[uni.name, studyAt.classYear,
+      …]`: its items of several types, a `Variant` ClickHouse groups by
+      no more than `Dynamic`) carried as a grouping key is grouped by its
+      key (`CypherUnion::distinct_key`, as a map is: `[1]` and `[1.0]` one
+      group, as in Cypher). `collect(CASE … THEN null ELSE [..] END)`:
+      ClickHouse holds no NULL array, so the NULL read `[]`, which
+      `collect()` kept (`[[]]` where Neo4j's is `[]`), and `[]` beside a
+      list of `Variant`s failed to convert (Code 70): the lists are
+      collected where the CASE's result is one (`collect_list_case`: a
+      CASE of the same conditions as the flag; the NULL results read the
+      first list). A CASE's NULL list outside `collect()` stays `[]`
+      (#1454). On the SF1 `ldbc` database IC 1 equals the legacy pipeline
+      but for the legacy pipeline's errors: `[[]]` for no university, a
+      year as a string, a friend at distance 3 (2, by a hand-written
+      check). Also the Neo4j Browser's node expand: `ORDER BY id(o)` of a
+      node of several labels sorts by its identity (label, then key: two
+      labels' keys may be equal, so no one number), as Bolt passes it on;
+      11 rows, the node's neighbours.
+      - Adversarial review (Neo4j oracle, ClickHouse): grouping and
+        DISTINCT of lists of strings, ints, mixed, nested, with NULL items,
+        `[1]` / `[1.0]` one group and `[1]` / `['1']` two; the collect's
+        simple CASE, no ELSE, several NULL branches, DISTINCT; `ORDER BY
+        id(o)` DESC, NULLs, after WITH, union labels: as Neo4j. Fixed: a
+        collect over ordered rows (after `WITH … ORDER BY`) skipped the
+        CASE handling (`[[]]`, and IC 1's Code 70). A list grouped by its
+        key costs ~1.8× a single-type array's grouping (20M rows: 1.28 s
+        vs 0.70 s), the price of not knowing its items' types. A NULL list
+        carried through a WITH already reads `[]` (#1454).
+    - [ ] **S11o7…: the 4 not lowered**: `head()` of a map of a node (IC 7),
+      a subquery in a list comprehension (IC 10), a path in other positions
+      (IC 13), a property of a value (BI 14); BI 17's time.
 - [ ] **S12: Databricks coverage.** The bound plan lowers on Databricks what
   it lowers on ClickHouse, so the legacy pipeline can go on every dialect.
   Each `FunctionMapper` spelling that is `None` on Databricks (`unwind`,

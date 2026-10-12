@@ -6433,3 +6433,45 @@ fn an_optional_match_after_a_grouping_with_joins_on_the_keys() {
         "joined on the collected list: {got}"
     );
 }
+
+/// S11o6: `collect(CASE … THEN null ELSE [..] END)` collects the lists only
+/// (ClickHouse holds no NULL array: the NULL read `[]`, which it kept), and
+/// a list of values grouped by is grouped by its key (its items may be of
+/// several types, a `Variant`, which ClickHouse groups by no more than
+/// `Dynamic`) (LDBC IC 1).
+#[test]
+fn a_collect_of_lists_or_null_and_a_list_grouping_key() {
+    has(
+        "MATCH (u:User) OPTIONAL MATCH (u)-[:FOLLOWS]->(f:User) \
+         RETURN u.user_id AS id, collect(CASE WHEN f IS NULL THEN null ELSE [f.name, f.age] END) AS l",
+        &["coalesce(groupArrayIf(CASE WHEN o1.v2__user_id IS NULL THEN [o1.p2_v2_name, \
+           o1.p2_v2_age] ELSE [o1.p2_v2_name, o1.p2_v2_age] END, CASE WHEN o1.v2__user_id IS \
+           NULL THEN false ELSE true END), [])"],
+    );
+    // Over ordered rows (S11o6 review): the ordered collect has the flag.
+    let got = squash(&sql(
+        "MATCH (u:User) OPTIONAL MATCH (u)-[:FOLLOWS]->(f:User) WITH u, f ORDER BY f.user_id \
+         RETURN u.user_id AS id, collect(CASE WHEN f IS NULL THEN null ELSE [f.name, f.age] END) AS l",
+    ));
+    assert!(!got.contains("THEN [] ELSE"), "{got}");
+    assert!(got.contains("THEN false ELSE true END"), "{got}");
+    let got = squash(&sql(
+        "MATCH (u:User) WITH [u.name, u.age] AS l, count(*) AS c RETURN l, c",
+    ));
+    assert!(
+        got.contains("GROUP BY tuple(multiIf(dynamicType(CAST("),
+        "{got}"
+    );
+}
+
+/// S11o6: `ORDER BY id(o)` of a node of several labels (the Neo4j
+/// Browser's node expand) sorts by its label, then its key: its identity
+/// (two labels' keys may be equal: no one number).
+#[test]
+fn order_by_id_of_a_node_of_several_labels() {
+    has(
+        "MATCH (a:User) WHERE a.user_id = 1 WITH a, size([(a)--() | 1]) AS allNeighboursCount \
+         MATCH path = (a)--(o) RETURN path, allNeighboursCount ORDER BY id(o) LIMIT 100",
+        &["ORDER BY v7.__cg_label ASC, v7.__cg_id_0 ASC"],
+    );
+}

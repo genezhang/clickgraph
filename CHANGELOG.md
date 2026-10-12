@@ -11,6 +11,8 @@
 
 ### 🐛 Bug Fixes
 
+- **`collect(CASE … THEN null ELSE [..] END)` kept an empty list for each NULL** (`[[]]` where Neo4j returns `[]`), and failed when the lists mixed value types. A list of mixed values used as a grouping key failed on ClickHouse (Code 44). Both now work; LDBC IC 1 lowers.
+
 - **OPTIONAL MATCH after a WITH that collects could drop matches.** On ClickHouse, a WITH's CTE that is read twice is evaluated twice, and `collect()` can come back in a different order each time. An OPTIONAL MATCH joined its matches on the collected list as well as on the WITH's keys, so in LDBC IC 5 a forum with 93 posts reported 30. The join now uses the keys only, since they determine the aggregated values.
 - **A pattern starting at a new node and ending at a bound one was planned as a cross product.** It is now joined from its bound end; LDBC IC 5 went from over 300 s to 0.8 s.
 - **`x IN [a, b]` and `x IN collected list` of nodes were "Not supported".** They now compare node identities (LDBC IC 3, IC 5 and BI 13).
