@@ -226,6 +226,14 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// Used for cycle detection in VLP recursive CTEs.
     fn array_contains(&self) -> &'static str;
 
+    /// Cypher `value IN list` (`negated`: `NOT IN`) for a list that is an
+    /// expression, not a list of items; `None` when the dialect's `IN`
+    /// takes it as it is (ClickHouse's `x IN arr`). Spark's `IN` takes a
+    /// parenthesized list or a subquery only.
+    fn in_list_expression(&self, _value: &str, _list: &str, _negated: bool) -> Option<String> {
+        None
+    }
+
     /// Integer (truncate-toward-zero) division. CH: `intDiv`. Spark: `div`.
     /// Both match Neo4j's `int / int` (`intDiv(-7, 2) = -3`, toward zero, not
     /// floor). Used to render Cypher integer-literal division, whose default
@@ -580,15 +588,28 @@ pub(crate) struct Lists {
     /// An empty list of the type of the tuple `{0}` over the table `{1}`
     /// aliased `{2}` (reading no row).
     pub empty_of: fn(&str, &str, &str) -> String,
-    /// A map of `(key, value SQL)` entries (keys distinct, in key order)
-    /// whose values keep their own types, of one type whatever its keys and
-    /// values (maps of different keys are values of one column).
-    pub map_of: fn(&[(String, String)]) -> String,
+    /// A map of entries (keys distinct, in key order) whose values keep
+    /// their own types, of one type whatever its keys and values (maps of
+    /// different keys are values of one column); `None` when the dialect
+    /// cannot hold one of the values.
+    pub map_of: fn(&[MapEntry]) -> Option<String>,
     /// The keys of the map `{0}`, in its order (key order).
     pub map_keys: fn(&str) -> String,
     /// The list `{0}` without its repeated elements, each where it first
     /// occurs.
     pub distinct: fn(&str) -> String,
+}
+
+/// An entry of a map ([`Lists::map_of`]).
+pub(crate) struct MapEntry {
+    pub key: String,
+    /// The value's SQL.
+    pub value: String,
+    /// The value is a map or a list holding maps.
+    pub holds_maps: bool,
+    /// The value is an empty list literal, or a list literal holding one
+    /// (its elements are of no type).
+    pub holds_empty_list: bool,
 }
 
 /// The dialect's parts of a shortest-path search

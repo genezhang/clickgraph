@@ -4387,6 +4387,35 @@ fn databricks_lists() {
     ] {
         assert!(got.contains(part), "missing `{part}` in\n{got}");
     }
+    // Spark's IN takes a parenthesized list only (review); past a list's
+    // end is NULL, not an error under ANSI mode.
+    let got = squash(
+        &databricks_sql(
+            "MATCH (u:User) WHERE NOT 'x' IN [(u)-[:FOLLOWS]->(f:User) | f.name] \
+             RETURN head([(u)-[:FOLLOWS]->(f:User) | f.name]) AS h, [1, 2][5] AS e",
+            &social(),
+        )
+        .unwrap(),
+    );
+    for part in [
+        "NOT array_contains(coalesce(s1.__value, array()), 'x')",
+        "try_element_at(coalesce(s2.__value, array()), 1) AS `h`",
+        "try_element_at(array(1, 2), 6) AS `e`",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    // A map value is made a VARIANT by `to_variant_object`; an empty list's
+    // elements are of no type, which no VARIANT holds.
+    let got = squash(&databricks_sql("RETURN {a: {b: 1}, c: [{d: 2}]} AS m", &social()).unwrap());
+    assert!(
+        got.contains(
+            "map('a', to_variant_object(map('b', CAST(1 AS VARIANT))), \
+             'c', to_variant_object(array(map('d', CAST(2 AS VARIANT)))))"
+        ),
+        "{got}"
+    );
+    let err = databricks_sql("RETURN {l: [[]]} AS m", &social()).unwrap_err();
+    assert!(err.contains("a map holding an empty list"), "{err}");
     // Spark groups and de-duplicates no map: refused here, not by Spark.
     for q in [
         "MATCH (u:User) RETURN DISTINCT {c: u.country} AS m",

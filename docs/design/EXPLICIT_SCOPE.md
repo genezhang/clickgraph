@@ -4457,6 +4457,20 @@ slice that will handle it.
       one in another order under a tie), the rest as at S12a. Filed: list predicates `all()` / `any()` / `none()` /
       `single()` do not parse on any dialect (#1420, documented as
       supported), nor do backtick-quoted map keys (#1421).
+    - Adversarial review (135 more differential queries, no wrong answer;
+      ClickHouse SQL byte-identical over the corpus): fixed `x IN <list
+      expression>` (Spark's `IN` takes a parenthesized list only:
+      `FunctionMapper::in_list_expression`, `array_contains`, at all three
+      operator renderers), a list index / `head` / `last` past the end
+      failing under ANSI mode (Spark 4's and Databricks' default:
+      `try_element_at`; also the legacy path's, 22 Databricks goldens), a
+      map value that is a map (`to_variant_object`: a cast refuses it) and
+      an empty list in a map refused (`Lists::map_of` takes `MapEntry`s,
+      `None`: no VARIANT holds a list of no type). Filed: ClickHouse
+      `x IN <list expression>` with a NULL element answers false (#1423;
+      Spark's NULL is Cypher's), a pattern comprehension from a NULL node
+      reads `[]` on both (#1424, to check against Neo4j), `collect(f) + [u]`
+      in an aggregation not grouping `u`'s columns (#1425, both dialects).
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

@@ -519,11 +519,12 @@ lazy_static::lazy_static! {
         // head(list) -> arrayElementOrNull(list, 1) [first element, NULL if empty]
         // openCypher: head([]) is null, not the element type's default. CH
         // `arrayElement` returns 0/'' on an empty list; `arrayElementOrNull`
-        // returns NULL. Spark `element_at` already returns NULL on out-of-bounds.
+        // returns NULL. Spark `element_at` fails on one out of bounds under ANSI
+        // mode (Spark 4's and Databricks' default); `try_element_at` is NULL.
         m.insert("head", FunctionMapping {
             neo4j_name: "head",
             clickhouse_name: "arrayElementOrNull",
-            databricks_name: Some("element_at"), // Spark 1-based element access
+            databricks_name: Some("try_element_at"), // Spark 1-based element access
             arg_transform: Some(|args| {
                 if !args.is_empty() {
                     vec![args[0].clone(), "1".to_string()]
@@ -564,7 +565,7 @@ lazy_static::lazy_static! {
         m.insert("last", FunctionMapping {
             neo4j_name: "last",
             clickhouse_name: "arrayElementOrNull",
-            databricks_name: Some("element_at"), // Spark element_at supports -1 (last)
+            databricks_name: Some("try_element_at"), // supports -1 (last)
             arg_transform: Some(|args| {
                 if !args.is_empty() {
                     vec![args[0].clone(), "-1".to_string()]

@@ -13,7 +13,7 @@ WHERE r1.member_type = 'User'
 )
 SELECT 
       get_json_object(t.start_properties, '$.name') AS `u.name`, 
-      element_at(t.path_relationships, 1) AS `type(r)`, 
+      try_element_at(t.path_relationships, 1) AS `type(r)`, 
       get_json_object(t.end_properties, '$.name') AS `g.name`
 FROM vlp_multi_type_u_g AS t
 LIMIT 5

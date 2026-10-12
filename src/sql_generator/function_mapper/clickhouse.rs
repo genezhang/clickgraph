@@ -317,17 +317,19 @@ impl FunctionMapper for ClickhouseFunctionMapper {
                 if entries.is_empty() {
                     // `CAST(map(), 'Map(String, Dynamic)')` fails: an empty
                     // map's value type has no variant to cast from.
-                    return "CAST(CAST(map(), 'Map(String, String)'), 'Map(String, Dynamic)')"
-                        .to_string();
+                    return Some(
+                        "CAST(CAST(map(), 'Map(String, String)'), 'Map(String, Dynamic)')"
+                            .to_string(),
+                    );
                 }
                 let pairs: Vec<String> = entries
                     .iter()
-                    .map(|(k, v)| {
-                        let k = k.replace('\\', "\\\\").replace('\'', "\\'");
-                        format!("'{k}', CAST({v}, 'Dynamic')")
+                    .map(|e| {
+                        let k = e.key.replace('\\', "\\\\").replace('\'', "\\'");
+                        format!("'{k}', CAST({}, 'Dynamic')", e.value)
                     })
                     .collect();
-                format!("map({})", pairs.join(", "))
+                Some(format!("map({})", pairs.join(", ")))
             },
         })
     }

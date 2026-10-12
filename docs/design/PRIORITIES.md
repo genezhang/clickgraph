@@ -740,7 +740,7 @@ after P-2 merges), 1× P-5 S1. Re-balance here, in writing, not ad hoc.
 
 ## 4. Merge log (newest first — append on merge)
 
-- 2026-10-11: **P-4c S12b: lists on Databricks** (`FunctionMapper::lists`: `filter` / `transform`, ordered `collect_list`, `Lists::tuple` positional structs, `Lists::or_empty`, `MAP<STRING, VARIANT>` maps; #1420 / #1421 filed).
+- 2026-10-11: **P-4c S12b: lists on Databricks** (`FunctionMapper::lists`: `filter` / `transform`, ordered `collect_list`, `Lists::tuple` positional structs, `Lists::or_empty`, `MAP<STRING, VARIANT>` maps; review: `in_list_expression`, `try_element_at`, map values via `to_variant_object`; #1420 / #1421 / #1423 / #1424 / #1425 filed).
 - 2026-10-11: **P-4c S12a: UNWIND and embedded nodes on Databricks** (`FunctionMapper::array_join_clause` / `unwind` / `one_type_guard` / `any_non_null` / `list_size`, `scripts/oracle/spark/`).
   - Databricks lowers 1289 corpus queries (was 1135); a ClickHouse-vs-Spark differential over the same data: 1128 equal, the rest ties, schema-expression artifacts or filed (#1412–#1416, #1418, #1419). Spark `split` delimiter quoted (regex); Spark `range` empty when its step leads away; UNWIND positions by `posexplode` (the list read once).
 - 2026-10-11: **P-4c S11j: the ClickHouse cutover** (`src/translate.rs`, `SqlDialect::reads_fall_back_to_legacy`, `TranslateError::Unsupported`, `BindError::NotARead`).

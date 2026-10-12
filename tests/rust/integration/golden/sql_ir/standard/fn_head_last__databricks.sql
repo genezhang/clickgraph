@@ -3,6 +3,6 @@ WITH with_ns_cte_0 AS (SELECT
 FROM social.users_bench AS u
 )
 SELECT 
-      element_at(ns.ns, 1) AS `h`, 
-      element_at(ns.ns, -1) AS `l`
+      try_element_at(ns.ns, 1) AS `h`, 
+      try_element_at(ns.ns, -1) AS `l`
 FROM with_ns_cte_0 AS ns

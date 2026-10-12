@@ -50,11 +50,11 @@ impl FunctionMapper for DatabricksFunctionMapper {
     }
 
     fn array_element_or_null(&self, arr: &str, idx: &str) -> String {
-        // Spark `element_at(arr, i)` returns NULL for an out-of-bounds index
-        // (non-ANSI default), already matching openCypher `list[i]` semantics —
-        // so this is byte-identical to the plain `element_at` accessor the
-        // ArraySubscript arm emitted before, no CH-style OrNull variant needed.
-        format!("element_at({}, {})", arr, idx)
+        // Spark `element_at(arr, i)` fails on an out-of-bounds index under
+        // ANSI mode (Spark 4's and Databricks' default); `try_element_at` is
+        // NULL there, as openCypher's `list[i]`. The index is never 0 (a
+        // Cypher index `i >= 0` is `i + 1`, a negative one is as it is).
+        format!("try_element_at({}, {})", arr, idx)
     }
 
     fn count_if(&self) -> &'static str {
@@ -178,6 +178,13 @@ impl FunctionMapper for DatabricksFunctionMapper {
         // Spark's `concat` is overloaded for arrays — same call shape as CH's
         // `arrayConcat(a, b)`.
         "concat"
+    }
+
+    fn in_list_expression(&self, value: &str, list: &str, negated: bool) -> Option<String> {
+        // NULL when the list is, or holds a NULL and not the value, as
+        // Cypher's `IN`.
+        let not = if negated { "NOT " } else { "" };
+        Some(format!("{not}array_contains({list}, {value})"))
     }
 
     fn array_contains(&self) -> &'static str {
@@ -357,19 +364,27 @@ impl FunctionMapper for DatabricksFunctionMapper {
             map_keys: |m| format!("map_keys({m})"),
             // A `MAP<STRING, VARIANT>`: each value keeps its type and maps of
             // any keys are of one type. Spark refuses a map in DISTINCT,
-            // GROUP BY and set operations (the query fails).
+            // GROUP BY and set operations (the query fails). A map value is
+            // made a VARIANT by `to_variant_object` (a cast refuses it); an
+            // empty list's elements are of no type, which no VARIANT holds.
             map_of: |entries| {
                 if entries.is_empty() {
-                    return "CAST(map() AS MAP<STRING, VARIANT>)".to_string();
+                    return Some("CAST(map() AS MAP<STRING, VARIANT>)".to_string());
+                }
+                if entries.iter().any(|e| e.holds_empty_list) {
+                    return None;
                 }
                 let pairs: Vec<String> = entries
                     .iter()
-                    .map(|(k, v)| {
-                        let k = k.replace('\\', "\\\\").replace('\'', "\\'");
-                        format!("'{k}', CAST({v} AS VARIANT)")
+                    .map(|e| {
+                        let k = e.key.replace('\\', "\\\\").replace('\'', "\\'");
+                        match e.holds_maps {
+                            true => format!("'{k}', to_variant_object({})", e.value),
+                            false => format!("'{k}', CAST({} AS VARIANT)", e.value),
+                        }
                     })
                     .collect();
-                format!("map({})", pairs.join(", "))
+                Some(format!("map({})", pairs.join(", ")))
             },
         })
     }
@@ -490,11 +505,11 @@ mod tests {
         let m = for_dialect(SqlDialect::Databricks);
         assert_eq!(m.collect_list(), "collect_list");
         assert_eq!(m.array_element(), "element_at");
-        // element_at already returns NULL on out-of-bounds (non-ANSI default),
-        // so array_element_or_null is byte-identical to the plain accessor.
+        // element_at fails out of bounds under ANSI mode (Spark 4's and
+        // Databricks' default): the NULL-returning accessor is try_element_at.
         assert_eq!(
             m.array_element_or_null("array(10, 20, 30)", "11"),
-            "element_at(array(10, 20, 30), 11)"
+            "try_element_at(array(10, 20, 30), 11)"
         );
         assert_eq!(m.count_if(), "count_if");
         assert_eq!(
