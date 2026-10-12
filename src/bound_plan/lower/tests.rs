@@ -5522,6 +5522,13 @@ fn ids_as_values() {
         "{}",
         rel.sql
     );
+    // Bolt's number is computed after the query: nothing orders by it.
+    for q in [
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN id(r) AS i ORDER BY i",
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN id(r) AS i ORDER BY id(r) DESC",
+    ] {
+        not_lowered(q, "ORDER BY a relationship's id()");
+    }
     has(
         "MATCH (a:User)-[r:FOLLOWS]->(b:User), (c:User)-[s:FOLLOWS]->(d:User) \
          WHERE id(r) <> id(s) RETURN count(*) AS n",

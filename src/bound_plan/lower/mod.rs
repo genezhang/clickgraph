@@ -318,6 +318,7 @@ impl Query<'_> {
             ordered_unwinds: ordered_unwinds(&self.stmt.plan),
             numbers: HashSet::new(),
             id_values: HashMap::new(),
+            rel_id_vars: HashSet::new(),
             unordered_numbers: HashSet::new(),
             unstable: BTreeSet::new(),
             collect_by_any: false,
@@ -638,6 +639,9 @@ struct Lowerer<'s> {
     /// Values that are `id(n)` of a node of this label (S11l): a WITH item
     /// `id(n)`, or one passing such a value on.
     id_values: HashMap<VarId, String>,
+    /// RETURN items that are `id(r)` of a relationship (S11l): Bolt's number
+    /// is computed after the query, so nothing in the SQL orders by it.
+    rel_id_vars: HashSet<VarId>,
     /// Those of [`Lowerer::numbers`] that number rows in no order
     /// (`Unwind::any_row_number`), or derive from such a number: ClickHouse
     /// numbers the rows anew each time it evaluates the CTE.
@@ -5251,6 +5255,20 @@ impl<'s> Lowerer<'s> {
             // A map's values are of any type: they have no order.
             return unsupported("ORDER BY a map");
         }
+        // A relationship's id is Bolt's number for it, computed after the
+        // query (S11l review): the SQL holds its element id, whose order is
+        // not the number's.
+        for k in keys {
+            let item = match &k.expr {
+                LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(n)) => {
+                    parse_var(n).is_some_and(|v| self.rel_id_vars.contains(&v))
+                }
+                _ => false,
+            };
+            if item || self.rel_id_item(&k.expr)?.is_some() {
+                return unsupported("ORDER BY a relationship's id()");
+            }
+        }
         let keys = keys
             .iter()
             .map(|k| {
@@ -5402,6 +5420,7 @@ impl<'s> Lowerer<'s> {
                     }
                     items_env.insert(it.var, e.clone());
                     let column = body.column(e, &it.name);
+                    self.rel_id_vars.insert(it.var);
                     shape.push(ResultColumn {
                         name: it.name.clone(),
                         kind: ResultKind::RelId,

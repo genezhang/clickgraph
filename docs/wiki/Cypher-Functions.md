@@ -758,7 +758,7 @@ A node of several labels (an unlabeled `(n)`) compares its key as text. In the l
 
 Ordering by the key matches the order of Bolt's encoded ids for nodes of one label with a non-negative integer key; a string key's encoded id is a hash, which has no meaningful order.
 
-`id(n)` used as a value (`WITH id(n) AS i`, `id(n) > 3`, `id(n) + 1`) is the node's key. Returned after a `WITH`, it is still the node's id: Bolt encodes it as it encodes `RETURN id(n)`. Two ids compared with each other (`id(a) = id(b)`, `id(a) <> id(b)`) compare the elements: nodes of different labels are never equal, whatever their keys.
+`id(n)` used as a value (`WITH id(n) AS i`, `id(n) > 3`, `id(n) + 1`) is the node's key. Returned after a `WITH`, it is still the node's id: Bolt encodes it as it encodes `RETURN id(n)`. Two ids compared directly with each other (`id(a) = id(b)`, `id(a) <> id(b)`) compare the elements: nodes of different labels are never equal, whatever their keys. Once an id is a value (carried by `WITH`, in a list, `IN`, `CASE`), it is the key alone, so two nodes of different labels with the same key compare equal there.
 
 `id(r)` of a relationship is the number Bolt gives that relationship (the `id` of the relationship `RETURN r` returns), computed from its type and its ends:
 
@@ -767,7 +767,7 @@ Ordering by the key matches the order of Bolt's encoded ids for nodes of one lab
 | Bolt, HTTP `/query` (JSON), embedded / `cg query` | Bolt's number for the relationship |
 | HTTP Pretty / CSV formats, SQL-only output (`/query/sql`, `sql_only`, `cg sql`) | its element id text (`TYPE:from->to-`) |
 
-The number depends on a label code each process assigns as it meets types, so the server and a separate library process can give different numbers for the same relationship, as Bolt's ids are only meaningful to the server that returned them. `id(r)` compared with another `id()` compares the relationships; other uses of a relationship's id (`id(r) > 3`, `WITH id(r) AS i`) are not supported. A relationship of several possible types or definitions (`[r:A|B]`) has no `id(r)` RETURN item yet.
+The number depends on a label code each process assigns as it meets types, so the server and a separate library process can give different numbers for the same relationship, as Bolt's ids are only meaningful to the server that returned them. `id(r)` compared with another `id()` compares the relationships; other uses of a relationship's id (`id(r) > 3`, `WITH id(r) AS i`, `ORDER BY id(r)`, whose number is computed after the query) are not supported. A relationship of several possible types or definitions (`[r:A|B]`) has no `id(r)` RETURN item yet. Bolt's id of a relationship comes from its type and ends, so parallel relationships between the same two nodes share it (#1409), in `id(r)` as in the relationships Bolt returns.
 
 ---
 

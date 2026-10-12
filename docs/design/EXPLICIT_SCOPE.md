@@ -4259,6 +4259,14 @@ slice that will handle it.
       numbers; a carried `id(a)` equals `RETURN id(a)` over Bolt and is the
       key over HTTP; `id(a) = id(b)` of all user pairs counts the users; an
       unmatched `id(r)` is NULL; `cg query` returns the library's number.
+    - Adversarial review (ids against Bolt's `r` / paths on six schemas,
+      the cache, every output format): fixed Bolt returning the element id
+      text when no graph item was beside `id(r)` (its rows skipped the
+      transform), and `ORDER BY id(r)` sorting by that text (now refused:
+      the number exists after the query). Documented: an id carried as a
+      value is the key alone (labels lost). Filed: parallel relationships
+      share Bolt's id, as Bolt's `r` does (#1409); `WHERE id(r) = <Bolt
+      id>` (#1410).
   - **User decisions (2026-10-11)** on what S11 does not lower: a
     relationship without `edge_id` keeps its ends as its identity (#1356;
     define `edge_id` to tell parallel rows apart); an undeclared property
