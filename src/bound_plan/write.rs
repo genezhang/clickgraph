@@ -88,7 +88,26 @@ pub fn plan_write(cypher: &str, schema: &GraphSchema) -> Result<WritePlan, Write
     if !rest.trim().trim_end_matches(';').trim().is_empty() {
         return Err(WritePlanError::Unsupported("unparsed text".to_string()));
     }
+    // A DELETE with a RETURN is not the legacy planner's: it deletes, then
+    // re-reads (Neo4j's RETURN reads the records as they were).
+    let deletes_returns = std::iter::once(&stmt.first)
+        .chain(stmt.unions.iter().map(|(_, q)| q))
+        .any(|q| {
+            q.clauses
+                .iter()
+                .any(|c| matches!(c, crate::open_cypher_parser::clause_list::Clause::Delete(_)))
+        })
+        && std::iter::once(&stmt.first)
+            .chain(stmt.unions.iter().map(|(_, q)| q))
+            .any(|q| {
+                q.clauses
+                    .iter()
+                    .any(|c| matches!(c, crate::open_cypher_parser::clause_list::Clause::Return(_)))
+            });
     let bound = bind_write_statement(&stmt, schema).map_err(|e| match e {
+        BindError::Unsupported(_) | BindError::NotARead(_) if deletes_returns => {
+            WritePlanError::Rejected(format!("a DELETE with a RETURN: {e}"))
+        }
         BindError::Unsupported(_) | BindError::NotARead(_) => {
             WritePlanError::Unsupported(e.to_string())
         }
@@ -244,7 +263,7 @@ fn return_sql(
 
 /// A RETURN after a DELETE (S13d), as Neo4j's: it reads the records as they
 /// were (read before the writes): `count(n)` the deleted nodes, a deleted
-/// node returned whole its identity alone (no properties), its properties
+/// node returned whole without properties (its columns NULL), its properties
 /// or labels read an error when it is a node (a check before any write; a
 /// NULL of an OPTIONAL MATCH reads NULL).
 ///
@@ -319,15 +338,29 @@ fn delete_return(
                 .any(|n| crate::bound_plan::lower::parse_var(n) == Some(v))
         })
     };
-    // DETACH DELETE deletes the node's relationships too: a relationship
-    // the RETURN reads may be one (not told here).
-    if detach
-        && read
-            .bindings
-            .iter()
-            .any(|b| matches!(b.kind, BindingKind::Rel { .. }) && names(b.id))
-    {
-        return refuse("a DETACH DELETE, of a relationship");
+    // DETACH DELETE deletes the node's relationships too, and an FK edge
+    // (a reference in a node's row) is gone with either end: a
+    // relationship the RETURN reads may be one (not told here).
+    let mut gone_labels = std::collections::BTreeSet::new();
+    for v in &targets {
+        if let BindingKind::Node { labels } = &read.binding(*v).kind {
+            gone_labels.extend(labels.iter().cloned());
+        }
+    }
+    let gone = |types: &std::collections::BTreeSet<String>| {
+        detach
+            || types.iter().any(|t| {
+                schema.rel_schemas_for_type(t).iter().any(|r| {
+                    r.is_node_row_reference()
+                        && (gone_labels.contains(&r.from_node) || gone_labels.contains(&r.to_node))
+                })
+            })
+    };
+    if read.bindings.iter().any(|b| match &b.kind {
+        BindingKind::Rel { types, .. } => names(b.id) && gone(types),
+        _ => false,
+    }) {
+        return refuse("a DELETE, of a relationship it deletes");
     }
     let mut defs = HashMap::new();
     definitions(&ret.plan, &mut defs);
@@ -553,10 +586,15 @@ impl Exposure<'_> {
             {
                 var(&f.args[0]).is_some_and(read)
             }
+            // `count(n)`, `count(DISTINCT n)`.
             LogicalExpr::AggregateFnCall(f)
                 if f.name.eq_ignore_ascii_case("count")
-                    && f.args.len() == 1
-                    && var(&f.args[0]).is_some() =>
+                    && matches!(f.args.as_slice(), [a] if var(a).is_some() || matches!(
+                        a,
+                        LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op)
+                            if matches!(op.operator, Operator::Distinct)
+                                && matches!(op.operands.as_slice(), [x] if var(x).is_some())
+                    )) =>
             {
                 false
             }
@@ -1587,6 +1625,26 @@ mod tests {
                 "{q}: {err:?}"
             );
         }
+        // An FK edge is gone with its node: refused, DETACH or not.
+        for q in [
+            "MATCH (u:User)-[r:AUTHORED]->(p:Post) WHERE p.post_id = 1 DELETE p \
+             RETURN r.post_title AS t",
+            "MATCH (u:User)-[r:AUTHORED]->(p:Post) WHERE u.user_id = 1 DELETE u RETURN r",
+        ] {
+            let err = plan_write(q, &schema).unwrap_err();
+            assert!(
+                matches!(&err, WritePlanError::Rejected(m) if m.contains("of a relationship it deletes")),
+                "{q}: {err:?}"
+            );
+        }
+        // Never the legacy planner's (it deletes, then re-reads).
+        let q = "MATCH (u:User) WHERE u.user_id = 1 DELETE u RETURN count(u) AS n \
+                 UNION RETURN 0 AS n";
+        let err = plan_write(q, &schema).unwrap_err();
+        assert!(
+            matches!(&err, WritePlanError::Rejected(m) if m.contains("a DELETE with a RETURN")),
+            "{q}: {err:?}"
+        );
         let q = "MATCH (u:User) WHERE u.user_id = 1 DELETE u RETURN size((u)-->()) AS n";
         let err = plan_write(q, &schema).unwrap_err();
         assert!(
@@ -1596,7 +1654,7 @@ mod tests {
         // Read where checked: no check for its identity, `count`, IS NULL.
         let p = plan_write(
             "MATCH (u:User) WHERE u.user_id = 1 DELETE u \
-             RETURN id(u) AS i, u IS NULL AS z, count(u) AS c",
+             RETURN id(u) AS i, u IS NULL AS z, count(u) AS c, count(DISTINCT u) AS d",
             &schema,
         )
         .unwrap();

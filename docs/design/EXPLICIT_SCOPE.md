@@ -4747,13 +4747,15 @@ slice that will handle it.
     (the same node, or one another record deletes: `Guard::Other`; Neo4j's
     error, and refused when returned whole, where Neo4j returns the bare
     node). Refused: a DELETE and a SET / REMOVE with a RETURN, a
-    relationship RETURNed after a DETACH DELETE (may be deleted), a
+    relationship the RETURN reads that the DELETE may delete (after a
+    DETACH DELETE, or an FK edge of a deleted label: gone with its row), a
     deleted node of several labels returned whole, a node, relationship
     or path in a list, map, `collect`, path or a value carried through
     WITH / UNWIND (its deleted nodes not told), a pattern read by the
-    RETURN (Neo4j reads the graph after the DELETE), and a RETURN the
-    bound plan does not lower (not the legacy planner's: it deletes
-    first). Stricter than Neo4j: `properties(n)` / `keys(n)` of a deleted
+    RETURN (Neo4j reads the graph after the DELETE), and a DELETE with a
+    RETURN the bound plan does not bind or lower (never the legacy
+    planner's: it deletes first). A deleted node returned whole is all its
+    columns NULL (the flat result has no identity beside its properties). Stricter than Neo4j: `properties(n)` / `keys(n)` of a deleted
     node fail (Neo4j: `{}` / `[]`). CREATE … RETURN and a relationship
     CREATE stay refused (the legacy planner's refusal; a later slice).
     - Acceptance: planner tests; the embedded crate's 152 (the TCK-shaped
