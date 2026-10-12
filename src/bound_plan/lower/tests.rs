@@ -4416,8 +4416,10 @@ fn databricks_lists() {
 
 /// S12e: on Spark a shortestPath search's steps are one parenthesized
 /// recursive term (Spark takes one), with no early stop (no recursive
-/// reference in an aggregate); `allShortestPaths` and a shortest path's
-/// nodes (grouped steps) are not lowered; a walk over several types is.
+/// reference in an aggregate); a walk over several types is lowered.
+/// S12f: `allShortestPaths` and a shortest path's nodes keep the paths in
+/// the search (no grouped step, no second recursion reading it): a row per
+/// shortest path, one per pair picked by its nodes from the last.
 #[test]
 fn databricks_shortest_path_search() {
     let got = squash(
@@ -4443,18 +4445,48 @@ fn databricks_shortest_path_search() {
         got.contains("WHERE start_node.user_id IS NOT NULL AND"),
         "{got}"
     );
-    for q in [
-        "MATCH p = allShortestPaths((a:User)-[:FOLLOWS*]->(b:User)) \
-         WHERE a.user_id = 1 AND b.user_id = 9 RETURN count(p) AS n",
-        "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) \
-         WHERE a.user_id = 1 AND b.user_id = 9 RETURN nodes(p) AS ns",
-    ] {
-        let err = databricks_sql(q, &social()).unwrap_err();
-        assert!(
-            err.contains("allShortestPaths, or a shortest path's"),
-            "{q}: {err}"
-        );
-    }
+    // Counted: a row per path, without their columns.
+    let got = squash(
+        &databricks_sql(
+            "MATCH p = allShortestPaths((a:User)-[:FOLLOWS*]->(b:User)) \
+             WHERE a.user_id = 1 AND b.user_id = 9 RETURN count(*) AS n",
+            &social(),
+        )
+        .unwrap(),
+    );
+    assert!(!got.contains("path_nodes"), "{got}");
+    assert!(!got.contains("GROUP BY f.start_id"), "{got}");
+    assert!(
+        got.contains("SELECT start_id, node AS end_id, depth AS hop_count FROM vlp_v1_bfs"),
+        "{got}"
+    );
+    // The carried nodes reached, once each.
+    assert!(
+        got.contains("SELECT DISTINCT start_id, node, depth FROM vlp_v1_bfs"),
+        "{got}"
+    );
+    // A path's nodes: the paths kept with their columns, one per pair
+    // picked from the last.
+    let got = squash(
+        &databricks_sql(
+            "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) \
+             WHERE a.user_id = 1 AND b.user_id = 9 RETURN nodes(p) AS ns",
+            &social(),
+        )
+        .unwrap(),
+    );
+    assert!(
+        got.contains("concat(f.path_nodes, array(end_node.user_id)) AS path_nodes"),
+        "{got}"
+    );
+    assert!(!got.contains("GROUP BY f.start_id"), "{got}");
+    assert!(
+        got.contains(
+            "ROW_NUMBER() OVER (PARTITION BY start_id, node \
+             ORDER BY reverse(path_nodes), reverse(path_edges)) AS pick"
+        ),
+        "{got}"
+    );
     databricks_sql(
         "MATCH (a:User)-[:FOLLOWS|AUTHORED*1..2]->(x) WHERE a.user_id = 1 RETURN count(*) AS n",
         &social(),

@@ -4111,6 +4111,15 @@ impl<'s> Lowerer<'s> {
             return unsupported("shortestPath in this SQL dialect");
         }
         let all = mode == ShortestMode::AllShortest;
+        // Where a step of a recursive CTE cannot group (Spark) the search
+        // counts no paths: `allShortestPaths` walks them back, a row each
+        // (the relation as a walk's, its paths' columns unread).
+        let read_paths = walked;
+        let walked = walked
+            || (all
+                && current_function_mapper()
+                    .shortest_path_search()
+                    .is_some_and(|s| !s.grouped_steps));
         // A bound on the length from above is a bound on the search: no
         // longer path satisfies it.
         let mut conditions = Vec::new();
@@ -4164,6 +4173,12 @@ impl<'s> Lowerer<'s> {
         };
         if conditions.is_empty() {
             let name = format!("vlp_{var}_path");
+            // Walked for its count alone: the paths, without their columns.
+            if walked && !read_paths {
+                let ends = path::ends_reached(&search);
+                let ctes = path::counted_paths_ctes(&search, &name, &ends)?;
+                return Ok(Some((ctes, name, read_paths)));
+            }
             let mut ctes = vec![path::search_cte(&search, counted, parents)?];
             if walked {
                 let ends = path::ends_reached(&search);
@@ -4171,7 +4186,7 @@ impl<'s> Lowerer<'s> {
             } else {
                 ctes.push(path::reached_cte(&search, &name, all, true)?);
             }
-            return Ok(Some((ctes, name, walked)));
+            return Ok(Some((ctes, name, read_paths)));
         }
         // The ends the conditions read are joined to the paths under their
         // own aliases. A condition reading anything else (another element,
@@ -4289,7 +4304,7 @@ impl<'s> Lowerer<'s> {
         }
         ctes.extend(trails);
         ctes.push(pick);
-        Ok(Some((ctes, name, walked)))
+        Ok(Some((ctes, name, read_paths)))
     }
 
     /// The relation of the nodes of `schema`'s label, as SQL to read under

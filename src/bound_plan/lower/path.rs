@@ -648,10 +648,13 @@ pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<C
         return unsupported("shortestPath in this SQL dialect");
     };
     let (depth, flag, count) = (spelling.depth, spelling.flag, spelling.count);
-    if (all || parents != Parents::None) && !spelling.grouped_steps {
-        return unsupported(
-            "allShortestPaths, or a shortest path's relationships or nodes, in this SQL dialect",
-        );
+    if !spelling.grouped_steps {
+        if all {
+            return unsupported("internal: a count of shortest paths where steps cannot group");
+        }
+        if parents != Parents::None {
+            return path_search_cte(call, &spelling, true);
+        }
     }
     let node_table = &call.node_table;
     let (start_key, end_key) = (call.node_key("start_node"), call.node_key("end_node"));
@@ -751,6 +754,125 @@ pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<C
     Ok(Cte::new(bfs, CteContent::RawSql(search), true))
 }
 
+/// [`search_cte`] where a step of a recursive CTE cannot group (Spark) and
+/// the paths are recovered (`walk_ctes`): the search keeps them, a row per
+/// shortest path to each node it reaches, with the [`carried_columns`] after
+/// its first node. A node already reached is not reached again, so only a
+/// shortest path to a node goes on: each row of a depth is a shortest path,
+/// once per relationship of parallel ones (as the walk back has them). The
+/// first rows of a node are `new = 1`; each step carries the nodes reached
+/// so far (`new = 0`, once each, their paths empty) for the next to tell
+/// them.
+///
+/// Without `carry` the rows carry no path columns: a row is still a path
+/// (`allShortestPaths` counted, [`counted_paths_ctes`]).
+fn path_search_cte(
+    call: &Search,
+    spelling: &crate::sql_generator::function_mapper::ShortestPathSearch,
+    carry: bool,
+) -> Result<Cte, LowerError> {
+    let Some(g) = current_function_mapper().graph_values() else {
+        return unsupported("a shortestPath's path in this SQL dialect");
+    };
+    let (depth, flag) = (spelling.depth, spelling.flag);
+    let node_table = &call.node_table;
+    let (start_key, end_key) = (call.node_key(START), call.node_key(END));
+    let (rel_from, rel_to) = (call.rel_start_key(REL), call.rel_end_key(REL));
+    let bfs = format!("vlp_{}_bfs", call.var);
+    let seed_where = std::iter::once(format!("{start_key} IS NOT NULL"))
+        .chain(conjunction(&call.start))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    // Each carried column, after a comma.
+    let carried = |node: &str| match carry {
+        true => carried_columns(call, node),
+        false => Ok(Vec::new()),
+    };
+    let empty = |node: &str| -> Result<String, LowerError> {
+        Ok(carried(node)?
+            .iter()
+            .map(|(c, e, _)| format!(", {e} AS {c}"))
+            .collect())
+    };
+    let mut search = format!(
+        "{bfs} AS (\n    \
+         SELECT s.start_id AS start_id, s.start_id AS node, CAST(0 AS {depth}) AS depth\
+         {}, CAST(1 AS {flag}) AS new\n    \
+         FROM (SELECT DISTINCT {start_key} AS start_id FROM {node_table} AS {START} \
+         WHERE {seed_where}) AS s",
+        empty("s.start_id")?
+    );
+    // `*0..0`: the first nodes only (the edge may join other labels).
+    if let (Some(edge_table), false) = (&call.edge_table, call.max == Some(0)) {
+        let mut step = vec!["f.new = 1".to_string()];
+        if let Some(max) = call.max {
+            step.push(format!("f.depth < {max}"));
+        }
+        step.extend(conjunction(&call.rel));
+        step.push(format!(
+            "(f.start_id, {end_key}) NOT IN (SELECT start_id, node FROM {bfs})"
+        ));
+        let stepped: String = carried("node")?
+            .iter()
+            .map(|(c, _, one)| {
+                format!(
+                    ",\n      {} AS {c}",
+                    (g.concat)(&[format!("f.{c}"), (g.list)(std::slice::from_ref(one))])
+                )
+            })
+            .collect();
+        let reached = format!(
+            "SELECT f.start_id AS start_id, {end_key} AS node, \
+             CAST(f.depth + 1 AS {depth}) AS depth{},\n      \
+             CAST(1 AS {flag}) AS new\n    \
+             FROM {bfs} AS f\n    \
+             JOIN {edge_table} AS {REL} ON {rel_from} = f.node\n    \
+             JOIN {node_table} AS {END} ON {end_key} = {rel_to}\n    \
+             WHERE {}",
+            stepped,
+            step.join("\n      AND "),
+        );
+        // The nodes reached, once each (a node's paths are many rows).
+        let kept = format!(
+            "SELECT start_id, node, depth{}, CAST(0 AS {flag}) AS new FROM (\n      \
+             SELECT DISTINCT start_id, node, depth FROM {bfs}\n      \
+             WHERE start_id IN (SELECT start_id FROM {bfs} WHERE new = 1)\n    \
+             ) AS reached",
+            empty("node")?
+        );
+        search.push_str(&format!(
+            "\n    UNION ALL\n    {}",
+            (spelling.recursive_steps)(&[reached, kept])
+        ));
+    }
+    search.push_str("\n)");
+    Ok(Cte::new(bfs, CteContent::RawSql(search), true))
+}
+
+/// The shortest paths of `call` to the rows of its search that satisfy
+/// `ends`, a row each, as the relation `name` (`start_id`, `end_id`,
+/// `hop_count`), where a step of a recursive CTE cannot group (Spark): the
+/// search keeps the paths, without their columns (none reads them).
+pub(super) fn counted_paths_ctes(
+    call: &Search,
+    name: &str,
+    ends: &str,
+) -> Result<Vec<Cte>, LowerError> {
+    let Some(spelling) = current_function_mapper().shortest_path_search() else {
+        return unsupported("shortestPath in this SQL dialect");
+    };
+    let bfs = format!("vlp_{}_bfs", call.var);
+    let sql = format!(
+        "{name} AS (\n    \
+         SELECT start_id, node AS end_id, depth AS hop_count FROM {bfs}\n    \
+         WHERE new = 1 AND {ends}\n)"
+    );
+    Ok(vec![
+        path_search_cte(call, &spelling, false)?,
+        Cte::new(name.to_string(), CteContent::RawSql(sql), false),
+    ])
+}
+
 /// The condition a row of the search of `call` (`search_cte`: `start_id`,
 /// `node`, `depth`) meets when its node is a path's last: at a distance in
 /// the range, and a value the last node can have.
@@ -820,12 +942,17 @@ pub(super) fn reached_cte(
 /// * Else (with [`Parents::Least`]): one parent, and one relationship of
 ///   parallel ones (the least identity): one path per pair, and a value is
 ///   built only for it.
+///
+/// Where a step of a recursive CTE cannot group (Spark), the search keeps no
+/// parents: they are read after it (`vlp_{var}_parents`: a node's at one
+/// level nearer with a relationship to it; one path: the least, by its least
+/// relationship), and the walk joins them in each step.
 pub(super) fn walk_ctes(
     call: &Search,
     name: &str,
     ends: &str,
     all: bool,
-) -> Result<[Cte; 2], LowerError> {
+) -> Result<Vec<Cte>, LowerError> {
     let m = current_function_mapper();
     let (Some(spelling), Some(g)) = (m.shortest_path_search(), m.graph_values()) else {
         return unsupported("a shortestPath's path in this SQL dialect");
@@ -844,28 +971,7 @@ pub(super) fn walk_ctes(
     let bfs = format!("vlp_{}_bfs", call.var);
     let walk = format!("vlp_{}_walk", call.var);
     let columns = call.walked_columns();
-    // The values carried, each with its value when empty and one step's.
-    let mut carried: Vec<(&str, String, String)> = vec![
-        (
-            "path_nodes",
-            m.array_slice(&m.array_literal("node"), "1", Some("0")),
-            end_key.clone(),
-        ),
-        ("path_edges", (g.texts)(&[]), edge_text.clone()),
-    ];
-    if let Some((_, end)) = &call.node_value {
-        carried.push((VALUE_COLUMNS[0], (g.list)(&[]), end.clone()));
-    }
-    if let Some(rel) = &call.rel_value {
-        carried.push((VALUE_COLUMNS[1], (g.list)(&[]), rel.clone()));
-    }
-    if let Some(t) = &call.node_tuple {
-        let end = t.other.clone().unwrap_or_default();
-        carried.push((TUPLE_COLUMNS[0], t.empty.clone(), end));
-    }
-    if let Some(t) = &call.rel_tuple {
-        carried.push((TUPLE_COLUMNS[1], t.empty.clone(), t.one.clone()));
-    }
+    let carried = carried_columns(call, "node")?;
     let empty: Vec<String> = carried
         .iter()
         .map(|(c, e, _)| format!("{e} AS {c}"))
@@ -884,6 +990,35 @@ pub(super) fn walk_ctes(
     // the whole edge table, a walk of one path cost twice as much (an
     // `allShortestPaths` pair at scale 100: 710 ms against 432 ms).
     step.extend(conjunction(&call.rel));
+    if !spelling.grouped_steps {
+        // The search kept the paths (`search_cte`): a row each, its last
+        // node `node`; one per pair, as the walk back picks it (the least
+        // parent, by its least relationship, at each level from the last).
+        let names: Vec<&str> = carried.iter().map(|(c, _, _)| *c).collect();
+        let found = format!("SELECT * FROM {bfs} WHERE new = 1 AND {ends}");
+        let found = match all {
+            true => found,
+            false => format!(
+                "SELECT * FROM (\n        \
+                 SELECT *, ROW_NUMBER() OVER (PARTITION BY start_id, node \
+                 ORDER BY {}, {}) AS pick\n        \
+                 FROM ({found}) AS found\n    \
+                 ) AS picked WHERE pick = 1",
+                (g.reverse)("path_nodes"),
+                (g.reverse)("path_edges"),
+            ),
+        };
+        let walk_sql = format!(
+            "{walk} AS (\n    \
+             SELECT start_id, node AS end_id, depth AS hop_count, {}\n    \
+             FROM ({found}) AS w\n)",
+            names.join(", ")
+        );
+        return Ok(vec![
+            Cte::new(walk.clone(), CteContent::RawSql(walk_sql), false),
+            walked_paths(call, name, &walk, "true")?,
+        ]);
+    }
     // The parents, each a row of `lv`; the pick of one path of parallel
     // relationships.
     let (parents, levels) = if all {
@@ -948,6 +1083,60 @@ pub(super) fn walk_ctes(
         ));
     }
     walk_sql.push_str("\n)");
+    Ok(vec![
+        Cte::new(walk.clone(), CteContent::RawSql(walk_sql), true),
+        walked_paths(call, name, &walk, "w.frontier = 1 AND w.depth = 0")?,
+    ])
+}
+
+/// The values a recovered path carries after its first node (`walk_ctes`;
+/// a search that keeps the paths, `search_cte`), each with its value when
+/// empty (`node`: a node's key, read for its type) and one step's (over
+/// [`END`] and [`REL`]): the nodes' keys, the relationships' identities as
+/// texts, and the values and tuples `call` asks for.
+fn carried_columns(
+    call: &Search,
+    node: &str,
+) -> Result<Vec<(&'static str, String, String)>, LowerError> {
+    let m = current_function_mapper();
+    let Some(g) = m.graph_values() else {
+        return unsupported("a shortestPath's path in this SQL dialect");
+    };
+    let Some(edge_text) = &call.edge_text else {
+        return unsupported("a variable-length relationship between composite ids (S8)");
+    };
+    let mut carried: Vec<(&'static str, String, String)> = vec![
+        (
+            "path_nodes",
+            m.array_slice(&m.array_literal(node), "1", Some("0")),
+            call.node_key(END),
+        ),
+        ("path_edges", (g.texts)(&[]), edge_text.clone()),
+    ];
+    if let Some((_, end)) = &call.node_value {
+        carried.push((VALUE_COLUMNS[0], (g.list)(&[]), end.clone()));
+    }
+    if let Some(rel) = &call.rel_value {
+        carried.push((VALUE_COLUMNS[1], (g.list)(&[]), rel.clone()));
+    }
+    if let Some(t) = &call.node_tuple {
+        let end = t.other.clone().unwrap_or_default();
+        carried.push((TUPLE_COLUMNS[0], t.empty.clone(), end));
+    }
+    if let Some(t) = &call.rel_tuple {
+        carried.push((TUPLE_COLUMNS[1], t.empty.clone(), t.one.clone()));
+    }
+    Ok(carried)
+}
+
+/// The paths of a walk `walk` (`walk_ctes`), as the relation `name`: the
+/// rows that satisfy `done` (the first node reached), the first node
+/// before the rest.
+fn walked_paths(call: &Search, name: &str, walk: &str, done: &str) -> Result<Cte, LowerError> {
+    let Some(g) = current_function_mapper().graph_values() else {
+        return unsupported("a shortestPath's path in this SQL dialect");
+    };
+    let node_table = &call.node_table;
     // The first node, before the rest.
     let mut first = vec![format!(
         "{} AS path_nodes",
@@ -974,7 +1163,10 @@ pub(super) fn walk_ctes(
     if let Some(t) = &call.node_tuple {
         first.push(format!(
             "{} AS {}",
-            (g.concat)(&[format!("[{}]", t.one), format!("w.{}", TUPLE_COLUMNS[0])]),
+            (g.concat)(&[
+                (g.list)(std::slice::from_ref(&t.one)),
+                format!("w.{}", TUPLE_COLUMNS[0])
+            ]),
             TUPLE_COLUMNS[0]
         ));
     }
@@ -992,13 +1184,14 @@ pub(super) fn walk_ctes(
         "{name} AS (\n    \
          SELECT w.start_id AS start_id, w.end_id AS end_id, w.hop_count AS hop_count, {}\n    \
          FROM {from}\n    \
-         WHERE w.frontier = 1 AND w.depth = 0\n)",
+         WHERE {done}\n)",
         first.join(", ")
     );
-    Ok([
-        Cte::new(walk, CteContent::RawSql(walk_sql), true),
-        Cte::new(name.to_string(), CteContent::RawSql(paths_sql), false),
-    ])
+    Ok(Cte::new(
+        name.to_string(),
+        CteContent::RawSql(paths_sql),
+        false,
+    ))
 }
 
 /// The rows of the search of `var` whose node is the last of a path that

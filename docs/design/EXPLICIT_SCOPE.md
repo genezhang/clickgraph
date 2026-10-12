@@ -4585,6 +4585,50 @@ slice that will handle it.
       Spark caps a recursive CTE at 100 levels and 1,000,000 rows
       (`spark.sql.cteRecursionLevelLimit` / `cteRecursionRowLimit`): a
       deep or wide graph fails there, loudly, where ClickHouse answers.
+  - [x] **S12f: `allShortestPaths` and a shortest path's nodes and
+    relationships on Spark.** ClickHouse counts each node's shortest paths
+    and keeps its parents in grouped search steps, then walks back over
+    the levels in a second recursive CTE. Spark takes neither: no step
+    aggregates (`grouped_steps`), and a recursive CTE that reads another
+    whose steps anti-join itself fails analysis (`INVALID_RECURSIVE_
+    REFERENCE`, even read through a non-recursive CTE, even in the anchor
+    alone). So on Spark the search keeps the paths (`path::path_search_cte`):
+    no DISTINCT on a step's nodes, a row per shortest path to each node
+    (once per parallel relationship, as ClickHouse counts them), carrying
+    `path::carried_columns` forward; a node already reached is not reached
+    again, so only shortest paths extend. `allShortestPaths` reads every
+    such row ending at an end (`shortest_relation` walks its paths where
+    steps cannot group, its paths' columns unread); one shortest path per
+    pair is picked after the search by its nodes, then its relationships,
+    from the last (`ROW_NUMBER` over `reverse(path_nodes),
+    reverse(path_edges)`): the least parent, then its least relationship,
+    at each level from the end, as ClickHouse's walk back picks it. Also
+    fixed: a walked path's node tuples were a ClickHouse array literal
+    (`walked_paths` spells the list through `GraphValues::list`). Rows grow
+    with the number of shortest paths (ClickHouse counts them instead),
+    within Spark's recursion limits.
+    - Acceptance: Databricks lowers 1442 of 1442 (was 1436). Spark
+      differential: the corpus's 42 lowered shortest-path queries all equal
+      ClickHouse (the 6 newly lowered among them); ad hoc 12 (`nodes(p)` and
+      `relationships(p)` of shortest paths and all shortest paths, directed
+      and undirected, `*0..`, `length(p)` conditions, all pairs counted, a
+      path returned whole, several types, `*1..2`): all equal, including
+      pairs with several shortest paths (the same one picked). The legacy
+      pipeline, the fallback until now, answered these on Spark by
+      enumerating node-unique walks up to 5 hops for an unbounded `*`.
+    - Adversarial review: ClickHouse SQL byte-identical (the corpus and 71
+      ad hoc); ~140 Spark queries over 9 schemas (ranges, length
+      conditions, OPTIONAL, WITH, UNION, path values, cycles, parallel and
+      polymorphic edges, composite ids, union walks) equal ClickHouse but
+      for ties. Fixed: all-pairs `allShortestPaths` count took 121 s on
+      Spark (data_security, 56,972 paths): the carried reached nodes are
+      now once each, and a counted search carries no path columns
+      (`path::counted_paths_ctes`): 73 s. Filed, failing on main already
+      with `shortestPath` (now also `allShortestPaths`): a shortest path with
+      another recursive relation (#1443), dotted column names unquoted
+      (#1444), a several-type walk with a length condition (#1445). A
+      length condition's pick among equally long trails is unordered
+      (either engine's path is a shortest).
 
 - [ ] **S13: the embedded write path.** Embedded (chdb) mode runs Cypher
   writes, which planned on the legacy pipeline: the statement as a
