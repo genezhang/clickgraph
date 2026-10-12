@@ -367,11 +367,12 @@ lazy_static::lazy_static! {
 
         // Cypher split(str, delim):
         //   CH    -> splitByChar(delim, str)   [name + args swapped]
-        //   Spark -> split(str, delim)         [name change only, Cypher arg order]
+        //   Spark -> split(str, quoted delim)  [Cypher arg order]
         // The swap is ClickHouse-only, so the arg_transform reads the active
-        // dialect. (Spark `split` treats arg 2 as a regex, whereas Cypher/CH
-        // split is literal; equivalent for the single-char, non-regex-meta
-        // delimiters Cypher `split` is typically used with.)
+        // dialect. Spark `split` reads arg 2 as a regex, whereas Cypher's
+        // delimiter is literal (`split('a.b', '.')` is `['a', 'b']`, not four
+        // empty strings): quoted as Java's `Pattern.quote` does, `\Q…\E`
+        // with each `\E` in it ended and re-opened (S12).
         m.insert("split", FunctionMapping {
             neo4j_name: "split",
             clickhouse_name: "splitByChar",
@@ -381,6 +382,14 @@ lazy_static::lazy_static! {
                 if dialect == crate::sql_generator::SqlDialect::ClickHouse && args.len() >= 2 {
                     // CH splitByChar(delim, str): swap from Cypher split(str, delim).
                     vec![args[1].clone(), args[0].clone()]
+                } else if args.len() == 2 {
+                    vec![
+                        args[0].clone(),
+                        format!(
+                            r"concat('\\Q', replace({}, '\\E', '\\E\\\\E\\Q'), '\\E')",
+                            args[1]
+                        ),
+                    ]
                 } else {
                     args.to_vec()
                 }

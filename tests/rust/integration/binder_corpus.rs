@@ -14,6 +14,10 @@ use clickgraph::bound_plan::{bind_statement, BindError};
 use clickgraph::graph_catalog::graph_schema::GraphSchema;
 use clickgraph::open_cypher_parser::clause_list::parse_clause_statement;
 use clickgraph::open_cypher_parser::strip_comments;
+use clickgraph::server::query_context::{
+    set_current_dialect, set_current_schema, with_query_context_sync, QueryContext,
+};
+use clickgraph::sql_generator::SqlDialect;
 
 use crate::corpus_sweep::{corpus_root, load_schema_entry, load_schema_map};
 
@@ -94,12 +98,30 @@ fn the_corpus_binds() {
 /// `LOWER_TRACE=<text>`, prints why each query containing `<text>` is not.
 #[test]
 fn the_corpus_lowers() {
+    census(SqlDialect::ClickHouse);
+}
+
+/// P-4c S12: as `the_corpus_lowers`, on Databricks, where the queries the
+/// bound plan does not lower still go to the legacy pipeline. Prints the
+/// count and the reasons (`LOWER_TRACE` / `LOWERED_LIST` as there).
+#[test]
+fn the_corpus_lowers_on_databricks() {
+    census(SqlDialect::Databricks);
+}
+
+/// Lower every corpus query on `dialect`: no panic, and every lowered
+/// query yields SQL. Returns how many lowered.
+fn census(dialect: SqlDialect) -> usize {
     let schema_map = load_schema_map();
     let mut schemas: HashMap<String, GraphSchema> = HashMap::new();
     let mut lowered = Vec::new();
+    let mut sqls = Vec::new();
     let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
     let mut failures = Vec::new();
-    let corpus = std::fs::read_to_string(format!("{}/queries.jsonl", corpus_root())).unwrap();
+    // `CENSUS_CORPUS=<path>`: these queries instead (lines as the corpus's).
+    let corpus_path = std::env::var("CENSUS_CORPUS")
+        .unwrap_or_else(|_| format!("{}/queries.jsonl", corpus_root()));
+    let corpus = std::fs::read_to_string(corpus_path).unwrap();
     for line in corpus.lines().filter(|l| !l.trim().is_empty()) {
         let entry: serde_json::Value = serde_json::from_str(line).unwrap();
         let (cypher, name, schema_name) = (
@@ -115,11 +137,15 @@ fn the_corpus_lowers() {
             .or_insert_with(|| load_schema_entry(map_entry));
         let cleaned = strip_comments(cypher);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            clickgraph::translate::translate_bound_plan(
-                &cleaned,
-                schema,
-                &clickgraph::translate::ReadOptions::default(),
-            )
+            with_query_context_sync(QueryContext::new(None), || {
+                set_current_dialect(dialect);
+                set_current_schema(std::sync::Arc::new(schema.clone()));
+                clickgraph::translate::translate_bound_plan(
+                    &cleaned,
+                    schema,
+                    &clickgraph::translate::ReadOptions::default(),
+                )
+            })
         }));
         match result {
             Err(_) => failures.push(format!("PANIC {schema_name}/{name}: {cypher}")),
@@ -130,6 +156,9 @@ fn the_corpus_lowers() {
                     "{schema_name}/{name}: {sql}"
                 );
                 lowered.push(format!("{schema_name}/{name}"));
+                sqls.push(serde_json::json!({
+                    "schema": schema_name, "name": name, "cypher": cypher, "sql": sql,
+                }));
             }
             Ok(Err(why)) => {
                 if std::env::var("LOWER_TRACE").is_ok_and(|t| cypher.contains(&t)) {
@@ -140,7 +169,7 @@ fn the_corpus_lowers() {
             }
         }
     }
-    println!("lowered: {}", lowered.len());
+    println!("lowered ({dialect:?}): {}", lowered.len());
     let mut by_count: Vec<_> = reasons.into_iter().collect();
     by_count.sort_by(|a, b| b.1.cmp(&a.1));
     for (why, n) in by_count.iter().take(25) {
@@ -149,5 +178,16 @@ fn the_corpus_lowers() {
     if let Ok(path) = std::env::var("LOWERED_LIST") {
         std::fs::write(path, lowered.join("\n") + "\n").unwrap();
     }
+    // `CENSUS_SQL_OUT=<dir>`: each lowered query's SQL, one JSON object a
+    // line, in `<dir>/<dialect>.jsonl` (the dialects' differential, S12).
+    if let Ok(dir) = std::env::var("CENSUS_SQL_OUT") {
+        let lines: Vec<String> = sqls.iter().map(|v| v.to_string()).collect();
+        std::fs::write(
+            format!("{dir}/{dialect:?}.jsonl").to_lowercase(),
+            lines.join("\n") + "\n",
+        )
+        .unwrap();
+    }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+    lowered.len()
 }

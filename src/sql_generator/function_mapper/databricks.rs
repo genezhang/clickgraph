@@ -279,10 +279,31 @@ impl FunctionMapper for DatabricksFunctionMapper {
         None
     }
 
-    fn one_type_guard(&self, _columns: &[String]) -> Option<String> {
-        // Spark widens a union's column to a common type (a number and a
-        // string to a string), which compares differently.
-        None
+    fn one_type_guard(&self, columns: &[String]) -> Option<String> {
+        // Each definition's values are their own column: the value is their
+        // `coalesce` when every column's type is the same up to integer
+        // width and string representation (`typeof`, constant over a
+        // query), else an error. Spark raises it on a row read: rows of
+        // values of different types fail, no rows are no rows.
+        let class = |c: &str| {
+            format!(
+                "regexp_replace(regexp_replace(typeof({c}), '^(tinyint|smallint|int|bigint)$', \
+                 'int'), '^(var)?char\\(\\d+\\)$', 'string')"
+            )
+        };
+        let value = format!("coalesce({})", columns.join(", "));
+        let same: Vec<String> = columns[1..]
+            .iter()
+            .map(|c| format!("{} = {}", class(&columns[0]), class(c)))
+            .collect();
+        if same.is_empty() {
+            return Some(value);
+        }
+        Some(format!(
+            "CASE WHEN {} THEN {value} ELSE raise_error(\
+             'ClickGraph: a property has different types on different labels or types') END",
+            same.join(" AND ")
+        ))
     }
 
     fn cypher_union(&self) -> Option<super::CypherUnion> {
@@ -300,9 +321,44 @@ impl FunctionMapper for DatabricksFunctionMapper {
     }
 
     fn unwind(&self) -> Option<super::Unwind> {
-        // `LATERAL VIEW explode` is not verified against the lowering's
-        // shapes: UNWIND stays on the legacy path there.
-        None
+        Some(super::Unwind {
+            one_row: "(SELECT 1)",
+            // As many as the list's elements (`sequence(1, 0)` is `[1, 0]`).
+            positions: |list| format!("transform({list}, (__cg_x, __cg_i) -> __cg_i + 1)"),
+            // `explode` of a map, or `arrays_zip` of one, fails the query.
+            list_only: |list| list.to_string(),
+            row_number: |keys| format!("row_number() OVER (ORDER BY {keys})"),
+            // Spark numbers rows of an ordered window only.
+            any_row_number: "row_number() OVER (ORDER BY 1)",
+            is_null: |v| format!("isnull({v})"),
+            value_list: |v| format!("CASE WHEN isnull({v}) THEN array() ELSE array({v}) END"),
+        })
+    }
+
+    fn array_join_clause(&self, lists: &[(String, String)]) -> String {
+        // Spark has no ARRAY JOIN: `explode` repeats a row per element (none
+        // for an empty or NULL list); lists read in step are zipped first.
+        match lists {
+            [(list, alias)] => format!("LATERAL VIEW explode({list}) AS {alias}\n"),
+            _ => {
+                let (l, a): (Vec<&str>, Vec<&str>) =
+                    lists.iter().map(|(l, a)| (l.as_str(), a.as_str())).unzip();
+                format!(
+                    "LATERAL VIEW inline(arrays_zip({})) AS {}\n",
+                    l.join(", "),
+                    a.join(", ")
+                )
+            }
+        }
+    }
+
+    fn list_size(&self, list: &str) -> String {
+        // `length` is of a string only; `size` of NULL is -1 unless ANSI.
+        format!("array_size({list})")
+    }
+
+    fn any_non_null(&self, value: &str) -> String {
+        format!("any_value({value}, true)")
     }
 
     fn graph_values(&self) -> Option<super::GraphValues> {

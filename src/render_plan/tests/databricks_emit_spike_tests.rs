@@ -400,8 +400,8 @@ async fn pattern_comprehension_collect_list_per_dialect() {
 }
 
 /// Cypher `split(str, delim)` must map per dialect: CH `splitByChar(delim, str)`
-/// (name + args swapped), Spark `split(str, delim)` (name change, Cypher arg
-/// order). The arg swap is ClickHouse-only.
+/// (name + args swapped), Spark `split(str, quoted delim)` (Cypher arg order,
+/// the delimiter quoted as a literal regex). The arg swap is ClickHouse-only.
 #[tokio::test]
 async fn split_function_per_dialect() {
     let cypher = "MATCH (a:User) RETURN split(a.name, ' ') AS parts";
@@ -431,10 +431,11 @@ async fn split_function_per_dialect() {
         !dbx.contains("splitByChar"),
         "Databricks SQL leaked CH `splitByChar`; got:\n{dbx}"
     );
-    // Spark `split(str, delim)` keeps Cypher arg order (str first).
+    // Spark `split(str, delim)` keeps Cypher arg order (str first), the
+    // delimiter quoted: Spark reads it as a regex (S12).
     assert!(
-        dbx.contains("split(") && dbx.contains(", ' ')"),
-        "Databricks should emit `split(str, delim)` in Cypher arg order; got:\n{dbx}"
+        dbx.contains(r"split(") && dbx.contains(r"concat('\\Q', replace(' ', '\\E'"),
+        "Databricks should emit `split(str, quoted delim)` in Cypher arg order; got:\n{dbx}"
     );
 }
 

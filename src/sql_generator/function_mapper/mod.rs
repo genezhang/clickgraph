@@ -77,6 +77,28 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// node_ids still yields exactly one row per id.
     fn any(&self) -> &'static str;
 
+    /// An aggregate of any of the values `{0}` that are not NULL (NULL when
+    /// all are): CH `any` skips NULLs; Spark's `any_value` needs its
+    /// `ignoreNulls` argument.
+    fn any_non_null(&self, value: &str) -> String {
+        format!("{}({value})", self.any())
+    }
+
+    /// The number of elements of the list `{0}`, NULL when it is NULL. CH
+    /// `length` (of an array or a string alike).
+    fn list_size(&self, list: &str) -> String {
+        format!("length({list})")
+    }
+
+    /// The clause that repeats each row once per element of the lists
+    /// `(list, alias)`, read in step (the n-th row reads each list's n-th
+    /// element): the lowering's UNWIND (`Lowerer::unwind`, printed by
+    /// `render_plan_to_sql_plain`). CH `ARRAY JOIN l1 AS a1, l2 AS a2`.
+    fn array_join_clause(&self, lists: &[(String, String)]) -> String {
+        let lists: Vec<String> = lists.iter().map(|(l, a)| format!("{l} AS {a}")).collect();
+        format!("ARRAY JOIN {}\n", lists.join(", "))
+    }
+
     /// Conditional minimum: minimum of `val` over rows where `cond` is true.
     /// CH: `minIf(val, cond)`. Spark has no `minIf`, so we rewrite to
     /// `min(CASE WHEN cond THEN val END)` — `min` ignores NULLs, so rows
