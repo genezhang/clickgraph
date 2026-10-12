@@ -452,7 +452,7 @@ graph_schema:
       database: ldbc
       table: Post_isLocatedIn_Place
       from_id: PostId
-      to_id: PlaceId
+      to_id: CountryId
       from_node: Post
       to_node: Country
       property_mappings:
@@ -466,7 +466,7 @@ graph_schema:
       database: ldbc
       table: Comment_isLocatedIn_Place
       from_id: CommentId
-      to_id: PlaceId
+      to_id: CountryId
       from_node: Comment
       to_node: Country
       property_mappings:

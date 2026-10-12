@@ -297,7 +297,7 @@ impl Query<'_> {
         let mut l = self.lowerer(ctes);
         let lowered = l
             .relation(input)
-            .map(|()| l.finish_relation())
+            .and_then(|()| l.finish_relation())
             .and_then(|()| l.project(projection));
         *ctes = std::mem::take(&mut l.ctes);
         self.unstable
@@ -348,6 +348,7 @@ impl Query<'_> {
             unordered_numbers: HashSet::new(),
             unstable: BTreeSet::new(),
             collect_by_any: false,
+            grouped_with: None,
         }
     }
 }
@@ -672,6 +673,9 @@ struct Lowerer<'s> {
     unstable: BTreeSet<String>,
     /// The projection being lowered collects in the order of such a number.
     collect_by_any: bool,
+    /// The last WITH, when it aggregates: its CTE's alias, its grouping
+    /// keys and its aggregated values (each determined by the keys).
+    grouped_with: Option<(String, Vec<VarId>, Vec<VarId>)>,
 }
 
 /// The elements of a path variable, in path order.
@@ -993,7 +997,7 @@ impl<'s> Lowerer<'s> {
                     return unsupported("a RETURN that is not the last clause");
                 }
                 self.relation(input)?;
-                self.finish_relation();
+                self.finish_relation()?;
                 for item in &projection.items {
                     let kind = self.kind(&item.expr);
                     self.kinds.insert(item.var, kind);
@@ -1017,17 +1021,17 @@ impl<'s> Lowerer<'s> {
             }
             BoundOp::Skip { input, count } => {
                 self.relation(input)?;
-                self.finish_relation();
+                self.finish_relation()?;
                 self.page(Some(*count), None)
             }
             BoundOp::Limit { input, count } => {
                 self.relation(input)?;
-                self.finish_relation();
+                self.finish_relation()?;
                 self.page(None, Some(*count))
             }
             BoundOp::Unwind { input, expr, var } => {
                 self.relation(input)?;
-                self.finish_relation();
+                self.finish_relation()?;
                 self.apply_subqueries(&[expr])?;
                 self.unwind(expr, *var)
             }
@@ -1154,15 +1158,28 @@ impl<'s> Lowerer<'s> {
             }
         }
         for part in &pattern.parts {
-            self.emit(part.nodes[0].var)?;
-            for (i, r) in part.rels.iter().enumerate() {
+            // From a node the relation has already (an earlier clause's or
+            // part's): a part whose first node is new but whose last is not
+            // is joined from its last, each step tied to the one before (from
+            // the first it would start as a product with the relation).
+            let last = part.nodes.len() - 1;
+            let backward = last > 0
+                && !self.is_emitted(part.nodes[0].var)
+                && self.is_emitted(part.nodes[last].var);
+            let steps: Vec<usize> = match backward {
+                true => (0..part.rels.len()).rev().collect(),
+                false => (0..part.rels.len()).collect(),
+            };
+            self.emit(part.nodes[if backward { last } else { 0 }].var)?;
+            for i in steps {
+                let r = &part.rels[i];
                 if let Some(Scan::Path { .. }) = self.scans.get(&r.var) {
                     let (left, right) = (part.nodes[i].var, part.nodes[i + 1].var);
                     let search = in_search.get(&r.var).map(Vec::as_slice).unwrap_or(&[]);
                     self.build_path(r, left, right, &own, search)?;
                 }
                 self.emit(r.var)?;
-                self.emit(part.nodes[i + 1].var)?;
+                self.emit(part.nodes[if backward { i } else { i + 1 }].var)?;
             }
         }
         self.filters.extend(conditions);
@@ -1617,7 +1634,7 @@ impl<'s> Lowerer<'s> {
         read_props: &[(VarId, String)],
         q: &mut Segment<'s>,
     ) -> Result<Vec<Correlated>, LowerError> {
-        self.finish_relation();
+        self.finish_relation()?;
         // A segment that is only its CTE (right after a WITH) is that CTE.
         let only_a_cte = self.joins.is_empty()
             && self.filters.is_empty()
@@ -1632,6 +1649,22 @@ impl<'s> Lowerer<'s> {
         }
         let w = self.emitted[0].clone();
         let d = format!("d{}", self.ctes.len() + 1);
+        // Right after an aggregating WITH whose keys are all correlated, its
+        // aggregated values are determined by them: the rows are not joined
+        // on those too. (ClickHouse evaluates the WITH's CTE again for `D`:
+        // a `collect()` in another order would join no match.)
+        let determined: Vec<VarId> = match &self.grouped_with {
+            Some((alias, keys, aggregated))
+                if only_a_cte
+                    && *alias == w
+                    && keys
+                        .iter()
+                        .all(|k| shared.contains(k) || where_only.contains(k)) =>
+            {
+                aggregated.clone()
+            }
+            _ => Vec::new(),
+        };
         let mut columns: Vec<String> = Vec::new();
         let mut correlation = Vec::new();
         for v in shared.iter().chain(where_only) {
@@ -1644,6 +1677,10 @@ impl<'s> Lowerer<'s> {
             if let Some(e) = self.values.get(v) {
                 let column = column_of(e, &w)?;
                 q.values.insert(*v, col_at(&d, &column));
+                columns.push(column.clone());
+                if determined.contains(v) {
+                    continue;
+                }
                 correlation.push(Correlated {
                     column: column.clone(),
                     outer: e.clone(),
@@ -1651,7 +1688,6 @@ impl<'s> Lowerer<'s> {
                     // A value's nullability is not tracked.
                     null_safe: where_only.contains(v),
                 });
-                columns.push(column);
                 continue;
             }
             let Some(scan) = self.scans.get(v).cloned() else {
@@ -1765,7 +1801,7 @@ impl<'s> Lowerer<'s> {
         q_alias: &str,
     ) -> Result<Option<(RenderPlan, Vec<(VarId, Scan<'s>)>)>, LowerError> {
         self.lower_match(pattern, predicate)?;
-        self.finish_relation();
+        self.finish_relation()?;
         if self.empty {
             return Ok(None);
         }
@@ -5204,10 +5240,11 @@ impl<'s> Lowerer<'s> {
             self.joins.push(j);
         }
         self.emitted.push(alias);
-        // Ties that this scan completes go in its ON.
+        // Ties that this scan completes go in its ON (a node read from this
+        // relationship's columns is emitted with it: its ties too).
         let mut still = Vec::new();
         for t in std::mem::take(&mut self.pending) {
-            if (t.a == v || t.b == v) && self.is_emitted(t.a) && self.is_emitted(t.b) {
+            if self.is_emitted(t.a) && self.is_emitted(t.b) {
                 self.place(t);
             } else {
                 still.push(t);
@@ -5274,9 +5311,15 @@ impl<'s> Lowerer<'s> {
         join.joining_on.extend(eqs);
     }
 
-    fn finish_relation(&mut self) {
+    fn finish_relation(&mut self) -> Result<(), LowerError> {
         // A tie to an impossible scan never completes; the relation is empty.
+        // Otherwise every tie is placed: one left would join its scans as a
+        // product (wrong rows, silently).
+        if !self.empty && !self.pending.is_empty() {
+            return unsupported("internal: a tie between scans of the relation was not placed");
+        }
         self.pending.clear();
+        Ok(())
     }
 
     // ------------------------------------------------------------- segments
@@ -6112,6 +6155,15 @@ impl<'s> Lowerer<'s> {
         if collects_by_any {
             self.unstable.insert(format!("with_{alias}"));
         }
+        self.grouped_with = p.aggregates().then(|| {
+            let (aggregated, keys): (Vec<&ProjItem>, Vec<&ProjItem>) =
+                p.items.iter().partition(|i| i.aggregate);
+            (
+                alias.clone(),
+                keys.iter().map(|i| i.var).collect(),
+                aggregated.iter().map(|i| i.var).collect(),
+            )
+        });
         self.close_segment(body, exports, alias)
     }
 

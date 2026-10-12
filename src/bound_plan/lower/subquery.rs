@@ -448,7 +448,7 @@ impl<'s> Lowerer<'s> {
         read_props: &[(VarId, String)],
         q: &mut Segment<'s>,
     ) -> Result<Vec<Correlated>, LowerError> {
-        self.finish_relation();
+        self.finish_relation()?;
         let n = self.ctes.len() + 1;
         let (d, name) = (format!("d{n}"), format!("subquery_d{n}"));
         let mut body = Body {
@@ -561,7 +561,7 @@ impl<'s> Lowerer<'s> {
             // Nested subqueries of the projection, per match.
             self.apply_subqueries(&[p])?;
         }
-        self.finish_relation();
+        self.finish_relation()?;
         if self.empty {
             return Ok(None);
         }

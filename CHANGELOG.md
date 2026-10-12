@@ -11,6 +11,10 @@
 
 ### 🐛 Bug Fixes
 
+- **OPTIONAL MATCH after a WITH that collects could drop matches.** On ClickHouse, a WITH's CTE that is read twice is evaluated twice, and `collect()` can come back in a different order each time. An OPTIONAL MATCH joined its matches on the collected list as well as on the WITH's keys, so in LDBC IC 5 a forum with 93 posts reported 30. The join now uses the keys only, since they determine the aggregated values.
+- **A pattern starting at a new node and ending at a bound one was planned as a cross product.** It is now joined from its bound end; LDBC IC 5 went from over 300 s to 0.8 s.
+- **`x IN [a, b]` and `x IN collected list` of nodes were "Not supported".** They now compare node identities (LDBC IC 3, IC 5 and BI 13).
+
 - **A list element used as a node was "Not supported".** `WITH collect(DISTINCT f) AS fs UNWIND fs AS f MATCH (f)<-[:HAS_CREATOR]-(m)`, as LDBC IC 6, IC 9 and BI 8 write it, now matches the node the element holds. The legacy pipeline's answer to IC 6 had been a cross product, with counts ten million times too high.
 
 - **LDBC schema: `Message` matched no node.** `benchmarks/ldbc_snb/schemas/ldbc_snb_complete.yaml` and `ldbc_snb_embedded.yaml` declared `label_column: type` with `label_value: "Post|Comment"`, a single value that no row holds. So every `(m:Message)` pattern returned nothing once reads went through the bound plan; the legacy pipeline had ignored the label column. Every row of the Message table is a Message, so the label column is removed.

@@ -572,6 +572,24 @@ impl Lowerer<'_> {
                 return self.identity_comparison(a, b, op.operator == O::Equal);
             }
         }
+        // `x IN …` of nodes or relationships, by identity.
+        if let (O::In | O::NotIn, [x, list]) = (op.operator, op.operands.as_slice()) {
+            let negated = op.operator == O::NotIn;
+            let element = |e: &LogicalExpr| {
+                self.entity(e).is_some() || matches!(self.kind(e), Kind::Element(_))
+            };
+            match list {
+                LogicalExpr::List(xs) if element(x) || xs.iter().any(element) => {
+                    return self.in_listed(x, xs, negated, items);
+                }
+                _ if element(x)
+                    && matches!(self.kind(list), Kind::List(k) if matches!(*k, Kind::Element(_))) =>
+                {
+                    return self.in_elements(x, list, negated, items);
+                }
+                _ => {}
+            }
+        }
         // A list's node or relationship (`elements.rs`) by its identity.
         let element_operands = op.operands.iter().any(|o| {
             matches!(o, LogicalExpr::TableAlias(_))
@@ -750,6 +768,110 @@ impl Lowerer<'_> {
         } else {
             holds
         }))
+    }
+
+    /// `x [NOT] IN [a, b, …]` of nodes or relationships: `x = a OR x = b …`
+    /// (Cypher's `IN` is equality, three-valued as `OR` is: NULL where no
+    /// item is `x` and one is NULL); of no item, false.
+    fn in_listed(
+        &self,
+        x: &LogicalExpr,
+        xs: &[LogicalExpr],
+        negated: bool,
+        items: &Items,
+    ) -> Result<RenderExpr, LowerError> {
+        let op = |operator, operands| {
+            LogicalExpr::OperatorApplicationExp(lx::OperatorApplication { operator, operands })
+        };
+        let equalities: Vec<LogicalExpr> = xs
+            .iter()
+            .map(|item| match item {
+                LogicalExpr::Literal(lx::Literal::Null) => item.clone(),
+                _ => op(lx::Operator::Equal, vec![x.clone(), item.clone()]),
+            })
+            .collect();
+        let found = match equalities.len() {
+            0 => LogicalExpr::Literal(lx::Literal::Boolean(false)),
+            1 => equalities
+                .into_iter()
+                .next()
+                .unwrap_or(LogicalExpr::Literal(lx::Literal::Null)),
+            _ => op(lx::Operator::Or, equalities),
+        };
+        let e = match negated {
+            true => op(lx::Operator::Not, vec![found]),
+            false => found,
+        };
+        self.expr(&e, items)
+    }
+
+    /// `x [NOT] IN l` of a node or relationship `x` and a list `l` of them
+    /// (`collect(n)`: element tuples, `elements.rs`): whether an element of
+    /// `l` has `x`'s identity; NULL where `x` or `l` is (a collected list
+    /// holds no NULL).
+    fn in_elements(
+        &self,
+        x: &LogicalExpr,
+        list: &LogicalExpr,
+        negated: bool,
+        items: &Items,
+    ) -> Result<RenderExpr, LowerError> {
+        use lx::Operator as O;
+        let (Kind::Element(x_elem), Kind::List(inner)) = (self.kind(x), self.kind(list)) else {
+            return unsupported(
+                "IN of a list of nodes or relationships, of a node of several labels",
+            );
+        };
+        let Kind::Element(elem) = *inner else {
+            return unsupported("IN of a list of nodes or relationships of several labels");
+        };
+        let Some(spelling) = current_function_mapper().lists() else {
+            return unsupported("a list of nodes or relationships in this SQL dialect");
+        };
+        let x_id = match self.entity(x).map(|v| self.identity(v)).transpose()? {
+            Some(Some(id)) => id,
+            Some(None) => vec![RenderExpr::Literal(Literal::Null)],
+            None => self.elem_identity(&self.expr(x, items)?, &x_elem)?,
+        };
+        let list_sql = render_expr_to_sql_plain(&self.expr(list, items)?);
+        // Elements of other labels or types are never `x`.
+        let found = if x_elem != elem {
+            "false".to_string()
+        } else {
+            const T: &str = "__cg_in";
+            let t_id = self.elem_identity(&RenderExpr::Raw(T.to_string()), &elem)?;
+            let same = super::and_all(
+                t_id.into_iter()
+                    .zip(&x_id)
+                    .map(|(a, b)| {
+                        RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: O::Equal,
+                            operands: vec![a, b.clone()],
+                        })
+                    })
+                    .collect(),
+            )
+            .unwrap_or(RenderExpr::Literal(Literal::Boolean(false)));
+            let matching = (spelling.filter)(T, &render_expr_to_sql_plain(&same), &list_sql);
+            format!("{} > 0", current_function_mapper().list_size(&matching))
+        };
+        let found = match negated {
+            true => format!("NOT ({found})"),
+            false => found,
+        };
+        // Of an empty list, false (`null IN []` too); else NULL where `x` is.
+        let x_absent: Vec<String> = elem_presence(&x_id, &x_elem)
+            .iter()
+            .map(|c| format!("{} IS NULL", render_expr_to_sql_plain(c)))
+            .collect();
+        let m = current_function_mapper();
+        Ok(RenderExpr::Raw(m.cast_bool(&format!(
+            "CASE WHEN {list_sql} IS NULL THEN NULL WHEN {} = 0 THEN {} WHEN {} THEN NULL \
+             ELSE {found} END",
+            m.list_size(&list_sql),
+            if negated { "true" } else { "false" },
+            x_absent.join(" OR ")
+        ))))
     }
 
     /// `a IS [NOT] NULL`, `a = b`, `a <> b` where an operand is a list's node
