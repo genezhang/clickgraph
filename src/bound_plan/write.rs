@@ -66,6 +66,19 @@ pub fn is_write_statement(cypher: &str) -> bool {
 pub struct WritePlan {
     pub plan: WriteRenderPlan,
     pub ret: Option<String>,
+    /// The RETURN reads the records before the writes (after a DELETE:
+    /// Neo4j's RETURN reads the deleted nodes' records), else after them.
+    pub ret_before: bool,
+}
+
+/// A RETURN after the writes ([`return_sql`]).
+struct ReturnPlan {
+    sql: String,
+    before: bool,
+    /// Nodes the RETURN reads that can be deleted ones: the statement fails
+    /// when one is (Neo4j: "has been deleted in this transaction"; a NULL
+    /// of an OPTIONAL MATCH is none).
+    guarded: Vec<Guard>,
 }
 
 /// Plan the write statement `cypher` (comments stripped).
@@ -75,7 +88,26 @@ pub fn plan_write(cypher: &str, schema: &GraphSchema) -> Result<WritePlan, Write
     if !rest.trim().trim_end_matches(';').trim().is_empty() {
         return Err(WritePlanError::Unsupported("unparsed text".to_string()));
     }
+    // A DELETE with a RETURN is not the legacy planner's: it deletes, then
+    // re-reads (Neo4j's RETURN reads the records as they were).
+    let deletes_returns = std::iter::once(&stmt.first)
+        .chain(stmt.unions.iter().map(|(_, q)| q))
+        .any(|q| {
+            q.clauses
+                .iter()
+                .any(|c| matches!(c, crate::open_cypher_parser::clause_list::Clause::Delete(_)))
+        })
+        && std::iter::once(&stmt.first)
+            .chain(stmt.unions.iter().map(|(_, q)| q))
+            .any(|q| {
+                q.clauses
+                    .iter()
+                    .any(|c| matches!(c, crate::open_cypher_parser::clause_list::Clause::Return(_)))
+            });
     let bound = bind_write_statement(&stmt, schema).map_err(|e| match e {
+        BindError::Unsupported(_) | BindError::NotARead(_) if deletes_returns => {
+            WritePlanError::Rejected(format!("a DELETE with a RETURN: {e}"))
+        }
         BindError::Unsupported(_) | BindError::NotARead(_) => {
             WritePlanError::Unsupported(e.to_string())
         }
@@ -91,9 +123,14 @@ pub fn plan_write(cypher: &str, schema: &GraphSchema) -> Result<WritePlan, Write
         options: LowerOptions::default(),
         identities: HashMap::new(),
         detached: Vec::new(),
+        guarded: ret.as_ref().map(|r| r.guarded.clone()).unwrap_or_default(),
     }
     .plan()?;
-    Ok(WritePlan { plan, ret })
+    Ok(WritePlan {
+        plan,
+        ret_before: ret.as_ref().is_some_and(|r| r.before),
+        ret: ret.map(|r| r.sql),
+    })
 }
 
 /// The SQL of a RETURN after the writes (S13c): the read part re-read
@@ -107,24 +144,30 @@ fn return_sql(
     bound: &BoundWriteStatement,
     ret: &super::types::BoundStatement,
     schema: &GraphSchema,
-) -> Result<String, WritePlanError> {
+) -> Result<ReturnPlan, WritePlanError> {
     let refuse = |why: &str| {
         Err(WritePlanError::Rejected(format!(
             "RETURN after {why}: not supported (the statement's records are re-read after \
              its writes)"
         )))
     };
-    // After a DELETE Neo4j's RETURN reads the deleted nodes' records (their
-    // properties an error, a node none), after a CREATE the created ones:
-    // not a re-read (the legacy planner's: CREATE refused, DELETE re-read).
+    // After a CREATE the RETURN reads the created nodes: not yet (the
+    // legacy planner's: refused).
     if bound
         .writes
         .iter()
-        .any(|w| matches!(w, BoundWrite::Delete { .. } | BoundWrite::Create { .. }))
+        .any(|w| matches!(w, BoundWrite::Create { .. }))
     {
         return Err(WritePlanError::Unsupported(
-            "RETURN after a DELETE or CREATE".to_string(),
+            "RETURN after a CREATE".to_string(),
         ));
+    }
+    if bound
+        .writes
+        .iter()
+        .any(|w| matches!(w, BoundWrite::Delete { .. }))
+    {
+        return delete_return(bound, ret, schema);
     }
     fn pages(op: &BoundOp) -> bool {
         match op {
@@ -211,7 +254,362 @@ fn return_sql(
     }
     let lowered = super::lower::lower_statement(ret, schema, &LowerOptions::default())
         .map_err(|e| WritePlanError::Unsupported(e.to_string()))?;
-    Ok(render_plan_to_sql_plain(lowered.plan))
+    Ok(ReturnPlan {
+        sql: render_plan_to_sql_plain(lowered.plan),
+        before: false,
+        guarded: Vec::new(),
+    })
+}
+
+/// A RETURN after a DELETE (S13d), as Neo4j's: it reads the records as they
+/// were (read before the writes): `count(n)` the deleted nodes, a deleted
+/// node returned whole without properties (its columns NULL), its properties
+/// or labels read an error when it is a node (a check before any write; a
+/// NULL of an OPTIONAL MATCH reads NULL).
+///
+/// A node is read only where the check sees it: returned whole, its
+/// properties, labels, `id`, `count`, `IS NULL`. In a list, a map, a
+/// `collect`, a path or a value carried through WITH / UNWIND it is not
+/// (refused), nor is the graph read by a subquery (after the DELETE). A
+/// node of another variable can be a deleted one (the same node, or one
+/// another record deletes): read, the statement fails when it is.
+fn delete_return(
+    bound: &BoundWriteStatement,
+    ret: &super::types::BoundStatement,
+    schema: &GraphSchema,
+) -> Result<ReturnPlan, WritePlanError> {
+    use crate::query_planner::logical_expr::{LogicalExpr, TableAlias};
+    let refuse = |why: &str| {
+        Err(WritePlanError::Rejected(format!(
+            "RETURN after {why}: not supported"
+        )))
+    };
+    if bound
+        .writes
+        .iter()
+        .any(|w| matches!(w, BoundWrite::Set { .. } | BoundWrite::Remove { .. }))
+    {
+        return refuse("a DELETE and a SET or REMOVE");
+    }
+    let read = &bound.read;
+    // A node is the deleted one when it passes it through (`WITH a AS b`).
+    let root = |mut v: VarId| loop {
+        match read.binding(v).source {
+            super::types::BindingSource::Projection { of: Some(of), .. } => v = of,
+            _ => return v,
+        }
+    };
+    let mut targets = Vec::new();
+    let mut detach = false;
+    for w in &bound.writes {
+        if let BoundWrite::Delete { var, detach: d, .. } = w {
+            targets.push(*var);
+            detach |= *d;
+        }
+    }
+    let roots: Vec<VarId> = targets.iter().map(|v| root(*v)).collect();
+    let deleted: std::collections::BTreeSet<VarId> = read
+        .bindings
+        .iter()
+        .filter(|b| matches!(b.kind, BindingKind::Node { .. }) && roots.contains(&root(b.id)))
+        .map(|b| b.id)
+        .collect();
+    let BoundOp::Project { projection, .. } = &ret.plan else {
+        return Err(WritePlanError::Rejected(
+            "internal: a RETURN that is not a projection".to_string(),
+        ));
+    };
+    let exprs: Vec<&LogicalExpr> = projection
+        .items
+        .iter()
+        .map(|i| &i.expr)
+        .chain(projection.order_by.iter().map(|k| &k.expr))
+        .collect();
+    if exprs
+        .iter()
+        .any(|e| !crate::bound_plan::expr::subquery_vars(e).is_empty())
+    {
+        return refuse("a DELETE, of a pattern (it reads the graph after the DELETE)");
+    }
+    let names = |v: VarId| {
+        exprs.iter().any(|e| {
+            crate::bound_plan::expr::referenced_names(e, false)
+                .iter()
+                .any(|n| crate::bound_plan::lower::parse_var(n) == Some(v))
+        })
+    };
+    // DETACH DELETE deletes the node's relationships too, and an FK edge
+    // (a reference in a node's row) is gone with either end: a
+    // relationship the RETURN reads may be one (not told here).
+    let mut gone_labels = std::collections::BTreeSet::new();
+    for v in &targets {
+        if let BindingKind::Node { labels } = &read.binding(*v).kind {
+            gone_labels.extend(labels.iter().cloned());
+        }
+    }
+    let gone = |types: &std::collections::BTreeSet<String>| {
+        detach
+            || types.iter().any(|t| {
+                schema.rel_schemas_for_type(t).iter().any(|r| {
+                    r.is_node_row_reference()
+                        && (gone_labels.contains(&r.from_node) || gone_labels.contains(&r.to_node))
+                })
+            })
+    };
+    if read.bindings.iter().any(|b| match &b.kind {
+        BindingKind::Rel { types, .. } => names(b.id) && gone(types),
+        _ => false,
+    }) {
+        return refuse("a DELETE, of a relationship it deletes");
+    }
+    let mut defs = HashMap::new();
+    definitions(&ret.plan, &mut defs);
+    let exposure = Exposure {
+        stmt: ret,
+        defs,
+        memo: Default::default(),
+    };
+    if projection
+        .items
+        .iter()
+        .any(|i| exposure.exposes(&i.expr, true))
+        || projection
+            .order_by
+            .iter()
+            .any(|k| exposure.exposes(&k.expr, false))
+    {
+        return refuse(
+            "a DELETE, of a node, relationship or path in a list, map, path or value \
+             (a deleted node in it is not told)",
+        );
+    }
+    // The RETURN's own column of a node (`RETURN a ORDER BY a.x`): the node
+    // it returns.
+    let input = |v: VarId| {
+        projection
+            .items
+            .iter()
+            .find(|i| i.var == v)
+            .and_then(|i| match &i.expr {
+                LogicalExpr::TableAlias(TableAlias(n)) => crate::bound_plan::lower::parse_var(n),
+                _ => None,
+            })
+            .unwrap_or(v)
+    };
+    let labels = |v: VarId| match &read.binding(v).kind {
+        BindingKind::Node { labels } => labels.clone(),
+        _ => Default::default(),
+    };
+    let mut guarded = Vec::new();
+    for b in &read.bindings {
+        if !matches!(b.kind, BindingKind::Node { .. }) {
+            continue;
+        }
+        let name = b.id.name();
+        let reads = exprs.iter().any(|e| reads_node(e, &name));
+        let whole = projection
+            .items
+            .iter()
+            .any(|i| matches!(&i.expr, LogicalExpr::TableAlias(TableAlias(n)) if *n == name));
+        if !reads && !whole {
+            continue;
+        }
+        let var = input(b.id);
+        if deleted.contains(&b.id) {
+            if reads && !guarded.contains(&Guard::Deleted(var)) {
+                guarded.push(Guard::Deleted(var));
+            }
+            // Returned whole: its identity alone, of one label's columns.
+            if whole && labels(b.id).len() != 1 {
+                return refuse("a DELETE, of a deleted node of several possible labels");
+            }
+            continue;
+        }
+        for d in &targets {
+            let guard = Guard::Other {
+                var,
+                deleted: *d,
+                reads,
+            };
+            if !labels(*d).is_disjoint(&labels(var)) && !guarded.contains(&guard) {
+                guarded.push(guard);
+            }
+        }
+    }
+    let options = LowerOptions {
+        deleted: deleted.clone(),
+        ..LowerOptions::default()
+    };
+    // Rejected, not the caller's other path: the legacy planner deletes
+    // before it reads.
+    let lowered = super::lower::lower_statement(ret, schema, &options)
+        .map_err(|e| WritePlanError::Rejected(format!("RETURN after a DELETE: {e}")))?;
+    Ok(ReturnPlan {
+        sql: render_plan_to_sql_plain(lowered.plan),
+        before: true,
+        guarded,
+    })
+}
+
+/// A node a RETURN after a DELETE reads ([`delete_return`]): the statement
+/// fails when it is a deleted one.
+#[derive(Debug, Clone, PartialEq)]
+enum Guard {
+    /// A deleted node's properties or labels.
+    Deleted(VarId),
+    /// A node of another variable (`reads`: its properties or labels, else
+    /// returned whole), when it is one `deleted` deletes.
+    Other {
+        var: VarId,
+        deleted: VarId,
+        reads: bool,
+    },
+}
+
+/// Does `e` read the properties or labels of node `name`?
+fn reads_node(e: &crate::query_planner::logical_expr::LogicalExpr, name: &str) -> bool {
+    crate::bound_plan::expr::reads_element(e, name) || label_tested(e, name)
+}
+
+fn label_tested(e: &crate::query_planner::logical_expr::LogicalExpr, name: &str) -> bool {
+    use crate::query_planner::logical_expr::LogicalExpr;
+    match e {
+        LogicalExpr::LabelExpression { variable, .. } => variable == name,
+        _ => crate::bound_plan::expr::children(e)
+            .into_iter()
+            .any(|c| label_tested(c, name)),
+    }
+}
+
+/// The expression each value binding of `op` is projected or unwound
+/// from (a UNION's arms: none, not told).
+fn definitions<'e>(
+    op: &'e BoundOp,
+    out: &mut HashMap<VarId, &'e crate::query_planner::logical_expr::LogicalExpr>,
+) {
+    match op {
+        BoundOp::Project { input, projection } => {
+            for i in &projection.items {
+                out.insert(i.var, &i.expr);
+            }
+            definitions(input, out);
+        }
+        BoundOp::Unwind { input, expr, var } => {
+            out.insert(*var, expr);
+            definitions(input, out);
+        }
+        BoundOp::Match { input, .. }
+        | BoundOp::Sort { input, .. }
+        | BoundOp::Skip { input, .. }
+        | BoundOp::Limit { input, .. }
+        | BoundOp::Filter { input, .. } => definitions(input, out),
+        BoundOp::Union { .. } | BoundOp::Unit => {}
+    }
+}
+
+/// Where a RETURN after a DELETE reads a node, relationship or path that
+/// the check of a deleted node does not see ([`delete_return`]).
+struct Exposure<'s> {
+    stmt: &'s super::types::BoundStatement,
+    defs: HashMap<VarId, &'s crate::query_planner::logical_expr::LogicalExpr>,
+    memo: std::cell::RefCell<HashMap<VarId, bool>>,
+}
+
+impl Exposure<'_> {
+    /// Can value `v` be, or hold, a node, relationship or path?
+    fn holds(&self, v: VarId) -> bool {
+        use super::types::{BindingSource, SubqueryKind};
+        if let Some(h) = self.memo.borrow().get(&v) {
+            return *h;
+        }
+        self.memo.borrow_mut().insert(v, true);
+        let b = self.stmt.binding(v);
+        let holds = match (&b.kind, &b.source) {
+            (BindingKind::Value, BindingSource::Projection { of: Some(of), .. }) => self.holds(*of),
+            // A comprehension's element, of a list read where it is checked.
+            (BindingKind::Value, BindingSource::Local) => false,
+            (BindingKind::Value, BindingSource::Subquery) => {
+                match self.stmt.subqueries.iter().find(|s| s.var == v) {
+                    Some(s) => match &s.kind {
+                        SubqueryKind::Collect(e) => self.exposes(e, false),
+                        SubqueryKind::Exists | SubqueryKind::Count => false,
+                    },
+                    None => true,
+                }
+            }
+            (BindingKind::Value, _) => self.defs.get(&v).is_none_or(|e| self.exposes(e, false)),
+            _ => true,
+        };
+        self.memo.borrow_mut().insert(v, holds);
+        holds
+    }
+
+    /// Does `e` read a node, relationship or path other than as an item of
+    /// its own (`top`), its properties, labels, `id`, `count`, `IS NULL`?
+    fn exposes(&self, e: &crate::query_planner::logical_expr::LogicalExpr, top: bool) -> bool {
+        use crate::bound_plan::lower::parse_var;
+        use crate::query_planner::logical_expr::{LogicalExpr, Operator, TableAlias};
+        const READS: [&str; 7] = [
+            "id",
+            "elementid",
+            "labels",
+            "properties",
+            "keys",
+            "type",
+            "length",
+        ];
+        let var = |x: &LogicalExpr| match x {
+            LogicalExpr::TableAlias(TableAlias(n)) => parse_var(n),
+            _ => None,
+        };
+        // A node, a relationship or a path: read where it is checked.
+        let element = |v: VarId| {
+            matches!(
+                self.stmt.binding(v).kind,
+                BindingKind::Node { .. }
+                    | BindingKind::Rel { length: None, .. }
+                    | BindingKind::Path
+            )
+        };
+        let read = |v: VarId| !element(v) && self.holds(v);
+        match e {
+            LogicalExpr::TableAlias(TableAlias(n)) => parse_var(n).is_some_and(|v| {
+                let whole = top && !matches!(self.stmt.binding(v).kind, BindingKind::Path);
+                !(whole && element(v)) && self.holds(v)
+            }),
+            LogicalExpr::PropertyAccessExp(pa) => parse_var(&pa.table_alias.0).is_some_and(read),
+            LogicalExpr::LabelExpression { variable, .. } => parse_var(variable).is_some_and(read),
+            LogicalExpr::ScalarFnCall(f)
+                if f.args.len() == 1
+                    && var(&f.args[0]).is_some()
+                    && READS.contains(&f.name.to_ascii_lowercase().as_str()) =>
+            {
+                var(&f.args[0]).is_some_and(read)
+            }
+            // `count(n)`, `count(DISTINCT n)`.
+            LogicalExpr::AggregateFnCall(f)
+                if f.name.eq_ignore_ascii_case("count")
+                    && matches!(f.args.as_slice(), [a] if var(a).is_some() || matches!(
+                        a,
+                        LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op)
+                            if matches!(op.operator, Operator::Distinct)
+                                && matches!(op.operands.as_slice(), [x] if var(x).is_some())
+                    )) =>
+            {
+                false
+            }
+            LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op)
+                if matches!(op.operator, Operator::IsNull | Operator::IsNotNull)
+                    && op.operands.len() == 1
+                    && var(&op.operands[0]).is_some() =>
+            {
+                false
+            }
+            _ => crate::bound_plan::expr::children(e)
+                .into_iter()
+                .any(|c| self.exposes(c, false)),
+        }
+    }
 }
 
 /// One SET / REMOVE of a node: its property, and its value (REMOVE: none).
@@ -230,6 +628,8 @@ struct Planner<'a> {
     /// table, its column, the ids (a node's relationships are not "still
     /// there" for another DELETE when this one deletes them).
     detached: Vec<(EdgeEnd, RowSource)>,
+    /// Nodes the RETURN reads that can be deleted ones ([`ReturnPlan`]).
+    guarded: Vec<Guard>,
 }
 
 impl<'a> Planner<'a> {
@@ -319,6 +719,55 @@ impl<'a> Planner<'a> {
             }
         }
         let mut ops = Vec::new();
+        for guard in self.guarded.clone() {
+            match guard {
+                Guard::Deleted(var) => {
+                    for label in self.labels(var)? {
+                        if let Some(source) = self.source(var, &label)? {
+                            ops.push(WriteRenderPlan::Check(CheckOp {
+                                source,
+                                within: None,
+                                message: format!(
+                                    "a `{label}` node the statement deleted is read by its \
+                                     RETURN (Neo4j: it has been deleted in this transaction)"
+                                ),
+                            }));
+                        }
+                    }
+                }
+                Guard::Other {
+                    var,
+                    deleted,
+                    reads,
+                } => {
+                    let of = self.labels(deleted)?;
+                    for label in self.labels(var)? {
+                        if !of.contains(&label) {
+                            continue;
+                        }
+                        let Some(source) = self.overlap(var, deleted, &label)? else {
+                            continue;
+                        };
+                        let name = self.stmt.read.binding(var).name.clone().unwrap_or_default();
+                        let message = match reads {
+                            true => format!(
+                                "a `{label}` node the statement deleted is read by its RETURN, \
+                                 as `{name}` (Neo4j: it has been deleted in this transaction)"
+                            ),
+                            false => format!(
+                                "a `{label}` node the statement deleted is returned as `{name}`: \
+                                 not supported"
+                            ),
+                        };
+                        ops.push(WriteRenderPlan::Check(CheckOp {
+                            source,
+                            within: None,
+                            message,
+                        }));
+                    }
+                }
+            }
+        }
         // The nodes an earlier clause of the statement changed: the read
         // part's records were read before any write (a snapshot), so a
         // CREATE value reading one would see it unchanged.
@@ -652,6 +1101,40 @@ impl<'a> Planner<'a> {
     /// in the target's database, where a CTE is unknown, so the executor
     /// reads the ids first.
     fn source(&mut self, var: VarId, label: &str) -> Result<Option<RowSource>, WritePlanError> {
+        Ok(self.ids(var, label)?.map(|(sql, _, ctes)| match ctes {
+            true => RowSource::Read(sql),
+            false => RowSource::Sql(sql),
+        }))
+    }
+
+    /// The identities of `var` of `label` that are also of `deleted` (both
+    /// in any record).
+    fn overlap(
+        &mut self,
+        var: VarId,
+        deleted: VarId,
+        label: &str,
+    ) -> Result<Option<RowSource>, WritePlanError> {
+        let (Some((these, column, a)), Some((those, _, b))) =
+            (self.ids(var, label)?, self.ids(deleted, label)?)
+        else {
+            return Ok(None);
+        };
+        let sql =
+            format!("SELECT {column} FROM ({these}) AS __cg_these WHERE {column} IN ({those})");
+        Ok(Some(match a || b {
+            true => RowSource::Read(sql),
+            false => RowSource::Sql(sql),
+        }))
+    }
+
+    /// The SELECT of `var`'s identities of `label` ([`Self::source`]): its
+    /// column, and whether it has CTEs.
+    fn ids(
+        &mut self,
+        var: VarId,
+        label: &str,
+    ) -> Result<Option<(String, String, bool)>, WritePlanError> {
         if !self.identities.contains_key(&var) {
             let rows = lower_identities(&self.stmt.read, self.schema, &self.options, var, true)
                 .map_err(|e| WritePlanError::Unsupported(e.to_string()))?;
@@ -676,10 +1159,7 @@ impl<'a> Planner<'a> {
             false => String::new(),
         };
         let sql = format!("SELECT {id} FROM ({inner}) AS __cg_write_ids{label_filter}");
-        Ok(Some(match !rows.plan.ctes.0.is_empty() {
-            true => RowSource::Read(sql),
-            false => RowSource::Sql(sql),
-        }))
+        Ok(Some((sql, id.clone(), !rows.plan.ctes.0.is_empty())))
     }
 }
 
@@ -1009,12 +1489,9 @@ mod tests {
         )
         .unwrap();
         let ret = planned.ret.expect("a RETURN");
-        // After a DELETE or CREATE: the legacy planner's.
+        // After a CREATE: the legacy planner's.
         assert!(matches!(
-            plan_write(
-                "MATCH (u:User) WHERE u.user_id = 1 DELETE u RETURN 1 AS x",
-                &social()
-            ),
+            plan_write("CREATE (u:User {user_id: 5}) RETURN 1 AS x", &social()),
             Err(WritePlanError::Unsupported(_))
         ));
         assert!(
@@ -1056,6 +1533,161 @@ mod tests {
                 matches!(&err, WritePlanError::Rejected(m) if m.contains(why)),
                 "{q}: {err:?}"
             );
+        }
+    }
+
+    /// S13d: RETURN after DELETE reads the records before the writes; a
+    /// deleted node's properties read by it: a check (Neo4j's error when it
+    /// is a node); refused: DELETE with SET, a relationship after DETACH.
+    #[test]
+    fn delete_then_return() {
+        let p = plan_write(
+            "MATCH (u:User) WHERE u.user_id = 1 DELETE u RETURN count(u) AS c",
+            &social(),
+        )
+        .unwrap();
+        assert!(p.ret_before && p.ret.is_some());
+        let p = plan_write(
+            "MATCH (u:User) WHERE u.user_id = 1 DELETE u RETURN u.name AS n",
+            &social(),
+        )
+        .unwrap();
+        let WriteRenderPlan::Sequence(ops) = &p.plan else {
+            panic!("a check and the DELETE: {:?}", p.plan);
+        };
+        assert!(
+            ops.iter().any(|op| matches!(op, WriteRenderPlan::Check(c) if c.within.is_none() && c.message.contains("deleted in this transaction"))),
+            "{ops:?}"
+        );
+        // Returned whole: no properties (NULL columns).
+        let p = plan_write(
+            "MATCH (u:User) WHERE u.user_id = 1 DELETE u RETURN u",
+            &social(),
+        )
+        .unwrap();
+        let ret = p.ret.unwrap();
+        assert!(ret.contains("NULL AS \"u.name\""), "{ret}");
+        for (q, why) in [
+            (
+                "MATCH (u:User) WHERE u.user_id = 1 SET u.age = 1 DELETE u RETURN 1 AS x",
+                "a DELETE and a SET",
+            ),
+            (
+                "MATCH (u:User)-[r:FOLLOWS]->(f:User) WHERE u.user_id = 1 DETACH DELETE u \
+                 RETURN r",
+                "of a relationship",
+            ),
+        ] {
+            let err = plan_write(q, &social()).unwrap_err();
+            assert!(
+                matches!(&err, WritePlanError::Rejected(m) if m.contains(why)),
+                "{q}: {err:?}"
+            );
+        }
+    }
+
+    /// S13d: a node the RETURN reads where a deleted one's check does not
+    /// see it (in a list, map, collect, path, a value through WITH /
+    /// UNWIND, a pattern read after the DELETE): refused; a node of
+    /// another variable read or returned: checked against the deleted.
+    #[test]
+    fn delete_then_return_reads_nodes_where_checked() {
+        let schema = social();
+        let one = "MATCH (u:User)-[:FOLLOWS]->(f:User) WHERE u.user_id = 1 DETACH DELETE u";
+        for tail in [
+            "RETURN [u] AS l",
+            "RETURN collect(u) AS l",
+            "RETURN collect(f) AS l",
+            "RETURN {k: u} AS m",
+            "RETURN [x IN [u] | x.name] AS l",
+            "RETURN u.name + '' AS n ORDER BY u",
+        ] {
+            let q = format!("{one} {tail}");
+            let err = plan_write(&q, &schema).unwrap_err();
+            assert!(
+                matches!(&err, WritePlanError::Rejected(m) if m.contains("in a list, map, path or value")),
+                "{q}: {err:?}"
+            );
+        }
+        for q in [
+            "MATCH p = (u:User)-[:FOLLOWS]->(f:User) WHERE u.user_id = 1 DETACH DELETE u \
+             RETURN p",
+            "MATCH p = (u:User)-[:FOLLOWS]->(f:User) WHERE u.user_id = 1 DETACH DELETE u \
+             RETURN nodes(p) AS ns",
+            "MATCH (u:User) WHERE u.user_id = 1 WITH u, [u] AS l UNWIND l AS x DELETE u \
+             RETURN x.name AS n",
+            "MATCH (u:User) WHERE u.user_id = 1 WITH u, collect(u) AS l DELETE u \
+             RETURN size(l) AS n",
+        ] {
+            let err = plan_write(q, &schema).unwrap_err();
+            assert!(
+                matches!(&err, WritePlanError::Rejected(m) if m.contains("in a list, map, path or value")),
+                "{q}: {err:?}"
+            );
+        }
+        // An FK edge is gone with its node: refused, DETACH or not.
+        for q in [
+            "MATCH (u:User)-[r:AUTHORED]->(p:Post) WHERE p.post_id = 1 DELETE p \
+             RETURN r.post_title AS t",
+            "MATCH (u:User)-[r:AUTHORED]->(p:Post) WHERE u.user_id = 1 DELETE u RETURN r",
+        ] {
+            let err = plan_write(q, &schema).unwrap_err();
+            assert!(
+                matches!(&err, WritePlanError::Rejected(m) if m.contains("of a relationship it deletes")),
+                "{q}: {err:?}"
+            );
+        }
+        // Never the legacy planner's (it deletes, then re-reads).
+        let q = "MATCH (u:User) WHERE u.user_id = 1 DELETE u RETURN count(u) AS n \
+                 UNION RETURN 0 AS n";
+        let err = plan_write(q, &schema).unwrap_err();
+        assert!(
+            matches!(&err, WritePlanError::Rejected(m) if m.contains("a DELETE with a RETURN")),
+            "{q}: {err:?}"
+        );
+        let q = "MATCH (u:User) WHERE u.user_id = 1 DELETE u RETURN size((u)-->()) AS n";
+        let err = plan_write(q, &schema).unwrap_err();
+        assert!(
+            matches!(&err, WritePlanError::Rejected(m) if m.contains("of a pattern")),
+            "{q}: {err:?}"
+        );
+        // Read where checked: no check for its identity, `count`, IS NULL.
+        let p = plan_write(
+            "MATCH (u:User) WHERE u.user_id = 1 DELETE u \
+             RETURN id(u) AS i, u IS NULL AS z, count(u) AS c, count(DISTINCT u) AS d",
+            &schema,
+        )
+        .unwrap();
+        let WriteRenderPlan::Sequence(ops) = &p.plan else {
+            panic!("{:?}", p.plan);
+        };
+        assert!(
+            !ops.iter()
+                .any(|op| matches!(op, WriteRenderPlan::Check(c) if c.message.contains("RETURN"))),
+            "{ops:?}"
+        );
+        // Another variable's node: checked against the deleted ones.
+        for (tail, message) in [
+            ("RETURN f.name AS n", "read by its RETURN, as `f`"),
+            ("RETURN f", "returned as `f`"),
+        ] {
+            let q = format!("{one} {tail}");
+            let p = plan_write(&q, &schema).unwrap();
+            let WriteRenderPlan::Sequence(ops) = &p.plan else {
+                panic!("{q}: {:?}", p.plan);
+            };
+            let check = ops.iter().find_map(|op| match op {
+                WriteRenderPlan::Check(c) if c.message.contains(message) => Some(c),
+                _ => None,
+            });
+            let Some(check) = check else {
+                panic!("{q}: {ops:?}");
+            };
+            let (RowSource::Sql(sql) | RowSource::Read(sql)) = &check.source else {
+                panic!("{q}: {check:?}");
+            };
+            assert!(sql.contains("FROM (SELECT"), "{sql}");
+            assert!(sql.contains("__cg_these WHERE"), "{sql}");
         }
     }
 

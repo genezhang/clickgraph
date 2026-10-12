@@ -4731,6 +4731,39 @@ slice that will handle it.
       fell to the legacy planner, not only RETURN) and an S13a gap (chdb's
       UPDATE, as the lightweight DELETE, resolves no CTE in its subquery:
       every write whose ids need one reads them first).
+  - [ ] **S13d: DELETE … RETURN, as Neo4j (user 2026-10-12).** Neo4j's
+    RETURN after a DELETE reads the records as they were (oracle:
+    `count(n)` the deleted nodes; `RETURN n` the node's identity alone, no
+    labels or properties; `n.name`, `labels(n)` the error "Node … has been
+    deleted in this transaction"; an OPTIONAL MATCH's NULL: NULL). The
+    RETURN is read before the writes (`WritePlan::ret_before`); a deleted
+    node returned whole is its columns NULL (`LowerOptions::deleted`, a
+    node passed through a WITH included); one whose properties or labels
+    the RETURN reads (`expr::reads_element`) is a check before any write,
+    failing with Neo4j's error when it is a node. A node is read only
+    where that check sees it (`write::Exposure`): returned whole, its
+    properties, labels, `id`, `count`, `IS NULL`. A node of another
+    variable read (or returned) is checked against the deleted ones' ids
+    (the same node, or one another record deletes: `Guard::Other`; Neo4j's
+    error, and refused when returned whole, where Neo4j returns the bare
+    node). Refused: a DELETE and a SET / REMOVE with a RETURN, a
+    relationship the RETURN reads that the DELETE may delete (after a
+    DETACH DELETE, or an FK edge of a deleted label: gone with its row), a
+    deleted node of several labels returned whole, a node, relationship
+    or path in a list, map, `collect`, path or a value carried through
+    WITH / UNWIND (its deleted nodes not told), a pattern read by the
+    RETURN (Neo4j reads the graph after the DELETE), and a DELETE with a
+    RETURN the bound plan does not bind or lower (never the legacy
+    planner's: it deletes first). A deleted node returned whole is all its
+    columns NULL (the flat result has no identity beside its properties). Stricter than Neo4j: `properties(n)` / `keys(n)` of a deleted
+    node fail (Neo4j: `{}` / `[]`). CREATE … RETURN and a relationship
+    CREATE stay refused (the legacy planner's refusal; a later slice).
+    - Acceptance: planner tests; the embedded crate's 152 (the TCK-shaped
+      `OPTIONAL MATCH (a) DELETE a RETURN a` now the bound plan's); chdb
+      end to end: `count` of the deleted, a property read refused before
+      deleting, a whole deleted node without properties, an OPTIONAL NULL,
+      another variable's node deleted by another record refused, and read
+      when it is not, a `collect` refused (18 pass; #1436's 2 as on main).
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

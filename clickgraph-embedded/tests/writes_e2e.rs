@@ -529,3 +529,127 @@ fn create_clauses_and_set_after_with() {
         Some("after_with")
     );
 }
+
+// ---- S13d: DELETE … RETURN as Neo4j ----
+
+/// RETURN after DELETE reads the records as they were: `count(n)` the
+/// deleted nodes.
+#[test]
+fn delete_return_counts_the_deleted() {
+    let Some(conn) = conn() else { return };
+    person(&conn, "da1", 40);
+    person(&conn, "da2", 40);
+    let mut result = conn
+        .query("MATCH (a:Person) WHERE a.person_id IN ['da1', 'da2'] DELETE a RETURN count(a) AS c")
+        .expect("DELETE … RETURN count");
+    assert_eq!(int(&result.next().unwrap(), "c"), 2);
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id IN ['da1', 'da2'] RETURN count(a) AS c"
+        ),
+        0
+    );
+}
+
+/// A deleted node's properties read by the RETURN: Neo4j's error, before
+/// anything is deleted; returned whole: no properties; a NULL of an
+/// OPTIONAL MATCH: NULL.
+#[test]
+fn delete_return_of_the_deleted_node() {
+    let Some(conn) = conn() else { return };
+    person(&conn, "db1", 40);
+    let err = conn
+        .query("MATCH (a:Person) WHERE a.person_id = 'db1' DELETE a RETURN a.name")
+        .expect_err("reads a deleted node");
+    assert!(
+        err.to_string().contains("deleted in this transaction"),
+        "{err}"
+    );
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id = 'db1' RETURN count(a) AS c"
+        ),
+        1
+    );
+    let mut result = conn
+        .query("MATCH (a:Person) WHERE a.person_id = 'db1' DELETE a RETURN a")
+        .expect("returned whole");
+    let row = result.next().expect("one row");
+    for column in result.get_column_names().to_vec() {
+        let v = row.get(&column).expect("a column");
+        assert!(v.is_null(), "{column} = {v:?}");
+    }
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id = 'db1' RETURN count(a) AS c"
+        ),
+        0
+    );
+    let mut result = conn
+        .query("OPTIONAL MATCH (a:Person {person_id: 'nobody'}) DELETE a RETURN a.name AS n")
+        .expect("a NULL record");
+    assert!(result.next().unwrap().get("n").unwrap().is_null());
+}
+
+/// A node of another variable read by the RETURN after a DELETE: Neo4j's
+/// error when it is a deleted one (the same node, or one another record
+/// deletes), before anything is deleted; a node that is not: read.
+#[test]
+fn delete_return_of_another_variable() {
+    let Some(conn) = conn() else { return };
+    for id in ["dc1", "dc2", "dc3"] {
+        person(&conn, id, 40);
+    }
+    // dc1 -> dc2 -> dc3: the second record's `b` is the first's `a`.
+    knows(&conn, "dc1", "dc2");
+    knows(&conn, "dc2", "dc3");
+    let err = conn
+        .query(
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE a.person_id IN ['dc1', 'dc2'] \
+             DETACH DELETE a RETURN b.name AS n",
+        )
+        .expect_err("dc2 is deleted by the second record");
+    assert!(
+        err.to_string().contains("deleted in this transaction"),
+        "{err}"
+    );
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id STARTS WITH 'dc' RETURN count(a) AS c"
+        ),
+        3
+    );
+    let mut result = conn
+        .query(
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE a.person_id = 'dc1' \
+             DETACH DELETE a RETURN b.name AS n",
+        )
+        .expect("dc2 is not deleted");
+    assert_eq!(
+        result.next().unwrap().get("n").unwrap().as_str(),
+        Some("dc2")
+    );
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id STARTS WITH 'dc' RETURN count(a) AS c"
+        ),
+        2
+    );
+    // In a list: refused, nothing deleted.
+    let err = conn
+        .query("MATCH (a:Person) WHERE a.person_id = 'dc2' DETACH DELETE a RETURN collect(a) AS l")
+        .expect_err("a list of a deleted node");
+    assert!(err.to_string().contains("not supported"), "{err}");
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id = 'dc2' RETURN count(a) AS c"
+        ),
+        1
+    );
+}

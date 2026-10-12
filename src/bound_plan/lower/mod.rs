@@ -129,6 +129,9 @@ pub struct LowerOptions {
     /// (`ReadOptions::id_mapper`); `None` (library, `cg`): `id(n)` is the
     /// node's key.
     pub id_lookup: Option<IdLookup>,
+    /// Nodes a write statement deleted (its RETURN, S13d): returned whole
+    /// without properties (Neo4j's deleted node: its identity alone).
+    pub deleted: BTreeSet<VarId>,
 }
 
 /// The node an integer `id()` value names on the server: its label and key
@@ -5773,7 +5776,10 @@ impl<'s> Lowerer<'s> {
             None => return unsupported(format!("internal: {v} has no scan")),
         };
         for prop in self.all_property_names(v) {
-            let e = self.property(v, &prop)?;
+            let e = match self.options.deleted.contains(&v) {
+                true => RenderExpr::Literal(Literal::Null),
+                false => self.property(v, &prop)?,
+            };
             columns.push((prop, e));
         }
         Ok(Some((columns, kind)))
