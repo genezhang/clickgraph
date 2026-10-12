@@ -1023,11 +1023,10 @@ mod tests {
         }
         // Not planned here yet (the legacy planner's): a relationship
         // CREATE.
-        for q in ["CREATE (a:User {user_id: 1})-[:FOLLOWS]->(b:User {user_id: 2})"] {
-            assert!(
-                matches!(planned(q, &schema), Err(WritePlanError::Unsupported(_))),
-                "{q}"
-            );
-        }
+        let q = "CREATE (a:User {user_id: 1})-[:FOLLOWS]->(b:User {user_id: 2})";
+        assert!(
+            matches!(planned(q, &schema), Err(WritePlanError::Unsupported(_))),
+            "{q}"
+        );
     }
 }
