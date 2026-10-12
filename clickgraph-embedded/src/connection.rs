@@ -1298,15 +1298,12 @@ impl<'db> Connection<'db> {
     /// Plan, render, and execute a Cypher write query (CREATE / SET /
     /// DELETE / REMOVE). Returns Neo4j-compatible counters as a single-row
     /// `QueryResult` per Decision 0.8 of the embedded-writes design — or,
-    /// when the statement also carries a RETURN clause (Phase 5d), the
-    /// row payload from re-running the read pipeline against the modified
-    /// state with the write counters attached via `QueryResult::get_write_counters()`.
+    /// when the statement also carries a RETURN clause, its rows (the
+    /// write planner's read, run before the writes after a DELETE and after
+    /// them otherwise: `bound_plan::write`) with the write counters attached
+    /// via `QueryResult::get_write_counters()`. What the write planner does
+    /// not plan is an error ([`write_not_supported`]).
     async fn handle_write_async(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
-        use clickgraph::clickhouse_query_generator::cypher_to_sql_read_only;
-        use clickgraph::open_cypher_parser::ast::CypherStatement;
-        use clickgraph::query_planner::logical_plan::LogicalPlan;
-        use clickgraph::query_planner::write_guard::ensure_write_target_writable;
-        use clickgraph::render_plan::write_plan_builder::build_write_plan;
         use clickgraph::server::query_context::{
             set_current_schema, with_query_context, QueryContext,
         };
@@ -1333,103 +1330,23 @@ impl<'db> Connection<'db> {
                 )));
             }
 
-            // SET / REMOVE / DELETE after a read part: the bound plan's write
-            // planner (S13). CREATE and an update followed by RETURN take the
-            // legacy planner below until it plans them.
-            let bound = match clickgraph::bound_plan::write::plan_write(&cleaned, &schema) {
-                Ok(plan) => Ok(plan),
+            // The bound plan's write planner (S13): what it does not plan is
+            // not supported (S14b; the legacy write planner is gone).
+            let planned = match clickgraph::bound_plan::write::plan_write(&cleaned, &schema) {
+                Ok(plan) => plan,
                 Err(clickgraph::bound_plan::write::WritePlanError::Rejected(e)) => {
                     return Err(EmbeddedError::Query(format!("Write rejected: {e}")));
                 }
-                Err(clickgraph::bound_plan::write::WritePlanError::Unsupported(why)) => Err(why),
-            };
-            // A RETURN after the writes: the bound plan's re-read (S13c), or
-            // the legacy planner's (Phase 5d).
-            let mut bound_return: Option<String> = None;
-            let mut return_before = false;
-            let (write_plan, has_return) = match bound {
-                Ok(planned) => {
-                    let has_return = planned.ret.is_some();
-                    bound_return = planned.ret;
-                    return_before = planned.ret_before;
-                    (planned.plan, has_return)
-                }
-                Err(not_bound) => {
-                    // Parse, plan, run the regular analyzer/optimizer
-                    // pipeline so any read pipeline below the write variant
-                    // is fully resolved before we render.
-                    let (_remaining, stmt) =
-                        clickgraph::open_cypher_parser::parse_cypher_statement(&cleaned)
-                            .map_err(|e| {
-                                EmbeddedError::Query(format!(
-                                    "Parse error: {e:?} (not planned on the bound plan: {not_bound})"
-                                ))
-                            })?;
-                    // Whether the statement carries a RETURN clause, captured
-                    // before `stmt` moves into the planner: write+RETURN
-                    // routes through the Phase 5d branch below.
-                    let has_return = matches!(
-                        &stmt,
-                        CypherStatement::Query { query, .. } if query.return_clause.is_some()
-                    );
-                    let (logical_plan, _plan_ctx) =
-                        clickgraph::query_planner::evaluate_read_statement(
-                            stmt, &schema, None, None, None,
-                        )
-                        .map_err(|e| EmbeddedError::Query(format!("Plan error: {}", e)))?;
-
-                    // Decision 0.1 / 0.3 / 0.6 admission check.
-                    ensure_write_target_writable(&logical_plan, &schema, executor_kind)
-                        .map_err(|e| EmbeddedError::Query(format!("Write rejected: {}", e)))?;
-
-                    // Walk past read-only wrappers (Projection / OrderBy / Skip /
-                    // Limit) to find the write subplan. write+RETURN puts a
-                    // Projection above the write; pure-write statements have the
-                    // write at the root. The subplan retains its full read input
-                    // (the MATCH/WHERE/etc. that bound the variables we mutate).
-                    let write_subplan = find_write_subplan(&logical_plan).ok_or_else(|| {
-                        EmbeddedError::Query(
-                            "Cypher write clause is not supported in this combination yet \
-                     (e.g. write clauses inside subqueries). Use a separate \
-                     write statement followed by a MATCH for now."
-                                .to_string(),
-                        )
-                    })?;
-
-                    let write_plan = build_write_plan(write_subplan, &schema)
-                        .map_err(|e| EmbeddedError::Query(format!("Write render error: {}", e)))?
-                        .ok_or_else(|| {
-                            EmbeddedError::Query(
-                                "Internal error: write subplan resolved but `build_write_plan` \
-                         returned None. This is a planner/rendering bug; please report."
-                                    .to_string(),
-                            )
-                        })?;
-
-                    // Phase 5d v1 supports DELETE / SET / REMOVE + RETURN by
-                    // executing the write, then re-running the read pipeline with
-                    // the write clauses stripped. CREATE + RETURN is *not*
-                    // supported by that path: the read pipeline can't see freshly
-                    // inserted rows by alias (the alias was never bound by a
-                    // MATCH and the inserted row has no MATCH-able identity yet),
-                    // so referencing the create-bound alias from RETURN would
-                    // fail with "undefined variable" *after* the INSERT has
-                    // already executed. Rejecting up-front keeps the database
-                    // unchanged on failure and surfaces a clear, deterministic
-                    // error rather than a partially-applied write. Pinned by
-                    // `cypher_create_with_return_rejected_before_insert` below.
-                    if has_return && matches!(write_subplan, LogicalPlan::Create(_)) {
-                        return Err(EmbeddedError::Query(
-                            "CREATE … RETURN is not supported in this build of ClickGraph yet. \
-                     The write would execute but the RETURN cannot reference the \
-                     newly created node by alias from the read pipeline. \
-                     Run CREATE as a separate statement, then MATCH … RETURN."
-                                .to_string(),
-                        ));
-                    }
-                    (write_plan, has_return)
+                Err(clickgraph::bound_plan::write::WritePlanError::Unsupported(why)) => {
+                    return Err(EmbeddedError::Query(write_not_supported(&why)));
                 }
             };
+            // A RETURN after the writes: read before them (after a DELETE)
+            // or after (S13c / S13d).
+            let has_return = planned.ret.is_some();
+            let bound_return = planned.ret;
+            let return_before = planned.ret_before;
+            let write_plan = planned.plan;
             let compile_time_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
 
             // Resolve counters via `count()` probes against the same
@@ -1477,16 +1394,13 @@ impl<'db> Connection<'db> {
                 ));
             }
 
-            // Phase 5d: write+RETURN. Render the Cypher through the
-            // read-only pipeline (which clears CREATE / SET / DELETE /
-            // REMOVE on the AST internally so the planner re-derives just
-            // the read shape), execute it against the now-modified state,
-            // and attach the write counters via the side-channel.
+            // A write with a RETURN: its rows (read before the writes, or
+            // now), with the write counters attached via the side-channel.
             let read_compile_start = Instant::now();
-            let read_sql = match bound_return {
-                Some(sql) => sql,
-                None => cypher_to_sql_read_only(&cypher, &schema, DEFAULT_MAX_CTE_DEPTH)
-                    .map_err(EmbeddedError::Query)?,
+            let Some(read_sql) = bound_return else {
+                return Err(EmbeddedError::Query(
+                    "Internal error: a write with a RETURN planned no read".to_string(),
+                ));
             };
             let read_compile_ms = read_compile_start.elapsed().as_secs_f64() * 1000.0;
 
@@ -1796,39 +1710,6 @@ async fn execute_write(
     Ok(c)
 }
 
-/// Walk past read-only wrappers (Projection / OrderBy / Skip / Limit) to
-/// find the topmost write subplan inside `plan`. Returns `None` if the
-/// plan tree contains no write node, or if a write is buried under a
-/// shape we don't yet descend through (UNION, CartesianProduct, etc.).
-///
-/// This lets `handle_write_async` peel off the RETURN/ORDER BY/SKIP/LIMIT
-/// chain that sits above a write in `MATCH … DELETE … RETURN …` shapes
-/// without coupling that knowledge to the write_plan_builder, which only
-/// matches root-level write nodes.
-fn find_write_subplan(
-    plan: &clickgraph::query_planner::logical_plan::LogicalPlan,
-) -> Option<&clickgraph::query_planner::logical_plan::LogicalPlan> {
-    use clickgraph::query_planner::logical_plan::LogicalPlan;
-    match plan {
-        LogicalPlan::Create(_)
-        | LogicalPlan::SetProperties(_)
-        | LogicalPlan::Delete(_)
-        | LogicalPlan::Remove(_) => Some(plan),
-        LogicalPlan::Projection(p) => find_write_subplan(&p.input),
-        LogicalPlan::OrderBy(o) => find_write_subplan(&o.input),
-        LogicalPlan::Skip(s) => find_write_subplan(&s.input),
-        LogicalPlan::Limit(l) => find_write_subplan(&l.input),
-        LogicalPlan::Filter(f) => find_write_subplan(&f.input),
-        LogicalPlan::WithClause(w) => find_write_subplan(&w.input),
-        LogicalPlan::GroupBy(g) => find_write_subplan(&g.input),
-        // The graph-join inference pass wraps the entire planned tree in a
-        // `GraphJoins` node even when the join list is empty (it carries
-        // anchor/correlation metadata). Walk through it to reach a write.
-        LogicalPlan::GraphJoins(gj) => find_write_subplan(&gj.input),
-        _ => None,
-    }
-}
-
 /// Counters surfaced as `nodes_created` / `properties_set` /
 /// `nodes_deleted` / `relationships_deleted` on the write `QueryResult`.
 /// `INSERT` counts come straight from the rendered op (rows are exact);
@@ -1888,6 +1769,21 @@ async fn run_count_probe(
             "count probe `{sql}` returned unexpected `n` type: {other:?}"
         ))),
     }
+}
+
+/// The error of a write statement the write planner does not plan: the
+/// construct, and what to use instead where there is something.
+fn write_not_supported(why: &str) -> String {
+    let what = why
+        .strip_prefix("not supported by the bound plan yet: ")
+        .unwrap_or(why);
+    let instead = match what {
+        "RETURN after a CREATE" => " (run the CREATE, then MATCH … RETURN)",
+        "CREATE of a relationship" => " (use `Connection::create_edge`)",
+        "DELETE of a relationship" => " (use `Connection::delete_edges`)",
+        _ => "",
+    };
+    format!("Not supported: {what}{instead}")
 }
 
 #[cfg(test)]
@@ -3086,7 +2982,7 @@ graph_schema:
             .expect_err("CREATE … RETURN must surface a write-pipeline error");
         let msg = err.to_string();
         assert!(
-            msg.contains("not supported") && msg.to_lowercase().contains("create"),
+            msg.to_lowercase().contains("not supported") && msg.to_lowercase().contains("create"),
             "expected write-pipeline rejection naming CREATE, got: {}",
             msg
         );
@@ -3097,5 +2993,37 @@ graph_schema:
             "CREATE … RETURN rejection must not emit any INSERT, got: {:?}",
             *sqls
         );
+    }
+
+    /// What the write planner does not plan is an error naming it (and
+    /// what to use instead), before anything runs: the legacy write
+    /// planner is gone (P-4c S14b).
+    #[test]
+    fn unplanned_writes_are_not_supported() {
+        let (db, captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        for (q, message) in [
+            (
+                "CREATE (a:Person {person_id: 'p3'}) RETURN a",
+                "Not supported: RETURN after a CREATE (run the CREATE, then MATCH … RETURN)",
+            ),
+            (
+                "MATCH (a:Person), (b:Person) CREATE (a)-[:KNOWS]->(b)",
+                "Not supported: CREATE of a relationship (use `Connection::create_edge`)",
+            ),
+            (
+                "MATCH (a:Person)-[r:KNOWS]->(b) DELETE r",
+                "Not supported: DELETE of a relationship (use `Connection::delete_edges`)",
+            ),
+            (
+                "CREATE (a:Person {person_id: 'p3'}) WITH a RETURN a.name",
+                "Not supported: a reading clause after an updating clause",
+            ),
+        ] {
+            let err = conn.query(q).expect_err(q).to_string();
+            assert!(err.contains(message), "{q}: {err}");
+        }
+        let sqls = captured.lock().unwrap();
+        assert!(sqls.is_empty(), "nothing runs: {:?}", *sqls);
     }
 }
