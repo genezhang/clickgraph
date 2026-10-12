@@ -50,7 +50,9 @@ use crate::open_cypher_parser::ast::{
     RelationshipPattern, UnionType,
 };
 use crate::open_cypher_parser::clause_list::{Clause, ClauseQuery, ClauseStatement};
-use crate::query_planner::logical_expr::{LogicalExpr, TableAlias};
+use crate::query_planner::logical_expr::{
+    LogicalExpr, Operator as LogicalOperator, OperatorApplication, ScalarFnCall, TableAlias,
+};
 
 use super::expr::{
     bind_expr, contains_aggregate, has_subquery, referenced_names, rename_refs, replace_subtrees,
@@ -600,6 +602,8 @@ impl Binder {
         let mut pb = PatternBuilder {
             input_scope: &scope,
             clause_vars: HashMap::new(),
+            value_nodes: HashMap::new(),
+            ties: Vec::new(),
             anon_nodes: HashMap::new(),
             introduces: Vec::new(),
             optional,
@@ -626,9 +630,28 @@ impl Binder {
         }
         // Label inference over the whole clause.
         self.infer_labels(&mut bound_parts, &pb.introduces);
-        let predicate = where_.map(|w| self.expr(w, &[&clause_scope])).transpose()?;
+        let mut predicate = where_.map(|w| self.expr(w, &[&clause_scope])).transpose()?;
         if let Some(p) = &predicate {
             no_aggregate(p, AGGREGATE_MISPLACED)?;
+        }
+        // A value used as a node is the clause's node there: the node it
+        // holds (`expr::NODE_TIE`; a value that is no node is Neo4j's type
+        // error, not lowered).
+        for (node, value) in &pb.ties {
+            let tie = LogicalExpr::ScalarFnCall(ScalarFnCall {
+                name: super::expr::NODE_TIE.to_string(),
+                args: vec![
+                    LogicalExpr::TableAlias(TableAlias(node.name())),
+                    LogicalExpr::TableAlias(TableAlias(value.name())),
+                ],
+            });
+            predicate = Some(match predicate {
+                Some(p) => LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: LogicalOperator::And,
+                    operands: vec![p, tie],
+                }),
+                None => tie,
+            });
         }
         let pattern = BoundPattern { parts: bound_parts };
         Ok((
@@ -1148,6 +1171,11 @@ struct PatternBuilder<'s> {
     input_scope: &'s Scope,
     /// Named variables introduced by this clause so far.
     clause_vars: HashMap<String, VarId>,
+    /// A value-typed variable used as a node (an UNWIND element of a list
+    /// of nodes): the clause's node there, by the variable's name, and the
+    /// value it is (`ties`: node, value).
+    value_nodes: HashMap<String, VarId>,
+    ties: Vec<(VarId, VarId)>,
     /// Anonymous nodes, by their (shared) AST node: consecutive steps of a
     /// path share the node between them.
     anon_nodes: HashMap<NodeKey, VarId>,
@@ -1458,6 +1486,16 @@ impl<'s> PatternBuilder<'s> {
             }
             Ok(())
         };
+        if let Some(v) = self.value_nodes.get(name).copied() {
+            if used_as != "node" {
+                return Err(BindError::TypeMismatch {
+                    name: name.to_string(),
+                    bound: "node",
+                    used: used_as,
+                });
+            }
+            return Ok((v, false));
+        }
         if let Some(v) = self.clause_vars.get(name).copied() {
             check(b, v)?;
             if used_as == "relationship" {
@@ -1470,6 +1508,24 @@ impl<'s> PatternBuilder<'s> {
             return Ok((v, false));
         }
         if let Some(v) = self.input_scope.lookup(name) {
+            // A value (an UNWIND element of a list of nodes) used as a node:
+            // a node of the clause, tied to it (`bind_match`). Not a name of
+            // the clause's scope: after an OPTIONAL MATCH the name is still
+            // the value, which the node there may not be.
+            if matches!(b.binding(v).kind, BindingKind::Value) && used_as == "node" {
+                let node = b.new_binding(
+                    None,
+                    new_kind(),
+                    self.optional,
+                    BindingSource::Pattern {
+                        clause: self.clause,
+                    },
+                );
+                self.introduces.push(node);
+                self.value_nodes.insert(name.to_string(), node);
+                self.ties.push((node, v));
+                return Ok((node, false));
+            }
             check(b, v)?;
             return Ok((v, true));
         }

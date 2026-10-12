@@ -4448,7 +4448,34 @@ slice that will handle it.
         labels; `CREATE (n:Message)` now says Message is a union label.
         Not yet: `db.schema.nodeTypeProperties`, `apoc.meta.schema` and the
         Bolt schema visualization list no union label.
-    - [ ] **S11o3…: the 11 not lowered**, IC 1's grouping key, BI 17's time.
+    - [x] **S11o3: a value used as a node.** `WITH collect(DISTINCT f) AS fs
+      UNWIND fs AS f MATCH (f)<-[:HAS_CREATOR]-(m)` (IC 6, IC 9, BI 8, BI 13):
+      the binder makes a value-typed variable in a node position the
+      clause's node there, anonymous, tied to the value by identity
+      (`PatternBuilder::ties`, ANDed into the clause's WHERE: decided
+      inside an OPTIONAL MATCH), one node for every occurrence of the name
+      in the clause; the name stays the value's (after an OPTIONAL MATCH
+      the node there may be NULL where the value is not). The lowering
+      compares a node with a list element's identity already. A value that
+      is no node is not lowered (Neo4j: a type error). A relationship stays
+      unsupported.
+      - On the SF1 `ldbc` database: IC 9 equal to the legacy pipeline; IC 6
+        equal to a hand-written query over the tables (the legacy pipeline's
+        counts were a cross product, ten million times too many); BI 8
+        answers where the legacy SQL fails (Code 47). BI 13 now stops at a
+        node as a value (in a list / `collect()` / CASE).
+      - Adversarial review (Neo4j oracle and ClickHouse: duplicates, NULLs,
+        both ends, cycles, EXISTS, pattern comprehensions, VLP ends,
+        OPTIONAL MATCH, label narrowing over overlapping ids: as Neo4j).
+        Fixed, silent where Neo4j raises a type error: the name used as a
+        relationship in the same clause (`(x)-[x]->(y)`) took the node
+        (now Neo4j's type mismatch), and a relationship value used as a node
+        matched nothing; the tie is `expr::NODE_TIE(node, value)`, lowered
+        only for a value known to hold a node.
+    - [ ] **S11o4…: the 7 not lowered** (a node as an operand or a value,
+      `head()` of a map, a subquery in a list comprehension, a path in other
+      positions, a property of a value, the Browser's `id()`), IC 1's
+      grouping key, BI 17's time.
 - [ ] **S12: Databricks coverage.** The bound plan lowers on Databricks what
   it lowers on ClickHouse, so the legacy pipeline can go on every dialect.
   Each `FunctionMapper` spelling that is `None` on Databricks (`unwind`,
