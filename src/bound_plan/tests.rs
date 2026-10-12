@@ -522,7 +522,10 @@ fn value_variables_used_as_graph_elements_fall_back() {
         let BoundOp::Project { input, .. } = &s.plan else {
             panic!("{q}: {:?}", s.plan)
         };
-        let BoundOp::Match { predicate: Some(_), .. } = &**input else {
+        let BoundOp::Match {
+            predicate: Some(_), ..
+        } = &**input
+        else {
             panic!("{q}: no tie: {input:?}")
         };
     }

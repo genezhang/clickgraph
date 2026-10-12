@@ -573,6 +573,11 @@ fn rename_op(
 /// binding `name` (generated name): `name.p`, `labels(name)`,
 /// `properties(name)`, `keys(name)`, `type(name)` — not its identity
 /// (`id`, `count`, `IS NULL`, the bare variable)?
+/// The tie of a value used as a node to the clause's node there
+/// (`binder::PatternBuilder::ties`): `NODE_TIE(node, value)`, the node's
+/// identity equal to the node the value holds.
+pub(crate) const NODE_TIE: &str = "__cg_node_tie";
+
 pub(crate) fn reads_element(expr: &LogicalExpr, name: &str) -> bool {
     let is_name =
         |e: &LogicalExpr| matches!(e, LogicalExpr::TableAlias(TableAlias(n)) if n == name);

@@ -6319,15 +6319,25 @@ fn a_value_used_as_a_node() {
             "LEFT JOIN optional_o4",
         ],
     );
-    // A value that is no node: not lowered (Neo4j: a type error).
-    let err = translate_bound_plan(
-        "UNWIND [1, 2] AS x MATCH (x)-[:FOLLOWS]->(b:User) RETURN count(*) AS n",
-        &social(),
-        &ReadOptions::default(),
-    )
-    .unwrap_err();
-    assert!(
-        err.contains("a node or relationship as an operand"),
-        "{err}"
-    );
+    // A value that is no node (a number, a relationship): not lowered
+    // (Neo4j: a type error); the name as a relationship too.
+    for (q, why) in [
+        (
+            "UNWIND [1, 2] AS x MATCH (x)-[:FOLLOWS]->(b:User) RETURN count(*) AS n",
+            "a value not known to be a node used as a node",
+        ),
+        (
+            "MATCH (a:User)-[r:FOLLOWS]->() WITH collect(r) AS l UNWIND l AS x \
+             MATCH (x)-[:FOLLOWS]->(y) RETURN count(*) AS n",
+            "a value not known to be a node used as a node",
+        ),
+        (
+            "MATCH (a:User) WITH collect(a) AS l UNWIND l AS x MATCH (x)-[x]->(y) \
+             RETURN count(*) AS n",
+            "is a node, used as a relationship",
+        ),
+    ] {
+        let err = translate_bound_plan(q, &social(), &ReadOptions::default()).unwrap_err();
+        assert!(err.contains(why), "{q}: {err}");
+    }
 }

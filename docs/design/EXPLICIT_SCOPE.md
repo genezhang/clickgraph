@@ -4464,6 +4464,14 @@ slice that will handle it.
         counts were a cross product, ten million times too many); BI 8
         answers where the legacy SQL fails (Code 47). BI 13 now stops at a
         node as a value (in a list / `collect()` / CASE).
+      - Adversarial review (Neo4j oracle and ClickHouse: duplicates, NULLs,
+        both ends, cycles, EXISTS, pattern comprehensions, VLP ends,
+        OPTIONAL MATCH, label narrowing over overlapping ids: as Neo4j).
+        Fixed, silent where Neo4j raises a type error: the name used as a
+        relationship in the same clause (`(x)-[x]->(y)`) took the node
+        (now Neo4j's type mismatch), and a relationship value used as a node
+        matched nothing; the tie is `expr::NODE_TIE(node, value)`, lowered
+        only for a value known to hold a node.
     - [ ] **S11o4…: the 7 not lowered** (a node as an operand or a value,
       `head()` of a map, a subquery in a list comprehension, a path in other
       positions, a property of a value, the Browser's `id()`), IC 1's

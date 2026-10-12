@@ -1274,6 +1274,23 @@ impl Lowerer<'_> {
     }
 
     fn scalar_fn(&self, f: &LScalar, items: &Items) -> Result<RenderExpr, LowerError> {
+        // A value used as a node: of a node, its identity; of anything else,
+        // Neo4j's type error (a relationship is no node).
+        if f.name == crate::bound_plan::expr::NODE_TIE {
+            let [_, value] = f.args.as_slice() else {
+                return unsupported("internal: a node tie of other than two operands");
+            };
+            if !matches!(self.kind(value), Kind::Element(Elem::Node(_))) {
+                return unsupported("a value not known to be a node used as a node");
+            }
+            return self.operator(
+                &LOp {
+                    operator: lx::Operator::Equal,
+                    operands: f.args.clone(),
+                },
+                items,
+            );
+        }
         if let Some((how, x, body, list)) = comprehension(f) {
             return self.comprehension(how, x, body, list, items);
         }

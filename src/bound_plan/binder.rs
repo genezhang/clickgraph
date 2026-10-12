@@ -51,7 +51,7 @@ use crate::open_cypher_parser::ast::{
 };
 use crate::open_cypher_parser::clause_list::{Clause, ClauseQuery, ClauseStatement};
 use crate::query_planner::logical_expr::{
-    LogicalExpr, Operator as LogicalOperator, OperatorApplication, TableAlias,
+    LogicalExpr, Operator as LogicalOperator, OperatorApplication, ScalarFnCall, TableAlias,
 };
 
 use super::expr::{
@@ -634,12 +634,13 @@ impl Binder {
         if let Some(p) = &predicate {
             no_aggregate(p, AGGREGATE_MISPLACED)?;
         }
-        // A value used as a node is the clause's node there (Neo4j: the
-        // node it holds; a value that is no node matches nothing).
+        // A value used as a node is the clause's node there: the node it
+        // holds (`expr::NODE_TIE`; a value that is no node is Neo4j's type
+        // error, not lowered).
         for (node, value) in &pb.ties {
-            let tie = LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                operator: LogicalOperator::Equal,
-                operands: vec![
+            let tie = LogicalExpr::ScalarFnCall(ScalarFnCall {
+                name: super::expr::NODE_TIE.to_string(),
+                args: vec![
                     LogicalExpr::TableAlias(TableAlias(node.name())),
                     LogicalExpr::TableAlias(TableAlias(value.name())),
                 ],
@@ -1486,6 +1487,13 @@ impl<'s> PatternBuilder<'s> {
             Ok(())
         };
         if let Some(v) = self.value_nodes.get(name).copied() {
+            if used_as != "node" {
+                return Err(BindError::TypeMismatch {
+                    name: name.to_string(),
+                    bound: "node",
+                    used: used_as,
+                });
+            }
             return Ok((v, false));
         }
         if let Some(v) = self.clause_vars.get(name).copied() {
