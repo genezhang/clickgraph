@@ -242,6 +242,12 @@ fn translate_in_context(
                 // Text the clause-list parser rejects is not Cypher (a query
                 // without RETURN, which the legacy pipeline answered with the
                 // matched nodes; user 2026-10-11: as Neo4j, an error).
+                // A CALL or updating query the clause-list parser does not
+                // read (`CALL p() YIELD x WHERE …`) is not a read: its entry
+                // point handles it, as `NotARead`.
+                Err(BoundPlanError::Unparsed(reason)) if !is_read(&statement) => {
+                    log::debug!("bound plan: legacy pipeline (not a read: {reason})")
+                }
                 Err(BoundPlanError::Unparsed(reason)) => {
                     return Err(TranslateError::Invalid(reason));
                 }
@@ -299,6 +305,25 @@ fn translate_in_context(
         },
         route: Route::Legacy,
     })
+}
+
+/// Whether the legacy parse of a query is a read: no CALL and no updating
+/// clause in any UNION arm.
+fn is_read(statement: &CypherStatement<'_>) -> bool {
+    let read = |q: &crate::open_cypher_parser::ast::OpenCypherQueryAst<'_>| {
+        q.call_clause.is_none()
+            && q.create_clause.is_none()
+            && q.set_clause.is_none()
+            && q.remove_clause.is_none()
+            && q.delete_clause.is_none()
+    };
+    match statement {
+        CypherStatement::Query {
+            query,
+            union_clauses,
+        } => read(query) && union_clauses.iter().all(|u| read(&u.query)),
+        CypherStatement::ProcedureCall(_) | CypherStatement::CopyTo(_) => false,
+    }
 }
 
 /// Translate read-query text that only the clause-list parser reads (P-4c

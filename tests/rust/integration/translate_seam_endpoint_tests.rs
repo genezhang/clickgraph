@@ -309,3 +309,19 @@ async fn a_query_without_return_is_a_syntax_error() {
         "{lib:?}"
     );
 }
+
+/// A CALL the clause-list parser does not read (`YIELD … WHERE`) is not a
+/// syntax error: it goes to the procedure route as before (S11j review).
+#[test]
+fn a_call_with_yield_where_is_not_a_syntax_error() {
+    let schema = GraphSchemaConfig::from_yaml_file("schemas/test/social_integration.yaml")
+        .unwrap()
+        .to_graph_schema()
+        .unwrap();
+    let q = "CALL db.labels() YIELD label WHERE label = 'User' RETURN label";
+    let lib = clickgraph::clickhouse_query_generator::cypher_to_sql(q, &schema, 100);
+    assert!(
+        !matches!(&lib, Err(e) if e.contains("Invalid syntax")),
+        "{lib:?}"
+    );
+}
