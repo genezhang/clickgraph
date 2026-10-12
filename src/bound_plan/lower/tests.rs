@@ -6451,5 +6451,20 @@ fn a_collect_of_lists_or_null_and_a_list_grouping_key() {
     let got = squash(&sql(
         "MATCH (u:User) WITH [u.name, u.age] AS l, count(*) AS c RETURN l, c",
     ));
-    assert!(got.contains("GROUP BY tuple(multiIf(dynamicType(CAST("), "{got}");
+    assert!(
+        got.contains("GROUP BY tuple(multiIf(dynamicType(CAST("),
+        "{got}"
+    );
+}
+
+/// S11o6: `ORDER BY id(o)` of a node of several labels (the Neo4j
+/// Browser's node expand) sorts by its label, then its key: its identity
+/// (two labels' keys may be equal: no one number).
+#[test]
+fn order_by_id_of_a_node_of_several_labels() {
+    has(
+        "MATCH (a:User) WHERE a.user_id = 1 WITH a, size([(a)--() | 1]) AS allNeighboursCount \
+         MATCH path = (a)--(o) RETURN path, allNeighboursCount ORDER BY id(o) LIMIT 100",
+        &["ORDER BY v7.__cg_label ASC, v7.__cg_id_0 ASC"],
+    );
 }

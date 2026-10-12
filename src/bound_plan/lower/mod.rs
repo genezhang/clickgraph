@@ -5352,24 +5352,42 @@ impl<'s> Lowerer<'s> {
                 return unsupported("ORDER BY a relationship's id()");
             }
         }
-        let keys = keys
-            .iter()
-            .map(|k| {
-                let e = match self.node_id_item(&k.expr) {
-                    // As an `id(n)` item: by the node's key (S11e).
-                    Some((v, _)) => self.identity_value(v)?,
-                    None => self.expr(&k.expr, items)?,
-                };
-                Ok(OrderByItem {
-                    expression: e,
-                    order: if k.descending {
-                        OrderByOrder::Desc
-                    } else {
-                        OrderByOrder::Asc
-                    },
-                })
-            })
-            .collect::<Result<Vec<_>, LowerError>>()?;
+        let mut sorted = Vec::new();
+        for k in keys {
+            let order = if k.descending {
+                OrderByOrder::Desc
+            } else {
+                OrderByOrder::Asc
+            };
+            // `id(n)` of a node of several labels (the Neo4j Browser's node
+            // expand: `ORDER BY id(o)`): by its label, then its key, as its
+            // identity is (no one number: keys of two labels may be equal).
+            let labeled = match &k.expr {
+                LogicalExpr::ScalarFnCall(f) if f.name.eq_ignore_ascii_case("id") => self
+                    .entity_arg(&f.args)
+                    .filter(|v| matches!(self.scans.get(v), Some(Scan::Labels { .. }))),
+                _ => None,
+            };
+            if let Some(v) = labeled {
+                for e in self.identity(v)?.unwrap_or_default() {
+                    sorted.push(OrderByItem {
+                        expression: e,
+                        order: order.clone(),
+                    });
+                }
+                continue;
+            }
+            let e = match self.node_id_item(&k.expr) {
+                // As an `id(n)` item: by the node's key (S11e).
+                Some((v, _)) => self.identity_value(v)?,
+                None => self.expr(&k.expr, items)?,
+            };
+            sorted.push(OrderByItem {
+                expression: e,
+                order,
+            });
+        }
+        let keys = sorted;
         // A constant key orders nothing, and ClickHouse would read an
         // integer one as a column position (`ORDER BY 1`).
         Ok(keys

@@ -4536,11 +4536,13 @@ slice that will handle it.
       (#1454). On the SF1 `ldbc` database IC 1 equals the legacy pipeline
       but for the legacy pipeline's errors: `[[]]` for no university, a
       year as a string, a friend at distance 3 (2, by a hand-written
-      check).
-    - [ ] **S11o7…: the 4 not lowered** (a node as an operand or a value,
-      `head()` of a map, a subquery in a list comprehension, a path in other
-      positions, a property of a value, the Browser's `id()`), IC 1's
-      grouping key, BI 17's time.
+      check). Also the Neo4j Browser's node expand: `ORDER BY id(o)` of a
+      node of several labels sorts by its identity (label, then key: two
+      labels' keys may be equal, so no one number), as Bolt passes it on;
+      11 rows, the node's neighbours.
+    - [ ] **S11o7…: the 4 not lowered**: `head()` of a map of a node (IC 7),
+      a subquery in a list comprehension (IC 10), a path in other positions
+      (IC 13), a property of a value (BI 14); BI 17's time.
 - [ ] **S12: Databricks coverage.** The bound plan lowers on Databricks what
   it lowers on ClickHouse, so the legacy pipeline can go on every dialect.
   Each `FunctionMapper` spelling that is `None` on Databricks (`unwind`,
