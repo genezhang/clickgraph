@@ -657,9 +657,16 @@ pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<C
     let (start_key, end_key) = (call.node_key("start_node"), call.node_key("end_node"));
     let (rel_from, rel_to) = (call.rel_start_key("rel"), call.rel_end_key("rel"));
     let bfs = format!("vlp_{}_bfs", call.var);
-    let seed_where = conjunction(&call.start)
-        .map(|c| format!("\n    WHERE {c}"))
-        .unwrap_or_default();
+    // A row whose id is NULL is no node: none starts a search (Spark's
+    // `(a, b) NOT IN` of a row holding NULL rejects every pair, and the
+    // search would end at its first nodes).
+    let seed_where = format!(
+        "\n    WHERE {}",
+        std::iter::once(format!("{start_key} IS NOT NULL"))
+            .chain(conjunction(&call.start))
+            .collect::<Vec<_>>()
+            .join(" AND ")
+    );
     let seed_paths = if all {
         format!(", CAST(1 AS {count}) AS paths")
     } else if parents == Parents::Least {

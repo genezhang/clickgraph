@@ -1900,7 +1900,8 @@ fn a_shortest_path_is_a_breadth_first_search() {
         &[
             "WITH RECURSIVE vlp_v1_bfs AS ( SELECT DISTINCT start_node.user_id AS start_id, \
              start_node.user_id AS node, CAST(0 AS UInt32) AS depth, CAST(1 AS UInt8) AS new \
-             FROM test_integration.users_test AS start_node WHERE (start_node.user_id = 1) \
+             FROM test_integration.users_test AS start_node \
+             WHERE start_node.user_id IS NOT NULL AND (start_node.user_id = 1) \
              UNION ALL",
             "FROM vlp_v1_bfs AS f \
              JOIN test_integration.user_follows_test AS rel ON rel.follower_id = f.node \
@@ -1926,7 +1927,7 @@ fn a_shortest_path_is_a_breadth_first_search() {
     has(
         "MATCH p = shortestPath((a:User {user_id: 1})<-[:FOLLOWS*]-(b:User)) RETURN b.name AS n",
         &[
-            "WHERE (start_node.user_id = 1)",
+            "WHERE start_node.user_id IS NOT NULL AND (start_node.user_id = 1)",
             "ON rel.followed_id = f.node",
             "ON end_node.user_id = rel.follower_id",
             "JOIN test_integration.users_test AS v0 ON v1.start_id = v0.user_id",
@@ -2089,7 +2090,7 @@ fn a_shortest_path_starts_at_an_end_pinned_by_its_identity() {
         "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User {user_id: 5})) \
          WHERE a.city = 'Paris' RETURN count(*) AS c",
         &[
-            "WHERE (start_node.user_id = 5)",
+            "WHERE start_node.user_id IS NOT NULL AND (start_node.user_id = 5)",
             "ON rel.followed_id = f.node",
             "JOIN test_integration.users_test AS v2 ON v1.start_id = v2.user_id",
         ],
@@ -4436,6 +4437,12 @@ fn databricks_shortest_path_search() {
         "{got}"
     );
     assert!(!got.contains("HAVING"), "{got}");
+    // A NULL id starts no search: Spark's `(a, b) NOT IN` of a row holding
+    // NULL rejects every pair (review: 0 rows for 98).
+    assert!(
+        got.contains("WHERE start_node.user_id IS NOT NULL AND"),
+        "{got}"
+    );
     for q in [
         "MATCH p = allShortestPaths((a:User)-[:FOLLOWS*]->(b:User)) \
          WHERE a.user_id = 1 AND b.user_id = 9 RETURN count(p) AS n",

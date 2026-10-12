@@ -4575,6 +4575,16 @@ slice that will handle it.
       `nodes(p)` of a shortest path refused on Spark. Found:
       `RETURN p ORDER BY length(p)` is an internal error on both dialects
       (#1427, broadened).
+    - Adversarial review: fixed a node row with a NULL id emptying every
+      Spark search (it seeded `(NULL, NULL)`, and Spark's `(a, b) NOT IN` of
+      a row holding NULL rejects every pair: 0 rows for 98); a search now
+      starts only at non-NULL ids, on every dialect. Checked on a synthetic
+      graph of cycles, a diamond, self-loops and parallel edges (13 shapes)
+      and the polymorphic schema (12): every one equal. Limits: without the
+      early stop a Spark search explores all a first node reaches, and
+      Spark caps a recursive CTE at 100 levels and 1,000,000 rows
+      (`spark.sql.cteRecursionLevelLimit` / `cteRecursionRowLimit`): a
+      deep or wide graph fails there, loudly, where ClickHouse answers.
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 
