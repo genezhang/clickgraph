@@ -35,19 +35,24 @@ def norm(v):
     if isinstance(v, dict): return ("m", tuple(sorted((k, norm(x)) for k, x in v.items())))
     return ("?", repr(v))
 
-tables = json.load(open(os.path.join(HERE, "schema_tables.json")))
-have = {f"{t['db']}.{t['table']}" for t in json.load(open(os.path.join(HERE, "manifest.json")))}
-chq = {(j["schema"], j["name"]): j for j in map(json.loads, open(f"{S12}/clickhouse.jsonl"))}
+try:
+    tables = json.load(open(os.path.join(HERE, "schema_tables.json")))
+    have = {f"{t['db']}.{t['table']}" for t in json.load(open(os.path.join(HERE, "manifest.json")))}
+    chq = {(j["schema"], j["name"]): j for j in map(json.loads, open(f"{S12}/clickhouse.jsonl"))}
+    dbx = [json.loads(l) for l in open(f"{S12}/databricks.jsonl")]
+except (OSError, ValueError) as e:
+    sys.exit(f"diff.py: {e} (CG_SPARK_WORK holds schema_tables.json / manifest.json; "
+             "the SQL directory clickhouse.jsonl / databricks.jsonl)")
 verdicts = collections.Counter()
 out = open(f"{S12}/diff.jsonl", "w")
-for line in open(f"{S12}/databricks.jsonl"):
-    j = json.loads(line)
+for j in dbx:
     key = (j["schema"], j["name"])
     if only and only not in f"{key[0]}/{key[1]}": continue
     ts = tables.get(j["schema"])
     # The schema's tables the query reads must have been loaded.
     used = [t for t in (ts if isinstance(ts, list) else []) if re.search(r"\b" + re.escape(t) + r"\b", j["sql"])]
-    if not isinstance(ts, list) or not used or not all(t in have for t in used):
+    # (A query that reads no table, `UNWIND [1, 2]`, needs none.)
+    if not isinstance(ts, list) or not all(t in have for t in used):
         verdicts["NO_DATA"] += 1; continue
     c = chq.get(key)
     if c is None:
@@ -55,11 +60,17 @@ for line in open(f"{S12}/databricks.jsonl"):
     # A final LIMIT without a total order picks any rows: ClickHouse's rows
     # without it, Spark's must be as many of them.
     lim = re.search(r"\nLIMIT (\d+)\s*$", c["sql"])
-    limit = int(lim.group(1)) if lim and re.search(r"\nLIMIT \d+\s*$", j["sql"]) else None
+    ordered = bool(re.search(r"(?i)\bORDER\s+BY\b", j["cypher"]))
+    limit = (int(lim.group(1)) if lim and not ordered
+             and re.search(r"\nLIMIT \d+\s*$", j["sql"]) else None)
     a = ch(c["sql"][: lim.start()] if limit is not None else c["sql"]); b = sparkq.run(j["sql"])
     if b.get("error") == "TIMEOUT":
         sys.exit(f"Spark worker timed out on {key}: is it running? (worker.log)")
-    unordered_lists = bool(re.search(r"(?i)collect\s*\(", j["cypher"]))
+    # collect() of rows in no order: its list in any order. Not when an
+    # ORDER BY comes before it (an ordered collect).
+    first_collect = re.search(r"(?i)collect\s*\(", j["cypher"])
+    unordered_lists = bool(first_collect) and not re.search(
+        r"(?i)\bORDER\s+BY\b", j["cypher"][: first_collect.start()])
     if "error" in a and "error" in b: v = "BOTH_ERROR"
     elif "error" in a: v = "CH_ERROR"
     elif "error" in b: v = "SPARK_ERROR"
@@ -77,8 +88,20 @@ for line in open(f"{S12}/databricks.jsonl"):
             ca, cb = collections.Counter(ra), collections.Counter(rb)
             ok = len(rb) == min(limit, len(ra)) and all(ca[k] >= n for k, n in cb.items())
             v = "MATCH" if ok else "MISMATCH"
-        elif collections.Counter(ra) != collections.Counter(rb): v = "MISMATCH"
-        elif ra != rb and re.search(r"(?i)\bORDER\s+BY\b", j["cypher"]): v = "ORDER_DIFF"
+        elif collections.Counter(ra) != collections.Counter(rb):
+            v = "MISMATCH"
+            # ORDER BY … LIMIT: rows tied at the cut may differ. Spark's
+            # rows as many of ClickHouse's unlimited ones: TIES_LIMIT, to
+            # check by hand (the sort keys are not known here).
+            if ordered and lim and re.search(r"\nLIMIT \d+\s*$", j["sql"]):
+                full = ch(c["sql"][: lim.start()])
+                if "rows" in full:
+                    cf = collections.Counter(nrow(r) for r in full["rows"])
+                    if len(rb) == len(ra) and all(cf[k] >= n for k, n in collections.Counter(rb).items()):
+                        v = "TIES_LIMIT"
+        # Same rows, another order: ties under ORDER BY, or an ordering
+        # bug: the keys are not known here, so check these by hand.
+        elif ra != rb and ordered: v = "ORDER_DIFF"
         else: v = "MATCH"
     verdicts[v] += 1
     rec = {"key": f"{key[0]}/{key[1]}", "verdict": v, "cypher": j["cypher"]}

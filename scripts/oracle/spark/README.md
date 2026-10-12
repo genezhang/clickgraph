@@ -32,12 +32,14 @@ Ad hoc queries: write one Cypher query per line, then
 and run step 3 with `CENSUS_CORPUS=$CG_SPARK_WORK/adhoc.jsonl`.
 
 Verdicts:
-- `MATCH`: the same rows as a multiset. A final `LIMIT` without a total order checks that Spark's rows are as many of ClickHouse's unlimited rows. `collect()` lists compare as multisets.
-- `ORDER_DIFF`: the same rows in another order (ties under `ORDER BY`).
+- `MATCH`: the same rows as a multiset. A final `LIMIT` in a query without `ORDER BY` checks that Spark's rows are as many of ClickHouse's unlimited rows. `collect()` lists compare as multisets, unless an `ORDER BY` comes before the collect.
+- `TIES_LIMIT`: `ORDER BY … LIMIT` gave other rows, all among ClickHouse's unlimited rows and as many: rows tied at the cut. Check by hand.
+- `ORDER_DIFF`: the same rows in another order. The sort keys are not known to the script, so check by hand that these are ties.
+- Booleans compare as numbers: ClickHouse's `UInt8` booleans and Spark's `BOOLEAN` are the same values.
 - `MISMATCH`, `SPARK_ERROR`, `CH_ERROR`, `BOTH_ERROR`.
 - `NO_DATA`: a table the query reads is not in ClickHouse.
 
 Data mapping:
-- ClickHouse unsigned integers load as the next wider signed type.
+- ClickHouse integers load as Spark integers (`UInt8` → SMALLINT, `UInt16` → INT, `UInt32` / `UInt64` / `Int64` → BIGINT; the test data fits).
 - `is_*` / `has_*` UInt8 columns load as BOOLEAN, as a Databricks table would hold them.
 - Schemas whose properties are ClickHouse expressions (`property_expressions`) fail on Spark by design.

@@ -867,6 +867,7 @@ impl JoinBuilder for LogicalPlan {
                 array_joins.push(ArrayJoin {
                     expression: render_expr,
                     alias: u.alias.clone(),
+                    position: None,
                 });
                 // Recursively collect UNWIND nodes from input
                 let mut inner_joins = <LogicalPlan as JoinBuilder>::extract_array_join(&u.input)?;

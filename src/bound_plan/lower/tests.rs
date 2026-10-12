@@ -4239,16 +4239,15 @@ fn databricks_sql(q: &str, schema: &GraphSchema) -> Result<String, String> {
     })
 }
 
-/// S12a: Spark has no ARRAY JOIN: an UNWIND is a `LATERAL VIEW` (lists read
-/// in step zipped, positions counted by `transform`), from one row
+/// S12a: Spark has no ARRAY JOIN: an UNWIND is a `LATERAL VIEW`, its
+/// positions from `posexplode` (the list read once: review), from one row
 /// `(SELECT 1)`; a scalar is a list of itself or none.
 #[test]
 fn databricks_unwind_is_a_lateral_view() {
     let got = squash(&databricks_sql("UNWIND [1, 2] AS x RETURN x", &social()).unwrap());
     for part in [
         "FROM (SELECT 1) AS __cg_one",
-        "LATERAL VIEW inline(arrays_zip(",
-        "(__cg_x, __cg_i) -> __cg_i + 1))) AS __cg_element, __cg_position",
+        "LATERAL VIEW posexplode(array(1, 2)) AS __cg_position, __cg_element",
     ] {
         assert!(got.contains(part), "missing `{part}` in\n{got}");
     }
@@ -4275,6 +4274,28 @@ fn databricks_embedded_nodes() {
     assert!(got.contains("any_value("), "{got}");
     assert!(got.contains(", true)"), "{got}");
     assert!(got.contains("raise_error("), "{got}");
+}
+
+/// S12a review: Spark `sequence` is never empty (`sequence(1, 0)` is
+/// `[1, 0]`): `range` is empty when its step leads away from its end, each
+/// argument bound once;
+/// an empty `split` delimiter stays empty (characters, no trailing "").
+#[test]
+fn databricks_range_and_split() {
+    let got = databricks_sql("RETURN range(5, 1) AS r", &social()).unwrap();
+    assert!(
+        got.contains(
+            "element_at(transform(array(named_struct('s', 5, 'e', 1, 't', 1)), __cg_r -> \
+             CASE WHEN (__cg_r.t > 0 AND __cg_r.s > __cg_r.e) OR (__cg_r.t < 0 AND __cg_r.s < \
+             __cg_r.e) THEN array() ELSE sequence(__cg_r.s, __cg_r.e, __cg_r.t) END), 1)"
+        ),
+        "{got}"
+    );
+    let got = databricks_sql("RETURN split('abc', '') AS s", &social()).unwrap();
+    assert!(
+        got.contains("split('abc', CASE WHEN '' = '' THEN '' ELSE concat("),
+        "{got}"
+    );
 }
 
 /// S12a: `size()` of a list is the dialect's list size (Spark `length` is

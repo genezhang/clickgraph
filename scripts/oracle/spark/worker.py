@@ -69,7 +69,8 @@ while True:
             rows = [[conv(x) for x in r] for r in df.collect()]
             out = {"columns": df.columns, "rows": rows}
         except Exception as e:
-            out = {"error": str(e).splitlines()[0][:600] if str(e) else repr(e)}
+            text = str(e).strip()
+            out = {"error": (text.splitlines()[0][:600] if text else repr(e)[:600]) or "error"}
         tmp = p[:-4] + ".tmp"
         json.dump(out, open(tmp, "w"), default=str)
         os.rename(tmp, p[:-4] + ".out.json")

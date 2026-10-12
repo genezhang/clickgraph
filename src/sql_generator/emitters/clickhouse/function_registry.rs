@@ -372,7 +372,9 @@ lazy_static::lazy_static! {
         // dialect. Spark `split` reads arg 2 as a regex, whereas Cypher's
         // delimiter is literal (`split('a.b', '.')` is `['a', 'b']`, not four
         // empty strings): quoted as Java's `Pattern.quote` does, `\Q…\E`
-        // with each `\E` in it ended and re-opened (S12).
+        // with each `\E` in it ended and re-opened (S12). An empty delimiter
+        // stays empty: Spark splits it into characters, as Cypher does
+        // (`\Q\E` would add a trailing empty string).
         m.insert("split", FunctionMapping {
             neo4j_name: "split",
             clickhouse_name: "splitByChar",
@@ -386,8 +388,8 @@ lazy_static::lazy_static! {
                     vec![
                         args[0].clone(),
                         format!(
-                            r"concat('\\Q', replace({}, '\\E', '\\E\\\\E\\Q'), '\\E')",
-                            args[1]
+                            r"CASE WHEN {d} = '' THEN '' ELSE concat('\\Q', replace({d}, '\\E', '\\E\\\\E\\Q'), '\\E') END",
+                            d = args[1]
                         ),
                     ]
                 } else {
@@ -582,18 +584,33 @@ lazy_static::lazy_static! {
         //     wrong). The direction-mismatch cases (e.g. range(1,5,-1)) still
         //     yield [] because CH range() returns empty when start/end disagree
         //     with the step sign — the ±1 bump preserves that.
-        //   Spark has no `range`; `sequence(start, end [, step])` is inclusive in
-        //     BOTH directions -> use as-is.
+        //   Spark has no `range`; `sequence(start, end [, step])` is inclusive
+        //     but never empty (`sequence(1, 0)` is `[1, 0]`, a step away from
+        //     `end` fails): empty when the step leads away from `end`. Each
+        //     argument is bound once (a lambda over a one-element array), as
+        //     an argument read twice could differ (`rand()`) (S12).
         m.insert("range", FunctionMapping {
             neo4j_name: "range",
             clickhouse_name: "range",
-            databricks_name: Some("sequence"),
+            databricks_name: Some("element_at"),
             arg_transform: Some(|args| {
                 use crate::server::query_context::get_current_dialect;
                 use crate::sql_generator::SqlDialect;
-                // Spark sequence() is already inclusive — leave args untouched.
                 if matches!(get_current_dialect(), SqlDialect::Databricks) {
-                    return args.to_vec();
+                    let (start, end) = match args {
+                        [s, e, ..] => (s, e),
+                        _ => return args.to_vec(),
+                    };
+                    let step = args.get(2).map_or("1", String::as_str);
+                    return vec![
+                        format!(
+                            "transform(array(named_struct('s', {start}, 'e', {end}, 't', {step})), \
+                             __cg_r -> CASE WHEN (__cg_r.t > 0 AND __cg_r.s > __cg_r.e) OR \
+                             (__cg_r.t < 0 AND __cg_r.s < __cg_r.e) THEN array() \
+                             ELSE sequence(__cg_r.s, __cg_r.e, __cg_r.t) END)"
+                        ),
+                        "1".to_string(),
+                    ];
                 }
                 // ClickHouse range() is exclusive of `end`; make it inclusive by
                 // bumping the end bound (2nd arg) by one step's direction.

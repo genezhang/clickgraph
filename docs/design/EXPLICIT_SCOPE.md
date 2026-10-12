@@ -4387,10 +4387,11 @@ slice that will handle it.
   the differential over them matched every comparable query (763; 20 in
   another order under ties).
   - [x] **S12a: UNWIND and nodes embedded in edge tables.** Spark has no
-    ARRAY JOIN: an UNWIND is a `LATERAL VIEW explode`, lists read in step
-    `inline(arrays_zip(…))` (`FunctionMapper::array_join_clause`, which the
-    plain printer calls), positions counted by `transform`, rows numbered
-    over `ORDER BY 1` (Spark numbers ordered windows only), one row
+    ARRAY JOIN: an UNWIND is a `LATERAL VIEW explode`, with its positions
+    `posexplode` (`ArrayJoin::position`, `FunctionMapper::array_join_clause`,
+    which the plain printer calls: the list read once), lists read in step
+    zipped, rows numbered over `ORDER BY 1` (Spark numbers ordered windows
+    only: one partition, a cost on large unordered inputs), one row
     `(SELECT 1)`. A property several sources hold is their `coalesce`
     under a `typeof` guard that raises an error when the types differ
     beyond integer width and string representation (`one_type_guard`;
@@ -4398,9 +4399,14 @@ slice that will handle it.
     any of the rows' values is `any_value(…, true)` (`any_non_null`: CH
     `any` skips NULLs, Spark's needs it). Also: Spark `split` reads its
     delimiter as a regex (`split('a.b', '.')` gave four empty strings):
-    quoted as `Pattern.quote` does; `size()` of a list is
-    `FunctionMapper::list_size` (Spark `array_size`: `length` is of a
-    string only, `size(NULL)` is -1 unless ANSI).
+    quoted as `Pattern.quote` does (an empty one kept: characters); Spark
+    `sequence` is never empty: `range` is empty when its step leads away
+    from its end, each argument bound once; `size()` of a list expression
+    is `FunctionMapper::list_size` (Spark `array_size`: `length` is of a
+    string only, `size(NULL)` is -1 unless ANSI; a property holding an
+    array is not known as a list yet). A list of values of different types
+    (`[u.name, u.age]`) fails on Spark (one element type: VARIANT, with
+    graph values).
     - Acceptance: Databricks lowers 1289 (was 1135). Differential over
       every comparable query: 1062 equal, 20 in another order under ties;
       the rest are ClickHouse expressions in a schema's YAML
@@ -4410,6 +4416,19 @@ slice that will handle it.
       (#1415), Databricks ORDER BY an aggregate of an impossible pattern
       (#1416). 46 generated UNWIND / split / size shapes: every one both
       dialects lower equal.
+    - Adversarial review: fixed a list read twice for its positions
+      (`transform`: a `rand()` list gave a NULL element; now `posexplode`),
+      `split` with an empty delimiter (a trailing ""), `range` with a step
+      away from its end (Spark `sequence` never empty), the type guard's
+      regex escaping (and collated strings), and the harness: queries that
+      read no table compared, a LIMIT subset only without ORDER BY
+      (`TIES_LIMIT` with it), `collect()` lists sorted only before any ORDER
+      BY. Rerun over the corpus (literal queries now compared): 1128 equal,
+      43 in another order and 12 of other rows at a LIMIT, all ties; an
+      embedded node whose sources disagree on a property (zeek's IP port)
+      gives either engine's `any` pick. Filed: ClickHouse `split` with an
+      empty or multi-character delimiter (#1418), ClickHouse UNWIND gaps
+      (#1419).
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

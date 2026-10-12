@@ -6633,11 +6633,11 @@ fn plain_select_sql(mut plan: RenderPlan) -> String {
     // An UNWIND (`Lowerer::unwind`): ONE clause of its lists, read in step
     // (`FunctionMapper::array_join_clause`), after the joins.
     if !plan.array_join.0.is_empty() {
-        let lists: Vec<(String, String)> = plan
+        let lists: Vec<(String, String, Option<String>)> = plan
             .array_join
             .0
             .iter()
-            .map(|a| (a.expression.to_sql(), a.alias.clone()))
+            .map(|a| (a.expression.to_sql(), a.alias.clone(), a.position.clone()))
             .collect();
         sql.push_str(
             &crate::sql_generator::function_mapper::current_function_mapper()

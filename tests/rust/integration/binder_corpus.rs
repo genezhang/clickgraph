@@ -183,7 +183,7 @@ fn census(dialect: SqlDialect) -> usize {
     if let Ok(dir) = std::env::var("CENSUS_SQL_OUT") {
         let lines: Vec<String> = sqls.iter().map(|v| v.to_string()).collect();
         std::fs::write(
-            format!("{dir}/{dialect:?}.jsonl").to_lowercase(),
+            format!("{dir}/{}.jsonl", format!("{dialect:?}").to_lowercase()),
             lines.join("\n") + "\n",
         )
         .unwrap();

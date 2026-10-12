@@ -286,9 +286,10 @@ impl FunctionMapper for DatabricksFunctionMapper {
         // query), else an error. Spark raises it on a row read: rows of
         // values of different types fail, no rows are no rows.
         let class = |c: &str| {
+            // A Spark string literal unescapes `\\(` to `\(`; a collated
+            // string is a string.
             format!(
-                "regexp_replace(regexp_replace(typeof({c}), '^(tinyint|smallint|int|bigint)$', \
-                 'int'), '^(var)?char\\(\\d+\\)$', 'string')"
+                r"regexp_replace(regexp_replace(typeof({c}), '^(tinyint|smallint|int|bigint)$', 'int'), '^((var)?char\\(\\d+\\)|string( collate .*)?)$', 'string')"
             )
         };
         let value = format!("coalesce({})", columns.join(", "));
@@ -323,8 +324,6 @@ impl FunctionMapper for DatabricksFunctionMapper {
     fn unwind(&self) -> Option<super::Unwind> {
         Some(super::Unwind {
             one_row: "(SELECT 1)",
-            // As many as the list's elements (`sequence(1, 0)` is `[1, 0]`).
-            positions: |list| format!("transform({list}, (__cg_x, __cg_i) -> __cg_i + 1)"),
             // `explode` of a map, or `arrays_zip` of one, fails the query.
             list_only: |list| list.to_string(),
             row_number: |keys| format!("row_number() OVER (ORDER BY {keys})"),
@@ -335,19 +334,29 @@ impl FunctionMapper for DatabricksFunctionMapper {
         })
     }
 
-    fn array_join_clause(&self, lists: &[(String, String)]) -> String {
+    fn array_join_clause(&self, lists: &[(String, String, Option<String>)]) -> String {
         // Spark has no ARRAY JOIN: `explode` repeats a row per element (none
-        // for an empty or NULL list); lists read in step are zipped first.
+        // for an empty or NULL list), `posexplode` with its position (from
+        // 0), each reading the list once (a list read twice could differ:
+        // `rand()`). Lists read in step are zipped first; their positions
+        // are counted over the zipped list.
         match lists {
-            [(list, alias)] => format!("LATERAL VIEW explode({list}) AS {alias}\n"),
+            [(list, alias, None)] => format!("LATERAL VIEW explode({list}) AS {alias}\n"),
+            [(list, alias, Some(p))] => {
+                format!("LATERAL VIEW posexplode({list}) AS {p}, {alias}\n")
+            }
             _ => {
-                let (l, a): (Vec<&str>, Vec<&str>) =
-                    lists.iter().map(|(l, a)| (l.as_str(), a.as_str())).unzip();
-                format!(
-                    "LATERAL VIEW inline(arrays_zip({})) AS {}\n",
-                    l.join(", "),
-                    a.join(", ")
-                )
+                let l: Vec<&str> = lists.iter().map(|(l, _, _)| l.as_str()).collect();
+                let a: Vec<&str> = lists.iter().map(|(_, a, _)| a.as_str()).collect();
+                let zipped = format!("arrays_zip({})", l.join(", "));
+                match lists.iter().find_map(|(_, _, p)| p.as_deref()) {
+                    None => format!("LATERAL VIEW inline({zipped}) AS {}\n", a.join(", ")),
+                    Some(p) => format!(
+                        "LATERAL VIEW posexplode({zipped}) AS {p}, __cg_zipped\n\
+                         LATERAL VIEW inline(array(__cg_zipped)) AS {}\n",
+                        a.join(", ")
+                    ),
+                }
             }
         }
     }
