@@ -5054,6 +5054,24 @@ slice that will handle it.
       another variable's node deleted by another record refused, and read
       when it is not, a `collect` refused (18 pass; #1436's 2 as on main).
 
+- [ ] **S14: the cutovers, then the legacy deletion (§7 row 11).** Once no
+  entry point reaches the legacy pipeline, it is deleted in groups, one PR
+  each.
+  - [x] **S14a: the Databricks read cutover.** Databricks lowers the whole
+    corpus (1442 at S12f; 1477 with the LDBC queries after S11o9), so a read the bound plan does not translate is an
+    error there too, as on ClickHouse since S11j ("Not supported: …"; a
+    query that is not a read: "Not supported" as well). The dialect
+    predicate `reads_fall_back_to_legacy` is gone; the legacy read
+    pipeline is reached only by `BoundPlanMode::Off` (its own tests).
+    - Acceptance: the seam test (`unsupported_reads_fail_on_every_dialect`:
+      both dialects `Unsupported`); the census (1477 on both); the
+      Databricks executor's mock-server tests.
+  - [ ] **S14b: the embedded write cutover.** What the write planner does
+    not plan is an error, not the legacy write planner's.
+  - [ ] **S14c…: the deletion PRs** (the legacy translate route and its
+    tests, the analyzer passes, render composition, the repairs, the
+    name-keyed maps), then #1392 closed.
+
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 
 **A. WITH finalization (`with_to_cte/mod.rs` unless noted)**

@@ -235,16 +235,16 @@ async fn concurrent_query_sql_requests_do_not_share_alias_counters() {
     }
 }
 
-/// What the bound plan does not lower is an error on ClickHouse (P-4c
-/// S11j): on `/query` (400, "Not supported"), and in the library. A
-/// dialect that keeps the legacy fallback still translates it there.
+/// What the bound plan does not lower is an error on every dialect (P-4c
+/// S11j ClickHouse, S14a Databricks): on `/query` (400, "Not supported"),
+/// and in the library.
 #[tokio::test]
-async fn unsupported_reads_fail_on_clickhouse_and_fall_back_elsewhere() {
+async fn unsupported_reads_fail_on_every_dialect() {
     use clickgraph::server::query_context::{
         set_current_dialect, set_current_schema, with_query_context_sync, QueryContext,
     };
     use clickgraph::sql_generator::SqlDialect;
-    use clickgraph::translate::{translate_read, ReadOptions, Route, TranslateError};
+    use clickgraph::translate::{translate_read, ReadOptions, TranslateError};
     let schema = GraphSchemaConfig::from_yaml_file("schemas/test/social_integration.yaml")
         .unwrap()
         .to_graph_schema()
@@ -267,10 +267,13 @@ async fn unsupported_reads_fail_on_clickhouse_and_fall_back_elsewhere() {
             )
         })
     };
-    let ch = translate(SqlDialect::ClickHouse);
-    assert!(matches!(ch, Err(TranslateError::Unsupported(_))), "{ch:?}");
-    let databricks = translate(SqlDialect::Databricks).unwrap();
-    assert_eq!(databricks.route, Route::Legacy);
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let got = translate(dialect);
+        assert!(
+            matches!(&got, Err(TranslateError::Unsupported(_))),
+            "{dialect:?}: {got:?}"
+        );
+    }
     let lib = clickgraph::clickhouse_query_generator::cypher_to_sql(q, &schema, 100);
     assert!(
         matches!(&lib, Err(e) if e.starts_with("Not supported: ")),
