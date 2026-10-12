@@ -78,8 +78,8 @@ pub(crate) trait FunctionMapper: Send + Sync {
     fn any(&self) -> &'static str;
 
     /// An aggregate of any of the values `{0}` that are not NULL (NULL when
-    /// all are): CH `any` skips NULLs; Spark's `any_value` needs its
-    /// `ignoreNulls` argument.
+    /// all are): CH `any` skips a `Nullable`'s NULLs but not a `Variant`'s;
+    /// Spark's `any_value` needs its `ignoreNulls` argument.
     fn any_non_null(&self, value: &str) -> String {
         format!("{}({value})", self.any())
     }

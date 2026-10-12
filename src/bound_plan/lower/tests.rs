@@ -4260,6 +4260,27 @@ fn databricks_embedded_nodes() {
     assert!(got.contains("raise_error("), "{got}");
 }
 
+/// #1426: a node embedded in several sources takes any of its sources'
+/// non-NULL values: ClickHouse `any` keeps a `Variant`'s NULL (`NULL UNION
+/// ALL` an `Array` column is a `Variant`), so a source without the property
+/// could win; a group of NULLs only stays NULL (`-OrNull`: `anyIf` of a
+/// `Nullable(Tuple)` is its default, review).
+#[test]
+fn embedded_property_skips_variant_nulls() {
+    let got = squash(
+        &translate_bound_plan(
+            "MATCH (a:Airport) RETURN a.city AS c",
+            &embedded_schema(),
+            &ReadOptions::default(),
+        )
+        .unwrap()
+        .sql,
+    );
+    assert!(got.contains("anyIfOrNull("), "{got}");
+    assert!(got.contains(", NOT isNull("), "{got}");
+    assert!(!got.contains(" any("), "{got}");
+}
+
 /// S12a review: Spark `sequence` is never empty (`sequence(1, 0)` is
 /// `[1, 0]`): `range` is empty when its step leads away from its end, each
 /// argument bound once;
