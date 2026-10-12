@@ -11,6 +11,8 @@
 
 ### 🐛 Bug Fixes
 
+- **`head(collect({…}))` and `collect({…})[i]` read by key were "Not supported".** A WITH can now carry them and later clauses read their keys, including a node property under a key (`latestLike.msg.id`). This covers LDBC IC 7 and BI 14.
+
 - **`p IS NULL` of a path was "Not supported".** It is now true where an OPTIONAL MATCH left the path unmatched (LDBC IC 13).
 
 - **`collect(CASE … THEN null ELSE [..] END)` kept an empty list for each NULL** (`[[]]` where Neo4j returns `[]`), and failed when the lists mixed value types. A list of mixed values used as a grouping key failed on ClickHouse (Code 44). Both now work; LDBC IC 1 lowers.

@@ -187,12 +187,17 @@ impl Lowerer<'_> {
     /// (`Lowerer::map_keys`, S11m): the key's value, NULL for a key the map
     /// does not have. `None`: its keys are not known here.
     pub(super) fn map_key(&self, v: VarId, k: &str) -> Option<RenderExpr> {
+        let keys = self.map_keys.get(&v)?;
+        // `m.k.p` carried as its own key (a collected map's node of several
+        // labels, S11o8).
+        if let Some((_, e)) = keys.iter().find(|(key, _)| key == k) {
+            return Some(e.clone());
+        }
         // `m.a.b`: a key of a key's value, whose own keys are not carried
         // (S11m review: not a key named `a.b`).
         if k.contains('.') {
             return None;
         }
-        let keys = self.map_keys.get(&v)?;
         Some(
             keys.iter()
                 .find(|(key, _)| key == k)
@@ -237,13 +242,26 @@ impl Lowerer<'_> {
                     // projected the map's keys (S11m); otherwise its type is
                     // not known here (a value of any type would compare,
                     // sort and count unlike its own).
-                    (_, Some(Kind::Map(_))) => match self.map_key(v, prop) {
+                    (_, Some(Kind::Map(entries))) => match self.map_key(v, prop) {
                         Some(e) => e,
-                        None => {
-                            return unsupported(
-                                "a property of a map (its value's type is not known)",
-                            )
-                        }
+                        // `m.k.p`: a property of the node or relationship the
+                        // key holds (LDBC IC 7's `latestLike.msg.id`).
+                        None => match prop.split_once('.').and_then(|(k, p)| {
+                            let elem = entries.iter().find_map(|(key, kind)| match kind {
+                                Kind::Element(elem) if key == k => Some(elem.clone()),
+                                _ => None,
+                            })?;
+                            Some((self.map_key(v, k)?, elem, p))
+                        }) {
+                            Some((t, elem, p)) if !p.contains('.') => {
+                                self.elem_property(&t, &elem, p)?
+                            }
+                            _ => {
+                                return unsupported(
+                                    "a property of a map (its value's type is not known)",
+                                )
+                            }
+                        },
                     },
                     _ => {
                         return unsupported("a property of a value (map, list element, WITH item)")
@@ -1279,6 +1297,10 @@ impl Lowerer<'_> {
             ),
             (BindingKind::Value, _) => match self.values.get(&v) {
                 Some(e) => Ok(e.clone()),
+                // `head(collect({…}))`: its keys only (S11o8).
+                None if self.map_keys.contains_key(&v) => {
+                    unsupported("a collected map other than by its keys")
+                }
                 None => unsupported("an UNWIND value (S7)"),
             },
         }
@@ -1286,7 +1308,7 @@ impl Lowerer<'_> {
 
     /// The node or relationship a bare variable expression names (not a
     /// variable-length relationship: that is a list).
-    fn entity(&self, e: &LogicalExpr) -> Option<VarId> {
+    pub(super) fn entity(&self, e: &LogicalExpr) -> Option<VarId> {
         match e {
             LogicalExpr::TableAlias(lx::TableAlias(n)) => parse_var(n).filter(|v| {
                 matches!(
