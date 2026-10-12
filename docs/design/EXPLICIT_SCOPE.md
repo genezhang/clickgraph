@@ -4731,6 +4731,25 @@ slice that will handle it.
       fell to the legacy planner, not only RETURN) and an S13a gap (chdb's
       UPDATE, as the lightweight DELETE, resolves no CTE in its subquery:
       every write whose ids need one reads them first).
+  - [ ] **S13d: DELETE … RETURN, as Neo4j (user 2026-10-12).** Neo4j's
+    RETURN after a DELETE reads the records as they were (oracle:
+    `count(n)` the deleted nodes; `RETURN n` the node's identity alone, no
+    labels or properties; `n.name`, `labels(n)` the error "Node … has been
+    deleted in this transaction"; an OPTIONAL MATCH's NULL: NULL). The
+    RETURN is read before the writes (`WritePlan::ret_before`); a deleted
+    node returned whole is its columns NULL (`LowerOptions::deleted`, a
+    node passed through a WITH included); one whose properties or labels
+    the RETURN reads (`expr::reads_element`) is a check before any write,
+    failing with Neo4j's error when it is a node. Refused: a DELETE and a
+    SET / REMOVE with a RETURN, a relationship RETURNed after a DETACH
+    DELETE (may be deleted), a deleted node of several labels returned
+    whole. CREATE … RETURN and a relationship CREATE stay refused (the
+    legacy planner's refusal; a later slice).
+    - Acceptance: planner tests; the embedded crate's 152 (the TCK-shaped
+      `OPTIONAL MATCH (a) DELETE a RETURN a` now the bound plan's); chdb
+      end to end: `count` of the deleted, a property read refused before
+      deleting, a whole deleted node without properties, an OPTIONAL NULL
+      (17 pass; #1436's 2 as on main).
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

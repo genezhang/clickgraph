@@ -66,6 +66,19 @@ pub fn is_write_statement(cypher: &str) -> bool {
 pub struct WritePlan {
     pub plan: WriteRenderPlan,
     pub ret: Option<String>,
+    /// The RETURN reads the records before the writes (after a DELETE:
+    /// Neo4j's RETURN reads the deleted nodes' records), else after them.
+    pub ret_before: bool,
+}
+
+/// A RETURN after the writes ([`return_sql`]).
+struct ReturnPlan {
+    sql: String,
+    before: bool,
+    /// Deleted nodes the RETURN reads the properties or labels of: the
+    /// statement fails when one is a node (Neo4j: "has been deleted in this
+    /// transaction"; a NULL of an OPTIONAL MATCH is none).
+    guarded: Vec<VarId>,
 }
 
 /// Plan the write statement `cypher` (comments stripped).
@@ -91,9 +104,14 @@ pub fn plan_write(cypher: &str, schema: &GraphSchema) -> Result<WritePlan, Write
         options: LowerOptions::default(),
         identities: HashMap::new(),
         detached: Vec::new(),
+        guarded: ret.as_ref().map(|r| r.guarded.clone()).unwrap_or_default(),
     }
     .plan()?;
-    Ok(WritePlan { plan, ret })
+    Ok(WritePlan {
+        plan,
+        ret_before: ret.as_ref().is_some_and(|r| r.before),
+        ret: ret.map(|r| r.sql),
+    })
 }
 
 /// The SQL of a RETURN after the writes (S13c): the read part re-read
@@ -107,24 +125,30 @@ fn return_sql(
     bound: &BoundWriteStatement,
     ret: &super::types::BoundStatement,
     schema: &GraphSchema,
-) -> Result<String, WritePlanError> {
+) -> Result<ReturnPlan, WritePlanError> {
     let refuse = |why: &str| {
         Err(WritePlanError::Rejected(format!(
             "RETURN after {why}: not supported (the statement's records are re-read after \
              its writes)"
         )))
     };
-    // After a DELETE Neo4j's RETURN reads the deleted nodes' records (their
-    // properties an error, a node none), after a CREATE the created ones:
-    // not a re-read (the legacy planner's: CREATE refused, DELETE re-read).
+    // After a CREATE the RETURN reads the created nodes: not yet (the
+    // legacy planner's: refused).
     if bound
         .writes
         .iter()
-        .any(|w| matches!(w, BoundWrite::Delete { .. } | BoundWrite::Create { .. }))
+        .any(|w| matches!(w, BoundWrite::Create { .. }))
     {
         return Err(WritePlanError::Unsupported(
-            "RETURN after a DELETE or CREATE".to_string(),
+            "RETURN after a CREATE".to_string(),
         ));
+    }
+    if bound
+        .writes
+        .iter()
+        .any(|w| matches!(w, BoundWrite::Delete { .. }))
+    {
+        return delete_return(bound, ret, schema);
     }
     fn pages(op: &BoundOp) -> bool {
         match op {
@@ -211,7 +235,115 @@ fn return_sql(
     }
     let lowered = super::lower::lower_statement(ret, schema, &LowerOptions::default())
         .map_err(|e| WritePlanError::Unsupported(e.to_string()))?;
-    Ok(render_plan_to_sql_plain(lowered.plan))
+    Ok(ReturnPlan {
+        sql: render_plan_to_sql_plain(lowered.plan),
+        before: false,
+        guarded: Vec::new(),
+    })
+}
+
+/// A RETURN after a DELETE (S13d), as Neo4j's: it reads the records as they
+/// were (read before the writes): `count(n)` the deleted nodes, a deleted
+/// node returned whole its identity alone (no properties), its properties
+/// or labels read an error when it is a node (a check before any write; a
+/// NULL of an OPTIONAL MATCH reads NULL).
+fn delete_return(
+    bound: &BoundWriteStatement,
+    ret: &super::types::BoundStatement,
+    schema: &GraphSchema,
+) -> Result<ReturnPlan, WritePlanError> {
+    let refuse = |why: &str| {
+        Err(WritePlanError::Rejected(format!(
+            "RETURN after {why}: not supported"
+        )))
+    };
+    if bound
+        .writes
+        .iter()
+        .any(|w| matches!(w, BoundWrite::Set { .. } | BoundWrite::Remove { .. }))
+    {
+        return refuse("a DELETE and a SET or REMOVE");
+    }
+    let read = &bound.read;
+    // A node is the deleted one when it passes it through (`WITH a AS b`).
+    let root = |mut v: VarId| loop {
+        match read.binding(v).source {
+            super::types::BindingSource::Projection { of: Some(of), .. } => v = of,
+            _ => return v,
+        }
+    };
+    let mut roots = Vec::new();
+    let mut detach = false;
+    for w in &bound.writes {
+        if let BoundWrite::Delete { var, detach: d, .. } = w {
+            roots.push(root(*var));
+            detach |= *d;
+        }
+    }
+    let deleted: std::collections::BTreeSet<VarId> = read
+        .bindings
+        .iter()
+        .filter(|b| matches!(b.kind, BindingKind::Node { .. }) && roots.contains(&root(b.id)))
+        .map(|b| b.id)
+        .collect();
+    let BoundOp::Project { projection, .. } = &ret.plan else {
+        return Err(WritePlanError::Rejected(
+            "internal: a RETURN that is not a projection".to_string(),
+        ));
+    };
+    let exprs: Vec<&crate::query_planner::logical_expr::LogicalExpr> = projection
+        .items
+        .iter()
+        .map(|i| &i.expr)
+        .chain(projection.order_by.iter().map(|k| &k.expr))
+        .collect();
+    let names = |v: VarId| {
+        exprs.iter().any(|e| {
+            crate::bound_plan::expr::referenced_names(e, false)
+                .iter()
+                .any(|n| crate::bound_plan::lower::parse_var(n) == Some(v))
+        })
+    };
+    // DETACH DELETE deletes the node's relationships too: a relationship
+    // the RETURN reads may be one (not told here).
+    if detach
+        && read
+            .bindings
+            .iter()
+            .any(|b| matches!(b.kind, BindingKind::Rel { .. }) && names(b.id))
+    {
+        return refuse("a DETACH DELETE, of a relationship");
+    }
+    let mut guarded = Vec::new();
+    for v in &deleted {
+        let name = v.name();
+        if exprs
+            .iter()
+            .any(|e| crate::bound_plan::expr::reads_element(e, &name))
+        {
+            guarded.push(*v);
+        }
+        // Returned whole: its identity alone, of one label's columns.
+        let whole = projection.items.iter().any(|i| {
+            matches!(&i.expr, crate::query_planner::logical_expr::LogicalExpr::TableAlias(t) if t.0 == name)
+        });
+        let one_label =
+            matches!(&read.binding(*v).kind, BindingKind::Node { labels } if labels.len() == 1);
+        if whole && !one_label {
+            return refuse("a DELETE, of a deleted node of several possible labels");
+        }
+    }
+    let options = LowerOptions {
+        deleted: deleted.clone(),
+        ..LowerOptions::default()
+    };
+    let lowered = super::lower::lower_statement(ret, schema, &options)
+        .map_err(|e| WritePlanError::Unsupported(e.to_string()))?;
+    Ok(ReturnPlan {
+        sql: render_plan_to_sql_plain(lowered.plan),
+        before: true,
+        guarded,
+    })
 }
 
 /// One SET / REMOVE of a node: its property, and its value (REMOVE: none).
@@ -230,6 +362,8 @@ struct Planner<'a> {
     /// table, its column, the ids (a node's relationships are not "still
     /// there" for another DELETE when this one deletes them).
     detached: Vec<(EdgeEnd, RowSource)>,
+    /// Deleted nodes the RETURN reads the properties of ([`ReturnPlan`]).
+    guarded: Vec<VarId>,
 }
 
 impl<'a> Planner<'a> {
@@ -319,6 +453,20 @@ impl<'a> Planner<'a> {
             }
         }
         let mut ops = Vec::new();
+        for var in self.guarded.clone() {
+            for label in self.labels(var)? {
+                if let Some(source) = self.source(var, &label)? {
+                    ops.push(WriteRenderPlan::Check(CheckOp {
+                        source,
+                        within: None,
+                        message: format!(
+                            "a `{label}` node the statement deleted is read by its RETURN \
+                             (Neo4j: it has been deleted in this transaction)"
+                        ),
+                    }));
+                }
+            }
+        }
         // The nodes an earlier clause of the statement changed: the read
         // part's records were read before any write (a snapshot), so a
         // CREATE value reading one would see it unchanged.
@@ -1009,12 +1157,9 @@ mod tests {
         )
         .unwrap();
         let ret = planned.ret.expect("a RETURN");
-        // After a DELETE or CREATE: the legacy planner's.
+        // After a CREATE: the legacy planner's.
         assert!(matches!(
-            plan_write(
-                "MATCH (u:User) WHERE u.user_id = 1 DELETE u RETURN 1 AS x",
-                &social()
-            ),
+            plan_write("CREATE (u:User {user_id: 5}) RETURN 1 AS x", &social()),
             Err(WritePlanError::Unsupported(_))
         ));
         assert!(
@@ -1049,6 +1194,56 @@ mod tests {
             (
                 "MATCH (a:User) WHERE rand() < 0.5 SET a.age = 2 RETURN count(*) AS c",
                 "rand()",
+            ),
+        ] {
+            let err = plan_write(q, &social()).unwrap_err();
+            assert!(
+                matches!(&err, WritePlanError::Rejected(m) if m.contains(why)),
+                "{q}: {err:?}"
+            );
+        }
+    }
+
+    /// S13d: RETURN after DELETE reads the records before the writes; a
+    /// deleted node's properties read by it: a check (Neo4j's error when it
+    /// is a node); refused: DELETE with SET, a relationship after DETACH.
+    #[test]
+    fn delete_then_return() {
+        let p = plan_write(
+            "MATCH (u:User) WHERE u.user_id = 1 DELETE u RETURN count(u) AS c",
+            &social(),
+        )
+        .unwrap();
+        assert!(p.ret_before && p.ret.is_some());
+        let p = plan_write(
+            "MATCH (u:User) WHERE u.user_id = 1 DELETE u RETURN u.name AS n",
+            &social(),
+        )
+        .unwrap();
+        let WriteRenderPlan::Sequence(ops) = &p.plan else {
+            panic!("a check and the DELETE: {:?}", p.plan);
+        };
+        assert!(
+            ops.iter().any(|op| matches!(op, WriteRenderPlan::Check(c) if c.within.is_none() && c.message.contains("deleted in this transaction"))),
+            "{ops:?}"
+        );
+        // Returned whole: no properties (NULL columns).
+        let p = plan_write(
+            "MATCH (u:User) WHERE u.user_id = 1 DELETE u RETURN u",
+            &social(),
+        )
+        .unwrap();
+        let ret = p.ret.unwrap();
+        assert!(ret.contains("NULL AS \"u.name\""), "{ret}");
+        for (q, why) in [
+            (
+                "MATCH (u:User) WHERE u.user_id = 1 SET u.age = 1 DELETE u RETURN 1 AS x",
+                "a DELETE and a SET",
+            ),
+            (
+                "MATCH (u:User)-[r:FOLLOWS]->(f:User) WHERE u.user_id = 1 DETACH DELETE u \
+                 RETURN r",
+                "of a relationship",
             ),
         ] {
             let err = plan_write(q, &social()).unwrap_err();

@@ -569,6 +569,29 @@ fn rename_op(
     })
 }
 
+/// Does the (bound) expression read the properties or labels of the
+/// binding `name` (generated name): `name.p`, `labels(name)`,
+/// `properties(name)`, `keys(name)`, `type(name)` — not its identity
+/// (`id`, `count`, `IS NULL`, the bare variable)?
+pub(crate) fn reads_element(expr: &LogicalExpr, name: &str) -> bool {
+    let is_name =
+        |e: &LogicalExpr| matches!(e, LogicalExpr::TableAlias(TableAlias(n)) if n == name);
+    let mut found = false;
+    visit(expr, &mut |e| match e {
+        LogicalExpr::PropertyAccessExp(PropertyAccess { table_alias, .. }) => {
+            found |= table_alias.0 == name;
+        }
+        LogicalExpr::ScalarFnCall(f) => {
+            let reads = ["labels", "properties", "keys", "type"]
+                .iter()
+                .any(|r| f.name.eq_ignore_ascii_case(r));
+            found |= reads && f.args.iter().any(is_name);
+        }
+        _ => {}
+    });
+    found
+}
+
 /// Does the (bound) expression call one of the functions `names`
 /// (lowercase) with no argument?
 pub(crate) fn calls_nullary(expr: &LogicalExpr, names: &[&str]) -> bool {

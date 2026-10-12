@@ -529,3 +529,67 @@ fn create_clauses_and_set_after_with() {
         Some("after_with")
     );
 }
+
+// ---- S13d: DELETE … RETURN as Neo4j ----
+
+/// RETURN after DELETE reads the records as they were: `count(n)` the
+/// deleted nodes.
+#[test]
+fn delete_return_counts_the_deleted() {
+    let Some(conn) = conn() else { return };
+    person(&conn, "da1", 40);
+    person(&conn, "da2", 40);
+    let mut result = conn
+        .query("MATCH (a:Person) WHERE a.person_id IN ['da1', 'da2'] DELETE a RETURN count(a) AS c")
+        .expect("DELETE … RETURN count");
+    assert_eq!(int(&result.next().unwrap(), "c"), 2);
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id IN ['da1', 'da2'] RETURN count(a) AS c"
+        ),
+        0
+    );
+}
+
+/// A deleted node's properties read by the RETURN: Neo4j's error, before
+/// anything is deleted; returned whole: no properties; a NULL of an
+/// OPTIONAL MATCH: NULL.
+#[test]
+fn delete_return_of_the_deleted_node() {
+    let Some(conn) = conn() else { return };
+    person(&conn, "db1", 40);
+    let err = conn
+        .query("MATCH (a:Person) WHERE a.person_id = 'db1' DELETE a RETURN a.name")
+        .expect_err("reads a deleted node");
+    assert!(
+        err.to_string().contains("deleted in this transaction"),
+        "{err}"
+    );
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id = 'db1' RETURN count(a) AS c"
+        ),
+        1
+    );
+    let mut result = conn
+        .query("MATCH (a:Person) WHERE a.person_id = 'db1' DELETE a RETURN a")
+        .expect("returned whole");
+    let row = result.next().expect("one row");
+    for column in result.get_column_names().to_vec() {
+        let v = row.get(&column).expect("a column");
+        assert!(v.is_null(), "{column} = {v:?}");
+    }
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id = 'db1' RETURN count(a) AS c"
+        ),
+        0
+    );
+    let mut result = conn
+        .query("OPTIONAL MATCH (a:Person {person_id: 'nobody'}) DELETE a RETURN a.name AS n")
+        .expect("a NULL record");
+    assert!(result.next().unwrap().get("n").unwrap().is_null());
+}

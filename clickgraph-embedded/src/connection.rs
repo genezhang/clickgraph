@@ -1346,10 +1346,12 @@ impl<'db> Connection<'db> {
             // A RETURN after the writes: the bound plan's re-read (S13c), or
             // the legacy planner's (Phase 5d).
             let mut bound_return: Option<String> = None;
+            let mut return_before = false;
             let (write_plan, has_return) = match bound {
                 Ok(planned) => {
                     let has_return = planned.ret.is_some();
                     bound_return = planned.ret;
+                    return_before = planned.ret_before;
                     (planned.plan, has_return)
                 }
                 Err(not_bound) => {
@@ -1438,6 +1440,16 @@ impl<'db> Connection<'db> {
             // against the probe's snapshot for the chdb workload here.
             // INSERT counts are exact and don't need a probe.
             let exec_start = Instant::now();
+            // A RETURN after a DELETE reads the records before the writes.
+            let rows_before = match (&bound_return, return_before) {
+                (Some(sql), true) => Some(
+                    executor
+                        .execute_json(sql, None)
+                        .await
+                        .map_err(EmbeddedError::from)?,
+                ),
+                _ => None,
+            };
             let write_plan = read_ids(write_plan, &executor).await?;
             let counters = execute_write(&write_plan, &executor).await?;
             let execution_time_ms = exec_start.elapsed().as_secs_f64() * 1000.0;
@@ -1479,10 +1491,13 @@ impl<'db> Connection<'db> {
             let read_compile_ms = read_compile_start.elapsed().as_secs_f64() * 1000.0;
 
             let read_exec_start = Instant::now();
-            let json_rows = executor
-                .execute_json(&read_sql, None)
-                .await
-                .map_err(EmbeddedError::from)?;
+            let json_rows = match rows_before {
+                Some(rows) => rows,
+                None => executor
+                    .execute_json(&read_sql, None)
+                    .await
+                    .map_err(EmbeddedError::from)?,
+            };
             let read_exec_ms = read_exec_start.elapsed().as_secs_f64() * 1000.0;
 
             let mut column_names: Vec<String> = Vec::new();

@@ -626,6 +626,7 @@ fn bound_plan_or_reason(
                     )
                 }))
             }),
+            ..LowerOptions::default()
         },
     )
     .map_err(|e| BoundPlanError::Fallback(e.to_string()))?;
