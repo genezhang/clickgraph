@@ -310,18 +310,37 @@ async fn a_query_without_return_is_a_syntax_error() {
     );
 }
 
-/// A CALL the clause-list parser does not read (`YIELD … WHERE`) is not a
-/// syntax error: it goes to the procedure route as before (S11j review).
-#[test]
-fn a_call_with_yield_where_is_not_a_syntax_error() {
+/// A statement that is not a read reaching the read path on ClickHouse is
+/// not supported, never the legacy pipeline (which dropped a CALL inside a
+/// query and answered a library CALL with no rows) nor a syntax error (the
+/// clause-list parser does not read `YIELD … WHERE`); the server answers a
+/// standalone CALL before it (S11j review).
+#[tokio::test]
+async fn statements_other_than_reads_are_not_supported_on_clickhouse() {
+    ensure_default_schema_registered().await;
+    for q in [
+        "MATCH (u:User) CALL db.labels() YIELD label RETURN count(*) AS c",
+        "MATCH (u:User) RETURN u.name AS n UNION ALL CALL db.labels() YIELD label RETURN label AS n",
+        "MATCH (u:User) CREATE (x:User) RETURN u.name",
+    ] {
+        let body = json!({ "query": q, "sql_only": true });
+        let (status, text) = post_text("/query", body.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {text}");
+        assert!(text.contains("Not supported"), "{body}: {text}");
+    }
     let schema = GraphSchemaConfig::from_yaml_file("schemas/test/social_integration.yaml")
         .unwrap()
         .to_graph_schema()
         .unwrap();
-    let q = "CALL db.labels() YIELD label WHERE label = 'User' RETURN label";
-    let lib = clickgraph::clickhouse_query_generator::cypher_to_sql(q, &schema, 100);
-    assert!(
-        !matches!(&lib, Err(e) if e.contains("Invalid syntax")),
-        "{lib:?}"
-    );
+    for q in [
+        "CALL db.labels() YIELD label WHERE label = 'User' RETURN label",
+        "MATCH (u:User) CALL db.labels() YIELD label RETURN count(*) AS c",
+        "MATCH (u:User) CREATE (x:User)",
+    ] {
+        let lib = clickgraph::clickhouse_query_generator::cypher_to_sql(q, &schema, 100);
+        assert!(
+            matches!(&lib, Err(e) if e.starts_with("Not supported")),
+            "{q}: {lib:?}"
+        );
+    }
 }

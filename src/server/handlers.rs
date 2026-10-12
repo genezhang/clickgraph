@@ -497,7 +497,7 @@ pub async fn query_handler(
                 &schema_name_for_export,
                 app_state.config.max_cte_depth,
             )
-            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+            .map_err(|e| (inner_read_status(&e), e))?;
 
             crate::procedures::apoc_export::build_export_sql(
                 &inner_sql,
@@ -699,7 +699,7 @@ pub async fn query_handler(
                     &schema_name_for_export,
                     app_state.config.max_cte_depth,
                 )
-                .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+                .map_err(|e| (inner_read_status(&e), e))?;
                 crate::procedures::apoc_export::build_export_sql(
                     &inner_sql,
                     &export_args.destination,
@@ -2221,6 +2221,16 @@ fn translate_cypher_to_sql(
         schema_name
     );
     crate::translate::translate_inner_read(cypher, graph_schema, max_cte_depth)
+}
+
+/// The status of an inner query's translation error: a broken invariant is
+/// the server's (500), anything else the query's (400).
+fn inner_read_status(e: &str) -> StatusCode {
+    if e.starts_with("Inner Cypher internal error") {
+        StatusCode::INTERNAL_SERVER_ERROR
+    } else {
+        StatusCode::BAD_REQUEST
+    }
 }
 
 /// Extract a schema name from a leading `USE <schema>` clause in a Cypher query.

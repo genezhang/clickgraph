@@ -106,7 +106,8 @@ use value::{Carried, GraphRef, NODE_TUPLES, NODE_VALUES, PATH_KEY, REL_TUPLES, R
 /// Why a bound plan was not lowered.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum LowerError {
-    /// Not lowered yet; the legacy pipeline translates the query.
+    /// Not lowered: an error on ClickHouse, the legacy pipeline on dialects
+    /// that still fall back (`crate::translate`).
     #[error("not lowered yet: {0}")]
     Unsupported(String),
 }

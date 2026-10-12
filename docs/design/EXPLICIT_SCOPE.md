@@ -4312,9 +4312,12 @@ slice that will handle it.
     switch `CLICKGRAPH_BOUND_PLAN` is gone; `ReadOptions::bound_plan =
     Off` reaches the legacy pipeline for its own tests until it is
     deleted. What still reaches it: other dialects
-    (`SqlDialect::reads_fall_back_to_legacy`), `CALL` / updating clauses
-    (`BindError::NotARead`, handled by their entry points as before), and
-    the embedded write path's read part (no query text).
+    (`SqlDialect::reads_fall_back_to_legacy`) and the embedded write path's
+    read part (no query text). Entry points answer standalone procedures
+    and reject SET / DELETE before translating; a statement that is not a
+    read reaching it (`BindError::NotARead`, or text only the legacy parser
+    reads: a CALL inside a query or a UNION, CREATE) is "Not supported" on
+    ClickHouse (`translate::not_a_read`).
     - Acceptance: full live suite on the cutover build: 4827 passed (the 9
       multi-tenant failures predate S10a). Tests changed to the new
       answers: a query without RETURN, shortestPath from a node to itself
@@ -4328,9 +4331,17 @@ slice that will handle it.
       `Neo.ClientError.Statement.FeatureNotSupported`), a broken invariant
       is `TranslateError::Internal` (HTTP 500, Bolt a database error); a
       CALL / updating statement the clause-list parser does not read
-      (`CALL p() YIELD x WHERE …`) goes to its entry point, not a syntax
-      error (found by a census of the wiki's 815 Cypher examples; the
-      procedure route ignoring the WHERE predates it: #1411). Rerun on
+      (`CALL p() YIELD x WHERE …`) is not a syntax error: the server answers
+      it as a standalone procedure (found by a census of the wiki's 815
+      Cypher examples; the procedure route ignoring the WHERE predates it:
+      #1411). Second review: a CALL inside a query or a UNION and CREATE
+      reached the legacy pipeline (the CALL dropped: `MATCH (u) CALL
+      db.labels() YIELD label RETURN count(*)` gave 30, not 60; a library
+      CALL gave `WHERE false`; CREATE a 500): now "Not supported" on
+      ClickHouse. Also: `id(r)` over several types names that limit; an
+      inner export query's internal error is 500; `not_translated` keeps
+      backticked text and nested `internal:` reasons. Bolt failure codes
+      reach 5.7+ drivers once they carry GQL fields (#1368, #1389). Rerun on
       main with S11k–S11n: live suite 4826 passed (the 9 multi-tenant
       failures, plus `test_filter_early_vs_late`, a timing ratio that is
       flaky on main too); corpus 1442; scorecard verdicts unchanged.

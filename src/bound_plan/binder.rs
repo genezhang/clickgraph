@@ -34,8 +34,8 @@
 //!   not allowed to introduce new variables"). A WITH's WHERE that reads a
 //!   subquery and only projected names is a `Filter` after the projection.
 //!
-//! Not bound yet (`BindError::Unsupported`, the caller falls back): CALL,
-//! updating clauses, property-map parameters, re-matching a bound
+//! CALL and updating clauses are `BindError::NotARead`. Not bound yet
+//! (`BindError::Unsupported`): property-map parameters, re-matching a bound
 //! variable-length relationship list, the same relationship variable twice in
 //! one MATCH, a value-typed variable (list element, `coalesce(a, b)`) used as
 //! a node or relationship, and a subquery expression inside a comprehension,

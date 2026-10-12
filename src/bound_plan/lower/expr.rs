@@ -1286,7 +1286,10 @@ impl Lowerer<'_> {
                 // 2026-10-11), which only the server computes: an `id(r)`
                 // RETURN item (`ResultKind::RelId`), or compared with another
                 // `id()`.
-                ("id", Some(Scan::Rel { .. } | Scan::Rels { .. })) => unsupported(
+                ("id", Some(Scan::Rels { .. })) => {
+                    unsupported("id() of a relationship of several types or definitions")
+                }
+                ("id", Some(Scan::Rel { .. })) => unsupported(
                     "id() of a relationship other than as a RETURN item or compared with another \
                      id()",
                 ),

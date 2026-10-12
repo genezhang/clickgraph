@@ -242,24 +242,32 @@ fn translate_in_context(
                 // Text the clause-list parser rejects is not Cypher (a query
                 // without RETURN, which the legacy pipeline answered with the
                 // matched nodes; user 2026-10-11: as Neo4j, an error).
-                // A CALL or updating query the clause-list parser does not
-                // read (`CALL p() YIELD x WHERE …`) is not a read: its entry
-                // point handles it, as `NotARead`.
+                // A CALL or updating query (`NotARead`, or text only the
+                // legacy parser reads: `CALL p() YIELD x WHERE …`) is not a
+                // read. Entry points answer standalone procedures and writes
+                // before this; one that gets here (a CALL inside a query, a
+                // CREATE) the legacy pipeline answered wrongly (the CALL
+                // dropped, `WHERE false` rows): an error where reads do not
+                // fall back (S11j review).
                 Err(BoundPlanError::Unparsed(reason)) if !is_read(&statement) => {
+                    if !legacy_reads() {
+                        return Err(not_a_read(&statement));
+                    }
                     log::debug!("bound plan: legacy pipeline (not a read: {reason})")
                 }
                 Err(BoundPlanError::Unparsed(reason)) => {
                     return Err(TranslateError::Invalid(reason));
                 }
                 Err(BoundPlanError::Fallback(reason)) => {
-                    if !crate::server::query_context::get_current_dialect()
-                        .reads_fall_back_to_legacy()
-                    {
+                    if !legacy_reads() {
                         return Err(not_translated(&reason));
                     }
                     log::debug!("bound plan: legacy pipeline ({reason})")
                 }
                 Err(BoundPlanError::NotARead(reason)) => {
+                    if !legacy_reads() {
+                        return Err(not_a_read(&statement));
+                    }
                     log::debug!("bound plan: legacy pipeline ({reason})")
                 }
                 Ok(bound) => return Ok(bound.into_read_translation(start)),
@@ -304,6 +312,36 @@ fn translate_in_context(
             sql_generation,
         },
         route: Route::Legacy,
+    })
+}
+
+/// Whether reads the bound plan does not translate reach the legacy pipeline
+/// on the current dialect (until S12, other dialects than ClickHouse).
+fn legacy_reads() -> bool {
+    crate::server::query_context::get_current_dialect().reads_fall_back_to_legacy()
+}
+
+/// The error for a statement that is not a read reaching the read path.
+fn not_a_read(statement: &CypherStatement<'_>) -> TranslateError {
+    let writes = |q: &crate::open_cypher_parser::ast::OpenCypherQueryAst<'_>| {
+        q.create_clause.is_some()
+            || q.set_clause.is_some()
+            || q.remove_clause.is_some()
+            || q.delete_clause.is_some()
+    };
+    let has_writes = match statement {
+        CypherStatement::Query {
+            query,
+            union_clauses,
+        } => writes(query) || union_clauses.iter().any(|u| writes(&u.query)),
+        CypherStatement::ProcedureCall(_) | CypherStatement::CopyTo(_) => false,
+    };
+    TranslateError::Unsupported(if has_writes {
+        "write clauses (CREATE / SET / REMOVE / DELETE): ClickGraph is read-only".to_string()
+    } else {
+        "a procedure CALL here (the server answers a standalone CALL; one inside a query or a \
+         UNION is not supported)"
+            .to_string()
     })
 }
 
@@ -450,15 +488,31 @@ fn not_translated(reason: &str) -> TranslateError {
     if let Some(internal) = r.strip_prefix("internal: ") {
         return TranslateError::Internal(internal.to_string());
     }
-    // Drop parenthesized tags of the plan: `(S8)`, `(S7 lists)`, `(#672/#1010)`.
+    // Nested under what was lowered: `variable-length relationship: internal: …`.
+    if r.contains("internal: ") {
+        return TranslateError::Internal(r.to_string());
+    }
+    // Drop parenthesized tags of the plan: `(S8)`, `(S7 lists)`,
+    // `(#672/#1010)`; never inside a backticked name the reason echoes.
+    let is_tag = |t: &str| {
+        let mut cs = t.chars();
+        match (cs.next(), cs.next()) {
+            (Some('#'), Some(c)) if c.is_ascii_digit() => t
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '#' || c == '/'),
+            (Some('S'), Some(c)) if c.is_ascii_digit() => t
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == ' ' || c == 'S'),
+            _ => false,
+        }
+    };
     let mut out = String::new();
     let mut rest = r;
     while let Some(open) = rest.find(" (") {
         let after = &rest[open + 2..];
-        let tag = after.starts_with('#')
-            || (after.starts_with('S') && after[1..].starts_with(|c: char| c.is_ascii_digit()));
-        match (tag, after.find(')')) {
-            (true, Some(close)) => {
+        let quoted = (out.matches('`').count() + rest[..open].matches('`').count()) % 2 == 1;
+        match after.find(')') {
+            Some(close) if !quoted && is_tag(&after[..close]) => {
                 out.push_str(&rest[..open]);
                 rest = &after[close + 1..];
             }
@@ -751,6 +805,19 @@ mod tests {
         assert_eq!(
             msg("not lowered yet: internal: a path endpoint is not a node"),
             "internal: a path endpoint is not a node"
+        );
+        assert_eq!(
+            msg("not lowered yet: variable-length relationship: internal: no seed"),
+            "internal: variable-length relationship: internal: no seed"
+        );
+        // Not tags: user text, or parentheses of the wording.
+        assert_eq!(
+            msg("not lowered yet: a value-typed variable `x (S1)` used as a node"),
+            "unsupported: a value-typed variable `x (S1)` used as a node"
+        );
+        assert_eq!(
+            msg("not lowered yet: a list (in a map) of nodes (S7 lists)"),
+            "unsupported: a list (in a map) of nodes"
         );
     }
 

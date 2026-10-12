@@ -331,8 +331,8 @@ pub enum BindError {
     DuplicateColumn(String),
     #[error("{0}")]
     Invalid(String),
-    /// Valid Cypher this binder does not handle yet: the caller falls back to
-    /// the legacy pipeline (or fails loudly once it is gone).
+    /// Valid Cypher this binder does not handle yet: an error on ClickHouse,
+    /// the legacy pipeline on dialects that still fall back.
     #[error("not supported by the bound plan yet: {0}")]
     Unsupported(String),
     /// A statement that is not a read query (`CALL`, an updating clause):
