@@ -5533,7 +5533,15 @@ impl<'s> Lowerer<'s> {
             // UNION's): ClickHouse groups no `Dynamic`, and compares `1` and
             // `1.0` as different. A dialect without the key reads a map that
             // is neither grouped nor made distinct as it is.
-            let map_key = match self.holds_maps(&it.expr) && !it.aggregate {
+            // So is a list of values, whose items may be of several types (a
+            // `Variant`, which ClickHouse groups no more than `Dynamic`;
+            // LDBC IC 1's `[uni.name, studyAt.classYear, …]`), by the same
+            // key (`[1]` and `[1.0]` are one group, as in Cypher).
+            let value_list = matches!(
+                self.kind(&it.expr),
+                unwind::Kind::List(inner) if !matches!(*inner, unwind::Kind::Element(_))
+            );
+            let map_key = match (self.holds_maps(&it.expr) || value_list) && !it.aggregate {
                 true => match current_function_mapper().cypher_union() {
                     Some(u) => Some(RenderExpr::Raw((u.distinct_key)(
                         &render_expr_to_sql_plain(&e),

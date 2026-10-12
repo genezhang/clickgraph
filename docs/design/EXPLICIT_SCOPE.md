@@ -4521,7 +4521,23 @@ slice that will handle it.
         error, not dropped (`finish_relation`); `null IN` an empty
         collected list is false (it was NULL); `x IN l` returned 1/0 on
         ClickHouse (now a boolean).
-    - [ ] **S11o6…: the 4 not lowered** (a node as an operand or a value,
+    - [x] **S11o6: IC 1 — a list of values as a grouping key; a collect of
+      lists or NULL.** A list of values (`[uni.name, studyAt.classYear,
+      …]`: its items of several types, a `Variant` ClickHouse groups by
+      no more than `Dynamic`) carried as a grouping key is grouped by its
+      key (`CypherUnion::distinct_key`, as a map is: `[1]` and `[1.0]` one
+      group, as in Cypher). `collect(CASE … THEN null ELSE [..] END)`:
+      ClickHouse holds no NULL array, so the NULL read `[]`, which
+      `collect()` kept (`[[]]` where Neo4j's is `[]`), and `[]` beside a
+      list of `Variant`s failed to convert (Code 70): the lists are
+      collected where the CASE's result is one (`collect_list_case`: a
+      CASE of the same conditions as the flag; the NULL results read the
+      first list). A CASE's NULL list outside `collect()` stays `[]`
+      (#1454). On the SF1 `ldbc` database IC 1 equals the legacy pipeline
+      but for the legacy pipeline's errors: `[[]]` for no university, a
+      year as a string, a friend at distance 3 (2, by a hand-written
+      check).
+    - [ ] **S11o7…: the 4 not lowered** (a node as an operand or a value,
       `head()` of a map, a subquery in a list comprehension, a path in other
       positions, a property of a value, the Browser's `id()`), IC 1's
       grouping key, BI 17's time.

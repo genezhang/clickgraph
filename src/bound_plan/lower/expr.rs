@@ -1763,6 +1763,10 @@ impl Lowerer<'_> {
                 list
             }));
         }
+        if let (Some(c), "collect") = (arg.and_then(|a| list_or_null_case(self, a)), name.as_str())
+        {
+            return self.collect_list_case(c, distinct, items);
+        }
         let call = RenderExpr::AggregateFnCall(AggregateFnCall {
             name: f.name.clone(),
             args,
@@ -1785,7 +1789,99 @@ impl Lowerer<'_> {
     }
 }
 
+/// A CASE whose results are lists or the NULL literal (a branch of each):
+/// ClickHouse holds no NULL array, so a NULL result reads `[]` there
+/// (`to_sql_query`), which `collect()` would keep.
+fn list_or_null_case<'e>(l: &Lowerer<'_>, e: &'e LogicalExpr) -> Option<&'e LogicalCase> {
+    let LogicalExpr::Case(c) = e else {
+        return None;
+    };
+    let results: Vec<Option<&LogicalExpr>> = c
+        .when_then
+        .iter()
+        .map(|(_, t)| Some(t))
+        .chain([c.else_expr.as_deref()])
+        .collect();
+    let null = |r: &Option<&LogicalExpr>| {
+        r.is_none_or(|e| matches!(e, LogicalExpr::Literal(lx::Literal::Null)))
+    };
+    let list = |r: &Option<&LogicalExpr>| r.is_some_and(|e| matches!(l.kind(e), Kind::List(_)));
+    (results.iter().any(null)
+        && results.iter().any(list)
+        && results.iter().all(|r| null(r) || list(r)))
+    .then_some(c)
+}
+
 impl Lowerer<'_> {
+    /// `collect(CASE … THEN NULL … ELSE [..] END)` ([`list_or_null_case`]):
+    /// of the rows whose result is a list, as `collect()` skips NULLs. The
+    /// NULL results read the first list result (never collected), so every
+    /// result is of one type (an empty array would be of none: ClickHouse
+    /// converts it to no `Variant`).
+    fn collect_list_case(
+        &self,
+        c: &LogicalCase,
+        distinct: bool,
+        items: &Items,
+    ) -> Result<RenderExpr, LowerError> {
+        let Some(spelling) = current_function_mapper().lists() else {
+            return unsupported("collect() of a CASE of lists in this SQL dialect");
+        };
+        let is_null = |e: Option<&LogicalExpr>| {
+            e.is_none_or(|e| matches!(e, LogicalExpr::Literal(lx::Literal::Null)))
+        };
+        let Some(first) = c
+            .when_then
+            .iter()
+            .map(|(_, t)| Some(t))
+            .chain([c.else_expr.as_deref()])
+            .find(|r| !is_null(*r))
+            .flatten()
+        else {
+            return unsupported("internal: a CASE of lists without one");
+        };
+        let first = self.expr(first, items)?;
+        let result = |e: Option<&LogicalExpr>| -> Result<RenderExpr, LowerError> {
+            match e {
+                Some(e) if !is_null(Some(e)) => self.expr(e, items),
+                _ => Ok(first.clone()),
+            }
+        };
+        let flag = |e: Option<&LogicalExpr>| RenderExpr::Literal(Literal::Boolean(!is_null(e)));
+        let subject = c
+            .expr
+            .as_ref()
+            .map(|e| self.expr(e, items).map(Box::new))
+            .transpose()?;
+        let mut value = RenderCase {
+            expr: subject.clone(),
+            when_then: Vec::new(),
+            else_expr: Some(Box::new(result(c.else_expr.as_deref())?)),
+        };
+        let mut present = RenderCase {
+            expr: subject,
+            when_then: Vec::new(),
+            else_expr: Some(Box::new(flag(c.else_expr.as_deref()))),
+        };
+        for (w, t) in &c.when_then {
+            let w = self.expr(w, items)?;
+            value.when_then.push((w.clone(), result(Some(t))?));
+            present.when_then.push((w, flag(Some(t))));
+        }
+        let list = (spelling.collect_if)(
+            &render_expr_to_sql_plain(&RenderExpr::Case(value)),
+            &render_expr_to_sql_plain(&RenderExpr::Case(present)),
+        );
+        let list = match distinct {
+            true => (spelling.distinct)(&list),
+            false => list,
+        };
+        Ok(RenderExpr::ScalarFnCall(ScalarFnCall {
+            name: "coalesce".to_string(),
+            args: vec![RenderExpr::Raw(list), RenderExpr::List(Vec::new())],
+        }))
+    }
+
     /// `labels()` of a node of `label`: it, then the union labels it carries
     /// (`GraphSchema::union_labels_of`).
     pub(super) fn node_labels(&self, label: &str) -> RenderExpr {

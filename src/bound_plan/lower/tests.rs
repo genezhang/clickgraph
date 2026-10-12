@@ -6433,3 +6433,23 @@ fn an_optional_match_after_a_grouping_with_joins_on_the_keys() {
         "joined on the collected list: {got}"
     );
 }
+
+/// S11o6: `collect(CASE … THEN null ELSE [..] END)` collects the lists only
+/// (ClickHouse holds no NULL array: the NULL read `[]`, which it kept), and
+/// a list of values grouped by is grouped by its key (its items may be of
+/// several types, a `Variant`, which ClickHouse groups by no more than
+/// `Dynamic`) (LDBC IC 1).
+#[test]
+fn a_collect_of_lists_or_null_and_a_list_grouping_key() {
+    has(
+        "MATCH (u:User) OPTIONAL MATCH (u)-[:FOLLOWS]->(f:User) \
+         RETURN u.user_id AS id, collect(CASE WHEN f IS NULL THEN null ELSE [f.name, f.age] END) AS l",
+        &["coalesce(groupArrayIf(CASE WHEN o1.v2__user_id IS NULL THEN [o1.p2_v2_name, \
+           o1.p2_v2_age] ELSE [o1.p2_v2_name, o1.p2_v2_age] END, CASE WHEN o1.v2__user_id IS \
+           NULL THEN false ELSE true END), [])"],
+    );
+    let got = squash(&sql(
+        "MATCH (u:User) WITH [u.name, u.age] AS l, count(*) AS c RETURN l, c",
+    ));
+    assert!(got.contains("GROUP BY tuple(multiIf(dynamicType(CAST("), "{got}");
+}
