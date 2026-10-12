@@ -288,6 +288,32 @@ pub struct Subquery {
     pub correlation: Vec<VarId>,
 }
 
+/// One updating clause's operation (`bind_write_statement`, the embedded
+/// write path, S13): on the nodes its read part binds.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BoundWrite {
+    /// `SET v.prop = value`.
+    Set {
+        var: VarId,
+        property: String,
+        value: LogicalExpr,
+    },
+    /// `REMOVE v.prop`.
+    Remove { var: VarId, property: String },
+    /// `[DETACH] DELETE v`.
+    Delete { var: VarId, detach: bool },
+}
+
+/// A statement of updating clauses after a read part: the read part is
+/// `read.plan` (no projection: the records the writes apply to), its
+/// variables bound as a read's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoundWriteStatement {
+    pub read: BoundStatement,
+    /// In clause order.
+    pub writes: Vec<BoundWrite>,
+}
+
 /// The result of binding a statement.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoundStatement {

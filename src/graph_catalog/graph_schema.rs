@@ -555,6 +555,14 @@ impl RelationshipSchema {
         !self.is_fk_edge && self.from_node_properties.is_none() && self.to_node_properties.is_none()
     }
 
+    /// An FK edge: each relationship is a node's row (of one of its ends'
+    /// tables) holding a reference to the other end, so it is gone with the
+    /// node whose row it is, and with the node it references (no row
+    /// joins it).
+    pub fn is_node_row_reference(&self) -> bool {
+        self.is_fk_edge
+    }
+
     /// P-4c S4 / S8a: every row of the relationship's table is one
     /// relationship, from the node its `from_id` names to the node its
     /// `to_id` names, between nodes of its declared labels: a separate edge

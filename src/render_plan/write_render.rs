@@ -93,6 +93,15 @@ pub enum RowSource {
     /// The subquery is rendered via the regular `clickhouse_query_generator`,
     /// then wrapped as `WHERE id_col IN (<subquery>)`.
     Subquery(Box<RenderPlan>),
+    /// A rendered SELECT of a single ID column (the bound plan's,
+    /// `bound_plan::write`). Wrapped as `WHERE id_col IN (<sql>)`.
+    Sql(String),
+    /// A rendered SELECT of a single ID column that a lightweight DELETE
+    /// cannot read (it has CTEs, whose names the DELETE resolves in its
+    /// target's database): the executor reads the ids first and deletes by
+    /// them ([`RowSource::Ids`]). A probe (`SELECT count()`) or an UPDATE
+    /// reads it as [`RowSource::Sql`].
+    Read(String),
     /// Direct list of literal ID expressions.
     /// Wrapped as `WHERE id_col IN (id1, id2, ...)`.
     Ids(Vec<RenderExpr>),

@@ -46,8 +46,8 @@ use std::collections::{BTreeSet, HashMap};
 
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::open_cypher_parser::ast::{
-    Direction, Expression, NodePattern, OrerByOrder, PathPattern, Property, RelationshipPattern,
-    UnionType,
+    Direction, Expression, NodePattern, Operator, OrerByOrder, PathPattern, Property,
+    RelationshipPattern, UnionType,
 };
 use crate::open_cypher_parser::clause_list::{Clause, ClauseQuery, ClauseStatement};
 use crate::query_planner::logical_expr::{LogicalExpr, TableAlias};
@@ -69,6 +69,7 @@ pub fn bind_statement(
         feasibility: Feasibility::from_schema(schema),
         subqueries: Vec::new(),
         clause: 0,
+        writes: None,
     };
     let (first_plan, first_cols) = b.bind_query(&stmt.first)?;
     if stmt.unions.is_empty() {
@@ -140,6 +141,45 @@ struct Binder {
     /// The index of the clause being bound (a subquery's variables are
     /// introduced by the clause of its expression).
     clause: usize,
+    /// Binding a write statement (`bind_write_statement`): its updating
+    /// clauses' operations; `None` binds a read.
+    writes: Option<Vec<BoundWrite>>,
+}
+
+/// Bind a statement of updating clauses (SET / REMOVE / DELETE) after a
+/// read part, for the embedded write path (S13): the read part as a read's,
+/// then each operation in its scope. Other updating statements (CREATE, a
+/// RETURN or read clause after an update, a UNION) are `Unsupported`.
+pub fn bind_write_statement(
+    stmt: &ClauseStatement<'_>,
+    schema: &GraphSchema,
+) -> Result<BoundWriteStatement, BindError> {
+    if !stmt.unions.is_empty() {
+        return Err(BindError::Unsupported(
+            "an updating clause in a UNION".to_string(),
+        ));
+    }
+    let mut b = Binder {
+        bindings: Vec::new(),
+        feasibility: Feasibility::from_schema(schema),
+        subqueries: Vec::new(),
+        clause: 0,
+        writes: Some(Vec::new()),
+    };
+    let (plan, columns) = b.bind_query(&stmt.first)?;
+    let writes = b.writes.take().unwrap_or_default();
+    if writes.is_empty() {
+        return Err(BindError::Invalid("not an updating statement".to_string()));
+    }
+    Ok(BoundWriteStatement {
+        read: BoundStatement {
+            plan,
+            bindings: b.bindings,
+            columns,
+            subqueries: b.subqueries,
+        },
+        writes,
+    })
 }
 
 /// Name resolution for one expression: the scope, then the binder's local
@@ -207,8 +247,25 @@ impl Binder {
     ) -> Result<(BoundOp, Vec<(String, VarId)>), BindError> {
         let mut scope = Scope::default();
         let mut op = BoundOp::Unit;
+        // A write statement's updating clauses end it (S13).
+        let mut wrote = false;
         for (idx, clause) in q.clauses.iter().enumerate() {
             self.clause = idx;
+            let updating = matches!(
+                clause,
+                Clause::Create(_) | Clause::Set(_) | Clause::Remove(_) | Clause::Delete(_)
+            );
+            if wrote && !updating {
+                return Err(BindError::Unsupported(match clause {
+                    Clause::Return(_) => "RETURN after an updating clause".to_string(),
+                    _ => "a reading clause after an updating clause".to_string(),
+                }));
+            }
+            if updating && self.writes.is_some() {
+                self.bind_update(clause, &scope)?;
+                wrote = true;
+                continue;
+            }
             match clause {
                 Clause::Match(m) => {
                     let parts: Vec<(Option<&str>, &PathPattern<'_>)> =
@@ -373,8 +430,83 @@ impl Binder {
                 }
             }
         }
+        if wrote {
+            return Ok((op, Vec::new()));
+        }
         // The clause-list parser guarantees a final RETURN / CALL / update.
         Err(BindError::Unsupported("query without RETURN".to_string()))
+    }
+
+    /// An updating clause of a write statement (`bind_write_statement`): its
+    /// operations, on the nodes `scope` binds.
+    fn bind_update(&mut self, clause: &Clause<'_>, scope: &Scope) -> Result<(), BindError> {
+        let node = |b: &Binder, name: &str, clause: &str| -> Result<VarId, BindError> {
+            let Some(v) = scope.lookup(name) else {
+                return Err(BindError::UndefinedVariable(name.to_string()));
+            };
+            match b.binding(v).kind {
+                BindingKind::Node { .. } => Ok(v),
+                BindingKind::Rel { .. } => Err(BindError::Unsupported(format!(
+                    "{clause} of a relationship"
+                ))),
+                _ => Err(BindError::Unsupported(format!("{clause} of a value"))),
+            }
+        };
+        let mut ops = Vec::new();
+        match clause {
+            Clause::Set(set) => {
+                for item in &set.set_items {
+                    let (Operator::Equal, [Expression::PropertyAccessExp(target), value]) =
+                        (&item.operator, item.operands.as_slice())
+                    else {
+                        return Err(BindError::Unsupported(
+                            "a SET item other than `v.property = value`".to_string(),
+                        ));
+                    };
+                    let var = node(self, target.base, "SET")?;
+                    let value = self.expr(value, &[scope])?;
+                    no_aggregate(&value, "Invalid use of aggregating function in SET")?;
+                    ops.push(BoundWrite::Set {
+                        var,
+                        property: target.key.to_string(),
+                        value,
+                    });
+                }
+            }
+            Clause::Remove(remove) => {
+                for item in &remove.remove_items {
+                    let var = node(self, item.base, "REMOVE")?;
+                    ops.push(BoundWrite::Remove {
+                        var,
+                        property: item.key.to_string(),
+                    });
+                }
+            }
+            Clause::Delete(delete) => {
+                for item in &delete.delete_items {
+                    let Expression::Variable(name) = item else {
+                        return Err(BindError::Unsupported(
+                            "a DELETE of other than a variable".to_string(),
+                        ));
+                    };
+                    let var = node(self, name, "DELETE")?;
+                    ops.push(BoundWrite::Delete {
+                        var,
+                        detach: delete.is_detach,
+                    });
+                }
+            }
+            Clause::Create(_) => return Err(BindError::Unsupported("CREATE".to_string())),
+            _ => {
+                return Err(BindError::Unsupported(
+                    "internal: not an updating clause".to_string(),
+                ))
+            }
+        }
+        if let Some(writes) = self.writes.as_mut() {
+            writes.extend(ops);
+        }
+        Ok(())
     }
 
     // ---------------------------------------------------------------- MATCH

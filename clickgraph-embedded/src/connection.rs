@@ -1332,59 +1332,87 @@ impl<'db> Connection<'db> {
                 CypherStatement::Query { query, .. } if query.return_clause.is_some()
             );
 
-            let (logical_plan, _plan_ctx) =
-                clickgraph::query_planner::evaluate_read_statement(stmt, &schema, None, None, None)
-                    .map_err(|e| EmbeddedError::Query(format!("Plan error: {}", e)))?;
+            // Writes run on the embedded chdb backend only (Decision 0.1).
+            if executor_kind != clickgraph::query_planner::write_guard::ExecutorKind::EmbeddedChdb {
+                return Err(EmbeddedError::Query(format!(
+                    "Write rejected: {}",
+                    clickgraph::query_planner::write_guard::WriteGuardError::ExecutorNotWritable(
+                        executor_kind
+                    )
+                )));
+            }
 
-            // Decision 0.1 / 0.3 / 0.6 admission check.
-            ensure_write_target_writable(&logical_plan, &schema, executor_kind)
-                .map_err(|e| EmbeddedError::Query(format!("Write rejected: {}", e)))?;
+            // SET / REMOVE / DELETE after a read part: the bound plan's write
+            // planner (S13). CREATE and an update followed by RETURN take the
+            // legacy planner below until it plans them.
+            let bound = match clickgraph::bound_plan::write::plan_write(&cleaned, &schema) {
+                Ok(plan) => Some(read_delete_ids(plan, &executor).await?),
+                Err(clickgraph::bound_plan::write::WritePlanError::Rejected(e)) => {
+                    return Err(EmbeddedError::Query(format!("Write rejected: {e}")));
+                }
+                Err(clickgraph::bound_plan::write::WritePlanError::Unsupported(_)) => None,
+            };
+            let write_plan = match bound {
+                Some(plan) => plan,
+                None => {
+                    let (logical_plan, _plan_ctx) =
+                        clickgraph::query_planner::evaluate_read_statement(
+                            stmt, &schema, None, None, None,
+                        )
+                        .map_err(|e| EmbeddedError::Query(format!("Plan error: {}", e)))?;
 
-            // Walk past read-only wrappers (Projection / OrderBy / Skip /
-            // Limit) to find the write subplan. write+RETURN puts a
-            // Projection above the write; pure-write statements have the
-            // write at the root. The subplan retains its full read input
-            // (the MATCH/WHERE/etc. that bound the variables we mutate).
-            let write_subplan = find_write_subplan(&logical_plan).ok_or_else(|| {
-                EmbeddedError::Query(
-                    "Cypher write clause is not supported in this combination yet \
+                    // Decision 0.1 / 0.3 / 0.6 admission check.
+                    ensure_write_target_writable(&logical_plan, &schema, executor_kind)
+                        .map_err(|e| EmbeddedError::Query(format!("Write rejected: {}", e)))?;
+
+                    // Walk past read-only wrappers (Projection / OrderBy / Skip /
+                    // Limit) to find the write subplan. write+RETURN puts a
+                    // Projection above the write; pure-write statements have the
+                    // write at the root. The subplan retains its full read input
+                    // (the MATCH/WHERE/etc. that bound the variables we mutate).
+                    let write_subplan = find_write_subplan(&logical_plan).ok_or_else(|| {
+                        EmbeddedError::Query(
+                            "Cypher write clause is not supported in this combination yet \
                      (e.g. write clauses inside subqueries). Use a separate \
                      write statement followed by a MATCH for now."
-                        .to_string(),
-                )
-            })?;
+                                .to_string(),
+                        )
+                    })?;
 
-            let write_plan = build_write_plan(write_subplan, &schema)
-                .map_err(|e| EmbeddedError::Query(format!("Write render error: {}", e)))?
-                .ok_or_else(|| {
-                    EmbeddedError::Query(
-                        "Internal error: write subplan resolved but `build_write_plan` \
+                    let write_plan = build_write_plan(write_subplan, &schema)
+                        .map_err(|e| EmbeddedError::Query(format!("Write render error: {}", e)))?
+                        .ok_or_else(|| {
+                            EmbeddedError::Query(
+                                "Internal error: write subplan resolved but `build_write_plan` \
                          returned None. This is a planner/rendering bug; please report."
-                            .to_string(),
-                    )
-                })?;
+                                    .to_string(),
+                            )
+                        })?;
 
-            // Phase 5d v1 supports DELETE / SET / REMOVE + RETURN by
-            // executing the write, then re-running the read pipeline with
-            // the write clauses stripped. CREATE + RETURN is *not*
-            // supported by that path: the read pipeline can't see freshly
-            // inserted rows by alias (the alias was never bound by a
-            // MATCH and the inserted row has no MATCH-able identity yet),
-            // so referencing the create-bound alias from RETURN would
-            // fail with "undefined variable" *after* the INSERT has
-            // already executed. Rejecting up-front keeps the database
-            // unchanged on failure and surfaces a clear, deterministic
-            // error rather than a partially-applied write. Pinned by
-            // `cypher_create_with_return_rejected_before_insert` below.
-            if has_return && matches!(write_subplan, LogicalPlan::Create(_)) {
-                return Err(EmbeddedError::Query(
-                    "CREATE … RETURN is not supported in this build of ClickGraph yet. \
+                    // Phase 5d v1 supports DELETE / SET / REMOVE + RETURN by
+                    // executing the write, then re-running the read pipeline with
+                    // the write clauses stripped. CREATE + RETURN is *not*
+                    // supported by that path: the read pipeline can't see freshly
+                    // inserted rows by alias (the alias was never bound by a
+                    // MATCH and the inserted row has no MATCH-able identity yet),
+                    // so referencing the create-bound alias from RETURN would
+                    // fail with "undefined variable" *after* the INSERT has
+                    // already executed. Rejecting up-front keeps the database
+                    // unchanged on failure and surfaces a clear, deterministic
+                    // error rather than a partially-applied write. Pinned by
+                    // `cypher_create_with_return_rejected_before_insert` below.
+                    if has_return && matches!(write_subplan, LogicalPlan::Create(_)) {
+                        return Err(EmbeddedError::Query(
+                            "CREATE … RETURN is not supported in this build of ClickGraph yet. \
                      The write would execute but the RETURN cannot reference the \
                      newly created node by alias from the read pipeline. \
                      Run CREATE as a separate statement, then MATCH … RETURN."
-                        .to_string(),
-                ));
-            }
+                                .to_string(),
+                        ));
+                    }
+                    write_plan
+                }
+            };
 
             let stmts = write_render_to_sql(&write_plan);
             let compile_time_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
@@ -1485,6 +1513,104 @@ impl<'db> Connection<'db> {
         })
         .await
     }
+}
+
+/// The ids of each DELETE whose subquery a lightweight DELETE cannot read
+/// (`RowSource::Read`: it has CTEs, which the DELETE resolves in its
+/// target's database), read first and deleted by them, at most
+/// `IDS_PER_DELETE` per statement; a DELETE of no ids is dropped.
+async fn read_delete_ids(
+    plan: clickgraph::render_plan::WriteRenderPlan,
+    executor: &Arc<dyn QueryExecutor>,
+) -> Result<clickgraph::render_plan::WriteRenderPlan, EmbeddedError> {
+    use clickgraph::render_plan::render_expr::{Literal, RenderExpr};
+    use clickgraph::render_plan::write_render::{RowSource, WriteRenderPlan};
+    const IDS_PER_DELETE: usize = 5_000;
+    fn reads(plan: &WriteRenderPlan, out: &mut Vec<String>) {
+        match plan {
+            WriteRenderPlan::Delete(d) => {
+                if let RowSource::Read(sql) = &d.source {
+                    if !out.contains(sql) {
+                        out.push(sql.clone());
+                    }
+                }
+            }
+            WriteRenderPlan::Sequence(ops) => ops.iter().for_each(|op| reads(op, out)),
+            WriteRenderPlan::Insert(_) | WriteRenderPlan::Update(_) => {}
+        }
+    }
+    let mut sqls = Vec::new();
+    reads(&plan, &mut sqls);
+    if sqls.is_empty() {
+        return Ok(plan);
+    }
+    let mut ids: HashMap<String, Vec<RenderExpr>> = HashMap::new();
+    for sql in sqls {
+        let rows = executor
+            .execute_json(&sql, None)
+            .await
+            .map_err(EmbeddedError::from)?;
+        let mut values = Vec::with_capacity(rows.len());
+        for row in rows {
+            let serde_json::Value::Object(obj) = row else {
+                return Err(EmbeddedError::Query(format!(
+                    "the ids of a DELETE (`{sql}`) are not rows of one column"
+                )));
+            };
+            let value = match obj.values().next() {
+                Some(serde_json::Value::String(s)) => Literal::String(s.clone()),
+                Some(serde_json::Value::Bool(b)) => Literal::Boolean(*b),
+                Some(serde_json::Value::Number(n)) => match (n.as_i64(), n.as_f64()) {
+                    (Some(i), _) => Literal::Integer(i),
+                    (None, Some(f)) => Literal::Float(f),
+                    (None, None) => {
+                        return Err(EmbeddedError::Query(format!(
+                            "a DELETE's id {n} is out of range"
+                        )))
+                    }
+                },
+                // A NULL id is no node's.
+                Some(serde_json::Value::Null) => continue,
+                other => {
+                    return Err(EmbeddedError::Query(format!(
+                        "a DELETE's id is not a scalar: {other:?}"
+                    )))
+                }
+            };
+            values.push(RenderExpr::Literal(value));
+        }
+        ids.insert(sql, values);
+    }
+    fn rewrite(
+        plan: WriteRenderPlan,
+        ids: &HashMap<String, Vec<RenderExpr>>,
+        out: &mut Vec<WriteRenderPlan>,
+    ) {
+        match plan {
+            WriteRenderPlan::Delete(d) => match &d.source {
+                RowSource::Read(sql) => {
+                    for chunk in ids[sql].chunks(IDS_PER_DELETE) {
+                        let mut op = d.clone();
+                        op.source = RowSource::Ids(chunk.to_vec());
+                        out.push(WriteRenderPlan::Delete(op));
+                    }
+                }
+                _ => out.push(WriteRenderPlan::Delete(d)),
+            },
+            WriteRenderPlan::Sequence(ops) => {
+                for op in ops {
+                    rewrite(op, ids, out);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    let mut ops = Vec::new();
+    rewrite(plan, &ids, &mut ops);
+    Ok(match ops.len() {
+        1 => ops.remove(0),
+        _ => WriteRenderPlan::Sequence(ops),
+    })
 }
 
 /// Walk past read-only wrappers (Projection / OrderBy / Skip / Limit) to
@@ -1856,6 +1982,11 @@ graph_schema:
                 let trimmed = sql.trim_start();
                 if trimmed.starts_with("SELECT count() AS n") {
                     return Ok(vec![serde_json::json!({"n": 1})]);
+                }
+                // A DELETE's ids read first (a subquery with CTEs, S13):
+                // one id, as the count probes assume one match.
+                if trimmed.starts_with("SELECT __cg_id") {
+                    return Ok(vec![serde_json::json!({"__cg_id0": "1"})]);
                 }
                 Ok(vec![])
             }
@@ -2642,6 +2773,37 @@ graph_schema:
     /// `count()` probe per DELETE for accurate counters), not pick a
     /// single label via `find_alias_label` and silently leave the other
     /// tables intact.
+    /// S13: SET / REMOVE / DELETE after a read part are planned on the bound
+    /// plan (their ids read through `__cg_write_ids`); a DELETE whose ids
+    /// need a CTE (the union of an untyped node's labels) reads them first
+    /// and deletes by them; CREATE is still the legacy planner's.
+    #[test]
+    fn cypher_writes_are_planned_on_the_bound_plan() {
+        let (db, captured) = make_capturing_db(build_multi_label_writable_schema());
+        let conn = Connection::new(&db).unwrap();
+        conn.query("MATCH (a:A) WHERE a.a_id = 'x' SET a.a_id = 'y'")
+            .expect("SET");
+        conn.query("MATCH (n) DELETE n").expect("untyped DELETE");
+        let sqls = captured.lock().unwrap().clone();
+        let update = sqls
+            .iter()
+            .find(|s| s.starts_with("UPDATE"))
+            .expect("an UPDATE");
+        assert!(update.contains("__cg_write_ids"), "{update}");
+        // The untyped DELETE's ids: read (a SELECT with the labels' CTE),
+        // then deleted by literal.
+        assert!(
+            sqls.iter()
+                .any(|s| s.starts_with("SELECT __cg_id") && s.contains("WITH")),
+            "{sqls:?}"
+        );
+        assert!(
+            sqls.iter()
+                .any(|s| s.starts_with("DELETE FROM `test_db`.`a_nodes` WHERE `a_id` IN ('1')")),
+            "{sqls:?}"
+        );
+    }
+
     #[test]
     fn cypher_untyped_match_delete_fans_out_across_node_tables() {
         let (db, captured) = make_capturing_db(build_multi_label_writable_schema());

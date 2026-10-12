@@ -128,6 +128,7 @@ pub fn probe_update_count_sql(op: &UpdateOp) -> String {
 fn render_id_source(source: &RowSource) -> String {
     match source {
         RowSource::Subquery(plan) => format!("({})", render_subquery(plan.as_ref())),
+        RowSource::Sql(sql) | RowSource::Read(sql) => format!("({sql})"),
         RowSource::Ids(ids) => {
             let parts = ids.iter().map(render_expr_inline).collect::<Vec<_>>();
             format!("({})", parts.join(", "))
