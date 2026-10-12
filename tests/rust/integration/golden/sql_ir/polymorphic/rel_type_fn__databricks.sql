@@ -24,5 +24,5 @@ INNER JOIN brahmand.users_bench u2 ON r1.to_id = u2.user_id
 WHERE r1.interaction_type = 'LIKES' AND r1.from_type = 'User' AND r1.to_type = 'User'
 )
 SELECT 
-      element_at(t.path_relationships, 1) AS `t`
+      try_element_at(t.path_relationships, 1) AS `t`
 FROM vlp_multi_type_a_b AS t

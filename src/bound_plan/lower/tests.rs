@@ -4314,6 +4314,118 @@ fn databricks_size_of_a_list() {
     );
 }
 
+/// S12b: Spark spells comprehensions with `filter` / `transform`, an ordered
+/// `collect()` by sorting (key, value) structs on the key alone, a list's
+/// node as a struct of positional fields, a pattern comprehension that
+/// matches nothing as `[]` (Spark's unmatched LEFT JOIN column is NULL), and
+/// a map as a `MAP<STRING, VARIANT>`.
+#[test]
+fn databricks_lists() {
+    let got = squash(
+        &databricks_sql(
+            "RETURN [x IN [1, 2, 3] WHERE x > 1 | x * 10] AS l",
+            &social(),
+        )
+        .unwrap(),
+    );
+    assert!(
+        got.contains("transform(filter(array(1, 2, 3), v1 -> v1 > 1), v0 -> v0 * 10)"),
+        "{got}"
+    );
+    let got = squash(
+        &databricks_sql(
+            "MATCH (u:User) WITH u ORDER BY u.user_id RETURN collect(u.name) AS names",
+            &social(),
+        )
+        .unwrap(),
+    );
+    assert!(
+        got.contains(
+            "transform(array_sort(collect_list(CASE WHEN NOT isnull(w2.p2_v1_name) THEN \
+             named_struct('k', w2.__cg_row, 'v', w2.p2_v1_name) END), (__cg_l, __cg_r) -> \
+             CASE WHEN __cg_l.k < __cg_r.k THEN -1 WHEN __cg_l.k > __cg_r.k THEN 1 ELSE 0 END), \
+             __cg_t -> __cg_t.v)"
+        ),
+        "{got}"
+    );
+    let got = squash(
+        &databricks_sql(
+            "MATCH (u:User)-[:FOLLOWS]->(f:User) RETURN u.user_id, [x IN collect(f) | x.name] AS n",
+            &social(),
+        )
+        .unwrap(),
+    );
+    for part in [
+        "collect_list(CASE WHEN NOT isnull(v2.user_id) THEN named_struct('_1', v2.user_id, '_2', v2.age,",
+        "v3 -> (v3)._7)",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    let got = squash(
+        &databricks_sql(
+            "MATCH (u:User) RETURN u.user_id, [(u)-[:FOLLOWS]->(f:User) | f.name] AS names",
+            &social(),
+        )
+        .unwrap(),
+    );
+    for part in [
+        "transform(collect_list(named_struct('v', v2.full_name)), __cg_t -> __cg_t.v)",
+        "coalesce(s1.__value, array()) AS `names`",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    let got = squash(
+        &databricks_sql(
+            "RETURN {b: 'x', a: [1]} AS m, keys({b: 1, a: 2}) AS k",
+            &social(),
+        )
+        .unwrap(),
+    );
+    for part in [
+        "map('a', CAST(array(1) AS VARIANT), 'b', CAST('x' AS VARIANT)) AS `m`",
+        "map_keys(map('a', CAST(2 AS VARIANT), 'b', CAST(1 AS VARIANT))) AS `k`",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    // Spark's IN takes a parenthesized list only (review); past a list's
+    // end is NULL, not an error under ANSI mode.
+    let got = squash(
+        &databricks_sql(
+            "MATCH (u:User) WHERE NOT 'x' IN [(u)-[:FOLLOWS]->(f:User) | f.name] \
+             RETURN head([(u)-[:FOLLOWS]->(f:User) | f.name]) AS h, [1, 2][5] AS e",
+            &social(),
+        )
+        .unwrap(),
+    );
+    for part in [
+        "NOT array_contains(coalesce(s1.__value, array()), 'x')",
+        "try_element_at(coalesce(s2.__value, array()), 1) AS `h`",
+        "try_element_at(array(1, 2), 6) AS `e`",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    // A map value is made a VARIANT by `to_variant_object`; an empty list's
+    // elements are of no type, which no VARIANT holds.
+    let got = squash(&databricks_sql("RETURN {a: {b: 1}, c: [{d: 2}]} AS m", &social()).unwrap());
+    assert!(
+        got.contains(
+            "map('a', to_variant_object(map('b', CAST(1 AS VARIANT))), \
+             'c', to_variant_object(array(map('d', CAST(2 AS VARIANT)))))"
+        ),
+        "{got}"
+    );
+    let err = databricks_sql("RETURN {l: [[]]} AS m", &social()).unwrap_err();
+    assert!(err.contains("a map holding an empty list"), "{err}");
+    // Spark groups and de-duplicates no map: refused here, not by Spark.
+    for q in [
+        "MATCH (u:User) RETURN DISTINCT {c: u.country} AS m",
+        "MATCH (u:User) RETURN {c: u.country} AS m, count(*) AS n",
+    ] {
+        let err = databricks_sql(q, &social()).unwrap_err();
+        assert!(err.contains("a grouped or DISTINCT map"), "{q}: {err}");
+    }
+}
+
 /// UNION (S7d): each arm is a CTE of its RETURN's columns in the UNION's
 /// order (matched by name); a CTE is the UNION ALL of the arms, each value
 /// read as a value of any type; UNION groups rows by Cypher's equality.
@@ -4945,28 +5057,6 @@ fn a_map_keeps_its_values_types() {
     ] {
         not_lowered(q, why);
     }
-}
-
-#[test]
-fn databricks_comprehension_is_not_lowered() {
-    use crate::server::query_context::{set_current_schema, with_query_context_sync, QueryContext};
-    let ctx = QueryContext {
-        dialect: crate::sql_generator::SqlDialect::Databricks,
-        ..QueryContext::default()
-    };
-    let got = with_query_context_sync(ctx, || {
-        set_current_schema(std::sync::Arc::new(social()));
-        translate_bound_plan(
-            "RETURN [x IN [1, 2] | x * 2] AS l",
-            &social(),
-            &ReadOptions::default(),
-        )
-        .map(|t| t.sql)
-    });
-    assert!(
-        matches!(&got, Err(e) if e.contains("a list comprehension in this SQL dialect")),
-        "{got:?}"
-    );
 }
 
 /// S8d: the schema of the composite-id walks: accounts by `(bank, num)`.

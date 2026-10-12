@@ -406,9 +406,16 @@ impl<'s> Lowerer<'s> {
             // comparison of it needs no parentheses (`EXISTS {…} = …`).
             SubqueryKind::Exists => or_else(Literal::Boolean(false)),
             SubqueryKind::Count => or_else(Literal::Integer(0)),
-            // A row that joins no group reads the empty list: ClickHouse
-            // fills an unmatched `Array` column with its default.
-            SubqueryKind::Collect(_) => column.clone(),
+            // A row that joins no group reads the empty list.
+            SubqueryKind::Collect(_) => {
+                let Some(spelling) = current_function_mapper().lists() else {
+                    return unsupported("a pattern comprehension in this SQL dialect");
+                };
+                match spelling.or_empty {
+                    Some(or_empty) => RenderExpr::Raw(or_empty(&render_expr_to_sql_plain(&column))),
+                    None => column.clone(),
+                }
+            }
         };
         self.values.insert(sq.var, value);
         if let Some(k) = list {

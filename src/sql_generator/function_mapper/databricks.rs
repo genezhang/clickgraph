@@ -50,11 +50,11 @@ impl FunctionMapper for DatabricksFunctionMapper {
     }
 
     fn array_element_or_null(&self, arr: &str, idx: &str) -> String {
-        // Spark `element_at(arr, i)` returns NULL for an out-of-bounds index
-        // (non-ANSI default), already matching openCypher `list[i]` semantics —
-        // so this is byte-identical to the plain `element_at` accessor the
-        // ArraySubscript arm emitted before, no CH-style OrNull variant needed.
-        format!("element_at({}, {})", arr, idx)
+        // Spark `element_at(arr, i)` fails on an out-of-bounds index under
+        // ANSI mode (Spark 4's and Databricks' default); `try_element_at` is
+        // NULL there, as openCypher's `list[i]`. The index is never 0 (a
+        // Cypher index `i >= 0` is `i + 1`, a negative one is as it is).
+        format!("try_element_at({}, {})", arr, idx)
     }
 
     fn count_if(&self) -> &'static str {
@@ -178,6 +178,13 @@ impl FunctionMapper for DatabricksFunctionMapper {
         // Spark's `concat` is overloaded for arrays — same call shape as CH's
         // `arrayConcat(a, b)`.
         "concat"
+    }
+
+    fn in_list_expression(&self, value: &str, list: &str, negated: bool) -> Option<String> {
+        // NULL when the list is, or holds a NULL and not the value, as
+        // Cypher's `IN`.
+        let not = if negated { "NOT " } else { "" };
+        Some(format!("{not}array_contains({list}, {value})"))
     }
 
     fn array_contains(&self) -> &'static str {
@@ -315,10 +322,71 @@ impl FunctionMapper for DatabricksFunctionMapper {
     }
 
     fn lists(&self) -> Option<super::Lists> {
-        // `filter` / `transform` and an ordered `collect_list` are not
-        // verified against the lowering's shapes: comprehensions stay on the
-        // legacy path there.
-        None
+        Some(super::Lists {
+            // `filter` keeps the elements whose predicate is true.
+            filter: |x, p, l| format!("filter({l}, {x} -> {p})"),
+            map: |x, e, l| format!("transform({l}, {x} -> {e})"),
+            // `collect_list` skips NULLs (the absent rows); the pairs are
+            // sorted by their key alone: a value need not be orderable (a
+            // map is not).
+            ordered_collect: |v, k, present| {
+                format!(
+                    "transform(array_sort(collect_list(CASE WHEN {present} THEN \
+                     named_struct('k', {k}, 'v', {v}) END), (__cg_l, __cg_r) -> \
+                     CASE WHEN __cg_l.k < __cg_r.k THEN -1 WHEN __cg_l.k > __cg_r.k THEN 1 \
+                     ELSE 0 END), __cg_t -> __cg_t.v)"
+                )
+            },
+            collect_if: |v, present| format!("collect_list(CASE WHEN {present} THEN {v} END)"),
+            // A struct of one NULL is not NULL.
+            collect_all: |v| {
+                format!("transform(collect_list(named_struct('v', {v})), __cg_t -> __cg_t.v)")
+            },
+            or_empty: Some(|l| format!("coalesce({l}, array())")),
+            // `struct(a.x, …)` names its fields after their columns: the
+            // fields are named by position to be read by it.
+            tuple: |fields| {
+                let fields: Vec<String> = fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| format!("'_{}', {f}", i + 1))
+                    .collect();
+                format!("named_struct({})", fields.join(", "))
+            },
+            element: |t, i| format!("({t})._{i}"),
+            is_null: |v| format!("isnull({v})"),
+            // An aggregate has one row also over none.
+            empty_of: |t, table, alias| {
+                format!("(SELECT collect_list({t}) FROM {table} AS {alias} WHERE false)")
+            },
+            // `array_distinct` keeps each element where it first occurs.
+            distinct: |l| format!("array_distinct({l})"),
+            map_keys: |m| format!("map_keys({m})"),
+            // A `MAP<STRING, VARIANT>`: each value keeps its type and maps of
+            // any keys are of one type. Spark refuses a map in DISTINCT,
+            // GROUP BY and set operations (the query fails). A map value is
+            // made a VARIANT by `to_variant_object` (a cast refuses it); an
+            // empty list's elements are of no type, which no VARIANT holds.
+            map_of: |entries| {
+                if entries.is_empty() {
+                    return Some("CAST(map() AS MAP<STRING, VARIANT>)".to_string());
+                }
+                if entries.iter().any(|e| e.holds_empty_list) {
+                    return None;
+                }
+                let pairs: Vec<String> = entries
+                    .iter()
+                    .map(|e| {
+                        let k = e.key.replace('\\', "\\\\").replace('\'', "\\'");
+                        match e.holds_maps {
+                            true => format!("'{k}', to_variant_object({})", e.value),
+                            false => format!("'{k}', CAST({} AS VARIANT)", e.value),
+                        }
+                    })
+                    .collect();
+                Some(format!("map({})", pairs.join(", ")))
+            },
+        })
     }
 
     fn unwind(&self) -> Option<super::Unwind> {
@@ -437,11 +505,11 @@ mod tests {
         let m = for_dialect(SqlDialect::Databricks);
         assert_eq!(m.collect_list(), "collect_list");
         assert_eq!(m.array_element(), "element_at");
-        // element_at already returns NULL on out-of-bounds (non-ANSI default),
-        // so array_element_or_null is byte-identical to the plain accessor.
+        // element_at fails out of bounds under ANSI mode (Spark 4's and
+        // Databricks' default): the NULL-returning accessor is try_element_at.
         assert_eq!(
             m.array_element_or_null("array(10, 20, 30)", "11"),
-            "element_at(array(10, 20, 30), 11)"
+            "try_element_at(array(10, 20, 30), 11)"
         );
         assert_eq!(m.count_if(), "count_if");
         assert_eq!(

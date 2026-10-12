@@ -13,9 +13,9 @@ UNION ALL
 (SELECT 'User' AS start_type, string(social.users_bench.user_id) as start_id, string(social.posts_bench.post_id) as end_id, 'Post' AS end_type, array('LIKED') as path_relationships, array(to_json(struct(social.post_likes_bench.like_date AS like_date))) as rel_properties, to_json(struct(social.users_bench.city AS _s_city, social.users_bench.country AS _s_country, social.users_bench.email_address AS _s_email_address, social.users_bench.is_active AS _s_is_active, social.users_bench.full_name AS _s_full_name, social.users_bench.registration_date AS _s_registration_date, social.users_bench.user_id AS _s_user_id)) as start_properties, to_json(struct(social.posts_bench.author_id AS _e_author_id, social.posts_bench.post_content AS _e_post_content, social.posts_bench.post_date AS _e_post_date, social.posts_bench.post_id AS _e_post_id, social.posts_bench.post_title AS _e_post_title)) as end_properties, NULL AS authored_date, NULL AS follow_date, social.post_likes_bench.like_date AS like_date FROM social.post_likes_bench INNER JOIN social.users_bench ON social.users_bench.user_id = social.post_likes_bench.user_id INNER JOIN social.posts_bench ON social.posts_bench.post_id = social.post_likes_bench.post_id)
 )
 SELECT 
-      element_at(r.path_relationships, 1) AS `t`
+      try_element_at(r.path_relationships, 1) AS `t`
 FROM pattern_union_r AS r
 UNION DISTINCT 
 SELECT 
-      element_at(r2.path_relationships, 1) AS `t`
+      try_element_at(r2.path_relationships, 1) AS `t`
 FROM pattern_union_r2 AS r2

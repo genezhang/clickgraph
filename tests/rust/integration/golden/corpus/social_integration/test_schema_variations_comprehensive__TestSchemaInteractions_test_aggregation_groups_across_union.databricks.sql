@@ -15,7 +15,7 @@ INNER JOIN test_integration.posts_test p2 ON r1.post_id = p2.post_id
 )
 SELECT 
       t.start_id AS `u.user_id`, 
-      element_at(t.path_relationships, 1) AS `type(r)`, 
+      try_element_at(t.path_relationships, 1) AS `type(r)`, 
       count(*) AS `action_count`
 FROM vlp_multi_type_u_target AS t
-GROUP BY t.start_id, element_at(t.path_relationships, 1)
+GROUP BY t.start_id, try_element_at(t.path_relationships, 1)

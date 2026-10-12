@@ -5455,13 +5455,15 @@ impl<'s> Lowerer<'s> {
             // A map or a list of maps (of `Dynamic` values) is grouped, and
             // made distinct, by its key (`CypherUnion::distinct_key`, as a
             // UNION's): ClickHouse groups no `Dynamic`, and compares `1` and
-            // `1.0` as different.
+            // `1.0` as different. A dialect without the key reads a map that
+            // is neither grouped nor made distinct as it is.
             let map_key = match self.holds_maps(&it.expr) && !it.aggregate {
                 true => match current_function_mapper().cypher_union() {
                     Some(u) => Some(RenderExpr::Raw((u.distinct_key)(
                         &render_expr_to_sql_plain(&e),
                     ))),
-                    None => return unsupported("a map in this SQL dialect"),
+                    None if !aggregating && !body.distinct => None,
+                    None => return unsupported("a grouped or DISTINCT map in this SQL dialect"),
                 },
                 false => None,
             };

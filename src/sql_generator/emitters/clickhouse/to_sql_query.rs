@@ -6521,6 +6521,30 @@ pub fn render_plan_parts_plain(mut plan: RenderPlan) -> (Vec<PlainCte>, String) 
 /// One expression of a lowered plan as SQL (its column references are final,
 /// as in [`render_plan_to_sql_plain`]): a condition handed to a generator
 /// that takes SQL text (the recursive path CTE).
+/// Cypher `x IN list` / `x NOT IN list` whose list is an expression (a
+/// comprehension, a function's list), not a list of items: as the dialect
+/// spells it (`FunctionMapper::in_list_expression`; `None`: as `IN`).
+fn in_list_expression_sql(
+    operator: &Operator,
+    operands: &[RenderExpr],
+    rendered: &[String],
+) -> Option<String> {
+    let negated = match operator {
+        Operator::In => false,
+        Operator::NotIn => true,
+        _ => return None,
+    };
+    match (operands, rendered) {
+        ([_, list], [value, list_sql])
+            if !matches!(list, RenderExpr::List(_) | RenderExpr::Literal(_)) =>
+        {
+            crate::sql_generator::function_mapper::current_function_mapper()
+                .in_list_expression(value, list_sql, negated)
+        }
+        _ => None,
+    }
+}
+
 pub fn render_expr_to_sql_plain(e: &RenderExpr) -> String {
     struct PlainGuard(bool);
     impl Drop for PlainGuard {
@@ -9499,6 +9523,11 @@ impl RenderExpr {
                     return format!("NOT {}({}, {})", contains, &rendered[1], &rendered[0]);
                 }
 
+                // IN/NOT IN with a list expression, as the dialect spells it.
+                if let Some(sql) = in_list_expression_sql(&op.operator, &op.operands, &rendered) {
+                    return sql;
+                }
+
                 // IN/NOT IN with List containing non-constant elements → expand to OR/AND
                 // ClickHouse: `x IN [col1, col2]` fails when array has column refs
                 if (op.operator == Operator::In || op.operator == Operator::NotIn)
@@ -10030,6 +10059,11 @@ impl RenderExpr {
                     return format!("NOT {}({}, {})", contains, &rendered[1], &rendered[0]);
                 }
 
+                // IN/NOT IN with a list expression, as the dialect spells it.
+                if let Some(sql) = in_list_expression_sql(&op.operator, &op.operands, &rendered) {
+                    return sql;
+                }
+
                 // IN/NOT IN with List containing non-constant elements → expand to OR/AND
                 if (op.operator == Operator::In || op.operator == Operator::NotIn)
                     && rendered.len() == 2
@@ -10380,6 +10414,11 @@ impl ToSql for OperatorApplication {
             let contains =
                 crate::sql_generator::function_mapper::current_function_mapper().array_contains();
             return format!("NOT {}({}, {})", contains, &rendered[1], &rendered[0]);
+        }
+
+        // IN/NOT IN with a list expression, as the dialect spells it.
+        if let Some(sql) = in_list_expression_sql(&self.operator, &self.operands, &rendered) {
+            return sql;
         }
 
         // IN/NOT IN with List containing non-constant elements → expand to OR/AND

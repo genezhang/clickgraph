@@ -298,6 +298,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             // `groupArray` skips NULLs; a one-element tuple of one is not
             // NULL.
             collect_all: |v| format!("arrayMap(t -> t.1, groupArray(tuple({v})))"),
+            // An unmatched row's `Array` column is its default, `[]`, also
+            // under `join_use_nulls = 1`.
+            or_empty: None,
+            tuple: |fields| format!("tuple({})", fields.join(", ")),
             element: |t, i| format!("tupleElement({t}, {i})"),
             is_null: |v| format!("isNull({v})"),
             // An aggregate has one row also over none.
@@ -313,17 +317,19 @@ impl FunctionMapper for ClickhouseFunctionMapper {
                 if entries.is_empty() {
                     // `CAST(map(), 'Map(String, Dynamic)')` fails: an empty
                     // map's value type has no variant to cast from.
-                    return "CAST(CAST(map(), 'Map(String, String)'), 'Map(String, Dynamic)')"
-                        .to_string();
+                    return Some(
+                        "CAST(CAST(map(), 'Map(String, String)'), 'Map(String, Dynamic)')"
+                            .to_string(),
+                    );
                 }
                 let pairs: Vec<String> = entries
                     .iter()
-                    .map(|(k, v)| {
-                        let k = k.replace('\\', "\\\\").replace('\'', "\\'");
-                        format!("'{k}', CAST({v}, 'Dynamic')")
+                    .map(|e| {
+                        let k = e.key.replace('\\', "\\\\").replace('\'', "\\'");
+                        format!("'{k}', CAST({}, 'Dynamic')", e.value)
                     })
                     .collect();
-                format!("map({})", pairs.join(", "))
+                Some(format!("map({})", pairs.join(", ")))
             },
         })
     }

@@ -35,7 +35,7 @@ use crate::render_plan::render_expr::{
     RenderExpr, ScalarFnCall, TableAlias,
 };
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
-use crate::sql_generator::function_mapper::current_function_mapper;
+use crate::sql_generator::function_mapper::{current_function_mapper, MapEntry};
 
 use super::elements::Elem;
 use super::unwind::{comprehension, Comprehension, Kind};
@@ -496,13 +496,21 @@ impl Lowerer<'_> {
             .iter()
             .map(|(k, v)| {
                 let value = self.element(v, items)?;
-                Ok((k.clone(), render_expr_to_sql_plain(&value)))
+                Ok(MapEntry {
+                    key: k.clone(),
+                    value: render_expr_to_sql_plain(&value),
+                    holds_maps: self.holds_maps(v),
+                    holds_empty_list: holds_empty_list(v),
+                })
             })
             .collect::<Result<Vec<_>, LowerError>>()?;
         // In key order: maps are equal by their entries (DISTINCT, grouping,
         // UNION), and ClickHouse compares them in order.
-        values.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(RenderExpr::Raw((spelling.map_of)(&values)))
+        values.sort_by(|a, b| a.key.cmp(&b.key));
+        match (spelling.map_of)(&values) {
+            Some(map) => Ok(RenderExpr::Raw(map)),
+            None => unsupported("a map holding an empty list in this SQL dialect"),
+        }
     }
 
     /// A map literal as the emitter reads it (a function's argument:
@@ -1704,5 +1712,15 @@ fn literal(l: &lx::Literal) -> Literal {
         lx::Literal::Boolean(b) => Literal::Boolean(*b),
         lx::Literal::String(s) => Literal::String(s.clone()),
         lx::Literal::Null => Literal::Null,
+    }
+}
+
+/// Whether `e` is an empty list literal, or a list or map literal holding
+/// one (a list of elements of no type).
+fn holds_empty_list(e: &LogicalExpr) -> bool {
+    match e {
+        LogicalExpr::List(items) => items.is_empty() || items.iter().any(holds_empty_list),
+        LogicalExpr::MapLiteral(entries) => entries.iter().any(|(_, v)| holds_empty_list(v)),
+        _ => false,
     }
 }
