@@ -67,6 +67,10 @@
     "subschema": null,
     "yaml": "schemas/test/foreign_selfloop_filtered.yaml"
   },
+  "ldbc_official": {
+    "subschema": null,
+    "yaml": "benchmarks/ldbc_snb/schemas/ldbc_snb_complete.yaml"
+  },
   "ldbc_snb": {
     "subschema": "ldbc_snb",
     "yaml": "schemas/test/unified_test_multi_schema.yaml"

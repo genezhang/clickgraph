@@ -1,0 +1,45 @@
+# Corpus entries of the bound plan's census only, not byte-locked by the
+# legacy pipeline's corpus sweep (tests/rust/integration/corpus_sweep.rs).
+# Written by scripts/dev/corpus_add_ldbc.py; format: schema/name<TAB>source.
+ldbc_official/bi_bi_1	LDBC official
+ldbc_official/bi_bi_10	LDBC official
+ldbc_official/bi_bi_11	LDBC official
+ldbc_official/bi_bi_12	LDBC official
+ldbc_official/bi_bi_13	LDBC official
+ldbc_official/bi_bi_14	LDBC official
+ldbc_official/bi_bi_15	LDBC official
+ldbc_official/bi_bi_16	LDBC official
+ldbc_official/bi_bi_17	LDBC official
+ldbc_official/bi_bi_18	LDBC official
+ldbc_official/bi_bi_19	LDBC official
+ldbc_official/bi_bi_2	LDBC official
+ldbc_official/bi_bi_20	LDBC official
+ldbc_official/bi_bi_3	LDBC official
+ldbc_official/bi_bi_4	LDBC official
+ldbc_official/bi_bi_5	LDBC official
+ldbc_official/bi_bi_6	LDBC official
+ldbc_official/bi_bi_7	LDBC official
+ldbc_official/bi_bi_8	LDBC official
+ldbc_official/bi_bi_9	LDBC official
+ldbc_official/interactive_complex_1	LDBC official
+ldbc_official/interactive_complex_10	LDBC official
+ldbc_official/interactive_complex_11	LDBC official
+ldbc_official/interactive_complex_12	LDBC official
+ldbc_official/interactive_complex_13	LDBC official
+ldbc_official/interactive_complex_14	LDBC official
+ldbc_official/interactive_complex_2	LDBC official
+ldbc_official/interactive_complex_3	LDBC official
+ldbc_official/interactive_complex_4	LDBC official
+ldbc_official/interactive_complex_5	LDBC official
+ldbc_official/interactive_complex_6	LDBC official
+ldbc_official/interactive_complex_7	LDBC official
+ldbc_official/interactive_complex_8	LDBC official
+ldbc_official/interactive_complex_9	LDBC official
+ldbc_official/interactive_short_1	LDBC official
+ldbc_official/interactive_short_2	LDBC official
+ldbc_official/interactive_short_3	LDBC official
+ldbc_official/interactive_short_4	LDBC official
+ldbc_official/interactive_short_5	LDBC official
+ldbc_official/interactive_short_6	LDBC official
+ldbc_official/interactive_short_7	LDBC official
+social_integration/neo4j_browser_expand	curated

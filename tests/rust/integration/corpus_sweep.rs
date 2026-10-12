@@ -102,7 +102,19 @@ pub(crate) fn load_schema_map() -> std::collections::HashMap<String, SchemaMapEn
 /// Load the nondeterministic-entry exclusion list: `schema/name<TAB>reason`
 /// per line, blank lines and `#`-comments ignored.
 fn load_nondeterministic_set() -> HashSet<(String, String)> {
-    let path = format!("{}/nondeterministic.txt", corpus_root());
+    load_entry_list("nondeterministic.txt")
+}
+
+/// Entries of the bound plan's census only (`census_only.txt`, written by
+/// `scripts/dev/corpus_add_ldbc.py`): added after the P-4c cutover, so this
+/// net of the legacy pipeline's output does not lock them.
+fn load_census_only_set() -> HashSet<(String, String)> {
+    load_entry_list("census_only.txt")
+}
+
+/// A `schema/name<TAB>…` list of corpus entries in the corpus directory.
+fn load_entry_list(file: &str) -> HashSet<(String, String)> {
+    let path = format!("{}/{file}", corpus_root());
     let content = std::fs::read_to_string(&path).unwrap_or_default();
     content
         .lines()
@@ -233,6 +245,7 @@ async fn corpus_sweep() {
     let entries = load_entries();
     let schema_map = load_schema_map();
     let nondeterministic = load_nondeterministic_set();
+    let census_only = load_census_only_set();
 
     // Cache loaded GraphSchema per schema key — many entries share a schema.
     let mut schema_cache: std::collections::HashMap<String, GraphSchema> =
@@ -244,6 +257,9 @@ async fn corpus_sweep() {
     let mut skipped_nondeterministic = 0usize;
 
     for entry in &entries {
+        if census_only.contains(&(entry.schema.clone(), entry.name.clone())) {
+            continue;
+        }
         let schema = schema_cache.entry(entry.schema.clone()).or_insert_with(|| {
             let map_entry = schema_map.get(&entry.schema).unwrap_or_else(|| {
                 panic!(
