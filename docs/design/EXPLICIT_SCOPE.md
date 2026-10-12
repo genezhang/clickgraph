@@ -4240,6 +4240,33 @@ slice that will handle it.
       people and 40 relationships, with `use_final`, against the same
       graph's latest versions in plain MergeTree tables: equal rows
       (a comprehension's list in another element order).
+  - [x] **S11l: `id()` as a value** (user 2026-10-11). A node's `id(n)`
+    as a value is its key; `id(a) = / <> id(b)` compares the elements
+    (`identity_comparison`: different labels never equal); a WITH item
+    `id(n)` returned later keeps `ResultKind::NodeId` (`Lowerer::id_values`)
+    so Bolt encodes it. `id(r)` of a relationship is Bolt's number for it
+    (`IdMapper::compute_deterministic_id` of its element id, which only
+    Rust computes: a per-process label code and `DefaultHasher`): a RETURN
+    item (`ResultKind::RelId`) holds the element id text (`value::
+    rel_element_id`) that Bolt, HTTP JSON (`execute_cte_queries`, such a
+    query is not cached) and the embedded library
+    (`cypher_to_sql_with_id_columns`) turn into the number; HTTP text
+    formats and SQL-only output keep the text. Other `id(r)` uses and
+    `elementId()` stay refused. Found by the cutover's review (legacy
+    answered them, `id(r)` with a different number than `r`'s).
+    - Acceptance: live over Bolt and HTTP (social_integration): `id(r)`
+      equals the returned `r`'s id on every row; HTTP returns the same
+      numbers; a carried `id(a)` equals `RETURN id(a)` over Bolt and is the
+      key over HTTP; `id(a) = id(b)` of all user pairs counts the users; an
+      unmatched `id(r)` is NULL; `cg query` returns the library's number.
+    - Adversarial review (ids against Bolt's `r` / paths on six schemas,
+      the cache, every output format): fixed Bolt returning the element id
+      text when no graph item was beside `id(r)` (its rows skipped the
+      transform), and `ORDER BY id(r)` sorting by that text (now refused:
+      the number exists after the query). Documented: an id carried as a
+      value is the key alone (labels lost). Filed: parallel relationships
+      share Bolt's id, as Bolt's `r` does (#1409); `WHERE id(r) = <Bolt
+      id>` (#1410).
   - **User decisions (2026-10-11)** on what S11 does not lower: a
     relationship without `edge_id` keeps its ends as its identity (#1356;
     define `edge_id` to tell parallel rows apart); an undeclared property

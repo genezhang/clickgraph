@@ -157,6 +157,10 @@ pub enum ReturnItemType {
         /// Labels for the entity (if known)
         labels: Vec<String>,
     },
+    /// A column holding an element id (`TYPE:from->to` of a relationship,
+    /// P-4c S11l `id(r)`): returned as Bolt's number for it
+    /// (`IdMapper::compute_deterministic_id`), NULL as NULL.
+    ElementIdNumber,
     /// Scalar value (property access, expression, aggregate) - return as-is
     Scalar,
     /// A value holding nodes, relationships or paths in Neo4j's JSON form
@@ -164,6 +168,18 @@ pub enum ReturnItemType {
     /// nodes and relationships in turn), of this type: the bound-plan path's
     /// paths and lists (`bound_plan::lower::value`).
     Graph(crate::bound_plan::lower::GraphType),
+}
+
+/// Bolt's number for an element id held as text (`ReturnItemType::
+/// ElementIdNumber`, P-4c S11l): the id Bolt gives that element; NULL stays
+/// NULL. The server's HTTP JSON results and the library return the same.
+pub fn element_id_number(value: Value) -> Value {
+    match value {
+        Value::String(element_id) => {
+            Value::Number(super::id_mapper::IdMapper::compute_deterministic_id(&element_id).into())
+        }
+        other => other,
+    }
 }
 
 /// Extract return metadata from logical plan and plan context
@@ -919,6 +935,10 @@ pub fn transform_row(
                 let encoded_id = super::id_mapper::IdMapper::compute_deterministic_id(&element_id);
                 log::debug!("id() encoded: {} -> {}", element_id, encoded_id);
                 result.push(BoltValue::Json(Value::Number(encoded_id.into())));
+            }
+            ReturnItemType::ElementIdNumber => {
+                let value = meta.value(&row).cloned().unwrap_or(Value::Null);
+                result.push(BoltValue::Json(element_id_number(value)));
             }
             ReturnItemType::Scalar => {
                 // For scalars, just extract the value and wrap in BoltValue::Json

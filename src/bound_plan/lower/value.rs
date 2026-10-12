@@ -280,6 +280,19 @@ fn labeled_node_object(
 /// A relationship: its type, the labels of its stored `from` and `to`
 /// nodes, the SQL of their ids, its properties.
 #[allow(clippy::too_many_arguments)]
+/// A relationship's element id (as Bolt makes it): its type and the
+/// element-id texts of its stored ends (`from`, `to`).
+pub(super) fn rel_element_id(g: &GraphValues, rel_type: &str, from: &str, to: &str) -> String {
+    let (prefix, between, suffix) = relationship_element_id_affixes(rel_type);
+    (g.text)(&[
+        string(&prefix),
+        (g.to_text)(from),
+        string(between),
+        (g.to_text)(to),
+        string(suffix),
+    ])
+}
+
 pub(super) fn rel_object(
     g: &GraphValues,
     rel_type: &str,
@@ -289,22 +302,12 @@ pub(super) fn rel_object(
     to: &str,
     props: &[(String, String)],
 ) -> String {
-    let (prefix, between, suffix) = relationship_element_id_affixes(rel_type);
     let node_id = |label: &str, id: &str| {
         let (p, s) = node_element_id_affixes(label);
         (g.text)(&[string(&p), (g.to_text)(id), string(s)])
     };
     (g.object)(&[
-        (
-            string("elementId"),
-            (g.text)(&[
-                string(&prefix),
-                (g.to_text)(from),
-                string(between),
-                (g.to_text)(to),
-                string(suffix),
-            ]),
-        ),
+        (string("elementId"), rel_element_id(g, rel_type, from, to)),
         (string("startNodeElementId"), node_id(from_label, from)),
         (string("endNodeElementId"), node_id(to_label, to)),
         (string("type"), string(rel_type)),

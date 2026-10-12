@@ -299,7 +299,7 @@ fn lower_arms(
         // properties. Through the key, as a column may be of a type
         // ClickHouse cannot group by (`Dynamic`).
         plan.group_by.0.push(match kind {
-            ResultKind::NodeId { .. } => column,
+            ResultKind::NodeId { .. } | ResultKind::RelId => column,
             ResultKind::Value
             | ResultKind::Graph(_)
             | ResultKind::Node { .. }

@@ -475,6 +475,19 @@ impl Lowerer<'_> {
         if let Some(e) = self.id_comparison(op)? {
             return Ok(e);
         }
+        // `id(a) = id(b)` / `<>` (S11l): ids are equal exactly when the
+        // elements are (each endpoint's ids are unique per element).
+        if let (O::Equal | O::NotEqual, [a, b]) = (op.operator, op.operands.as_slice()) {
+            let id_of = |e: &LogicalExpr| match e {
+                LogicalExpr::ScalarFnCall(f) if f.name.eq_ignore_ascii_case("id") => {
+                    self.entity_arg(&f.args)
+                }
+                _ => None,
+            };
+            if let (Some(a), Some(b)) = (id_of(a), id_of(b)) {
+                return self.identity_comparison(a, b, op.operator == O::Equal);
+            }
+        }
         // A list's node or relationship (`elements.rs`) by its identity.
         let element_operands = op.operands.iter().any(|o| {
             matches!(o, LogicalExpr::TableAlias(_))
@@ -1145,7 +1158,7 @@ impl Lowerer<'_> {
         }
     }
 
-    fn entity_arg(&self, args: &[LogicalExpr]) -> Option<VarId> {
+    pub(super) fn entity_arg(&self, args: &[LogicalExpr]) -> Option<VarId> {
         match args {
             [only] => self.entity(only),
             _ => None,
@@ -1209,14 +1222,22 @@ impl Lowerer<'_> {
                     Ok(RenderExpr::Literal(Literal::String("NULL".to_string())))
                 }
                 (_, Some(Scan::Impossible)) => Ok(RenderExpr::Literal(Literal::Null)),
-                // `id()` is the server's encoded id (`IdMapper`): Bolt encodes
-                // the key column of an `id(n)` RETURN item (the result shape),
-                // and the HTTP / Bolt `id()` rewrite turns comparisons with
-                // ids into key predicates before planning. Anywhere else the
-                // key is not the id.
-                ("id" | "elementid", _) => {
-                    unsupported("id() / elementId() other than a node's `id(n)` RETURN item")
-                }
+                // `id(n)` of a node as a value is its key (S11l, user
+                // 2026-10-11), as an `id(n)` RETURN item is over HTTP and in
+                // the library (Bolt encodes a RETURN item's: the result
+                // shape). Compared with another `id()`, the elements are
+                // (`Self::operator`).
+                ("id", Some(Scan::Node { .. })) => self.identity_value(v),
+                // A relationship's id is Bolt's number for it (user
+                // 2026-10-11), which only the server computes: an `id(r)`
+                // RETURN item (`ResultKind::RelId`), or compared with another
+                // `id()`.
+                ("id", Some(Scan::Rel { .. } | Scan::Rels { .. })) => unsupported(
+                    "id() of a relationship other than as a RETURN item or compared with another \
+                     id()",
+                ),
+                ("id", _) => unsupported("id() of a node of several labels as a value"),
+                ("elementid", _) => unsupported("elementId()"),
                 ("type", Some(Scan::Rel { rel_type, .. })) => {
                     self.unless_null(&[v], RenderExpr::Literal(Literal::String(rel_type.clone())))
                 }
