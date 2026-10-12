@@ -1774,8 +1774,9 @@ async fn run_count_probe(
 /// The error of a write statement the write planner does not plan: the
 /// construct, and what to use instead where there is something.
 fn write_not_supported(why: &str) -> String {
-    let what = why
-        .strip_prefix("not supported by the bound plan yet: ")
+    let what = ["not supported by the bound plan yet: ", "not lowered yet: "]
+        .iter()
+        .find_map(|p| why.strip_prefix(p))
         .unwrap_or(why);
     let instead = match what {
         "RETURN after a CREATE" => " (run the CREATE, then MATCH … RETURN)",
@@ -3018,6 +3019,10 @@ graph_schema:
             (
                 "CREATE (a:Person {person_id: 'p3'}) WITH a RETURN a.name",
                 "Not supported: a reading clause after an updating clause",
+            ),
+            (
+                "MATCH (a:Person) CREATE (c:Person {person_id: size([(a)-->(b) | b])})",
+                "Not supported: a CREATE value that reads a pattern",
             ),
         ] {
             let err = conn.query(q).expect_err(q).to_string();
