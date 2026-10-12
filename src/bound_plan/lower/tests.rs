@@ -4387,8 +4387,9 @@ fn databricks_lists() {
         .unwrap(),
     );
     for part in [
-        "map('a', CAST(array(1) AS VARIANT), 'b', CAST('x' AS VARIANT)) AS `m`",
-        "map_keys(map('a', CAST(2 AS VARIANT), 'b', CAST(1 AS VARIANT))) AS `k`",
+        "to_variant_object(map('a', CAST(array(1) AS VARIANT), 'b', CAST('x' AS VARIANT))) AS `m`",
+        "map_keys(CAST(to_variant_object(map('a', CAST(2 AS VARIANT), 'b', CAST(1 AS VARIANT))) \
+         AS MAP<STRING, VARIANT>)) AS `k`",
     ] {
         assert!(got.contains(part), "missing `{part}` in\n{got}");
     }
@@ -4414,20 +4415,25 @@ fn databricks_lists() {
     let got = squash(&databricks_sql("RETURN {a: {b: 1}, c: [{d: 2}]} AS m", &social()).unwrap());
     assert!(
         got.contains(
-            "map('a', to_variant_object(map('b', CAST(1 AS VARIANT))), \
-             'c', to_variant_object(array(map('d', CAST(2 AS VARIANT)))))"
+            "to_variant_object(map('a', CAST(to_variant_object(map('b', CAST(1 AS VARIANT))) \
+             AS VARIANT), 'c', CAST(array(to_variant_object(map('d', CAST(2 AS VARIANT)))) \
+             AS VARIANT)))"
         ),
         "{got}"
     );
     let err = databricks_sql("RETURN {l: [[]]} AS m", &social()).unwrap_err();
     assert!(err.contains("a map holding an empty list"), "{err}");
-    // Spark groups and de-duplicates no map: refused here, not by Spark.
+    // Spark groups and de-duplicates no VARIANT: a map by its key (S12d).
     for q in [
         "MATCH (u:User) RETURN DISTINCT {c: u.country} AS m",
         "MATCH (u:User) RETURN {c: u.country} AS m, count(*) AS n",
     ] {
-        let err = databricks_sql(q, &social()).unwrap_err();
-        assert!(err.contains("a grouped or DISTINCT map"), "{q}: {err}");
+        let got = squash(&databricks_sql(q, &social()).unwrap());
+        assert!(got.contains("GROUP BY CASE WHEN CAST("), "{q}: {got}");
+        assert!(
+            got.contains("concat('m:', to_json(transform_values("),
+            "{q}: {got}"
+        );
     }
 }
 
@@ -4613,26 +4619,29 @@ fn a_union_keeps_elements_apart_by_identity() {
     assert!(!sql.contains("__cg_k0"), "{sql}");
 }
 
+/// S12d: on Spark a UNION's column of values is a VARIANT, grouped by a
+/// key of its kind and text (Spark groups no VARIANT): `1` = `1.0`, not
+/// `true` or `'1'`.
 #[test]
-fn databricks_union_is_not_lowered() {
-    use crate::server::query_context::{set_current_schema, with_query_context_sync, QueryContext};
-    let ctx = QueryContext {
-        dialect: crate::sql_generator::SqlDialect::Databricks,
-        ..QueryContext::default()
-    };
-    let got = with_query_context_sync(ctx, || {
-        set_current_schema(std::sync::Arc::new(social()));
-        translate_bound_plan(
-            "RETURN 1 AS x UNION RETURN 2 AS x",
-            &social(),
-            &ReadOptions::default(),
-        )
-        .map(|t| t.sql)
-    });
-    assert!(
-        matches!(&got, Err(e) if e.contains("UNION in this SQL dialect")),
-        "{got:?}"
-    );
+fn databricks_union() {
+    let got = squash(&databricks_sql("RETURN 1 AS x UNION RETURN 1.0 AS x", &social()).unwrap());
+    for part in [
+        "SELECT CAST(w1.__cg_w1_c0 AS VARIANT) AS `__cg_c0` FROM with_w1 AS w1 UNION ALL",
+        "SELECT any_value(w3.__cg_c0) AS `x` FROM with_w3 AS w3 GROUP BY CASE WHEN",
+        "WHEN schema_of_variant(CAST(w3.__cg_c0 AS VARIANT)) RLIKE '^(TINYINT|SMALLINT|INT|BIGINT)$' \
+         THEN concat('n:', CAST(CAST(CAST(w3.__cg_c0 AS VARIANT) AS BIGINT) AS STRING))",
+        // Any other number as a Cypher number: its double (review).
+        "RLIKE '^(FLOAT|DOUBLE|DECIMAL)' THEN concat('n:', CASE WHEN \
+         variant_get(CAST(w3.__cg_c0 AS VARIANT), '$', 'DOUBLE') = \
+         floor(variant_get(CAST(w3.__cg_c0 AS VARIANT), '$', 'DOUBLE'))",
+        // A list by its elements' keys; any other scalar by its type.
+        "concat('l:', to_json(transform(CAST(CAST(w3.__cg_c0 AS VARIANT) AS ARRAY<VARIANT>), \
+         __cg_e0 ->",
+        "ELSE concat(schema_of_variant(CAST(w3.__cg_c0 AS VARIANT)), ':', \
+         CAST(CAST(w3.__cg_c0 AS VARIANT) AS STRING)) END",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
 }
 
 /// S7e1: a list comprehension over values filters and maps by the

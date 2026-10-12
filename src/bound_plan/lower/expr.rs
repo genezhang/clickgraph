@@ -499,7 +499,6 @@ impl Lowerer<'_> {
                 Ok(MapEntry {
                     key: k.clone(),
                     value: render_expr_to_sql_plain(&value),
-                    holds_maps: self.holds_maps(v),
                     holds_empty_list: holds_empty_list(v),
                 })
             })
