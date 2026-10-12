@@ -300,9 +300,15 @@ fn extract_node_from_row(
         .map(|(k, v)| (k, Value::from(v)))
         .collect();
 
+    // Its label, then the union labels it carries (a Post is also a Message).
+    let unions: Vec<String> = schema
+        .union_labels_of(&label)
+        .into_iter()
+        .map(str::to_string)
+        .collect();
     Some(GraphNode {
         id: element_id,
-        labels: vec![label],
+        labels: std::iter::once(label).chain(unions).collect(),
         properties: embedded_properties,
     })
 }

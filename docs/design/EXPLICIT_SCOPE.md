@@ -4434,6 +4434,20 @@ slice that will handle it.
         NULL); BI 12, IS 6, IS 7 answer where the legacy SQL fails; IC 1
         the grouping-key error; BI 17 (two variable-length paths, refused
         by the legacy pipeline) runs past 300 s.
+      - Adversarial review (ClickHouse checked against the Neo4j oracle on
+        multi-label nodes: label tests in WHERE / CASE / comprehensions /
+        OPTIONAL NULLs, `labels()` of values, collects, paths, VLP ends,
+        property maps, EXISTS, shortestPath, UNION, re-labeling, embedded
+        SET / DELETE fanning out to the members: all as Neo4j; other
+        schemas' census SQL byte-identical). Fixed: on a dialect that kept
+        the legacy fallback, a read the bound plan refused reached the
+        legacy pipeline, which knows no union label (`m:Message` of a Post
+        `false`): a schema with union labels never falls back
+        (`translate::legacy_reads`); the embedded graph result
+        (`query_graph`) gave a node matched by its own label no union
+        labels; `CREATE (n:Message)` now says Message is a union label.
+        Not yet: `db.schema.nodeTypeProperties`, `apoc.meta.schema` and the
+        Bolt schema visualization list no union label.
     - [ ] **S11o3…: the 11 not lowered**, IC 1's grouping key, BI 17's time.
 - [ ] **S12: Databricks coverage.** The bound plan lowers on Databricks what
   it lowers on ClickHouse, so the legacy pipeline can go on every dialect.

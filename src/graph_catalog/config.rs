@@ -2686,9 +2686,9 @@ impl GraphSchemaConfig {
     }
 
     /// The schema's union labels ([`UnionLabelDefinition`]), each of its
-    /// node labels; refused: a union label named as a node label, a
-    /// relationship type or another union label, a member that is no node
-    /// label, a union of none, a relationship end that names one.
+    /// node labels; refused: a union label named as a node label or defined
+    /// twice, a member that is no node label, a union of none, a
+    /// relationship end that names one.
     fn union_labels(
         &self,
     ) -> Result<
