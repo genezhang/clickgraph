@@ -4516,11 +4516,14 @@ slice that will handle it.
       (`CAST(MAP AS VARIANT)`), loudly.
   - [x] **S12d: UNION and grouped maps.** `FunctionMapper::cypher_union` on
     Spark: a column of values is a VARIANT (`CAST(… AS VARIANT)`), grouped
-    by `distinct_key`, a text of the value's kind and canonical text (Spark
-    groups, compares and sorts no VARIANT): `n:` a number (an integral one
-    within BIGINT as its integer, a decimal without trailing zeros: `1` =
-    `1.0` = decimal `1.0`, `-0.0` = `0`), `b:` a boolean, `s:` a string or
-    date, `c:` a list or map (its JSON), `:` NULL; `any_value` of a group.
+    by `distinct_key`, a text of the value's kind and value (Spark groups,
+    compares and sorts no VARIANT, `variant_key`): `n:` a number as a
+    Cypher number (an integral one within BIGINT as its integer, any other
+    as its double: `1` = `1.0` = decimal `1.0`, `-0.0` = `0`, `0.0001` either
+    way), `b:` a boolean, any other scalar by its type and text (a date is
+    no string), `l:` / `m:` a list or map by its elements' keys (two levels,
+    then JSON), `:` NULL; `any_value` of a group (which of equal values, as
+    ClickHouse's `any`).
     A map literal is now a VARIANT object (`to_variant_object`, S12b's
     `MAP<STRING, VARIANT>` could not be a VARIANT: a UNION's or a map's
     value), so a map nested in a map needs no special case
@@ -4537,6 +4540,16 @@ slice that will handle it.
       ordered arms, nodes and paths, grouped and DISTINCT maps, a boolean
       with an integer): every one equal; S12b's 61 list and map queries
       rerun with maps as VARIANT objects: every one equal (63 now lower).
+    - Adversarial review (Neo4j oracle): fixed the key splitting a decimal
+      and a double of one value (`CAST(double AS STRING)` is scientific),
+      merging decimals past 18 digits and failing past 10^20 (a
+      `DECIMAL(38, 18)` cast; now as Cypher's double), lists and maps
+      compared by JSON (`[1]` ≠ `[1.0]`; now by their elements' keys), and a
+      date merged with its text (now by type). Rerun: every repro equal to
+      Neo4j; corpus and S12b unchanged. Filed: ClickHouse merges a date
+      with its text (#1432). Noted: a list of NULLs only (`[null]`,
+      `ARRAY<VOID>`) in a UNION fails on Spark, loudly; a list of mixed
+      element types fails on Spark (S12a).
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

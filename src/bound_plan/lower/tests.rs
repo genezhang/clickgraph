@@ -4430,7 +4430,10 @@ fn databricks_lists() {
     ] {
         let got = squash(&databricks_sql(q, &social()).unwrap());
         assert!(got.contains("GROUP BY CASE WHEN CAST("), "{q}: {got}");
-        assert!(got.contains("concat('c:', to_json("), "{q}: {got}");
+        assert!(
+            got.contains("concat('m:', to_json(transform_values("),
+            "{q}: {got}"
+        );
     }
 }
 
@@ -4627,6 +4630,15 @@ fn databricks_union() {
         "SELECT any_value(w3.__cg_c0) AS `x` FROM with_w3 AS w3 GROUP BY CASE WHEN",
         "WHEN schema_of_variant(CAST(w3.__cg_c0 AS VARIANT)) RLIKE '^(TINYINT|SMALLINT|INT|BIGINT)$' \
          THEN concat('n:', CAST(CAST(CAST(w3.__cg_c0 AS VARIANT) AS BIGINT) AS STRING))",
+        // Any other number as a Cypher number: its double (review).
+        "RLIKE '^(FLOAT|DOUBLE|DECIMAL)' THEN concat('n:', CASE WHEN \
+         variant_get(CAST(w3.__cg_c0 AS VARIANT), '$', 'DOUBLE') = \
+         floor(variant_get(CAST(w3.__cg_c0 AS VARIANT), '$', 'DOUBLE'))",
+        // A list by its elements' keys; any other scalar by its type.
+        "concat('l:', to_json(transform(CAST(CAST(w3.__cg_c0 AS VARIANT) AS ARRAY<VARIANT>), \
+         __cg_e0 ->",
+        "ELSE concat(schema_of_variant(CAST(w3.__cg_c0 AS VARIANT)), ':', \
+         CAST(CAST(w3.__cg_c0 AS VARIANT) AS STRING)) END",
     ] {
         assert!(got.contains(part), "missing `{part}` in\n{got}");
     }

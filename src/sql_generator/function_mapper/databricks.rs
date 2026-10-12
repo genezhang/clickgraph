@@ -37,6 +37,53 @@
 
 use super::FunctionMapper;
 
+/// A text of the VARIANT `x` that two values share exactly when Cypher's
+/// DISTINCT takes them as equal: a number (`n:`) by its value, as a Cypher
+/// number (a 64-bit integer or a double): an integral one within BIGINT as
+/// its integer (`1` = `1.0` = a decimal `1.0`, `-0.0` = `0`), any other as
+/// its double (`0.0001` written either way); a boolean (`b:`); any other
+/// scalar by its type and text (a date is no string); a list (`l:`) or map
+/// (`m:`, keys sorted, as a VARIANT object holds them) by its elements'
+/// texts, two levels deep and by its JSON below; NULL one group (`:`).
+fn variant_key(x: &str, depth: usize) -> String {
+    const DEPTH: usize = 2;
+    let ty = format!("schema_of_variant({x})");
+    let d = format!("variant_get({x}, '$', 'DOUBLE')");
+    let (list, map) = if depth < DEPTH {
+        let (e, k, v) = (
+            format!("__cg_e{depth}"),
+            format!("__cg_k{depth}"),
+            format!("__cg_v{depth}"),
+        );
+        (
+            format!(
+                "concat('l:', to_json(transform(CAST({x} AS ARRAY<VARIANT>), {e} -> {})))",
+                variant_key(&e, depth + 1)
+            ),
+            format!(
+                "concat('m:', to_json(transform_values(CAST({x} AS MAP<STRING, VARIANT>), \
+                 ({k}, {v}) -> {})))",
+                variant_key(&v, depth + 1)
+            ),
+        )
+    } else {
+        let json = format!("concat('c:', to_json({x}))");
+        (json.clone(), json)
+    };
+    format!(
+        "CASE WHEN {x} IS NULL OR {ty} = 'VOID' THEN ':' \
+         WHEN {ty} = 'BOOLEAN' THEN concat('b:', CAST({x} AS STRING)) \
+         WHEN {ty} RLIKE '^(TINYINT|SMALLINT|INT|BIGINT)$' \
+         THEN concat('n:', CAST(CAST({x} AS BIGINT) AS STRING)) \
+         WHEN {ty} RLIKE '^(FLOAT|DOUBLE|DECIMAL)' THEN concat('n:', \
+         CASE WHEN {d} = floor({d}) AND abs({d}) < 9.2E18 \
+         THEN CAST(CAST({d} AS BIGINT) AS STRING) ELSE CAST({d} AS STRING) END) \
+         WHEN {ty} RLIKE '^ARRAY' THEN {list} \
+         WHEN {ty} RLIKE '^OBJECT' THEN {map} \
+         ELSE concat({ty}, ':', CAST({x} AS STRING)) END"
+    )
+}
+
 pub(crate) struct DatabricksFunctionMapper;
 
 impl FunctionMapper for DatabricksFunctionMapper {
@@ -318,39 +365,9 @@ impl FunctionMapper for DatabricksFunctionMapper {
         Some(super::CypherUnion {
             // A VARIANT holds each value with its own type.
             any_type: |v| format!("CAST({v} AS VARIANT)"),
-            // The value's kind and text (Spark groups no VARIANT): values of
-            // different kinds are different (`1`, `'1'`, `true`), numbers
-            // equal by value (`1` = `1.0`, a decimal `5.0` = `5`, `-0.0` =
-            // `0`: an integral number within BIGINT is its integer's text),
-            // a list or map is its JSON. NULL is one group.
-            distinct_key: |v| {
-                let x = format!("CAST({v} AS VARIANT)");
-                let ty = format!("schema_of_variant({x})");
-                let d = format!("variant_get({x}, '$', 'DOUBLE')");
-                let integral = |n: &str| {
-                    format!(
-                        "CASE WHEN {n} = floor({n}) AND abs({n}) < 9.0E18 \
-                         THEN CAST(CAST({n} AS BIGINT) AS STRING) ELSE CAST({n} AS STRING) END"
-                    )
-                };
-                // A decimal's text without trailing zeros, as an integer's
-                // when integral.
-                let decimal = format!(
-                    "regexp_replace(regexp_replace(CAST(CAST({x} AS DECIMAL(38, 18)) AS STRING), \
-                     '(\\\\.[0-9]*?)0+$', '$1'), '\\\\.$', '')"
-                );
-                format!(
-                    "CASE WHEN {x} IS NULL OR {ty} = 'VOID' THEN ':' \
-                     WHEN {ty} = 'BOOLEAN' THEN concat('b:', CAST({x} AS STRING)) \
-                     WHEN {ty} RLIKE '^(TINYINT|SMALLINT|INT|BIGINT)$' \
-                     THEN concat('n:', CAST(CAST({x} AS BIGINT) AS STRING)) \
-                     WHEN {ty} RLIKE '^(FLOAT|DOUBLE)$' THEN concat('n:', {}) \
-                     WHEN {ty} RLIKE '^DECIMAL' THEN concat('n:', {decimal}) \
-                     WHEN {ty} RLIKE '^(ARRAY|OBJECT)' THEN concat('c:', to_json({x})) \
-                     ELSE concat('s:', CAST({x} AS STRING)) END",
-                    integral(&d)
-                )
-            },
+            // A text of the value's kind and value (Spark groups no VARIANT):
+            // `variant_key`.
+            distinct_key: |v| variant_key(&format!("CAST({v} AS VARIANT)"), 0),
             any: |v| format!("any_value({v})"),
             row_number: |keys| format!("row_number() OVER (ORDER BY {keys})"),
         })
