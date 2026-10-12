@@ -183,6 +183,18 @@ impl Lowerer<'_> {
     }
 
     /// A node's or relationship's identity as one expression.
+    /// Key `k` of map value `v`, where the segment carries its keys
+    /// (`Lowerer::map_keys`, S11m): the key's value, NULL for a key the map
+    /// does not have. `None`: its keys are not known here.
+    pub(super) fn map_key(&self, v: VarId, k: &str) -> Option<RenderExpr> {
+        let keys = self.map_keys.get(&v)?;
+        Some(
+            keys.iter()
+                .find(|(key, _)| key == k)
+                .map_or(RenderExpr::Literal(Literal::Null), |(_, e)| e.clone()),
+        )
+    }
+
     pub(super) fn identity_value(&self, v: VarId) -> Result<RenderExpr, LowerError> {
         match self.identity(v)? {
             None => Ok(RenderExpr::Literal(Literal::Null)),
@@ -216,11 +228,18 @@ impl Lowerer<'_> {
                         let t = self.variable(&pa.table_alias.0, items)?;
                         self.elem_property(&t, &elem, prop)?
                     }
-                    // A map's value: its type is not known here (a value of
-                    // any type would compare, sort and count unlike its own).
-                    (_, Some(Kind::Map(_))) => {
-                        return unsupported("a property of a map (its value's type is not known)")
-                    }
+                    // A map's value: the key's own column where a WITH
+                    // projected the map's keys (S11m); otherwise its type is
+                    // not known here (a value of any type would compare,
+                    // sort and count unlike its own).
+                    (_, Some(Kind::Map(_))) => match self.map_key(v, prop) {
+                        Some(e) => e,
+                        None => {
+                            return unsupported(
+                                "a property of a map (its value's type is not known)",
+                            )
+                        }
+                    },
                     _ => {
                         return unsupported("a property of a value (map, list element, WITH item)")
                     }
@@ -337,11 +356,21 @@ impl Lowerer<'_> {
                 // An element out of range would be a tuple of defaults.
                 return unsupported("an element or slice of a list of nodes or relationships");
             }
-            // `m['k']` of a map: its value's type is not known here.
-            LogicalExpr::ArraySubscript { array, .. }
+            // `m['k']` of a map: as `m.k` (S11m), for a literal key.
+            LogicalExpr::ArraySubscript { array, index }
                 if matches!(self.kind(array), Kind::Map(_)) =>
             {
-                return unsupported("a key of a map (its value's type is not known)");
+                let key = match (array.as_ref(), index.as_ref()) {
+                    (
+                        LogicalExpr::TableAlias(lx::TableAlias(n)),
+                        LogicalExpr::Literal(lx::Literal::String(k)),
+                    ) => parse_var(n).and_then(|v| self.map_key(v, k)),
+                    _ => None,
+                };
+                match key {
+                    Some(e) => e,
+                    None => return unsupported("a key of a map (its value's type is not known)"),
+                }
             }
             LogicalExpr::ArraySubscript { array, index } => RenderExpr::ArraySubscript {
                 array: Box::new(self.expr(array, items)?),

@@ -4821,9 +4821,29 @@ fn a_map_keeps_its_values_types() {
         "WITH {b: 1, a: 2} AS m RETURN keys(m) AS k",
         &["mapKeys(w1.v0) AS \"k\""],
     );
+    // A key of a map a WITH projected: the key's own column (S11m).
+    has(
+        "MATCH (u:User) WITH {n: u.name, k: u.user_id} AS m WHERE m.k > 5 \
+         RETURN m.n AS n, m['k'] AS k, m.missing AS z",
+        &[
+            r#"v0.full_name AS "v1__k0""#,
+            r#"v0.user_id AS "v1__k1""#,
+            "WHERE v0.user_id > 5",
+            r#"w1.v1__k0 AS "n", w1.v1__k1 AS "k", NULL AS "z""#,
+        ],
+    );
+    // Through another WITH, and constant keys as they are.
+    has(
+        "MATCH (u:User) WITH {a: 1, n: u.name} AS m WITH m RETURN m.a AS a, m.n AS n",
+        &[r#"w1.v1__k1 AS "v2__k1""#, r#"1 AS "a", w2.v2__k1 AS "n""#],
+    );
     for (q, why) in [
-        ("WITH {a: 1} AS m RETURN m.a AS a", "a property of a map"),
-        ("WITH {a: 1} AS m RETURN m['a'] AS a", "a key of a map"),
+        // A map whose keys are not known (a parameter, a list's element).
+        (
+            "UNWIND [{a: 1}] AS m RETURN m.a AS a",
+            "a property of a map",
+        ),
+        ("UNWIND [{a: 1}] AS m RETURN m['a'] AS a", "a key of a map"),
         (
             "WITH {days: 5} AS m RETURN duration(m) AS d",
             "duration() of a map",

@@ -307,6 +307,7 @@ impl Query<'_> {
             elided: HashMap::new(),
             paths: HashMap::new(),
             graph_values: HashMap::new(),
+            map_keys: HashMap::new(),
             kinds: HashMap::new(),
             local_kinds: RefCell::new(HashMap::new()),
             collect_order: None,
@@ -556,6 +557,7 @@ struct Segment<'s> {
     order: RowOrder,
     elided: HashMap<VarId, VarId>,
     graph_values: HashMap<VarId, Carried>,
+    map_keys: HashMap<VarId, MapKeys>,
 }
 
 /// One column an OPTIONAL MATCH's matches are joined to the input rows on:
@@ -607,6 +609,9 @@ struct Lowerer<'s> {
     /// Graph values (`value.rs`) the segment's CTE carries, by variable;
     /// each is also in `values`.
     graph_values: HashMap<VarId, Carried>,
+    /// Map values the segment's CTE carries with each key's value (S11m):
+    /// a map literal a WITH projected; each is also in `values`.
+    map_keys: HashMap<VarId, MapKeys>,
     /// What each projected or unwound value is (`unwind.rs`).
     kinds: HashMap<VarId, unwind::Kind>,
     /// What each comprehension parameter is: an element of its list. Filled
@@ -1782,6 +1787,7 @@ impl<'s> Lowerer<'s> {
         std::mem::swap(&mut self.order, &mut s.order);
         std::mem::swap(&mut self.elided, &mut s.elided);
         std::mem::swap(&mut self.graph_values, &mut s.graph_values);
+        std::mem::swap(&mut self.map_keys, &mut s.map_keys);
         s
     }
 
@@ -5515,6 +5521,23 @@ impl<'s> Lowerer<'s> {
                         body.determined.push(name.clone());
                     }
                     exports.values.push((it.var, col_at(alias, &name)));
+                    // A map's keys, each its own column (S11m), which the
+                    // map's key determines as it does the map.
+                    if let Some(keys) = self.item_map_keys(&it.expr)? {
+                        // This projection's WHERE / ORDER BY read the item's
+                        // keys over its input rows.
+                        self.map_keys.insert(it.var, keys.clone());
+                        let first = body.select.len();
+                        let keys = export_map_keys(it.var, keys, alias, &mut body);
+                        if map_key.is_some() {
+                            let added = body.select[first..]
+                                .iter()
+                                .filter_map(|s| s.col_alias.as_ref().map(|a| a.0.clone()))
+                                .collect::<Vec<_>>();
+                            body.determined.extend(added);
+                        }
+                        exports.maps.push((it.var, keys));
+                    }
                 }
                 None => {
                     let column = body.column(e, &it.name);
@@ -5825,6 +5848,24 @@ impl<'s> Lowerer<'s> {
         }
     }
 
+    /// The keys of the map a WITH item `e` is, each with its value (S11m): a
+    /// map literal, or a map value this segment carries with its keys.
+    fn item_map_keys(&self, e: &LogicalExpr) -> Result<Option<MapKeys>, LowerError> {
+        match e {
+            LogicalExpr::MapLiteral(entries) => {
+                let mut keys = Vec::new();
+                for (k, v) in entries {
+                    keys.push((k.clone(), self.expr(v, &HashMap::new())?));
+                }
+                Ok(Some(keys))
+            }
+            LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(n)) => {
+                Ok(parse_var(n).and_then(|v| self.map_keys.get(&v).cloned()))
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// Export a node or relationship `src` as `out` from a CTE aliased
     /// `alias`: its physical identity (and endpoint) columns, and the
     /// properties read of `out` downstream. Returns how the next segment
@@ -6080,6 +6121,10 @@ impl<'s> Lowerer<'s> {
                     body.select.push(select(e, &v.name()));
                     exports.values.push((v, col_at(alias, &v.name())));
                 }
+                if let Some(keys) = self.map_keys.get(&v).cloned() {
+                    let keys = export_map_keys(v, keys, alias, body);
+                    exports.maps.push((v, keys));
+                }
                 continue;
             }
             let scan = self.export_element(v, v, alias, body, &mut Vec::new())?;
@@ -6149,6 +6194,7 @@ impl<'s> Lowerer<'s> {
         self.scans = exports.scans.into_iter().collect();
         self.values = exports.values.into_iter().collect();
         self.graph_values = exports.graph.into_iter().collect();
+        self.map_keys = exports.maps.into_iter().collect();
         self.emitted = vec![alias.clone()];
         self.from = Some(table_ref(name, &alias));
         self.joins = Vec::new();
@@ -6405,6 +6451,29 @@ struct Exports<'s> {
     keep: Option<RenderExpr>,
     /// Graph values among `values`.
     graph: Vec<(VarId, Carried)>,
+    /// Each key's value of the map values among `values` (S11m).
+    maps: Vec<(VarId, MapKeys)>,
+}
+
+/// A map value's keys and each one's value, in its own type (S11m): what
+/// `m.k` / `m['k']` reads.
+type MapKeys = Vec<(String, RenderExpr)>;
+
+/// Export map `v`'s keys `keys` as `out`'s from a CTE aliased `alias`: each
+/// key's value a column `{out}__k{i}` (a constant stays as it is). Returns
+/// how the next segment reads them.
+fn export_map_keys(out: VarId, keys: MapKeys, alias: &str, body: &mut Body) -> MapKeys {
+    keys.into_iter()
+        .enumerate()
+        .map(|(i, (k, e))| {
+            if is_constant(&e) {
+                return (k, e);
+            }
+            let name = format!("{}__k{i}", out.name());
+            body.select.push(select(e, &name));
+            (k, col_at(alias, &name))
+        })
+        .collect()
 }
 
 fn join(table_name: String, alias: &str) -> Join {
