@@ -4697,7 +4697,7 @@ slice that will handle it.
       when the read part is not deterministic (`rand()`, LIMIT without
       ORDER BY); a node of no properties stays the legacy planner's (its
       SQL invalid, as before).
-  - [ ] **S13c: SET / REMOVE … RETURN.** Cypher's RETURN after the writes
+  - [x] **S13c: SET / REMOVE … RETURN.** Cypher's RETURN after the writes
     reads the same records, their properties as the writes left them
     (Neo4j: `MATCH (n) WHERE n.x = 1 SET n.age = n.age + 1 RETURN n.age`
     the new ages; `… SET n.x = 2 RETURN n.x` both records, `2`). The bound
@@ -4719,6 +4719,18 @@ slice that will handle it.
       CREATE … RETURN as before), chdb end to end: SET … RETURN the new
       values and the counters, a SET of a matched property refused before
       writing (14 pass; #1436's 2 as on main).
+    - Adversarial review (chdb, Neo4j oracle): the refusal looked at the
+      SET variable's own reads only; another variable can be the same node
+      (`MATCH (a), (b) WHERE b.name = … SET a.name = …`: Neo4j two records,
+      the re-read none), and an undeclared property reads the written
+      column by name. Now by column: any node of the read part that can be
+      of the written label reading the written column (an
+      expression-mapped property: refused). A non-deterministic call in the
+      read part (`rand()`, `randomUUID()`, `timestamp()`, the clock) is
+      drawn again: refused. Fixed a regression (any clause after a CREATE
+      fell to the legacy planner, not only RETURN) and an S13a gap (chdb's
+      UPDATE, as the lightweight DELETE, resolves no CTE in its subquery:
+      every write whose ids need one reads them first).
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

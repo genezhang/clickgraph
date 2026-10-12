@@ -569,6 +569,18 @@ fn rename_op(
     })
 }
 
+/// Does the (bound) expression call one of the functions `names`
+/// (lowercase) with no argument?
+pub(crate) fn calls_nullary(expr: &LogicalExpr, names: &[&str]) -> bool {
+    let mut found = false;
+    visit(expr, &mut |e| {
+        if let LogicalExpr::ScalarFnCall(f) = e {
+            found |= f.args.is_empty() && names.contains(&f.name.to_ascii_lowercase().as_str());
+        }
+    });
+    found
+}
+
 /// Does the (bound) expression contain an aggregate function call?
 pub(crate) fn contains_aggregate(expr: &LogicalExpr) -> bool {
     let mut found = false;

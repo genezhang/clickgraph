@@ -506,3 +506,26 @@ fn set_of_a_matched_property_then_return_is_refused() {
         1
     );
 }
+
+/// Two CREATE clauses; a SET whose read part needs a CTE (a WITH) — its
+/// ids read first (chdb's UPDATE resolves no CTE in its subquery).
+#[test]
+fn create_clauses_and_set_after_with() {
+    let Some(conn) = conn() else { return };
+    let mut counters = conn
+        .query("CREATE (:Person {person_id: 'rc1', name: 'x'}) CREATE (:Person {person_id: 'rc2', name: 'y'})")
+        .expect("two CREATE clauses");
+    assert_eq!(int(&counters.next().unwrap(), "nodes_created"), 2);
+    conn.query(
+        "MATCH (a:Person) WHERE a.person_id IN ['rc1', 'rc2'] WITH a WHERE a.name = 'x' \
+         SET a.name = 'after_with'",
+    )
+    .expect("SET after a WITH");
+    let mut result = conn
+        .query("MATCH (a:Person) WHERE a.person_id = 'rc1' RETURN a.name AS n")
+        .expect("read back");
+    assert_eq!(
+        result.next().unwrap().get("n").unwrap().as_str(),
+        Some("after_with")
+    );
+}

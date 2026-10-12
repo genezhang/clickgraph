@@ -143,24 +143,70 @@ fn return_sql(
     if pages(&bound.read.plan) {
         return refuse("an update of a MATCH with SKIP or LIMIT");
     }
-    let read = super::lower::write::read_properties(&bound.read, schema);
+    // A non-deterministic call is drawn again by the re-read.
+    let mut exprs = Vec::new();
+    super::lower::op_exprs(&bound.read.plan, &mut exprs);
+    for sq in &bound.read.subqueries {
+        super::lower::op_exprs(&sq.plan, &mut exprs);
+    }
+    const DRAWN: [&str; 8] = [
+        "rand",
+        "randomuuid",
+        "timestamp",
+        "datetime",
+        "localdatetime",
+        "date",
+        "time",
+        "localtime",
+    ];
+    if exprs
+        .iter()
+        .any(|e| crate::bound_plan::expr::calls_nullary(e, &DRAWN))
+    {
+        return refuse("an update of a MATCH that calls rand() or reads the clock");
+    }
+    // A column a SET / REMOVE writes, read by any node of the read part that
+    // can be of its label (another variable can be the same node; an
+    // undeclared property reads its column by name; an expression-mapped
+    // one reads columns that cannot be told).
+    let mut written: Vec<(String, String, &String)> = Vec::new();
     for w in &bound.writes {
         let (BoundWrite::Set { var, property, .. } | BoundWrite::Remove { var, property, .. }) = w
         else {
             continue;
         };
-        // The node and every binding it passes through (`WITH a AS b`).
-        let mut v = Some(*var);
-        while let Some(x) = v {
-            if read.get(&x).is_some_and(|props| props.contains(property)) {
+        if let BindingKind::Node { labels } = &bound.read.binding(*var).kind {
+            for label in labels {
+                let column = schema
+                    .node_schema_opt(label)
+                    .and_then(|n| property_column(n, property));
+                if let Some(column) = column {
+                    written.push((label.clone(), column, property));
+                }
+            }
+        }
+    }
+    let read = super::lower::write::read_properties(&bound.read, schema);
+    for (v, props) in &read {
+        let BindingKind::Node { labels } = &bound.read.binding(*v).kind else {
+            continue;
+        };
+        for (label, column, property) in &written {
+            if !labels.contains(label) {
+                continue;
+            }
+            let Some(node) = schema.node_schema_opt(label) else {
+                continue;
+            };
+            let conflict = props.iter().any(|p| match node.property_mappings.get(p) {
+                Some(PropertyValue::Expression(_)) => true,
+                _ => property_column(node, p).as_ref() == Some(column),
+            });
+            if conflict {
                 return refuse(&format!(
                     "a SET or REMOVE of `{property}`, which the MATCH reads"
                 ));
             }
-            v = match bound.read.binding(x).source {
-                super::types::BindingSource::Projection { of, .. } => of,
-                _ => None,
-            };
         }
     }
     let lowered = super::lower::lower_statement(ret, schema, &LowerOptions::default())
@@ -263,7 +309,7 @@ impl<'a> Planner<'a> {
             if let Group::Delete { var, detach: true } = g {
                 for label in self.labels(*var)? {
                     self.writable(&label)?;
-                    let Some(source) = self.source(*var, &label, true)? else {
+                    let Some(source) = self.source(*var, &label)? else {
                         continue;
                     };
                     for end in edge_ends(self.schema, &label, true)? {
@@ -341,7 +387,7 @@ impl<'a> Planner<'a> {
         let labels = self.labels(var)?;
         for label in &labels {
             let node = self.writable(label)?;
-            let Some(source) = self.source(var, label, false)? else {
+            let Some(source) = self.source(var, label)? else {
                 continue;
             };
             let unwritable = items
@@ -496,7 +542,7 @@ impl<'a> Planner<'a> {
     ) -> Result<(), WritePlanError> {
         for label in self.labels(var)? {
             let node = self.writable(&label)?;
-            let Some(source) = self.source(var, &label, true)? else {
+            let Some(source) = self.source(var, &label)? else {
                 continue;
             };
             match detach {
@@ -601,17 +647,11 @@ impl<'a> Planner<'a> {
     /// The identities of `var` of `label` in the read part's records, as a
     /// subquery of one column; `None` when the node matches nothing. A node
     /// of several labels: the identities of `label`'s (its rows' label
-    /// column). For a DELETE whose subquery has CTEs, a
-    /// [`RowSource::Read`]: ClickHouse's lightweight DELETE reads its
-    /// subquery's tables in the target's database, where a CTE is unknown
-    /// (an UPDATE and a SELECT read it), so the executor reads the ids
-    /// first.
-    fn source(
-        &mut self,
-        var: VarId,
-        label: &str,
-        delete: bool,
-    ) -> Result<Option<RowSource>, WritePlanError> {
+    /// column). A subquery with CTEs is a [`RowSource::Read`]: ClickHouse's
+    /// lightweight DELETE (and chdb's UPDATE) resolves its subquery's tables
+    /// in the target's database, where a CTE is unknown, so the executor
+    /// reads the ids first.
+    fn source(&mut self, var: VarId, label: &str) -> Result<Option<RowSource>, WritePlanError> {
         if !self.identities.contains_key(&var) {
             let rows = lower_identities(&self.stmt.read, self.schema, &self.options, var, true)
                 .map_err(|e| WritePlanError::Unsupported(e.to_string()))?;
@@ -636,7 +676,7 @@ impl<'a> Planner<'a> {
             false => String::new(),
         };
         let sql = format!("SELECT {id} FROM ({inner}) AS __cg_write_ids{label_filter}");
-        Ok(Some(match delete && !rows.plan.ctes.0.is_empty() {
+        Ok(Some(match !rows.plan.ctes.0.is_empty() {
             true => RowSource::Read(sql),
             false => RowSource::Sql(sql),
         }))
@@ -994,6 +1034,21 @@ mod tests {
             (
                 "MATCH (u:User) WITH u LIMIT 2 SET u.name = 'x' RETURN u.name",
                 "SKIP or LIMIT",
+            ),
+            // Another variable can be the same node (review).
+            (
+                "MATCH (a:User), (b:User) WHERE b.name = 'x' SET a.name = 'y' \
+                 RETURN a.user_id",
+                "which the MATCH reads",
+            ),
+            // An undeclared property reads its column by name (review).
+            (
+                "MATCH (a:User) WHERE a.full_name = 'x' SET a.name = 'y' RETURN a.user_id",
+                "which the MATCH reads",
+            ),
+            (
+                "MATCH (a:User) WHERE rand() < 0.5 SET a.age = 2 RETURN count(*) AS c",
+                "rand()",
             ),
         ] {
             let err = plan_write(q, &social()).unwrap_err();

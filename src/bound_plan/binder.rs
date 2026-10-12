@@ -286,7 +286,7 @@ impl Binder {
                 .writes
                 .as_ref()
                 .is_some_and(|w| w.iter().any(|w| matches!(w, BoundWrite::Create { .. })));
-            if wrote && created {
+            if wrote && created && matches!(clause, Clause::Return(_)) {
                 return Err(BindError::Unsupported("RETURN after a CREATE".to_string()));
             }
             if updating && self.writes.is_some() {
