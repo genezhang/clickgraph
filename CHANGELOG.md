@@ -7,6 +7,7 @@
 
 ### 🐛 Bug Fixes
 
+- **Embedded writes: `MATCH … CREATE (n:L {…})` created one node however many records matched.** It now creates one node per record, as Cypher does, with values that can read the record (`CREATE (c:Copy {id: a.id + '_copy'})`), and none when nothing matches.
 - **Embedded writes: a plain `DELETE` of a node that still has relationships now fails, as in Neo4j** ("… still has relationships … use DETACH DELETE"). It used to delete the node and leave its relationships dangling. It is checked before anything is written. Relationships that a `DETACH DELETE` in the same statement removes don't count. Relationships in FK-edge tables are not checked.
 - **Embedded writes: a SET whose value reads its own node, where the node appears in several of the MATCH's records, now fails.** Cypher applies SET once per record, so `t.age + 1` over 3 records adds 3. The single UPDATE used to add 1. A constant SET is unaffected.
 - **Embedded writes: a write of several statements re-ran its MATCH after earlier statements had written.** `MATCH (u)-[:FOLLOWS]->(f) … DETACH DELETE u` deleted `u`'s relationships and then no longer matched `u`, so `u` survived. `SET … DELETE` and `DELETE a, b` had the same problem, and the counters were wrong. Every operation's ids are now read before any statement runs, and each statement's count is probed right before it runs. SET clauses apply in order, so a later clause reads what an earlier one wrote.

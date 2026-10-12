@@ -92,6 +92,63 @@ fn identities_over(
     }))
 }
 
+/// The values `exprs` in each record of `stmt`'s read part, one row per
+/// record (columns `__cg_v{i}`), with each value's SQL (over a read part of
+/// no MATCH, a constant's: an INSERT's `VALUES`).
+pub fn lower_records(
+    stmt: &BoundStatement,
+    schema: &GraphSchema,
+    options: &LowerOptions,
+    exprs: &[LogicalExpr],
+) -> Result<(RenderPlan, Vec<String>), LowerError> {
+    match schema.lowering_view() {
+        Some(read) => records_over(stmt, &read, options, exprs),
+        None => records_over(stmt, schema, options, exprs),
+    }
+}
+
+fn records_over(
+    stmt: &BoundStatement,
+    schema: &GraphSchema,
+    options: &LowerOptions,
+    exprs: &[LogicalExpr],
+) -> Result<(RenderPlan, Vec<String>), LowerError> {
+    if exprs.iter().any(|e| !subquery_vars(e).is_empty()) {
+        return unsupported("a CREATE value that reads a pattern");
+    }
+    // The values read the read part's variables: demanded as a RETURN's.
+    let mut extra = constraint_reads(stmt, schema);
+    extra.extend(exprs.iter().cloned());
+    let demand = demand(stmt, &extra);
+    let unstable = std::cell::RefCell::new(std::collections::BTreeSet::new());
+    let query = Query {
+        stmt,
+        schema,
+        options,
+        demand: &demand,
+        as_values: std::collections::BTreeSet::new(),
+        unstable: &unstable,
+    };
+    let mut ctes = Vec::new();
+    let mut l = query.lowerer(&mut ctes);
+    l.relation(&stmt.plan)?;
+    l.finish_relation();
+    let mut body = Body::default();
+    let mut sqls = Vec::new();
+    for (i, e) in exprs.iter().enumerate() {
+        let value = l.expr(e, &HashMap::new())?;
+        sqls.push(
+            crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain(
+                &value,
+            ),
+        );
+        body.select.push(select(value, &format!("__cg_v{i}")));
+    }
+    let mut plan = l.render(body);
+    plan.ctes = CteItems(std::mem::take(&mut l.ctes));
+    Ok((plan, sqls))
+}
+
 /// A SET value of node `var` of `label`, as an UPDATE of its table computes
 /// it for each row (SQL): its properties read from the row, by their bare
 /// columns (a lightweight UPDATE has no alias, and chdb's resolves no

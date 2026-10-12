@@ -4664,6 +4664,25 @@ slice that will handle it.
       checked: an FK edge's relationships (Decision 0.6: FK-edge writes are
       out of scope), so a plain DELETE of a node an FK edge references
       leaves the reference.
+  - [ ] **S13b: CREATE of nodes.** `bind_update` binds a CREATE of lone
+    nodes (`BoundWrite::Create`: one label, a property map read in the
+    clause's scope; a key twice: the last). Cypher creates one node per
+    record of the read part: a read part of no MATCH is one record, its
+    INSERT's `VALUES` the values' SQL; otherwise `INSERT … SELECT` of the
+    records' values (`lower::write::lower_records`: the read part's
+    relation, the values demanded as a RETURN's, one row per record; the
+    legacy planner inserted one node whatever the MATCH matched), its
+    count probed (`probe_insert_count_sql`); in a statement of several
+    statements the rows are read first (`InsertOp::select`
+    `RowSource::Read`) and inserted as `VALUES`. Not yet (the legacy
+    planner's): a relationship CREATE (refused there too), a CREATE'd
+    node read by a later clause, a parameter map, a node of no
+    properties (its id the table's default), RETURN (S13c).
+    - Acceptance: the embedded crate's tests (152, including the CREATE
+      dispatch and `MATCH … CREATE` tests), planner tests (VALUES, `INSERT …
+      SELECT`), chdb end to end: `MATCH … CREATE` one node per record with
+      its values, none for no record, two nodes in one clause (11 pass; the
+      2 of #1436 as on main).
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 
