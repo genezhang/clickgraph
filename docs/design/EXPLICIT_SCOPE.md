@@ -4664,7 +4664,7 @@ slice that will handle it.
       checked: an FK edge's relationships (Decision 0.6: FK-edge writes are
       out of scope), so a plain DELETE of a node an FK edge references
       leaves the reference.
-  - [ ] **S13b: CREATE of nodes.** `bind_update` binds a CREATE of lone
+  - [x] **S13b: CREATE of nodes.** `bind_update` binds a CREATE of lone
     nodes (`BoundWrite::Create`: one label, a property map read in the
     clause's scope; a key twice: the last). Cypher creates one node per
     record of the read part: a read part of no MATCH is one record, its
@@ -4697,6 +4697,40 @@ slice that will handle it.
       when the read part is not deterministic (`rand()`, LIMIT without
       ORDER BY); a node of no properties stays the legacy planner's (its
       SQL invalid, as before).
+  - [x] **S13c: SET / REMOVE … RETURN.** Cypher's RETURN after the writes
+    reads the same records, their properties as the writes left them
+    (Neo4j: `MATCH (n) WHERE n.x = 1 SET n.age = n.age + 1 RETURN n.age`
+    the new ages; `… SET n.x = 2 RETURN n.x` both records, `2`). The bound
+    plan re-reads the read part after the writes (`WritePlan::ret`, the
+    RETURN statement `bind_write_statement` keeps), which is those records
+    when the writes change none of them: refused when they may — a SET /
+    REMOVE of a property the read part reads (`read_properties`, the
+    read part's patterns, WHERE, WITH, UNWIND and edge constraints, through
+    a WITH's renames), a SKIP / LIMIT in the read part. RETURN after a
+    DELETE or CREATE stays the legacy planner's (Neo4j: a deleted node's
+    properties an error and the node itself returned without them; a
+    re-read reads neither, a read before the DELETE their old values; the
+    legacy re-read answers `OPTIONAL MATCH (a) DELETE a RETURN a`, TCK
+    Delete1 [5]): **a decision for the legacy deletion** (implement the
+    deleted-node semantics, or refuse), as is CREATE … RETURN (refused).
+    - Acceptance: planner tests (a RETURN's SQL; refusals: a read property
+      SET, through a WITH rename; LIMIT; DELETE / CREATE to the legacy
+      planner), the embedded crate's tests (152: DELETE … RETURN and
+      CREATE … RETURN as before), chdb end to end: SET … RETURN the new
+      values and the counters, a SET of a matched property refused before
+      writing (14 pass; #1436's 2 as on main).
+    - Adversarial review (chdb, Neo4j oracle): the refusal looked at the
+      SET variable's own reads only; another variable can be the same node
+      (`MATCH (a), (b) WHERE b.name = … SET a.name = …`: Neo4j two records,
+      the re-read none), and an undeclared property reads the written
+      column by name. Now by column: any node of the read part that can be
+      of the written label reading the written column (an
+      expression-mapped property: refused). A non-deterministic call in the
+      read part (`rand()`, `randomUUID()`, `timestamp()`, the clock) is
+      drawn again: refused. Fixed a regression (any clause after a CREATE
+      fell to the legacy planner, not only RETURN) and an S13a gap (chdb's
+      UPDATE, as the lightweight DELETE, resolves no CTE in its subquery:
+      every write whose ids need one reads them first).
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

@@ -176,14 +176,29 @@ pub fn bind_write_statement(
     if writes.is_empty() {
         return Err(BindError::Invalid("not an updating statement".to_string()));
     }
+    // A RETURN: its projection over the read part (the updates do not
+    // change the records' plan).
+    let (read_plan, ret) = match (&plan, columns.is_empty()) {
+        (BoundOp::Project { input, .. }, false) => {
+            let ret = BoundStatement {
+                plan: plan.clone(),
+                bindings: b.bindings.clone(),
+                columns: columns.clone(),
+                subqueries: b.subqueries.clone(),
+            };
+            ((**input).clone(), Some(ret))
+        }
+        _ => (plan, None),
+    };
     Ok(BoundWriteStatement {
         read: BoundStatement {
-            plan,
+            plan: read_plan,
             bindings: b.bindings,
-            columns,
+            columns: Vec::new(),
             subqueries: b.subqueries,
         },
         writes,
+        ret,
     })
 }
 
@@ -260,11 +275,19 @@ impl Binder {
                 clause,
                 Clause::Create(_) | Clause::Set(_) | Clause::Remove(_) | Clause::Delete(_)
             );
-            if wrote && !updating {
-                return Err(BindError::Unsupported(match clause {
-                    Clause::Return(_) => "RETURN after an updating clause".to_string(),
-                    _ => "a reading clause after an updating clause".to_string(),
-                }));
+            // A RETURN after the updates reads the read part's records (S13c);
+            // after a CREATE it would read the created nodes: not yet.
+            if wrote && !updating && !matches!(clause, Clause::Return(_)) {
+                return Err(BindError::Unsupported(
+                    "a reading clause after an updating clause".to_string(),
+                ));
+            }
+            let created = self
+                .writes
+                .as_ref()
+                .is_some_and(|w| w.iter().any(|w| matches!(w, BoundWrite::Create { .. })));
+            if wrote && created && matches!(clause, Clause::Return(_)) {
+                return Err(BindError::Unsupported("RETURN after a CREATE".to_string()));
             }
             if updating && self.writes.is_some() {
                 self.bind_update(clause, &scope)?;

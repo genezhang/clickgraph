@@ -192,6 +192,20 @@ fn unstorable(
     of(&l.kind(e), true)
 }
 
+/// The properties `stmt`'s read part reads of each variable: its patterns'
+/// property maps, its WHERE, WITH and UNWIND expressions, and the edge
+/// constraints of its relationships.
+pub fn read_properties(
+    stmt: &BoundStatement,
+    schema: &GraphSchema,
+) -> HashMap<VarId, std::collections::BTreeSet<String>> {
+    let read = |schema: &GraphSchema| demand(stmt, &constraint_reads(stmt, schema));
+    match schema.lowering_view() {
+        Some(view) => read(&view),
+        None => read(schema),
+    }
+}
+
 /// A SET value of node `var` of `label`, as an UPDATE of its table computes
 /// it for each row (SQL): its properties read from the row, by their bare
 /// columns (a lightweight UPDATE has no alias, and chdb's resolves no

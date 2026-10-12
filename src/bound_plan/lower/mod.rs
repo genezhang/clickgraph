@@ -6807,57 +6807,60 @@ fn rel_constraint_exprs(
     out
 }
 
-fn demand(stmt: &BoundStatement, extra: &[LogicalExpr]) -> HashMap<VarId, BTreeSet<String>> {
-    fn exprs<'a>(op: &'a BoundOp, out: &mut Vec<&'a LogicalExpr>) {
-        match op {
-            BoundOp::Unit => {}
-            BoundOp::Match {
-                input,
-                pattern,
-                predicate,
-                ..
-            } => {
-                exprs(input, out);
-                for part in &pattern.parts {
-                    for n in &part.nodes {
-                        out.extend(n.props.iter().map(|(_, e)| e));
-                    }
-                    for r in &part.rels {
-                        out.extend(r.props.iter().map(|(_, e)| e));
-                    }
+/// Every expression of `op` (patterns' property maps, predicates,
+/// projections, sort keys, UNWIND lists), into `out`.
+pub(crate) fn op_exprs<'a>(op: &'a BoundOp, out: &mut Vec<&'a LogicalExpr>) {
+    match op {
+        BoundOp::Unit => {}
+        BoundOp::Match {
+            input,
+            pattern,
+            predicate,
+            ..
+        } => {
+            op_exprs(input, out);
+            for part in &pattern.parts {
+                for n in &part.nodes {
+                    out.extend(n.props.iter().map(|(_, e)| e));
                 }
-                out.extend(predicate);
+                for r in &part.rels {
+                    out.extend(r.props.iter().map(|(_, e)| e));
+                }
             }
-            BoundOp::Unwind { input, expr, .. } => {
-                exprs(input, out);
-                out.push(expr);
-            }
-            BoundOp::Project { input, projection } => {
-                exprs(input, out);
-                out.extend(projection.items.iter().map(|i| &i.expr));
-                out.extend(projection.order_by.iter().map(|k| &k.expr));
-                out.extend(&projection.filter);
-            }
-            BoundOp::Sort { input, keys } => {
-                exprs(input, out);
-                out.extend(keys.iter().map(|k| &k.expr));
-            }
-            BoundOp::Filter { input, predicate } => {
-                exprs(input, out);
-                out.push(predicate);
-            }
-            BoundOp::Skip { input, .. } | BoundOp::Limit { input, .. } => exprs(input, out),
-            BoundOp::Union { arms, .. } => arms.iter().for_each(|a| exprs(a, out)),
+            out.extend(predicate);
         }
+        BoundOp::Unwind { input, expr, .. } => {
+            op_exprs(input, out);
+            out.push(expr);
+        }
+        BoundOp::Project { input, projection } => {
+            op_exprs(input, out);
+            out.extend(projection.items.iter().map(|i| &i.expr));
+            out.extend(projection.order_by.iter().map(|k| &k.expr));
+            out.extend(&projection.filter);
+        }
+        BoundOp::Sort { input, keys } => {
+            op_exprs(input, out);
+            out.extend(keys.iter().map(|k| &k.expr));
+        }
+        BoundOp::Filter { input, predicate } => {
+            op_exprs(input, out);
+            out.push(predicate);
+        }
+        BoundOp::Skip { input, .. } | BoundOp::Limit { input, .. } => op_exprs(input, out),
+        BoundOp::Union { arms, .. } => arms.iter().for_each(|a| op_exprs(a, out)),
     }
+}
+
+fn demand(stmt: &BoundStatement, extra: &[LogicalExpr]) -> HashMap<VarId, BTreeSet<String>> {
     let mut all = Vec::new();
-    exprs(&stmt.plan, &mut all);
+    op_exprs(&stmt.plan, &mut all);
     // The edge constraints a relationship of a pattern is matched under.
     all.extend(extra);
     // What a subquery reads of the variables it is correlated with is read
     // where it is applied.
     for sq in &stmt.subqueries {
-        exprs(&sq.plan, &mut all);
+        op_exprs(&sq.plan, &mut all);
         if let SubqueryKind::Collect(p) = &sq.kind {
             all.push(p);
         }

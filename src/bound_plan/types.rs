@@ -329,6 +329,9 @@ pub struct BoundWriteStatement {
     pub read: BoundStatement,
     /// In clause order.
     pub writes: Vec<BoundWrite>,
+    /// A RETURN after the writes: the read part and the RETURN, a read
+    /// statement (its bindings `read`'s).
+    pub ret: Option<BoundStatement>,
 }
 
 /// The result of binding a statement.

@@ -462,3 +462,70 @@ fn create_reading_a_changed_node_is_refused() {
         Some("cc1")
     );
 }
+
+// ---- S13c: SET / REMOVE … RETURN on the bound plan ----
+
+/// RETURN after SET reads the matched records with their new values.
+#[test]
+fn set_then_return_reads_the_new_values() {
+    let Some(conn) = conn() else { return };
+    person(&conn, "ra1", 40);
+    person(&conn, "ra2", 40);
+    let mut result = conn
+        .query(
+            "MATCH (a:Person) WHERE a.person_id IN ['ra1', 'ra2'] SET a.name = 'renamed' \
+             RETURN a.person_id AS id, a.name AS n ORDER BY id",
+        )
+        .expect("SET … RETURN");
+    let counters = result.get_write_counters().cloned().expect("counters");
+    assert_eq!(counters.get("properties_set"), Some(&2));
+    let first = result.next().unwrap();
+    assert_eq!(first.get("id").unwrap().as_str(), Some("ra1"));
+    assert_eq!(first.get("n").unwrap().as_str(), Some("renamed"));
+    let second = result.next().unwrap();
+    assert_eq!(second.get("n").unwrap().as_str(), Some("renamed"));
+    assert!(result.next().is_none());
+}
+
+/// A SET of a property the MATCH reads, then RETURN: refused before any
+/// write (re-reading would match other records; Neo4j returns the same
+/// ones).
+#[test]
+fn set_of_a_matched_property_then_return_is_refused() {
+    let Some(conn) = conn() else { return };
+    person(&conn, "rb1", 40);
+    let err = conn
+        .query("MATCH (a:Person) WHERE a.name = 'rb1' SET a.name = 'other' RETURN a.person_id")
+        .expect_err("re-read would miss it");
+    assert!(err.to_string().contains("which the MATCH reads"), "{err}");
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.name = 'rb1' RETURN count(a) AS c"
+        ),
+        1
+    );
+}
+
+/// Two CREATE clauses; a SET whose read part needs a CTE (a WITH) — its
+/// ids read first (chdb's UPDATE resolves no CTE in its subquery).
+#[test]
+fn create_clauses_and_set_after_with() {
+    let Some(conn) = conn() else { return };
+    let mut counters = conn
+        .query("CREATE (:Person {person_id: 'rc1', name: 'x'}) CREATE (:Person {person_id: 'rc2', name: 'y'})")
+        .expect("two CREATE clauses");
+    assert_eq!(int(&counters.next().unwrap(), "nodes_created"), 2);
+    conn.query(
+        "MATCH (a:Person) WHERE a.person_id IN ['rc1', 'rc2'] WITH a WHERE a.name = 'x' \
+         SET a.name = 'after_with'",
+    )
+    .expect("SET after a WITH");
+    let mut result = conn
+        .query("MATCH (a:Person) WHERE a.person_id = 'rc1' RETURN a.name AS n")
+        .expect("read back");
+    assert_eq!(
+        result.next().unwrap().get("n").unwrap().as_str(),
+        Some("after_with")
+    );
+}
