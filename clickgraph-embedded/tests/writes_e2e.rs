@@ -432,3 +432,33 @@ fn create_of_several_nodes() {
         2
     );
 }
+
+/// A CREATE value reading a node an earlier SET of the statement changed
+/// is refused before anything is written (the records are a snapshot: it
+/// would read the old value; Neo4j reads the new one).
+#[test]
+fn create_reading_a_changed_node_is_refused() {
+    let Some(conn) = conn() else { return };
+    person(&conn, "cc1", 50);
+    let err = conn
+        .query(
+            "MATCH (a:Person) WHERE a.person_id = 'cc1' SET a.name = 'changed' \
+             CREATE (:Person {person_id: 'cc2', name: a.name})",
+        )
+        .expect_err("reads a changed node");
+    assert!(err.to_string().contains("an earlier SET"), "{err}");
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id = 'cc2' RETURN count(a) AS c"
+        ),
+        0
+    );
+    let mut result = conn
+        .query("MATCH (a:Person) WHERE a.person_id = 'cc1' RETURN a.name AS n")
+        .expect("read back");
+    assert_eq!(
+        result.next().unwrap().get("n").unwrap().as_str(),
+        Some("cc1")
+    );
+}

@@ -4683,6 +4683,20 @@ slice that will handle it.
       SELECT`), chdb end to end: `MATCH … CREATE` one node per record with
       its values, none for no record, two nodes in one clause (11 pass; the
       2 of #1436 as on main).
+    - Adversarial review (chdb and the Neo4j oracle): a CREATE value read a
+      node an earlier SET of the statement changed from the snapshot, so
+      the old value (Neo4j: the new one); now refused, as one reading a
+      node it SET, REMOVEd or DELETEd. A value no property holds (a map, a
+      node, a relationship, a path, a list of them or holding a NULL:
+      Neo4j's TypeError) was stored as text; now refused
+      (`lower_records`' `unstorable`). Checked correct: OPTIONAL MATCH NULL
+      records (a node each), DISTINCT / aggregating WITH, UNWIND, a CREATE
+      into the table its MATCH reads, a variable-length MATCH's CTE inside
+      the INSERT, escaping, column order. Known: an `INSERT … SELECT`'s
+      count is a probe of the same SELECT, which differs from the insert
+      when the read part is not deterministic (`rand()`, LIMIT without
+      ORDER BY); a node of no properties stays the legacy planner's (its
+      SQL invalid, as before).
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

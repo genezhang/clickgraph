@@ -94,13 +94,15 @@ fn identities_over(
 
 /// The values `exprs` in each record of `stmt`'s read part, one row per
 /// record (columns `__cg_v{i}`), with each value's SQL (over a read part of
-/// no MATCH, a constant's: an INSERT's `VALUES`).
+/// no MATCH, a constant's: an INSERT's `VALUES`). A value no property can
+/// hold (a map, a node, a relationship, a path, a list of them or holding
+/// a NULL: Neo4j's TypeError) is `Err(Ok(reason))`.
 pub fn lower_records(
     stmt: &BoundStatement,
     schema: &GraphSchema,
     options: &LowerOptions,
     exprs: &[LogicalExpr],
-) -> Result<(RenderPlan, Vec<String>), LowerError> {
+) -> Result<(RenderPlan, Vec<String>), Result<String, LowerError>> {
     match schema.lowering_view() {
         Some(read) => records_over(stmt, &read, options, exprs),
         None => records_over(stmt, schema, options, exprs),
@@ -112,9 +114,9 @@ fn records_over(
     schema: &GraphSchema,
     options: &LowerOptions,
     exprs: &[LogicalExpr],
-) -> Result<(RenderPlan, Vec<String>), LowerError> {
+) -> Result<(RenderPlan, Vec<String>), Result<String, LowerError>> {
     if exprs.iter().any(|e| !subquery_vars(e).is_empty()) {
-        return unsupported("a CREATE value that reads a pattern");
+        return Err(unsupported("a CREATE value that reads a pattern"));
     }
     // The values read the read part's variables: demanded as a RETURN's.
     let mut extra = constraint_reads(stmt, schema);
@@ -131,12 +133,17 @@ fn records_over(
     };
     let mut ctes = Vec::new();
     let mut l = query.lowerer(&mut ctes);
-    l.relation(&stmt.plan)?;
+    l.relation(&stmt.plan).map_err(Err)?;
     l.finish_relation();
+    for e in exprs {
+        if let Some(reason) = unstorable(&l, stmt, e) {
+            return Err(Ok(format!("a property value that is {reason}")));
+        }
+    }
     let mut body = Body::default();
     let mut sqls = Vec::new();
     for (i, e) in exprs.iter().enumerate() {
-        let value = l.expr(e, &HashMap::new())?;
+        let value = l.expr(e, &HashMap::new()).map_err(Err)?;
         sqls.push(
             crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain(
                 &value,
@@ -147,6 +154,42 @@ fn records_over(
     let mut plan = l.render(body);
     plan.ctes = CteItems(std::mem::take(&mut l.ctes));
     Ok((plan, sqls))
+}
+
+/// What no property can hold that `e` is (Neo4j's TypeError), if it is.
+fn unstorable(
+    l: &super::Lowerer<'_>,
+    stmt: &BoundStatement,
+    e: &LogicalExpr,
+) -> Option<&'static str> {
+    use super::unwind::Kind;
+    use crate::bound_plan::types::BindingKind;
+    use crate::query_planner::logical_expr::{Literal, TableAlias};
+    if let LogicalExpr::TableAlias(TableAlias(name)) = e {
+        if let Some(v) = parse_var(name) {
+            if !matches!(stmt.binding(v).kind, BindingKind::Value) {
+                return Some("a node, relationship or path");
+            }
+        }
+    }
+    if let LogicalExpr::List(items) = e {
+        if items
+            .iter()
+            .any(|i| matches!(i, LogicalExpr::Literal(Literal::Null)))
+        {
+            return Some("a list holding a NULL");
+        }
+    }
+    fn of(k: &Kind, top: bool) -> Option<&'static str> {
+        match k {
+            Kind::Map(_) => Some("a map"),
+            Kind::Element(_) => Some("a node or relationship"),
+            Kind::List(inner) if top => of(inner, false),
+            Kind::List(_) => Some("a list of lists"),
+            _ => None,
+        }
+    }
+    of(&l.kind(e), true)
 }
 
 /// A SET value of node `var` of `label`, as an UPDATE of its table computes

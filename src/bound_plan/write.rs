@@ -188,11 +188,23 @@ impl<'a> Planner<'a> {
             }
         }
         let mut ops = Vec::new();
+        // The nodes an earlier clause of the statement changed: the read
+        // part's records were read before any write (a snapshot), so a
+        // CREATE value reading one would see it unchanged.
+        let mut changed: Vec<VarId> = Vec::new();
         for g in groups {
             match g {
-                Group::Update { var, items, .. } => self.update(var, &items, &mut ops)?,
-                Group::Delete { var, detach } => self.delete(var, detach, &mut ops)?,
-                Group::Create { label, properties } => self.create(label, properties, &mut ops)?,
+                Group::Update { var, items, .. } => {
+                    self.update(var, &items, &mut ops)?;
+                    changed.push(var);
+                }
+                Group::Delete { var, detach } => {
+                    self.delete(var, detach, &mut ops)?;
+                    changed.push(var);
+                }
+                Group::Create { label, properties } => {
+                    self.create(label, properties, &changed, &mut ops)?
+                }
             }
         }
         // Several statements: the ids of each read before any runs (one
@@ -331,9 +343,23 @@ impl<'a> Planner<'a> {
         &mut self,
         label: &str,
         properties: &[(String, crate::query_planner::logical_expr::LogicalExpr)],
+        changed: &[VarId],
         ops: &mut Vec<WriteRenderPlan>,
     ) -> Result<(), WritePlanError> {
         let node = self.writable(label)?;
+        let reads_changed = properties.iter().any(|(_, v)| {
+            crate::bound_plan::expr::referenced_names(v, false)
+                .iter()
+                .filter_map(|n| crate::bound_plan::lower::parse_var(n))
+                .any(|v| changed.contains(&v))
+        });
+        if reads_changed {
+            return Err(WritePlanError::Rejected(
+                "a CREATE value that reads a node an earlier SET, REMOVE or DELETE of the \
+                 statement changed: not supported"
+                    .to_string(),
+            ));
+        }
         if properties.is_empty() {
             return Err(WritePlanError::Unsupported(
                 "CREATE of a node with no properties".to_string(),
@@ -352,7 +378,11 @@ impl<'a> Planner<'a> {
             values.push(value.clone());
         }
         let (plan, sqls) = lower_records(&self.stmt.read, self.schema, &self.options, &values)
-            .map_err(|e| WritePlanError::Unsupported(e.to_string()))?;
+            .map_err(|e| match e {
+                // Neo4j's TypeError: no property holds it.
+                Ok(reason) => WritePlanError::Rejected(format!("CREATE: {reason}")),
+                Err(e) => WritePlanError::Unsupported(e.to_string()),
+            })?;
         let (rows, select) = match self.stmt.read.plan {
             BoundOp::Unit => (vec![sqls.into_iter().map(RenderExpr::Raw).collect()], None),
             _ => (
@@ -806,6 +836,31 @@ mod tests {
             ),
             "{got:?}"
         );
+        // Refused (Neo4j: a TypeError, or a value a snapshot would read
+        // stale): a map, a node, a list holding NULL; a value reading a
+        // node an earlier clause changed.
+        for (q, why) in [
+            ("CREATE (u:User {user_id: 7, name: {a: 1}})", "a map"),
+            (
+                "MATCH (a:User) CREATE (p:Post {post_id: 1, title: a})",
+                "a node, relationship or path",
+            ),
+            (
+                "CREATE (u:User {user_id: 8, name: [1, null]})",
+                "holding a NULL",
+            ),
+            (
+                "MATCH (a:User) WHERE a.user_id = 1 SET a.age = 99 \
+                 CREATE (p:Post {post_id: 5, title: a.name})",
+                "an earlier SET",
+            ),
+        ] {
+            let err = plan_write(q, &social()).unwrap_err();
+            assert!(
+                matches!(&err, WritePlanError::Rejected(m) if m.contains(why)),
+                "{q}: {err:?}"
+            );
+        }
         // A CREATE'd node read by a later clause: not yet.
         assert!(matches!(
             plan_write("CREATE (u:User {user_id: 1}) SET u.age = 2", &social()),
