@@ -6475,3 +6475,14 @@ fn order_by_id_of_a_node_of_several_labels() {
         &["ORDER BY v7.__cg_label ASC, v7.__cg_id_0 ASC"],
     );
 }
+
+/// S11o7: `p IS [NOT] NULL` of a path of the relation (LDBC IC 13): NULL
+/// where a node of it is (an OPTIONAL MATCH left it so).
+#[test]
+fn a_path_is_null() {
+    has(
+        "MATCH (a:User {user_id: 1}) OPTIONAL MATCH p = (a)-[:FOLLOWS]->(b:User {user_id: 99}) \
+         RETURN p IS NULL AS n",
+        &["CAST((v0.user_id IS NULL OR o1.v2__user_id IS NULL) AS Nullable(Bool)) AS \"n\""],
+    );
+}

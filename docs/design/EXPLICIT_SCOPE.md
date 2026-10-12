@@ -4550,9 +4550,14 @@ slice that will handle it.
         key costs ~1.8× a single-type array's grouping (20M rows: 1.28 s
         vs 0.70 s), the price of not knowing its items' types. A NULL list
         carried through a WITH already reads `[]` (#1454).
-    - [ ] **S11o7…: the 4 not lowered**: `head()` of a map of a node (IC 7),
-      a subquery in a list comprehension (IC 10), a path in other positions
-      (IC 13), a property of a value (BI 14); BI 17's time.
+    - [x] **S11o7: `p IS [NOT] NULL` of a path** (IC 13: `CASE path IS
+      NULL WHEN true THEN -1 ELSE length(path) END`): NULL exactly where a
+      node of the path is (an OPTIONAL MATCH left it so). A path carried
+      through a WITH stays unsupported here. IC 13 equals the legacy
+      pipeline on the SF1 `ldbc` database (2).
+    - [ ] **S11o8…: the 3 not lowered**: `head()` of a map holding a node
+      (IC 7), a subquery in a list comprehension (IC 10), a key of a map in
+      a list (BI 14: `collect({…})[0].k`); BI 17's time.
 - [ ] **S12: Databricks coverage.** The bound plan lowers on Databricks what
   it lowers on ClickHouse, so the legacy pipeline can go on every dialect.
   Each `FunctionMapper` spelling that is `None` on Databricks (`unwind`,
