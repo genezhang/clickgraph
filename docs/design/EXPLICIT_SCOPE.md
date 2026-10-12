@@ -4483,7 +4483,35 @@ slice that will handle it.
       Continent (the one table: a place's id is unique, so each definition
       joins its own rows); `IS_LOCATED_IN` Organisation → Place dropped
       (Company → Country and University → City stay).
-    - [ ] **S11o5…: the 7 not lowered** (a node as an operand or a value,
+    - [x] **S11o5: a node `IN` a list; a part joined from its bound end.**
+      `x IN [a, b]` of nodes or relationships is `x = a OR x = b`
+      (`Lowerer::in_listed`: Cypher's IN is equality, three-valued as OR
+      is; of no item, false); `x IN l` of a collected list or a path's
+      nodes tests its elements' identities (`in_elements`: NULL where `x`
+      or `l` is) (IC 3, IC 5, BI 13). Two defects the newly lowered
+      queries showed, on every query:
+      - A pattern part whose first node is new and whose last the
+        relation has was joined from its first node, as a product with
+        the relation (IC 5's OPTIONAL MATCH: every forum with every
+        person, past 300 s): it is joined from its last node now, each
+        step tied to the one before (0.8 s). In the corpus 5 other
+        queries' SQL changed, their rows the same.
+      - An OPTIONAL MATCH after an aggregating WITH joined its matches to
+        the input rows on the WITH's aggregated values too, and
+        ClickHouse evaluates the WITH's CTE again for them: a `collect()`
+        in another order joined no match (IC 5: 30 posts for a forum of
+        93). Right after an aggregating WITH whose keys are all
+        correlated, the aggregated values (determined by them) are not
+        joined on (`Lowerer::grouped_with`).
+      - Also: the LDBC schema's Post / Comment `IS_LOCATED_IN` read the
+        column `PlaceId`, which the data names `CountryId` (the Spark
+        seed renamed to match).
+      - On the SF1 `ldbc` database: IC 5 equal to the legacy pipeline and
+        to a hand-written query; IC 3 answers where the legacy SQL fails;
+        BI 13 lists every zombie (score 0 where none liked), where the
+        legacy pipeline dropped the OPTIONAL rows (3); BI 11 22382, as a
+        hand-written count of the triangles (0 before S11o4's Place).
+    - [ ] **S11o6…: the 4 not lowered** (a node as an operand or a value,
       `head()` of a map, a subquery in a list comprehension, a path in other
       positions, a property of a value, the Browser's `id()`), IC 1's
       grouping key, BI 17's time.

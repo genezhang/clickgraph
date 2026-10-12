@@ -2462,10 +2462,6 @@ fn what_path_values_are_not_lowered() {
          OPTIONAL MATCH (x)-[:FOLLOWS]->(y:User) WHERE size(ns) > 1 RETURN y.name",
         "a path's list read by an OPTIONAL MATCH",
     );
-    not_lowered(
-        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User), (c:User) WHERE c IN nodes(p) RETURN c",
-        "as an operand",
-    );
 }
 
 /// A list passed through and not read as a value lowers on Databricks.
@@ -6341,3 +6337,68 @@ fn a_value_used_as_a_node() {
         assert!(err.contains(why), "{q}: {err}");
     }
 }
+
+/// S11o5: `x IN …` of nodes by identity (LDBC IC 3, IC 5, BI 13): a list
+/// literal as `x = a OR x = b`; a collected list, or a path's nodes, by its
+/// elements' identities (NULL where `x` or the list is).
+#[test]
+fn a_node_in_a_list() {
+    has(
+        "MATCH (a:User), (b:User) WHERE a.user_id = 1 AND b.user_id = 2 \
+         MATCH (c:User) WHERE c IN [a, b] RETURN c.name AS n",
+        &["(v2.user_id = v0.user_id OR v2.user_id = v1.user_id)"],
+    );
+    has(
+        "MATCH (a:User) WHERE a.user_id < 3 WITH collect(a) AS l \
+         MATCH (c:User) WHERE NOT c IN l RETURN count(*) AS n",
+        &["NOT CASE WHEN v2.user_id IS NULL OR w1.v1 IS NULL THEN NULL ELSE \
+           length(arrayFilter(__cg_in -> tupleElement(__cg_in, 1) = v2.user_id, w1.v1)) > 0 END"],
+    );
+    has(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User), (c:User) WHERE c IN nodes(p) RETURN c",
+        &["arrayFilter(__cg_in -> tupleElement(__cg_in, 1) = v4.user_id"],
+    );
+    // Of no item: false.
+    has(
+        "MATCH (a:User) WHERE a IN [] RETURN count(*) AS n",
+        &["WHERE false"],
+    );
+}
+
+/// S11o5: a pattern part whose first node is new and whose last the
+/// relation has (an earlier clause's) is joined from its last node, not as
+/// a product with the relation (LDBC IC 5 ran past 300 s).
+#[test]
+fn a_part_joined_from_its_bound_end() {
+    let got = squash(&sql(
+        "MATCH (a:User) WHERE a.user_id = 1 WITH a \
+         MATCH (x:User)-[:FOLLOWS]->(a) RETURN count(*) AS n",
+    ));
+    assert!(!got.contains("CROSS JOIN"), "{got}");
+    assert!(
+        got.contains(
+            "FROM with_w1 AS w1 JOIN test_integration.user_follows_test AS v3 ON \
+             v3.followed_id = w1.v1__user_id JOIN test_integration.users_test AS v2 ON \
+             v3.follower_id = v2.user_id"
+        ),
+        "{got}"
+    );
+}
+
+/// S11o5: right after an aggregating WITH, an OPTIONAL MATCH correlated on
+/// all its keys is not joined on its aggregated values (ClickHouse reads
+/// the WITH's CTE again for them: a `collect()` in another order joined no
+/// match; LDBC IC 5).
+#[test]
+fn an_optional_match_after_a_grouping_with_joins_on_the_keys() {
+    let got = squash(&sql(
+        "MATCH (u:User)-[:FOLLOWS]->(f:User) WITH u, collect(f) AS fs \
+         OPTIONAL MATCH (u)-[:FOLLOWS]->(g:User) WHERE g IN fs \
+         RETURN u.name AS n, count(g) AS c",
+    ));
+    assert!(
+        got.contains("LEFT JOIN optional_o3 AS o3 ON w1.v3__user_id = o3.v3__user_id GROUP BY"),
+        "joined on the collected list: {got}"
+    );
+}
+

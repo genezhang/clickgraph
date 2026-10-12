@@ -195,7 +195,7 @@ INSERT INTO ldbc.Post_hasCreator_Person VALUES
 (1276128000000, 104, 3), (1270000000000, 105, 2), (1278000000000, 106, 4);
 
 CREATE OR REPLACE TABLE ldbc.Post_isLocatedIn_Place (
-    creationDate BIGINT, PostId BIGINT, PlaceId BIGINT
+    creationDate BIGINT, PostId BIGINT, CountryId BIGINT
 ) USING DELTA;
 
 INSERT INTO ldbc.Post_isLocatedIn_Place VALUES
@@ -241,7 +241,7 @@ INSERT INTO ldbc.Comment_hasCreator_Person VALUES
 (1276214400000, 204, 1), (1276300800000, 205, 5);
 
 CREATE OR REPLACE TABLE ldbc.Comment_isLocatedIn_Place (
-    creationDate BIGINT, CommentId BIGINT, PlaceId BIGINT
+    creationDate BIGINT, CommentId BIGINT, CountryId BIGINT
 ) USING DELTA;
 
 INSERT INTO ldbc.Comment_isLocatedIn_Place VALUES
@@ -320,9 +320,9 @@ UNION ALL
 SELECT creationDate, CommentId AS MessageId, TagId FROM ldbc.Comment_hasTag_Tag;
 
 -- Expose the location id as CountryId to match the YAML's Message IS_LOCATED_IN
--- Country edge (to_id: CountryId); base tables carry the column as PlaceId. Without
--- this, LDBC complex-3 generates `t5.CountryId` that fails to resolve (#399).
+-- The LDBC data's column is CountryId (as the ClickHouse `ldbc` database
+-- loads it); the schema reads it (to_id: CountryId).
 CREATE OR REPLACE VIEW ldbc.Message_isLocatedIn_Place AS
-SELECT creationDate, PostId AS MessageId, PlaceId AS CountryId FROM ldbc.Post_isLocatedIn_Place
+SELECT creationDate, PostId AS MessageId, CountryId FROM ldbc.Post_isLocatedIn_Place
 UNION ALL
-SELECT creationDate, CommentId AS MessageId, PlaceId AS CountryId FROM ldbc.Comment_isLocatedIn_Place;
+SELECT creationDate, CommentId AS MessageId, CountryId FROM ldbc.Comment_isLocatedIn_Place;
