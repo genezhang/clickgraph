@@ -4740,16 +4740,28 @@ slice that will handle it.
     node returned whole is its columns NULL (`LowerOptions::deleted`, a
     node passed through a WITH included); one whose properties or labels
     the RETURN reads (`expr::reads_element`) is a check before any write,
-    failing with Neo4j's error when it is a node. Refused: a DELETE and a
-    SET / REMOVE with a RETURN, a relationship RETURNed after a DETACH
-    DELETE (may be deleted), a deleted node of several labels returned
-    whole. CREATE … RETURN and a relationship CREATE stay refused (the
-    legacy planner's refusal; a later slice).
+    failing with Neo4j's error when it is a node. A node is read only
+    where that check sees it (`write::Exposure`): returned whole, its
+    properties, labels, `id`, `count`, `IS NULL`. A node of another
+    variable read (or returned) is checked against the deleted ones' ids
+    (the same node, or one another record deletes: `Guard::Other`; Neo4j's
+    error, and refused when returned whole, where Neo4j returns the bare
+    node). Refused: a DELETE and a SET / REMOVE with a RETURN, a
+    relationship RETURNed after a DETACH DELETE (may be deleted), a
+    deleted node of several labels returned whole, a node, relationship
+    or path in a list, map, `collect`, path or a value carried through
+    WITH / UNWIND (its deleted nodes not told), a pattern read by the
+    RETURN (Neo4j reads the graph after the DELETE), and a RETURN the
+    bound plan does not lower (not the legacy planner's: it deletes
+    first). Stricter than Neo4j: `properties(n)` / `keys(n)` of a deleted
+    node fail (Neo4j: `{}` / `[]`). CREATE … RETURN and a relationship
+    CREATE stay refused (the legacy planner's refusal; a later slice).
     - Acceptance: planner tests; the embedded crate's 152 (the TCK-shaped
       `OPTIONAL MATCH (a) DELETE a RETURN a` now the bound plan's); chdb
       end to end: `count` of the deleted, a property read refused before
-      deleting, a whole deleted node without properties, an OPTIONAL NULL
-      (17 pass; #1436's 2 as on main).
+      deleting, a whole deleted node without properties, an OPTIONAL NULL,
+      another variable's node deleted by another record refused, and read
+      when it is not, a `collect` refused (18 pass; #1436's 2 as on main).
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

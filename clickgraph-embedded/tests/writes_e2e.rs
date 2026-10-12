@@ -593,3 +593,63 @@ fn delete_return_of_the_deleted_node() {
         .expect("a NULL record");
     assert!(result.next().unwrap().get("n").unwrap().is_null());
 }
+
+/// A node of another variable read by the RETURN after a DELETE: Neo4j's
+/// error when it is a deleted one (the same node, or one another record
+/// deletes), before anything is deleted; a node that is not: read.
+#[test]
+fn delete_return_of_another_variable() {
+    let Some(conn) = conn() else { return };
+    for id in ["dc1", "dc2", "dc3"] {
+        person(&conn, id, 40);
+    }
+    // dc1 -> dc2 -> dc3: the second record's `b` is the first's `a`.
+    knows(&conn, "dc1", "dc2");
+    knows(&conn, "dc2", "dc3");
+    let err = conn
+        .query(
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE a.person_id IN ['dc1', 'dc2'] \
+             DETACH DELETE a RETURN b.name AS n",
+        )
+        .expect_err("dc2 is deleted by the second record");
+    assert!(
+        err.to_string().contains("deleted in this transaction"),
+        "{err}"
+    );
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id STARTS WITH 'dc' RETURN count(a) AS c"
+        ),
+        3
+    );
+    let mut result = conn
+        .query(
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE a.person_id = 'dc1' \
+             DETACH DELETE a RETURN b.name AS n",
+        )
+        .expect("dc2 is not deleted");
+    assert_eq!(
+        result.next().unwrap().get("n").unwrap().as_str(),
+        Some("dc2")
+    );
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id STARTS WITH 'dc' RETURN count(a) AS c"
+        ),
+        2
+    );
+    // In a list: refused, nothing deleted.
+    let err = conn
+        .query("MATCH (a:Person) WHERE a.person_id = 'dc2' DETACH DELETE a RETURN collect(a) AS l")
+        .expect_err("a list of a deleted node");
+    assert!(err.to_string().contains("not supported"), "{err}");
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id = 'dc2' RETURN count(a) AS c"
+        ),
+        1
+    );
+}
