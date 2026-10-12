@@ -756,7 +756,18 @@ What `id(n)` of a node is depends on the endpoint:
 
 A node of several labels (an unlabeled `(n)`) compares its key as text. In the library, `id(n) = 2` of an unlabeled node matches every label's node whose key is 2. Over HTTP, `id()` parameters (`$id`) are not decoded; Bolt inlines them.
 
-Ordering by the key matches the order of Bolt's encoded ids for nodes of one label with a non-negative integer key; a string key's encoded id is a hash, which has no meaningful order. Other uses of `id()` (`id(n) > 3`, `id(r)` of a relationship, `id(n) + 1`) fall back to the legacy pipeline, which reads the key.
+Ordering by the key matches the order of Bolt's encoded ids for nodes of one label with a non-negative integer key; a string key's encoded id is a hash, which has no meaningful order.
+
+`id(n)` used as a value (`WITH id(n) AS i`, `id(n) > 3`, `id(n) + 1`) is the node's key. Returned after a `WITH`, it is still the node's id: Bolt encodes it as it encodes `RETURN id(n)`. Two ids compared with each other (`id(a) = id(b)`, `id(a) <> id(b)`) compare the elements: nodes of different labels are never equal, whatever their keys.
+
+`id(r)` of a relationship is the number Bolt gives that relationship (the `id` of the relationship `RETURN r` returns), computed from its type and its ends:
+
+| Endpoint | `RETURN id(r)` |
+|---|---|
+| Bolt, HTTP `/query` (JSON), embedded / `cg query` | Bolt's number for the relationship |
+| HTTP Pretty / CSV formats, SQL-only output (`/query/sql`, `sql_only`, `cg sql`) | its element id text (`TYPE:from->to-`) |
+
+The number depends on a label code each process assigns as it meets types, so the server and a separate library process can give different numbers for the same relationship, as Bolt's ids are only meaningful to the server that returned them. `id(r)` compared with another `id()` compares the relationships; other uses of a relationship's id (`id(r) > 3`, `WITH id(r) AS i`) are not supported. A relationship of several possible types or definitions (`[r:A|B]`) has no `id(r)` RETURN item yet.
 
 ---
 

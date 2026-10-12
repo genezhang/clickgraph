@@ -147,6 +147,7 @@ fn return_item_metadata(c: &ResultColumn) -> ReturnItemMetadata {
             labels: vec![label.clone()],
         },
         ResultKind::Graph(ty) => ReturnItemType::Graph(ty.clone()),
+        ResultKind::RelId => ReturnItemType::ElementIdNumber,
     };
     ReturnItemMetadata {
         field_name: c.name.clone(),
@@ -547,8 +548,8 @@ mod tests {
         // updating clause, or the route off: the caller reports its parse
         // error.
         for q in [
-            "MATCH (a:User) WITH a MATCH (a)-[:FOLLOWS]->(b:User) MATCH (b) \
-             WHERE id(b) > 3 RETURN count(*) AS n",
+            "MATCH (a:User) WITH a MATCH (a)-[r:FOLLOWS]->(b:User) MATCH (b) \
+             WHERE id(r) > 3 RETURN count(*) AS n",
             "MATCH (a:User) ORDER BY a.name LIMIT 3 CREATE (b:User) RETURN a.name",
         ] {
             assert!(

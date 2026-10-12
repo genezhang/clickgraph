@@ -1131,7 +1131,8 @@ impl<'db> Connection<'db> {
         cypher: &str,
         executor: &Arc<dyn QueryExecutor>,
     ) -> Result<QueryResult, EmbeddedError> {
-        use clickgraph::clickhouse_query_generator::cypher_to_sql;
+        use clickgraph::clickhouse_query_generator::cypher_to_sql_with_id_columns;
+        use clickgraph::server::bolt_protocol::result_transformer::element_id_number;
         use clickgraph::server::query_context::{
             set_current_dialect, set_current_schema, with_query_context, QueryContext,
         };
@@ -1143,8 +1144,11 @@ impl<'db> Connection<'db> {
             set_current_dialect(dialect);
             set_current_schema(Arc::clone(&schema));
             let compile_start = Instant::now();
-            let final_sql = cypher_to_sql(&cypher, &schema, DEFAULT_MAX_CTE_DEPTH)
-                .map_err(EmbeddedError::Query)?;
+            // `id(r)` columns hold an element id, returned as Bolt's number
+            // for it (P-4c S11l).
+            let (final_sql, id_columns) =
+                cypher_to_sql_with_id_columns(&cypher, &schema, DEFAULT_MAX_CTE_DEPTH)
+                    .map_err(EmbeddedError::Query)?;
             let compile_time_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
             let exec_start = Instant::now();
             let json_rows = executor
@@ -1155,7 +1159,12 @@ impl<'db> Connection<'db> {
             let mut column_names: Vec<String> = Vec::new();
             let mut rows: Vec<Vec<Value>> = Vec::new();
             for json_row in json_rows {
-                if let serde_json::Value::Object(obj) = json_row {
+                if let serde_json::Value::Object(mut obj) = json_row {
+                    for c in &id_columns {
+                        if let Some(v) = obj.get_mut(c) {
+                            *v = element_id_number(v.take());
+                        }
+                    }
                     if column_names.is_empty() {
                         column_names = obj.keys().cloned().collect();
                     }

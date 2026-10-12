@@ -1286,6 +1286,8 @@ async fn query_handler_inner(
             output_format,
             all_params, // Use merged parameters
             payload.role.clone(),
+            // A query with `id(r)` items is not cached.
+            &[],
         )
         .await;
         metrics.execution_time = execution_start.elapsed().as_secs_f64();
@@ -1308,6 +1310,9 @@ async fn query_handler_inner(
     }
 
     // graph_ctx holds (result shape, GraphSchema) when format=Graph
+    // Result columns holding an element id that JSON results return as
+    // Bolt's number for it (`id(r)`, P-4c S11l).
+    let mut id_number_columns: Vec<String> = Vec::new();
     let (ch_sql_queries, maybe_schema_elem, is_read, query_type_str, graph_ctx) = {
         // ✅ FAIL LOUDLY: If schema not found, return clear error (no silent fallback)
         let graph_schema = match graph_catalog::get_graph_schema_by_name(&schema_name).await {
@@ -1581,9 +1586,18 @@ async fn query_handler_inner(
             metrics.sql_generation_time = translation.timings.sql_generation.as_secs_f64();
             let ch_query = translation.sql.clone();
             crate::debug_println!("\n ch_query \n {} \n", ch_query);
+            id_number_columns = translation
+                .shape
+                .iter()
+                .flatten()
+                .filter(|c| matches!(c.kind, crate::bound_plan::lower::ResultKind::RelId))
+                .map(|c| c.name.clone())
+                .collect();
 
-            // Store in cache (even in sql_only mode for future use)
-            if let Some(cache) = GLOBAL_QUERY_CACHE.get() {
+            // Store in cache (even in sql_only mode for future use). Not a
+            // query whose results need the result shape (a cached query is
+            // not translated again).
+            if let (Some(cache), true) = (GLOBAL_QUERY_CACHE.get(), id_number_columns.is_empty()) {
                 cache.insert(cache_key.clone(), ch_query.clone());
                 log::debug!("Stored SQL template in cache");
             }
@@ -1682,6 +1696,7 @@ async fn query_handler_inner(
             output_format,
             all_params,
             payload.role.clone(),
+            &id_number_columns,
         )
         .await
     } else {
@@ -1852,6 +1867,7 @@ async fn execute_cte_queries(
     output_format: OutputFormat,
     parameters: Option<std::collections::HashMap<String, Value>>,
     role: Option<String>,
+    id_number_columns: &[String],
 ) -> Result<Response, (StatusCode, String)> {
     let final_sql = prepare_final_sql(&ch_sql_queries, parameters.as_ref())?;
 
@@ -1892,6 +1908,22 @@ async fn execute_cte_queries(
                 )
             })?;
 
+        // An element id returned as Bolt's number for it (`id(r)`, S11l).
+        let mut rows = rows;
+        if !id_number_columns.is_empty() {
+            for row in rows.iter_mut() {
+                if let Value::Object(map) = row {
+                    for c in id_number_columns {
+                        if let Some(v) = map.get_mut(c) {
+                            *v =
+                                crate::server::bolt_protocol::result_transformer::element_id_number(
+                                    v.take(),
+                                );
+                        }
+                    }
+                }
+            }
+        }
         // Wrap results in an object with "results" key for consistency with Neo4j format
         let response_obj = serde_json::json!({
             "results": rows

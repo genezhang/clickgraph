@@ -77,6 +77,26 @@ pub fn cypher_to_sql(
     translate_text_for_library(&cleaned, schema, max_cte_depth).map(|t| t.sql)
 }
 
+/// [`cypher_to_sql`], and the result columns holding an element id that a
+/// library returns as Bolt's number for it (`id(r)`, P-4c S11l;
+/// `bolt_protocol::result_transformer::element_id_number`).
+pub fn cypher_to_sql_with_id_columns(
+    cypher: &str,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+    max_cte_depth: u32,
+) -> Result<(String, Vec<String>), String> {
+    let cleaned = crate::open_cypher_parser::strip_comments(cypher);
+    let t = translate_text_for_library(&cleaned, schema, max_cte_depth)?;
+    let id_columns = t
+        .shape
+        .iter()
+        .flatten()
+        .filter(|c| matches!(c.kind, crate::bound_plan::lower::ResultKind::RelId))
+        .map(|c| c.name.clone())
+        .collect();
+    Ok((t.sql, id_columns))
+}
+
 /// [`cypher_to_sql`] on the legacy route (`CLICKGRAPH_BOUND_PLAN=off`): the
 /// tests of the legacy pipeline, which stays the fallback for what the
 /// bound plan does not support until it is deleted (P-4c S11).

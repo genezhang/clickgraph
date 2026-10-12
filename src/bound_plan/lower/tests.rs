@@ -829,7 +829,10 @@ fn what_is_not_lowered_yet() {
         "MATCH (a:User)-[r:FOLLOWS*1..2]->(b:User) RETURN r[0] AS n",
         "an element or slice of a list of nodes or relationships",
     );
-    not_lowered("MATCH (a:User) WHERE id(a) > 1 RETURN a.name", "id()");
+    not_lowered(
+        "MATCH (a:User)-[r:FOLLOWS]->(b) WHERE id(r) > 1 RETURN b.name",
+        "id() of a relationship other than",
+    );
     not_lowered("MATCH (n) RETURN n.*", "`v.*` of an element of several");
     not_lowered(
         "MATCH (:User)-[r:FOLLOWS|LIKED]->() RETURN r.*",
@@ -1364,9 +1367,11 @@ fn id_of_a_returned_node_is_its_key() {
         "MATCH (a:User) RETURN id(a) AS i ORDER BY i",
         &["ORDER BY v0.user_id ASC"],
     );
-    not_lowered("MATCH (a:User) RETURN id(a) + 1 AS i", "id()");
-    not_lowered("MATCH (a:User) WITH id(a) AS i RETURN i", "id()");
-    not_lowered("MATCH (a:User)-[r:FOLLOWS]->(b) RETURN id(r)", "id()");
+    // As a value it is the key (S11l).
+    has(
+        "MATCH (a:User) RETURN id(a) + 1 AS i",
+        &[r#"v0.user_id + 1 AS "i""#],
+    );
     not_lowered("MATCH (a:User) RETURN size(a.*) AS n", "`v.*`");
     let err = translate_bound_plan(
         "MATCH (t:T) RETURN id(t)",
@@ -5463,14 +5468,64 @@ fn ids_compared_with_integers() {
         "MATCH (a:User) RETURN a.name ORDER BY id(a)",
         &["ORDER BY v0.user_id ASC"],
     );
-    // Not an id compared with integers: refused.
-    not_lowered(
+    // Ordered against an integer: by the key (S11l).
+    has(
         "MATCH (a:User) WHERE id(a) > 3 RETURN a.name",
-        "id() / elementId() other than",
+        &["WHERE v0.user_id > 3"],
     );
+    // A relationship's id is Bolt's number for it, only the server's.
     not_lowered(
         "MATCH (a:User)-[r:FOLLOWS]->(b) WHERE id(r) = 1 RETURN b.name",
-        "id() / elementId() other than",
+        "id() of a relationship other than",
+    );
+}
+
+/// S11l (user 2026-10-11): `id()` as a value. A node's is its key; ids
+/// compared with ids compare the elements; a WITH-carried node id is still
+/// one when returned; a relationship's RETURN item holds its element id,
+/// which the server and the library return as Bolt's number.
+#[test]
+fn ids_as_values() {
+    has(
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WHERE id(a) <> id(b) RETURN count(*) AS n",
+        &["WHERE v0.user_id <> v2.user_id"],
+    );
+    // Of different labels: never equal, whatever their keys.
+    has(
+        "MATCH (a:User)-[:AUTHORED]->(p:Post) WHERE id(a) = id(p) RETURN count(*) AS n",
+        &["WHERE false"],
+    );
+    let carried = translate_bound_plan(
+        "MATCH (a:User) WITH id(a) AS i RETURN i",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        matches!(&carried.shape[0].kind, ResultKind::NodeId { label } if label == "User"),
+        "{:?}",
+        carried.shape
+    );
+    let rel = translate_bound_plan(
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN id(r) AS i",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        matches!(rel.shape[0].kind, ResultKind::RelId),
+        "{:?}",
+        rel.shape
+    );
+    assert!(
+        squash(&rel.sql).contains("concat('FOLLOWS:', toString(v1.follower_id), '->', toString(v1.followed_id), '-') AS \"i\""),
+        "{}",
+        rel.sql
+    );
+    has(
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User), (c:User)-[s:FOLLOWS]->(d:User) \
+         WHERE id(r) <> id(s) RETURN count(*) AS n",
+        &["v1.follow_id <> v4.follow_id"],
     );
 }
 
