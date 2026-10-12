@@ -1343,9 +1343,15 @@ impl<'db> Connection<'db> {
                 }
                 Err(clickgraph::bound_plan::write::WritePlanError::Unsupported(why)) => Err(why),
             };
-            // A RETURN after the writes (Phase 5d) is the legacy planner's.
+            // A RETURN after the writes: the bound plan's re-read (S13c), or
+            // the legacy planner's (Phase 5d).
+            let mut bound_return: Option<String> = None;
             let (write_plan, has_return) = match bound {
-                Ok(plan) => (plan, false),
+                Ok(planned) => {
+                    let has_return = planned.ret.is_some();
+                    bound_return = planned.ret;
+                    (planned.plan, has_return)
+                }
                 Err(not_bound) => {
                     // Parse, plan, run the regular analyzer/optimizer
                     // pipeline so any read pipeline below the write variant
@@ -1465,8 +1471,11 @@ impl<'db> Connection<'db> {
             // the read shape), execute it against the now-modified state,
             // and attach the write counters via the side-channel.
             let read_compile_start = Instant::now();
-            let read_sql = cypher_to_sql_read_only(&cypher, &schema, DEFAULT_MAX_CTE_DEPTH)
-                .map_err(EmbeddedError::Query)?;
+            let read_sql = match bound_return {
+                Some(sql) => sql,
+                None => cypher_to_sql_read_only(&cypher, &schema, DEFAULT_MAX_CTE_DEPTH)
+                    .map_err(EmbeddedError::Query)?,
+            };
             let read_compile_ms = read_compile_start.elapsed().as_secs_f64() * 1000.0;
 
             let read_exec_start = Instant::now();
