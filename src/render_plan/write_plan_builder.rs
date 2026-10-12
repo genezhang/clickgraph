@@ -135,6 +135,7 @@ fn build_node_insert(
         table: node_schema.table_name.clone(),
         columns,
         rows: vec![row],
+        select: None,
     })
 }
 

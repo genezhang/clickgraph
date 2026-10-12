@@ -69,6 +69,12 @@ fn insert_sql(op: &InsertOp) -> String {
         .map(|c| format!("`{}`", c))
         .collect::<Vec<_>>()
         .join(", ");
+    if let Some(RowSource::Sql(select) | RowSource::Read(select)) = &op.select {
+        return format!(
+            "INSERT INTO `{}`.`{}` ({cols}) SELECT * FROM ({select}) AS __cg_rows",
+            op.database, op.table
+        );
+    }
 
     let rows: Vec<String> = op
         .rows
@@ -134,6 +140,11 @@ pub fn probe_delete_count_sql(op: &DeleteOp) -> String {
         op.id_column,
         render_id_source(&op.source),
     )
+}
+
+/// Probe SQL counting the rows an `InsertOp` of a SELECT inserts.
+pub fn probe_insert_count_sql(select: &str) -> String {
+    format!("SELECT count() AS n FROM ({select}) AS __cg_rows")
 }
 
 /// Probe SQL for an `UpdateOp` — same pattern as `probe_delete_count_sql`.
@@ -229,6 +240,7 @@ mod tests {
             table: "person".into(),
             columns: vec!["id".into(), "name".into(), "age".into()],
             rows: vec![vec![lit_string("u1"), lit_string("Alice"), lit_int(30)]],
+            select: None,
         };
         assert_eq!(
             insert_sql(&op),
@@ -243,6 +255,7 @@ mod tests {
             table: "person".into(),
             columns: vec!["id".into()],
             rows: vec![vec![lit_string("u1")], vec![lit_string("u2")]],
+            select: None,
         };
         assert_eq!(
             insert_sql(&op),
@@ -311,6 +324,7 @@ mod tests {
             table: "p".into(),
             columns: vec!["name".into()],
             rows: vec![vec![lit_string("O'Brien")]],
+            select: None,
         };
         let sql = insert_sql(&op);
         assert!(

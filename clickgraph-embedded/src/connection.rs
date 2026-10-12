@@ -1545,7 +1545,39 @@ async fn read_ids(
             WriteRenderPlan::Insert(_) | WriteRenderPlan::Sequence(_) => None,
         }
     }
-    let ops = flatten(plan);
+    let mut ops = flatten(plan);
+    // An INSERT of a SELECT read first: its rows, as VALUES (none: no INSERT).
+    let mut kept = Vec::with_capacity(ops.len());
+    for mut op in ops {
+        if let WriteRenderPlan::Insert(insert) = &mut op {
+            if let Some(RowSource::Read(sql)) = &insert.select {
+                let rows = executor
+                    .execute_json(sql, None)
+                    .await
+                    .map_err(EmbeddedError::from)?;
+                let mut values = Vec::with_capacity(rows.len());
+                for row in rows {
+                    let serde_json::Value::Object(obj) = row else {
+                        return Err(EmbeddedError::Query(format!(
+                            "the rows of a CREATE (`{sql}`) are not records"
+                        )));
+                    };
+                    values.push(
+                        obj.values()
+                            .map(json_literal)
+                            .collect::<Result<Vec<_>, _>>()?,
+                    );
+                }
+                if values.is_empty() {
+                    continue;
+                }
+                insert.rows = values;
+                insert.select = None;
+            }
+        }
+        kept.push(op);
+    }
+    ops = kept;
     // Every Read: the operations', and a check's exclusions.
     let mut reads: Vec<&String> = Vec::new();
     for op in &ops {
@@ -1633,6 +1665,35 @@ async fn read_ids(
     Ok(WriteRenderPlan::Sequence(out))
 }
 
+/// A value read from a row as a literal of an INSERT's `VALUES`.
+fn json_literal(
+    v: &serde_json::Value,
+) -> Result<clickgraph::render_plan::render_expr::RenderExpr, EmbeddedError> {
+    use clickgraph::render_plan::render_expr::{Literal, RenderExpr};
+    Ok(match v {
+        serde_json::Value::Null => RenderExpr::Literal(Literal::Null),
+        serde_json::Value::Bool(b) => RenderExpr::Literal(Literal::Boolean(*b)),
+        serde_json::Value::String(s) => RenderExpr::Literal(Literal::String(s.clone())),
+        serde_json::Value::Number(n) => match (n.as_i64(), n.as_f64()) {
+            (Some(i), _) => RenderExpr::Literal(Literal::Integer(i)),
+            (None, Some(f)) => RenderExpr::Literal(Literal::Float(f)),
+            (None, None) => {
+                return Err(EmbeddedError::Query(format!(
+                    "a CREATE value {n} is out of range"
+                )))
+            }
+        },
+        serde_json::Value::Array(items) => {
+            RenderExpr::List(items.iter().map(json_literal).collect::<Result<_, _>>()?)
+        }
+        serde_json::Value::Object(_) => {
+            return Err(EmbeddedError::Query(
+                "a CREATE value that is a map is not supported".to_string(),
+            ))
+        }
+    })
+}
+
 /// The operations of a plan, in order.
 fn flatten(
     plan: clickgraph::render_plan::WriteRenderPlan,
@@ -1653,7 +1714,8 @@ async fn execute_write(
     executor: &Arc<dyn QueryExecutor>,
 ) -> Result<WriteCounters, EmbeddedError> {
     use clickgraph::clickhouse_query_generator::write_to_sql::{
-        check_sql, probe_delete_count_sql, probe_update_count_sql, write_render_to_sql,
+        check_sql, probe_delete_count_sql, probe_insert_count_sql, probe_update_count_sql,
+        write_render_to_sql,
     };
     use clickgraph::render_plan::write_render::{RowSource, WriteRenderPlan};
     let ops = flatten(plan.clone());
@@ -1681,7 +1743,13 @@ async fn execute_write(
     for op in &ops {
         match op {
             WriteRenderPlan::Check(_) | WriteRenderPlan::Sequence(_) => continue,
-            WriteRenderPlan::Insert(i) => c.nodes_created += i.rows.len() as u64,
+            WriteRenderPlan::Insert(i) => match &i.select {
+                Some(RowSource::Sql(select) | RowSource::Read(select)) => {
+                    c.nodes_created +=
+                        run_count_probe(executor, &probe_insert_count_sql(select)).await?;
+                }
+                _ => c.nodes_created += i.rows.len() as u64,
+            },
             WriteRenderPlan::Update(u) => {
                 let affected = run_count_probe(executor, &probe_update_count_sql(u)).await?;
                 c.properties_set += u.assignments.len() as u64 * affected;

@@ -373,3 +373,92 @@ fn set_of_a_node_in_several_records() {
     )
     .expect("a comprehension");
 }
+
+// ---- S13b: CREATE on the bound plan ----
+
+/// `MATCH … CREATE`: one node per record, its values read in the record.
+#[test]
+fn match_create_creates_one_node_per_record() {
+    let Some(conn) = conn() else { return };
+    person(&conn, "ca1", 40);
+    person(&conn, "ca2", 41);
+    let mut counters = conn
+        .query(
+            "MATCH (a:Person) WHERE a.person_id IN ['ca1', 'ca2'] \
+             CREATE (c:Person {person_id: a.person_id + '_copy', name: a.name})",
+        )
+        .expect("MATCH … CREATE");
+    assert_eq!(int(&counters.next().unwrap(), "nodes_created"), 2);
+    let mut result = conn
+        .query(
+            "MATCH (a:Person) WHERE a.person_id IN ['ca1_copy', 'ca2_copy'] \
+             RETURN a.person_id AS id, a.name AS n ORDER BY id",
+        )
+        .expect("read back");
+    let first = result.next().unwrap();
+    assert_eq!(first.get("id").unwrap().as_str(), Some("ca1_copy"));
+    assert_eq!(first.get("n").unwrap().as_str(), Some("ca1"));
+    let second = result.next().unwrap();
+    assert_eq!(second.get("id").unwrap().as_str(), Some("ca2_copy"));
+    // No record: no node.
+    let mut counters = conn
+        .query(
+            "MATCH (a:Person) WHERE a.person_id = 'nobody' CREATE (:Person {person_id: 'never'})",
+        )
+        .expect("no record");
+    assert_eq!(int(&counters.next().unwrap(), "nodes_created"), 0);
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id = 'never' RETURN count(a) AS c"
+        ),
+        0
+    );
+}
+
+/// Several nodes in one CREATE clause.
+#[test]
+fn create_of_several_nodes() {
+    let Some(conn) = conn() else { return };
+    let mut counters = conn
+        .query("CREATE (:Person {person_id: 'cb1', name: 'x'}), (:Person {person_id: 'cb2', name: 'y'})")
+        .expect("CREATE of two");
+    assert_eq!(int(&counters.next().unwrap(), "nodes_created"), 2);
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id IN ['cb1', 'cb2'] RETURN count(a) AS c"
+        ),
+        2
+    );
+}
+
+/// A CREATE value reading a node an earlier SET of the statement changed
+/// is refused before anything is written (the records are a snapshot: it
+/// would read the old value; Neo4j reads the new one).
+#[test]
+fn create_reading_a_changed_node_is_refused() {
+    let Some(conn) = conn() else { return };
+    person(&conn, "cc1", 50);
+    let err = conn
+        .query(
+            "MATCH (a:Person) WHERE a.person_id = 'cc1' SET a.name = 'changed' \
+             CREATE (:Person {person_id: 'cc2', name: a.name})",
+        )
+        .expect_err("reads a changed node");
+    assert!(err.to_string().contains("an earlier SET"), "{err}");
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id = 'cc2' RETURN count(a) AS c"
+        ),
+        0
+    );
+    let mut result = conn
+        .query("MATCH (a:Person) WHERE a.person_id = 'cc1' RETURN a.name AS n")
+        .expect("read back");
+    assert_eq!(
+        result.next().unwrap().get("n").unwrap().as_str(),
+        Some("cc1")
+    );
+}

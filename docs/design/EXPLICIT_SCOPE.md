@@ -4664,6 +4664,39 @@ slice that will handle it.
       checked: an FK edge's relationships (Decision 0.6: FK-edge writes are
       out of scope), so a plain DELETE of a node an FK edge references
       leaves the reference.
+  - [ ] **S13b: CREATE of nodes.** `bind_update` binds a CREATE of lone
+    nodes (`BoundWrite::Create`: one label, a property map read in the
+    clause's scope; a key twice: the last). Cypher creates one node per
+    record of the read part: a read part of no MATCH is one record, its
+    INSERT's `VALUES` the values' SQL; otherwise `INSERT … SELECT` of the
+    records' values (`lower::write::lower_records`: the read part's
+    relation, the values demanded as a RETURN's, one row per record; the
+    legacy planner inserted one node whatever the MATCH matched), its
+    count probed (`probe_insert_count_sql`); in a statement of several
+    statements the rows are read first (`InsertOp::select`
+    `RowSource::Read`) and inserted as `VALUES`. Not yet (the legacy
+    planner's): a relationship CREATE (refused there too), a CREATE'd
+    node read by a later clause, a parameter map, a node of no
+    properties (its id the table's default), RETURN (S13c).
+    - Acceptance: the embedded crate's tests (152, including the CREATE
+      dispatch and `MATCH … CREATE` tests), planner tests (VALUES, `INSERT …
+      SELECT`), chdb end to end: `MATCH … CREATE` one node per record with
+      its values, none for no record, two nodes in one clause (11 pass; the
+      2 of #1436 as on main).
+    - Adversarial review (chdb and the Neo4j oracle): a CREATE value read a
+      node an earlier SET of the statement changed from the snapshot, so
+      the old value (Neo4j: the new one); now refused, as one reading a
+      node it SET, REMOVEd or DELETEd. A value no property holds (a map, a
+      node, a relationship, a path, a list of them or holding a NULL:
+      Neo4j's TypeError) was stored as text; now refused
+      (`lower_records`' `unstorable`). Checked correct: OPTIONAL MATCH NULL
+      records (a node each), DISTINCT / aggregating WITH, UNWIND, a CREATE
+      into the table its MATCH reads, a variable-length MATCH's CTE inside
+      the INSERT, escaping, column order. Known: an `INSERT … SELECT`'s
+      count is a probe of the same SELECT, which differs from the insert
+      when the read part is not deterministic (`rand()`, LIMIT without
+      ORDER BY); a node of no properties stays the legacy planner's (its
+      SQL invalid, as before).
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

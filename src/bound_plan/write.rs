@@ -21,13 +21,13 @@ use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema};
 use crate::render_plan::render_expr::{Literal, RenderExpr};
 use crate::render_plan::write_render::{
-    CheckOp, CheckTable, DeleteOp, RowSource, UpdateOp, WriteRenderPlan,
+    CheckOp, CheckTable, DeleteOp, InsertOp, RowSource, UpdateOp, WriteRenderPlan,
 };
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_plan_to_sql_plain;
 
-use super::lower::write::{lower_identities, lower_write_value, IdentityRows};
+use super::lower::write::{lower_identities, lower_records, lower_write_value, IdentityRows};
 use super::lower::LowerOptions;
-use super::types::{BindingKind, BoundWrite, BoundWriteStatement, VarId};
+use super::types::{BindingKind, BoundOp, BoundWrite, BoundWriteStatement, VarId};
 use super::{bind_write_statement, BindError};
 
 /// Why a write statement was not planned on the bound plan.
@@ -117,6 +117,10 @@ impl<'a> Planner<'a> {
                 var: VarId,
                 detach: bool,
             },
+            Create {
+                label: &'e str,
+                properties: &'e [(String, crate::query_planner::logical_expr::LogicalExpr)],
+            },
         }
         let mut groups: Vec<Group<'_>> = Vec::new();
         for w in &self.stmt.writes {
@@ -132,6 +136,12 @@ impl<'a> Planner<'a> {
                     property,
                     clause,
                 } => (*var, property, None, *clause),
+                BoundWrite::Create {
+                    label, properties, ..
+                } => {
+                    groups.push(Group::Create { label, properties });
+                    continue;
+                }
                 BoundWrite::Delete { var, detach, .. } => {
                     let earlier = groups.iter_mut().find_map(|g| match g {
                         Group::Delete { var: v, detach } if v == var => Some(detach),
@@ -178,10 +188,23 @@ impl<'a> Planner<'a> {
             }
         }
         let mut ops = Vec::new();
+        // The nodes an earlier clause of the statement changed: the read
+        // part's records were read before any write (a snapshot), so a
+        // CREATE value reading one would see it unchanged.
+        let mut changed: Vec<VarId> = Vec::new();
         for g in groups {
             match g {
-                Group::Update { var, items, .. } => self.update(var, &items, &mut ops)?,
-                Group::Delete { var, detach } => self.delete(var, detach, &mut ops)?,
+                Group::Update { var, items, .. } => {
+                    self.update(var, &items, &mut ops)?;
+                    changed.push(var);
+                }
+                Group::Delete { var, detach } => {
+                    self.delete(var, detach, &mut ops)?;
+                    changed.push(var);
+                }
+                Group::Create { label, properties } => {
+                    self.create(label, properties, &changed, &mut ops)?
+                }
             }
         }
         // Several statements: the ids of each read before any runs (one
@@ -189,7 +212,14 @@ impl<'a> Planner<'a> {
         // rows: a node's relationships deleted, it is no longer matched).
         let statements = ops
             .iter()
-            .filter(|op| matches!(op, WriteRenderPlan::Update(_) | WriteRenderPlan::Delete(_)))
+            .filter(|op| {
+                matches!(
+                    op,
+                    WriteRenderPlan::Update(_)
+                        | WriteRenderPlan::Delete(_)
+                        | WriteRenderPlan::Insert(_)
+                )
+            })
             .count();
         if statements > 1 {
             for op in &mut ops {
@@ -197,6 +227,10 @@ impl<'a> Planner<'a> {
                     WriteRenderPlan::Update(u) => &mut u.source,
                     WriteRenderPlan::Delete(d) => &mut d.source,
                     WriteRenderPlan::Check(c) => &mut c.source,
+                    WriteRenderPlan::Insert(InsertOp {
+                        select: Some(select),
+                        ..
+                    }) => select,
                     _ => continue,
                 };
                 if let RowSource::Sql(sql) = source {
@@ -299,6 +333,70 @@ impl<'a> Planner<'a> {
                 source,
             }));
         }
+        Ok(())
+    }
+
+    /// The INSERT of a CREATE of a node of `label`: one row per record of
+    /// the read part (a read part of no MATCH: one, its `VALUES`), its
+    /// properties' values read in the record.
+    fn create(
+        &mut self,
+        label: &str,
+        properties: &[(String, crate::query_planner::logical_expr::LogicalExpr)],
+        changed: &[VarId],
+        ops: &mut Vec<WriteRenderPlan>,
+    ) -> Result<(), WritePlanError> {
+        let node = self.writable(label)?;
+        let reads_changed = properties.iter().any(|(_, v)| {
+            crate::bound_plan::expr::referenced_names(v, false)
+                .iter()
+                .filter_map(|n| crate::bound_plan::lower::parse_var(n))
+                .any(|v| changed.contains(&v))
+        });
+        if reads_changed {
+            return Err(WritePlanError::Rejected(
+                "a CREATE value that reads a node an earlier SET, REMOVE or DELETE of the \
+                 statement changed: not supported"
+                    .to_string(),
+            ));
+        }
+        if properties.is_empty() {
+            return Err(WritePlanError::Unsupported(
+                "CREATE of a node with no properties".to_string(),
+            ));
+        }
+        let mut columns = Vec::new();
+        let mut values = Vec::new();
+        for (property, value) in properties {
+            let column = property_column(node, property).ok_or_else(|| {
+                WritePlanError::Rejected(format!(
+                    "CREATE: property `{property}` of `{label}` cannot be mapped to a writable \
+                     column"
+                ))
+            })?;
+            columns.push(column);
+            values.push(value.clone());
+        }
+        let (plan, sqls) = lower_records(&self.stmt.read, self.schema, &self.options, &values)
+            .map_err(|e| match e {
+                // Neo4j's TypeError: no property holds it.
+                Ok(reason) => WritePlanError::Rejected(format!("CREATE: {reason}")),
+                Err(e) => WritePlanError::Unsupported(e.to_string()),
+            })?;
+        let (rows, select) = match self.stmt.read.plan {
+            BoundOp::Unit => (vec![sqls.into_iter().map(RenderExpr::Raw).collect()], None),
+            _ => (
+                Vec::new(),
+                Some(RowSource::Sql(render_plan_to_sql_plain(plan))),
+            ),
+        };
+        ops.push(WriteRenderPlan::Insert(InsertOp {
+            database: node.database.clone(),
+            table: node.table_name.clone(),
+            columns,
+            rows,
+            select,
+        }));
         Ok(())
     }
 
@@ -715,6 +813,61 @@ mod tests {
         assert_eq!(checked.len(), 2, "{ops:?}");
     }
 
+    /// CREATE: one node per record of the read part, its values read in
+    /// the record; with no MATCH, one, its `VALUES`.
+    #[test]
+    fn create_per_record() {
+        let got = sql("CREATE (u:User {user_id: 99, name: 'n' + 'x'})");
+        assert_eq!(got.len(), 1);
+        assert!(
+            got[0].starts_with(
+                "INSERT INTO `test_integration`.`users_test` (`user_id`, `full_name`) VALUES (99, "
+            ),
+            "{got:?}"
+        );
+        let got = sql(
+            "MATCH (u:User) WHERE u.age > 30 CREATE (p:Post {post_id: u.user_id, title: u.name})",
+        );
+        assert!(
+            got[0].starts_with(
+                "INSERT INTO `test_integration`.`posts_test` (`post_id`, `post_title`) SELECT * FROM \
+                 (SELECT v0.user_id AS \"__cg_v0\", v0.full_name AS \"__cg_v1\" FROM \
+                 test_integration.users_test AS v0 WHERE"
+            ),
+            "{got:?}"
+        );
+        // Refused (Neo4j: a TypeError, or a value a snapshot would read
+        // stale): a map, a node, a list holding NULL; a value reading a
+        // node an earlier clause changed.
+        for (q, why) in [
+            ("CREATE (u:User {user_id: 7, name: {a: 1}})", "a map"),
+            (
+                "MATCH (a:User) CREATE (p:Post {post_id: 1, title: a})",
+                "a node, relationship or path",
+            ),
+            (
+                "CREATE (u:User {user_id: 8, name: [1, null]})",
+                "holding a NULL",
+            ),
+            (
+                "MATCH (a:User) WHERE a.user_id = 1 SET a.age = 99 \
+                 CREATE (p:Post {post_id: 5, title: a.name})",
+                "an earlier SET",
+            ),
+        ] {
+            let err = plan_write(q, &social()).unwrap_err();
+            assert!(
+                matches!(&err, WritePlanError::Rejected(m) if m.contains(why)),
+                "{q}: {err:?}"
+            );
+        }
+        // A CREATE'd node read by a later clause: not yet.
+        assert!(matches!(
+            plan_write("CREATE (u:User {user_id: 1}) SET u.age = 2", &social()),
+            Err(WritePlanError::Unsupported(_))
+        ));
+    }
+
     #[test]
     fn refusals() {
         let schema = social();
@@ -732,10 +885,11 @@ mod tests {
             let err = plan_write(q, &schema).unwrap_err().to_string();
             assert!(err.contains(why), "{q}: {err}");
         }
-        // Not planned here yet (the legacy planner's): CREATE, RETURN.
+        // Not planned here yet (the legacy planner's): RETURN after an
+        // update, a relationship CREATE.
         for q in [
-            "CREATE (u:User {user_id: 99})",
             "MATCH (u:User) SET u.age = 1 RETURN u.age",
+            "CREATE (a:User {user_id: 1})-[:FOLLOWS]->(b:User {user_id: 2})",
         ] {
             assert!(
                 matches!(plan_write(q, &schema), Err(WritePlanError::Unsupported(_))),

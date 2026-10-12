@@ -64,6 +64,11 @@ pub struct InsertOp {
     /// One inner Vec per row to insert. Each value is rendered via
     /// `RenderExpr::to_sql`. Length must equal `columns.len()`.
     pub rows: Vec<Vec<RenderExpr>>,
+    /// Instead of `rows`, the rows of a SELECT of the columns in order
+    /// ([`RowSource::Sql`]: `INSERT … SELECT`; [`RowSource::Read`]: the
+    /// executor reads them first, a statement of several).
+    #[serde(default)]
+    pub select: Option<RowSource>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

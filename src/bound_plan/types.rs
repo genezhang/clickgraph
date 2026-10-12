@@ -313,6 +313,12 @@ pub enum BoundWrite {
         detach: bool,
         clause: usize,
     },
+    /// `CREATE (:Label {props})`: one node per record of the read part.
+    Create {
+        label: String,
+        properties: Vec<(String, LogicalExpr)>,
+        clause: usize,
+    },
 }
 
 /// A statement of updating clauses after a read part: the read part is

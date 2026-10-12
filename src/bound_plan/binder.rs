@@ -70,6 +70,7 @@ pub fn bind_statement(
         subqueries: Vec::new(),
         clause: 0,
         writes: None,
+        created: Vec::new(),
     };
     let (first_plan, first_cols) = b.bind_query(&stmt.first)?;
     if stmt.unions.is_empty() {
@@ -144,6 +145,9 @@ struct Binder {
     /// Binding a write statement (`bind_write_statement`): its updating
     /// clauses' operations; `None` binds a read.
     writes: Option<Vec<BoundWrite>>,
+    /// The variables a CREATE of the write statement named: not readable
+    /// by a later clause yet.
+    created: Vec<String>,
 }
 
 /// Bind a statement of updating clauses (SET / REMOVE / DELETE) after a
@@ -165,6 +169,7 @@ pub fn bind_write_statement(
         subqueries: Vec::new(),
         clause: 0,
         writes: Some(Vec::new()),
+        created: Vec::new(),
     };
     let (plan, columns) = b.bind_query(&stmt.first)?;
     let writes = b.writes.take().unwrap_or_default();
@@ -441,6 +446,11 @@ impl Binder {
     /// operations, on the nodes `scope` binds.
     fn bind_update(&mut self, clause: &Clause<'_>, scope: &Scope) -> Result<(), BindError> {
         let node = |b: &Binder, name: &str, clause: &str| -> Result<VarId, BindError> {
+            if b.created.iter().any(|c| c == name) {
+                return Err(BindError::Unsupported(format!(
+                    "{clause} of a node a CREATE of the statement created"
+                )));
+            }
             let Some(v) = scope.lookup(name) else {
                 return Err(BindError::UndefinedVariable(name.to_string()));
             };
@@ -499,7 +509,47 @@ impl Binder {
                     });
                 }
             }
-            Clause::Create(_) => return Err(BindError::Unsupported("CREATE".to_string())),
+            Clause::Create(create) => {
+                for pattern in &create.path_patterns {
+                    let PathPattern::Node(n) = pattern else {
+                        return Err(BindError::Unsupported(
+                            "CREATE of a relationship".to_string(),
+                        ));
+                    };
+                    let label = match n.labels.as_deref() {
+                        Some([one]) => one.to_string(),
+                        _ => {
+                            return Err(BindError::Unsupported(
+                                "CREATE of a node of other than one label".to_string(),
+                            ))
+                        }
+                    };
+                    if let Some(name) = n.name {
+                        if scope.lookup(name).is_some() || self.created.iter().any(|c| c == name) {
+                            return Err(BindError::AlreadyDeclared(name.to_string()));
+                        }
+                        self.created.push(name.to_string());
+                    }
+                    let mut properties: Vec<(String, LogicalExpr)> = Vec::new();
+                    for p in n.properties.iter().flatten() {
+                        let Property::PropertyKV(kv) = p else {
+                            return Err(BindError::Unsupported(
+                                "CREATE with a parameter map".to_string(),
+                            ));
+                        };
+                        let value = self.expr(&kv.value, &[scope])?;
+                        no_aggregate(&value, "Invalid use of aggregating function in CREATE")?;
+                        // A key given twice: the last.
+                        properties.retain(|(k, _)| k != kv.key);
+                        properties.push((kv.key.to_string(), value));
+                    }
+                    ops.push(BoundWrite::Create {
+                        label,
+                        properties,
+                        clause: self.clause,
+                    });
+                }
+            }
             _ => {
                 return Err(BindError::Unsupported(
                     "internal: not an updating clause".to_string(),
