@@ -67,6 +67,9 @@ impl Lowerer<'_> {
     /// path an OPTIONAL MATCH may leave NULL is not: its list would be NULL.
     pub(super) fn path_elem(&self, f: &lx::ScalarFnCall) -> Option<Elem> {
         let (p, nodes) = self.path_part(f)?;
+        if self.grouped_paths.contains(&p) {
+            return None;
+        }
         let elements = self.paths.get(&p)?;
         let mut elem: Option<Elem> = None;
         let mut agree = |e: Elem| -> Option<()> {

@@ -1139,6 +1139,30 @@ impl Lowerer<'_> {
     /// `length(p)`: the path's fixed relationships, plus the hops of each
     /// variable-length one. NULL for a path an OPTIONAL MATCH did not match.
     pub(super) fn path_length(&self, p: VarId) -> Result<RenderExpr, LowerError> {
+        let length = self.ungrouped_path_length(p)?;
+        // A path a grouping RETURN returns: any of its group's (the path,
+        // the group's key, determines it), all of it one aggregate.
+        Ok(match self.grouped_paths.contains(&p) {
+            true => RenderExpr::Raw(
+                current_function_mapper().any_non_null(&render_expr_to_sql_plain(&length)),
+            ),
+            false => length,
+        })
+    }
+
+    /// Refuses reading the nodes or relationships of a path a grouping
+    /// RETURN returns (its ORDER BY): their columns are not the group's.
+    pub(super) fn ungrouped_elements(&self, p: VarId) -> Result<(), LowerError> {
+        if self.grouped_paths.contains(&p) {
+            return unsupported(
+                "the nodes or relationships of a path a DISTINCT or aggregating RETURN \
+                 returns, in its ORDER BY",
+            );
+        }
+        Ok(())
+    }
+
+    fn ungrouped_path_length(&self, p: VarId) -> Result<RenderExpr, LowerError> {
         let Some(elements) = self.paths.get(&p) else {
             return unsupported(format!("internal: path {p} has no elements"));
         };

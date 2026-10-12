@@ -492,6 +492,16 @@ impl<'s> Lowerer<'s> {
                 Ok(false)
             }
             (g, None) => {
+                // The RETURN's ORDER BY reads the item (`ORDER BY
+                // length(p)`): its elements are the path's (#1427).
+                if let GraphRef::Path(src) = g {
+                    if let Some(elements) = self.paths.get(&src).cloned() {
+                        self.paths.insert(it.var, elements);
+                        if aggregating || body.distinct {
+                            self.grouped_paths.insert(it.var);
+                        }
+                    }
+                }
                 let v = self.graph_value(g)?;
                 let column = body.column(v.value, &it.name);
                 body.determined.push(column.clone());
@@ -619,6 +629,7 @@ impl<'s> Lowerer<'s> {
         let s = spelling()?;
         let (identities, vars) = match g {
             GraphRef::Path(p) | GraphRef::Nodes(p) | GraphRef::Rels(p) => {
+                self.ungrouped_elements(p)?;
                 let Some(elements) = self.paths.get(&p).cloned() else {
                     return unsupported(format!("internal: path {p} has no elements"));
                 };
@@ -779,6 +790,7 @@ impl<'s> Lowerer<'s> {
 
     /// A path, its nodes or its relationships, in path order.
     fn path_value(&self, p: VarId, part: Part) -> Result<GraphValue, LowerError> {
+        self.ungrouped_elements(p)?;
         let s = spelling()?;
         let Some(elements) = self.paths.get(&p).cloned() else {
             return unsupported(format!("internal: path {p} has no elements"));

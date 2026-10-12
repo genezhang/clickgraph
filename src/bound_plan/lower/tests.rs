@@ -4462,6 +4462,46 @@ fn databricks_shortest_path_search() {
     .unwrap();
 }
 
+/// #1427: a RETURN's ORDER BY reads a returned path's length (the item's
+/// elements are the path's); returned with DISTINCT or an aggregation, as
+/// any of its group's (the path, the group's key, determines it).
+#[test]
+fn order_by_length_of_a_returned_path() {
+    has(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN p ORDER BY length(p)",
+        &["ORDER BY v1.hop_count ASC"],
+    );
+    // A fixed path's length is a constant: no order to apply.
+    sql("MATCH p = (a:User)-[:FOLLOWS]->(b:User) RETURN p ORDER BY length(p) DESC");
+    has(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN DISTINCT p ORDER BY length(p)",
+        &["ORDER BY anyIfOrNull(v1.hop_count, NOT isNull(v1.hop_count)) ASC"],
+    );
+    // Two walks: their lengths' sum is one aggregate, one row's (review).
+    has(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User) \
+         RETURN DISTINCT p ORDER BY length(p)",
+        &["ORDER BY anyIfOrNull(v1.hop_count + v3.hop_count, NOT isNull(v1.hop_count + v3.hop_count)) ASC"],
+    );
+    // Its nodes are not the group's columns: refused, not an SQL error.
+    for q in [
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN DISTINCT p \
+         ORDER BY [n IN nodes(p) | n.name]",
+        "MATCH p = (a:User)-[:FOLLOWS]->(b:User) RETURN p, count(*) AS c \
+         ORDER BY [n IN nodes(p) | n.name]",
+    ] {
+        assert!(
+            translate_bound_plan(q, &social(), &ReadOptions::default()).is_err(),
+            "{q}"
+        );
+    }
+    sql("MATCH p = (a:User)-[:FOLLOWS]->(b:User) WITH p RETURN p ORDER BY length(p)");
+    has(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) WITH p RETURN p ORDER BY length(p)",
+        &["ORDER BY w2.v1__hop_count ASC"],
+    );
+}
+
 /// UNION (S7d): each arm is a CTE of its RETURN's columns in the UNION's
 /// order (matched by name); a CTE is the UNION ALL of the arms, each value
 /// read as a value of any type; UNION groups rows by Cypher's equality.

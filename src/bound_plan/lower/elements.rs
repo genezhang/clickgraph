@@ -483,6 +483,7 @@ impl<'s> Lowerer<'s> {
         let Some((p, nodes)) = self.path_part(f) else {
             return unsupported("internal: not a path's nodes or relationships");
         };
+        self.ungrouped_elements(p)?;
         let Some(elements) = self.paths.get(&p).cloned() else {
             return unsupported(format!("internal: path {p} has no elements"));
         };
