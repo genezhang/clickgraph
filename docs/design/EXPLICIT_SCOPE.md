@@ -4594,7 +4594,7 @@ slice that will handle it.
   pipeline cannot be deleted while they do. The output model
   (`WriteRenderPlan`: INSERT / lightweight UPDATE / DELETE, `write_to_sql`,
   the count probes) stays.
-  - [ ] **S13a: SET / REMOVE / DELETE.** `bind_write_statement`: the read
+  - [x] **S13a: SET / REMOVE / DELETE.** `bind_write_statement`: the read
     part bound as a read's (no RETURN), then each updating clause's
     operations in its scope (`BoundWrite`: `v.prop = value`, REMOVE,
     `[DETACH] DELETE v` of a node; a relationship target, CREATE, a
@@ -4629,6 +4629,26 @@ slice that will handle it.
       as a string, #1436). Executed on ClickHouse against copies of the
       test tables: SET with a value of the row's own properties, DETACH
       DELETE of a user (its follows and likes, then the node).
+    - Adversarial review (executed on ClickHouse): a write of several
+      statements re-ran its MATCH in each after the earlier ones wrote
+      (`MATCH (u)-[:FOLLOWS]->(f) … DETACH DELETE u`: its relationships
+      deleted, `u` was no longer matched; `SET … DELETE`, `DELETE a, b`
+      likewise), counters wrong (every DELETE of a sequence but the last
+      counted as a relationship's, a shared relationship twice). Now a
+      write of several statements reads every operation's ids before any
+      runs (`RowSource::Read`), and the executor runs the checks, then
+      each statement after probing its count (`DeleteOp::relationships`
+      says which counter). One UPDATE per SET clause, in clause order (a
+      later clause reads what an earlier one wrote). A SET value reads its
+      row's bare columns (chdb resolves no table-qualified column in an
+      UPDATE). Neo4j's rules: a plain DELETE of a node with relationships
+      fails (`WriteRenderPlan::Check`, each plain edge table at the label,
+      before anything runs; the legacy path left them dangling); a node of
+      several labels whose other label lacks a SET property fails only
+      when such a node matches. The embedded dispatcher routes a write the
+      legacy parser cannot read (two SET clauses). Five chdb end-to-end
+      tests of these shapes pass; #1436 re-diagnosed (the schema declares
+      no property types: its columns are strings).
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

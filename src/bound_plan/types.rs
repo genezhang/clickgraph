@@ -297,11 +297,22 @@ pub enum BoundWrite {
         var: VarId,
         property: String,
         value: LogicalExpr,
+        /// The clause's index: a SET clause's values read the records as
+        /// the clauses before it left them.
+        clause: usize,
     },
     /// `REMOVE v.prop`.
-    Remove { var: VarId, property: String },
+    Remove {
+        var: VarId,
+        property: String,
+        clause: usize,
+    },
     /// `[DETACH] DELETE v`.
-    Delete { var: VarId, detach: bool },
+    Delete {
+        var: VarId,
+        detach: bool,
+        clause: usize,
+    },
 }
 
 /// A statement of updating clauses after a read part: the read part is

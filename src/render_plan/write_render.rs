@@ -49,6 +49,8 @@ pub enum WriteRenderPlan {
     /// - `DETACH DELETE` (per-rel-table DELETEs, then the node DELETE).
     /// - Multi-item `SET` / `REMOVE` that updates multiple aliases at once.
     Sequence(Vec<WriteRenderPlan>),
+    /// A condition checked before any statement runs (no SQL statement).
+    Check(CheckOp),
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -84,6 +86,28 @@ pub struct DeleteOp {
     /// often `from_id` or `to_id`; for node DELETE it's the node ID column.
     pub id_column: String,
     pub source: RowSource,
+    /// It deletes relationships (DETACH DELETE's cleanup), not nodes: the
+    /// counter it adds to.
+    #[serde(default)]
+    pub relationships: bool,
+}
+
+/// A condition of a write statement, checked before any of its statements
+/// runs: the write fails with `message` when `source` holds an id (with
+/// `within`: an id that is in that table's column).
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct CheckOp {
+    pub source: RowSource,
+    pub within: Option<CheckTable>,
+    pub message: String,
+}
+
+/// A table column a [`CheckOp`] looks the ids up in.
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct CheckTable {
+    pub database: String,
+    pub table: String,
+    pub column: String,
 }
 
 /// Where the IDs in the WHERE clause of `Update` / `Delete` come from.

@@ -90,9 +90,11 @@ fn identities_over(
 }
 
 /// A SET value of node `var` of `label`, as an UPDATE of its table computes
-/// it for each row: its properties read from the row, qualified by `table`
-/// (the table's name). A value that reads another variable or a subquery is
-/// not lowered: one table's UPDATE reads only its own rows.
+/// it for each row (SQL): its properties read from the row, by their bare
+/// columns (a lightweight UPDATE has no alias, and chdb's resolves no
+/// column qualified by the table's name). A value that reads another
+/// variable or a subquery is not lowered: one table's UPDATE reads only its
+/// own rows.
 #[allow(clippy::too_many_arguments)]
 pub fn lower_write_value(
     stmt: &BoundStatement,
@@ -101,9 +103,8 @@ pub fn lower_write_value(
     var: VarId,
     label: &str,
     node: &NodeSchema,
-    table: &str,
     value: &LogicalExpr,
-) -> Result<crate::render_plan::render_expr::RenderExpr, LowerError> {
+) -> Result<String, LowerError> {
     if !subquery_vars(value).is_empty() {
         return unsupported("a SET value that reads a pattern");
     }
@@ -130,12 +131,85 @@ pub fn lower_write_value(
         Scan::Node {
             schema: node,
             label: label.to_string(),
-            at: At::Table(table.to_string()),
+            at: At::Table(ROW.to_string()),
         },
     );
     let lowered = l.expr(value, &HashMap::new())?;
     if !l.ctes.is_empty() || !l.joins.is_empty() {
         return unsupported("a SET value that reads more than its node's row");
     }
-    Ok(lowered)
+    Ok(unqualified(
+        &crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain(
+            &lowered,
+        ),
+        ROW,
+    ))
+}
+
+/// The alias a SET value reads its row's columns at ([`lower_write_value`]).
+const ROW: &str = "__cg_row";
+
+/// `sql` without the qualifier `alias.` of its columns, outside its string
+/// literals (`'…'`, a quote doubled or escaped) and quoted names (`` `…` ``,
+/// `"…"`).
+fn unqualified(sql: &str, alias: &str) -> String {
+    let qualifier = format!("{alias}.");
+    let mut out = String::with_capacity(sql.len());
+    let mut rest = sql;
+    while let Some(c) = rest.chars().next() {
+        if matches!(c, '\'' | '`' | '"') {
+            // Through the closing quote: a backslash escapes the next
+            // character, a doubled quote is one.
+            let mut end = 1;
+            let bytes = rest.as_bytes();
+            while end < bytes.len() {
+                match bytes[end] {
+                    b'\\' => end += 2,
+                    b if b == c as u8 && bytes.get(end + 1) == Some(&(c as u8)) => end += 2,
+                    b if b == c as u8 => {
+                        end += 1;
+                        break;
+                    }
+                    _ => end += 1,
+                }
+            }
+            let end = end.min(rest.len());
+            out.push_str(&rest[..end]);
+            rest = &rest[end..];
+            continue;
+        }
+        let word_start = out
+            .chars()
+            .last()
+            .is_none_or(|p| !(p.is_alphanumeric() || p == '_' || p == '.'));
+        if word_start && rest.starts_with(&qualifier) {
+            rest = &rest[qualifier.len()..];
+            continue;
+        }
+        out.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unqualified_skips_literals_and_quoted_names() {
+        assert_eq!(
+            super::unqualified("__cg_row.age + 1", "__cg_row"),
+            "age + 1"
+        );
+        assert_eq!(
+            super::unqualified(
+                "concat(__cg_row.name, '__cg_row.x', 'it''s __cg_row.y', 'a\\'__cg_row.z')",
+                "__cg_row"
+            ),
+            "concat(name, '__cg_row.x', 'it''s __cg_row.y', 'a\\'__cg_row.z')"
+        );
+        assert_eq!(
+            super::unqualified("x__cg_row.age + `__cg_row.q`", "__cg_row"),
+            "x__cg_row.age + `__cg_row.q`"
+        );
+    }
 }

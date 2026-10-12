@@ -470,6 +470,7 @@ impl Binder {
                         var,
                         property: target.key.to_string(),
                         value,
+                        clause: self.clause,
                     });
                 }
             }
@@ -479,6 +480,7 @@ impl Binder {
                     ops.push(BoundWrite::Remove {
                         var,
                         property: item.key.to_string(),
+                        clause: self.clause,
                     });
                 }
             }
@@ -493,6 +495,7 @@ impl Binder {
                     ops.push(BoundWrite::Delete {
                         var,
                         detach: delete.is_detach,
+                        clause: self.clause,
                     });
                 }
             }
