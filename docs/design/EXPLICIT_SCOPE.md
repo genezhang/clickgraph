@@ -4471,6 +4471,49 @@ slice that will handle it.
       Spark's NULL is Cypher's), a pattern comprehension from a NULL node
       reads `[]` on both (#1424, to check against Neo4j), `collect(f) + [u]`
       in an aggregation not grouping `u`'s columns (#1425, both dialects).
+  - [x] **S12c: graph values.** `FunctionMapper::graph_values` on Spark: an
+    element is a VARIANT object (`to_variant_object` of a
+    `MAP<STRING, VARIANT>`; a value that is an object or a list is a VARIANT
+    already or casts to one), a path or a list of elements an
+    `ARRAY<VARIANT>` (an empty one typed); properties without NULLs by
+    `map_filter`; `tail` by `filter` on the index, `interleave` by
+    `flatten(transform(…))`, `length` `array_size`, `any` `any_value(…,
+    true)`. A composite identity's key text is the new
+    `GraphValues::tuple_text` (`value::identity_text`, at every key: a
+    relationship's, a walk's node, a shortest-path search's, a union walk's
+    edges): ClickHouse `toString(tuple(…))` as before, Spark a JSON object
+    of the parts' texts by position, NULLs kept (`CAST(struct AS STRING)`
+    quotes no part: `('a, b')` and `('a', 'b')` would read alike). The Databricks executor reads a
+    `VARIANT` / `MAP` / `STRUCT` column's JSON text as the object or array
+    it is (a scalar left as it is: a VARIANT string `"123"` is no number);
+    to verify against a live workspace. A datetime inside a value is Spark's
+    text (`2024-01-01 10:00:00+00:00`), as ClickHouse's is its own (#1068).
+    Walks over several labels or types also need the shortest-path search
+    spelling (S12e).
+    - Acceptance: Databricks lowers 1324 (was 1294). Corpus differential
+      1158 equal (was 1132; the 30 newly lowered: 26 equal, 2 the zeek
+      embedded IP's `any` pick and #1426, 1 an error on both, 1 not
+      lowered on ClickHouse). Ad hoc (21 queries: paths
+      fixed, variable-length, undirected, incoming, zero-hop, OPTIONAL
+      NULL; `nodes` / `relationships`; collected nodes and relationships,
+      ordered or not; nodes of several labels and relationships of several
+      types): every one both dialects lower equal (one under a tie). Filed:
+      ClickHouse reads an embedded node's array property as NULL when one
+      source lacks it (#1426, `any` over a `Variant`; Spark right), an
+      internal error ordering a carried path by `length(p)` (#1427).
+    - Adversarial review: fixed DISTINCT paths overcounted on Spark with
+      composite identities (16 vs 22 on test_fixtures, 24 vs 32 on
+      denormalized flights): a walk's typed tuples (`path_edges`, a
+      composite `path_nodes`) were texted by `CAST(struct AS STRING)`, a
+      fixed hop's by `tuple_text`, so one path cut two ways was two keys.
+      `GraphValues::tuple_value_text` texts a tuple value as `tuple_text`
+      its parts (Spark: cast to `STRUCT<_1: STRING, …>`, `to_json`), and
+      `prefixed_texts` takes the elements' arity (`TrailEdges::Typed`
+      carries it). The executor recognizes a container by its type text
+      too, and an array's container elements delivered as JSON text. Noted:
+      a float or `UInt8` boolean id's element id reads as each engine
+      texts it (`1.0` / `1`); a `Map`-typed property fails on Spark
+      (`CAST(MAP AS VARIANT)`), loudly.
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

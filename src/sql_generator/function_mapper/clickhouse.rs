@@ -379,6 +379,9 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             length: |list| format!("length({list})"),
             text: |parts| format!("concat({})", parts.join(", ")),
             to_text: |x| format!("toString({x})"),
+            // A string part is quoted.
+            tuple_text: |parts| format!("toString(tuple({}))", parts.join(", ")),
+            tuple_value_text: |tuple, _| format!("toString({tuple})"),
             null_if: |cond, value| format!("if({cond}, NULL, CAST({value}, 'Dynamic'))"),
             any: |value| format!("any({value})"),
             texts: |items| {
@@ -388,7 +391,7 @@ impl FunctionMapper for ClickhouseFunctionMapper {
                     format!("[{}]", items.join(", "))
                 }
             },
-            prefixed_texts: |prefix, list| {
+            prefixed_texts: |prefix, list, _| {
                 format!("arrayMap(__x -> concat({prefix}, toString(__x)), {list})")
             },
             empty_if: |cond, list| format!("if({cond}, [], {list})"),

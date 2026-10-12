@@ -439,10 +439,98 @@ impl FunctionMapper for DatabricksFunctionMapper {
     }
 
     fn graph_values(&self) -> Option<super::GraphValues> {
-        // Spark's arrays and maps hold one type: a path (nodes and
-        // relationships) or a list of nodes of different labels needs a
-        // VARIANT form not built yet. Such values stay on the legacy path.
-        None
+        fn struct_text(tuple: &str, arity: usize) -> String {
+            let fields: Vec<String> = (1..=arity).map(|i| format!("_{i}: STRING")).collect();
+            format!(
+                "to_json(CAST({tuple} AS STRUCT<{}>), map('ignoreNullFields', 'false'))",
+                fields.join(", ")
+            )
+        }
+        // An element is a VARIANT object: objects of different keys and
+        // value types share the type, so one `ARRAY<VARIANT>` holds nodes
+        // and relationships of any label, as a path does. A value that is
+        // an object or a list is already a VARIANT, or casts to one.
+        fn map(entries: &[(String, String)]) -> String {
+            if entries.is_empty() {
+                return "CAST(map() AS MAP<STRING, VARIANT>)".to_string();
+            }
+            let pairs: Vec<String> = entries
+                .iter()
+                .map(|(k, v)| format!("{k}, CAST({v} AS VARIANT)"))
+                .collect();
+            format!("map({})", pairs.join(", "))
+        }
+        Some(super::GraphValues {
+            object: |entries| format!("to_variant_object({})", map(entries)),
+            // A VARIANT cast of NULL is SQL NULL.
+            object_without_nulls: |entries| {
+                format!(
+                    "to_variant_object(map_filter({}, (__k, __v) -> __v IS NOT NULL))",
+                    map(entries)
+                )
+            },
+            list: |items| {
+                if items.is_empty() {
+                    "CAST(array() AS ARRAY<VARIANT>)".to_string()
+                } else {
+                    format!("array({})", items.join(", "))
+                }
+            },
+            concat: |lists| match lists {
+                [one] => one.clone(),
+                _ => format!("concat({})", lists.join(", ")),
+            },
+            tail: |list| format!("filter({list}, (__x, __i) -> __i > 0)"),
+            reverse: |list| format!("reverse({list})"),
+            // The lists are of one length.
+            interleave: |rels, nodes| {
+                format!(
+                    "flatten(transform({rels}, (__r, __i) -> \
+                     array(__r, element_at({nodes}, __i + 1))))"
+                )
+            },
+            // `size(NULL)` is -1 unless ANSI mode.
+            length: |list| format!("array_size({list})"),
+            text: |parts| format!("concat({})", parts.join(", ")),
+            to_text: |x| format!("CAST({x} AS STRING)"),
+            // `CAST(struct AS STRING)` quotes no part: each part's text in a
+            // JSON object of positional fields, its NULLs kept, as
+            // `tuple_value_text` spells a struct of the parts.
+            tuple_text: |parts| {
+                let fields: Vec<String> = parts
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| format!("'_{}', CAST({p} AS STRING)", i + 1))
+                    .collect();
+                format!(
+                    "to_json(named_struct({}), map('ignoreNullFields', 'false'))",
+                    fields.join(", ")
+                )
+            },
+            // A struct cast to one of strings is cast field by field, by
+            // position.
+            tuple_value_text: struct_text,
+            null_if: |cond, value| {
+                format!("CASE WHEN {cond} THEN NULL ELSE CAST({value} AS VARIANT) END")
+            },
+            // `any_value` skips NULLs only when asked, as ClickHouse's `any`.
+            any: |value| format!("any_value({value}, true)"),
+            texts: |items| {
+                if items.is_empty() {
+                    "CAST(array() AS ARRAY<STRING>)".to_string()
+                } else {
+                    format!("array({})", items.join(", "))
+                }
+            },
+            prefixed_texts: |prefix, list, arity| {
+                let text = match arity {
+                    1 => "CAST(__x AS STRING)".to_string(),
+                    n => struct_text("__x", n),
+                };
+                format!("transform({list}, __x -> concat({prefix}, {text}))")
+            },
+            empty_if: |cond, list| format!("CASE WHEN {cond} THEN array() ELSE {list} END"),
+        })
     }
 
     fn id_order_key_nulls_clause(&self) -> &'static str {

@@ -506,14 +506,23 @@ pub(crate) struct GraphValues {
     pub text: fn(&[String]) -> String,
     /// A scalar as a string.
     pub to_text: fn(&str) -> String,
+    /// The values (SQL, two or more: a composite identity's columns) as one
+    /// string that tells any two lists of values apart, however their parts
+    /// read (`('B|1', '2')` is not `('B', '1|2')`).
+    pub tuple_text: fn(&[String]) -> String,
+    /// The tuple value `{0}` of `{1}` parts as a string, the same as
+    /// `tuple_text` of its parts: the two spell one identity alike.
+    pub tuple_value_text: fn(&str, usize) -> String,
     /// NULL when the condition holds, else the value (an object or a list).
     pub null_if: fn(&str, &str) -> String,
     /// Any one of a group's values (they are all equal).
     pub any: fn(&str) -> String,
     /// A list of texts (possibly none).
     pub texts: fn(&[String]) -> String,
-    /// The texts of a list's elements, each after the text `prefix`.
-    pub prefixed_texts: fn(&str, &str) -> String,
+    /// The texts of a list's elements, each after the text `prefix`; an
+    /// element of `arity` parts (`{2}`, more than one: a tuple) as
+    /// `tuple_value_text` spells it.
+    pub prefixed_texts: fn(&str, &str, usize) -> String,
     /// An empty list when the condition holds, else the list.
     pub empty_if: fn(&str, &str) -> String,
 }

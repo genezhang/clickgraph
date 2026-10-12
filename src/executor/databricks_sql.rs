@@ -902,6 +902,7 @@ fn rows_from_data(
                 // scalars are themselves strings; un-string them recursively so
                 // the HTTP/Bolt result matches ClickHouse's native array shape.
                 Some("ARRAY") => coerce_array(val.clone(), *type_text),
+                _ if is_container_type(*type_name, *type_text) => parse_container(val.clone()),
                 Some(t) => coerce_scalar(val.clone(), t),
                 None => val.clone(),
             };
@@ -955,6 +956,35 @@ fn coerce_scalar(value: Value, type_name: &str) -> Value {
     coerced.unwrap_or(value)
 }
 
+/// Whether a column is a `VARIANT`, `MAP` or `STRUCT`, by its type name or,
+/// whatever name the manifest gives it, its type text.
+fn is_container_type(type_name: Option<&str>, type_text: Option<&str>) -> bool {
+    const CONTAINERS: [&str; 3] = ["VARIANT", "MAP", "STRUCT"];
+    let starts = |t: &str| {
+        let t = t.trim().to_ascii_uppercase();
+        CONTAINERS
+            .iter()
+            .any(|c| t == *c || t.starts_with(&format!("{c}<")))
+    };
+    type_name.is_some_and(|n| CONTAINERS.contains(&n)) || type_text.is_some_and(starts)
+}
+
+/// Restore a native JSON object or array from a `VARIANT`, `MAP` or `STRUCT`
+/// column, which the Statement Execution API delivers as JSON text: a graph
+/// value (a node, relationship or path is a VARIANT object, a list of them
+/// an array) or a map (`MAP<STRING, VARIANT>`) reads as ClickHouse's does.
+/// Only an object or an array is taken: a VARIANT holding the string `"123"`
+/// is not the number 123. Anything else is left as it is.
+fn parse_container(value: Value) -> Value {
+    let Value::String(s) = &value else {
+        return value;
+    };
+    match serde_json::from_str::<Value>(s) {
+        Ok(parsed @ (Value::Object(_) | Value::Array(_))) => parsed,
+        _ => value,
+    }
+}
+
 /// Restore a native JSON array from an `ARRAY` column. The Statement Execution
 /// API delivers the whole array as one JSON-encoded string (e.g.
 /// `"[\"a\",\"b\"]"`) whose inner scalars are themselves strings. Parse it and
@@ -984,6 +1014,11 @@ fn coerce_by_type(value: Value, sql_type: &str) -> Value {
                     .map(|it| coerce_by_type(it, inner))
                     .collect(),
             )
+        }
+        // An element that is a VARIANT, MAP or STRUCT delivered as its JSON
+        // text (a path's elements).
+        Value::String(s) if is_container_type(None, Some(sql_type)) => {
+            parse_container(Value::String(s))
         }
         Value::String(s) => {
             // Map SQL type names (type_text) onto the enum names coerce_scalar
@@ -1859,6 +1894,34 @@ mod wiremock_tests {
         assert_eq!(
             coerce_array(Value::String("[]".to_string()), Some("ARRAY<STRING>")),
             json!([])
+        );
+    }
+
+    #[test]
+    fn variant_map_struct_columns_read_as_objects() {
+        let node = json!(r#"{"elementId":"User:1-","labels":["User"],"properties":{"age":30}}"#);
+        assert_eq!(
+            parse_container(node),
+            json!({"elementId": "User:1-", "labels": ["User"], "properties": {"age": 30}})
+        );
+        assert_eq!(
+            parse_container(json!(r#"[{"a":1},{"b":"x"}]"#)),
+            json!([{"a": 1}, {"b": "x"}])
+        );
+        // A scalar stays as delivered: a VARIANT string "123" is no number.
+        assert_eq!(parse_container(json!("123")), json!("123"));
+        assert_eq!(parse_container(json!("not json")), json!("not json"));
+        assert_eq!(parse_container(Value::Null), Value::Null);
+        // By type text whatever the type name; an array's elements too.
+        assert!(is_container_type(
+            Some("USER_DEFINED_TYPE"),
+            Some("variant")
+        ));
+        assert!(is_container_type(None, Some("MAP<STRING, VARIANT>")));
+        assert!(!is_container_type(Some("STRING"), Some("STRING")));
+        assert_eq!(
+            coerce_by_type(json!([r#"{"a":1}"#, "x"]), "ARRAY<VARIANT>"),
+            json!([{"a": 1}, "x"])
         );
     }
 
