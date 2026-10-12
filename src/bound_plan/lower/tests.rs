@@ -4263,7 +4263,8 @@ fn databricks_embedded_nodes() {
 /// #1426: a node embedded in several sources takes any of its sources'
 /// non-NULL values: ClickHouse `any` keeps a `Variant`'s NULL (`NULL UNION
 /// ALL` an `Array` column is a `Variant`), so a source without the property
-/// could win.
+/// could win; a group of NULLs only stays NULL (`-OrNull`: `anyIf` of a
+/// `Nullable(Tuple)` is its default, review).
 #[test]
 fn embedded_property_skips_variant_nulls() {
     let got = squash(
@@ -4275,7 +4276,7 @@ fn embedded_property_skips_variant_nulls() {
         .unwrap()
         .sql,
     );
-    assert!(got.contains("anyIf("), "{got}");
+    assert!(got.contains("anyIfOrNull("), "{got}");
     assert!(got.contains(", NOT isNull("), "{got}");
     assert!(!got.contains(" any("), "{got}");
 }
