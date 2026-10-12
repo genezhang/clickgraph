@@ -4323,6 +4323,17 @@ slice that will handle it.
       ClickGraph too: NEO_ERROR 15 → 11, BOTH_ERROR 14 → 18). Embedded /
       tool / client crates, the embedded chdb e2e tests and the Python
       bindings pass but for failures that main has too.
+    - Review polish: a refusal names the construct (`not_translated`
+      drops the plan's wording and slice tags; Bolt
+      `Neo.ClientError.Statement.FeatureNotSupported`), a broken invariant
+      is `TranslateError::Internal` (HTTP 500, Bolt a database error); a
+      CALL / updating statement the clause-list parser does not read
+      (`CALL p() YIELD x WHERE …`) goes to its entry point, not a syntax
+      error (found by a census of the wiki's 815 Cypher examples; the
+      procedure route ignoring the WHERE predates it: #1411). Rerun on
+      main with S11k–S11n: live suite 4826 passed (the 9 multi-tenant
+      failures, plus `test_filter_early_vs_late`, a timing ratio that is
+      flaky on main too); corpus 1442; scorecard verdicts unchanged.
   - **User decisions (2026-10-11)** on what S11 does not lower: a
     relationship without `edge_id` keeps its ends as its identity (#1356;
     define `edge_id` to tell parallel rows apart); an undeclared property
