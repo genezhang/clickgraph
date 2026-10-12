@@ -4514,6 +4514,29 @@ slice that will handle it.
       a float or `UInt8` boolean id's element id reads as each engine
       texts it (`1.0` / `1`); a `Map`-typed property fails on Spark
       (`CAST(MAP AS VARIANT)`), loudly.
+  - [x] **S12d: UNION and grouped maps.** `FunctionMapper::cypher_union` on
+    Spark: a column of values is a VARIANT (`CAST(… AS VARIANT)`), grouped
+    by `distinct_key`, a text of the value's kind and canonical text (Spark
+    groups, compares and sorts no VARIANT): `n:` a number (an integral one
+    within BIGINT as its integer, a decimal without trailing zeros: `1` =
+    `1.0` = decimal `1.0`, `-0.0` = `0`), `b:` a boolean, `s:` a string or
+    date, `c:` a list or map (its JSON), `:` NULL; `any_value` of a group.
+    A map literal is now a VARIANT object (`to_variant_object`, S12b's
+    `MAP<STRING, VARIANT>` could not be a VARIANT: a UNION's or a map's
+    value), so a map nested in a map needs no special case
+    (`MapEntry::holds_maps` gone); `keys()` reads it as a map
+    (`CAST(… AS MAP<STRING, VARIANT>)`, keys sorted as a VARIANT object
+    holds them). With the key, a grouped or DISTINCT map lowers on Spark.
+    The Databricks executor reads a VARIANT column's JSON text whatever it
+    holds (Databricks renders a VARIANT as JSON: a string with its quotes),
+    a MAP / STRUCT column's object; to verify against a live workspace.
+    - Acceptance: Databricks lowers 1334 (was 1324). Corpus differential
+      1166 equal (was 1158; of the 10 newly lowered UNIONs 8 equal, 2 are
+      arms with LIMIT and no ORDER BY: any rows, as many). Ad hoc (17:
+      `1` / `1.0` / `true` / `'1'` / NULL in one column, lists, maps,
+      ordered arms, nodes and paths, grouped and DISTINCT maps, a boolean
+      with an integer): every one equal; S12b's 61 list and map queries
+      rerun with maps as VARIANT objects: every one equal (63 now lower).
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

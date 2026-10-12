@@ -902,6 +902,7 @@ fn rows_from_data(
                 // scalars are themselves strings; un-string them recursively so
                 // the HTTP/Bolt result matches ClickHouse's native array shape.
                 Some("ARRAY") => coerce_array(val.clone(), *type_text),
+                _ if is_variant_type(*type_name, *type_text) => parse_variant(val.clone()),
                 _ if is_container_type(*type_name, *type_text) => parse_container(val.clone()),
                 Some(t) => coerce_scalar(val.clone(), t),
                 None => val.clone(),
@@ -967,6 +968,22 @@ fn is_container_type(type_name: Option<&str>, type_text: Option<&str>) -> bool {
             .any(|c| t == *c || t.starts_with(&format!("{c}<")))
     };
     type_name.is_some_and(|n| CONTAINERS.contains(&n)) || type_text.is_some_and(starts)
+}
+
+/// Whether a column is a `VARIANT`, by its type name or type text.
+fn is_variant_type(type_name: Option<&str>, type_text: Option<&str>) -> bool {
+    type_name == Some("VARIANT")
+        || type_text.is_some_and(|t| t.trim().eq_ignore_ascii_case("VARIANT"))
+}
+
+/// A `VARIANT` value from its JSON text, as Databricks renders a VARIANT
+/// (a string with its quotes: `"abc"`, a number bare: `123`): a UNION's
+/// column holds values of any type. Text that is not JSON is left as it is.
+fn parse_variant(value: Value) -> Value {
+    let Value::String(s) = &value else {
+        return value;
+    };
+    serde_json::from_str::<Value>(s).unwrap_or(value)
 }
 
 /// Restore a native JSON object or array from a `VARIANT`, `MAP` or `STRUCT`
@@ -1912,6 +1929,14 @@ mod wiremock_tests {
         assert_eq!(parse_container(json!("123")), json!("123"));
         assert_eq!(parse_container(json!("not json")), json!("not json"));
         assert_eq!(parse_container(Value::Null), Value::Null);
+        // A VARIANT is its JSON text, a string quoted.
+        assert_eq!(parse_variant(json!(r#""abc""#)), json!("abc"));
+        assert_eq!(parse_variant(json!("123")), json!(123));
+        assert_eq!(parse_variant(json!("1.5")), json!(1.5));
+        assert_eq!(parse_variant(json!("true")), json!(true));
+        assert_eq!(parse_variant(json!(r#"{"a":[1]}"#)), json!({"a": [1]}));
+        assert!(is_variant_type(Some("USER_DEFINED_TYPE"), Some("variant")));
+        assert!(!is_variant_type(Some("MAP"), Some("MAP<STRING, VARIANT>")));
         // By type text whatever the type name; an array's elements too.
         assert!(is_container_type(
             Some("USER_DEFINED_TYPE"),

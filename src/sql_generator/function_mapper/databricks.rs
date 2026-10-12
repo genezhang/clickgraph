@@ -315,10 +315,45 @@ impl FunctionMapper for DatabricksFunctionMapper {
     }
 
     fn cypher_union(&self) -> Option<super::CypherUnion> {
-        // Spark has no column type of values of any type (`VARIANT` is not
-        // verified against the lowering's shapes): UNION stays on the legacy
-        // path there.
-        None
+        Some(super::CypherUnion {
+            // A VARIANT holds each value with its own type.
+            any_type: |v| format!("CAST({v} AS VARIANT)"),
+            // The value's kind and text (Spark groups no VARIANT): values of
+            // different kinds are different (`1`, `'1'`, `true`), numbers
+            // equal by value (`1` = `1.0`, a decimal `5.0` = `5`, `-0.0` =
+            // `0`: an integral number within BIGINT is its integer's text),
+            // a list or map is its JSON. NULL is one group.
+            distinct_key: |v| {
+                let x = format!("CAST({v} AS VARIANT)");
+                let ty = format!("schema_of_variant({x})");
+                let d = format!("variant_get({x}, '$', 'DOUBLE')");
+                let integral = |n: &str| {
+                    format!(
+                        "CASE WHEN {n} = floor({n}) AND abs({n}) < 9.0E18 \
+                         THEN CAST(CAST({n} AS BIGINT) AS STRING) ELSE CAST({n} AS STRING) END"
+                    )
+                };
+                // A decimal's text without trailing zeros, as an integer's
+                // when integral.
+                let decimal = format!(
+                    "regexp_replace(regexp_replace(CAST(CAST({x} AS DECIMAL(38, 18)) AS STRING), \
+                     '(\\\\.[0-9]*?)0+$', '$1'), '\\\\.$', '')"
+                );
+                format!(
+                    "CASE WHEN {x} IS NULL OR {ty} = 'VOID' THEN ':' \
+                     WHEN {ty} = 'BOOLEAN' THEN concat('b:', CAST({x} AS STRING)) \
+                     WHEN {ty} RLIKE '^(TINYINT|SMALLINT|INT|BIGINT)$' \
+                     THEN concat('n:', CAST(CAST({x} AS BIGINT) AS STRING)) \
+                     WHEN {ty} RLIKE '^(FLOAT|DOUBLE)$' THEN concat('n:', {}) \
+                     WHEN {ty} RLIKE '^DECIMAL' THEN concat('n:', {decimal}) \
+                     WHEN {ty} RLIKE '^(ARRAY|OBJECT)' THEN concat('c:', to_json({x})) \
+                     ELSE concat('s:', CAST({x} AS STRING)) END",
+                    integral(&d)
+                )
+            },
+            any: |v| format!("any_value({v})"),
+            row_number: |keys| format!("row_number() OVER (ORDER BY {keys})"),
+        })
     }
 
     fn lists(&self) -> Option<super::Lists> {
@@ -361,15 +396,19 @@ impl FunctionMapper for DatabricksFunctionMapper {
             },
             // `array_distinct` keeps each element where it first occurs.
             distinct: |l| format!("array_distinct({l})"),
-            map_keys: |m| format!("map_keys({m})"),
-            // A `MAP<STRING, VARIANT>`: each value keeps its type and maps of
-            // any keys are of one type. Spark refuses a map in DISTINCT,
-            // GROUP BY and set operations (the query fails). A map value is
-            // made a VARIANT by `to_variant_object` (a cast refuses it); an
-            // empty list's elements are of no type, which no VARIANT holds.
+            // A VARIANT object's keys, sorted (its order).
+            map_keys: |m| format!("map_keys(CAST({m} AS MAP<STRING, VARIANT>))"),
+            // A VARIANT object: each value keeps its type, maps of any keys
+            // are of one type, and a map is a value as any other (a value of
+            // a map, a UNION's column). Spark groups, compares and sorts no
+            // VARIANT: a map is grouped and made distinct by its key
+            // (`CypherUnion::distinct_key`). An empty list's elements are of
+            // no type, which no VARIANT holds.
             map_of: |entries| {
                 if entries.is_empty() {
-                    return Some("CAST(map() AS MAP<STRING, VARIANT>)".to_string());
+                    return Some(
+                        "to_variant_object(CAST(map() AS MAP<STRING, VARIANT>))".to_string(),
+                    );
                 }
                 if entries.iter().any(|e| e.holds_empty_list) {
                     return None;
@@ -378,13 +417,10 @@ impl FunctionMapper for DatabricksFunctionMapper {
                     .iter()
                     .map(|e| {
                         let k = e.key.replace('\\', "\\\\").replace('\'', "\\'");
-                        match e.holds_maps {
-                            true => format!("'{k}', to_variant_object({})", e.value),
-                            false => format!("'{k}', CAST({} AS VARIANT)", e.value),
-                        }
+                        format!("'{k}', CAST({} AS VARIANT)", e.value)
                     })
                     .collect();
-                Some(format!("map({})", pairs.join(", ")))
+                Some(format!("to_variant_object(map({}))", pairs.join(", ")))
             },
         })
     }

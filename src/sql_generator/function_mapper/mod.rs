@@ -614,8 +614,6 @@ pub(crate) struct MapEntry {
     pub key: String,
     /// The value's SQL.
     pub value: String,
-    /// The value is a map or a list holding maps.
-    pub holds_maps: bool,
     /// The value is an empty list literal, or a list literal holding one
     /// (its elements are of no type).
     pub holds_empty_list: bool,
