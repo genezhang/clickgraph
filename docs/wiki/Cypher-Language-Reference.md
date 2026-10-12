@@ -1040,10 +1040,10 @@ A map built in a `WITH` can be read by key afterwards, each key keeping its valu
 MATCH (u:User)
 WITH {name: u.name, id: u.user_id} AS m
 WHERE m.id > 5
-RETURN m.name, m['id'], m.missing   -- m.missing is null
+RETURN m.name, m['id'], m.missing   // m.missing is null
 ```
 
-Reading a key of a map whose keys are not known where it is read (a `$parameter` map, a map from a list's element, a computed key `m[$k]`) is not supported.
+Reading a key of a map whose keys are not known where it is read (a `$parameter` map, a map from a list's element, a computed key `m[$k]`, a key of a key's value `m.a.b`, or inside an `OPTIONAL MATCH` or a subquery) is not supported.
 
 ### Common Use Cases
 

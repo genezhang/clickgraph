@@ -5525,8 +5525,30 @@ impl<'s> Lowerer<'s> {
                     // map's key determines as it does the map.
                     if let Some(keys) = self.item_map_keys(&it.expr)? {
                         // This projection's WHERE / ORDER BY read the item's
-                        // keys over its input rows.
-                        self.map_keys.insert(it.var, keys.clone());
+                        // keys over its input rows; grouped by the map's key
+                        // (an aggregation: its WHERE is a HAVING), any one of
+                        // its group's (S11m review). Made distinct, its
+                        // WHERE reads the input rows.
+                        let own: MapKeys = match (&map_key, aggregating) {
+                            (Some(_), true) => {
+                                let Some(u) = current_function_mapper().cypher_union() else {
+                                    return unsupported("a map in this SQL dialect");
+                                };
+                                keys.iter()
+                                    .map(|(k, e)| {
+                                        let e = match is_constant(e) {
+                                            true => e.clone(),
+                                            false => RenderExpr::Raw((u.any)(
+                                                &render_expr_to_sql_plain(e),
+                                            )),
+                                        };
+                                        (k.clone(), e)
+                                    })
+                                    .collect()
+                            }
+                            _ => keys.clone(),
+                        };
+                        self.map_keys.insert(it.var, own);
                         let first = body.select.len();
                         let keys = export_map_keys(it.var, keys, alias, &mut body);
                         if map_key.is_some() {

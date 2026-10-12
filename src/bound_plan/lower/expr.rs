@@ -187,6 +187,11 @@ impl Lowerer<'_> {
     /// (`Lowerer::map_keys`, S11m): the key's value, NULL for a key the map
     /// does not have. `None`: its keys are not known here.
     pub(super) fn map_key(&self, v: VarId, k: &str) -> Option<RenderExpr> {
+        // `m.a.b`: a key of a key's value, whose own keys are not carried
+        // (S11m review: not a key named `a.b`).
+        if k.contains('.') {
+            return None;
+        }
         let keys = self.map_keys.get(&v)?;
         Some(
             keys.iter()

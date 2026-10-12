@@ -4837,7 +4837,19 @@ fn a_map_keeps_its_values_types() {
         "MATCH (u:User) WITH {a: 1, n: u.name} AS m WITH m RETURN m.a AS a, m.n AS n",
         &[r#"w1.v1__k1 AS "v2__k1""#, r#"1 AS "a", w2.v2__k1 AS "n""#],
     );
+    // Grouped by the map, its own HAVING / ORDER BY read any one of its
+    // group's keys (review: a raw key there is not an aggregate).
+    has(
+        "MATCH (u:User) WITH {c: u.country} AS m, count(*) AS n WHERE m.c <> 'UK' \
+         RETURN m.c AS c, n",
+        &["HAVING any(v0.country) <> 'UK'"],
+    );
     for (q, why) in [
+        // A key of a key's value: not carried (review: read as NULL).
+        (
+            "MATCH (u:User) WITH {inner: {n: u.name}} AS m RETURN m.inner.n AS n",
+            "a property of a map",
+        ),
         // A map whose keys are not known (a parameter, a list's element).
         (
             "UNWIND [{a: 1}] AS m RETURN m.a AS a",
