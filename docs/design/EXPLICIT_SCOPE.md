@@ -4267,6 +4267,25 @@ slice that will handle it.
       value is the key alone (labels lost). Filed: parallel relationships
       share Bolt's id, as Bolt's `r` does (#1409); `WHERE id(r) = <Bolt
       id>` (#1410).
+  - [x] **S11m: a map's keys.** A map literal a WITH projects also
+    exports each key's value as its own column (`{v}__k{i}`, a constant
+    kept as it is: `export_map_keys`), carried through later segments
+    (`Exports::maps`, `Lowerer::map_keys`, re-exported by `export_scope`);
+    `m.k` / `m['k']` read it in its own type, a key the map does not have
+    is NULL, and the projection's own WHERE / ORDER BY read the keys over
+    its input. A map whose keys are not known where it is read (a
+    parameter, a list's element, a computed key) stays refused. Found by
+    the cutover's review (legacy answered `m.n`, and `m.k` of an integer as
+    a string).
+    - Acceptance: 12 generated shapes on `social_integration` equal to
+      Neo4j (typed keys, missing keys, WHERE / ORDER BY / DISTINCT /
+      aggregation over keys, NULL values, two WITHs, OPTIONAL MATCH
+      values, UNWIND); legacy errors on 5, wrong on 5.
+    - Adversarial review (about 110 shapes): fixed `m.a.b` reading NULL
+      (the dotted text was looked up as one key: now refused), and a key
+      read in an aggregating WITH's own WHERE / ORDER BY reading the key
+      ungrouped (ClickHouse Code 215: now `any()` of it, as the map is
+      read). Rerun: 18 shapes equal to Neo4j.
   - **User decisions (2026-10-11)** on what S11 does not lower: a
     relationship without `edge_id` keeps its ends as its identity (#1356;
     define `edge_id` to tell parallel rows apart); an undeclared property

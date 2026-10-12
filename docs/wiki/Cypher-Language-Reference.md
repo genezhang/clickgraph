@@ -1032,6 +1032,19 @@ RETURN u.user_id, c
 
 Rows in no order are numbered for this in whatever order ClickHouse reads them, which can differ each time it reads them. A query that would read such rows twice after a `SKIP` / `LIMIT` or `collect()` over them (for example `WITH u, x LIMIT 9 OPTIONAL MATCH (u)-->(v)`) is not translated this way; adding an `ORDER BY` before the `SKIP` / `LIMIT` gives it a fixed order.
 
+### Map Values
+
+A map built in a `WITH` can be read by key afterwards, each key keeping its value's own type; a key the map does not have reads `null`:
+
+```cypher
+MATCH (u:User)
+WITH {name: u.name, id: u.user_id} AS m
+WHERE m.id > 5
+RETURN m.name, m['id'], m.missing   // m.missing is null
+```
+
+Reading a key of a map whose keys are not known where it is read (a `$parameter` map, a map from a list's element, a computed key `m[$k]`, a key of a key's value `m.a.b`, or inside an `OPTIONAL MATCH` or a subquery) is not supported.
+
 ### Common Use Cases
 
 **1. Parameter Expansion**
