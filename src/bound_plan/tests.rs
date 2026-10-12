@@ -512,9 +512,20 @@ fn properties_of_a_grouping_key_variable() {
 
 #[test]
 fn value_variables_used_as_graph_elements_fall_back() {
-    // Neo4j accepts all of these (types are checked at runtime).
-    unsupported("MATCH (a:User) WITH collect(a) AS ns UNWIND ns AS n MATCH (n)-->(m) RETURN m");
-    unsupported("MATCH (a:User) WITH coalesce(a, a) AS c MATCH (c)-->(m) RETURN m");
+    // Neo4j accepts all of these (types are checked at runtime). A value as
+    // a node binds (S11o3): the clause's node there, tied to the value.
+    for q in [
+        "MATCH (a:User) WITH collect(a) AS ns UNWIND ns AS n MATCH (n)-->(m) RETURN m",
+        "MATCH (a:User) WITH coalesce(a, a) AS c MATCH (c)-->(m) RETURN m",
+    ] {
+        let s = bind(q).unwrap_or_else(|e| panic!("{q}: {e:?}"));
+        let BoundOp::Project { input, .. } = &s.plan else {
+            panic!("{q}: {:?}", s.plan)
+        };
+        let BoundOp::Match { predicate: Some(_), .. } = &**input else {
+            panic!("{q}: no tie: {input:?}")
+        };
+    }
     unsupported("MATCH ()-[rs*]->() UNWIND rs AS r MATCH ()-[r]->() RETURN count(*)");
     unsupported("MATCH ()-[r]->() WITH collect(r) AS rs MATCH ()-[rs*]->() RETURN count(*)");
     // A path is never a node.

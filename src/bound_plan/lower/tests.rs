@@ -6293,3 +6293,41 @@ fn union_labels() {
     .to_string();
     assert!(err.contains("`Nope` is not a node label"), "{err}");
 }
+
+/// S11o3: a value used as a node (an UNWIND element of collected nodes, as
+/// LDBC IC 6 / IC 9 / BI 8 write it) is the clause's node there, tied to it
+/// by identity: in the WHERE of an OPTIONAL MATCH too, and one node for
+/// every occurrence in the clause.
+#[test]
+fn a_value_used_as_a_node() {
+    let tie = "v3.user_id = tupleElement(w2.v2, 1)";
+    has(
+        "MATCH (a:User) WITH collect(a) AS l UNWIND l AS x \
+         MATCH (x)-[:FOLLOWS]->(b:User) RETURN x.name AS n, b.name AS m",
+        &[tie, "ON v4.follower_id = v3.user_id"],
+    );
+    has(
+        "MATCH (a:User) WITH collect(a) AS l UNWIND l AS x \
+         MATCH (x)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(x) RETURN count(*) AS n",
+        &[tie, "v6.followed_id = v3.user_id"],
+    );
+    has(
+        "MATCH (a:User) WITH collect(a) AS l UNWIND l AS x \
+         OPTIONAL MATCH (x)-[:FOLLOWS]->(b:User) RETURN x.name AS n, b.name AS m",
+        &[
+            "WHERE v3.user_id = tupleElement(d3.v2, 1)",
+            "LEFT JOIN optional_o4",
+        ],
+    );
+    // A value that is no node: not lowered (Neo4j: a type error).
+    let err = translate_bound_plan(
+        "UNWIND [1, 2] AS x MATCH (x)-[:FOLLOWS]->(b:User) RETURN count(*) AS n",
+        &social(),
+        &ReadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("a node or relationship as an operand"),
+        "{err}"
+    );
+}
