@@ -1,0 +1,746 @@
+//! The embedded write path on the bound plan (S13,
+//! `docs/design/EXPLICIT_SCOPE.md`): a statement of SET / REMOVE / DELETE
+//! after a read part, planned as the lightweight UPDATE / DELETE statements
+//! of [`WriteRenderPlan`].
+//!
+//! Each operation's node is updated or deleted by its identity: the
+//! identities of the node in the read part's records
+//! ([`lower::write::lower_identities`]), one statement per label the node
+//! can have, reading that label's identities. A SET value is computed from
+//! the row it updates ([`lower::write::lower_write_value`]); REMOVE sets the
+//! property to NULL; DETACH DELETE first deletes the relationships of every
+//! standard edge table at either end of the label.
+//!
+//! Admission (the read-only rules of the embedded-writes design): a
+//! source-backed label (Parquet / S3 / Iceberg / Delta) is read-only; a
+//! node is written in its own table, by a single-column identity.
+
+use std::collections::HashMap;
+
+use crate::graph_catalog::expression_parser::PropertyValue;
+use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema};
+use crate::render_plan::render_expr::{Literal, RenderExpr};
+use crate::render_plan::write_render::{
+    CheckOp, CheckTable, DeleteOp, RowSource, UpdateOp, WriteRenderPlan,
+};
+use crate::sql_generator::emitters::clickhouse::to_sql_query::render_plan_to_sql_plain;
+
+use super::lower::write::{lower_identities, lower_write_value, IdentityRows};
+use super::lower::LowerOptions;
+use super::types::{BindingKind, BoundWrite, BoundWriteStatement, VarId};
+use super::{bind_write_statement, BindError};
+
+/// Why a write statement was not planned on the bound plan.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum WritePlanError {
+    /// A statement this planner does not handle yet (CREATE, an update
+    /// followed by RETURN, …): the caller's other path.
+    #[error("{0}")]
+    Unsupported(String),
+    /// A statement that cannot be executed (invalid, or a read-only
+    /// target).
+    #[error("{0}")]
+    Rejected(String),
+}
+
+/// Whether `cypher` (comments stripped) is a statement of updating clauses
+/// the clause-list parser reads: a write, whichever planner plans it.
+pub fn is_write_statement(cypher: &str) -> bool {
+    use crate::open_cypher_parser::clause_list::Clause;
+    crate::open_cypher_parser::clause_list::parse_clause_statement(cypher).is_ok_and(|(_, stmt)| {
+        std::iter::once(&stmt.first)
+            .chain(stmt.unions.iter().map(|(_, q)| q))
+            .flat_map(|q| &q.clauses)
+            .any(|c| {
+                matches!(
+                    c,
+                    Clause::Create(_) | Clause::Set(_) | Clause::Remove(_) | Clause::Delete(_)
+                )
+            })
+    })
+}
+
+/// Plan the write statement `cypher` (comments stripped).
+pub fn plan_write(cypher: &str, schema: &GraphSchema) -> Result<WriteRenderPlan, WritePlanError> {
+    let (rest, stmt) = crate::open_cypher_parser::clause_list::parse_clause_statement(cypher)
+        .map_err(|e| WritePlanError::Unsupported(format!("not parsed: {e:?}")))?;
+    if !rest.trim().trim_end_matches(';').trim().is_empty() {
+        return Err(WritePlanError::Unsupported("unparsed text".to_string()));
+    }
+    let bound = bind_write_statement(&stmt, schema).map_err(|e| match e {
+        BindError::Unsupported(_) | BindError::NotARead(_) => {
+            WritePlanError::Unsupported(e.to_string())
+        }
+        e => WritePlanError::Rejected(e.to_string()),
+    })?;
+    Planner {
+        stmt: &bound,
+        schema,
+        options: LowerOptions::default(),
+        identities: HashMap::new(),
+        detached: Vec::new(),
+    }
+    .plan()
+}
+
+/// One SET / REMOVE of a node: its property, and its value (REMOVE: none).
+type Assignment<'e> = (
+    String,
+    Option<&'e crate::query_planner::logical_expr::LogicalExpr>,
+);
+
+struct Planner<'a> {
+    stmt: &'a BoundWriteStatement,
+    schema: &'a GraphSchema,
+    options: LowerOptions,
+    /// Each node's identity rows, lowered once.
+    identities: HashMap<VarId, Option<IdentityRows>>,
+    /// The relationship rows the statement's DETACH DELETEs delete: edge
+    /// table, its column, the ids (a node's relationships are not "still
+    /// there" for another DELETE when this one deletes them).
+    detached: Vec<(EdgeEnd, RowSource)>,
+}
+
+impl<'a> Planner<'a> {
+    fn plan(mut self) -> Result<WriteRenderPlan, WritePlanError> {
+        // In clause order: one UPDATE per SET / REMOVE clause, node and
+        // label (a later clause reads what an earlier one wrote: its own
+        // statement, run after), its assignments in order (a property
+        // assigned twice: the last); a DELETE per node and label.
+        enum Group<'e> {
+            Update {
+                clause: usize,
+                var: VarId,
+                items: Vec<Assignment<'e>>,
+            },
+            Delete {
+                var: VarId,
+                detach: bool,
+            },
+        }
+        let mut groups: Vec<Group<'_>> = Vec::new();
+        for w in &self.stmt.writes {
+            let (var, property, value, clause) = match w {
+                BoundWrite::Set {
+                    var,
+                    property,
+                    value,
+                    clause,
+                } => (*var, property, Some(value), *clause),
+                BoundWrite::Remove {
+                    var,
+                    property,
+                    clause,
+                } => (*var, property, None, *clause),
+                BoundWrite::Delete { var, detach, .. } => {
+                    let earlier = groups.iter_mut().find_map(|g| match g {
+                        Group::Delete { var: v, detach } if v == var => Some(detach),
+                        _ => None,
+                    });
+                    match earlier {
+                        Some(d) => *d |= *detach,
+                        None => groups.push(Group::Delete {
+                            var: *var,
+                            detach: *detach,
+                        }),
+                    }
+                    continue;
+                }
+            };
+            let same = groups.iter_mut().find_map(|g| match g {
+                Group::Update {
+                    clause: c,
+                    var: v,
+                    items,
+                } if *c == clause && *v == var => Some(items),
+                _ => None,
+            });
+            match same {
+                Some(items) => items.push((property.clone(), value)),
+                None => groups.push(Group::Update {
+                    clause,
+                    var,
+                    items: vec![(property.clone(), value)],
+                }),
+            }
+        }
+        for g in &groups {
+            if let Group::Delete { var, detach: true } = g {
+                for label in self.labels(*var)? {
+                    self.writable(&label)?;
+                    let Some(source) = self.source(*var, &label, true)? else {
+                        continue;
+                    };
+                    for end in edge_ends(self.schema, &label, true)? {
+                        self.detached.push((end, source.clone()));
+                    }
+                }
+            }
+        }
+        let mut ops = Vec::new();
+        for g in groups {
+            match g {
+                Group::Update { var, items, .. } => self.update(var, &items, &mut ops)?,
+                Group::Delete { var, detach } => self.delete(var, detach, &mut ops)?,
+            }
+        }
+        // Several statements: the ids of each read before any runs (one
+        // statement's MATCH re-run after another's write would find other
+        // rows: a node's relationships deleted, it is no longer matched).
+        let statements = ops
+            .iter()
+            .filter(|op| matches!(op, WriteRenderPlan::Update(_) | WriteRenderPlan::Delete(_)))
+            .count();
+        if statements > 1 {
+            for op in &mut ops {
+                let source = match op {
+                    WriteRenderPlan::Update(u) => &mut u.source,
+                    WriteRenderPlan::Delete(d) => &mut d.source,
+                    WriteRenderPlan::Check(c) => &mut c.source,
+                    _ => continue,
+                };
+                if let RowSource::Sql(sql) = source {
+                    *source = RowSource::Read(std::mem::take(sql));
+                }
+            }
+        }
+        Ok(match ops.len() {
+            1 => ops.remove(0),
+            _ => WriteRenderPlan::Sequence(ops),
+        })
+    }
+
+    /// The UPDATEs of one SET / REMOVE clause's assignments of node `var`:
+    /// one per label. A property a label cannot write fails the statement
+    /// (a node of several labels: when a node of that label matches).
+    fn update(
+        &mut self,
+        var: VarId,
+        items: &[Assignment<'_>],
+        ops: &mut Vec<WriteRenderPlan>,
+    ) -> Result<(), WritePlanError> {
+        let labels = self.labels(var)?;
+        for label in &labels {
+            let node = self.writable(label)?;
+            let Some(source) = self.source(var, label, false)? else {
+                continue;
+            };
+            let unwritable = items
+                .iter()
+                .find(|(p, _)| property_column(node, p).is_none());
+            if let Some((property, _)) = unwritable {
+                let message = format!(
+                    "SET: property `{property}` of `{label}` cannot be mapped to a writable column"
+                );
+                if labels.len() == 1 {
+                    return Err(WritePlanError::Rejected(message));
+                }
+                ops.push(WriteRenderPlan::Check(CheckOp {
+                    source,
+                    within: None,
+                    message,
+                }));
+                continue;
+            }
+            // Cypher sets a value per record, each reading the node as the
+            // records before left it: one UPDATE per node equals it only
+            // when the node is in one record, or the value does not read
+            // the node.
+            let reads_node = items.iter().any(|(_, v)| {
+                v.is_some_and(|v| {
+                    crate::bound_plan::expr::referenced_names(v, false)
+                        .iter()
+                        .any(|n| crate::bound_plan::lower::parse_var(n) == Some(var))
+                })
+            });
+            if reads_node {
+                if let Some(repeated) = self.repeated(var, label)? {
+                    ops.push(WriteRenderPlan::Check(CheckOp {
+                        source: repeated,
+                        within: None,
+                        message: format!(
+                            "a SET of a `{label}` node from its own properties when the node \
+                             is in several of the MATCH's records (Cypher sets it once per \
+                             record): not supported"
+                        ),
+                    }));
+                }
+            }
+            let mut assignments: Vec<(String, RenderExpr)> = Vec::new();
+            for (property, value) in items {
+                let column = property_column(node, property).unwrap_or_default();
+                let value = match value {
+                    Some(v) => RenderExpr::Raw(
+                        lower_write_value(
+                            &self.stmt.read,
+                            self.schema,
+                            &self.options,
+                            var,
+                            label,
+                            node,
+                            v,
+                        )
+                        // A row's UPDATE computes no other value: refused
+                        // (the legacy planner's SQL fails).
+                        .map_err(|e| WritePlanError::Rejected(e.to_string()))?,
+                    ),
+                    None => RenderExpr::Literal(Literal::Null),
+                };
+                match assignments.iter_mut().find(|(c, _)| *c == column) {
+                    Some(a) => a.1 = value,
+                    None => assignments.push((column, value)),
+                }
+            }
+            ops.push(WriteRenderPlan::Update(UpdateOp {
+                database: node.database.clone(),
+                table: node.table_name.clone(),
+                assignments,
+                id_column: id_column(node, label)?,
+                source,
+            }));
+        }
+        Ok(())
+    }
+
+    /// The DELETEs of node `var`: one per label; DETACH: its relationships
+    /// first. Without DETACH, a node with relationships fails the statement
+    /// (Neo4j's rule), checked in each edge table at the label.
+    fn delete(
+        &mut self,
+        var: VarId,
+        detach: bool,
+        ops: &mut Vec<WriteRenderPlan>,
+    ) -> Result<(), WritePlanError> {
+        for label in self.labels(var)? {
+            let node = self.writable(&label)?;
+            let Some(source) = self.source(var, &label, true)? else {
+                continue;
+            };
+            match detach {
+                true => ops.extend(detach_deletes(self.schema, &label, &source)?),
+                false => {
+                    for (table, column) in edge_ends(self.schema, &label, false)? {
+                        let unless = self
+                            .detached
+                            .iter()
+                            .filter(|((t, _), _)| *t == table)
+                            .map(|((_, c), s)| (c.clone(), s.clone()))
+                            .collect();
+                        ops.push(WriteRenderPlan::Check(CheckOp {
+                            source: source.clone(),
+                            within: Some(CheckTable {
+                                database: table.0,
+                                table: table.1,
+                                column,
+                                unless,
+                            }),
+                            message: format!(
+                                "Cannot delete a node of `{label}` because it still has \
+                                 relationships. To delete this node, you must first delete its \
+                                 relationships, or use DETACH DELETE."
+                            ),
+                        }));
+                    }
+                }
+            }
+            ops.push(WriteRenderPlan::Delete(DeleteOp {
+                database: node.database.clone(),
+                table: node.table_name.clone(),
+                id_column: id_column(node, &label)?,
+                source,
+                relationships: false,
+            }));
+        }
+        Ok(())
+    }
+
+    /// The ids of `var` of `label` in more than one of the read part's
+    /// records; `None` when the node matches nothing.
+    fn repeated(&self, var: VarId, label: &str) -> Result<Option<RowSource>, WritePlanError> {
+        let Some(rows) = lower_identities(&self.stmt.read, self.schema, &self.options, var, false)
+            .map_err(|e| WritePlanError::Unsupported(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let ids = &rows.columns[usize::from(rows.labeled)..];
+        let [id] = ids else {
+            return Err(WritePlanError::Rejected(format!(
+                "a write to `{label}`: composite primary keys are not supported"
+            )));
+        };
+        let inner = render_plan_to_sql_plain(rows.plan.clone());
+        let label_filter = match rows.labeled {
+            true => format!(
+                " WHERE {} = '{}'",
+                rows.columns[0],
+                label.replace('\'', "''")
+            ),
+            false => String::new(),
+        };
+        Ok(Some(RowSource::Sql(format!(
+            "SELECT {id} FROM ({inner}) AS __cg_write_ids{label_filter} \
+             GROUP BY {id} HAVING count() > 1"
+        ))))
+    }
+
+    /// The labels node `var` can have.
+    fn labels(&self, var: VarId) -> Result<Vec<String>, WritePlanError> {
+        match &self.stmt.read.binding(var).kind {
+            BindingKind::Node { labels } => Ok(labels.iter().cloned().collect()),
+            _ => Err(WritePlanError::Rejected(
+                "internal: a write target that is not a node".to_string(),
+            )),
+        }
+    }
+
+    /// The schema of `label`, refused when it is not writable.
+    fn writable(&self, label: &str) -> Result<&'a NodeSchema, WritePlanError> {
+        let Some(node) = self.schema.node_schema_opt(label) else {
+            return Err(WritePlanError::Rejected(format!(
+                "unknown node label `{label}`"
+            )));
+        };
+        if node.source.is_some() {
+            return Err(WritePlanError::Rejected(format!(
+                "Cannot write to node label `{label}`: it resolves to a source-backed \
+                 (read-only) table. Source-backed schemas (Parquet/S3/Iceberg/Delta) are \
+                 read-only by design."
+            )));
+        }
+        if !node.is_standard_own_table() {
+            return Err(WritePlanError::Rejected(format!(
+                "Cannot write to node label `{label}`: its nodes are not rows of their own table"
+            )));
+        }
+        Ok(node)
+    }
+
+    /// The identities of `var` of `label` in the read part's records, as a
+    /// subquery of one column; `None` when the node matches nothing. A node
+    /// of several labels: the identities of `label`'s (its rows' label
+    /// column). For a DELETE whose subquery has CTEs, a
+    /// [`RowSource::Read`]: ClickHouse's lightweight DELETE reads its
+    /// subquery's tables in the target's database, where a CTE is unknown
+    /// (an UPDATE and a SELECT read it), so the executor reads the ids
+    /// first.
+    fn source(
+        &mut self,
+        var: VarId,
+        label: &str,
+        delete: bool,
+    ) -> Result<Option<RowSource>, WritePlanError> {
+        if !self.identities.contains_key(&var) {
+            let rows = lower_identities(&self.stmt.read, self.schema, &self.options, var, true)
+                .map_err(|e| WritePlanError::Unsupported(e.to_string()))?;
+            self.identities.insert(var, rows);
+        }
+        let Some(rows) = &self.identities[&var] else {
+            return Ok(None);
+        };
+        let ids = &rows.columns[usize::from(rows.labeled)..];
+        let [id] = ids else {
+            return Err(WritePlanError::Rejected(format!(
+                "a write to `{label}`: composite primary keys are not supported"
+            )));
+        };
+        let inner = render_plan_to_sql_plain(rows.plan.clone());
+        let label_filter = match rows.labeled {
+            true => format!(
+                " WHERE {} = '{}'",
+                rows.columns[0],
+                label.replace('\'', "''")
+            ),
+            false => String::new(),
+        };
+        let sql = format!("SELECT {id} FROM ({inner}) AS __cg_write_ids{label_filter}");
+        Ok(Some(match delete && !rows.plan.ctes.0.is_empty() {
+            true => RowSource::Read(sql),
+            false => RowSource::Sql(sql),
+        }))
+    }
+}
+
+/// The node table's column of `property`: a column mapping, or a column of
+/// the table by that name; an expression-mapped property is not writable.
+fn property_column(node: &NodeSchema, property: &str) -> Option<String> {
+    match node.property_mappings.get(property) {
+        Some(PropertyValue::Column(c)) => Some(c.clone()),
+        Some(PropertyValue::Expression(_)) => None,
+        None => node
+            .column_names
+            .iter()
+            .any(|c| c == property)
+            .then(|| property.to_string()),
+    }
+}
+
+fn id_column(node: &NodeSchema, label: &str) -> Result<String, WritePlanError> {
+    node.node_id
+        .column_or_error()
+        .map(str::to_string)
+        .map_err(|e| {
+            WritePlanError::Rejected(format!(
+                "a write to `{label}`: composite primary keys are not supported ({e})"
+            ))
+        })
+}
+
+/// An edge table, `(database, table)`, and a column of it holding a
+/// relationship's end.
+type EdgeEnd = ((String, String), String);
+
+/// The edge table columns that hold a node of `label` as a relationship's
+/// end: each plain edge table with fixed end labels, `(database, table)`
+/// and column, per end at the label. An FK edge's relationship is a node's
+/// row (gone with either node). A polymorphic table, or one embedding node
+/// properties, cannot tell the label's relationships apart by its id: with
+/// `strict` (DETACH DELETE, which must delete them) refused, else skipped.
+fn edge_ends(
+    schema: &GraphSchema,
+    label: &str,
+    strict: bool,
+) -> Result<Vec<EdgeEnd>, WritePlanError> {
+    let mut out = Vec::new();
+    let mut rels: Vec<_> = schema.get_relationships_schemas().iter().collect();
+    rels.sort_by(|a, b| a.0.cmp(b.0));
+    let mut seen = std::collections::HashSet::new();
+    for (_, rel) in rels {
+        // A polymorphic table's ends are any label (`$any`, a label column).
+        let fixed = rel.has_fixed_endpoint_labels();
+        if rel.is_node_row_reference() || (fixed && rel.from_node != label && rel.to_node != label)
+        {
+            continue;
+        }
+        // Without DETACH a row of either end column holding the id is a
+        // relationship the node may have (another label's of the same id
+        // too: refused, loudly).
+        let any_end = !fixed || !rel.is_plain_edge_table();
+        if any_end && strict {
+            return Err(WritePlanError::Rejected(format!(
+                "a DELETE of `{label}`: the relationships of table `{}` cannot be told apart by \
+                 the node's id alone (a polymorphic table, or one embedding node properties)",
+                rel.table_name
+            )));
+        }
+        let table = (rel.database.clone(), rel.table_name.clone());
+        for (end, at_end) in [
+            (&rel.from_id, any_end || rel.from_node == label),
+            (&rel.to_id, any_end || rel.to_node == label),
+        ] {
+            if !at_end {
+                continue;
+            }
+            let column = end.as_single().map_err(|_| {
+                WritePlanError::Rejected(format!(
+                    "a DELETE of `{label}`: a composite end on `{}` is not supported",
+                    rel.table_name
+                ))
+            })?;
+            if seen.insert((table.clone(), column.to_string())) {
+                out.push((table.clone(), column.to_string()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// DETACH DELETE: the relationships at each end column of `label`
+/// ([`edge_ends`]), one DELETE each.
+fn detach_deletes(
+    schema: &GraphSchema,
+    label: &str,
+    source: &RowSource,
+) -> Result<Vec<WriteRenderPlan>, WritePlanError> {
+    Ok(edge_ends(schema, label, true)?
+        .into_iter()
+        .map(|((database, table), column)| {
+            WriteRenderPlan::Delete(DeleteOp {
+                database,
+                table,
+                id_column: column,
+                source: source.clone(),
+                relationships: true,
+            })
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clickhouse_query_generator::write_to_sql::write_render_to_sql;
+
+    fn social() -> GraphSchema {
+        crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(include_str!(
+            "../../schemas/test/social_integration.yaml"
+        ))
+        .unwrap()
+        .to_graph_schema()
+        .unwrap()
+    }
+
+    fn sql(q: &str) -> Vec<String> {
+        write_render_to_sql(&plan_write(q, &social()).unwrap())
+            .into_iter()
+            .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect()
+    }
+
+    /// A SET value is computed from the row it updates (its properties
+    /// qualified by the table's name: an UPDATE has no alias), by the
+    /// node's identities in the read part's records.
+    #[test]
+    fn set_reads_the_row_it_updates() {
+        let got = sql("MATCH (u:User) WHERE u.user_id = 1 SET u.age = u.age + 1, u.name = 'x'");
+        assert_eq!(got.len(), 1);
+        assert!(
+            got[0].starts_with(
+                "UPDATE `test_integration`.`users_test` SET `age` = age + 1, \
+                 `full_name` = 'x' WHERE `user_id` IN (SELECT __cg_id0 FROM (SELECT DISTINCT \
+                 v0.user_id AS \"__cg_id0\" FROM test_integration.users_test AS v0 WHERE"
+            ),
+            "{got:?}"
+        );
+        // A property assigned twice in a clause: the last.
+        let got = sql("MATCH (u:User) WHERE u.user_id = 1 SET u.age = 1, u.age = 2");
+        assert!(got[0].contains("SET `age` = 2 WHERE"), "{got:?}");
+        // Each clause its statement, in order (REMOVE: NULL), each reading
+        // the ids its MATCH gave before any ran.
+        let plan = plan_write(
+            "MATCH (u:User) WHERE u.user_id = 1 SET u.age = 1 REMOVE u.age",
+            &social(),
+        )
+        .unwrap();
+        let WriteRenderPlan::Sequence(ops) = &plan else {
+            panic!("two statements");
+        };
+        assert_eq!(ops.len(), 2);
+        for op in ops {
+            let WriteRenderPlan::Update(u) = op else {
+                panic!("an UPDATE");
+            };
+            assert!(matches!(u.source, RowSource::Read(_)), "{u:?}");
+        }
+        let got: Vec<String> = write_render_to_sql(&plan);
+        assert!(got[1].contains("SET `age` = NULL WHERE"), "{got:?}");
+    }
+
+    /// DETACH DELETE: each standard edge table's relationships at either
+    /// end, then the node (an FK edge is the other node's row: kept). A
+    /// node of several labels: one per label, its ids read first (the
+    /// labels' union is a CTE, which a lightweight DELETE cannot read).
+    #[test]
+    fn delete_and_detach() {
+        let plan = plan_write("MATCH (u:User {user_id: 2}) DETACH DELETE u", &social()).unwrap();
+        let got: Vec<String> = write_render_to_sql(&plan)
+            .iter()
+            .map(|s| s.split(" WHERE ").next().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(
+            got,
+            [
+                "DELETE FROM `test_integration`.`user_follows_test`",
+                "DELETE FROM `test_integration`.`user_follows_test`",
+                "DELETE FROM `test_integration`.`post_likes_test`",
+                "DELETE FROM `test_integration`.`users_test`",
+            ]
+        );
+        let WriteRenderPlan::Sequence(ops) = plan_write("MATCH (n) DELETE n", &social()).unwrap()
+        else {
+            panic!("one DELETE per label");
+        };
+        let deletes: Vec<_> = ops
+            .iter()
+            .filter_map(|op| match op {
+                WriteRenderPlan::Delete(d) => Some(d),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(deletes.len(), 2);
+        for d in deletes {
+            assert!(matches!(d.source, RowSource::Read(_)), "{d:?}");
+        }
+        // Without DETACH: a node with relationships fails the statement,
+        // checked in each edge table at its label before anything runs.
+        let checks: Vec<_> = ops
+            .iter()
+            .filter_map(|op| match op {
+                WriteRenderPlan::Check(c) => c.within.as_ref().map(|t| (&t.table, &t.column)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            checks.contains(&(&"user_follows_test".to_string(), &"followed_id".to_string())),
+            "{checks:?}"
+        );
+        // One label, one statement: its subquery, read by the DELETE.
+        let WriteRenderPlan::Sequence(ops) =
+            plan_write("MATCH (u:User) DELETE u", &social()).unwrap()
+        else {
+            panic!("its checks and the DELETE");
+        };
+        let Some(WriteRenderPlan::Delete(d)) = ops.last() else {
+            panic!("a DELETE last");
+        };
+        assert!(matches!(d.source, RowSource::Sql(_)), "{d:?}");
+    }
+
+    /// A polymorphic edge table's ends are any label: DETACH DELETE cannot
+    /// tell a node's relationships apart by its id (refused); a plain
+    /// DELETE checks both its end columns (another label's id too: loud).
+    #[test]
+    fn polymorphic_edges() {
+        let schema = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(include_str!(
+            "../../schemas/test/social_polymorphic.yaml"
+        ))
+        .unwrap()
+        .to_graph_schema()
+        .unwrap();
+        let err = plan_write("MATCH (u:User {user_id: 1}) DETACH DELETE u", &schema)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cannot be told apart"), "{err}");
+        let WriteRenderPlan::Sequence(ops) =
+            plan_write("MATCH (u:User {user_id: 1}) DELETE u", &schema).unwrap()
+        else {
+            panic!("checks and the DELETE");
+        };
+        let checked: Vec<&str> = ops
+            .iter()
+            .filter_map(|op| match op {
+                WriteRenderPlan::Check(c) => c.within.as_ref().map(|t| t.column.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(checked.len(), 2, "{ops:?}");
+    }
+
+    #[test]
+    fn refusals() {
+        let schema = social();
+        for (q, why) in [
+            (
+                "MATCH (u:User)-[:FOLLOWS]->(f:User) SET u.name = f.name",
+                "another variable",
+            ),
+            (
+                "MATCH (u:User)-[r:FOLLOWS]->(f:User) DELETE r",
+                "relationship",
+            ),
+            ("MATCH (u:User) SET u.nope_xyz = 1", "writable column"),
+        ] {
+            let err = plan_write(q, &schema).unwrap_err().to_string();
+            assert!(err.contains(why), "{q}: {err}");
+        }
+        // Not planned here yet (the legacy planner's): CREATE, RETURN.
+        for q in [
+            "CREATE (u:User {user_id: 99})",
+            "MATCH (u:User) SET u.age = 1 RETURN u.age",
+        ] {
+            assert!(
+                matches!(plan_write(q, &schema), Err(WritePlanError::Unsupported(_))),
+                "{q}"
+            );
+        }
+    }
+}

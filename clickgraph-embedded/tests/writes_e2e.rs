@@ -140,3 +140,236 @@ fn remove_property_sets_null() {
     // After REMOVE, `a.age` should be NULL.
     assert!(row.get("a.age").unwrap().is_null());
 }
+
+// ---- S13a: a write of several statements works on a snapshot of the
+// MATCH's records (review of PR #1437) ----
+
+/// An integer read back (an Int64 reads back as a string: #1436).
+fn int(row: &clickgraph_embedded::Row, column: &str) -> i64 {
+    let v = row.get(column).expect("column");
+    v.as_i64()
+        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        .unwrap_or_else(|| panic!("{column} is not an integer: {v:?}"))
+}
+
+fn count(conn: &Connection<'_>, cypher: &str) -> i64 {
+    let mut result = conn.query(cypher).expect("count query");
+    int(&result.next().expect("a row"), "c")
+}
+
+fn person(conn: &Connection<'_>, id: &str, age: i64) {
+    conn.query(&format!(
+        "CREATE (a:Person {{person_id: '{id}', name: '{id}', age: {age}}})"
+    ))
+    .expect("CREATE");
+}
+
+fn knows(conn: &Connection<'_>, from: &str, to: &str) {
+    conn.create_edge("KNOWS", from, to, Default::default())
+        .expect("create_edge");
+}
+
+/// DETACH DELETE of the nodes a pattern matches: every one, with all its
+/// relationships, though deleting the first relationships unmatches them.
+#[test]
+fn detach_delete_of_matched_nodes_uses_one_snapshot() {
+    let Some(conn) = conn() else { return };
+    for id in ["sa1", "sa2", "sa3", "sa4"] {
+        person(&conn, id, 40);
+    }
+    knows(&conn, "sa2", "sa1");
+    knows(&conn, "sa3", "sa1");
+    knows(&conn, "sa4", "sa2");
+    knows(&conn, "sa2", "sa3");
+    let mut counters = conn
+        .query("MATCH (u:Person)-[:KNOWS]->(t:Person) WHERE t.person_id = 'sa1' DETACH DELETE u")
+        .expect("DETACH DELETE");
+    let row = counters.next().unwrap();
+    assert_eq!(int(&row, "nodes_deleted"), 2);
+    assert_eq!(int(&row, "relationships_deleted"), 4);
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id IN ['sa2', 'sa3'] RETURN count(a) AS c"
+        ),
+        0
+    );
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id IN ['sa1', 'sa4'] RETURN count(a) AS c"
+        ),
+        2
+    );
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE a.person_id STARTS WITH 'sa' \
+             RETURN count(*) AS c"
+        ),
+        0
+    );
+}
+
+#[test]
+fn set_then_delete_deletes() {
+    let Some(conn) = conn() else { return };
+    person(&conn, "sb1", 40);
+    conn.query("MATCH (a:Person) WHERE a.person_id = 'sb1' SET a.age = 1 DELETE a")
+        .expect("SET … DELETE");
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id = 'sb1' RETURN count(a) AS c"
+        ),
+        0
+    );
+}
+
+#[test]
+fn detach_delete_of_two_matched_nodes() {
+    let Some(conn) = conn() else { return };
+    person(&conn, "sc1", 40);
+    person(&conn, "sc2", 40);
+    knows(&conn, "sc1", "sc2");
+    let mut counters = conn
+        .query(
+            "MATCH (a:Person {person_id: 'sc1'})-[:KNOWS]->(b:Person {person_id: 'sc2'}) \
+             DETACH DELETE a, b",
+        )
+        .expect("DETACH DELETE a, b");
+    let row = counters.next().unwrap();
+    assert_eq!(int(&row, "nodes_deleted"), 2);
+    // Their one relationship, counted once.
+    assert_eq!(int(&row, "relationships_deleted"), 1);
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id IN ['sc1', 'sc2'] RETURN count(a) AS c"
+        ),
+        0
+    );
+}
+
+/// A SET clause reads what the clause before it wrote.
+#[test]
+fn set_clauses_apply_in_order() {
+    let Some(conn) = conn() else { return };
+    person(&conn, "sd1", 30);
+    conn.query(
+        "MATCH (a:Person) WHERE a.person_id = 'sd1' SET a.name = 'renamed' SET a.age = a.name",
+    )
+    .expect("two SET clauses");
+    let mut result = conn
+        .query("MATCH (a:Person) WHERE a.person_id = 'sd1' RETURN a.age AS v")
+        .expect("read back");
+    // The column is a string (this schema declares no property types).
+    assert_eq!(
+        result.next().unwrap().get("v").unwrap().as_str(),
+        Some("renamed")
+    );
+}
+
+/// A node with relationships is not deleted without DETACH (Neo4j's rule):
+/// the statement fails and nothing changes.
+#[test]
+fn delete_of_a_connected_node_is_refused() {
+    let Some(conn) = conn() else { return };
+    person(&conn, "se1", 40);
+    person(&conn, "se2", 40);
+    knows(&conn, "se1", "se2");
+    let err = conn
+        .query("MATCH (a:Person) WHERE a.person_id = 'se2' DELETE a")
+        .expect_err("a connected node");
+    assert!(err.to_string().contains("still has relationships"), "{err}");
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id = 'se2' RETURN count(a) AS c"
+        ),
+        1
+    );
+}
+
+/// DETACH DELETE of one node and DELETE of another in one statement: the
+/// second's only relationship is the first's, which the statement deletes
+/// (Neo4j checks at commit: it succeeds); with another relationship it
+/// fails, and nothing changes.
+#[test]
+fn detach_and_delete_in_one_statement() {
+    let Some(conn) = conn() else { return };
+    person(&conn, "sf1", 40);
+    person(&conn, "sf2", 40);
+    knows(&conn, "sf1", "sf2");
+    conn.query(
+        "MATCH (a:Person {person_id: 'sf1'})-[:KNOWS]->(b:Person {person_id: 'sf2'}) \
+         DETACH DELETE a DELETE b",
+    )
+    .expect("b's only relationship is a's");
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id IN ['sf1', 'sf2'] RETURN count(a) AS c"
+        ),
+        0
+    );
+    person(&conn, "sg1", 40);
+    person(&conn, "sg2", 40);
+    person(&conn, "sg3", 40);
+    knows(&conn, "sg1", "sg2");
+    knows(&conn, "sg3", "sg2");
+    let err = conn
+        .query(
+            "MATCH (a:Person {person_id: 'sg1'})-[:KNOWS]->(b:Person {person_id: 'sg2'}) \
+             DETACH DELETE a DELETE b",
+        )
+        .expect_err("b also has sg3's relationship");
+    assert!(err.to_string().contains("still has relationships"), "{err}");
+    assert_eq!(
+        count(
+            &conn,
+            "MATCH (a:Person) WHERE a.person_id IN ['sg1', 'sg2'] RETURN count(a) AS c"
+        ),
+        2
+    );
+}
+
+/// Cypher sets a value once per record: a SET reading the node's own
+/// property of a node in several records is refused (one UPDATE would set
+/// it once); a constant one is the same either way.
+#[test]
+fn set_of_a_node_in_several_records() {
+    let Some(conn) = conn() else { return };
+    for id in ["sh0", "sh1", "sh2"] {
+        person(&conn, id, 40);
+    }
+    knows(&conn, "sh1", "sh0");
+    knows(&conn, "sh2", "sh0");
+    let err = conn
+        .query(
+            "MATCH (u:Person)-[:KNOWS]->(t:Person) WHERE t.person_id = 'sh0' \
+             SET t.name = t.name + 'x'",
+        )
+        .expect_err("t is in two records");
+    assert!(
+        err.to_string().contains("several of the MATCH's records"),
+        "{err}"
+    );
+    conn.query(
+        "MATCH (u:Person)-[:KNOWS]->(t:Person) WHERE t.person_id = 'sh0' SET t.name = 'same'",
+    )
+    .expect("a constant");
+    let mut result = conn
+        .query("MATCH (a:Person) WHERE a.person_id = 'sh0' RETURN a.name AS n")
+        .expect("read back");
+    assert_eq!(
+        result.next().unwrap().get("n").unwrap().as_str(),
+        Some("same")
+    );
+    // A list comprehension's variable is the value's own.
+    conn.query(
+        "MATCH (a:Person) WHERE a.person_id = 'sh1' \
+         SET a.name = toString(size([x IN [1, 2, 3] WHERE x > 1]))",
+    )
+    .expect("a comprehension");
+}

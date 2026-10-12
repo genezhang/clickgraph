@@ -394,6 +394,7 @@ fn build_delete_for_label(
         table: node_schema.table_name.clone(),
         id_column,
         source,
+        relationships: false,
     }));
     Ok(ops)
 }
@@ -454,6 +455,7 @@ fn build_detach_rel_deletes(
                 table: rel_schema.table_name.clone(),
                 id_column: from_col,
                 source: build_id_source(alias, node_id_column, input, schema)?,
+                relationships: true,
             }));
         }
         if touches_to {
@@ -472,6 +474,7 @@ fn build_detach_rel_deletes(
                 table: rel_schema.table_name.clone(),
                 id_column: to_col,
                 source: build_id_source(alias, node_id_column, input, schema)?,
+                relationships: true,
             }));
         }
     }

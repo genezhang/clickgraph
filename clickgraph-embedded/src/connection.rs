@@ -1225,6 +1225,13 @@ impl<'db> Connection<'db> {
         // (e.g., `// ...` or `/* ... */`) inside the query would otherwise
         // break parsing here and silently bypass write routing.
         let dispatch_input = clickgraph::open_cypher_parser::strip_comments(cypher);
+        // A write the legacy parser does not read (two SET clauses): the
+        // clause-list parser's (S13).
+        if clickgraph::open_cypher_parser::parse_cypher_statement(&dispatch_input).is_err()
+            && clickgraph::bound_plan::write::is_write_statement(&dispatch_input)
+        {
+            return self.handle_write_async(cypher).await;
+        }
         if let Ok((_, stmt)) =
             clickgraph::open_cypher_parser::parse_cypher_statement(&dispatch_input)
         {
@@ -1296,7 +1303,6 @@ impl<'db> Connection<'db> {
     /// state with the write counters attached via `QueryResult::get_write_counters()`.
     async fn handle_write_async(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
         use clickgraph::clickhouse_query_generator::cypher_to_sql_read_only;
-        use clickgraph::clickhouse_query_generator::write_to_sql::write_render_to_sql;
         use clickgraph::open_cypher_parser::ast::CypherStatement;
         use clickgraph::query_planner::logical_plan::LogicalPlan;
         use clickgraph::query_planner::write_guard::ensure_write_target_writable;
@@ -1315,78 +1321,107 @@ impl<'db> Connection<'db> {
 
             let compile_start = Instant::now();
 
-            // Parse, plan, run the regular analyzer/optimizer pipeline so
-            // any read pipeline below the write variant is fully resolved
-            // before we render.
             let cleaned = clickgraph::open_cypher_parser::strip_comments(&cypher);
-            let (_remaining, stmt) =
-                clickgraph::open_cypher_parser::parse_cypher_statement(&cleaned)
-                    .map_err(|e| EmbeddedError::Query(format!("Parse error: {:?}", e)))?;
 
-            // Capture whether the statement carries a RETURN clause before
-            // ownership of `stmt` moves into the planner. write+RETURN
-            // routes through the Phase 5d branch below; pure writes keep
-            // the synthetic counter-row response.
-            let has_return = matches!(
-                &stmt,
-                CypherStatement::Query { query, .. } if query.return_clause.is_some()
-            );
+            // Writes run on the embedded chdb backend only (Decision 0.1).
+            if executor_kind != clickgraph::query_planner::write_guard::ExecutorKind::EmbeddedChdb {
+                return Err(EmbeddedError::Query(format!(
+                    "Write rejected: {}",
+                    clickgraph::query_planner::write_guard::WriteGuardError::ExecutorNotWritable(
+                        executor_kind
+                    )
+                )));
+            }
 
-            let (logical_plan, _plan_ctx) =
-                clickgraph::query_planner::evaluate_read_statement(stmt, &schema, None, None, None)
-                    .map_err(|e| EmbeddedError::Query(format!("Plan error: {}", e)))?;
+            // SET / REMOVE / DELETE after a read part: the bound plan's write
+            // planner (S13). CREATE and an update followed by RETURN take the
+            // legacy planner below until it plans them.
+            let bound = match clickgraph::bound_plan::write::plan_write(&cleaned, &schema) {
+                Ok(plan) => Ok(plan),
+                Err(clickgraph::bound_plan::write::WritePlanError::Rejected(e)) => {
+                    return Err(EmbeddedError::Query(format!("Write rejected: {e}")));
+                }
+                Err(clickgraph::bound_plan::write::WritePlanError::Unsupported(why)) => Err(why),
+            };
+            // A RETURN after the writes (Phase 5d) is the legacy planner's.
+            let (write_plan, has_return) = match bound {
+                Ok(plan) => (plan, false),
+                Err(not_bound) => {
+                    // Parse, plan, run the regular analyzer/optimizer
+                    // pipeline so any read pipeline below the write variant
+                    // is fully resolved before we render.
+                    let (_remaining, stmt) =
+                        clickgraph::open_cypher_parser::parse_cypher_statement(&cleaned)
+                            .map_err(|e| {
+                                EmbeddedError::Query(format!(
+                                    "Parse error: {e:?} (not planned on the bound plan: {not_bound})"
+                                ))
+                            })?;
+                    // Whether the statement carries a RETURN clause, captured
+                    // before `stmt` moves into the planner: write+RETURN
+                    // routes through the Phase 5d branch below.
+                    let has_return = matches!(
+                        &stmt,
+                        CypherStatement::Query { query, .. } if query.return_clause.is_some()
+                    );
+                    let (logical_plan, _plan_ctx) =
+                        clickgraph::query_planner::evaluate_read_statement(
+                            stmt, &schema, None, None, None,
+                        )
+                        .map_err(|e| EmbeddedError::Query(format!("Plan error: {}", e)))?;
 
-            // Decision 0.1 / 0.3 / 0.6 admission check.
-            ensure_write_target_writable(&logical_plan, &schema, executor_kind)
-                .map_err(|e| EmbeddedError::Query(format!("Write rejected: {}", e)))?;
+                    // Decision 0.1 / 0.3 / 0.6 admission check.
+                    ensure_write_target_writable(&logical_plan, &schema, executor_kind)
+                        .map_err(|e| EmbeddedError::Query(format!("Write rejected: {}", e)))?;
 
-            // Walk past read-only wrappers (Projection / OrderBy / Skip /
-            // Limit) to find the write subplan. write+RETURN puts a
-            // Projection above the write; pure-write statements have the
-            // write at the root. The subplan retains its full read input
-            // (the MATCH/WHERE/etc. that bound the variables we mutate).
-            let write_subplan = find_write_subplan(&logical_plan).ok_or_else(|| {
-                EmbeddedError::Query(
-                    "Cypher write clause is not supported in this combination yet \
+                    // Walk past read-only wrappers (Projection / OrderBy / Skip /
+                    // Limit) to find the write subplan. write+RETURN puts a
+                    // Projection above the write; pure-write statements have the
+                    // write at the root. The subplan retains its full read input
+                    // (the MATCH/WHERE/etc. that bound the variables we mutate).
+                    let write_subplan = find_write_subplan(&logical_plan).ok_or_else(|| {
+                        EmbeddedError::Query(
+                            "Cypher write clause is not supported in this combination yet \
                      (e.g. write clauses inside subqueries). Use a separate \
                      write statement followed by a MATCH for now."
-                        .to_string(),
-                )
-            })?;
+                                .to_string(),
+                        )
+                    })?;
 
-            let write_plan = build_write_plan(write_subplan, &schema)
-                .map_err(|e| EmbeddedError::Query(format!("Write render error: {}", e)))?
-                .ok_or_else(|| {
-                    EmbeddedError::Query(
-                        "Internal error: write subplan resolved but `build_write_plan` \
+                    let write_plan = build_write_plan(write_subplan, &schema)
+                        .map_err(|e| EmbeddedError::Query(format!("Write render error: {}", e)))?
+                        .ok_or_else(|| {
+                            EmbeddedError::Query(
+                                "Internal error: write subplan resolved but `build_write_plan` \
                          returned None. This is a planner/rendering bug; please report."
-                            .to_string(),
-                    )
-                })?;
+                                    .to_string(),
+                            )
+                        })?;
 
-            // Phase 5d v1 supports DELETE / SET / REMOVE + RETURN by
-            // executing the write, then re-running the read pipeline with
-            // the write clauses stripped. CREATE + RETURN is *not*
-            // supported by that path: the read pipeline can't see freshly
-            // inserted rows by alias (the alias was never bound by a
-            // MATCH and the inserted row has no MATCH-able identity yet),
-            // so referencing the create-bound alias from RETURN would
-            // fail with "undefined variable" *after* the INSERT has
-            // already executed. Rejecting up-front keeps the database
-            // unchanged on failure and surfaces a clear, deterministic
-            // error rather than a partially-applied write. Pinned by
-            // `cypher_create_with_return_rejected_before_insert` below.
-            if has_return && matches!(write_subplan, LogicalPlan::Create(_)) {
-                return Err(EmbeddedError::Query(
-                    "CREATE … RETURN is not supported in this build of ClickGraph yet. \
+                    // Phase 5d v1 supports DELETE / SET / REMOVE + RETURN by
+                    // executing the write, then re-running the read pipeline with
+                    // the write clauses stripped. CREATE + RETURN is *not*
+                    // supported by that path: the read pipeline can't see freshly
+                    // inserted rows by alias (the alias was never bound by a
+                    // MATCH and the inserted row has no MATCH-able identity yet),
+                    // so referencing the create-bound alias from RETURN would
+                    // fail with "undefined variable" *after* the INSERT has
+                    // already executed. Rejecting up-front keeps the database
+                    // unchanged on failure and surfaces a clear, deterministic
+                    // error rather than a partially-applied write. Pinned by
+                    // `cypher_create_with_return_rejected_before_insert` below.
+                    if has_return && matches!(write_subplan, LogicalPlan::Create(_)) {
+                        return Err(EmbeddedError::Query(
+                            "CREATE … RETURN is not supported in this build of ClickGraph yet. \
                      The write would execute but the RETURN cannot reference the \
                      newly created node by alias from the read pipeline. \
                      Run CREATE as a separate statement, then MATCH … RETURN."
-                        .to_string(),
-                ));
-            }
-
-            let stmts = write_render_to_sql(&write_plan);
+                                .to_string(),
+                        ));
+                    }
+                    (write_plan, has_return)
+                }
+            };
             let compile_time_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
 
             // Resolve counters via `count()` probes against the same
@@ -1397,13 +1432,8 @@ impl<'db> Connection<'db> {
             // against the probe's snapshot for the chdb workload here.
             // INSERT counts are exact and don't need a probe.
             let exec_start = Instant::now();
-            let counters = resolve_write_counters(&write_plan, &executor).await?;
-            for sql in &stmts {
-                executor
-                    .execute_json(sql, None)
-                    .await
-                    .map_err(EmbeddedError::from)?;
-            }
+            let write_plan = read_ids(write_plan, &executor).await?;
+            let counters = execute_write(&write_plan, &executor).await?;
             let execution_time_ms = exec_start.elapsed().as_secs_f64() * 1000.0;
 
             if !has_return {
@@ -1487,6 +1517,193 @@ impl<'db> Connection<'db> {
     }
 }
 
+/// The ids a statement's operations read first ([`RowSource::Read`]: a
+/// write of several statements reads each operation's ids before any runs,
+/// and a DELETE whose subquery has CTEs, which it resolves in its target's
+/// database), read and given as literals, at most `IDS_PER_STATEMENT` per
+/// statement; an operation of no ids is dropped.
+async fn read_ids(
+    plan: clickgraph::render_plan::WriteRenderPlan,
+    executor: &Arc<dyn QueryExecutor>,
+) -> Result<clickgraph::render_plan::WriteRenderPlan, EmbeddedError> {
+    use clickgraph::render_plan::render_expr::{Literal, RenderExpr};
+    use clickgraph::render_plan::write_render::{RowSource, WriteRenderPlan};
+    const IDS_PER_STATEMENT: usize = 5_000;
+    fn source(plan: &WriteRenderPlan) -> Option<&RowSource> {
+        match plan {
+            WriteRenderPlan::Update(u) => Some(&u.source),
+            WriteRenderPlan::Delete(d) => Some(&d.source),
+            WriteRenderPlan::Check(c) => Some(&c.source),
+            WriteRenderPlan::Insert(_) | WriteRenderPlan::Sequence(_) => None,
+        }
+    }
+    fn source_mut(plan: &mut WriteRenderPlan) -> Option<&mut RowSource> {
+        match plan {
+            WriteRenderPlan::Update(u) => Some(&mut u.source),
+            WriteRenderPlan::Delete(d) => Some(&mut d.source),
+            WriteRenderPlan::Check(c) => Some(&mut c.source),
+            WriteRenderPlan::Insert(_) | WriteRenderPlan::Sequence(_) => None,
+        }
+    }
+    let ops = flatten(plan);
+    // Every Read: the operations', and a check's exclusions.
+    let mut reads: Vec<&String> = Vec::new();
+    for op in &ops {
+        if let Some(RowSource::Read(sql)) = source(op) {
+            reads.push(sql);
+        }
+        if let WriteRenderPlan::Check(c) = op {
+            for (_, s) in c.within.iter().flat_map(|t| &t.unless) {
+                if let RowSource::Read(sql) = s {
+                    reads.push(sql);
+                }
+            }
+        }
+    }
+    let mut ids: HashMap<String, Vec<RenderExpr>> = HashMap::new();
+    for sql in reads {
+        if ids.contains_key(sql) {
+            continue;
+        }
+        let rows = executor
+            .execute_json(sql, None)
+            .await
+            .map_err(EmbeddedError::from)?;
+        let mut values = Vec::with_capacity(rows.len());
+        for row in rows {
+            let serde_json::Value::Object(obj) = row else {
+                return Err(EmbeddedError::Query(format!(
+                    "the ids of a write (`{sql}`) are not rows of one column"
+                )));
+            };
+            let value = match obj.values().next() {
+                Some(serde_json::Value::String(s)) => Literal::String(s.clone()),
+                Some(serde_json::Value::Bool(b)) => Literal::Boolean(*b),
+                Some(serde_json::Value::Number(n)) => match (n.as_i64(), n.as_f64()) {
+                    (Some(i), _) => Literal::Integer(i),
+                    (None, Some(f)) => Literal::Float(f),
+                    (None, None) => {
+                        return Err(EmbeddedError::Query(format!(
+                            "a write's id {n} is out of range"
+                        )))
+                    }
+                },
+                // A NULL id is no node's.
+                Some(serde_json::Value::Null) => continue,
+                other => {
+                    return Err(EmbeddedError::Query(format!(
+                        "a write's id is not a scalar: {other:?}"
+                    )))
+                }
+            };
+            values.push(RenderExpr::Literal(value));
+        }
+        ids.insert(sql.clone(), values);
+    }
+    let mut out = Vec::new();
+    for mut op in ops {
+        // A check's exclusions: all their ids (none: no exclusion).
+        if let WriteRenderPlan::Check(c) = &mut op {
+            if let Some(t) = &mut c.within {
+                t.unless = std::mem::take(&mut t.unless)
+                    .into_iter()
+                    .filter_map(|(column, s)| match s {
+                        RowSource::Read(sql) => {
+                            let read = &ids[&sql];
+                            (!read.is_empty()).then(|| (column, RowSource::Ids(read.clone())))
+                        }
+                        s => Some((column, s)),
+                    })
+                    .collect();
+            }
+        }
+        let Some(RowSource::Read(sql)) = source(&op) else {
+            out.push(op);
+            continue;
+        };
+        let sql = sql.clone();
+        for chunk in ids[&sql].chunks(IDS_PER_STATEMENT) {
+            let mut op = op.clone();
+            if let Some(s) = source_mut(&mut op) {
+                *s = RowSource::Ids(chunk.to_vec());
+            }
+            out.push(op);
+        }
+    }
+    Ok(WriteRenderPlan::Sequence(out))
+}
+
+/// The operations of a plan, in order.
+fn flatten(
+    plan: clickgraph::render_plan::WriteRenderPlan,
+) -> Vec<clickgraph::render_plan::WriteRenderPlan> {
+    use clickgraph::render_plan::write_render::WriteRenderPlan;
+    match plan {
+        WriteRenderPlan::Sequence(ops) => ops.into_iter().flat_map(flatten).collect(),
+        op => vec![op],
+    }
+}
+
+/// Run a write plan: its checks first (any violated: nothing runs), then
+/// each statement in order, its count probed right before it runs (a
+/// relationship two deleted nodes share is counted once: the first DELETE
+/// removed it).
+async fn execute_write(
+    plan: &clickgraph::render_plan::WriteRenderPlan,
+    executor: &Arc<dyn QueryExecutor>,
+) -> Result<WriteCounters, EmbeddedError> {
+    use clickgraph::clickhouse_query_generator::write_to_sql::{
+        check_sql, probe_delete_count_sql, probe_update_count_sql, write_render_to_sql,
+    };
+    use clickgraph::render_plan::write_render::{RowSource, WriteRenderPlan};
+    let ops = flatten(plan.clone());
+    for op in &ops {
+        let WriteRenderPlan::Check(check) = op else {
+            continue;
+        };
+        let hit = match (&check.source, &check.within) {
+            (RowSource::Ids(ids), _) if ids.is_empty() => false,
+            (RowSource::Ids(_), None) => true,
+            _ => !executor
+                .execute_json(&check_sql(check), None)
+                .await
+                .map_err(EmbeddedError::from)?
+                .is_empty(),
+        };
+        if hit {
+            return Err(EmbeddedError::Query(format!(
+                "Write rejected: {}",
+                check.message
+            )));
+        }
+    }
+    let mut c = WriteCounters::default();
+    for op in &ops {
+        match op {
+            WriteRenderPlan::Check(_) | WriteRenderPlan::Sequence(_) => continue,
+            WriteRenderPlan::Insert(i) => c.nodes_created += i.rows.len() as u64,
+            WriteRenderPlan::Update(u) => {
+                let affected = run_count_probe(executor, &probe_update_count_sql(u)).await?;
+                c.properties_set += u.assignments.len() as u64 * affected;
+            }
+            WriteRenderPlan::Delete(d) => {
+                let affected = run_count_probe(executor, &probe_delete_count_sql(d)).await?;
+                match d.relationships {
+                    true => c.relationships_deleted += affected,
+                    false => c.nodes_deleted += affected,
+                }
+            }
+        }
+        for sql in write_render_to_sql(op) {
+            executor
+                .execute_json(&sql, None)
+                .await
+                .map_err(EmbeddedError::from)?;
+        }
+    }
+    Ok(c)
+}
+
 /// Walk past read-only wrappers (Projection / OrderBy / Skip / Limit) to
 /// find the topmost write subplan inside `plan`. Returns `None` if the
 /// plan tree contains no write node, or if a write is buried under a
@@ -1538,71 +1755,6 @@ struct WriteCounters {
     relationships_deleted: u64,
 }
 
-/// Flat list of count probes derived from a `WriteRenderPlan`. The async
-/// pass over the executor accumulates each probe's affected-row count
-/// into the right `WriteCounters` field; static (INSERT) counts go
-/// straight in without a probe.
-enum ProbeAction {
-    NodesCreatedStatic(u64),
-    NodesDeletedProbe(String),
-    RelationshipsDeletedProbe(String),
-    /// `properties_set` is per-property-per-row: `assignments * affected_rows`.
-    PropertiesSetProbe {
-        assignments: u64,
-        sql: String,
-    },
-}
-
-fn collect_counter_probes(plan: &clickgraph::render_plan::WriteRenderPlan) -> Vec<ProbeAction> {
-    let mut out = Vec::new();
-    push_probes(plan, &mut out);
-    out
-}
-
-fn push_probes(plan: &clickgraph::render_plan::WriteRenderPlan, out: &mut Vec<ProbeAction>) {
-    use clickgraph::clickhouse_query_generator::write_to_sql::{
-        probe_delete_count_sql, probe_update_count_sql,
-    };
-    use clickgraph::render_plan::WriteRenderPlan;
-    match plan {
-        WriteRenderPlan::Insert(op) => {
-            // INSERT counts are exact: one row per VALUES tuple.
-            // Whether it's a node or relationship is encoded in the table,
-            // but rel CREATE is currently rejected by build_write_plan, so
-            // every Insert here is a node create.
-            out.push(ProbeAction::NodesCreatedStatic(op.rows.len() as u64));
-        }
-        WriteRenderPlan::Update(op) => {
-            out.push(ProbeAction::PropertiesSetProbe {
-                assignments: op.assignments.len() as u64,
-                sql: probe_update_count_sql(op),
-            });
-        }
-        WriteRenderPlan::Delete(op) => {
-            out.push(ProbeAction::NodesDeletedProbe(probe_delete_count_sql(op)));
-        }
-        WriteRenderPlan::Sequence(seq) => {
-            // DETACH DELETE renders as a Sequence of rel-cleanup DELETEs
-            // followed by the final node DELETE; `Sequence(Delete, …,
-            // Delete)` thus splits N-1 → relationships_deleted and last
-            // → nodes_deleted. Other Sequence shapes (multi-Insert from
-            // CREATE patterns; multi-Update from multi-target SET) walk
-            // recursively under the same rules.
-            let len = seq.len();
-            for (i, inner) in seq.iter().enumerate() {
-                match inner {
-                    WriteRenderPlan::Delete(op) if i + 1 < len => {
-                        out.push(ProbeAction::RelationshipsDeletedProbe(
-                            probe_delete_count_sql(op),
-                        ));
-                    }
-                    _ => push_probes(inner, out),
-                }
-            }
-        }
-    }
-}
-
 async fn run_count_probe(
     executor: &Arc<dyn QueryExecutor>,
     sql: &str,
@@ -1644,29 +1796,6 @@ async fn run_count_probe(
             "count probe `{sql}` returned unexpected `n` type: {other:?}"
         ))),
     }
-}
-
-async fn resolve_write_counters(
-    plan: &clickgraph::render_plan::WriteRenderPlan,
-    executor: &Arc<dyn QueryExecutor>,
-) -> Result<WriteCounters, EmbeddedError> {
-    let mut c = WriteCounters::default();
-    for probe in collect_counter_probes(plan) {
-        match probe {
-            ProbeAction::NodesCreatedStatic(n) => c.nodes_created += n,
-            ProbeAction::NodesDeletedProbe(sql) => {
-                c.nodes_deleted += run_count_probe(executor, &sql).await?;
-            }
-            ProbeAction::RelationshipsDeletedProbe(sql) => {
-                c.relationships_deleted += run_count_probe(executor, &sql).await?;
-            }
-            ProbeAction::PropertiesSetProbe { assignments, sql } => {
-                let affected = run_count_probe(executor, &sql).await?;
-                c.properties_set += assignments * affected;
-            }
-        }
-    }
-    Ok(c)
 }
 
 #[cfg(test)]
@@ -1856,6 +1985,11 @@ graph_schema:
                 let trimmed = sql.trim_start();
                 if trimmed.starts_with("SELECT count() AS n") {
                     return Ok(vec![serde_json::json!({"n": 1})]);
+                }
+                // A DELETE's ids read first (a subquery with CTEs, S13):
+                // one id, as the count probes assume one match.
+                if trimmed.starts_with("SELECT __cg_id") {
+                    return Ok(vec![serde_json::json!({"__cg_id0": "1"})]);
                 }
                 Ok(vec![])
             }
@@ -2642,6 +2776,37 @@ graph_schema:
     /// `count()` probe per DELETE for accurate counters), not pick a
     /// single label via `find_alias_label` and silently leave the other
     /// tables intact.
+    /// S13: SET / REMOVE / DELETE after a read part are planned on the bound
+    /// plan (their ids read through `__cg_write_ids`); a DELETE whose ids
+    /// need a CTE (the union of an untyped node's labels) reads them first
+    /// and deletes by them; CREATE is still the legacy planner's.
+    #[test]
+    fn cypher_writes_are_planned_on_the_bound_plan() {
+        let (db, captured) = make_capturing_db(build_multi_label_writable_schema());
+        let conn = Connection::new(&db).unwrap();
+        conn.query("MATCH (a:A) WHERE a.a_id = 'x' SET a.a_id = 'y'")
+            .expect("SET");
+        conn.query("MATCH (n) DELETE n").expect("untyped DELETE");
+        let sqls = captured.lock().unwrap().clone();
+        let update = sqls
+            .iter()
+            .find(|s| s.starts_with("UPDATE"))
+            .expect("an UPDATE");
+        assert!(update.contains("__cg_write_ids"), "{update}");
+        // The untyped DELETE's ids: read (a SELECT with the labels' CTE),
+        // then deleted by literal.
+        assert!(
+            sqls.iter()
+                .any(|s| s.starts_with("SELECT __cg_id") && s.contains("WITH")),
+            "{sqls:?}"
+        );
+        assert!(
+            sqls.iter()
+                .any(|s| s.starts_with("DELETE FROM `test_db`.`a_nodes` WHERE `a_id` IN ('1')")),
+            "{sqls:?}"
+        );
+    }
+
     #[test]
     fn cypher_untyped_match_delete_fans_out_across_node_tables() {
         let (db, captured) = make_capturing_db(build_multi_label_writable_schema());

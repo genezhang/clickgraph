@@ -18,9 +18,10 @@ mod expr;
 mod labels;
 pub mod lower;
 pub mod types;
+pub mod write;
 
 #[cfg(test)]
 mod tests;
 
-pub use binder::bind_statement;
+pub use binder::{bind_statement, bind_write_statement};
 pub use types::*;

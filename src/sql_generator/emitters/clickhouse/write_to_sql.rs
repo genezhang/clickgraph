@@ -37,6 +37,28 @@ fn push_sql(plan: &WriteRenderPlan, out: &mut Vec<String>) {
                 push_sql(inner, out);
             }
         }
+        // Checked by the executor before any statement: no statement.
+        WriteRenderPlan::Check(_) => {}
+    }
+}
+
+/// The SELECT that finds a [`CheckOp`]'s violation: a row when its ids are
+/// not empty (with `within`: when one is in that table's column).
+pub fn check_sql(op: &crate::render_plan::write_render::CheckOp) -> String {
+    let ids = render_id_source(&op.source);
+    match &op.within {
+        Some(t) => {
+            let unless: String = t
+                .unless
+                .iter()
+                .map(|(c, s)| format!(" AND NOT `{c}` IN {}", render_id_source(s)))
+                .collect();
+            format!(
+                "SELECT 1 AS hit FROM `{}`.`{}` WHERE `{}` IN {ids}{unless} LIMIT 1",
+                t.database, t.table, t.column
+            )
+        }
+        None => format!("SELECT 1 AS hit FROM {ids} AS __cg_ids LIMIT 1"),
     }
 }
 
@@ -128,6 +150,7 @@ pub fn probe_update_count_sql(op: &UpdateOp) -> String {
 fn render_id_source(source: &RowSource) -> String {
     match source {
         RowSource::Subquery(plan) => format!("({})", render_subquery(plan.as_ref())),
+        RowSource::Sql(sql) | RowSource::Read(sql) => format!("({sql})"),
         RowSource::Ids(ids) => {
             let parts = ids.iter().map(render_expr_inline).collect::<Vec<_>>();
             format!("({})", parts.join(", "))
@@ -234,6 +257,7 @@ mod tests {
             table: "person".into(),
             id_column: "id".into(),
             source: RowSource::Ids(vec![lit_string("u1"), lit_string("u2")]),
+            relationships: false,
         };
         assert_eq!(
             delete_sql(&op),
@@ -264,12 +288,14 @@ mod tests {
                 table: "knows".into(),
                 id_column: "from_id".into(),
                 source: RowSource::Ids(vec![lit_string("u1")]),
+                relationships: false,
             }),
             WriteRenderPlan::Delete(DeleteOp {
                 database: "t".into(),
                 table: "person".into(),
                 id_column: "id".into(),
                 source: RowSource::Ids(vec![lit_string("u1")]),
+                relationships: false,
             }),
         ]);
         let sql = write_render_to_sql(&op);

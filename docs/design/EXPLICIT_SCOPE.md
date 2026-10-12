@@ -4586,6 +4586,85 @@ slice that will handle it.
       (`spark.sql.cteRecursionLevelLimit` / `cteRecursionRowLimit`): a
       deep or wide graph fails there, loudly, where ClickHouse answers.
 
+- [ ] **S13: the embedded write path.** Embedded (chdb) mode runs Cypher
+  writes, which planned on the legacy pipeline: the statement as a
+  `LogicalPlan`, `write_guard`, `write_plan_builder` (each UPDATE / DELETE's
+  ids a legacy `RenderPlan`), write + RETURN re-read through
+  `translate_read` without text (legacy on every dialect). The legacy
+  pipeline cannot be deleted while they do. The output model
+  (`WriteRenderPlan`: INSERT / lightweight UPDATE / DELETE, `write_to_sql`,
+  the count probes) stays.
+  - [x] **S13a: SET / REMOVE / DELETE.** `bind_write_statement`: the read
+    part bound as a read's (no RETURN), then each updating clause's
+    operations in its scope (`BoundWrite`: `v.prop = value`, REMOVE,
+    `[DETACH] DELETE v` of a node; a relationship target, CREATE, a
+    RETURN or reading clause after an update, a UNION: `Unsupported`, the
+    legacy planner's until S13b/S13c). `bound_plan::write::plan_write`: one
+    UPDATE / DELETE per label the node can have, by its identities in the
+    read part's records (`lower::write::lower_identities`: the read part
+    lowered as a relation, its node's identity columns DISTINCT; a node of
+    several labels by its rows' label column, so a property another label
+    declares reads NULL, as the read's union does). A SET value is computed
+    from the row it updates (`lower_write_value`: its node scanned at the
+    UPDATE's table, qualified by the table's name, which ClickHouse's UPDATE
+    resolves; another variable or a pattern: refused, the legacy SQL
+    `SET age = a.age + 1` failed with UNKNOWN_IDENTIFIER). REMOVE: NULL; a
+    property assigned twice: the last. ClickHouse's lightweight DELETE
+    resolves its subquery's tables in its target's database, so a CTE there
+    is unknown (an UPDATE and a SELECT read it): such a DELETE's ids
+    (`RowSource::Read`: the union of an untyped node's labels, a WITH, a
+    variable-length pattern) are read first by the embedded executor and
+    deleted by literal (`RowSource::Ids`, at most 5,000 per statement; no
+    ids, no DELETE). Admission as the legacy guard's: chdb only, a
+    source-backed label read-only, a node in its own table, a
+    single-column identity; DETACH DELETE deletes the relationships of each
+    plain edge table with fixed end labels at the label (an FK edge's go
+    with the node; a polymorphic or node-property-embedding table's cannot
+    be told apart by the id: refused, where the legacy planner deleted by
+    id alone).
+    - Acceptance: the embedded crate's write tests (152, the capturing
+      executor's SQL) pass, `__cg_write_ids` showing the bound plan's;
+      chdb end to end (`writes_e2e`) as on main: SET, REMOVE, DELETE
+      executed (2 failures on main and here: an Int64 property reads back
+      as a string, #1436). Executed on ClickHouse against copies of the
+      test tables: SET with a value of the row's own properties, DETACH
+      DELETE of a user (its follows and likes, then the node).
+    - Adversarial review (executed on ClickHouse): a write of several
+      statements re-ran its MATCH in each after the earlier ones wrote
+      (`MATCH (u)-[:FOLLOWS]->(f) … DETACH DELETE u`: its relationships
+      deleted, `u` was no longer matched; `SET … DELETE`, `DELETE a, b`
+      likewise), counters wrong (every DELETE of a sequence but the last
+      counted as a relationship's, a shared relationship twice). Now a
+      write of several statements reads every operation's ids before any
+      runs (`RowSource::Read`), and the executor runs the checks, then
+      each statement after probing its count (`DeleteOp::relationships`
+      says which counter). One UPDATE per SET clause, in clause order (a
+      later clause reads what an earlier one wrote). A SET value reads its
+      row's bare columns (chdb resolves no table-qualified column in an
+      UPDATE). Neo4j's rules: a plain DELETE of a node with relationships
+      fails (`WriteRenderPlan::Check`, each plain edge table at the label,
+      before anything runs; the legacy path left them dangling); a node of
+      several labels whose other label lacks a SET property fails only
+      when such a node matches. The embedded dispatcher routes a write the
+      legacy parser cannot read (two SET clauses). Five chdb end-to-end
+      tests of these shapes pass; #1436 re-diagnosed (the schema declares
+      no property types: its columns are strings).
+    - Second review, against the Neo4j oracle: Cypher sets a value once
+      per record (`MATCH (u)-[:K]->(t) SET t.age = t.age + 1` over 3
+      records: 103), so a SET whose value reads its node fails when the
+      node is in several records (`repeated`: a non-DISTINCT identity
+      read, `GROUP BY … HAVING count() > 1`; one UPDATE would set it once);
+      a SET clause's items all read the row before it (Neo4j: `SET n.a =
+      1, n.b = n.a` leaves `b` NULL), as one UPDATE does. A DELETE's
+      relationship check does not count rows a DETACH DELETE of the same
+      statement deletes (`CheckTable::unless`; Neo4j checks at commit). A
+      polymorphic edge table's ends are any label (`$any`): DETACH DELETE
+      refused, a plain DELETE checks both its end columns. A list
+      comprehension's variable in a SET value is the value's own. Not
+      checked: an FK edge's relationships (Decision 0.6: FK-edge writes are
+      out of scope), so a plain DELETE of a node an FK edge references
+      leaves the reference.
+
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 
 **A. WITH finalization (`with_to_cte/mod.rs` unless noted)**

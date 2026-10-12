@@ -49,6 +49,8 @@ pub enum WriteRenderPlan {
     /// - `DETACH DELETE` (per-rel-table DELETEs, then the node DELETE).
     /// - Multi-item `SET` / `REMOVE` that updates multiple aliases at once.
     Sequence(Vec<WriteRenderPlan>),
+    /// A condition checked before any statement runs (no SQL statement).
+    Check(CheckOp),
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -84,6 +86,32 @@ pub struct DeleteOp {
     /// often `from_id` or `to_id`; for node DELETE it's the node ID column.
     pub id_column: String,
     pub source: RowSource,
+    /// It deletes relationships (DETACH DELETE's cleanup), not nodes: the
+    /// counter it adds to.
+    #[serde(default)]
+    pub relationships: bool,
+}
+
+/// A condition of a write statement, checked before any of its statements
+/// runs: the write fails with `message` when `source` holds an id (with
+/// `within`: an id that is in that table's column).
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct CheckOp {
+    pub source: RowSource,
+    pub within: Option<CheckTable>,
+    pub message: String,
+}
+
+/// A table column a [`CheckOp`] looks the ids up in.
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct CheckTable {
+    pub database: String,
+    pub table: String,
+    pub column: String,
+    /// Rows the statement deletes (another node's DETACH DELETE: their
+    /// column in the ids): not counted.
+    #[serde(default)]
+    pub unless: Vec<(String, RowSource)>,
 }
 
 /// Where the IDs in the WHERE clause of `Update` / `Delete` come from.
@@ -93,6 +121,15 @@ pub enum RowSource {
     /// The subquery is rendered via the regular `clickhouse_query_generator`,
     /// then wrapped as `WHERE id_col IN (<subquery>)`.
     Subquery(Box<RenderPlan>),
+    /// A rendered SELECT of a single ID column (the bound plan's,
+    /// `bound_plan::write`). Wrapped as `WHERE id_col IN (<sql>)`.
+    Sql(String),
+    /// A rendered SELECT of a single ID column that a lightweight DELETE
+    /// cannot read (it has CTEs, whose names the DELETE resolves in its
+    /// target's database): the executor reads the ids first and deletes by
+    /// them ([`RowSource::Ids`]). A probe (`SELECT count()`) or an UPDATE
+    /// reads it as [`RowSource::Sql`].
+    Read(String),
     /// Direct list of literal ID expressions.
     /// Wrapped as `WHERE id_col IN (id1, id2, ...)`.
     Ids(Vec<RenderExpr>),

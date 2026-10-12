@@ -75,6 +75,7 @@ mod tests;
 mod union;
 mod unwind;
 mod value;
+pub mod write;
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -290,7 +291,26 @@ impl Query<'_> {
         let BoundOp::Project { input, projection } = op else {
             return unsupported("internal: a query that does not end in RETURN");
         };
-        let mut l = Lowerer {
+        let mut l = self.lowerer(ctes);
+        let lowered = l
+            .relation(input)
+            .map(|()| l.finish_relation())
+            .and_then(|()| l.project(projection));
+        *ctes = std::mem::take(&mut l.ctes);
+        self.unstable
+            .borrow_mut()
+            .extend(std::mem::take(&mut l.unstable));
+        let (plan, shape) = lowered?;
+        Ok(LoweredQuery {
+            plan,
+            shape,
+            identities: l.identities,
+        })
+    }
+
+    /// A lowerer of this query, continuing the CTEs `ctes` (taken).
+    fn lowerer(&self, ctes: &mut Vec<Cte>) -> Lowerer<'_> {
+        Lowerer {
             schema: self.schema,
             bindings: &self.stmt.bindings,
             options: self.options,
@@ -325,21 +345,7 @@ impl Query<'_> {
             unordered_numbers: HashSet::new(),
             unstable: BTreeSet::new(),
             collect_by_any: false,
-        };
-        let lowered = l
-            .relation(input)
-            .map(|()| l.finish_relation())
-            .and_then(|()| l.project(projection));
-        *ctes = std::mem::take(&mut l.ctes);
-        self.unstable
-            .borrow_mut()
-            .extend(std::mem::take(&mut l.unstable));
-        let (plan, shape) = lowered?;
-        Ok(LoweredQuery {
-            plan,
-            shape,
-            identities: l.identities,
-        })
+        }
     }
 }
 
