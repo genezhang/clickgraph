@@ -165,16 +165,13 @@ pub(super) fn string(s: &str) -> String {
     sql(&RenderExpr::Literal(Literal::String(s.to_string())))
 }
 
-/// An identity of one or more columns (SQL) as one value: the column, or
-/// their tuple, as a path's `path_edges` spells a relationship's.
-fn spelled_identity(cols: &[String]) -> String {
+/// An identity of one or more columns (SQL) as a text: the column's, or
+/// their tuple's ([`GraphValues::tuple_text`]), as every key of a node or
+/// relationship spells it.
+pub(super) fn identity_text(g: &GraphValues, cols: &[String]) -> String {
     match cols {
-        [one] => one.clone(),
-        _ => format!(
-            "{}({})",
-            current_function_mapper().tuple_constructor(),
-            cols.join(", ")
-        ),
+        [one] => (g.to_text)(one),
+        _ => (g.tuple_text)(cols),
     }
 }
 
@@ -199,7 +196,7 @@ pub(super) fn rel_key(
 ) -> String {
     (g.text)(&[
         rel_key_prefix(rel_type, from_label, to_label),
-        (g.to_text)(&spelled_identity(ids)),
+        identity_text(g, ids),
     ])
 }
 

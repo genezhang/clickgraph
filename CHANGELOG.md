@@ -7,6 +7,7 @@
 
 ### 🐛 Bug Fixes
 
+- **Databricks: map and struct values were returned as JSON text.** The Statement Execution API delivers a `MAP`, `STRUCT` or `VARIANT` column as JSON text, which was passed through as a string. Such values are now read as the objects or arrays they hold, as on ClickHouse. This covers maps, and nodes, relationships and paths returned as values.
 - **Databricks: a list index past the end, `head([])` and `last([])` failed instead of returning null.** Spark's `element_at` raises an error for an out-of-range index under ANSI mode, the default on Spark 4 and Databricks. Cypher returns `null`. Databricks now uses `try_element_at`.
 - **Databricks: `x IN <list expression>` was a SQL syntax error.** Spark's `IN` accepts only a parenthesized list or a subquery, so `u.country IN split(s, ',')`, `x IN [y IN l WHERE …]` and `x IN collect(...)` failed. These now use `array_contains`, which is three-valued as Cypher's `IN` is.
 - **Databricks: `split()` read its delimiter as a regular expression.** Spark's `split` takes a regex, so `split('a.b', '.')` returned four empty strings and `'|'` split between every character. The delimiter is now quoted, so it is literal as in Cypher; an empty delimiter still splits into characters.

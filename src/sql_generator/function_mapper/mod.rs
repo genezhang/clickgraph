@@ -506,6 +506,10 @@ pub(crate) struct GraphValues {
     pub text: fn(&[String]) -> String,
     /// A scalar as a string.
     pub to_text: fn(&str) -> String,
+    /// The values (SQL, two or more: a composite identity's columns) as one
+    /// string that tells any two lists of values apart, however their parts
+    /// read (`('B|1', '2')` is not `('B', '1|2')`).
+    pub tuple_text: fn(&[String]) -> String,
     /// NULL when the condition holds, else the value (an object or a list).
     pub null_if: fn(&str, &str) -> String,
     /// Any one of a group's values (they are all equal).

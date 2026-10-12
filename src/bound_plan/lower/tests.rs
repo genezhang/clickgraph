@@ -2491,26 +2491,10 @@ fn what_path_values_are_not_lowered() {
     );
 }
 
+/// A list passed through and not read as a value lowers on Databricks.
 #[test]
-fn databricks_path_values_are_not_lowered() {
+fn databricks_list_passed_through_lowers() {
     use crate::server::query_context::{set_current_schema, with_query_context_sync, QueryContext};
-    let ctx = QueryContext {
-        dialect: crate::sql_generator::SqlDialect::Databricks,
-        ..QueryContext::default()
-    };
-    let got = with_query_context_sync(ctx, || {
-        set_current_schema(std::sync::Arc::new(social()));
-        translate_bound_plan(
-            "MATCH p = (a:User)-[:FOLLOWS]->(b:User) RETURN p",
-            &social(),
-            &ReadOptions::default(),
-        )
-    });
-    assert!(
-        matches!(&got, Err(e) if e.contains("as a value on this dialect")),
-        "{got:?}"
-    );
-    // A list passed through and not read as a value needs no spelling.
     let ctx = QueryContext {
         dialect: crate::sql_generator::SqlDialect::Databricks,
         ..QueryContext::default()
@@ -5978,5 +5962,44 @@ fn lambdas_of_higher_order_functions() {
     has(
         "MATCH (a:User) RETURN ch.arrayMap(x -> a.name, [1]) AS r",
         &["arrayMap(v1 -> v0.full_name, [1])"],
+    );
+}
+
+/// S12c: on Spark a node, relationship or path value is a VARIANT object
+/// (`to_variant_object` of a `MAP<STRING, VARIANT>`), a path an
+/// `ARRAY<VARIANT>` of them; a composite identity's key is a JSON array of
+/// its parts' texts (`CAST(struct AS STRING)` quotes none).
+#[test]
+fn databricks_graph_values() {
+    let got = squash(
+        &databricks_sql(
+            "MATCH p = (u:User)-[r:FOLLOWS]->(f:User) RETURN p",
+            &social(),
+        )
+        .unwrap(),
+    );
+    for part in [
+        "SELECT array(to_variant_object(map('elementId', CAST(concat('User:', \
+         CAST(v0.user_id AS STRING), '-') AS VARIANT), 'labels', CAST(array('User') AS VARIANT), \
+         'properties', CAST(to_variant_object(map_filter(map('age', CAST(v0.age AS VARIANT),",
+        "(__k, __v) -> __v IS NOT NULL)) AS VARIANT))), to_variant_object(map('elementId', \
+         CAST(concat('FOLLOWS:', CAST(v1.follower_id AS STRING), '->', \
+         CAST(v1.followed_id AS STRING), '-') AS VARIANT)",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    let got = squash(
+        &databricks_sql(
+            "MATCH (a:Acct)-[r:SENT|PAID]->(b:Acct) RETURN r",
+            &composite_walk_schema(),
+        )
+        .unwrap(),
+    );
+    assert!(
+        got.contains(
+            "concat('SENT:Acct:Acct:', to_json(array(CAST(e.fb AS STRING), \
+             CAST(e.fnum AS STRING), CAST(e.tb AS STRING), CAST(e.tnum AS STRING))))"
+        ),
+        "{got}"
     );
 }

@@ -800,15 +800,11 @@ fn walk_key_sql(
     label: &str,
     ids: &[String],
 ) -> String {
-    let id = match ids {
-        [one] => one.clone(),
-        _ => format!(
-            "{}({})",
-            current_function_mapper().tuple_constructor(),
-            ids.join(", ")
-        ),
-    };
-    value::node_key_text(g, label, &id)
+    (g.text)(&[
+        label.to_string(),
+        value::string(":"),
+        value::identity_text(g, ids),
+    ])
 }
 
 fn rel_union_shape(arms: &[RelArm]) -> Result<RelUnionShape, LowerError> {

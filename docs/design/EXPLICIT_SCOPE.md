@@ -4471,6 +4471,36 @@ slice that will handle it.
       Spark's NULL is Cypher's), a pattern comprehension from a NULL node
       reads `[]` on both (#1424, to check against Neo4j), `collect(f) + [u]`
       in an aggregation not grouping `u`'s columns (#1425, both dialects).
+  - [x] **S12c: graph values.** `FunctionMapper::graph_values` on Spark: an
+    element is a VARIANT object (`to_variant_object` of a
+    `MAP<STRING, VARIANT>`; a value that is an object or a list is a VARIANT
+    already or casts to one), a path or a list of elements an
+    `ARRAY<VARIANT>` (an empty one typed); properties without NULLs by
+    `map_filter`; `tail` by `filter` on the index, `interleave` by
+    `flatten(transform(…))`, `length` `array_size`, `any` `any_value(…,
+    true)`. A composite identity's key text is the new
+    `GraphValues::tuple_text` (`value::identity_text`, at every key: a
+    relationship's, a walk's node, a shortest-path search's, a union walk's
+    edges): ClickHouse `toString(tuple(…))` as before, Spark a JSON array of
+    the parts' texts (`CAST(struct AS STRING)` quotes no part: `('a, b')`
+    and `('a', 'b')` would read alike). The Databricks executor reads a
+    `VARIANT` / `MAP` / `STRUCT` column's JSON text as the object or array
+    it is (a scalar left as it is: a VARIANT string `"123"` is no number);
+    to verify against a live workspace. A datetime inside a value is Spark's
+    text (`2024-01-01 10:00:00+00:00`), as ClickHouse's is its own (#1068).
+    Walks over several labels or types also need the shortest-path search
+    spelling (S12e).
+    - Acceptance: Databricks lowers 1324 (was 1294). Corpus differential
+      1158 equal (was 1132; the 30 newly lowered: 26 equal, 2 the zeek
+      embedded IP's `any` pick and #1426, 1 an error on both, 1 not
+      lowered on ClickHouse). Ad hoc (21 queries: paths
+      fixed, variable-length, undirected, incoming, zero-hop, OPTIONAL
+      NULL; `nodes` / `relationships`; collected nodes and relationships,
+      ordered or not; nodes of several labels and relationships of several
+      types): every one both dialects lower equal (one under a tie). Filed:
+      ClickHouse reads an embedded node's array property as NULL when one
+      source lacks it (#1426, `any` over a `Variant`; Spark right), an
+      internal error ordering a carried path by `length(p)` (#1427).
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

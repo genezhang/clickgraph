@@ -583,9 +583,14 @@ impl PathCall<'_> {
             start: self.start.clone(),
             end: self.end.clone(),
             rel,
-            edge_text: g
-                .as_ref()
-                .map(|g| (g.to_text)(&edge_identity_sql(self.edge, REL))),
+            edge_text: g.as_ref().map(|g| {
+                let cols: Vec<String> = edge_identity(self.edge)
+                    .columns()
+                    .into_iter()
+                    .map(|c| format!("{REL}.{c}"))
+                    .collect();
+                super::value::identity_text(g, &cols)
+            }),
             node_value,
             rel_value,
         })
@@ -598,13 +603,8 @@ impl PathCall<'_> {
 /// string part: `('B|1','2')` is not `('B','1|2')`). `None` where the dialect
 /// spells no text of a value.
 pub(super) fn composite_key(cols: &[String]) -> Option<String> {
-    let m = current_function_mapper();
-    let g = m.graph_values()?;
-    Some((g.to_text)(&format!(
-        "{}({})",
-        m.tuple_constructor(),
-        cols.join(", ")
-    )))
+    let g = current_function_mapper().graph_values()?;
+    Some((g.tuple_text)(cols))
 }
 
 /// The column of a search's targets (`Search::targets`).

@@ -27,7 +27,9 @@ def norm(v):
     if isinstance(v, (int, float)):
         return ("n", round(float(v), 6)) if not (isinstance(v, float) and math.isnan(v)) else ("nan",)
     if isinstance(v, str):
-        m = re.fullmatch(r"(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d:\d\d)(\.0+)?Z?", v)
+        # A UTC datetime as either engine spells it (Spark's VARIANT JSON:
+        # `+00:00`).
+        m = re.fullmatch(r"(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d:\d\d)(\.0+)?(Z|\+00:00)?", v)
         if m: return ("s", f"{m.group(1)}T{m.group(2)}")
         return ("s", v)
     if v is None: return ("null",)

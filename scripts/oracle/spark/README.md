@@ -35,6 +35,7 @@ Verdicts:
 - `MATCH`: the same rows as a multiset. A final `LIMIT` in a query without `ORDER BY` checks that Spark's rows are as many of ClickHouse's unlimited rows. `collect()` lists compare as multisets, unless an `ORDER BY` comes before the collect.
 - `TIES_LIMIT`: `ORDER BY … LIMIT` gave other rows, all among ClickHouse's unlimited rows and as many: rows tied at the cut. Check by hand.
 - `ORDER_DIFF`: the same rows in another order. The sort keys are not known to the script, so check by hand that these are ties.
+- A UTC datetime compares by its value, however the engine spells it (ClickHouse's ISO text, Spark's VARIANT JSON `2024-01-01 10:00:00+00:00`): graph values' text follows the engine (#1068).
 - Booleans compare as numbers: ClickHouse's `UInt8` booleans and Spark's `BOOLEAN` are the same values.
 - `MISMATCH`, `SPARK_ERROR`, `CH_ERROR`, `BOTH_ERROR`.
 - `NO_DATA`: a table the query reads is not in ClickHouse.
