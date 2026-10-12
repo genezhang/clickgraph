@@ -4405,8 +4405,36 @@ slice that will handle it.
         Message (`message:Comment` false, BI 9's `(post:Post)<-[:REPLY_OF*0..]-
         (reply:Message)` matches nothing) and an unlabeled message is each
         of its rows (IS 2). Neo4j's LDBC graph gives a Post both labels.
-    - [ ] **S11o2…: the 11 not lowered**, IC 1's grouping key, and how the
-      LDBC schema models Message.
+    - [x] **S11o2: union labels (user 2026-10-12: Neo4j's model).** A
+      schema's `union_labels:` (`config::UnionLabelDefinition`, kept in
+      `GraphSchema::union_labels`) name a label the nodes of other labels
+      also carry, with no table of its own: LDBC's `Message` of `Post` and
+      `Comment`. The binder writes a pattern's union label as its labels
+      (`Feasibility::node_labels_of`, in `PatNode::labels`): `(m:Message)`
+      is a node of several labels as `(m:Post|Comment)` is, the label
+      inference narrowing it by the members' relationships. A label test
+      `m:Message` holds of its labels' nodes (by the label column of a
+      node of several labels); `labels(m)`, a node's value and a Bolt node
+      list the node's label, then the union labels it carries
+      (`GraphSchema::union_labels_of`; `db.labels()` too). Refused at
+      schema load: a member that is no node label, a union label that is
+      one, a relationship end that names one (an edge of a union label is
+      one definition per member). `ldbc_snb_complete.yaml` drops its
+      Message table and the eight definitions ending at it (each has its
+      Post and Comment ones) for `Message: [Post, Comment]`; the legacy
+      pipeline's own tests keep a frozen copy
+      (`schemas/test/ldbc_snb_complete_legacy_pipeline.yaml`).
+      - On the SF1 `ldbc` database, of the 24 lowered: 15 equal the legacy
+        pipeline (BI 1 now); IC 12 equal but for `collect(DISTINCT)`'s
+        order; BI 9 (`messageCount` 11593 for the first person, as a
+        hand-written recursion over the tables counts it: a post is its
+        own `*0..` reply) and IS 2 (10 rows: the person's 10 latest
+        messages, each with its post; the legacy pipeline 4) answer as
+        Neo4j's model does; BI 6 as before (the legacy pipeline counts a
+        NULL); BI 12, IS 6, IS 7 answer where the legacy SQL fails; IC 1
+        the grouping-key error; BI 17 (two variable-length paths, refused
+        by the legacy pipeline) runs past 300 s.
+    - [ ] **S11o3…: the 11 not lowered**, IC 1's grouping key, BI 17's time.
 - [ ] **S12: Databricks coverage.** The bound plan lowers on Databricks what
   it lowers on ClickHouse, so the legacy pipeline can go on every dialect.
   Each `FunctionMapper` spelling that is `None` on Databricks (`unwind`,

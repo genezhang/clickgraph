@@ -423,6 +423,34 @@ pub struct GraphSchemaDefinition {
     /// Maps Neo4j-style fulltext indexes to ClickHouse text search functions
     #[serde(default)]
     pub fulltext_indexes: Vec<FulltextIndexDefinition>,
+
+    /// Union labels: a label every node of some other labels also carries
+    /// (LDBC's `Message`, of `Post` and `Comment`). See [`UnionLabelDefinition`].
+    #[serde(default)]
+    pub union_labels: Vec<UnionLabelDefinition>,
+}
+
+/// A union label: a label that the nodes of each of `labels` also carry, as
+/// in a Neo4j graph where every `:Post` and every `:Comment` is a `:Message`.
+/// It has no table of its own: `(m:Message)` is a node of any of `labels`,
+/// `m:Message` holds of each, and `labels(m)` lists it after the node's own.
+///
+/// Example YAML:
+/// ```yaml
+/// union_labels:
+///   - label: Message
+///     labels: [Post, Comment]
+/// ```
+///
+/// Each of `labels` is a node label of the schema (not a union label), and
+/// a relationship's ends name node labels, not union labels: an edge of a
+/// union label is an edge of each member (one definition per member).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UnionLabelDefinition {
+    /// The union label.
+    pub label: String,
+    /// The node labels whose nodes carry it.
+    pub labels: Vec<String>,
 }
 
 /// Vector index definition in schema config
@@ -2653,7 +2681,84 @@ impl GraphSchemaConfig {
             fulltext_indexes,
         );
         schema.set_node_definitions(definitions);
+        schema.set_union_labels(self.union_labels()?);
         Ok(schema)
+    }
+
+    /// The schema's union labels ([`UnionLabelDefinition`]), each of its
+    /// node labels; refused: a union label named as a node label, a
+    /// relationship type or another union label, a member that is no node
+    /// label, a union of none, a relationship end that names one.
+    fn union_labels(
+        &self,
+    ) -> Result<
+        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+        GraphSchemaError,
+    > {
+        let invalid = |message: String| GraphSchemaError::InvalidConfig { message };
+        let def = &self.graph_schema;
+        let node_labels: std::collections::BTreeSet<&str> =
+            def.nodes.iter().map(|n| n.label.as_str()).collect();
+        let mut out = std::collections::BTreeMap::new();
+        for u in &def.union_labels {
+            if node_labels.contains(u.label.as_str()) {
+                return Err(invalid(format!(
+                    "union label `{}` is also a node label: a union label has no table of its own",
+                    u.label
+                )));
+            }
+            if u.labels.is_empty() {
+                return Err(invalid(format!("union label `{}` has no labels", u.label)));
+            }
+            for member in &u.labels {
+                if !node_labels.contains(member.as_str()) {
+                    return Err(invalid(format!(
+                        "union label `{}`: `{member}` is not a node label of the schema",
+                        u.label
+                    )));
+                }
+            }
+            let members: std::collections::BTreeSet<String> = u.labels.iter().cloned().collect();
+            if out.insert(u.label.clone(), members).is_some() {
+                return Err(invalid(format!(
+                    "union label `{}` is defined twice",
+                    u.label
+                )));
+            }
+        }
+        // A relationship's ends are node labels: an edge of a union label is
+        // one definition per member.
+        let mut ends: Vec<&str> = Vec::new();
+        for r in &def.relationships {
+            ends.extend(r.from_node.as_deref());
+            ends.extend(r.to_node.as_deref());
+        }
+        for e in &def.edges {
+            match e {
+                EdgeDefinition::Standard(e) => {
+                    ends.extend([e.from_node.as_str(), e.to_node.as_str()])
+                }
+                EdgeDefinition::Polymorphic(e) => {
+                    ends.extend(e.from_node.as_deref());
+                    ends.extend(e.to_node.as_deref());
+                    for values in [&e.from_label_values, &e.to_label_values]
+                        .into_iter()
+                        .flatten()
+                    {
+                        ends.extend(values.iter().map(String::as_str));
+                    }
+                }
+            }
+        }
+        for end in ends {
+            if out.contains_key(end) {
+                return Err(invalid(format!(
+                    "a relationship end is the union label `{end}`: define the relationship \
+                     for each of its labels"
+                )));
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -3055,6 +3160,7 @@ graph_schema:
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
+                union_labels: Vec::new(),
             },
         };
 
@@ -3120,6 +3226,7 @@ graph_schema:
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
+                union_labels: Vec::new(),
             },
         };
 
@@ -3200,6 +3307,7 @@ graph_schema:
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
+                union_labels: Vec::new(),
             },
         };
 
@@ -3288,6 +3396,7 @@ graph_schema:
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
+                union_labels: Vec::new(),
             },
         };
 
@@ -3383,6 +3492,7 @@ graph_schema:
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
+                union_labels: Vec::new(),
             },
         };
 
@@ -3445,6 +3555,7 @@ graph_schema:
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
+                union_labels: Vec::new(),
             },
         };
 
@@ -3540,6 +3651,7 @@ graph_schema:
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
+                union_labels: Vec::new(),
             },
         };
 
@@ -3608,6 +3720,7 @@ graph_schema:
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
+                union_labels: Vec::new(),
             },
         };
 
@@ -3681,6 +3794,7 @@ graph_schema:
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
+                union_labels: Vec::new(),
             },
         };
 

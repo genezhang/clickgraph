@@ -32,6 +32,8 @@ pub fn execute(schema: &GraphSchema) -> Result<Vec<HashMap<String, serde_json::V
             }
         })
         .collect();
+    // Union labels too: their nodes carry them (a Post is also a Message).
+    labels.extend(schema.union_labels().keys().cloned());
 
     // Remove duplicates and sort
     labels.sort();

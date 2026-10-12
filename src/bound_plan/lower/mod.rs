@@ -3803,7 +3803,7 @@ impl<'s> Lowerer<'s> {
             ];
             if values {
                 items.push(select(
-                    RenderExpr::Raw(value::table_node_object(&g, ns, label, ROW)?),
+                    RenderExpr::Raw(value::table_node_object(&g, self.schema, ns, label, ROW)?),
                     ELEMENT_VALUE,
                 ));
             }

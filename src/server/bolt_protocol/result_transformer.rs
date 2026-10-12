@@ -1131,7 +1131,13 @@ pub(crate) fn transform_to_node(
     // Create Node struct
     // Use the resolved label (from per-row __label__ or inference) as the definitive label.
     // This is more accurate than metadata labels for UNION queries where node types vary per row.
-    let final_labels = vec![label];
+    // Then the union labels it carries (a Post is also a Message).
+    let unions: Vec<String> = schema
+        .union_labels_of(&label)
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let final_labels: Vec<String> = std::iter::once(label).chain(unions).collect();
 
     Ok(Node {
         id,

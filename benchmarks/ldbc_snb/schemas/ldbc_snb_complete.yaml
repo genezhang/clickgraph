@@ -60,28 +60,6 @@ graph_schema:
         length: length
 
     # -------------------------------------------------------------------------
-    # Message - unified view of Post and Comment (virtual label)
-    # Note: Uses the Message view that unions Post and Comment
-    # The 'type' column distinguishes between 'Post' and 'Comment'
-    # -------------------------------------------------------------------------
-    - label: Message
-      database: ldbc
-      table: Message
-      node_id: id
-      # Every row is a Message (a Post or a Comment, `type`). No label column:
-      # `label_value` is one value, and "Post|Comment" matched no row.
-      property_mappings:
-        id: id
-        creationDate: creationDate
-        locationIP: locationIP
-        browserUsed: browserUsed
-        content: content
-        length: length
-        imageFile: imageFile
-        language: language
-        type: type
-
-    # -------------------------------------------------------------------------
     # Forum - container for Posts
     # -------------------------------------------------------------------------
     - label: Forum
@@ -295,32 +273,6 @@ graph_schema:
         creationDate: creationDate
 
     # -------------------------------------------------------------------------
-    # Person LIKES Message (unified view)
-    # -------------------------------------------------------------------------
-    - type: LIKES
-      database: ldbc
-      table: Person_likes_Message
-      from_id: PersonId
-      to_id: MessageId
-      from_node: Person
-      to_node: Message
-      property_mappings:
-        creationDate: creationDate
-
-    # -------------------------------------------------------------------------
-    # Message HAS_CREATOR Person (unified view for polymorphic Message node)
-    # -------------------------------------------------------------------------
-    - type: HAS_CREATOR
-      database: ldbc
-      table: Message_hasCreator_Person
-      from_id: MessageId
-      to_id: PersonId
-      from_node: Message
-      to_node: Person
-      property_mappings:
-        creationDate: creationDate
-
-    # -------------------------------------------------------------------------
     # Post HAS_CREATOR Person (specific - use HAS_CREATOR for Message queries)
     # -------------------------------------------------------------------------
     - type: HAS_CREATOR
@@ -342,19 +294,6 @@ graph_schema:
       from_id: CommentId
       to_id: PersonId
       from_node: Comment
-      to_node: Person
-      property_mappings:
-        creationDate: creationDate
-
-    # -------------------------------------------------------------------------
-    # Message HAS_CREATOR Person (unified view)
-    # -------------------------------------------------------------------------
-    - type: HAS_CREATOR
-      database: ldbc
-      table: Message_hasCreator_Person
-      from_id: MessageId
-      to_id: PersonId
-      from_node: Message
       to_node: Person
       property_mappings:
         creationDate: creationDate
@@ -382,36 +321,6 @@ graph_schema:
       to_id: Comment2Id
       from_node: Comment
       to_node: Comment
-      property_mappings:
-        creationDate: creationDate
-
-    # -------------------------------------------------------------------------
-    # Comment REPLY_OF Message (unified view for polymorphic Message queries)
-    # This allows queries like (message:Message)<-[:REPLY_OF]-(comment:Comment)
-    # Uses Comment_replyOf_Message view which unions Post and Comment replies
-    # -------------------------------------------------------------------------
-    - type: REPLY_OF
-      database: ldbc
-      table: Comment_replyOf_Message
-      from_id: CommentId
-      to_id: MessageId
-      from_node: Comment
-      to_node: Message
-      property_mappings:
-        creationDate: creationDate
-
-    # -------------------------------------------------------------------------
-    # Message REPLY_OF Message (unified view for VLP queries)
-    # This allows queries like (m:Message)-[:REPLY_OF*0..]->(p:Message)
-    # Uses Message_replyOf_Message view which handles polymorphic traversal
-    # -------------------------------------------------------------------------
-    - type: REPLY_OF
-      database: ldbc
-      table: Message_replyOf_Message
-      from_id: MessageId
-      to_id: TargetMessageId
-      from_node: Message
-      to_node: Message
       property_mappings:
         creationDate: creationDate
 
@@ -451,21 +360,6 @@ graph_schema:
       to_id: PersonId
       from_node: Forum
       to_node: Person
-      property_mappings:
-        creationDate: creationDate
-
-    # -------------------------------------------------------------------------
-    # Message HAS_TAG Tag (unified view for polymorphic Message node)
-    # This is the proper relationship for (Message)-[:HAS_TAG]->(Tag) queries
-    # Uses Message_hasTag_Tag view which unions Post and Comment edges
-    # -------------------------------------------------------------------------
-    - type: HAS_TAG
-      database: ldbc
-      table: Message_hasTag_Tag
-      from_id: MessageId
-      to_id: TagId
-      from_node: Message
-      to_node: Tag
       property_mappings:
         creationDate: creationDate
 
@@ -606,17 +500,10 @@ graph_schema:
       property_mappings:
         creationDate: creationDate
 
-    # -------------------------------------------------------------------------
-    # Message IS_LOCATED_IN Country (union view of Post + Comment)
-    # -------------------------------------------------------------------------
-    - type: IS_LOCATED_IN
-      database: ldbc
-      table: Message_isLocatedIn_Place
-      from_id: MessageId
-      to_id: CountryId
-      from_node: Message
-      to_node: Country
-      property_mappings:
-        creationDate: creationDate
-
-
+  # Message: every Post and every Comment is also a Message (Neo4j's LDBC graph
+  # gives each both labels). A union label has no table of its own:
+  # `(m:Message)` reads Post and Comment, `m:Comment` holds of the comments, and
+  # the Post / Comment edges above are a Message's.
+  union_labels:
+    - label: Message
+      labels: [Post, Comment]

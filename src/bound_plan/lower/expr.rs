@@ -254,27 +254,50 @@ impl Lowerer<'_> {
                 let Some(v) = parse_var(variable) else {
                     return unsupported("an unbound label test");
                 };
+                // A node of a union label's labels carries it too.
+                let carries = |l: &str| {
+                    l == label
+                        || self
+                            .schema
+                            .union_label_members(label)
+                            .is_some_and(|m| m.contains(l))
+                };
                 if let (BindingKind::Value, Some(Kind::Element(elem))) =
                     (&self.binding(v).kind, self.var_kind(v))
                 {
                     let holds = match &elem {
-                        Elem::Node(l) => l == label,
+                        Elem::Node(l) => carries(l),
                         Elem::Rel { rel_type, .. } => rel_type == label,
                     };
                     let t = self.variable(variable, items)?;
                     return self.elem_unless_null(&t, &elem, Literal::Boolean(holds));
                 }
                 let holds = match self.scans.get(&v) {
-                    Some(Scan::Node { label: l, .. }) => l == label,
+                    Some(Scan::Node { label: l, .. }) => carries(l),
                     // NULL where an OPTIONAL MATCH left it NULL, as Cypher.
-                    Some(Scan::Labels { arms, .. }) if arms.iter().any(|(l, _)| l == label) => {
-                        return Ok(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                            operator: lx::Operator::Equal,
-                            operands: vec![
-                                self.physical(v, super::LABEL_COLUMN)?,
-                                RenderExpr::Literal(Literal::String(label.clone())),
-                            ],
-                        }));
+                    Some(Scan::Labels { arms, .. }) if arms.iter().any(|(l, _)| carries(l)) => {
+                        let column = self.physical(v, super::LABEL_COLUMN)?;
+                        let mut tests: Vec<RenderExpr> = arms
+                            .iter()
+                            .filter(|(l, _)| carries(l))
+                            .map(|(l, _)| {
+                                RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                    operator: lx::Operator::Equal,
+                                    operands: vec![
+                                        column.clone(),
+                                        RenderExpr::Literal(Literal::String(l.clone())),
+                                    ],
+                                })
+                            })
+                            .collect();
+                        return Ok(if tests.len() == 1 {
+                            tests.remove(0)
+                        } else {
+                            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                operator: lx::Operator::Or,
+                                operands: tests,
+                            })
+                        });
                     }
                     Some(Scan::Labels { .. }) => false,
                     // NULL where an OPTIONAL MATCH left it NULL, as Cypher.
@@ -1338,14 +1361,30 @@ impl Lowerer<'_> {
                 {
                     unsupported("labels() of a node an OPTIONAL MATCH may leave NULL")
                 }
-                ("labels", Some(Scan::Labels { .. })) => Ok(RenderExpr::List(vec![
-                    self.physical(v, super::LABEL_COLUMN)?
-                ])),
-                ("labels", Some(Scan::Node { label, .. })) => {
-                    Ok(RenderExpr::List(vec![RenderExpr::Literal(
-                        Literal::String(label.clone()),
-                    )]))
+                // A node's label, then the union labels it carries.
+                ("labels", Some(Scan::Labels { arms, .. })) => {
+                    let column = self.physical(v, super::LABEL_COLUMN)?;
+                    let when_then: Vec<(RenderExpr, RenderExpr)> = arms
+                        .iter()
+                        .filter(|(l, _)| !self.schema.union_labels_of(l).is_empty())
+                        .map(|(l, _)| {
+                            (
+                                RenderExpr::Literal(Literal::String(l.clone())),
+                                self.node_labels(l),
+                            )
+                        })
+                        .collect();
+                    let own = RenderExpr::List(vec![column.clone()]);
+                    Ok(match when_then.is_empty() {
+                        true => own,
+                        false => RenderExpr::Case(RenderCase {
+                            expr: Some(Box::new(column)),
+                            when_then,
+                            else_expr: Some(Box::new(own)),
+                        }),
+                    })
                 }
+                ("labels", Some(Scan::Node { label, .. })) => Ok(self.node_labels(label)),
                 // `label(n)` (a ClickGraph function, as the legacy pipeline
                 // reads it): a node's one label as a string, NULL where an
                 // OPTIONAL MATCH left it NULL (P-4c S11d).
@@ -1608,6 +1647,17 @@ impl Lowerer<'_> {
 }
 
 impl Lowerer<'_> {
+    /// `labels()` of a node of `label`: it, then the union labels it carries
+    /// (`GraphSchema::union_labels_of`).
+    pub(super) fn node_labels(&self, label: &str) -> RenderExpr {
+        RenderExpr::List(
+            std::iter::once(label)
+                .chain(self.schema.union_labels_of(label))
+                .map(|l| RenderExpr::Literal(Literal::String(l.to_string())))
+                .collect(),
+        )
+    }
+
     /// `collect(x)` / `count(x)` of a list's node or relationship `x`: the
     /// tuples (`elements.rs`) whose identity is not NULL; their number.
     fn element_aggregate(

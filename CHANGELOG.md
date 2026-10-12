@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### 🚀 Features
+
+- **Union labels.** A schema can declare a label that the nodes of other labels also carry, under `union_labels:` (`- label: Message` with `labels: [Post, Comment]`), as in Neo4j's LDBC graph where every Post and every Comment is also a Message. `(m:Message)` matches both, `m:Comment` tests the node's own label, and `labels(m)` lists `['Post', 'Message']`. The LDBC schema `ldbc_snb_complete.yaml` now models Message this way; its three separate labels over overlapping tables made a Post no Message, so BI 1, BI 9 and IS 2 answered differently from Neo4j. See `docs/schema-reference.md`.
+
 ### ⚠️ Behaviour changes
 
 - **ClickHouse reads go through the bound plan only (P-4c S11j).** A read query the bound plan does not translate is now an error ("Not supported: …": HTTP 400, a Bolt client error, an `Err` in the library) instead of being handed to the legacy pipeline. They include shapes Neo4j also refuses (a property of a variable-length relationship's list, shortestPath from a node to itself), undeclared properties of nodes embedded in edge tables, `type()` of a named shortest path's relationship list, `[x IN nodes(p) | …]` over a shortest path, and `edges(p)`; the error names the construct. On Bolt its code is `Neo.ClientError.Statement.FeatureNotSupported` (Bolt 5.7+ drivers show it once failures carry GQL status fields, #1368). A query that is not a read reaching the read path (a procedure `CALL` inside a query or a UNION, write clauses) is also "Not supported"; the legacy pipeline dropped the CALL or failed with a 500. A standalone `CALL` is answered by the server as before. Some of these the legacy pipeline answered wrongly (`head(collect(a))` and `startNode(r)` as ids, `labels()` of an unmatched node as a label). The `CLICKGRAPH_BOUND_PLAN` switch is removed. Other SQL dialects (Databricks) keep the legacy fallback until their coverage is complete.
