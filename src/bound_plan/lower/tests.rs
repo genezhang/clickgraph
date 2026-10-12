@@ -6486,3 +6486,59 @@ fn a_path_is_null() {
         &["CAST((v0.user_id IS NULL OR o1.v2__user_id IS NULL) AS Nullable(Bool)) AS \"n\""],
     );
 }
+
+/// S11o8: `head(collect({…}))` / `collect({…})[i]` carried by a WITH (LDBC
+/// IC 7, BI 14): its keys each a column, from the collected tuples of the
+/// map's values (in the rows' order where they have one); a key's node read
+/// by its properties (`m.k.p`); a node of several labels carried as the
+/// properties read of it; the map read whole, not lowered.
+#[test]
+fn a_collected_map_read_by_its_keys() {
+    has(
+        "MATCH (u:User) WITH collect({a: u.name, b: u.age})[0] AS top RETURN top.a AS a, top.b AS b",
+        &["CASE WHEN length(arrayMap(t -> t.1, groupArray(tuple(tuple(v0.full_name, \
+           v0.age))))) > 0 THEN tupleElement(arrayElementOrNull(arrayMap(t -> t.1, \
+           groupArray(tuple(tuple(v0.full_name, v0.age)))), 1), 1) ELSE NULL END AS \"v1__k0\""],
+    );
+    let got = squash(&sql(
+        "MATCH (u:User)-[:FOLLOWS]->(f:User) WITH u, f ORDER BY f.user_id \
+         WITH u, head(collect({msg: f, t: f.age})) AS l RETURN u.name AS n, l.t AS t, l.msg.name AS m",
+    ));
+    assert!(got.contains("arraySort("), "in the rows' order: {got}");
+    // A node of several labels: the properties read of it.
+    has(
+        "MATCH (u:User)-[:AUTHORED|FOLLOWS]->(x) WITH u, head(collect({m: x})) AS l \
+         RETURN l.m.name AS n",
+        &["groupArray(tuple(tuple(v2.p2_v2_name)))), 1), 1) ELSE NULL END AS \"v4__k0\""],
+    );
+    // A missing row (an index past the end): a node's property reads NULL
+    // (S11o8 review: a tuple's defaults).
+    has(
+        "MATCH (u:User)-[:FOLLOWS]->(x:User) WITH u, collect({n: x})[2] AS m \
+         RETURN m.n.name AS n",
+        &["CASE WHEN w1.v4__k0 THEN", "ELSE NULL END AS \"n\""],
+    );
+    for (q, why) in [
+        (
+            "MATCH (u:User) WITH collect({a: u.name})[0] AS top RETURN top",
+            "a collected map other than by its keys",
+        ),
+        (
+            "MATCH (u:User)-[:FOLLOWS]->(f:User) WITH u, head(collect({n: f})) AS m RETURN m.n",
+            "a node or relationship a collected map holds, read whole",
+        ),
+        (
+            "MATCH (u:User)-[:FOLLOWS]->(x:User) WITH u, collect({l: [x.name]})[5] AS m \
+             RETURN m.l",
+            "a list or map in a collected map",
+        ),
+        (
+            "MATCH (u:User)-[:AUTHORED|FOLLOWS]->(x) WITH u, head(collect({m: x})) AS l \
+             RETURN l.m AS m",
+            "read whole",
+        ),
+    ] {
+        let err = translate_bound_plan(q, &social(), &ReadOptions::default()).unwrap_err();
+        assert!(err.contains(why), "{q}: {err}");
+    }
+}

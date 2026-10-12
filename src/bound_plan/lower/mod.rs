@@ -5447,6 +5447,28 @@ impl<'s> Lowerer<'s> {
                     continue;
                 }
             }
+            // `head(collect({…}))` / `collect({…})[i]` carried by a WITH
+            // (LDBC IC 7, BI 14): the map of one row, its keys each its own
+            // column (S11m), from the collected tuples of its values.
+            if let (Some(alias), Some((entries, index))) = (cte, collected_map(&it.expr)) {
+                let keys = self.collected_map_keys(entries, index, it.var)?;
+                // The map's kind: each key's (a node a key holds is read as
+                // a list's element, `elements.rs`).
+                let mut kinds: Vec<(String, unwind::Kind)> = keys
+                    .iter()
+                    .map(|(k, _)| match entries.iter().find(|(e, _)| e == k) {
+                        Some((_, v)) => (k.clone(), self.kind(v)),
+                        // A property of a key's node (`k.p`).
+                        None => (k.clone(), unwind::Kind::Unknown),
+                    })
+                    .collect();
+                kinds.sort_by(|a, b| a.0.cmp(&b.0));
+                self.kinds.insert(it.var, unwind::Kind::Map(kinds));
+                self.map_keys.insert(it.var, keys.clone());
+                let keys = export_map_keys(it.var, keys, alias, &mut body);
+                exports.maps.push((it.var, keys));
+                continue;
+            }
             let element = match &it.expr {
                 LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(n)) => {
                     parse_var(n).filter(|v| {
@@ -5980,6 +6002,88 @@ impl<'s> Lowerer<'s> {
 
     /// The keys of the map a WITH item `e` is, each with its value (S11m): a
     /// map literal, or a map value this segment carries with its keys.
+    /// The keys of `collect(MAP)[index]` ([`collected_map`]): each, its
+    /// value of that row, from the collected tuples of the map's values (in
+    /// the rows' order where they have one, `Lowerer::collect_order`). A
+    /// map literal is never NULL: every row is collected.
+    ///
+    /// A key holding a node or relationship of several labels or types (no
+    /// list element's tuple, `elements.rs`) carries the properties the
+    /// statement reads of it (`m.k.p`, as keys `k.p`); read whole, it is not
+    /// lowered.
+    fn collected_map_keys(
+        &self,
+        entries: &[(String, LogicalExpr)],
+        index: usize,
+        var: VarId,
+    ) -> Result<MapKeys, LowerError> {
+        let m = current_function_mapper();
+        let Some(spelling) = m.lists() else {
+            return unsupported("a collected map in this SQL dialect");
+        };
+        let demanded = self.demand.get(&var);
+        let mut names = Vec::new();
+        let mut values = Vec::new();
+        for (k, v) in entries {
+            let several = self.entity(v).filter(|e| {
+                matches!(
+                    self.scans.get(e),
+                    Some(Scan::Labels { .. } | Scan::Rels { .. })
+                )
+            });
+            if let Some(e) = several {
+                let read = demanded.into_iter().flatten();
+                if read.clone().any(|p| p == k || p == ALL_PROPERTIES) {
+                    return unsupported(
+                        "a node or relationship of several labels or types in a collected map, \
+                         read whole",
+                    );
+                }
+                let prefix = format!("{k}.");
+                for p in read.filter_map(|p| p.strip_prefix(&prefix)) {
+                    names.push(collected_key(k, Some(p)));
+                    values.push(render_expr_to_sql_plain(&self.property(e, p)?));
+                }
+                continue;
+            }
+            // A list or map would read `[]` / `{}` where the row is missing
+            // (ClickHouse holds no NULL array, #1454).
+            if matches!(self.kind(v), unwind::Kind::List(_) | unwind::Kind::Map(_)) {
+                return unsupported("a list or map in a collected map");
+            }
+            names.push(k.clone());
+            values.push(render_expr_to_sql_plain(&self.element(v, &HashMap::new())?));
+        }
+        let tuple = (spelling.tuple)(&values);
+        let list = match &self.collect_order {
+            Some(key) => (spelling.ordered_collect)(&tuple, &render_expr_to_sql_plain(key), "true"),
+            None => (spelling.collect_all)(&tuple),
+        };
+        let row = m.array_element_or_null(&list, &(index + 1).to_string());
+        // The row may be missing (an index past the list's end, `head` of
+        // none): its values NULL, not a tuple's defaults. A node's tuple
+        // cannot be NULL: its reads check the row (`collected_key(k, None)`).
+        let present = format!("{} > {index}", m.list_size(&list));
+        let mut keys: MapKeys = Vec::new();
+        for (i, k) in names.into_iter().enumerate() {
+            let value = (spelling.element)(&row, i + 1);
+            let element = entries
+                .iter()
+                .find(|(e, _)| *e == k)
+                .is_some_and(|(_, v)| matches!(self.kind(v), unwind::Kind::Element(_)));
+            if element {
+                keys.push((collected_key(&k, None), RenderExpr::Raw(present.clone())));
+                keys.push((k, RenderExpr::Raw(value)));
+            } else {
+                keys.push((
+                    k,
+                    RenderExpr::Raw(format!("CASE WHEN {present} THEN {value} ELSE NULL END")),
+                ));
+            }
+        }
+        Ok(keys)
+    }
+
     fn item_map_keys(&self, e: &LogicalExpr) -> Result<Option<MapKeys>, LowerError> {
         match e {
             LogicalExpr::MapLiteral(entries) => {
@@ -6598,6 +6702,46 @@ struct Exports<'s> {
 /// `m.k` / `m['k']` reads.
 type MapKeys = Vec<(String, RenderExpr)>;
 
+/// A collected map's key of what a key `k` holds, no Cypher key spells (a
+/// NUL in it): `k\0p`, property `p` of the node of several labels it holds;
+/// `k\0`, whether the row of the node it holds is there.
+pub(super) fn collected_key(k: &str, p: Option<&str>) -> String {
+    format!("{k}\u{0}{}", p.unwrap_or(""))
+}
+
+/// `head(collect(MAP))` / `collect(MAP)[i]` of a map literal: its entries
+/// and the row's index (`i` ≥ 0); not of DISTINCT (a map's values have no
+/// order or equality here).
+fn collected_map(e: &LogicalExpr) -> Option<(&[(String, LogicalExpr)], usize)> {
+    use crate::query_planner::logical_expr::Literal as L;
+    fn entries(c: &LogicalExpr) -> Option<&[(String, LogicalExpr)]> {
+        match c {
+            LogicalExpr::AggregateFnCall(f) if f.name.eq_ignore_ascii_case("collect") => {
+                match f.args.as_slice() {
+                    [LogicalExpr::MapLiteral(entries)] => Some(entries.as_slice()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+    match e {
+        LogicalExpr::ScalarFnCall(f) if f.name.eq_ignore_ascii_case("head") => {
+            match f.args.as_slice() {
+                [c] => entries(c).map(|es| (es, 0)),
+                _ => None,
+            }
+        }
+        LogicalExpr::ArraySubscript { array, index } => match index.as_ref() {
+            LogicalExpr::Literal(L::Integer(i)) if *i >= 0 => {
+                entries(array).map(|es| (es, usize::try_from(*i).unwrap_or(0)))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Export map `v`'s keys `keys` as `out`'s from a CTE aliased `alias`: each
 /// key's value a column `{out}__k{i}` (a constant stays as it is). Returns
 /// how the next segment reads them.
@@ -7184,6 +7328,10 @@ fn listed_elements(e: &LogicalExpr, bindings: &[Binding]) -> Vec<VarId> {
                 }
             }
             LogicalExpr::List(items) => out.extend(items.iter().filter_map(element)),
+            // A map's value (`head(collect({msg: m}))`, S11o8): as a list's.
+            LogicalExpr::MapLiteral(entries) => {
+                out.extend(entries.iter().filter_map(|(_, v)| element(v)))
+            }
             _ => {}
         }
         visit.extend(crate::bound_plan::expr::children(x));

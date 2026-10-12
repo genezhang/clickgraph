@@ -4555,9 +4555,30 @@ slice that will handle it.
       node of the path is (an OPTIONAL MATCH left it so). A path carried
       through a WITH stays unsupported here. IC 13 equals the legacy
       pipeline on the SF1 `ldbc` database (2).
-    - [ ] **S11o8…: the 3 not lowered**: `head()` of a map holding a node
-      (IC 7), a subquery in a list comprehension (IC 10), a key of a map in
-      a list (BI 14: `collect({…})[0].k`); BI 17's time.
+    - [x] **S11o8: a collected map read by its keys** (IC 7's
+      `head(collect({msg: message, likeTime: likeTime}))`, BI 14's
+      `collect({…})[0]`). A WITH item `head(collect(M))` / `collect(M)[i]`
+      of a map literal `M` keeps its keys each its own column (S11m's
+      map keys), from the collected tuples of `M`'s values — in the rows'
+      order where they have one (`collect_order`), every row (a map
+      literal is never NULL) — at index `i` (`collected_map_keys`). A
+      key's node is its list element's tuple, its properties read as
+      `m.k.p`; a node of several labels (no tuple) carries the properties
+      the statement reads of it as keys `k.p`. The map read whole, or such
+      a node read whole: not lowered. On the SF1 `ldbc` database IC 7
+      equals the legacy pipeline (`isNew` a boolean, not 1); BI 14 (the
+      legacy SQL fails) equals a hand-written query's top pair per city.
+      - Adversarial review (Neo4j oracle, ClickHouse). Fixed: a missing row
+        (an index past the end, `head` of none) read a node's, a list's or
+        a map's defaults (`0`, `''`, `[]`) where Neo4j's is NULL: a scalar
+        key reads NULL there, a node's property reads check the row (a
+        hidden key; a tuple cannot be NULL), a list or map in a collected
+        map is not lowered (#1454); a node of one label read whole returned
+        its tuple (now not lowered); the properties carried for a node of
+        several labels were keys a query could name (`m['n.name']`): they
+        are named with a NUL now (`collected_key`).
+    - [ ] **S11o9: the last not lowered**: a pattern predicate in a list
+      comprehension (IC 10); BI 17's time.
 - [ ] **S12: Databricks coverage.** The bound plan lowers on Databricks what
   it lowers on ClickHouse, so the legacy pipeline can go on every dialect.
   Each `FunctionMapper` spelling that is `None` on Databricks (`unwind`,

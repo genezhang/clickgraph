@@ -200,6 +200,40 @@ impl Lowerer<'_> {
         )
     }
 
+    /// `m.k.p` of a collected map `m` (S11o8): the property `p` of the
+    /// node `k` holds, NULL where its row is missing; carried as its own
+    /// key for a node of several labels.
+    fn collected_map_property(
+        &self,
+        v: VarId,
+        prop: &str,
+        element: &dyn Fn(&str) -> Option<Elem>,
+    ) -> Result<RenderExpr, LowerError> {
+        let keys = self.map_keys.get(&v);
+        let find = |name: &str| {
+            keys.and_then(|ks| ks.iter().find(|(key, _)| key == name))
+                .map(|(_, e)| e.clone())
+        };
+        let unknown = || unsupported("a property of a map (its value's type is not known)");
+        let Some((k, p)) = prop.split_once('.').filter(|(_, p)| !p.contains('.')) else {
+            return unknown();
+        };
+        if let Some(e) = find(&super::collected_key(k, Some(p))) {
+            return Ok(e);
+        }
+        let (Some(elem), Some(t), Some(present)) =
+            (element(k), find(k), find(&super::collected_key(k, None)))
+        else {
+            return unknown();
+        };
+        let value = self.elem_property(&t, &elem, p)?;
+        Ok(RenderExpr::Case(RenderCase {
+            expr: None,
+            when_then: vec![(present, value)],
+            else_expr: Some(Box::new(RenderExpr::Literal(Literal::Null))),
+        }))
+    }
+
     pub(super) fn identity_value(&self, v: VarId) -> Result<RenderExpr, LowerError> {
         match self.identity(v)? {
             None => Ok(RenderExpr::Literal(Literal::Null)),
@@ -237,14 +271,24 @@ impl Lowerer<'_> {
                     // projected the map's keys (S11m); otherwise its type is
                     // not known here (a value of any type would compare,
                     // sort and count unlike its own).
-                    (_, Some(Kind::Map(_))) => match self.map_key(v, prop) {
-                        Some(e) => e,
-                        None => {
+                    (_, Some(Kind::Map(entries))) => {
+                        let element = |k: &str| {
+                            entries.iter().find_map(|(key, kind)| match kind {
+                                Kind::Element(elem) if key == k => Some(elem.clone()),
+                                _ => None,
+                            })
+                        };
+                        if element(prop).is_some() {
+                            // Its tuple is no value of its own (S11o8 review).
                             return unsupported(
-                                "a property of a map (its value's type is not known)",
-                            )
+                                "a node or relationship a collected map holds, read whole",
+                            );
                         }
-                    },
+                        match self.map_key(v, prop) {
+                            Some(e) => e,
+                            None => self.collected_map_property(v, prop, &element)?,
+                        }
+                    }
                     _ => {
                         return unsupported("a property of a value (map, list element, WITH item)")
                     }
@@ -1279,6 +1323,10 @@ impl Lowerer<'_> {
             ),
             (BindingKind::Value, _) => match self.values.get(&v) {
                 Some(e) => Ok(e.clone()),
+                // `head(collect({…}))`: its keys only (S11o8).
+                None if self.map_keys.contains_key(&v) => {
+                    unsupported("a collected map other than by its keys")
+                }
                 None => unsupported("an UNWIND value (S7)"),
             },
         }
@@ -1286,7 +1334,7 @@ impl Lowerer<'_> {
 
     /// The node or relationship a bare variable expression names (not a
     /// variable-length relationship: that is a list).
-    fn entity(&self, e: &LogicalExpr) -> Option<VarId> {
+    pub(super) fn entity(&self, e: &LogicalExpr) -> Option<VarId> {
         match e {
             LogicalExpr::TableAlias(lx::TableAlias(n)) => parse_var(n).filter(|v| {
                 matches!(
