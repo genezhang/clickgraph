@@ -77,6 +77,36 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// node_ids still yields exactly one row per id.
     fn any(&self) -> &'static str;
 
+    /// An aggregate of any of the values `{0}` that are not NULL (NULL when
+    /// all are): CH `any` skips NULLs; Spark's `any_value` needs its
+    /// `ignoreNulls` argument.
+    fn any_non_null(&self, value: &str) -> String {
+        format!("{}({value})", self.any())
+    }
+
+    /// The number of elements of the list `{0}`, NULL when it is NULL. CH
+    /// `length` (of an array or a string alike).
+    fn list_size(&self, list: &str) -> String {
+        format!("length({list})")
+    }
+
+    /// The clause that repeats each row once per element of the lists
+    /// `(list, alias, position alias)`, read in step (the n-th row reads
+    /// each list's n-th element), each element's position (increasing along
+    /// its list) where asked: the lowering's UNWIND (`Lowerer::unwind`,
+    /// printed by `render_plan_to_sql_plain`). CH `ARRAY JOIN l AS a,
+    /// arrayEnumerate(l) AS p`.
+    fn array_join_clause(&self, lists: &[(String, String, Option<String>)]) -> String {
+        let mut items = Vec::new();
+        for (l, a, p) in lists {
+            items.push(format!("{l} AS {a}"));
+            if let Some(p) = p {
+                items.push(format!("arrayEnumerate({l}) AS {p}"));
+            }
+        }
+        format!("ARRAY JOIN {}\n", items.join(", "))
+    }
+
     /// Conditional minimum: minimum of `val` over rows where `cond` is true.
     /// CH: `minIf(val, cond)`. Spark has no `minIf`, so we rewrite to
     /// `min(CASE WHEN cond THEN val END)` — `min` ignores NULLs, so rows
@@ -488,8 +518,6 @@ pub(crate) struct GraphValues {
 pub(crate) struct Unwind {
     /// A table of one row: the FROM of a SELECT that reads no table.
     pub one_row: &'static str,
-    /// The positions `[1, 2, …]` of the elements of the list `{0}`.
-    pub positions: fn(&str) -> String,
     /// The list `{0}`, failing the query when it is not a list (ARRAY JOIN
     /// would repeat a row once per entry of a map).
     pub list_only: fn(&str) -> String,

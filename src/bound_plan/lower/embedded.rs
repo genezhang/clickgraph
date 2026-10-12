@@ -249,7 +249,6 @@ impl<'s> Lowerer<'s> {
         ));
 
         let mapper = current_function_mapper();
-        let any = mapper.any();
         let Some(spelling) = mapper.unwind() else {
             return unsupported("a node embedded in edge tables in this SQL dialect");
         };
@@ -277,7 +276,7 @@ impl<'s> Lowerer<'s> {
                         ),
                     },
                 };
-            items.push(select(RenderExpr::Raw(format!("{any}({value})")), p));
+            items.push(select(RenderExpr::Raw(mapper.any_non_null(&value)), p));
         }
         let not_null: Vec<String> = ids
             .iter()

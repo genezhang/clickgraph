@@ -6630,16 +6630,19 @@ fn plain_select_sql(mut plan: RenderPlan) -> String {
     sql.push_str(&plan.select.to_sql());
     sql.push_str(&plan.from.to_sql());
     sql.push_str(&plan.joins.to_sql());
-    // An UNWIND (`Lowerer::unwind`): ONE `ARRAY JOIN` of its lists, read in
-    // step (`FunctionMapper::unwind`), after the joins.
+    // An UNWIND (`Lowerer::unwind`): ONE clause of its lists, read in step
+    // (`FunctionMapper::array_join_clause`), after the joins.
     if !plan.array_join.0.is_empty() {
-        let lists: Vec<String> = plan
+        let lists: Vec<(String, String, Option<String>)> = plan
             .array_join
             .0
             .iter()
-            .map(|a| format!("{} AS {}", a.expression.to_sql(), a.alias))
+            .map(|a| (a.expression.to_sql(), a.alias.clone(), a.position.clone()))
             .collect();
-        sql.push_str(&format!("ARRAY JOIN {}\n", lists.join(", ")));
+        sql.push_str(
+            &crate::sql_generator::function_mapper::current_function_mapper()
+                .array_join_clause(&lists),
+        );
     }
     sql.push_str(&plan.filters.to_sql());
     sql.push_str(&plan.group_by.to_sql());

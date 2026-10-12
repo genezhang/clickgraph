@@ -1332,8 +1332,15 @@ impl Lowerer<'_> {
         }
         // `size()` of a map: Neo4j refuses it (a string or a list only).
         if let (true, [arg]) = (f.name.eq_ignore_ascii_case("size"), f.args.as_slice()) {
-            if matches!(self.kind(arg), Kind::Map(_)) {
-                return unsupported("size() of a map");
+            match self.kind(arg) {
+                Kind::Map(_) => return unsupported("size() of a map"),
+                // Of a list, which the dialect may count apart from a
+                // string's characters (S12).
+                Kind::List(_) => {
+                    let list = render_expr_to_sql_plain(&self.expr(arg, items)?);
+                    return Ok(RenderExpr::Raw(current_function_mapper().list_size(&list)));
+                }
+                _ => {}
             }
         }
         // A map argument of a temporal or spatial constructor as the

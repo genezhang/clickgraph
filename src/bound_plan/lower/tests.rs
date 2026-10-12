@@ -4226,25 +4226,91 @@ fn an_unwind_of_graph_values_is_not_lowered_yet() {
     not_lowered("UNWIND $rows AS m RETURN m.k AS k", "a property of a value");
 }
 
-#[test]
-fn databricks_unwind_is_not_lowered() {
+/// The SQL of `q` over `schema` on Databricks (S12).
+fn databricks_sql(q: &str, schema: &GraphSchema) -> Result<String, String> {
     use crate::server::query_context::{set_current_schema, with_query_context_sync, QueryContext};
     let ctx = QueryContext {
         dialect: crate::sql_generator::SqlDialect::Databricks,
         ..QueryContext::default()
     };
-    let got = with_query_context_sync(ctx, || {
-        set_current_schema(std::sync::Arc::new(social()));
-        translate_bound_plan(
-            "UNWIND [1, 2] AS x RETURN x",
-            &social(),
-            &ReadOptions::default(),
-        )
-        .map(|t| t.sql)
-    });
+    with_query_context_sync(ctx, || {
+        set_current_schema(std::sync::Arc::new(schema.clone()));
+        translate_bound_plan(q, schema, &ReadOptions::default()).map(|t| t.sql)
+    })
+}
+
+/// S12a: Spark has no ARRAY JOIN: an UNWIND is a `LATERAL VIEW`, its
+/// positions from `posexplode` (the list read once: review), from one row
+/// `(SELECT 1)`; a scalar is a list of itself or none.
+#[test]
+fn databricks_unwind_is_a_lateral_view() {
+    let got = squash(&databricks_sql("UNWIND [1, 2] AS x RETURN x", &social()).unwrap());
+    for part in [
+        "FROM (SELECT 1) AS __cg_one",
+        "LATERAL VIEW posexplode(array(1, 2)) AS __cg_position, __cg_element",
+    ] {
+        assert!(got.contains(part), "missing `{part}` in\n{got}");
+    }
+    let got =
+        squash(&databricks_sql("MATCH (u:User) UNWIND [u.name] AS n RETURN n", &social()).unwrap());
+    assert!(got.contains("LATERAL VIEW explode("), "{got}");
+    assert!(!got.contains("ARRAY JOIN"), "{got}");
+}
+
+/// S12a: a node embedded in edge tables on Databricks: its rows are its
+/// sources' rows, grouped by id; a property several sources hold is their
+/// `coalesce` under a type guard, any of the rows' values not NULL.
+#[test]
+fn databricks_embedded_nodes() {
+    let got =
+        squash(&databricks_sql("MATCH (i:IP) RETURN i.ip AS ip", &embedded_schema()).unwrap());
     assert!(
-        matches!(&got, Err(e) if e.contains("UNWIND in this SQL dialect")),
-        "{got:?}"
+        got.contains("WHERE NOT isnull(e.ip) GROUP BY e.ip"),
+        "{got}"
+    );
+    let got = squash(
+        &databricks_sql("MATCH (a:Airport) RETURN a.city AS c", &embedded_schema()).unwrap(),
+    );
+    assert!(got.contains("any_value("), "{got}");
+    assert!(got.contains(", true)"), "{got}");
+    assert!(got.contains("raise_error("), "{got}");
+}
+
+/// S12a review: Spark `sequence` is never empty (`sequence(1, 0)` is
+/// `[1, 0]`): `range` is empty when its step leads away from its end, each
+/// argument bound once;
+/// an empty `split` delimiter stays empty (characters, no trailing "").
+#[test]
+fn databricks_range_and_split() {
+    let got = databricks_sql("RETURN range(5, 1) AS r", &social()).unwrap();
+    assert!(
+        got.contains(
+            "element_at(transform(array(named_struct('s', 5, 'e', 1, 't', 1)), __cg_r -> \
+             CASE WHEN (__cg_r.t > 0 AND __cg_r.s > __cg_r.e) OR (__cg_r.t < 0 AND __cg_r.s < \
+             __cg_r.e) THEN array() ELSE sequence(__cg_r.s, __cg_r.e, __cg_r.t) END), 1)"
+        ),
+        "{got}"
+    );
+    let got = databricks_sql("RETURN split('abc', '') AS s", &social()).unwrap();
+    assert!(
+        got.contains("split('abc', CASE WHEN '' = '' THEN '' ELSE concat("),
+        "{got}"
+    );
+}
+
+/// S12a: `size()` of a list is the dialect's list size (Spark `length` is
+/// of a string only).
+#[test]
+fn databricks_size_of_a_list() {
+    let got = databricks_sql(
+        "MATCH (u:User) RETURN size(split(u.email, '@')) AS n",
+        &social(),
+    )
+    .unwrap();
+    assert!(got.contains("array_size(split("), "{got}");
+    has(
+        "MATCH (u:User) RETURN size(split(u.email, '@')) AS n",
+        &["length(splitByChar('@', v0.email_address))"],
     );
 }
 

@@ -524,15 +524,10 @@ impl<'s> Lowerer<'s> {
                     order: OrderByOrder::Asc,
                 });
                 body.order_by = keys;
-                let positions =
-                    RenderExpr::Raw((spelling.positions)(&render_expr_to_sql_plain(&list)));
                 body.array_join.push(ArrayJoin {
                     expression: list,
                     alias: ELEMENT.to_string(),
-                });
-                body.array_join.push(ArrayJoin {
-                    expression: positions,
-                    alias: POSITION.to_string(),
+                    position: Some(POSITION.to_string()),
                 });
             }
             None => {
@@ -540,6 +535,7 @@ impl<'s> Lowerer<'s> {
                 body.array_join.push(ArrayJoin {
                     expression: list,
                     alias: ELEMENT.to_string(),
+                    position: None,
                 });
             }
         }

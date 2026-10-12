@@ -320,6 +320,11 @@ pub struct ArrayJoin {
     pub expression: RenderExpr,
     /// The alias for each unwound element
     pub alias: String,
+    /// The alias of each element's position in its list, a number that
+    /// increases along the list (the lowering's UNWIND, which keeps list
+    /// order): read with the list, which is evaluated once.
+    #[serde(default)]
+    pub position: Option<String>,
 }
 
 impl TryFrom<LogicalJoinType> for JoinType {
