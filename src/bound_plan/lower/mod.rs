@@ -6041,10 +6041,15 @@ impl<'s> Lowerer<'s> {
                 }
                 let prefix = format!("{k}.");
                 for p in read.filter_map(|p| p.strip_prefix(&prefix)) {
-                    names.push(format!("{k}.{p}"));
+                    names.push(collected_key(k, Some(p)));
                     values.push(render_expr_to_sql_plain(&self.property(e, p)?));
                 }
                 continue;
+            }
+            // A list or map would read `[]` / `{}` where the row is missing
+            // (ClickHouse holds no NULL array, #1454).
+            if matches!(self.kind(v), unwind::Kind::List(_) | unwind::Kind::Map(_)) {
+                return unsupported("a list or map in a collected map");
             }
             names.push(k.clone());
             values.push(render_expr_to_sql_plain(&self.element(v, &HashMap::new())?));
@@ -6055,11 +6060,28 @@ impl<'s> Lowerer<'s> {
             None => (spelling.collect_all)(&tuple),
         };
         let row = m.array_element_or_null(&list, &(index + 1).to_string());
-        Ok(names
-            .into_iter()
-            .enumerate()
-            .map(|(i, k)| (k, RenderExpr::Raw((spelling.element)(&row, i + 1))))
-            .collect())
+        // The row may be missing (an index past the list's end, `head` of
+        // none): its values NULL, not a tuple's defaults. A node's tuple
+        // cannot be NULL: its reads check the row (`collected_key(k, None)`).
+        let present = format!("{} > {index}", m.list_size(&list));
+        let mut keys: MapKeys = Vec::new();
+        for (i, k) in names.into_iter().enumerate() {
+            let value = (spelling.element)(&row, i + 1);
+            let element = entries
+                .iter()
+                .find(|(e, _)| *e == k)
+                .is_some_and(|(_, v)| matches!(self.kind(v), unwind::Kind::Element(_)));
+            if element {
+                keys.push((collected_key(&k, None), RenderExpr::Raw(present.clone())));
+                keys.push((k, RenderExpr::Raw(value)));
+            } else {
+                keys.push((
+                    k,
+                    RenderExpr::Raw(format!("CASE WHEN {present} THEN {value} ELSE NULL END")),
+                ));
+            }
+        }
+        Ok(keys)
     }
 
     fn item_map_keys(&self, e: &LogicalExpr) -> Result<Option<MapKeys>, LowerError> {
@@ -6679,6 +6701,13 @@ struct Exports<'s> {
 /// A map value's keys and each one's value, in its own type (S11m): what
 /// `m.k` / `m['k']` reads.
 type MapKeys = Vec<(String, RenderExpr)>;
+
+/// A collected map's key of what a key `k` holds, no Cypher key spells (a
+/// NUL in it): `k\0p`, property `p` of the node of several labels it holds;
+/// `k\0`, whether the row of the node it holds is there.
+pub(super) fn collected_key(k: &str, p: Option<&str>) -> String {
+    format!("{k}\u{0}{}", p.unwrap_or(""))
+}
 
 /// `head(collect(MAP))` / `collect(MAP)[i]` of a map literal: its entries
 /// and the row's index (`i` ≥ 0); not of DISTINCT (a map's values have no
