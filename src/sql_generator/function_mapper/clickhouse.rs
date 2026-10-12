@@ -30,6 +30,13 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         "any"
     }
 
+    fn any_non_null(&self, value: &str) -> String {
+        // `any` skips the NULLs of a `Nullable` column but not a `Variant`'s
+        // NULL: `NULL UNION ALL` an `Array` column is a `Variant`, and `any`
+        // could pick the arm without the property (#1426).
+        format!("anyIf({value}, NOT isNull({value}))")
+    }
+
     fn min_if(&self, val: &str, cond: &str) -> String {
         format!("minIf({val}, {cond})")
     }
