@@ -315,10 +315,63 @@ impl FunctionMapper for DatabricksFunctionMapper {
     }
 
     fn lists(&self) -> Option<super::Lists> {
-        // `filter` / `transform` and an ordered `collect_list` are not
-        // verified against the lowering's shapes: comprehensions stay on the
-        // legacy path there.
-        None
+        Some(super::Lists {
+            // `filter` keeps the elements whose predicate is true.
+            filter: |x, p, l| format!("filter({l}, {x} -> {p})"),
+            map: |x, e, l| format!("transform({l}, {x} -> {e})"),
+            // `collect_list` skips NULLs (the absent rows); the pairs are
+            // sorted by their key alone: a value need not be orderable (a
+            // map is not).
+            ordered_collect: |v, k, present| {
+                format!(
+                    "transform(array_sort(collect_list(CASE WHEN {present} THEN \
+                     named_struct('k', {k}, 'v', {v}) END), (__cg_l, __cg_r) -> \
+                     CASE WHEN __cg_l.k < __cg_r.k THEN -1 WHEN __cg_l.k > __cg_r.k THEN 1 \
+                     ELSE 0 END), __cg_t -> __cg_t.v)"
+                )
+            },
+            collect_if: |v, present| format!("collect_list(CASE WHEN {present} THEN {v} END)"),
+            // A struct of one NULL is not NULL.
+            collect_all: |v| {
+                format!("transform(collect_list(named_struct('v', {v})), __cg_t -> __cg_t.v)")
+            },
+            or_empty: Some(|l| format!("coalesce({l}, array())")),
+            // `struct(a.x, …)` names its fields after their columns: the
+            // fields are named by position to be read by it.
+            tuple: |fields| {
+                let fields: Vec<String> = fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| format!("'_{}', {f}", i + 1))
+                    .collect();
+                format!("named_struct({})", fields.join(", "))
+            },
+            element: |t, i| format!("({t})._{i}"),
+            is_null: |v| format!("isnull({v})"),
+            // An aggregate has one row also over none.
+            empty_of: |t, table, alias| {
+                format!("(SELECT collect_list({t}) FROM {table} AS {alias} WHERE false)")
+            },
+            // `array_distinct` keeps each element where it first occurs.
+            distinct: |l| format!("array_distinct({l})"),
+            map_keys: |m| format!("map_keys({m})"),
+            // A `MAP<STRING, VARIANT>`: each value keeps its type and maps of
+            // any keys are of one type. Spark refuses a map in DISTINCT,
+            // GROUP BY and set operations (the query fails).
+            map_of: |entries| {
+                if entries.is_empty() {
+                    return "CAST(map() AS MAP<STRING, VARIANT>)".to_string();
+                }
+                let pairs: Vec<String> = entries
+                    .iter()
+                    .map(|(k, v)| {
+                        let k = k.replace('\\', "\\\\").replace('\'', "\\'");
+                        format!("'{k}', CAST({v} AS VARIANT)")
+                    })
+                    .collect();
+                format!("map({})", pairs.join(", "))
+            },
+        })
     }
 
     fn unwind(&self) -> Option<super::Unwind> {

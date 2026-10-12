@@ -15,7 +15,7 @@
 
 use crate::graph_catalog::graph_schema::{NodeSchema, RelationshipSchema};
 use crate::graph_catalog::schema_types::SchemaType;
-use crate::render_plan::render_expr::{Literal, RenderExpr, ScalarFnCall};
+use crate::render_plan::render_expr::{Literal, RenderExpr};
 use crate::sql_generator::emitters::clickhouse::to_sql_query::render_expr_to_sql_plain;
 use crate::sql_generator::function_mapper::{current_function_mapper, GraphValues};
 
@@ -178,11 +178,10 @@ fn table_tuple(layout: &Layout, alias: &str) -> Result<String, LowerError> {
             e
         });
     }
-    Ok(format!(
-        "{}({})",
-        current_function_mapper().tuple_constructor(),
-        fields.join(", ")
-    ))
+    let Some(spelling) = current_function_mapper().lists() else {
+        return unsupported("a list of nodes or relationships in this SQL dialect");
+    };
+    Ok((spelling.tuple)(&fields))
 }
 
 /// A walk's element tuples (`path.rs`): one over `alias`, and an empty list
@@ -302,10 +301,11 @@ impl<'s> Lowerer<'s> {
                 e
             });
         }
-        Ok(RenderExpr::ScalarFnCall(ScalarFnCall {
-            name: current_function_mapper().tuple_constructor().to_string(),
-            args: fields,
-        }))
+        let Some(spelling) = current_function_mapper().lists() else {
+            return unsupported("a list of nodes or relationships in this SQL dialect");
+        };
+        let fields: Vec<String> = fields.iter().map(render_expr_to_sql_plain).collect();
+        Ok(RenderExpr::Raw((spelling.tuple)(&fields)))
     }
 
     /// The identity of the element tuple `t`.

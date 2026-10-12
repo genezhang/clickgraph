@@ -4429,6 +4429,34 @@ slice that will handle it.
       gives either engine's `any` pick. Filed: ClickHouse `split` with an
       empty or multi-character delimiter (#1418), ClickHouse UNWIND gaps
       (#1419).
+  - [x] **S12b: lists.** `FunctionMapper::lists` on Spark: comprehensions
+    `filter` / `transform`; an ordered `collect()` sorts `(key, value)`
+    structs by the key alone (`array_sort` with a comparator: a value need
+    not be orderable); `collect_list` skips the absent rows (`CASE WHEN`);
+    a list's node or relationship is `Lists::tuple`, a `named_struct` of
+    positional fields `_1`, `_2`, … (Spark's `struct(a.x, …)` names a field
+    after its column: none can be read by position), read as `(t)._i`; the
+    empty list of a walk's tuples is a `collect_list` over no row;
+    `array_distinct` keeps first occurrences; a map is a
+    `MAP<STRING, VARIANT>` (`map_keys` in key order). A pattern
+    comprehension that matches nothing reads `[]` through `Lists::or_empty`
+    (Spark's unmatched LEFT JOIN column is NULL; ClickHouse fills an
+    `Array` column's default, so `None` there). A map that is neither
+    grouped nor made distinct needs no `cypher_union` key: Spark refuses a
+    map in GROUP BY / DISTINCT, so those stay refused ("a grouped or
+    DISTINCT map", with UNION: S12d). `nodes(p)` / `relationships(p)` of a
+    path read through the graph-value spelling: S12c.
+    - Acceptance: Databricks lowers 1294 (was 1289; 4 path
+      queries now stop at graph values). Ad hoc differential (88 queries
+      over social_integration and composite_id: comprehensions nested and
+      over NULL lists, ordered and DISTINCT collect, lists of nodes and
+      relationships read by property, UNWIND of them, variable-length
+      relationship lists incl. `*0..`, pattern comprehensions empty or
+      not, map literals and keys): all 69 that both dialects lower equal.
+      Corpus differential: 1132 equal (was 1128: the 5 newly lowered,
+      one in another order under a tie), the rest as at S12a. Filed: list predicates `all()` / `any()` / `none()` /
+      `single()` do not parse on any dialect (#1420, documented as
+      supported), nor do backtick-quoted map keys (#1421).
 
 ## Appendix A — post-assembly repair passes (48, plus CTE flattening, at `e1241a9c`)
 

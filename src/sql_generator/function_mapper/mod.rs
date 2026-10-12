@@ -566,6 +566,13 @@ pub(crate) struct Lists {
     /// An aggregate: every one of the group's values of `{0}`, NULL
     /// included (a pattern comprehension's list).
     pub collect_all: fn(&str) -> String,
+    /// The list column `{0}` of a LEFT JOIN, empty on a row that joined no
+    /// row (a pattern comprehension that matches nothing); `None` when the
+    /// column already is.
+    pub or_empty: Option<fn(&str) -> String>,
+    /// A tuple of the values `{0}` (a list's node or relationship), whose
+    /// elements `element` reads.
+    pub tuple: fn(&[String]) -> String,
     /// Element `{1}` (1-based) of the tuple `{0}`.
     pub element: fn(&str, usize) -> String,
     /// Whether the value `{0}` is NULL, as a function call.

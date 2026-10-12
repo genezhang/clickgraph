@@ -298,6 +298,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             // `groupArray` skips NULLs; a one-element tuple of one is not
             // NULL.
             collect_all: |v| format!("arrayMap(t -> t.1, groupArray(tuple({v})))"),
+            // An unmatched row's `Array` column is its default, `[]`, also
+            // under `join_use_nulls = 1`.
+            or_empty: None,
+            tuple: |fields| format!("tuple({})", fields.join(", ")),
             element: |t, i| format!("tupleElement({t}, {i})"),
             is_null: |v| format!("isNull({v})"),
             // An aggregate has one row also over none.
