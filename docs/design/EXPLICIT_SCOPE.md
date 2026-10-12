@@ -4616,6 +4616,19 @@ slice that will handle it.
       pairs with several shortest paths (the same one picked). The legacy
       pipeline, the fallback until now, answered these on Spark by
       enumerating node-unique walks up to 5 hops for an unbounded `*`.
+    - Adversarial review: ClickHouse SQL byte-identical (the corpus and 71
+      ad hoc); ~140 Spark queries over 9 schemas (ranges, length
+      conditions, OPTIONAL, WITH, UNION, path values, cycles, parallel and
+      polymorphic edges, composite ids, union walks) equal ClickHouse but
+      for ties. Fixed: all-pairs `allShortestPaths` count took 121 s on
+      Spark (data_security, 56,972 paths): the carried reached nodes are
+      now once each, and a counted search carries no path columns
+      (`path::counted_paths_ctes`): 73 s. Filed, failing on main already
+      with `shortestPath` (now also `allShortestPaths`): a shortest path with
+      another recursive relation (#1443), dotted column names unquoted
+      (#1444), a several-type walk with a length condition (#1445). A
+      length condition's pick among equally long trails is unordered
+      (either engine's path is a shortest).
 
 - [ ] **S13: the embedded write path.** Embedded (chdb) mode runs Cypher
   writes, which planned on the legacy pipeline: the statement as a

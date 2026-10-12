@@ -4173,6 +4173,12 @@ impl<'s> Lowerer<'s> {
         };
         if conditions.is_empty() {
             let name = format!("vlp_{var}_path");
+            // Walked for its count alone: the paths, without their columns.
+            if walked && !read_paths {
+                let ends = path::ends_reached(&search);
+                let ctes = path::counted_paths_ctes(&search, &name, &ends)?;
+                return Ok(Some((ctes, name, read_paths)));
+            }
             let mut ctes = vec![path::search_cte(&search, counted, parents)?];
             if walked {
                 let ends = path::ends_reached(&search);

@@ -4445,38 +4445,48 @@ fn databricks_shortest_path_search() {
         got.contains("WHERE start_node.user_id IS NOT NULL AND"),
         "{got}"
     );
-    for (q, picked) in [
-        (
+    // Counted: a row per path, without their columns.
+    let got = squash(
+        &databricks_sql(
             "MATCH p = allShortestPaths((a:User)-[:FOLLOWS*]->(b:User)) \
-             WHERE a.user_id = 1 AND b.user_id = 9 RETURN count(p) AS n",
-            false,
-        ),
-        (
+             WHERE a.user_id = 1 AND b.user_id = 9 RETURN count(*) AS n",
+            &social(),
+        )
+        .unwrap(),
+    );
+    assert!(!got.contains("path_nodes"), "{got}");
+    assert!(!got.contains("GROUP BY f.start_id"), "{got}");
+    assert!(
+        got.contains("SELECT start_id, node AS end_id, depth AS hop_count FROM vlp_v1_bfs"),
+        "{got}"
+    );
+    // The carried nodes reached, once each.
+    assert!(
+        got.contains("SELECT DISTINCT start_id, node, depth FROM vlp_v1_bfs"),
+        "{got}"
+    );
+    // A path's nodes: the paths kept with their columns, one per pair
+    // picked from the last.
+    let got = squash(
+        &databricks_sql(
             "MATCH p = shortestPath((a:User)-[:FOLLOWS*]->(b:User)) \
              WHERE a.user_id = 1 AND b.user_id = 9 RETURN nodes(p) AS ns",
-            true,
+            &social(),
+        )
+        .unwrap(),
+    );
+    assert!(
+        got.contains("concat(f.path_nodes, array(end_node.user_id)) AS path_nodes"),
+        "{got}"
+    );
+    assert!(!got.contains("GROUP BY f.start_id"), "{got}");
+    assert!(
+        got.contains(
+            "ROW_NUMBER() OVER (PARTITION BY start_id, node \
+             ORDER BY reverse(path_nodes), reverse(path_edges)) AS pick"
         ),
-    ] {
-        let got = squash(&databricks_sql(q, &social()).unwrap());
-        // The paths kept in the search, its steps not grouped.
-        assert!(
-            got.contains("concat(f.path_nodes, array(end_node.user_id)) AS path_nodes"),
-            "{q}: {got}"
-        );
-        assert!(!got.contains("GROUP BY f.start_id"), "{q}: {got}");
-        assert!(
-            !got.contains("vlp_v1_walk AS ( SELECT start_id, node, depth"),
-            "{q}: {got}"
-        );
-        assert_eq!(
-            got.contains(
-                "ROW_NUMBER() OVER (PARTITION BY start_id, node \
-                 ORDER BY reverse(path_nodes), reverse(path_edges)) AS pick"
-            ),
-            picked,
-            "{q}: {got}"
-        );
-    }
+        "{got}"
+    );
     databricks_sql(
         "MATCH (a:User)-[:FOLLOWS|AUTHORED*1..2]->(x) WHERE a.user_id = 1 RETURN count(*) AS n",
         &social(),

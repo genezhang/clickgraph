@@ -653,7 +653,7 @@ pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<C
             return unsupported("internal: a count of shortest paths where steps cannot group");
         }
         if parents != Parents::None {
-            return path_search_cte(call, &spelling);
+            return path_search_cte(call, &spelling, true);
         }
     }
     let node_table = &call.node_table;
@@ -761,10 +761,15 @@ pub(super) fn search_cte(call: &Search, all: bool, parents: Parents) -> Result<C
 /// shortest path to a node goes on: each row of a depth is a shortest path,
 /// once per relationship of parallel ones (as the walk back has them). The
 /// first rows of a node are `new = 1`; each step carries the nodes reached
-/// so far (`new = 0`, their paths empty) for the next to tell them.
+/// so far (`new = 0`, once each, their paths empty) for the next to tell
+/// them.
+///
+/// Without `carry` the rows carry no path columns: a row is still a path
+/// (`allShortestPaths` counted, [`counted_paths_ctes`]).
 fn path_search_cte(
     call: &Search,
     spelling: &crate::sql_generator::function_mapper::ShortestPathSearch,
+    carry: bool,
 ) -> Result<Cte, LowerError> {
     let Some(g) = current_function_mapper().graph_values() else {
         return unsupported("a shortestPath's path in this SQL dialect");
@@ -778,16 +783,20 @@ fn path_search_cte(
         .chain(conjunction(&call.start))
         .collect::<Vec<_>>()
         .join(" AND ");
+    // Each carried column, after a comma.
+    let carried = |node: &str| match carry {
+        true => carried_columns(call, node),
+        false => Ok(Vec::new()),
+    };
     let empty = |node: &str| -> Result<String, LowerError> {
-        Ok(carried_columns(call, node)?
+        Ok(carried(node)?
             .iter()
-            .map(|(c, e, _)| format!("{e} AS {c}"))
-            .collect::<Vec<_>>()
-            .join(", "))
+            .map(|(c, e, _)| format!(", {e} AS {c}"))
+            .collect())
     };
     let mut search = format!(
         "{bfs} AS (\n    \
-         SELECT s.start_id AS start_id, s.start_id AS node, CAST(0 AS {depth}) AS depth, \
+         SELECT s.start_id AS start_id, s.start_id AS node, CAST(0 AS {depth}) AS depth\
          {}, CAST(1 AS {flag}) AS new\n    \
          FROM (SELECT DISTINCT {start_key} AS start_id FROM {node_table} AS {START} \
          WHERE {seed_where}) AS s",
@@ -803,30 +812,32 @@ fn path_search_cte(
         step.push(format!(
             "(f.start_id, {end_key}) NOT IN (SELECT start_id, node FROM {bfs})"
         ));
-        let stepped: Vec<String> = carried_columns(call, "node")?
+        let stepped: String = carried("node")?
             .iter()
             .map(|(c, _, one)| {
                 format!(
-                    "{} AS {c}",
+                    ",\n      {} AS {c}",
                     (g.concat)(&[format!("f.{c}"), (g.list)(std::slice::from_ref(one))])
                 )
             })
             .collect();
         let reached = format!(
             "SELECT f.start_id AS start_id, {end_key} AS node, \
-             CAST(f.depth + 1 AS {depth}) AS depth,\n      {},\n      \
+             CAST(f.depth + 1 AS {depth}) AS depth{},\n      \
              CAST(1 AS {flag}) AS new\n    \
              FROM {bfs} AS f\n    \
              JOIN {edge_table} AS {REL} ON {rel_from} = f.node\n    \
              JOIN {node_table} AS {END} ON {end_key} = {rel_to}\n    \
              WHERE {}",
-            stepped.join(",\n      "),
+            stepped,
             step.join("\n      AND "),
         );
+        // The nodes reached, once each (a node's paths are many rows).
         let kept = format!(
-            "SELECT start_id, node, depth, {}, CAST(0 AS {flag}) AS new\n    \
-             FROM {bfs}\n    \
-             WHERE start_id IN (SELECT start_id FROM {bfs} WHERE new = 1)",
+            "SELECT start_id, node, depth{}, CAST(0 AS {flag}) AS new FROM (\n      \
+             SELECT DISTINCT start_id, node, depth FROM {bfs}\n      \
+             WHERE start_id IN (SELECT start_id FROM {bfs} WHERE new = 1)\n    \
+             ) AS reached",
             empty("node")?
         );
         search.push_str(&format!(
@@ -836,6 +847,30 @@ fn path_search_cte(
     }
     search.push_str("\n)");
     Ok(Cte::new(bfs, CteContent::RawSql(search), true))
+}
+
+/// The shortest paths of `call` to the rows of its search that satisfy
+/// `ends`, a row each, as the relation `name` (`start_id`, `end_id`,
+/// `hop_count`), where a step of a recursive CTE cannot group (Spark): the
+/// search keeps the paths, without their columns (none reads them).
+pub(super) fn counted_paths_ctes(
+    call: &Search,
+    name: &str,
+    ends: &str,
+) -> Result<Vec<Cte>, LowerError> {
+    let Some(spelling) = current_function_mapper().shortest_path_search() else {
+        return unsupported("shortestPath in this SQL dialect");
+    };
+    let bfs = format!("vlp_{}_bfs", call.var);
+    let sql = format!(
+        "{name} AS (\n    \
+         SELECT start_id, node AS end_id, depth AS hop_count FROM {bfs}\n    \
+         WHERE new = 1 AND {ends}\n)"
+    );
+    Ok(vec![
+        path_search_cte(call, &spelling, false)?,
+        Cte::new(name.to_string(), CteContent::RawSql(sql), false),
+    ])
 }
 
 /// The condition a row of the search of `call` (`search_cte`: `start_id`,
