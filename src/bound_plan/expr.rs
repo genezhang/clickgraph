@@ -454,6 +454,13 @@ fn rename(
             })
         }
         LogicalExpr::Lambda(LambdaExpr { params, body }) => {
+            if let Some(p) = params
+                .iter()
+                .enumerate()
+                .find_map(|(i, p)| params[..i].contains(p).then(|| p.clone()))
+            {
+                return Err(BindError::AlreadyDeclared(p));
+            }
             let depth = locals.len();
             let mut renamed = Vec::with_capacity(params.len());
             for p in params {

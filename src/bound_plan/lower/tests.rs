@@ -5787,3 +5787,41 @@ graph_schema:
         other => panic!("expected the constraint refused, got {other:?}"),
     }
 }
+
+/// S11n: a lambda written as a higher-order function's argument (the
+/// `ch.*` passthrough) is the dialect's lambda over its local parameters,
+/// which shadow variables of the same name.
+#[test]
+fn lambdas_of_higher_order_functions() {
+    has(
+        "RETURN ch.arrayMap((x, y) -> x + y, [1, 2], [10, 20]) AS s",
+        &[r#"arrayMap((v0, v1) -> v0 + v1, [1, 2], [10, 20]) AS "s""#],
+    );
+    has(
+        "MATCH (u:User) WITH collect(u.user_id) AS ids \
+         RETURN ch.arrayMap(x -> x * 2, ch.arrayFilter(n -> n > 3, ids)) AS big",
+        &["arrayMap(v2 -> v2 * 2, arrayFilter(v3 -> v3 > 3, w1.v1))"],
+    );
+    // A parameter named as a node shadows it.
+    has(
+        "MATCH (u:User) RETURN ch.arrayFilter(u -> u > 1, [1, 2]) AS l",
+        &["arrayFilter(v1 -> v1 > 1, [1, 2])"],
+    );
+    // Its value is read as a value: a node, relationship or map the body
+    // gives would be read as its tuple (S11n review).
+    for q in [
+        "MATCH (a:User) RETURN ch.arrayMap(x -> a, [1]) AS r",
+        "MATCH (a:User)-[f:FOLLOWS]->(b:User) RETURN ch.arrayMap(x -> f, [1]) AS r",
+        "MATCH (a:User) RETURN ch.arrayMap(x -> [a], [1]) AS r",
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN ch.arrayMap(x -> nodes(p), [1]) AS r",
+        "MATCH (a:User) WITH collect(a) AS us RETURN ch.arrayMap(x -> us, [1]) AS r",
+        "MATCH (a:User) RETURN ch.arrayMap(x -> {k: x}, [1]) AS r",
+    ] {
+        not_lowered(q, "as a lambda's value");
+    }
+    // Its properties and identity are values.
+    has(
+        "MATCH (a:User) RETURN ch.arrayMap(x -> a.name, [1]) AS r",
+        &["arrayMap(v1 -> v0.full_name, [1])"],
+    );
+}

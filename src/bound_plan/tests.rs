@@ -484,6 +484,11 @@ fn comprehension_locals_are_not_outer_variables() {
         bind("RETURN reduce(x = 0, x IN [1] | x) AS r").unwrap_err(),
         BindError::AlreadyDeclared(n) if n == "x"
     ));
+    // As ClickHouse: a lambda's parameters are distinct (S11n review).
+    assert!(matches!(
+        bind("RETURN ch.arrayMap((x, x) -> x, [1], [2]) AS r").unwrap_err(),
+        BindError::AlreadyDeclared(n) if n == "x"
+    ));
 }
 
 #[test]

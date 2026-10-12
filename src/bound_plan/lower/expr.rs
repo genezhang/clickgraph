@@ -393,8 +393,28 @@ impl Lowerer<'_> {
                     .transpose()?,
             },
             // A lambda other than a comprehension's (`scalar_fn`): a
-            // ClickHouse function's argument written in the query.
-            LogicalExpr::Lambda(_) => return unsupported("a lambda other than a comprehension's"),
+            // higher-order function's argument written in the query
+            // (`ch.arrayFilter(x -> x > 5, l)`, S11n). Its parameters are
+            // the binder's local bindings; their values are the list's.
+            LogicalExpr::Lambda(l) => {
+                for p in &l.params {
+                    if let Some(v) = parse_var(p) {
+                        self.local_kinds.borrow_mut().insert(v, Kind::Unknown);
+                    }
+                }
+                // The function's result is read as a value: a node,
+                // relationship or map the body gives would be its tuple.
+                if self.holds_elements(&l.body) || self.holds_maps(&l.body) {
+                    return unsupported(
+                        "a node, relationship or map as a lambda's value (a list comprehension \
+                         returns them)",
+                    );
+                }
+                let body = self.expr(&l.body, items)?;
+                RenderExpr::Raw(
+                    current_function_mapper().lambda(&l.params, &render_expr_to_sql_plain(&body)),
+                )
+            }
             LogicalExpr::Raw(_)
             | LogicalExpr::ColumnAlias(_)
             | LogicalExpr::Column(_)
