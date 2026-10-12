@@ -440,6 +440,9 @@ async fn sql_generation_handler_inner(
                     crate::translate::TranslateError::Unsupported(_) => {
                         (StatusCode::BAD_REQUEST, "NotSupported")
                     }
+                    crate::translate::TranslateError::Internal(_) => {
+                        (StatusCode::INTERNAL_SERVER_ERROR, "InternalError")
+                    }
                 };
                 return Err((
                     status,

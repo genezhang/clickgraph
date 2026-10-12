@@ -1577,6 +1577,13 @@ async fn query_handler_inner(
                     // A form the engine does not translate: the client's.
                     return Err((StatusCode::BAD_REQUEST, format!("Not supported: {}", e)));
                 }
+                Err(crate::translate::TranslateError::Internal(e)) => {
+                    metrics.planning_time = planning_start.elapsed().as_secs_f64();
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Internal error: {}", e),
+                    ));
+                }
                 Err(crate::translate::TranslateError::Render(e)) => {
                     metrics.planning_time = planning_start.elapsed().as_secs_f64();
                     // Return 500 for render errors (internal error)

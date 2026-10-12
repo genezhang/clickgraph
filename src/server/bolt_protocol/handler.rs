@@ -3117,7 +3117,10 @@ impl BoltHandler {
                 return Err(BoltError::query_error(format!("Invalid query: {}", e)));
             }
             Err(crate::translate::TranslateError::Unsupported(e)) => {
-                return Err(BoltError::query_error(format!("Not supported: {}", e)));
+                return Err(BoltError::not_implemented(e));
+            }
+            Err(crate::translate::TranslateError::Internal(e)) => {
+                return Err(BoltError::internal(e));
             }
         };
         // Extract return metadata for result transformation

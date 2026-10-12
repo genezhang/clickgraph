@@ -2,7 +2,7 @@
 
 ### ⚠️ Behaviour changes
 
-- **ClickHouse reads go through the bound plan only (P-4c S11j).** A read query the bound plan does not translate is now an error ("Not supported: …": HTTP 400, a Bolt client error, an `Err` in the library) instead of being handed to the legacy pipeline. Such queries are rare (none of the live suite's); they include shapes Neo4j also refuses (a property of a variable-length relationship's list, shortestPath from a node to itself), undeclared properties of nodes embedded in edge tables, and `type()` of a named shortest path's relationship list. The `CLICKGRAPH_BOUND_PLAN` switch is removed. Other SQL dialects (Databricks) keep the legacy fallback until their coverage is complete.
+- **ClickHouse reads go through the bound plan only (P-4c S11j).** A read query the bound plan does not translate is now an error ("Not supported: …": HTTP 400, a Bolt client error, an `Err` in the library) instead of being handed to the legacy pipeline. They include shapes Neo4j also refuses (a property of a variable-length relationship's list, shortestPath from a node to itself), undeclared properties of nodes embedded in edge tables, `type()` of a named shortest path's relationship list, `[x IN nodes(p) | …]` over a shortest path, and `edges(p)`; the error names the construct. On Bolt it is `Neo.ClientError.Statement.FeatureNotSupported`. Some of these the legacy pipeline answered wrongly (`head(collect(a))` and `startNode(r)` as ids, `labels()` of an unmatched node as a label). The `CLICKGRAPH_BOUND_PLAN` switch is removed. Other SQL dialects (Databricks) keep the legacy fallback until their coverage is complete.
 - **A query without RETURN is a syntax error**, as in Neo4j (`MATCH (u:User)` used to return the matched nodes).
 
 ### 🐛 Bug Fixes

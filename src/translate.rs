@@ -178,6 +178,9 @@ pub enum TranslateError {
     /// legacy fallback (P-4c S11j): a form not supported, or one Neo4j also
     /// refuses.
     Unsupported(String),
+    /// The bound plan broke one of its own invariants: a defect, not the
+    /// query's (an internal error, HTTP 500).
+    Internal(String),
 }
 
 impl std::fmt::Display for TranslateError {
@@ -187,6 +190,7 @@ impl std::fmt::Display for TranslateError {
             TranslateError::Render(e) => write!(f, "{}", e),
             TranslateError::Invalid(e) => write!(f, "{}", e),
             TranslateError::Unsupported(e) => write!(f, "{}", e),
+            TranslateError::Internal(e) => write!(f, "{}", e),
         }
     }
 }
@@ -245,7 +249,7 @@ fn translate_in_context(
                     if !crate::server::query_context::get_current_dialect()
                         .reads_fall_back_to_legacy()
                     {
-                        return Err(TranslateError::Unsupported(reason));
+                        return Err(not_translated(&reason));
                     }
                     log::debug!("bound plan: legacy pipeline ({reason})")
                 }
@@ -332,7 +336,7 @@ pub fn translate_text_read(
             Ok(None)
         }
         // The legacy parser rejects the text too: no pipeline translates it.
-        Err(BoundPlanError::Fallback(reason)) => Err(TranslateError::Unsupported(reason)),
+        Err(BoundPlanError::Fallback(reason)) => Err(not_translated(&reason)),
     }
 }
 
@@ -359,6 +363,7 @@ pub fn translate_inner_read(
         TranslateError::Render(e) => format!("Inner Cypher render error: {}", e),
         TranslateError::Invalid(e) => format!("Inner Cypher query error: {}", e),
         TranslateError::Unsupported(e) => format!("Inner Cypher not supported: {}", e),
+        TranslateError::Internal(e) => format!("Inner Cypher internal error: {}", e),
     };
     match crate::open_cypher_parser::parse_cypher_statement(cypher) {
         Ok((_, statement)) => {
@@ -406,6 +411,40 @@ pub fn translate_bound_plan(
         | BoundPlanError::NotARead(reason)
         | BoundPlanError::Invalid(reason) => reason,
     })
+}
+
+/// Why the bound plan did not translate a query, as its caller reports it:
+/// `Unsupported` with the construct (without the pipeline's own wording:
+/// "not lowered yet", slice tags such as "(S8)", issue numbers), or
+/// `Internal` when the bound plan broke an invariant of its own.
+fn not_translated(reason: &str) -> TranslateError {
+    let mut r = reason;
+    for prefix in ["not lowered yet: ", "not supported by the bound plan yet: "] {
+        r = r.strip_prefix(prefix).unwrap_or(r);
+    }
+    if let Some(internal) = r.strip_prefix("internal: ") {
+        return TranslateError::Internal(internal.to_string());
+    }
+    // Drop parenthesized tags of the plan: `(S8)`, `(S7 lists)`, `(#672/#1010)`.
+    let mut out = String::new();
+    let mut rest = r;
+    while let Some(open) = rest.find(" (") {
+        let after = &rest[open + 2..];
+        let tag = after.starts_with('#')
+            || (after.starts_with('S') && after[1..].starts_with(|c: char| c.is_ascii_digit()));
+        match (tag, after.find(')')) {
+            (true, Some(close)) => {
+                out.push_str(&rest[..open]);
+                rest = &after[close + 1..];
+            }
+            _ => {
+                out.push_str(&rest[..open + 2]);
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    TranslateError::Unsupported(out)
 }
 
 /// A clause-list parse failure as a message: what the parser expected, and
@@ -656,6 +695,37 @@ mod tests {
         assert!(
             matches!(&err, Err(e) if e.starts_with("Inner Cypher query error")),
             "{err:?}"
+        );
+    }
+
+    /// A refusal reads as the construct, without the plan's wording; a
+    /// broken invariant is an internal error (S11j review).
+    #[test]
+    fn refusals_read_as_their_construct() {
+        let msg = |r: &str| match super::not_translated(r) {
+            TranslateError::Unsupported(m) => format!("unsupported: {m}"),
+            TranslateError::Internal(m) => format!("internal: {m}"),
+            other => format!("{other:?}"),
+        };
+        assert_eq!(
+            msg("not lowered yet: type FOLLOWS is not the standard layout (S8)"),
+            "unsupported: type FOLLOWS is not the standard layout"
+        );
+        assert_eq!(
+            msg("not lowered yet: nodes() of a path other than as a RETURN item (S7 lists)"),
+            "unsupported: nodes() of a path other than as a RETURN item"
+        );
+        assert_eq!(
+            msg("not lowered yet: ids crossed (#672/#1010) in a walk (a composite id)"),
+            "unsupported: ids crossed in a walk (a composite id)"
+        );
+        assert_eq!(
+            msg("not supported by the bound plan yet: CALL"),
+            "unsupported: CALL"
+        );
+        assert_eq!(
+            msg("not lowered yet: internal: a path endpoint is not a node"),
+            "internal: a path endpoint is not a node"
         );
     }
 

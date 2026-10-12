@@ -234,6 +234,7 @@ fn library_error(e: crate::translate::TranslateError) -> String {
         // The caller reports it as a query error (`EmbeddedError::Query`).
         crate::translate::TranslateError::Invalid(e) => e,
         crate::translate::TranslateError::Unsupported(e) => format!("Not supported: {}", e),
+        crate::translate::TranslateError::Internal(e) => format!("Internal error: {}", e),
     }
 }
 
