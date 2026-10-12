@@ -307,6 +307,7 @@ impl Query<'_> {
             order: RowOrder::Unordered,
             elided: HashMap::new(),
             paths: HashMap::new(),
+            grouped_paths: HashSet::new(),
             graph_values: HashMap::new(),
             map_keys: HashMap::new(),
             kinds: HashMap::new(),
@@ -607,6 +608,10 @@ struct Lowerer<'s> {
     elided: HashMap<VarId, VarId>,
     /// Path variables (`p = …`) and their elements, of every clause.
     paths: HashMap<VarId, PathElements>,
+    /// Paths a grouping RETURN (DISTINCT, an aggregation) returns: its
+    /// ORDER BY reads their lengths as any of a group's, which the path
+    /// (the group's key) determines.
+    grouped_paths: HashSet<VarId>,
     /// Graph values (`value.rs`) the segment's CTE carries, by variable;
     /// each is also in `values`.
     graph_values: HashMap<VarId, Carried>,

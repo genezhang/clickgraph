@@ -492,6 +492,16 @@ impl<'s> Lowerer<'s> {
                 Ok(false)
             }
             (g, None) => {
+                // The RETURN's ORDER BY reads the item (`ORDER BY
+                // length(p)`): its elements are the path's (#1427).
+                if let GraphRef::Path(src) = g {
+                    if let Some(elements) = self.paths.get(&src).cloned() {
+                        self.paths.insert(it.var, elements);
+                        if aggregating || body.distinct {
+                            self.grouped_paths.insert(it.var);
+                        }
+                    }
+                }
                 let v = self.graph_value(g)?;
                 let column = body.column(v.value, &it.name);
                 body.determined.push(column.clone());

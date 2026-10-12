@@ -1147,7 +1147,16 @@ impl Lowerer<'_> {
         for r in &elements.rels {
             match self.scans.get(r) {
                 Some(Scan::Rel { .. } | Scan::Rels { .. }) => fixed += 1,
-                Some(Scan::Path { .. }) => terms.push(self.physical(*r, "hop_count")?),
+                Some(Scan::Path { .. }) => {
+                    let hops = self.physical(*r, "hop_count")?;
+                    terms.push(match self.grouped_paths.contains(&p) {
+                        true => RenderExpr::Raw(
+                            current_function_mapper()
+                                .any_non_null(&render_expr_to_sql_plain(&hops)),
+                        ),
+                        false => hops,
+                    });
+                }
                 // The relation has no rows (or the OPTIONAL MATCH no match).
                 Some(Scan::Impossible) => return Ok(RenderExpr::Literal(Literal::Null)),
                 _ => return unsupported(format!("internal: {r} is not a relationship scan")),
