@@ -1139,6 +1139,30 @@ impl Lowerer<'_> {
     /// `length(p)`: the path's fixed relationships, plus the hops of each
     /// variable-length one. NULL for a path an OPTIONAL MATCH did not match.
     pub(super) fn path_length(&self, p: VarId) -> Result<RenderExpr, LowerError> {
+        let length = self.ungrouped_path_length(p)?;
+        // A path a grouping RETURN returns: any of its group's (the path,
+        // the group's key, determines it), all of it one aggregate.
+        Ok(match self.grouped_paths.contains(&p) {
+            true => RenderExpr::Raw(
+                current_function_mapper().any_non_null(&render_expr_to_sql_plain(&length)),
+            ),
+            false => length,
+        })
+    }
+
+    /// Refuses reading the nodes or relationships of a path a grouping
+    /// RETURN returns (its ORDER BY): their columns are not the group's.
+    pub(super) fn ungrouped_elements(&self, p: VarId) -> Result<(), LowerError> {
+        if self.grouped_paths.contains(&p) {
+            return unsupported(
+                "the nodes or relationships of a path a DISTINCT or aggregating RETURN \
+                 returns, in its ORDER BY",
+            );
+        }
+        Ok(())
+    }
+
+    fn ungrouped_path_length(&self, p: VarId) -> Result<RenderExpr, LowerError> {
         let Some(elements) = self.paths.get(&p) else {
             return unsupported(format!("internal: path {p} has no elements"));
         };
@@ -1147,16 +1171,7 @@ impl Lowerer<'_> {
         for r in &elements.rels {
             match self.scans.get(r) {
                 Some(Scan::Rel { .. } | Scan::Rels { .. }) => fixed += 1,
-                Some(Scan::Path { .. }) => {
-                    let hops = self.physical(*r, "hop_count")?;
-                    terms.push(match self.grouped_paths.contains(&p) {
-                        true => RenderExpr::Raw(
-                            current_function_mapper()
-                                .any_non_null(&render_expr_to_sql_plain(&hops)),
-                        ),
-                        false => hops,
-                    });
-                }
+                Some(Scan::Path { .. }) => terms.push(self.physical(*r, "hop_count")?),
                 // The relation has no rows (or the OPTIONAL MATCH no match).
                 Some(Scan::Impossible) => return Ok(RenderExpr::Literal(Literal::Null)),
                 _ => return unsupported(format!("internal: {r} is not a relationship scan")),

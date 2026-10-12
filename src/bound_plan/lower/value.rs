@@ -629,6 +629,7 @@ impl<'s> Lowerer<'s> {
         let s = spelling()?;
         let (identities, vars) = match g {
             GraphRef::Path(p) | GraphRef::Nodes(p) | GraphRef::Rels(p) => {
+                self.ungrouped_elements(p)?;
                 let Some(elements) = self.paths.get(&p).cloned() else {
                     return unsupported(format!("internal: path {p} has no elements"));
                 };
@@ -789,6 +790,7 @@ impl<'s> Lowerer<'s> {
 
     /// A path, its nodes or its relationships, in path order.
     fn path_value(&self, p: VarId, part: Part) -> Result<GraphValue, LowerError> {
+        self.ungrouped_elements(p)?;
         let s = spelling()?;
         let Some(elements) = self.paths.get(&p).cloned() else {
             return unsupported(format!("internal: path {p} has no elements"));

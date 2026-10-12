@@ -4477,6 +4477,24 @@ fn order_by_length_of_a_returned_path() {
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN DISTINCT p ORDER BY length(p)",
         &["ORDER BY anyIfOrNull(v1.hop_count, NOT isNull(v1.hop_count)) ASC"],
     );
+    // Two walks: their lengths' sum is one aggregate, one row's (review).
+    has(
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User) \
+         RETURN DISTINCT p ORDER BY length(p)",
+        &["ORDER BY anyIfOrNull(v1.hop_count + v3.hop_count, NOT isNull(v1.hop_count + v3.hop_count)) ASC"],
+    );
+    // Its nodes are not the group's columns: refused, not an SQL error.
+    for q in [
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN DISTINCT p \
+         ORDER BY [n IN nodes(p) | n.name]",
+        "MATCH p = (a:User)-[:FOLLOWS]->(b:User) RETURN p, count(*) AS c \
+         ORDER BY [n IN nodes(p) | n.name]",
+    ] {
+        assert!(
+            translate_bound_plan(q, &social(), &ReadOptions::default()).is_err(),
+            "{q}"
+        );
+    }
     sql("MATCH p = (a:User)-[:FOLLOWS]->(b:User) WITH p RETURN p ORDER BY length(p)");
     has(
         "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User) WITH p RETURN p ORDER BY length(p)",
